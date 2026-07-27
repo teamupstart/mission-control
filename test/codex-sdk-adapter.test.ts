@@ -1164,17 +1164,20 @@ test("clearContext stops whatever the old thread was still running", async () =>
     ...defaultReplies(),
     "thread/start": () => threadResponse(++started === 1 ? THREAD : SECOND_THREAD),
   });
-  const { handle, drained } = await launch(server);
+  const { handle, events, drained } = await launch(server);
   await settle();
   server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
   await settle();
   await handle.clearContext!();
+  await settle();
   // The old thread is abandoned, not archived - so a turn left running on it would go on
   // spending tokens against a conversation nobody can see any more.
   assert.deepEqual(server.calls("turn/interrupt")[0]?.params, {
     threadId: THREAD.id,
     turnId: "turn-1",
   });
+  const replacement = events.filter((event) => event.kind === "bound").at(-1);
+  assert.equal(replacement?.kind === "bound" && replacement.cleared, true);
   await handle.stop();
   await drained;
 });

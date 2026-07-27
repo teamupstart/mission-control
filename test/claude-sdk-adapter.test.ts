@@ -300,6 +300,23 @@ test("a follow-up reports whether Claude queued it behind an active turn", async
   query.end();
 });
 
+test("a resumed Claude stream accepts a continuation without replaying the old intent", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(
+    launchOpts({ prompt: "", resume: "agent-interrupted" }),
+  );
+  const { options, turns } = await started;
+  assert.equal(options.resume, "agent-interrupted");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([...turns], [], "resume itself adds no user turn");
+
+  assert.equal(await handle.send({ text: "continue from the current checkout" }), "started");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]?.message.content, "continue from the current checkout");
+  await handle.stop();
+});
+
 test("an ordinary tool becomes a permission ask, and Yes allows it", async () => {
   const { deps, started } = fakeDeps();
   const handle = await claudeSdkSpec(deps).launch(launchOpts());

@@ -32,6 +32,7 @@ const { mkTask } = await import("./helpers/session-fixture.ts");
 
 type Handle = import("../src/server/harness/types.ts").SdkSessionHandle;
 type SdkEvent = import("../src/server/harness/types.ts").SdkEvent;
+type SdkTurn = import("../src/server/harness/types.ts").SdkTurn;
 type LaunchOptions = import("../src/server/harness/types.ts").SdkLaunchOptions;
 type ServerEvent = import("../src/shared/types.ts").ServerEvent;
 
@@ -41,9 +42,17 @@ beforeEach(() => {
   openDb().exec("DELETE FROM sdk_sessions; DELETE FROM tasks;");
 });
 
+type FakeHandle = Handle & {
+  push: (e: SdkEvent) => void;
+  end: () => void;
+  stopped: boolean;
+  sent: SdkTurn[];
+};
+
 /** A driver whose events the test pushes by hand. */
-function fakeHandle(): Handle & { push: (e: SdkEvent) => void; end: () => void; stopped: boolean } {
+function fakeHandle(): FakeHandle {
   const queued: SdkEvent[] = [];
+  const sent: SdkTurn[] = [];
   let waiting: ((r: IteratorResult<SdkEvent>) => void) | null = null;
   let ended = false;
   const push = (e: SdkEvent): void => {
@@ -66,6 +75,7 @@ function fakeHandle(): Handle & { push: (e: SdkEvent) => void; end: () => void; 
   const handle = {
     push,
     end,
+    sent,
     stopped: false,
     events: {
       async *[Symbol.asyncIterator](): AsyncGenerator<SdkEvent> {
@@ -82,7 +92,8 @@ function fakeHandle(): Handle & { push: (e: SdkEvent) => void; end: () => void; 
         }
       },
     },
-    async send() {
+    async send(turn: SdkTurn) {
+      sent.push(turn);
       return "started" as const;
     },
     async interrupt() {},
@@ -112,6 +123,20 @@ function withFakeDriver(
     },
   };
   return { restore: () => (HARNESSES.claude.sdk = real), calls };
+}
+
+function withFakeCodexDriver(
+  launch: (opts: LaunchOptions) => Promise<Handle>,
+): { restore: () => void; calls: LaunchOptions[] } {
+  const calls: LaunchOptions[] = [];
+  const real = HARNESSES.codex.sdk;
+  HARNESSES.codex.sdk = {
+    launch: (opts) => {
+      calls.push(opts);
+      return launch(opts);
+    },
+  };
+  return { restore: () => (HARNESSES.codex.sdk = real), calls };
 }
 
 const START = {
@@ -150,6 +175,7 @@ test("start persists a row, registers the card, and records the binding", async 
     assert.equal(row.taskId, "task-1");
     assert.equal(row.model, null, "the launch followed Claude's default");
     assert.equal(row.agentSessionId, null);
+    assert.equal(row.turnInProgress, true, "turn one is durable before the pump catches up");
 
     handle.push({
       kind: "bound",
@@ -165,7 +191,156 @@ test("start persists a row, registers the card, and records the binding", async 
     assert.equal(registry.getSession(session.id)?.agentSessionId, "agent-7");
     assert.equal(registry.getSession(session.id)?.meta?.modelId, "actual-model");
     assert.equal(registry.getSession(session.id)?.hooksSeen, true);
+
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    await supervisor.send(session.id, { text: "one more thing" });
+    assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+    assert.deepEqual(handle.sent, [{ text: "one more thing" }]);
   } finally {
+    fake.restore();
+  }
+});
+
+test("a completed turn preserves durability while an accepted follow-up remains", async () => {
+  const handle = fakeHandle();
+  const intermediateUsage = {
+    input: 12,
+    output: 3,
+    cacheRead: 4,
+    cacheWrite: 0,
+    modelId: "claude-test",
+    costUsd: null,
+  };
+  handle.send = async (turn) => {
+    handle.sent.push(turn);
+    return "queued";
+  };
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const observedCompletions: SdkEvent[] = [];
+    const applyDriverEvent = registry.applyDriverEvent.bind(registry);
+    registry.applyDriverEvent = (id, event, options) => {
+      if (event.kind === "turn_done") observedCompletions.push(event);
+      applyDriverEvent(id, event, options);
+    };
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+
+    handle.push({ kind: "state", state: "working", activity: null });
+    await waitFor(() => registry.getSession(session.id)?.state === "working");
+    assert.equal(await supervisor.send(session.id, { text: "follow up" }), "queued");
+    handle.push({ kind: "turn_done", usage: intermediateUsage });
+    await drain();
+    assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+    assert.equal(registry.getSession(session.id)?.state, "working");
+    assert.deepEqual(
+      observedCompletions.map((event) => event.kind === "turn_done" && event.usage),
+      [intermediateUsage],
+      "the intermediate completion reaches every non-idle registry projection",
+    );
+
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    assert.equal(registry.getSession(session.id)?.state, "idle");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a follow-up is durably recoverable before the driver can accept it", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    handle.send = async (turn) => {
+      handle.sent.push(turn);
+      assert.equal(
+        getSdkSession(session.id)?.turnInProgress,
+        true,
+        "SQLite is marked before the vendor boundary",
+      );
+      return "started";
+    };
+
+    assert.equal(await supervisor.send(session.id, { text: "follow up" }), "started");
+    assert.deepEqual(handle.sent, [{ text: "follow up" }]);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a rejected follow-up releases only its recovery reservation", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.send = async () => {
+      assert.equal(
+        getSdkSession(session.id)?.turnInProgress,
+        true,
+        "the attempted follow-up is durable while acceptance is pending",
+      );
+      throw new Error("driver rejected");
+    };
+
+    await assert.rejects(
+      () => supervisor.send(session.id, { text: "follow up" }),
+      /driver rejected/,
+    );
+    assert.equal(
+      getSdkSession(session.id)?.turnInProgress,
+      true,
+      "the original accepted turn remains recoverable",
+    );
+
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    await assert.rejects(
+      () => supervisor.send(session.id, { text: "try once more" }),
+      /driver rejected/,
+    );
+    assert.equal(
+      getSdkSession(session.id)?.turnInProgress,
+      false,
+      "a rejected send with no older work does not leave a false recovery latch",
+    );
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a failed recovery write prevents the driver from accepting the turn", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    openDb().exec(`
+      CREATE TRIGGER reject_sdk_turn_reservation
+      BEFORE UPDATE OF turn_in_progress ON sdk_sessions
+      WHEN OLD.id = '${session.id}'
+      BEGIN
+        SELECT RAISE(FAIL, 'reservation refused');
+      END;
+    `);
+
+    await assert.rejects(
+      () => supervisor.send(session.id, { text: "must not be accepted" }),
+      /reservation refused/,
+    );
+    assert.deepEqual(handle.sent, [], "the driver boundary is never crossed");
+  } finally {
+    openDb().exec("DROP TRIGGER IF EXISTS reject_sdk_turn_reservation");
     fake.restore();
   }
 });
@@ -202,7 +377,7 @@ test("a driver we cannot take ownership of is stopped, not leaked", async () => 
         supervisor.adopt({
           registration: { id: session.id, agent: "claude", name: "dup", cwd: "/wt/one" },
           handle: second,
-          durable: { taskId: null, model: null, effort: null },
+          durable: { taskId: null, model: null, effort: null, turnInProgress: false },
         }),
       /already registered/,
     );
@@ -266,6 +441,7 @@ test("restore resumes the same conversation rather than starting a new one", asy
       effort: "high",
       permissionMode: "auto",
       status: "running",
+      turnInProgress: false,
     });
     const registry = new Registry();
     const supervisor = new SdkSupervisor(registry, {
@@ -292,6 +468,82 @@ test("restore resumes the same conversation rather than starting a new one", asy
     // The row keeps the id it is being picked up from - it must not be blanked to `null`
     // and then re-learned, or a crash in that window loses the only thing a resume needs.
     assert.equal(getSdkSession("sdk:restore-1")?.agentSessionId, "agent-42");
+    assert.deepEqual(handle.sent, [], "an idle restored session receives no unsolicited turn");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("restore automatically continues an interrupted turn without replaying its intent", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    upsertSdkSession({
+      id: "sdk:continue-1",
+      agent: "claude",
+      agentSessionId: "agent-interrupted",
+      cwd: "/wt/continue",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "suspended",
+      turnInProgress: true,
+    });
+
+    await new SdkSupervisor(new Registry()).restore();
+
+    assert.equal(fake.calls.length, 1);
+    assert.equal(fake.calls[0]?.resume, "agent-interrupted");
+    assert.equal(fake.calls[0]?.prompt, "", "the original task prompt is never replayed");
+    assert.equal(handle.sent.length, 1);
+    assert.match(handle.sent[0]?.text ?? "", /previous turn was still in progress/i);
+    assert.match(handle.sent[0]?.text ?? "", /do not repeat completed work/i);
+    assert.equal(getSdkSession("sdk:continue-1")?.turnInProgress, true);
+
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession("sdk:continue-1")?.turnInProgress === false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a second restart retries unfinished recovery, but completion disarms the next one", async () => {
+  upsertSdkSession({
+    id: "sdk:continue-again",
+    agent: "claude",
+    agentSessionId: "agent-retry",
+    cwd: "/wt/retry",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "suspended",
+    turnInProgress: true,
+  });
+  const first = fakeHandle();
+  const second = fakeHandle();
+  const third = fakeHandle();
+  const handles = [first, second, third];
+  const fake = withFakeDriver(async () => handles.shift()!);
+  try {
+    const firstSupervisor = new SdkSupervisor(new Registry());
+    await firstSupervisor.restore();
+    assert.equal(first.sent.length, 1);
+    await firstSupervisor.stopAll();
+    assert.equal(getSdkSession("sdk:continue-again")?.turnInProgress, true);
+
+    const secondSupervisor = new SdkSupervisor(new Registry());
+    await secondSupervisor.restore();
+    assert.equal(second.sent.length, 1, "unfinished recovery is attempted in the new daemon");
+    second.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession("sdk:continue-again")?.turnInProgress === false);
+    await secondSupervisor.stopAll();
+
+    const thirdSupervisor = new SdkSupervisor(new Registry());
+    await thirdSupervisor.restore();
+    assert.deepEqual(third.sent, [], "a completed turn does not receive another continuation");
+    await thirdSupervisor.stopAll();
   } finally {
     fake.restore();
   }
@@ -313,6 +565,7 @@ test("a resume that fails still shows a card and takes it away, so the task sett
       effort: null,
       permissionMode: null,
       status: "running",
+      turnInProgress: false,
     });
     const registry = new Registry();
     const removed: string[] = [];
@@ -335,6 +588,11 @@ test("a resume that fails still shows a card and takes it away, so the task sett
 
 test("a shutdown suspends rather than exits, and a suspended row is resumed", async () => {
   const handle = fakeHandle();
+  handle.stop = async () => {
+    handle.stopped = true;
+    handle.push({ kind: "turn_done", usage: null });
+    handle.push({ kind: "exited", reason: "interrupted", resumable: true });
+  };
   const fake = withFakeDriver(async () => handle);
   try {
     const registry = new Registry();
@@ -358,6 +616,11 @@ test("a shutdown suspends rather than exits, and a suspended row is resumed", as
     // indistinguishable from an agent that finished, and `reconcileOnStartup` would run
     // `git worktree remove --force` over work that was merely interrupted.
     assert.equal(getSdkSession(session.id)?.status, "suspended");
+    assert.equal(
+      getSdkSession(session.id)?.turnInProgress,
+      true,
+      "shutdown preserves the unfinished turn for startup recovery",
+    );
     assert.equal(supervisor.handleFor(session.id), null);
     assert.notEqual(registry.getSession(session.id)?.state, "exited");
     assert.deepEqual(removed, []);
@@ -400,11 +663,11 @@ test("task liveness answers true or false for an embedded task, and null for any
 test("a task re-dispatched after a failure is answered by its newest row", async () => {
   const supervisor = new SdkSupervisor(new Registry());
   upsertSdkSession(
-    { id: "sdk:old", agent: "claude", agentSessionId: null, cwd: "/wt", taskId: "t", model: null, effort: null, permissionMode: null, status: "failed" },
+    { id: "sdk:old", agent: "claude", agentSessionId: null, cwd: "/wt", taskId: "t", model: null, effort: null, permissionMode: null, status: "failed", turnInProgress: false },
     1_000,
   );
   upsertSdkSession(
-    { id: "sdk:new", agent: "claude", agentSessionId: null, cwd: "/wt", taskId: "t", model: null, effort: null, permissionMode: null, status: "running" },
+    { id: "sdk:new", agent: "claude", agentSessionId: null, cwd: "/wt", taskId: "t", model: null, effort: null, permissionMode: null, status: "running", turnInProgress: false },
     2_000,
   );
   assert.equal(listSdkSessions().length, 2);
@@ -427,6 +690,47 @@ test("live controls reach the handle and persist what restart will reuse", async
     assert.deepEqual(efforts, ["xhigh"]);
     assert.equal(getSdkSession(session.id)?.permissionMode, "acceptEdits");
     assert.equal(getSdkSession(session.id)?.effort, "xhigh");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a cleared Codex replacement conversation is durably idle", async () => {
+  const handle = fakeHandle();
+  handle.clearContext = async () => {
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-cleared",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+      cleared: true,
+    });
+    handle.push({ kind: "state", state: "idle", activity: null });
+  };
+  const restored = fakeHandle();
+  const handles = [handle, restored];
+  const fake = withFakeCodexDriver(async () => handles.shift()!);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start({ ...START, agent: "codex" });
+    handle.push({
+      kind: "bound",
+      agentSessionId: "agent-original",
+      transcriptPath: null,
+      modelId: null,
+      pid: null,
+    });
+    handle.push({ kind: "state", state: "working", activity: null });
+    await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-original");
+
+    assert.equal(await supervisor.clearContext(session.id), true);
+    await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-cleared");
+    assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+
+    await supervisor.stopAll();
+    await new SdkSupervisor(new Registry()).restore();
+    assert.deepEqual(restored.sent, []);
   } finally {
     fake.restore();
   }
@@ -473,6 +777,7 @@ test("a dispatch interrupted mid-launch is COMPLETED on restart, not failed", as
     effort: null,
     permissionMode: null,
     status: "running",
+    turnInProgress: false,
   });
   const registry = new Registry();
   registry.upsertTask(
@@ -513,6 +818,7 @@ test("a dead embedded row still fails an interrupted dispatch", async () => {
     effort: null,
     permissionMode: null,
     status: "exited",
+    turnInProgress: false,
   });
   const registry = new Registry();
   registry.upsertTask(

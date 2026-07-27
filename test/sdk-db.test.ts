@@ -12,9 +12,9 @@ import { join } from "node:path";
 //
 // The database here is deliberately an UPGRADED one, seeded the way `schedule-db.test.ts`
 // seeds its own and for the same reason: a fresh-schema test would pass with the whole
-// CREATE deleted from the wrong side of `migrate()`. It is a new table, so it needs no
-// `addColumn` - but proving that on a pre-feature FILE is what makes the claim worth
-// anything.
+// `turn_in_progress` migration deleted. The seed has the SDK table as it existed before
+// automatic continuation, so the test proves an operator's existing rows receive the new
+// column rather than only proving a fresh install does.
 //
 // The second half is the persisted-enum doctrine: a status this build cannot read must come
 // back `null`, never the nearest thing we do know, and the restore sweep must leave such a
@@ -25,7 +25,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-sdk-db-"));
 // opens below. Set before importing anything that resolves it.
 process.env.MISSION_HOME = home;
 
-/** A database that predates embedded sessions: real tables, real rows, no `sdk_sessions`. */
+/** A database that predates interrupted-turn recovery: an SDK row, without its new bit. */
 function seedPreFeatureDb(): void {
   const raw = new DatabaseSync(join(home, "harness.db"));
   raw.exec(`
@@ -34,16 +34,30 @@ function seedPreFeatureDb(): void {
       value      TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE sdk_sessions (
+      id                TEXT PRIMARY KEY NOT NULL,
+      agent             TEXT NOT NULL,
+      agent_session_id  TEXT,
+      cwd               TEXT NOT NULL,
+      task_id           TEXT,
+      model             TEXT,
+      effort            TEXT,
+      permission_mode   TEXT,
+      status            TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    );
   `);
   raw.prepare(`INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)`).run(
     "ui",
     "{}",
     1,
   );
-  const tables = raw
-    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sdk_sessions'`)
-    .all();
-  assert.equal(tables.length, 0, "the seed must not already have the table under test");
+  raw.prepare(
+    `INSERT INTO sdk_sessions
+       (id, agent, agent_session_id, cwd, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run("sdk:pre-continuation", "claude", "agent-old", "/wt/old", "exited", 1, 1);
   raw.close();
 }
 
@@ -85,6 +99,8 @@ test("the table reaches a database that already had rows", () => {
       "status",
       "created_at",
       "updated_at",
+      // ALTER TABLE appends on an upgraded database; store reads name columns explicitly.
+      "turn_in_progress",
     ],
   );
   // The id is the registry's map key as well as this primary key, which is what lets a
@@ -100,6 +116,7 @@ test("the table reaches a database that already had rows", () => {
     (db.prepare(`SELECT COUNT(*) AS n FROM app_config`).get() as { n: number }).n,
     1,
   );
+  assert.equal(getSdkSession("sdk:pre-continuation")?.turnInProgress, false);
 });
 
 test("a row round-trips, and the id is upserted rather than duplicated", () => {
@@ -114,6 +131,7 @@ test("a row round-trips, and the id is upserted rather than duplicated", () => {
       effort: "high",
       permissionMode: "auto",
       status: "starting",
+      turnInProgress: true,
     },
     5_000,
   );
@@ -123,6 +141,7 @@ test("a row round-trips, and the id is upserted rather than duplicated", () => {
   assert.equal(row?.effort, "high");
   assert.equal(row?.permissionMode, "auto");
   assert.equal(row?.status, "starting");
+  assert.equal(row?.turnInProgress, true);
   assert.equal(row?.createdAt, 5_000);
 
   recordSdkSessionBinding("sdk:aaa", "agent-xyz", "actual-model", 6_000);
@@ -143,6 +162,7 @@ test("a row round-trips, and the id is upserted rather than duplicated", () => {
       effort: null,
       permissionMode: null,
       status: "running",
+      turnInProgress: false,
     },
     7_000,
   );
@@ -193,6 +213,7 @@ test("the status vocabulary is what the live check is built from", () => {
         effort: null,
         permissionMode: null,
         status,
+        turnInProgress: false,
       },
       1,
     );

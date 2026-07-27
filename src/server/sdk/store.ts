@@ -73,6 +73,14 @@ export interface SdkSessionRow {
   effort: ThinkingLevel | null;
   permissionMode: PermissionMode | null;
   status: SdkSessionStatus | null;
+  /**
+   * The driver accepted work that has not produced `turn_done`.
+   *
+   * Separate from `status`: a clean shutdown writes `suspended` while deliberately
+   * preserving this bit, so startup knows whether merely reattaching the conversation is
+   * enough or whether the interrupted work needs a continuation turn.
+   */
+  turnInProgress: boolean;
   /** The raw status as stored, so a refusal can say what it could not read. */
   statusRaw: string;
   createdAt: number;
@@ -90,6 +98,7 @@ export interface SdkSessionWrite {
   effort: ThinkingLevel | null;
   permissionMode: PermissionMode | null;
   status: SdkSessionStatus;
+  turnInProgress: boolean;
 }
 
 interface Row {
@@ -102,6 +111,7 @@ interface Row {
   effort: string | null;
   permission_mode: string | null;
   status: string;
+  turn_in_progress: number;
   created_at: number;
   updated_at: number;
 }
@@ -117,6 +127,7 @@ function mapRow(r: Row): SdkSessionRow {
     effort: readPersistedEnum(THINKING_LEVELS, r.effort),
     permissionMode: readPersistedEnum(PERMISSION_MODES, r.permission_mode),
     status: readPersistedEnum(SDK_SESSION_STATUSES, r.status),
+    turnInProgress: r.turn_in_progress === 1,
     statusRaw: r.status,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -140,7 +151,7 @@ export function listSdkSessions(): SdkSessionRow[] {
   return openDb()
     .prepare(
       `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
-              status, created_at, updated_at
+              status, turn_in_progress, created_at, updated_at
          FROM sdk_sessions ORDER BY created_at ASC`,
     )
     .all()
@@ -151,7 +162,7 @@ export function getSdkSession(id: string): SdkSessionRow | null {
   const row = openDb()
     .prepare(
       `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
-              status, created_at, updated_at
+              status, turn_in_progress, created_at, updated_at
          FROM sdk_sessions WHERE id = ?`,
     )
     .get(id) as unknown as Row | undefined;
@@ -169,8 +180,8 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
   openDb()
     .prepare(
       `INSERT INTO sdk_sessions (id, agent, agent_session_id, cwd, task_id, model, effort,
-                                 permission_mode, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 permission_mode, status, turn_in_progress, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          agent = excluded.agent,
          agent_session_id = excluded.agent_session_id,
@@ -180,6 +191,7 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
          effort = excluded.effort,
          permission_mode = excluded.permission_mode,
          status = excluded.status,
+         turn_in_progress = excluded.turn_in_progress,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -192,6 +204,7 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
       write.effort,
       write.permissionMode,
       write.status,
+      write.turnInProgress ? 1 : 0,
       now,
       now,
     );
@@ -221,6 +234,17 @@ export function setSdkSessionStatus(
   openDb()
     .prepare(`UPDATE sdk_sessions SET status = ?, updated_at = ? WHERE id = ?`)
     .run(status, now, id);
+}
+
+/** Record whether startup owes this conversation an automatic continuation turn. */
+export function setSdkSessionTurnInProgress(
+  id: string,
+  turnInProgress: boolean,
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(`UPDATE sdk_sessions SET turn_in_progress = ?, updated_at = ? WHERE id = ?`)
+    .run(turnInProgress ? 1 : 0, now, id);
 }
 
 export function clearSdkSessionTask(id: string, now = Date.now()): void {

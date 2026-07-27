@@ -706,6 +706,8 @@ export function openDb(): DatabaseSync {
       effort            TEXT,
       permission_mode   TEXT,
       status            TEXT NOT NULL,
+      -- Independent of lifecycle status: a suspended driver may owe a continuation turn.
+      turn_in_progress  INTEGER NOT NULL DEFAULT 0,
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL
     );
@@ -1227,6 +1229,11 @@ function inFlightIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  // An embedded driver can be relaunched from `status` plus `agent_session_id`, but those
+  // facts cannot say whether the old process died in the middle of a turn. Existing rows
+  // default idle: no older build recorded proof that they owe an automatic continuation.
+  addColumn(d, "sdk_sessions", "turn_in_progress", "INTEGER NOT NULL DEFAULT 0");
+
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
   // databases can contain table shells but no executable bindings, so empty identity

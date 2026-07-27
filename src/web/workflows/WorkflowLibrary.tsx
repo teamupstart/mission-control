@@ -200,10 +200,16 @@ export function WorkflowLibrary({
     [personas, workflow?.completionPolicy, workflow?.draft],
   );
   const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
-  // The same rule the daemon enforces in `deleteWorkflowCas`, asked of the version list this
-  // surface already holds. Gating the button on it keeps the refusal out of the operator's
-  // way rather than letting them reach a 409 that only tells them what they cannot do.
-  const neverPublished = Boolean(workflow) && draft.versions.length === 0;
+  // The same rule the daemon enforces in `deleteWorkflowCas`, and BOTH halves of it for the
+  // same reason the store checks both: `currentVersionId` is the pointer, the version list is
+  // the truth. The pointer is what makes this correct on first paint - it arrives with the
+  // workflow detail, while `versions` is a second request that is briefly `[]` in flight, so
+  // asking the list alone offered Delete on a published workflow until that request landed.
+  // Gating on it keeps the refusal out of the operator's way rather than letting them reach a
+  // 409 that only tells them what they cannot do.
+  const neverPublished = Boolean(workflow)
+    && workflow?.currentVersionId === null
+    && draft.versions.length === 0;
   const activePersonas = useMemo(
     () => personasForDisplay(personas).filter((persona) => persona.archivedAt === null),
     [personas],

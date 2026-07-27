@@ -247,7 +247,12 @@ test("delete is offered only before the first publish, and restore only when arc
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
   // The browser mirrors the daemon's `published` refusal so the operator never reaches a 409
   // that only tells them what they cannot do.
-  assert.match(source, /const neverPublished = Boolean\(workflow\) && draft\.versions\.length === 0;/);
+  // BOTH halves, matching the store's own guard. `versions` is a second request that is `[]`
+  // while in flight, so the list alone offered Delete on a published workflow until it landed.
+  // `currentVersionId` arrives with the workflow detail, which is what makes this right on
+  // first paint rather than one round trip later.
+  assert.match(source, /workflow\?\.currentVersionId === null/);
+  assert.match(source, /&& draft\.versions\.length === 0;/);
   assert.match(source, /\{neverPublished && \(/);
   // Delete is a POST to its own path: reusing `DELETE /api/workflows/:id` would make the
   // destructive path reachable by any client that still means "archive" by that verb.

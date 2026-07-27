@@ -148,7 +148,7 @@ The direct answer to "is there any current functionality we'd lose?".
 - **True interrupt, live mode/model changes** (`interrupt()`, `setPermissionMode`,
   `setModel`, `turn/steer`) instead of TUI walks that read footers which dialogs hide.
 - **Exact usage**: per-turn tokens and cost on the event stream, rather than inferred.
-- **Dispatch verification collapses**: `awaitReady`'s 20s hook wait, pi's session-file
+- **Dispatch verification collapses**: `awaitReady`'s hook wait, prompt acceptance
   polling, and `waitForSessionAtCwd` all become "the SDK reported init".
 
 ### Unchanged by design

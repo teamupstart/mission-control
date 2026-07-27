@@ -500,22 +500,21 @@ const TaskDependenciesSchema = z
 /**
  * A model id, in the only shape that is safe to hand to a harness CLI.
  *
- * This value ends up as an argument on a `tmux new-session` command line, which
- * tmux joins with spaces and runs through a shell - so anything quotable or
- * glob-able here would be a shell injection, not a typo. Every real Claude and
- * Codex id is `[a-z0-9]` plus dots and dashes (`claude-opus-4-8`, `gpt-5.6-sol`),
- * so constraining to that costs nothing and closes the hole at the edge, before
- * the id is stored. Note this deliberately excludes Claude's `[1m]` long-context
- * marker: the CLI takes the bare id and picks the window itself.
+ * Terminal backends preserve argv boundaries, but the value still passes through each
+ * harness's option parser. Requiring an alphanumeric first character rejects flag- and
+ * path-shaped inputs, while the restricted remainder excludes whitespace and control
+ * characters before the id is stored. Real Claude and Codex ids fit that alphabet
+ * (`claude-opus-4-8`, `gpt-5.6-sol`). Note this deliberately excludes Claude's `[1m]`
+ * long-context marker: the CLI takes the bare id and picks the window itself.
  */
 export const ModelIdSchema = z
   .string()
   .max(80)
   // `/` is allowed only in the INTERIOR, never as the first character, so a provider-qualified
   // id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the provider) passes while
-  // a path such as `../../etc/passwd` or a bare `-rf` still fails on the leading-char class. No
-  // shell metacharacter is admitted, so the guarantee this schema gives the `tmux new-session`
-  // command line is unchanged. Test: `dispatch-model.test.ts`.
+  // a path such as `../../etc/passwd` or a bare `-rf` still fails on the leading-char class.
+  // Terminal adapters own argv preservation; this schema owns the persisted id vocabulary.
+  // Test: `dispatch-model.test.ts`.
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/, "model id must be alphanumeric with . _ - / only");
 
 /**

@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import {
   AgentDot,
@@ -57,6 +58,7 @@ export function SessionTile({
   onOpenSchedule,
   scheduleNameById,
   onOpenEnsemble,
+  ensembleSummary = null,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -76,6 +78,8 @@ export function SessionTile({
   /** Live schedule names by id, for the tile flag's hover copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
   onOpenEnsemble?: (runId: string) => void;
+  /** This member's run summary, for the flag's hover copy. Null until its SSE summary lands. */
+  ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   // A run always produces a gate line, and the line always carries the run's segments:
@@ -249,6 +253,7 @@ export function SessionTile({
         />
         <EnsembleTileFlag
           link={session.task?.ensemble ?? null}
+          summary={ensembleSummary}
           onOpen={
             session.task?.ensemble
               ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)

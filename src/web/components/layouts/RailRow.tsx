@@ -12,6 +12,7 @@ import {
   runtimeRailMark,
 } from "../session-bits.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
@@ -34,6 +35,7 @@ export function RailRow({
   onOpenSchedule,
   scheduleNameById,
   onOpenEnsemble,
+  ensembleSummary = null,
 }: {
   session: Session;
   selected: boolean;
@@ -47,6 +49,8 @@ export function RailRow({
   /** Live schedule names by id, for the rail glyph's hover copy. */
   scheduleNameById?: ReadonlyMap<string, string>;
   onOpenEnsemble?: (runId: string) => void;
+  /** This member's run summary, for the glyph's hover copy. Null until its SSE summary lands. */
+  ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const ref = useRef<HTMLButtonElement>(null);
@@ -124,6 +128,7 @@ export function RailRow({
             />
             <EnsembleRailMark
               link={session.task?.ensemble ?? null}
+              summary={ensembleSummary}
               onOpen={
                 session.task?.ensemble
                   ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)

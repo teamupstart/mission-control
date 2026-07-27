@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueueSummary } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -115,6 +116,7 @@ export function SessionCard({
   onOpenSchedule,
   scheduleNameById,
   onOpenEnsemble,
+  ensembleSummary = null,
 }: {
   session: Session;
   /** True when this session's parked no-mistakes gate needs you (computed cross-session in App). */
@@ -171,6 +173,8 @@ export function SessionCard({
   scheduleNameById?: ReadonlyMap<string, string>;
   /** Open the Ensemble run this session's member belongs to (read off `session.task.ensemble`). */
   onOpenEnsemble?: (runId: string) => void;
+  /** That run's live summary, when App has one: the chip's `n/m in` progress suffix. */
+  ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
   const st = stateDisplay(session, gateNeedsYou);
   const attention = st.tone === "attention";
@@ -226,6 +230,7 @@ export function SessionCard({
         <WorkflowChip run={workflowRun} onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined} />
         <EnsembleChip
           link={session.task?.ensemble ?? null}
+          summary={ensembleSummary}
           onOpen={
             session.task?.ensemble
               ? () => onOpenEnsemble?.(session.task!.ensemble!.runId)

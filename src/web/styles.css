@@ -161,10 +161,51 @@
   font-size: 10px;
 }
 
+/* The run's own progress, appended to the member's standing. Dim, because it is a fact
+   about the GROUP and the chip's subject is this one session. */
+.ensemble-chip-progress {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* `waiting` is "this candidate submitted and the RUN is working on it" - nothing is asked
+   of anyone - so it is deliberately NOT the attention hue any more. That hue now belongs
+   to `blocked` alone, which is the one member state the operator can act on; painting the
+   two the same was the chip saying "look at me" over a candidate that had finished. */
 .ensemble-running { color: var(--working); }
-.ensemble-waiting { color: var(--attention); }
+.ensemble-waiting { color: var(--neutral); }
+.ensemble-blocked { color: var(--attention); font-weight: 650; }
 .ensemble-kept { color: var(--idle); }
 .ensemble-out { color: var(--danger); }
+
+/* One dot per member of the roster - the ONE progress rendering, mounted by the board's
+   cluster frame, the console rail's cluster header and the Ensembles list row. Squares
+   rather than circles so a five-dot row still reads at 6px, and no gap collapse: an
+   unstarted member has to occupy space or "2 of 5" looks like "2 of 2". */
+.ens-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.ens-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--neutral);
+}
+.ens-dot-blocked { background: var(--attention); }
+.ens-dot-done { background: var(--idle); }
+.ens-dot-working { background: var(--working); }
+.ens-dot-out { background: var(--danger); }
+/* Not started: an outline, not a fill. A grey fill reads as a member in some state; an
+   empty box reads as a lane the run has not opened yet, which is what it is. The outline is
+   mixed off --neutral rather than being --border: at 6px, a border-coloured hairline on the
+   cluster frame's own background is invisible, and an invisible lane is a shorter row. */
+.ens-dot-pending {
+  background: none;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--neutral) 55%, transparent);
+}
 
 .workflow-binding-dialog {
   width: min(560px, calc(100vw - 32px));
@@ -6746,6 +6787,28 @@ select:not([multiple]) option {
   font-weight: 800;
 }
 
+/* The progress the SSE summary has always carried, finally on screen: the shared dot leaf,
+   the member counts, and the blocked rollup. */
+.ensemble-run-progress {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ensemble-run-counts {
+  font-size: 11px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.ensemble-run-needs {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--attention);
+}
+
 .ensemble-run-empty,
 .ensemble-empty {
   padding: 18px 10px;
@@ -6818,6 +6881,14 @@ select:not([multiple]) option {
 .ensemble-facts dd {
   margin: 2px 0 0;
   overflow-wrap: anywhere;
+}
+
+/* The compiled stage id, beside the operator word that now leads this fact. Demoted rather
+   than removed: the timeline below names stages by exactly this string, so it has to stay
+   readable - it just must not compete with the word a glance is meant to land on. */
+.ensemble-stage-id {
+  font-size: 11px;
+  color: var(--dim);
 }
 
 .ensemble-section {
@@ -8144,6 +8215,24 @@ select.ensemble-judge-persona {
 .persona-narrow-toggle button.active {
   color: var(--fg);
   background: color-mix(in oklab, var(--working) 16%, var(--panel-2));
+}
+/* How many runs need you, on the tab itself. Until the attention inbox lands this is the
+   only ambient indicator an ensemble has: `awaiting_decision` fires one toast, and a
+   decision nobody caught otherwise sits silently behind an unvisited tab. */
+.workflow-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--bg);
+  background: var(--attention);
 }
 .workflow-empty {
   display: grid;
@@ -11792,6 +11881,52 @@ select.foreman-model-input {
   font-variant-numeric: tabular-nums;
   color: var(--dim);
 }
+/* An ensemble's siblings, gathered under one header inside their tone section. The frame
+   is a left hairline rather than a box: the rail is a dense vertical list and a bordered
+   card per run would turn five rows into five cards. Shared by the console rail and the
+   board's drilled-in column, which are the same rail. */
+.rail-cluster {
+  border-left: 2px solid color-mix(in oklab, var(--neutral) 55%, transparent);
+}
+.rail-ensemble-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 12px 5px;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--bg-2) 70%, transparent);
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+.rail-ensemble-group:hover {
+  color: var(--fg);
+  background: var(--panel);
+}
+.rail-cluster:has(.rail-ensemble-group.needs-you) {
+  border-left-color: var(--attention);
+}
+.reg-glyph {
+  font-weight: 800;
+  color: var(--neutral);
+}
+.rail-ensemble-group.needs-you .reg-glyph {
+  color: var(--attention);
+}
+.reg-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reg-stage {
+  margin-left: auto;
+  flex: none;
+  color: var(--dim);
+}
 .rail-row {
   position: relative;
   display: grid;
@@ -12545,6 +12680,109 @@ select.foreman-model-input {
   text-align: center;
   font-size: 11.5px;
   color: var(--dim);
+}
+
+/* ---- ensemble clusters: sibling members, framed together ----
+   A run's members are one piece of work spread over several agents, and on a board they
+   scatter like unrelated sessions. The frame is presentational ONLY - it carries no drag
+   handlers, so a backlog card dragged over a tile inside it behaves exactly as it did when
+   the tiles were loose children of the column body, and the tiles keep their own props and
+   order (`orderSessions` decided that, and the arrow keys walk the same sequence).
+
+   A cluster never crosses a tone column: a blocked member sits in "needs you" with this
+   header repeated, rather than dragging its working siblings out of the column that says
+   what they are. The header's rollup line is what ties the halves back together. */
+.board-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 0 7px;
+  border: 1px solid color-mix(in oklab, var(--neutral) 35%, var(--border-soft));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--bg-2) 45%, transparent);
+}
+.board-cluster.needs-you {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.board-cluster .tile {
+  margin: 0 7px;
+  width: auto;
+}
+/* Two EXPLICIT lines, not one wrapping row and not one grid. A column is 250px by default, so a
+   wrapping row reflowed for every stage word; and a grid track shared by the dots and the badge
+   is sized by the wider of the two, which squeezed the run title to "Fix the ...". */
+.board-cluster-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 7px 9px 6px;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 12px 12px 0 0;
+  cursor: pointer;
+}
+.board-cluster-head:hover {
+  color: var(--fg);
+  background: var(--panel);
+}
+.bch-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.bch-glyph {
+  flex: none;
+  font-weight: 800;
+  color: var(--neutral);
+}
+.board-cluster-head.needs-you .bch-glyph {
+  color: var(--attention);
+}
+.bch-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 640;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-cluster-head .ens-dots {
+  margin-left: auto;
+}
+.bch-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bch-needs {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-weight: 680;
+  color: var(--bg);
+  background: var(--attention);
+}
+/* The same fact, one column over. A solid badge here would read as "click the tiles below" in a
+   column whose members are all working; the outline says "the run has one, and it is not here".
+   Terse on purpose - the header's hover copy carries the sentence, and the alternative is a
+   badge that eats a 250px column's whole second line. */
+.bch-needs.is-elsewhere {
+  color: var(--attention);
+  background: none;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--attention) 55%, transparent);
+  font-weight: 600;
 }
 
 /* ---- empty columns: all-clear, and the stash the rest fold into ----

@@ -25,11 +25,22 @@ import {
   ScheduleOriginTileFlag,
   SessionTitle,
   StateBadge,
+  EnsembleChip,
+  EnsembleRailMark,
+  EnsembleTileFlag,
+  ensembleMemberStateLabel,
+  ensembleMemberTone,
 } from "../src/web/components/session-bits.tsx";
 import { Tooltip } from "../src/web/components/Tooltip.tsx";
 import { EffortPicker } from "../src/web/components/EffortPicker.tsx";
 import { ModePicker } from "../src/web/components/ModePicker.tsx";
-import { meta, mkSession } from "./helpers/session-fixture.ts";
+import {
+  meta,
+  mkEnsembleLink,
+  mkEnsembleSummary,
+  mkSession,
+  mkTaskSummary,
+} from "./helpers/session-fixture.ts";
 import { containsMarkup } from "./helpers/markup.ts";
 import type { Session, SessionCost } from "../src/shared/types.ts";
 
@@ -783,6 +794,157 @@ test("an archived schedule keeps auditable provenance and isolates chip gestures
     },
   });
   assert.equal(stopped, 2);
+});
+
+// ---- the ensemble member, across the four session drawings ----
+//
+// The fifth session-level signal to span all four renderers, and the one whose states are
+// hardest to see on a live dashboard: a member blocked on an unanswered question, a casualty, a
+// winner. Same rule as the Inspector and schedule families - one shared DECISION
+// (`ensembleMemberStateLabel` + the tooltip) so what "needs an answer" means and how it is
+// explained cannot drift between the card, the console detail, the board tile and the rail.
+
+test("an ensemble member's mark is the shared leaf in all four session renderers", () => {
+  const link = mkEnsembleLink({ ordinal: 2, maxMembers: 5, status: "active" });
+  const session = mkSession({ task: mkTaskSummary({ ensemble: link }) });
+  const summary = mkEnsembleSummary({ maxMembers: 5, launchedMembers: 3, membersReady: 1 });
+
+  const cardHtml = renderToStaticMarkup(
+    createElement(SessionCard, {
+      session,
+      gateNeedsYou: false,
+      onOpenReviews: () => {},
+      ensembleSummary: summary,
+    }),
+  );
+  assert.ok(
+    containsMarkup(cardHtml, bit(EnsembleChip, { link, summary })),
+    "the card should render the shared EnsembleChip",
+  );
+
+  const detailHtml = renderToStaticMarkup(
+    createElement(ConsoleDetail, {
+      session,
+      view: {
+        ...scheduledView(session),
+        ensembleSummaryByRun: new Map([[summary.id, summary]]),
+      },
+    }),
+  );
+  assert.ok(
+    containsMarkup(detailHtml, bit(EnsembleChip, { link, summary })),
+    "console detail should render the shared EnsembleChip, summary and all",
+  );
+
+  const tileHtml = renderToStaticMarkup(
+    createElement(SessionTile, {
+      session,
+      gateNeedsYou: false,
+      onOpen: () => {},
+      draggingRepo: null,
+      onDropped: () => {},
+      onDropError: () => {},
+      onDropConfirm: () => {},
+      ensembleSummary: summary,
+    }),
+  );
+  assert.ok(
+    containsMarkup(tileHtml, bit(EnsembleTileFlag, { link, summary })),
+    "the board tile should render the shared EnsembleTileFlag",
+  );
+
+  const railHtml = renderToStaticMarkup(
+    createElement(RailRow, {
+      session,
+      selected: false,
+      gateNeedsYou: false,
+      onSelect: () => {},
+      ensembleSummary: summary,
+    }),
+  );
+  assert.ok(
+    containsMarkup(railHtml, bit(EnsembleRailMark, { link, summary })),
+    "the rail should render the shared EnsembleRailMark",
+  );
+});
+
+test("a blocked member says so in every vocabulary, from one decision", () => {
+  // The disagreement this whole signal exists to close: the card was red with a waiting question
+  // while its ensemble chip said "working". `needsInput` now wins over the status ladder AND over
+  // the server's `resultLabel`, and it carries its own tone rather than borrowing `waiting`'s -
+  // "submitted, the run is chewing on it" and "waiting on YOU" must not be the same colour.
+  const blocked = mkEnsembleLink({ status: "submitted", resultLabel: "rank 1", needsInput: true });
+  assert.equal(ensembleMemberStateLabel(blocked), "needs an answer");
+  assert.equal(ensembleMemberTone(blocked), "blocked");
+
+  const calm = mkEnsembleLink({ status: "submitted", resultLabel: "rank 1" });
+  assert.equal(ensembleMemberStateLabel(calm), "rank 1");
+  assert.equal(ensembleMemberTone(calm), "waiting");
+
+  for (const [name, fragment] of [
+    ["chip", bit(EnsembleChip, { link: blocked })],
+    ["tile flag", bit(EnsembleTileFlag, { link: blocked })],
+    ["rail mark", bit(EnsembleRailMark, { link: blocked })],
+  ] as const) {
+    assert.match(fragment, /ensemble-blocked/, `${name} should carry the blocked tone`);
+    assert.match(fragment, /waiting on your answer/, `${name} should explain it on hover`);
+  }
+  // The rail has one line of room, so it spends it on the words that mean "act on this" rather
+  // than on the result label a calm member shows there.
+  assert.match(bit(EnsembleRailMark, { link: blocked }), /needs you/);
+  assert.match(bit(EnsembleRailMark, { link: calm }), /rank 1/);
+});
+
+test("all four ensemble surfaces share one Tooltip copy, run progress and all", () => {
+  const link = mkEnsembleLink({ ordinal: 3, maxMembers: 5, status: "reviewing" });
+  const summary = mkEnsembleSummary({
+    status: "evaluating",
+    maxMembers: 5,
+    launchedMembers: 5,
+    membersReady: 3,
+  });
+  const chip = EnsembleChip({ link, summary });
+  const tile = EnsembleTileFlag({ link, summary });
+  const rail = EnsembleRailMark({ link, summary });
+  assert.equal(chip?.type, Tooltip, "the chip is wrapped in the shared Tooltip");
+  assert.equal(tile?.type, Tooltip, "the tile flag is wrapped in the shared Tooltip");
+  assert.equal(rail?.type, Tooltip, "the rail mark is wrapped in the shared Tooltip");
+  const label = (chip?.props as { label: string }).label;
+  // The denominator is the roster the operator chose, not the wave-by-wave launch count.
+  assert.match(label, /candidate 3 of 5/);
+  // And the run clause is the ONE stage vocabulary, not a word invented per surface.
+  assert.match(label, /run: reviewing, 3 of 5 in/);
+  assert.equal((tile?.props as { label: string }).label, label);
+  assert.equal((rail?.props as { label: string }).label, label);
+
+  // The rail glyph stays a mouse-only span: the rail row is itself a native button, so an
+  // interactive descendant would be an invalid nested control.
+  const railMark = (rail?.props as { children: ReactElement }).children;
+  const railProps = railMark.props as { role?: string; tabIndex?: number };
+  assert.equal(railProps.role, undefined);
+  assert.equal(railProps.tabIndex, undefined);
+});
+
+test("without a run summary the marks say only what the member link can prove", () => {
+  // A member's link arrives with its task; the run's SSE summary is a separate collection that
+  // can land a tick later. The progress suffix is the only thing that waits for it - inventing a
+  // count from the link would be a second progress vocabulary disagreeing with the dots.
+  const link = mkEnsembleLink({ ordinal: 2, maxMembers: 4 });
+  const chip = bit(EnsembleChip, { link });
+  assert.doesNotMatch(chip, /ensemble-chip-progress/);
+  assert.match(chip, /candidate 2 of 4/);
+  assert.doesNotMatch(chip, /run: /);
+  // The tile flag's `2/4` is the member's ORDINAL over the roster, which the link always has.
+  assert.match(bit(EnsembleTileFlag, { link }), /E<\/span> 2\/4 ·/);
+});
+
+test("a session in no ensemble draws no mark on any surface", () => {
+  const props = { link: null };
+  assert.equal(bit(EnsembleChip, props), "");
+  assert.equal(bit(EnsembleTileFlag, props), "");
+  assert.equal(bit(EnsembleRailMark, props), "");
+  assert.doesNotMatch(card({}), /ensemble-chip/);
+  assert.doesNotMatch(tile(mkSession({})), /tf-ensemble/);
 });
 
 // ---- the session runtime, across the three mark vocabularies ----

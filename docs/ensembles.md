@@ -134,6 +134,51 @@ at `finalizing` if a destructive step needs retrying. Terminal states are `compl
 and `failed`. A run written by a **newer build** loads but reports itself *unreadable* and refuses
 to run rather than being executed as something adjacent.
 
+## Layout signals: where a run shows up in the fleet
+
+A member is an ordinary session, so it appears in Cards, Console and Board like any other. What
+the ensemble adds is drawn from two facts and nothing else - the run's live `EnsembleSummary` and
+the member link that rides on that session's task - so no surface re-derives a state the daemon
+already decided.
+
+**One vocabulary for where a run is.** `planning` reads as *launching*, `running` as *working*,
+`evaluating` as *reviewing*, `awaiting_decision` as **waiting on you**, `finalizing` as
+*promoting*, then *done* / *cancelled* / *failed*. A run written by a newer build is *unreadable*,
+never a nearest match. The same words appear on a cluster header, in a chip's hover copy, and as
+the run detail's **Active stage** fact - where the compiled stage id (`stage-2-review`) is now the
+small `<code>` beside the word rather than the whole answer.
+
+**One progress rendering.** A row of squares, one per lane of the roster: waiting on you (amber),
+submitted (green), working (blue), lost (red), and an outlined box for a lane the run has not
+opened yet. The counts are pairwise disjoint on the wire - a member that submitted and is *now*
+holding a question is counted once, as blocked - so the row is exactly `maxMembers` wide and never
+double-counts. They are **counts, not positions**: the third square does not mean candidate 3, and
+the hover copy says so. The same row is drawn by the Board's cluster header, the Console rail's,
+and the Ensembles list row.
+
+**Clusters.** Sibling members are ordered adjacent in every layout. Board and the Console rail
+draw a header over them (title, strategy, stage word, dots, and the attention rollup) that opens
+the run; Cards sorts them together without a frame, because its arrow keys are geometric against
+live CSS grid tracks. A cluster **never crosses a Board tone column**: a member waiting on your
+answer sits in *needs you* with the run's header repeated there, and its working siblings stay in
+*working*. Moving them all would dilute the column whose whole job is "these are the things to act
+on"; the repeated header is what ties the halves back together.
+
+Because the header is repeated, its rollup says two different things. A solid **N needs you**
+means a member *in this frame* is holding a question - the tiles below it are what to click. An
+outlined **N elsewhere** means the run has one and it is in another column: a pointer, not an
+instruction. One badge for both would put an amber call to action over the *gone* column's failed
+candidate.
+
+**Member marks.** The chip / tile flag / rail glyph each say the member's own standing from one
+shared decision: `needs an answer` (attention-toned) beats everything, then the run's own
+`resultLabel` ("rank 1", "retained"), then the member status. *Submitted* is deliberately **not**
+attention-toned - the run is working on it and nothing is asked of anyone.
+
+**The Ensembles tab badge** counts runs whose `attention` the daemon raised. It is the only
+ambient indicator today: `awaiting_decision` fires one toast, and a decision nobody caught would
+otherwise sit silently behind an unvisited tab.
+
 ## Artifacts and private refs
 
 Each submission is captured through a **temporary Git index**, never the member's real index, so its

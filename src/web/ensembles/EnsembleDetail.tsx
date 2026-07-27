@@ -6,7 +6,7 @@ import type {
   EnsembleJson,
   EnsembleMember,
 } from "@shared/ensemble.ts";
-import { aggregateEnsembleAgentCost } from "@shared/ensemble.ts";
+import { aggregateEnsembleAgentCost, ensembleStageWord } from "@shared/ensemble.ts";
 import { fmtUsd } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "./types.ts";
@@ -175,8 +175,14 @@ export function EnsembleDetail({
         {run.activeStageId && (
           <div>
             <dt>Active stage</dt>
+            {/* The operator word leads and the compiled stage id is demoted beside it. This
+                fact used to be the raw `stage-2-review` alone, which is the run describing
+                its own schema; `ensembleStageWord` is the ONE vocabulary the cluster headers,
+                chips and list rows also read, so they cannot each invent a word for
+                `evaluating`. The id stays because the timeline below names stages by it. */}
             <dd>
-              <code>{run.activeStageId}</code>
+              {ensembleStageWord({ status: run.status, outcomeKind: run.outcome?.kind ?? null })}{" "}
+              <code className="ensemble-stage-id">{run.activeStageId}</code>
             </dd>
           </div>
         )}

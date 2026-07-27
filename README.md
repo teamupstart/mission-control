@@ -1754,10 +1754,17 @@ primary slot and posts a side-effect-free preview (member count, concurrency, wa
 evaluation calls, and whether the chosen workflow mode is executable); once it verifies, a
 green **Reviewed** chip appears and **Launch N agents** takes the slot. Any edit after that
 invalidates the review, so the launch always confirms exactly what you reviewed. The launch is idempotent on a stable request id: a lost
-response and a retry return the same run, never a second fleet. Every candidate is grouped in
-Cards, Console and Board by a distinct **E** mark (separate from a workflow's **W**) that opens the
-run. The **Ensembles** tab beside Workflows, Personas and Runs is the monitoring, evidence,
-decision, recovery and history surface: it lists runs attention-first from the one live SSE stream
+response and a retry return the same run, never a second fleet. Every candidate wears a distinct
+**E** mark (separate from a workflow's **W**) that opens the run and says what the member's own
+standing is - `E 3/5 · working`, or an attention-toned **needs an answer** the moment that
+candidate is waiting on you. Siblings are drawn *together*: Cards sorts them adjacent, and the
+Board and the Console rail group them under a header carrying the run's title, its stage word,
+one dot per member of the roster and a **N need you** rollup - see
+[Layout](#layout-cards-console-or-board). The **Ensembles** tab beside Workflows, Personas and
+Runs is the monitoring, evidence, decision, recovery and history surface: it wears a badge
+counting the runs that need you (a parked decision, a failure, or a member on an unanswered
+question), lists runs attention-first from the one live SSE stream with their progress dots and
+`submitted/launched` counts,
 and fetches a selected run's bounded detail - members, immutable artifacts and their on-demand
 diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's scorecards,
 Consensus's agreements and divergence cards, Panel vote's aggregate and ballots), and the decision
@@ -3226,6 +3233,22 @@ earns two surfaces a card has nowhere to put:
   <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
   is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
   without opening its detail.
+- **An [ensemble](#multi-agent-ensembles)'s members are drawn together, in every layout.**
+  Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
+  ordering decides where every session goes, and it puts them adjacent. On the **Board** they
+  sit inside a framed group whose header names the run, its strategy, where it is in operator
+  words ("reviewing", "waiting on you"), one dot per member of the roster, and an attention
+  rollup - **N needs you** when a member *in that frame* is holding a question, or a quieter
+  outlined **N elsewhere** when the run has one in another column. Click the header to open the
+  run. The **Console** rail (and the board's drill-in,
+  which is the same rail) gets a slimmer version of that header above the members' rows;
+  arrow keys walk straight past it, so navigation is unchanged. **Cards** sorts siblings next
+  to each other but grows no frame: its arrow keys are geometric against the live CSS grid
+  tracks, and a header cell would silently break <kbd>↑</kbd>/<kbd>↓</kbd>.
+  A cluster never crosses a Board column: if one member is waiting on your answer it sits in
+  **needs you** with the run's header repeated there, rather than dragging its working siblings
+  out of the column that describes what they are. Dragging a backlog card onto a clustered tile
+  works exactly as it does anywhere else - the frame is a drawing, not a drop target.
 - **Killing a session closes its detail**, without waiting for the session to disappear -
   the board goes straight back to its columns, the console empties its pane, and Cards
   leaves focus mode with the card still selected. A killed session lingers for a few

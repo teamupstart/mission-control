@@ -4,6 +4,7 @@ import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkspaceLinkHandler } from "../Markdown.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { EnsembleSummary } from "@shared/ensemble.ts";
 
 /**
  * What every layout gets from App, which stays the single owner of session state.
@@ -135,6 +136,16 @@ export interface SessionViewProps {
    * the renderers read it straight off the session and route through this handler by run id.
    */
   onOpenEnsemble?: (runId: string) => void;
+  /**
+   * The live ensemble runs by id, for the facts that are about the GROUP rather than about one
+   * member: a cluster header's stage word and progress dots, and the chip's `n/m in` suffix.
+   *
+   * A map on the shared bundle rather than a per-session join, unlike `workflowRunBySession`,
+   * because a run is not a property of one session - a cluster header is drawn once for several
+   * of them. Absent entries are first-class: a member's link can arrive a tick before its run's
+   * SSE summary does, and every consumer falls back to what the link alone can say.
+   */
+  ensembleSummaryByRun?: ReadonlyMap<string, EnsembleSummary>;
 }
 
 /**
@@ -176,5 +187,15 @@ export function cardProps(p: SessionViewProps, s: Session) {
     onOpenSchedule: p.onOpenSchedule,
     scheduleNameById: p.scheduleNameById,
     onOpenEnsemble: p.onOpenEnsemble,
+    ensembleSummary: ensembleSummaryFor(p, s),
   };
+}
+
+/** The run summary behind this session's member link, when both are on hand. */
+export function ensembleSummaryFor(
+  p: Pick<SessionViewProps, "ensembleSummaryByRun">,
+  s: Session,
+): EnsembleSummary | null {
+  const runId = s.task?.ensemble?.runId;
+  return (runId ? p.ensembleSummaryByRun?.get(runId) : null) ?? null;
 }

@@ -28,6 +28,7 @@ export function WorkflowPage({
   selectedRunId = null,
   runFilters,
   ensembleSummaries = [],
+  ensembleAttentionCount = 0,
   selectedEnsembleId = null,
   hasSnapshot = false,
   llm,
@@ -51,6 +52,14 @@ export function WorkflowPage({
   selectedRunId?: string | null;
   runFilters?: WorkflowRunFilters;
   ensembleSummaries?: EnsembleSummary[];
+  /**
+   * How many runs the DAEMON flagged as needing attention, for the tab's badge.
+   *
+   * Passed in rather than folded here for the reason the topbar's schedule badge is: the
+   * threshold is `ensembleNeedsAttention`, a server derivation, and a page that recomputed it
+   * from `summaries` would be a second answer that agrees with the list row's dot by luck.
+   */
+  ensembleAttentionCount?: number;
   selectedEnsembleId?: string | null;
   hasSnapshot?: boolean;
   llm: LlmState;
@@ -111,6 +120,19 @@ export function WorkflowPage({
                 }}
               >
                 {id[0]!.toUpperCase() + id.slice(1)}
+                {/* The one ambient "a run needs you" indicator in the app until the
+                    attention inbox lands. Deliberately on the TAB and not in the topbar:
+                    a chip built here would be replaced rather than extended. */}
+                {id === "ensembles" && ensembleAttentionCount > 0 && (
+                  <span
+                    className="workflow-tab-badge"
+                    aria-label={`${ensembleAttentionCount} ensemble${
+                      ensembleAttentionCount === 1 ? "" : "s"
+                    } need attention`}
+                  >
+                    {ensembleAttentionCount}
+                  </span>
+                )}
               </button>
             </Tooltip>
           ))}

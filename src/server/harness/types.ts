@@ -767,6 +767,14 @@ export type SdkEvent =
       cleared?: true;
     }
   | { kind: "state"; state: "working" | "idle"; activity: string | null }
+  /**
+   * Account-global subscription windows learned through a pane-less driver.
+   *
+   * Interactive Claude sessions report these through statusLine. An embedded session has
+   * no status line, so its driver has to carry the same fact explicitly or a daemon restart
+   * leaves the fleet runway blank until an interactive session happens to render.
+   */
+  | { kind: "rate_limits"; rateLimits: import("@shared/types.ts").RateLimits }
   | { kind: "request"; request: SessionRequest }
   | { kind: "request_resolved"; requestId: string }
   | { kind: "turn_done"; usage: SdkUsage | null }

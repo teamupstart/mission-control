@@ -202,11 +202,11 @@ export interface SessionCost {
   updatedAt: number;
 }
 
-/** One subscription rate-limit window, as Claude Code's statusLine payload reports it. */
+/** One subscription rate-limit window, normalized from a harness's live usage source. */
 export interface RateLimitWindow {
-  /** 0-100. Claude's own number; we never derive it. */
+  /** 0-100. The harness's own number; we never derive it. */
   usedPercentage: number;
-  /** When the window rolls over, in epoch SECONDS - the unit Claude sends. */
+  /** When the window rolls over, in epoch SECONDS. */
   resetsAt: number;
   id?: string;
   label?: string;
@@ -220,14 +220,14 @@ export interface RateLimitSource {
 }
 
 /**
- * The subscription's rate-limit picture, from the statusLine payload.
+ * The Claude subscription's rate-limit picture, from statusLine or the embedded SDK.
  *
- * The one fact OpenTelemetry cannot supply (there is no quota metric), and the entire
- * reason the statusLine wrapper is still in the design. Account-global rather than
- * per-session, so it rides `FleetCost` and is deliberately NOT a `Session` field.
+ * The one fact OpenTelemetry cannot supply (there is no quota metric). Account-global
+ * rather than per-session, so it rides `FleetCost` and is deliberately NOT a `Session`
+ * field.
  *
- * Present only for Pro/Max subscribers, and only after the first API response of a
- * session - an API-key user never gets one. Either window may be null on its own.
+ * Present only for subscription-backed sessions, and only after usage is available -
+ * an API-key user never gets one. Either window may be null on its own.
  * Absent means "unknown", and must render as nothing rather than as 0%.
  */
 export interface RateLimits {

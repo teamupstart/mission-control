@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type {
   PaneOption,
   PermissionMode,
+  RateLimits,
+  RateLimitWindow,
   SdkSendDisposition,
   SessionRequestQuestion,
   ThinkingLevel,
@@ -26,6 +28,8 @@ import type {
   ClaudeSdkPermissionMode,
   ClaudeSdkPermissionResult,
   ClaudeSdkPermissionUpdate,
+  ClaudeSdkUsageResponse,
+  ClaudeSdkUsageWindow,
   ClaudeSdkUserMessage,
 } from "./sdk-types.ts";
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
@@ -82,6 +86,35 @@ const PLAN_KEEP_LABEL = "No, keep planning";
  */
 const ASK_USER_QUESTION = "AskUserQuestion";
 const EXIT_PLAN_MODE = "ExitPlanMode";
+
+function sdkUsageWindow(window: ClaudeSdkUsageWindow | null | undefined): RateLimitWindow | null {
+  if (
+    !window ||
+    typeof window.utilization !== "number" ||
+    !Number.isFinite(window.utilization) ||
+    window.utilization < 0 ||
+    window.utilization > 100 ||
+    typeof window.resets_at !== "string"
+  ) return null;
+  const resetMs = Date.parse(window.resets_at);
+  if (!Number.isFinite(resetMs)) return null;
+  return {
+    usedPercentage: window.utilization,
+    resetsAt: Math.floor(resetMs / 1000),
+  };
+}
+
+/** Structured SDK `/usage` response -> the same two-window shape statusLine reports. */
+export function claudeSdkRateLimits(
+  usage: ClaudeSdkUsageResponse,
+  now = Date.now(),
+): RateLimits | null {
+  if (!usage.rate_limits_available || !usage.rate_limits) return null;
+  const fiveHour = sdkUsageWindow(usage.rate_limits.five_hour);
+  const sevenDay = sdkUsageWindow(usage.rate_limits.seven_day);
+  if (!fiveHour && !sevenDay) return null;
+  return { fiveHour, sevenDay, updatedAt: now };
+}
 
 /** Root of Claude's per-project transcript store, mirrored from `transcript.ts`. */
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
@@ -309,6 +342,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private clearing = false;
   /** Accepted user turns that have not yet produced a result, including FIFO follow-ups. */
   private uncompletedTurns = 0;
+  /** Serialize the experimental control so a slow older reading cannot land after a newer one. */
+  private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
 
   constructor(private readonly cwd: string) {}
@@ -508,6 +543,33 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private requireQuery(): ClaudeSdkQuery {
     if (!this.query || this.stopped) throw new Error("this session's driver has stopped");
     return this.query;
+  }
+
+  /**
+   * Reacquire the account's live plan windows from the pane-less SDK session.
+   *
+   * The Registry deliberately does not persist this gauge. Refresh on init so a resumed
+   * idle session repopulates it after a daemon restart, and after each result so active
+   * usage moves the runway. Failure is an honest absence: this control is experimental
+   * upstream and must never end or degrade the conversation it observes.
+   */
+  private refreshRateLimits(): void {
+    const query = this.query;
+    if (!query) return;
+    this.rateLimitRefresh = this.rateLimitRefresh
+      .then(async () => {
+        if (this.stopped || this.query !== query) return;
+        const usage =
+          await query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+        const rateLimits = claudeSdkRateLimits(usage);
+        if (rateLimits && !this.stopped && this.query === query) {
+          this.out.emit({ kind: "rate_limits", rateLimits });
+        }
+      })
+      .catch(() => {
+        // Live enrichment only. An older CLI or a transient usage-endpoint failure leaves
+        // the last Registry reading in place and must not interfere with the agent's turn.
+      });
   }
 
   // ---- wiring, called only by `launch` ----------------------------------------------
@@ -722,12 +784,14 @@ class ClaudeSdkSession implements SdkSessionHandle {
     ) {
       this.modelId = message.model || null;
     }
+    const initialized = message.type === "system" && message.subtype === "init";
     // Every message carries the session id, `init` first and then every frame after it -
     // and `/clear` is the case that makes the second half matter: the CLI mints a NEW id
     // and reports it on an ordinary message rather than on a second `init`. Re-binding
     // whenever it changes is what keeps the note, queue, goal and work episode following
     // the conversation instead of stranding them on a dead key.
     if (typeof message.session_id === "string") this.bind(message.session_id);
+    if (initialized) this.refreshRateLimits();
     if (message.type === "assistant") {
       this.out.emit({ kind: "state", state: "working", activity: assistantActivity(message) });
       return;
@@ -735,6 +799,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     if (message.type === "result") {
       this.uncompletedTurns = Math.max(0, this.uncompletedTurns - 1);
       this.out.emit({ kind: "turn_done", usage: null });
+      this.refreshRateLimits();
       return;
     }
   }

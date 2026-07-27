@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claudeSdkSpec, askUserQuestions, permissionPrompt, sdkPermissionMode } from "../src/server/harness/claude/sdk.ts";
+import {
+  claudeSdkRateLimits,
+  claudeSdkSpec,
+  askUserQuestions,
+  permissionPrompt,
+  sdkPermissionMode,
+} from "../src/server/harness/claude/sdk.ts";
 import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type {
@@ -9,6 +15,7 @@ import type {
   ClaudeSdkPermissionResult,
   ClaudeSdkQuery,
   ClaudeSdkQueryOptions,
+  ClaudeSdkUsageResponse,
   ClaudeSdkUserMessage,
 } from "../src/server/harness/claude/sdk-types.ts";
 import type { SdkEvent } from "../src/server/harness/types.ts";
@@ -29,6 +36,11 @@ import type { SdkEvent } from "../src/server/harness/types.ts";
 /** A hand-driven query: frames go in when the test says so, controls are recorded. */
 class FakeQuery implements ClaudeSdkQuery {
   readonly control: string[] = [];
+  usageCalls = 0;
+  usageResponse: ClaudeSdkUsageResponse = {
+    rate_limits_available: false,
+    rate_limits: null,
+  };
   private queued: ClaudeSdkMessage[] = [];
   private waiting: ((m: IteratorResult<ClaudeSdkMessage>) => void) | null = null;
   private done = false;
@@ -67,6 +79,11 @@ class FakeQuery implements ClaudeSdkQuery {
 
   async setModel(model?: string): Promise<void> {
     this.control.push(`model:${model}`);
+  }
+
+  async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<ClaudeSdkUsageResponse> {
+    this.usageCalls += 1;
+    return this.usageResponse;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<ClaudeSdkMessage> {
@@ -178,6 +195,86 @@ test("the launch pins the binary, seeds turn one, and binds on init", async () =
   assert.equal((turns[0]!.message.content as string), "do the thing");
   // And delivery is the transition to working, said before any assistant frame arrives.
   assert.ok(events.some((e) => e.kind === "state" && e.state === "working"));
+});
+
+test("SDK usage repopulates both Claude plan windows on init and refreshes after a turn", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.usageResponse = {
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: 42.5, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 83, resets_at: "2026-08-02T04:00:00.000Z" },
+    },
+  };
+
+  query.emit(INIT("agent-limits"));
+  const initial = await collect(handle.events, (e) => e.kind === "rate_limits");
+  const first = initial.find((e) => e.kind === "rate_limits");
+  assert.deepEqual(first?.kind === "rate_limits" && {
+    fiveHour: first.rateLimits.fiveHour,
+    sevenDay: first.rateLimits.sevenDay,
+  }, {
+    fiveHour: {
+      usedPercentage: 42.5,
+      resetsAt: Date.parse("2026-07-27T18:00:00.000Z") / 1000,
+    },
+    sevenDay: {
+      usedPercentage: 83,
+      resetsAt: Date.parse("2026-08-02T04:00:00.000Z") / 1000,
+    },
+  });
+  assert.equal(query.usageCalls, 1, "an idle resumed session restores the gauge on init");
+
+  query.usageResponse = {
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: 48, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 84, resets_at: "2026-08-02T04:00:00.000Z" },
+    },
+  };
+  query.emit({ type: "result", subtype: "success", session_id: "agent-limits" });
+  const refreshed = await collect(handle.events, (e) => e.kind === "rate_limits");
+  const second = refreshed.find((e) => e.kind === "rate_limits");
+  assert.equal(second?.kind === "rate_limits" && second.rateLimits.fiveHour?.usedPercentage, 48);
+  assert.equal(second?.kind === "rate_limits" && second.rateLimits.sevenDay?.usedPercentage, 84);
+  assert.equal(query.usageCalls, 2, "each completed turn refreshes the live gauge");
+});
+
+test("SDK usage refuses unavailable, incomplete, or out-of-range plan windows", () => {
+  assert.equal(claudeSdkRateLimits({
+    rate_limits_available: false,
+    rate_limits: null,
+  }), null);
+  assert.equal(claudeSdkRateLimits({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: null, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 10, resets_at: null },
+    },
+  }), null);
+  assert.equal(claudeSdkRateLimits({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: -1, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 101, resets_at: "2026-08-02T04:00:00.000Z" },
+    },
+  }), null);
+  assert.deepEqual(claudeSdkRateLimits({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: -1, resets_at: "2026-07-27T18:00:00.000Z" },
+      seven_day: { utilization: 100, resets_at: "2026-08-02T04:00:00.000Z" },
+    },
+  }, 123), {
+    fiveHour: null,
+    sevenDay: {
+      usedPercentage: 100,
+      resetsAt: Date.parse("2026-08-02T04:00:00.000Z") / 1000,
+    },
+    updatedAt: 123,
+  });
 });
 
 test("a follow-up reports whether Claude queued it behind an active turn", async () => {

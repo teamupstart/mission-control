@@ -41,6 +41,28 @@ export interface ClaudeSdkMessage {
   [key: string]: unknown;
 }
 
+/** One claude.ai plan window returned by the SDK's structured `/usage` control. */
+export interface ClaudeSdkUsageWindow {
+  /** Percentage used, 0-100. */
+  utilization: number | null;
+  /** ISO 8601 reset instant. */
+  resets_at: string | null;
+}
+
+/**
+ * The slice of the SDK's experimental structured `/usage` response this driver reads.
+ *
+ * Session cost deliberately stays out of this shape: OTel is Claude's one ledger writer.
+ * This control exists solely for the two plan windows unavailable through OTel.
+ */
+export interface ClaudeSdkUsageResponse {
+  rate_limits_available: boolean;
+  rate_limits: {
+    five_hour?: ClaudeSdkUsageWindow | null;
+    seven_day?: ClaudeSdkUsageWindow | null;
+  } | null;
+}
+
 /** What `canUseTool` may hand back. Mirrors the vendor's `PermissionResult`. */
 export type ClaudeSdkPermissionResult =
   | {
@@ -65,6 +87,13 @@ export interface ClaudeSdkQuery extends AsyncIterable<ClaudeSdkMessage> {
   setPermissionMode(mode: string): Promise<void>;
   applyFlagSettings(settings: { effortLevel?: ThinkingLevel | null }): Promise<void>;
   setModel(model?: string): Promise<void>;
+  /**
+   * Structured plan usage behind `/usage`.
+   *
+   * Experimental upstream, so the adapter treats every failure as "not told" and never
+   * lets this live gauge affect the session lifecycle.
+   */
+  usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<ClaudeSdkUsageResponse>;
 }
 
 /**

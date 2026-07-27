@@ -506,7 +506,7 @@ export class Registry extends EventEmitter {
   private inspections = new Map<string, InspectorInspection>();
   private lastQueuePrune = 0;
   /**
-   * The last rate-limit reading any session's statusLine reported.
+   * The last rate-limit reading either Claude live transport reported.
    *
    * ONE value for the whole registry, not one per session, because that is what the fact
    * is: a five-hour window is a property of the ACCOUNT, and every session on the machine
@@ -1276,6 +1276,9 @@ export class Registry extends EventEmitter {
         // the event as display enrichment for the phase that verifies that (see the plan's
         // Automation parity section).
         this.applyDriverState(s, "idle", null, now);
+        return;
+      case "rate_limits":
+        this.recordRateLimits(evt.rateLimits);
         return;
       case "request":
         {
@@ -3478,7 +3481,7 @@ export class Registry extends EventEmitter {
     // account-global fact, so a reading from a session we haven't discovered yet (or
     // can't bind) is still the truth about the subscription. Gating them on the bind
     // would blank the topbar meters for exactly the sessions the binder is worst at.
-    this.recordRateLimits(ingest);
+    this.recordRateLimits(ingest.rateLimits);
     const s = this.findSessionByEnv(ingest.env, ingest.sessionId, ingest.cwd);
     if (!s) return;
     const statusLineTimestamp = ingest.ts ?? null;
@@ -3540,15 +3543,13 @@ export class Registry extends EventEmitter {
   // ---- cost telemetry (OpenTelemetry ingest + fleet roll-up) ----
 
   /**
-   * Record the subscription's rate-limit windows off a statusLine payload.
+   * Record the subscription's rate-limit windows from either live Claude transport.
    *
-   * An ABSENT `rateLimits` is not a clearing signal, and that asymmetry is the whole of
-   * this method. The key is missing for an API-key user, and also for a Pro/Max session
-   * that simply hasn't had its first API response yet - so on a machine running both, or
-   * during the first seconds of any session, every other render would wipe a perfectly
-   * good reading and the meters would strobe. Only a payload that actually carries
-   * windows updates them; nothing takes them away but their own reset time passing
-   * (applied where the value is read, in `fleetCostNow`).
+   * An ABSENT reading is not a clearing signal, and that asymmetry is the whole of this
+   * method. It is ordinary for an API-key user and before a Pro/Max session's first API
+   * response, so clearing on absence would make the meters strobe. Only a transport that
+   * actually carries windows updates them; nothing takes them away but their own reset
+   * time passing (applied where the value is read, in `fleetCostNow`).
    *
    * A payload that RESTATES the windows we already hold is not a change and is dropped
    * here, before `updatedAt` is restamped. That matters more than it looks: the
@@ -3557,8 +3558,9 @@ export class Registry extends EventEmitter {
    * suppression always miss - putting a `cost_fleet` frame on every open dashboard
    * several times a second, per session, carrying numbers that never moved.
    */
-  private recordRateLimits(ingest: StatusLineIngest): void {
-    const rl = ingest.rateLimits;
+  private recordRateLimits(
+    rl: Partial<Pick<RateLimits, "fiveHour" | "sevenDay">> | null | undefined,
+  ): void {
     if (!rl) return;
     if (!rl.fiveHour && !rl.sevenDay) return;
     // One window present without the other is ordinary, not an error: keep whichever

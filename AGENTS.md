@@ -1009,6 +1009,20 @@ CI runs `npm run typecheck`, `npm test`, `npm run build`, and the bundle smoke c
 (the supported floor) and Node 26 (the current release). The test runner uses two concurrent,
 isolated test-file workers; there is no linter.
 
+That matrix runs on **Blacksmith** (`blacksmith-4vcpu-ubuntu-2404`), and the two things to know
+before editing `.github/workflows/ci.yml` are the size and the actions. The size is 4 vCPU by
+choice, not by default: it is parity with the `ubuntu-latest` it replaced, and the sequential
+ordering of the gates after `npm test` is tuned to that budget - widening the runner without
+widening the test concurrency speeds up only the non-test gates. And **no `useblacksmith/*`
+action fork belongs in this file**: Blacksmith's cache is transparent to the upstream actions, so
+`actions/setup-node`'s `cache: npm` already reaches it, and the forks are archived upstream -
+adding one adopts an unmaintained action for no cache gain. The macOS `package` job deliberately
+stays on GitHub's `macos-14`: it is off the PR path, Blacksmith's macOS runners are billed per
+minute, and Blacksmith publishes no macos-14 image, so moving it would change the OS the shipped
+dmg is built on. One failure mode to recognise: a job whose runner label Blacksmith does not
+serve does not fail, it queues forever - so the Blacksmith GitHub App has to be installed on this
+repository's account.
+
 ## House rules
 
 - **Never use the em dash.** Plain dash only.

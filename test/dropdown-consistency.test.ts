@@ -1,12 +1,12 @@
 /**
  * What is at stake: every dropdown in the app should read as the same control. A native
- * `<select>` ignores colour, border and radius on macOS/Chrome until `appearance: none`
- * clears the UA control, so ONE shared rule - `select:not([multiple])` - is what themes
- * them all and draws the chevron. This file pins three things a silent-pixel regression
- * would break: the shared rule stays present and themed, and the two deliberate opt-outs
- * stay opted out - the `[multiple]` dependency listbox (excluded by the selector itself)
- * and the backlog priority chip (`.bl-prio select`, styled AS a chip, which must never
- * grow a dropdown chevron). Nothing else reads `styles.css` for this.
+ * `<select>` ignores colour, border and radius on macOS/Chrome until `appearance` clears
+ * the UA control, so ONE shared rule - `select:not([multiple])` - is what themes them all,
+ * draws the chevron, and paints the open picker. This file pins three things a silent-pixel regression
+ * would break: the shared rule stays present and themed, and the backlog priority chip
+ * (`.bl-prio select`, styled AS a chip) stays a deliberate exception that must never grow
+ * a dropdown chevron. `[multiple]` is excluded for any future listbox. Nothing else reads
+ * `styles.css` for this.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -50,14 +50,45 @@ const CHEVRON = /background-image:\s*url\("data:image\/svg\+xml/;
 test("one shared rule themes every single dropdown", () => {
   const base = ruleFor("select:not([multiple])");
   assert.ok(base, "the shared `select:not([multiple])` dropdown rule is gone");
-  // appearance:none is the load-bearing line - without it the rest is ignored by the UA control.
+  // `none` preserves the fallback; Chromium/Electron's `base-select` then opts into the
+  // CSS-painted picker rather than the light OS popup.
   assert.match(base.body, /appearance:\s*none/, "a native select ignores theming without appearance:none");
+  assert.match(base.body, /appearance:\s*base-select/, "the dropdown no longer opts into the themed picker");
   assert.match(base.body, CHEVRON, "the shared rule no longer draws its chevron");
+  assert.match(
+    base.body,
+    /color-scheme:\s*dark/,
+    "native option popups must explicitly use the app's dark color scheme",
+  );
   assert.match(base.body, /background-color:\s*var\(--bg-2\)/);
   assert.match(base.body, /border-radius:/);
   // The chevron sits at the right, and the padding leaves room for it there.
   assert.match(base.body, /background-position:\s*right/, "the chevron is not pinned to the right edge");
   assert.match(base.body, /padding:/);
+});
+
+test("the shared rule paints every open dropdown menu", () => {
+  const picker = ruleFor("select:not([multiple])::picker(select)");
+  assert.ok(picker, "the shared open-dropdown picker rule is gone");
+  assert.match(picker.body, /appearance:\s*base-select/);
+  assert.match(picker.body, /background:\s*var\(--bg-2\)/);
+  assert.match(picker.body, /border-radius:/);
+});
+
+test("the themed picker does not duplicate the shared chevron", () => {
+  const pickerIcon = ruleFor("select:not([multiple])::picker-icon");
+  assert.ok(pickerIcon, "the Chromium picker icon guard is gone");
+  assert.match(pickerIcon.body, /display:\s*none/);
+});
+
+test("scoped dropdown rules do not erase the shared chrome", () => {
+  const ensembleFilters = ruleFor(".ensemble-run-filters select");
+  assert.ok(ensembleFilters, "the ensemble-run filter dropdown rule is gone");
+  assert.doesNotMatch(
+    ensembleFilters.body,
+    /\b(?:appearance|background(?:-image|-color)?|border|padding)\s*:/,
+    "a scoped dropdown rule must size or place the shared control, not repaint it",
+  );
 });
 
 test("the chevron is drawn in exactly one place, so dropdowns cannot drift apart", () => {
@@ -86,9 +117,10 @@ test("the dependency picker is chips plus one themed single select, not a listbo
 test("the backlog priority chip stays a chip, not a dropdown", () => {
   const chip = ruleFor(".bl-prio select");
   assert.ok(chip, "the priority chip rule is gone");
-  // It clears the UA control like the shared rule, but paints its own chip surface with a
-  // `background` shorthand - which also resets any inherited chevron image - and never a chevron.
+  // It keeps the shared CSS-painted picker but paints its own closed chip surface with a
+  // `background` shorthand - which also resets any inherited chevron image.
   assert.match(chip.body, /appearance:\s*none/);
+  assert.match(chip.body, /appearance:\s*base-select/);
   assert.match(chip.body, /background:\s/, "the chip no longer paints its own surface, so the shared chevron leaks in");
   assert.doesNotMatch(chip.body, /data:image\/svg\+xml/, "the priority chip grew a dropdown chevron");
 });

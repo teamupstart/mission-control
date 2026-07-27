@@ -5815,11 +5815,15 @@ kbd {
    is what makes every dropdown in the app - settings panels, dispatch, the workflow editor,
    the backlog - read as the same control instead of a dozen near-misses in padding, radius
    and background. It sets no width, so each surface keeps its own sizing (full-row in
-   dialogs, capped in the harness pickers). `[multiple]` list boxes (dependency picker) and
-   the priority chip (`.bl-prio select`, styled AS a chip) opt out and override below.
-   The chevron is an inline SVG in `--muted`; the right padding is what leaves it room. */
+   dialogs, capped in the harness pickers). Future `[multiple]` list boxes and the priority
+   chip (`.bl-prio select`, styled AS a chip) are deliberate exceptions.
+   `appearance: base-select` opts current Chromium/Electron into a CSS-painted picker; the
+   preceding `none` is the fallback for older engines. The chevron is an inline SVG in
+   `--muted`; the right padding is what leaves it room. */
 select:not([multiple]) {
   appearance: none;
+  appearance: base-select;
+  color-scheme: dark;
   font: inherit;
   font-size: 12px;
   color: var(--fg);
@@ -5847,11 +5851,39 @@ select:not([multiple]):disabled {
   opacity: 0.6;
   cursor: default;
 }
-/* The option popup is native OS chrome, so the menu itself can't be themed - but these keep
-   its rows legible against it in the one theme this app ships (dark). */
+
+/* `::picker(select)` is the open part of every semantic single-select. It replaces the
+   light OS sheet in Chromium/Electron while keeping the platform's select keyboard and
+   screen-reader behavior. Engines that do not support it retain their native popup. */
+select:not([multiple])::picker(select) {
+  appearance: base-select;
+  margin-block-start: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  color: var(--fg);
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+}
+/* The closed control keeps the shared inline-SVG chevron above. `base-select` would add
+   Chromium's picker icon as well, which makes every dropdown read as a doubled arrow. */
+select:not([multiple])::picker-icon {
+  display: none;
+}
 select:not([multiple]) option {
   color: var(--fg);
   background: var(--bg-2);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+select:not([multiple]) option:checked {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--working) 24%, var(--bg-2));
+}
+select:not([multiple]) option:hover,
+select:not([multiple]) option:focus-visible {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--working) 15%, var(--bg-2));
 }
 
 .field-input {
@@ -6853,8 +6885,7 @@ select:not([multiple]) option {
   font-size: 10.5px;
 }
 
-.ensemble-run-filters input,
-.ensemble-run-filters select {
+.ensemble-run-filters input {
   min-width: 0;
   width: 100%;
   padding: 7px 8px;
@@ -6863,6 +6894,14 @@ select:not([multiple]) option {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg);
+}
+
+/* The shared dropdown rule owns its chrome and native-menu scheme. This filter only makes
+   the control fill its field; repeating the input's background or padding here clears the
+   shared chevron. */
+.ensemble-run-filters select {
+  min-width: 0;
+  width: 100%;
 }
 
 .ensemble-run-buttons {
@@ -13953,11 +13992,10 @@ select.sc-input {
   font-size: 10px;
   color: var(--dim);
 }
-/* The priority control, styled AS the chip rather than beside one - see the comment in
-   BacklogColumn.tsx. `appearance: none` is what lets a native select carry the same
-   colour, casing and radius the read-only `.task-priority` chip uses, so the same
-   priority looks identical whether you are reading it in the roundup or setting it
-   here. `--prio-color` is inherited from the `.prio-*` class the chip rules define. */
+/* The priority control is styled AS the chip rather than beside one - see the comment in
+   BacklogColumn.tsx. It keeps the shared CSS-painted picker but replaces the closed
+   control's chrome, so the same priority looks identical whether you are reading it in
+   the roundup or setting it here. `--prio-color` is inherited from `.prio-*`. */
 .bl-prio select {
   font: inherit;
   font-size: 10px;
@@ -13965,6 +14003,7 @@ select.sc-input {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   appearance: none;
+  appearance: base-select;
   /* Without this a select is as wide as its WIDEST option, so "LOW" and "MEDIUM" would
      each sit in a box cut for "BLOCKER" - chips with visibly unequal trailing space in a
      column you read by shape. `field-sizing` shrinks it to the option actually showing;

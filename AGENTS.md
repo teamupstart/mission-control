@@ -132,6 +132,10 @@ narrowing is a no-op.
 
 ## Layout parity
 
+**Dropdowns** → Native single `<select>` controls inherit the shared `select:not([multiple])`
+rule in `styles.css`; it owns the dark open menu, chrome, focus and disabled states. Scoped
+rules may size or place a dropdown, not repaint it; a deliberate exception needs a test.
+
 `LAYOUTS` in `src/web/lib/layout.ts`: `grid` (Cards), `console`, `board`. `App.tsx` owns all
 session state; layouts arrange, never decide.
 

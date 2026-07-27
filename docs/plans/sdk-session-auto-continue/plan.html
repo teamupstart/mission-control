@@ -155,9 +155,9 @@
   <h2>Outcome</h2>
   <p>The user no longer has to restart or nudge every SDK session after the app comes back. Conversation identity, checkout state, task binding, model, effort, and permission posture remain unchanged.</p>
 
-  <h2>What happens today</h2>
-  <p>The repository already persists SDK session rows, records clean shutdown as <code>suspended</code>, and runs <code>SdkSupervisor.restore()</code> before terminal discovery. Restore relaunches each live row with its existing harness-native conversation id and registers its card before startup reconciliation.</p>
-  <div class="callout"><strong>The missing piece:</strong> resume deliberately launches with <code>prompt: ""</code>. That avoids replaying the original task, but it restores the conversation without continuing the interrupted turn. Claude waits for a new user turn; Mission Control has no durable, harness-neutral fact saying which restored sessions need that turn.</div>
+  <h2>Baseline before this change</h2>
+  <p>The repository already persisted SDK session rows, recorded clean shutdown as <code>suspended</code>, and ran <code>SdkSupervisor.restore()</code> before terminal discovery. Restore relaunched each live row with its existing harness-native conversation id and registered its card before startup reconciliation.</p>
+  <div class="callout"><strong>The missing piece was durable turn state:</strong> resume deliberately launched with <code>prompt: ""</code>. That avoided replaying the original task, but it restored the conversation without continuing the interrupted turn. Claude waited for a new user turn; Mission Control had no durable, harness-neutral fact saying which restored sessions needed that turn.</div>
 
   <h2>Design</h2>
 
@@ -253,7 +253,8 @@
         <tr><td><code>test/sdk-db.test.ts</code></td><td>Prove migration, default value, and round trip.</td></tr>
         <tr><td><code>test/sdk-supervisor.test.ts</code></td><td>Prove working sessions continue, idle sessions do not, and repeated restarts remain recoverable.</td></tr>
         <tr><td>Claude/Codex adapter tests</td><td>Prove resumed continuation uses each driver's existing accepted send behavior.</td></tr>
-        <tr><td><code>docs/plans/agent-sdk-sessions/plan.md</code></td><td>Replace the accepted manual re-prompt regression with the new guarantee.</td></tr>
+        <tr><td><code>README.md</code></td><td>Replace the user-facing manual re-prompt limitation with the recovery behavior.</td></tr>
+        <tr><td><code>docs/plans/agent-sdk-sessions/plan.md</code></td><td>Point the broader SDK architecture plan to this recovery contract.</td></tr>
       </tbody>
     </table>
   </div>

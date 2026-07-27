@@ -367,11 +367,13 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   fields through those files and the driver, so those surfaces keep working too;
 - **Focus** is replaced by **Continue in terminal** (below).
 
-**What it costs.** One real regression: the subprocess is the daemon's child, so restarting
-the daemon interrupts whatever turn was in flight. The conversation itself survives - the
-supervisor records the session and resumes it on the next start, before anything else runs -
-including its Mission MCP tools - but the interrupted turn's remaining work has to be
-re-prompted. In exchange, delivery stops being probabilistic and menus stop being screens.
+**What it costs.** The subprocess is the daemon's child, so restarting the daemon interrupts
+whatever turn was in flight. The supervisor resumes the same conversation on the next start,
+before anything else runs, including its Mission MCP tools. When durable state says a turn
+was unfinished, it sends a cautious continuation that tells the agent to inspect the checkout
+and avoid repeating completed work; it never replays the original task prompt. Recovery is
+at-least-once across the database and vendor process boundary, while restored sessions that
+were already idle remain idle.
 
 **Automation works here, and works better.** Foreman reviews, answers and drives the work
 queue on an embedded session exactly as it does on a pane-backed one, over the same routes -

@@ -197,8 +197,8 @@
     <tr>
       <td>Surviving daemon death</td>
       <td>tmux keeps the agent running if the daemon crashes or restarts; the sweep re-adopts it</td>
-      <td>SDK subprocesses are daemon children: a restart interrupts the process. Conversation state survives, and the supervisor durably records an in-progress turn, resumes the same conversation on startup, then sends a cautious continuation without replaying the original intent</td>
-      <td>Low residual risk. Recovery is deliberately at-least-once across the SQLite/vendor boundary, so the continuation tells the agent to inspect current state and avoid repeating completed work</td>
+      <td>SDK subprocesses are daemon children, so a restart interrupts the process; <a href="../sdk-session-auto-continue/plan.html">auto-continue recovery</a> resumes the same conversation and any durably unfinished turn</td>
+      <td>Low residual risk; see the recovery plan for the at-least-once boundary</td>
     </tr>
     <tr>
       <td>Glanceable terminal presence</td>
@@ -361,15 +361,17 @@ export type SdkEvent =
       file-based read path working), and applies <code>state</code> / <code>request</code>
       events through a new <code>registry.applyDriverEvent</code>. No attribution guard is
       needed: the supervisor <em>owns</em> the binding it reports.</li>
-    <li><strong>Persists</strong> to <code>sdk_sessions</code>, including a
-      <code>turn_in_progress</code> bit added through <code>migrate()</code> for existing
-      databases (no <code>REFERENCES</code>; explicit <code>NOT NULL</code> primary key).</li>
+    <li><strong>Persists</strong> to <code>sdk_sessions</code>, including
+      <code>turn_in_progress</code>. The
+      <a href="../sdk-session-auto-continue/plan.html">auto-continue recovery plan</a>
+      owns the interrupted-turn contract and migration (no <code>REFERENCES</code>;
+      explicit <code>NOT NULL</code> primary key).</li>
     <li><strong>Resumes on startup</strong>, and the restore completes <strong>before the
       discovery poller starts</strong>, so <code>registry.onSessionsObserved</code> (the
       restart twin that settles orphaned tasks) sees SDK sessions on the first completed
-      sweep. A row whose turn was in progress receives one cautious continuation through
-      the ordinary serialized send path; an idle row receives nothing. A failed resume is
-      registered, marked exited, and evicted normally so
+      sweep. Interrupted-turn handling follows the
+      <a href="../sdk-session-auto-continue/plan.html">auto-continue recovery plan</a>.
+      A failed resume is registered, marked exited, and evicted normally so
       <code>TaskManager.reconcileTasksBoundTo</code> settles its task visibly.</li>
     <li><strong>Evicts</strong>: <code>applyDiscovery</code>'s unseen-means-exited rule is
       scoped to <code>proc:</code> sessions; SDK sessions exit when their handle says so,

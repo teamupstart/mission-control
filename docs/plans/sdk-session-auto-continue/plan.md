@@ -7,9 +7,9 @@ Claude or Codex conversation, and any session that was in the middle of a turn
 automatically continues without the user pressing Restart or sending another prompt.
 Sessions that were already idle are restored quietly and remain idle.
 
-## What happens today
+## Baseline before this change
 
-The repository already has the durable half of restart recovery:
+Before this change, the repository already had the durable half of restart recovery:
 
 - `sdk_sessions` stores the Mission Control session id, harness-native conversation id,
   checkout, task, model, effort, permission mode, and lifecycle status.
@@ -20,11 +20,11 @@ The repository already has the durable half of restart recovery:
 - Resume deliberately launches with `prompt: ""`, so the original task intent is not
   replayed.
 
-That last choice preserves conversation identity but does not recover interrupted work.
-For Claude, the relaunched streaming query waits for a new user turn. Codex can report an
-in-progress turn from `thread/resume`, but Mission Control has no durable, harness-neutral
-fact saying whether the pre-restart turn needs a continuation. The result is a session
-that exists again but appears paused until the user nudges it.
+That last choice preserved conversation identity but did not recover interrupted work.
+For Claude, the relaunched streaming query waited for a new user turn. Codex could report
+an in-progress turn from `thread/resume`, but Mission Control had no durable,
+harness-neutral fact saying whether the pre-restart turn needed a continuation. The result
+was a session that existed again but appeared paused until the user nudged it.
 
 ## Design
 
@@ -131,7 +131,8 @@ flowchart LR
 | `test/sdk-supervisor.test.ts` | Prove working sessions continue, idle sessions do not, and repeated restarts remain recoverable. |
 | `test/claude-sdk-adapter.test.ts` | Prove a resumed Claude handle accepts the recovery turn. |
 | `test/codex-sdk-adapter.test.ts` | Prove recovery steers an active resumed turn and starts a turn when the resumed thread is idle. |
-| `docs/plans/agent-sdk-sessions/plan.md` | Replace the accepted “remaining work must be re-prompted” regression with the new recovery guarantee. |
+| `README.md` | Replace the user-facing manual re-prompt limitation with the recovery behavior. |
+| `docs/plans/agent-sdk-sessions/plan.md` | Point the broader SDK architecture plan to this recovery contract. |
 
 ## Verification
 

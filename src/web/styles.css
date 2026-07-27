@@ -11380,15 +11380,19 @@ select.sc-input {
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
 }
 /* The ask takes the flexible track, because it is the only cell whose useful length is
-   unbounded - everything else is a word from a closed vocabulary or a timestamp. */
+   unbounded - everything else is a word from a closed vocabulary or a timestamp. Every
+   fixed track here is measured against its longest real value rather than rounded up:
+   this table gets 716px at a 1500px window, so 20px of slack on a metadata column comes
+   straight out of the one cell that says what the decision was ABOUT. The first cut spent
+   458px on five such columns and left the ask 66px - about ten characters - which reads as
+   a table of "Claude n...". */
 .sc-table-foreman .sc-row {
-  grid-template-columns: 104px minmax(0, 1fr) 88px 58px 72px 96px;
+  grid-template-columns: 84px minmax(0, 1fr) 84px 104px 62px;
 }
-/* The shadow column exists only while the cheap tier is measuring; the posture, not the
-   data, decides (see `showShadow`), so flipping to Shadow shows an empty column that is
-   about to fill rather than nothing at all. */
+/* The shadow column exists only while the cheap tier is MEASURING - see `showShadow`.
+   Under `on` no measurement is ever taken, so this would be a permanently empty 130px. */
 .sc-table-foreman.has-shadow .sc-row {
-  grid-template-columns: 104px minmax(0, 1fr) 88px 58px 72px 132px 96px;
+  grid-template-columns: 84px minmax(0, 1fr) 84px 104px 112px 62px;
 }
 /* Phone width: the row folds onto two lines rather than being cut in half.
    The fixed tracks above come to 326px plus gaps and padding, so below roughly 450px of
@@ -11442,9 +11446,12 @@ select.sc-input {
   .sc-table-foreman .sc-row-head {
     display: none;
   }
+  /* The trailing track is explicit, not `auto`. An auto track sizes to its widest item's
+     max-content, and both cells in it clip - so it resolved to the width of "9m ago" and
+     squeezed "foreman · structural" into 39px. 112px is that longest real pairing. */
   .sc-table-foreman .sc-row,
   .sc-table-foreman.has-shadow .sc-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 112px;
     row-gap: 3px;
   }
   .sc-table-foreman .sc-row > .sc-ref {
@@ -11464,19 +11471,14 @@ select.sc-input {
     grid-column: 1;
     grid-row: 3;
   }
-  .sc-table-foreman .sc-row > .sc-by {
+  .sc-table-foreman .sc-row > .sc-decided {
     grid-column: 2;
     grid-row: 3;
     text-align: right;
   }
-  .sc-table-foreman .sc-row > .sc-tier {
-    grid-column: 1;
-    grid-row: 4;
-  }
   .sc-table-foreman .sc-row > .sc-shadow {
-    grid-column: 2;
+    grid-column: 1 / -1;
     grid-row: 4;
-    text-align: right;
   }
 }
 .sc-row-head {
@@ -11575,11 +11577,12 @@ select.sc-input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sc-by,
-.sc-tier {
+.sc-decided {
   color: var(--dim);
   font-size: 11px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sc-shadow {
   min-width: 0;

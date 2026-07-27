@@ -172,6 +172,20 @@ const DIVERGENCE_LABEL: Record<string, string> = {
 };
 
 /**
+ * Whether naming the cheap tier's action beside the divergence tells you anything.
+ *
+ * For two of the five it does not, because the classifier DEFINES them by that action:
+ * `cheap-over-eager` is "the cheap tier answered and the review did not", and `deferred`
+ * is "it routed up". Printing "over-eager (answer)" is the same word twice in a column
+ * that is already the widest fixed track on the row. The other three are genuinely
+ * informative - `agreed` on what, `cautious` in which direction, `minor` how - so they
+ * keep it.
+ */
+function divergenceNamesItsAction(d: string): boolean {
+  return d === "cheap-over-eager" || d === "deferred";
+}
+
+/**
  * What each divergence means, spelled out - the strip's tooltips do the same job.
  *
  * `cheap-over-eager` gets the sentence it does because it is the one that decides whether
@@ -237,11 +251,19 @@ export function ForemanSettingsPanel({
   const tallies = episodeTallies(episodes);
   const active = STRIP.find((s) => s.id === filter) ?? null;
   const rows = active === null ? episodes : episodes.filter((r) => episodeBucket(r) === active.id);
-  // The shadow column earns its width only when something can fill it. Keyed on the
-  // POSTURE rather than on whether any row happens to carry a divergence, so switching to
-  // shadow shows the column immediately (empty, and about to fill) instead of leaving the
-  // operator wondering whether the setting took.
-  const showShadow = triage !== "off";
+  // The shadow column earns its width only under the posture that actually MEASURES.
+  //
+  // Keyed on the posture rather than on whether any row happens to carry a divergence, so
+  // flipping to Shadow shows the column immediately - empty, and about to fill - instead
+  // of leaving the operator wondering whether the setting took.
+  //
+  // But `shadow` ONLY, not "anything but off". Under `on` the cheap tier IS the decision,
+  // so `shadowBoth` never runs and no row will ever carry a measurement: the column is
+  // permanently empty, and it was costing the ask 132 of the 716 pixels this table gets at
+  // 1500px. Pointing the panel at a real ledger is what made that obvious - 95 of 100
+  // cells blank - and it is the same claim the write path already makes, that `off` and
+  // `on` both record null because neither has a second opinion to compare against.
+  const showShadow = triage === "shadow";
 
   return (
     <section className="settings-section sc-section">
@@ -475,8 +497,7 @@ export function ForemanSettingsPanel({
               <span>Session</span>
               <span>Asked</span>
               <span>Outcome</span>
-              <span>By</span>
-              <span>Tier</span>
+              <span>Decided by</span>
               {showShadow && <span>Cheap tier</span>}
               <span className="sc-when">When</span>
             </div>
@@ -499,11 +520,17 @@ export function ForemanSettingsPanel({
                   <span className={`sc-verdict sc-verdict-${row.disposition}`}>
                     {row.disposition === "pending" ? "drafted" : row.disposition}
                   </span>
-                  {/* Who DECIDED it, not who sent the text - a dismissal resolves an
-                      episode without delivering a word, and reading authorship off
-                      `sentBy` made one read back as an approval. Blank while nobody has. */}
-                  <span className="sc-by">{row.resolvedBy ?? ""}</span>
-                  <span className="sc-tier">{tierLabel(row.tier)}</span>
+                  {/* Who DECIDED it and which tier produced the verdict, in one cell.
+                      Two tracks for two short closed vocabularies cost the ask 130px of
+                      the 716 this table gets at 1500px, and the ask is the only cell whose
+                      useful length is unbounded.
+
+                      "Who" is `resolvedBy`, never `sentBy`: a dismissal resolves an episode
+                      without delivering a word, and reading authorship off the send made one
+                      read back as an approval. Blank while nobody has decided yet. */}
+                  <span className="sc-decided">
+                    {[row.resolvedBy, tierLabel(row.tier)].filter(Boolean).join(" · ")}
+                  </span>
                   {showShadow && (
                     <span className="sc-shadow">
                       {/* Blank, not "agreed", when nothing was measured: rows written
@@ -515,11 +542,11 @@ export function ForemanSettingsPanel({
                         ""
                       ) : (
                         <Tooltip label={DIVERGENCE_HINT[row.divergence] ?? ""}>
-                          <span
-                            className={`sc-div sc-div-${row.divergence}`}
-                          >
+                          <span className={`sc-div sc-div-${row.divergence}`}>
                             {DIVERGENCE_LABEL[row.divergence] ?? row.divergence}
-                            {row.cheapAction ? ` (${row.cheapAction})` : ""}
+                            {row.cheapAction && !divergenceNamesItsAction(row.divergence)
+                              ? ` (${row.cheapAction})`
+                              : ""}
                           </span>
                         </Tooltip>
                       )}

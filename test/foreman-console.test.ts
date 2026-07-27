@@ -224,8 +224,12 @@ test("the shadow column appears with the posture, and reads the divergence", () 
   assert.match(out, /has-shadow/);
   assert.match(out, /sc-div-cheap-over-eager/);
   assert.match(out, /over-eager/);
-  // The cheap tier's own action rides along, because the divergence alone does not say it.
-  assert.match(out, /\(answer\)/);
+  // The cheap tier's own action rides along where the divergence does not already imply
+  // it - see the dedicated test below for the two cases where it does.
+  const cautious = html({
+    episodes: [episode({ cheapAction: "skip", divergence: "cheap-too-cautious" })],
+  });
+  assert.match(cautious, /cautious \(skip\)/);
 });
 
 // Rows written before this phase, and rows decided under a posture that takes no
@@ -245,6 +249,37 @@ test("the shadow column is absent while the cheap tier is off", () => {
   });
   assert.doesNotMatch(out, /has-shadow/);
   assert.doesNotMatch(out, /Cheap tier<\/span>/);
+});
+
+// Found by pointing the panel at a real ledger, and invisible in every fixture: under
+// `on` the cheap tier IS the decision, so `shadowBoth` never runs and NO row can ever
+// carry a measurement. The column was showing anyway - 95 of 100 cells blank - and it
+// was costing the ask 132 of the 716 pixels this table gets at a 1500px window. "Not
+// off" is the wrong test; "measuring" is the right one.
+test("the shadow column is absent under 'on', where no measurement is ever taken", () => {
+  const out = html({
+    config: ForemanConfigSchema.parse({ enabled: true, mode: "dry-run", triage: "on" }),
+    episodes: [episode()],
+  });
+  assert.doesNotMatch(out, /has-shadow/);
+  assert.doesNotMatch(out, /Cheap tier<\/span>/);
+});
+
+// The classifier DEFINES these two by the cheap tier's action - `cheap-over-eager` is
+// "it answered where the review did not", `deferred` is "it routed up" - so naming the
+// action beside them is the same word twice, in the widest fixed column on the row.
+test("a divergence that already names its own action does not repeat it", () => {
+  const eager = html({ episodes: [episode({ cheapAction: "answer", divergence: "cheap-over-eager" })] });
+  assert.match(eager, /over-eager/);
+  assert.doesNotMatch(eager, /over-eager \(answer\)/);
+
+  const deferred = html({ episodes: [episode({ cheapAction: "route-up", divergence: "deferred" })] });
+  assert.doesNotMatch(deferred, /deferred \(route-up\)/);
+
+  // The other three genuinely add information - agreed on WHAT, cautious in which
+  // direction - so they keep it.
+  const agreed = html({ episodes: [episode({ cheapAction: "escalate", divergence: "agree" })] });
+  assert.match(agreed, /agreed \(escalate\)/);
 });
 
 // ---- the ledger ------------------------------------------------------------------------
@@ -271,7 +306,9 @@ test("the ledger draws a row per episode, with the ask and who decided", () => {
   assert.match(out, /sc-verdict-escalated/);
   assert.match(out, /sc-verdict-answered/);
   assert.match(out, /Claude needs your permission to run the tests/);
-  assert.match(out, /<span class="sc-by">you<\/span>/);
+  // Who decided and which tier, in one cell - two tracks for two closed vocabularies
+  // cost the ask 130px of the 716 this table gets at a 1500px window.
+  assert.match(out, /<span class="sc-decided">you · review<\/span>/);
 });
 
 // The panel is drawn from the shared console pieces, same as Inspector and Shipping.

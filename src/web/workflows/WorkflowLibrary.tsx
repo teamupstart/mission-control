@@ -32,7 +32,7 @@ import {
 } from "./WorkflowConfirmModal.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
 import { useWorkflowDraft, workflowPublishBlocked } from "./useWorkflowDraft.ts";
-import { workflowRequest } from "./workflowApi.ts";
+import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 import {
   readLastWorkflowId,
   readRequestedWorkflowVersion,
@@ -72,6 +72,37 @@ export function workflowSelectionRestore(
     if (requested) return requested.id;
   }
   return active.find((workflow) => workflow.id === rememberedId)?.id ?? active[0]?.id;
+}
+
+export function workflowSelectionAfterRemoval(
+  hasSnapshot: boolean,
+  selectedId: string | null,
+  summaries: WorkflowSummary[],
+  observedIds: ReadonlySet<string>,
+): string | null | undefined {
+  if (
+    !hasSnapshot
+    || !selectedId
+    || !observedIds.has(selectedId)
+    || summaries.some((workflow) => workflow.id === selectedId)
+  ) {
+    return undefined;
+  }
+  return summaries.find((workflow) => workflow.archivedAt === null)?.id ?? null;
+}
+
+export function workflowLifecycleError(caught: unknown): string {
+  if (caught instanceof WorkflowApiError) {
+    switch (caught.body?.code) {
+      case "workflow_published":
+        return "This workflow has already been published. Archive it instead of deleting it.";
+      case "workflow_not_archived":
+        return "This workflow was already restored. Reload the latest draft before trying again.";
+      case "workflow_revision_conflict":
+        return "This workflow changed in another tab. Reload the latest draft before trying again.";
+    }
+  }
+  return caught instanceof Error ? caught.message : "Workflow action failed";
 }
 
 export function WorkflowLoadError({
@@ -115,12 +146,14 @@ export function workflowEditorMode(
 export function WorkflowLibrary({
   summaries,
   personas,
+  hasSnapshot,
   onDirtyChange,
   onBindVersion = () => {},
   onBindWorkflow,
 }: {
   summaries: WorkflowSummary[];
   personas: PersonaView[];
+  hasSnapshot: boolean;
   onDirtyChange: (dirty: boolean) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
   /** Opens the binding dialog with no session pinned. Absent in surfaces App does not host. */
@@ -134,6 +167,7 @@ export function WorkflowLibrary({
   const [transitioning, setTransitioning] = useState(false);
   const transitionRef = useRef(false);
   const selectionInitialized = useRef(false);
+  const observedWorkflowIds = useRef(new Set<string>());
   const [selection, setSelection] = useState<WorkflowSelection>(null);
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
   const draft = useWorkflowDraft(selectedId, streamed, onDirtyChange);
@@ -182,6 +216,19 @@ export function WorkflowLibrary({
   const [assertiveAnnouncement, setAssertiveAnnouncement] = useState("");
   const previousValidationErrors = useRef(new Set<string>());
   const [mobileDrawer, setMobileDrawer] = useState<"library" | "properties" | null>(null);
+  const openWorkflow = useCallback((id: string | null): void => {
+    selectionInitialized.current = true;
+    rememberWorkflowId(id);
+    setSelection(null);
+    // A surface choice belongs to the workflow it was made on, so the next one opens on
+    // whatever IT expresses rather than inheriting the last draft's fallback.
+    setChosenMode(null);
+    setConfirm(null);
+    setSelectedId(id);
+  }, []);
+  useEffect(() => {
+    for (const summary of ordered) observedWorkflowIds.current.add(summary.id);
+  }, [ordered]);
   useEffect(() => {
     const explicitlyRequestedId = ordered.find((summary) =>
       readRequestedWorkflowVersion(summary.id) !== null)?.id ?? null;
@@ -202,6 +249,15 @@ export function WorkflowLibrary({
     setSelectedId(next);
   }, [active, ordered, selectedId]);
   useEffect(() => {
+    const next = workflowSelectionAfterRemoval(
+      hasSnapshot,
+      selectedId,
+      ordered,
+      observedWorkflowIds.current,
+    );
+    if (next !== undefined) openWorkflow(next);
+  }, [hasSnapshot, openWorkflow, ordered, selectedId]);
+  useEffect(() => {
     if (!activePersonas.some((persona) => persona.id === palettePersona)) setPalettePersona(activePersonas[0]?.id ?? "");
   }, [activePersonas, palettePersona]);
   useEffect(() => {
@@ -217,17 +273,6 @@ export function WorkflowLibrary({
     }
   }, [validation?.diagnostics]);
 
-  const openWorkflow = (id: string | null): void => {
-    selectionInitialized.current = true;
-    rememberWorkflowId(id);
-    setSelection(null);
-    // A surface choice belongs to the workflow it was made on, so the next one opens on
-    // whatever IT expresses rather than inheriting the last draft's fallback.
-    setChosenMode(null);
-    setConfirm(null);
-    setSelectedId(id);
-  };
-
   // Memoised because `WorkflowCanvas` lists it in the dependency array that projects its
   // node array, and that projection is synced into React Flow's store from an effect: a
   // fresh closure every render would re-run the sync every render, which is the churn the
@@ -242,8 +287,11 @@ export function WorkflowLibrary({
     if (transitionRef.current) return;
     transitionRef.current = true;
     setTransitioning(true);
+    draft.clearError();
     try {
       await work();
+    } catch (caught) {
+      draft.showError(workflowLifecycleError(caught));
     } finally {
       transitionRef.current = false;
       setTransitioning(false);

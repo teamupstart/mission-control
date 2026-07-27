@@ -136,6 +136,8 @@ export interface WorkflowDraftState {
   publish: () => Promise<WorkflowVersion | null>;
   duplicate: (name: string) => Promise<WorkflowSummary | null>;
   clearConflict: () => void;
+  clearError: () => void;
+  showError: (message: string) => void;
   canUndo: boolean;
   canRedo: boolean;
   undo: () => void;
@@ -273,7 +275,10 @@ export function useWorkflowDraft(
       conflictRef.current,
       savedFingerprintRef.current,
     );
-    if (preflight === "blocked") return false;
+    if (preflight === "blocked") {
+      setError("Reload or duplicate your changes before continuing");
+      return false;
+    }
     if (preflight === "clean" && versionRefreshRef.current !== workflowRef.current?.id) return true;
     const request = (async (): Promise<boolean> => {
       setSaving(true);
@@ -419,6 +424,8 @@ export function useWorkflowDraft(
       conflictRef.current = null;
       setConflict(null);
     },
+    clearError: () => setError(null),
+    showError: (message: string) => setError(message),
     canUndo: history.current.length > 0,
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),

@@ -14,8 +14,11 @@ import { WorkflowVersionDetail, WorkflowVersionHistory } from "../src/web/workfl
 import {
   nextWorkflowName,
   WorkflowLoadError,
+  workflowLifecycleError,
+  workflowSelectionAfterRemoval,
   workflowSelectionRestore,
 } from "../src/web/workflows/WorkflowLibrary.tsx";
+import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import {
   clearRequestedWorkflowVersion,
   readRequestedWorkflowVersion,
@@ -274,6 +277,54 @@ test("workflow detail load failures remain visible without a loaded workflow", (
   assert.match(html, /role="alert"/);
   assert.match(html, /Could not load workflow/);
   assert.match(html, /Retry/);
+});
+
+test("workflow removal reconciles only a previously observed selected summary", () => {
+  const active = [{
+    id: "workflow-1", name: "Review", description: "", draftRevision: 1,
+    currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1,
+    errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0,
+  }];
+  const archived = { ...active[0]!, id: "workflow-archived", archivedAt: 2 };
+  const observed = new Set(["workflow-removed"]);
+
+  assert.equal(
+    workflowSelectionAfterRemoval(false, "workflow-removed", [], observed),
+    undefined,
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(true, "workflow-removed", [], new Set()),
+    undefined,
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(
+      true,
+      "workflow-archived",
+      [...active, archived],
+      new Set(["workflow-archived"]),
+    ),
+    undefined,
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(true, "workflow-removed", active, observed),
+    "workflow-1",
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(true, "workflow-removed", [], observed),
+    null,
+  );
+});
+
+test("workflow lifecycle refusals use the existing load error surface", () => {
+  const refusal = (code: string) => new WorkflowApiError("request refused", 409, { code });
+
+  assert.match(workflowLifecycleError(refusal("workflow_published")), /already been published/);
+  assert.match(workflowLifecycleError(refusal("workflow_not_archived")), /already restored/);
+  assert.match(workflowLifecycleError(refusal("workflow_revision_conflict")), /changed in another tab/);
+  assert.equal(workflowLifecycleError(new Error("network unavailable")), "network unavailable");
+
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  assert.match(source, /catch \(caught\) \{\s*draft\.showError\(workflowLifecycleError\(caught\)\)/);
 });
 
 test("last workflow restoration excludes archived history unless a version link requested it", () => {

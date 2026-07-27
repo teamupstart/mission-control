@@ -378,6 +378,10 @@ test("history deep links, row activation, and timestamps preserve the audit", ()
   assert.match(history, /initialScheduledFor \+ 1/);
   assert.doesNotMatch(history, /DEEP_LINK_PAGE_LIMIT/);
   assert.match(history, /Promise\.all\(\[/);
+  assert.match(
+    history,
+    /createFetchedSpineHistoryWindow\([\s\S]*?\{ occurrences: accumulated, nextCursor \},\s+before !== null,/,
+  );
   assert.match(history, /Some history is not loaded/);
   assert.match(history, /Load missing history/);
   // The outcome is a focusable, tooltip-wrapped <button> that expands the audit in place,

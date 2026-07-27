@@ -30,7 +30,7 @@ import {
   EMPTY_SPINE_HISTORY,
   appendOlderSpineHistory,
   appendSpineHistoryBridge,
-  createSpineHistoryWindow,
+  createFetchedSpineHistoryWindow,
   mergeOccurrences,
 } from "../../lib/spine-history.ts";
 import { buildSpineRows } from "../../lib/spine.ts";
@@ -188,10 +188,14 @@ export function ScheduleSpine({
         if (!page) {
           setPageSchedule((newestPage ?? firstPage).schedule);
           setHistory(
-            createSpineHistoryWindow({
-              occurrences: (newestPage ?? firstPage).occurrences,
-              nextCursor: (newestPage ?? firstPage).nextCursor,
-            }),
+            createFetchedSpineHistoryWindow(
+              {
+                occurrences: (newestPage ?? firstPage).occurrences,
+                nextCursor: (newestPage ?? firstPage).nextCursor,
+              },
+              { occurrences: accumulated, nextCursor },
+              before !== null,
+            ),
           );
           setLoading(false);
           setError("Could not load the requested occurrence.");
@@ -206,17 +210,13 @@ export function ScheduleSpine({
         accumulated.some((occurrence) => occurrence.id === initialOccurrenceId);
       setPageSchedule((newestPage ?? firstPage).schedule);
       setHistory(
-        createSpineHistoryWindow(
+        createFetchedSpineHistoryWindow(
           {
             occurrences: (newestPage ?? firstPage).occurrences,
             nextCursor: (newestPage ?? firstPage).nextCursor,
           },
-          before === null
-            ? undefined
-            : {
-                occurrences: accumulated,
-                nextCursor,
-              },
+          { occurrences: accumulated, nextCursor },
+          before !== null,
         ),
       );
       if (initialOccurrenceId && targetFound) setOpenId(initialOccurrenceId);

@@ -68,6 +68,16 @@ export function createSpineHistoryWindow(
   };
 }
 
+export function createFetchedSpineHistoryWindow(
+  newest: SpineHistorySlice,
+  accumulated: SpineHistorySlice,
+  separateTargetRange: boolean,
+): SpineHistoryWindow {
+  return separateTargetRange
+    ? createSpineHistoryWindow(newest, accumulated)
+    : createSpineHistoryWindow(accumulated);
+}
+
 export function appendSpineHistoryBridge(
   current: SpineHistoryWindow,
   page: SpineHistorySlice,

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   appendSpineHistoryBridge,
+  createFetchedSpineHistoryWindow,
   createSpineHistoryWindow,
 } from "../src/web/lib/spine-history.ts";
 import { buildSpineRows, type SpineRow } from "../src/web/lib/spine.ts";
@@ -217,6 +218,27 @@ test("a deep-linked target keeps an explicit break until newest history connects
   assert.equal(window.bridgeBefore, null);
   assert.equal(window.bridgeCursor, null);
   assert.equal(new Set(window.occurrences.map((entry) => entry.id)).size, 101);
+});
+
+test("a timestamp-less deep link keeps its contiguous fallback pages", () => {
+  const occurrence = (index: number) =>
+    mkOccurrence({
+      id: `fallback-${index}`,
+      scheduledFor: T0 + index * HOUR,
+      claimedAt: T0 + index * HOUR,
+    });
+  const range = (from: number, through: number) =>
+    Array.from({ length: from - through + 1 }, (_, offset) => occurrence(from - offset));
+
+  const window = createFetchedSpineHistoryWindow(
+    { occurrences: range(100, 76), nextCursor: T0 + 76 * HOUR },
+    { occurrences: range(100, 26), nextCursor: T0 + 26 * HOUR },
+    false,
+  );
+  assert.equal(window.occurrences.length, 75);
+  assert.equal(window.occurrences.some((entry) => entry.id === "fallback-30"), true);
+  assert.equal(window.olderCursor, T0 + 26 * HOUR);
+  assert.equal(window.bridgeCursor, null);
 });
 
 test("a refreshed catch-up window resets pagination beyond the newest 25 rows", () => {

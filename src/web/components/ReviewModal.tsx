@@ -58,7 +58,15 @@ export function ReviewModal({
   );
 }
 
-function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
+/**
+ * One pending review, answered in place.
+ *
+ * Exported because it is session-AGNOSTIC - `api.resolveReview` is its whole dependency - so
+ * the attention inbox draws every session's questions with the same card rather than growing a
+ * second answering surface that would have to be kept in step with this one. Its `namePrefix`
+ * below is what makes that safe.
+ */
+export function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
   const [note, setNote] = useState("");
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
@@ -124,9 +132,10 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
           busy={busy}
           lead={decisionLead(review.kind)}
           hideQuestions={review.kind === "input"}
-          // Review ids are unique, and every pending review of a session is drawn into this
-          // one document - see `namePrefix`, without which two option-carrying `input` reviews
-          // share a radio group and answering one silently clears the other.
+          // Review ids are unique, and every pending review of a session - or, in the
+          // attention inbox, of the WHOLE FLEET - is drawn into one document. Without
+          // `namePrefix` two option-carrying `input` reviews share a radio group and answering
+          // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response) => void resolve("answer", response)}

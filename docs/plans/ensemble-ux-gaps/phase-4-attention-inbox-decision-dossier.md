@@ -62,4 +62,16 @@ Later phases may rely on: `OVERLAY_IDS.attention` and the fold in `lib/attention
 
 ## 10. Cross-phase audit record
 
+- 2026-07-27 (implementation): one reconciliation against 5.1(3). The topbar segment's label is
+  **"N to answer"**, not "N need you": the pulse already renders a `need you` segment beside it
+  (sessions in an attention tone, `App.tsx` `counts.attention`), which the phase's repository
+  findings did not record, and two segments carrying the same word in one readout is a figure
+  nobody can attribute. Everything else about 5.1(3) holds - the segment counts the fold's total,
+  the click opens the inbox, and the per-session `ReviewModal` entry points are untouched. Two
+  further notes: `EnsembleResultContext` gained `restorePendingArtifactId` beside the specified
+  `onRestoreArtifact`, so a dossier Restore reports the same pending state the Artifacts section
+  does rather than being a button with no feedback; and the read-only record is gated on a
+  TERMINAL run with a recorded decision (as written), which means a `finalizing` run shows neither
+  form nor record - offering Restore while the finalizer is resetting a checkout would be a race
+  the operator could lose.
 - 2026-07-26: initial version. Reconciliations: (a) source plan's Solution C "run strip on member cards" is dropped - Phase 3's clustering and enriched marks subsume it; (b) the inbox is a modal, not a chip-anchored popover, because of the drag-region scan; (c) pane dialogs are deep-linked, not answered inline in the inbox - reviews and pane dialogs are two wire protocols and the inbox renders only the one that is session-agnostic today; (d) the dossier lives inside the existing Result renderers rather than a new page, honoring the renderer registry as the one strategy-keyed surface.

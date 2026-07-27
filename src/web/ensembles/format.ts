@@ -1,4 +1,5 @@
 import type {
+  EnsembleAgentCost,
   EnsembleArtifactStatus,
   EnsembleMemberStatus,
   EnsembleStatus,
@@ -79,6 +80,29 @@ export function memberStatusTone(status: EnsembleMemberStatus | null): EnsembleT
 
 export function artifactStatusLabel(status: EnsembleArtifactStatus | null): string {
   return status ? titleCaseEnum(status) : "Unknown";
+}
+
+/**
+ * The aggregate candidate cost as a sentence, with what is unknown kept unknown.
+ *
+ * Shared by the detail's facts list and the dossier's header so one figure cannot be printed two
+ * ways. `reported: false` means NOBODY reported a cost, which is not "$0.00" - a run whose
+ * runners are silent about spend must not read as a free run, and a partial total says how
+ * partial it is rather than silently under-counting.
+ */
+export function agentCostSummary(
+  cost: EnsembleAgentCost,
+  fmt: (usd: number) => string,
+): { label: string; reported: boolean } {
+  if (cost.known === 0) return { label: "not reported", reported: false };
+  const total = fmt(cost.totalUsd ?? 0);
+  return {
+    label:
+      cost.unknown === 0
+        ? total
+        : `${total} · ${cost.known} of ${cost.known + cost.unknown} reported`,
+    reported: true,
+  };
 }
 
 /** A git object short id for display. Never used to address anything - the full id is durable. */

@@ -24,6 +24,18 @@ export interface EnsembleResultContext {
   /** Open one artifact's on-demand evidence/diff. */
   onOpenArtifact?: (artifactId: string) => void;
   /**
+   * Reset a checkout to one artifact's snapshot, through the generic action surface.
+   *
+   * Optional and additive: the same `restore_artifact` action the Artifacts section already
+   * posts, offered where the operator is actually asking the question it answers - beside a
+   * LOSING candidate of a decided run. That the losers' refs survive finalization is the least
+   * discoverable fact in the feature; a button in the section that shows the loser is the
+   * discovery. A renderer that does not offer it simply omits the prop.
+   */
+  onRestoreArtifact?: (artifactId: string) => void;
+  /** Which restore the generic action surface is currently running, so a column can say so. */
+  restorePendingArtifactId?: string | null;
+  /**
    * Present only while the run awaits a human decision and an action may be posted. The
    * strategy view builds the selection in its own vocabulary; the generic action surface wraps
    * it with the idempotency key, expected status, and destructive confirmation.

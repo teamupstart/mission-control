@@ -190,8 +190,11 @@ whole run.
 
 The **fleet pulse** is one readout, not a row of pills: the connection state leads it
 (`live`, or `reconnecting`, which dims the figures beside it because they are then stale),
-followed by the session counts and the reviews count, which is still clickable and still
-opens the review queue.
+followed by the session counts and the **to answer** count, which is clickable and opens the
+[attention inbox](#attention-inbox-one-place-to-drain-what-needs-you). It sits beside `need
+you` and means something narrower: `need you` counts SESSIONS in an attention state, while `to
+answer` counts the things you can actually settle - and it is the figure that has to match what
+the click opens.
 
 When the desktop window narrows, the bar progressively collapses secondary labels instead
 of adding ragged rows. The filter becomes its **⌕** glyph; click it or press <kbd>/</kbd> to
@@ -1766,8 +1769,8 @@ counting the runs the daemon marks as needing attention, and lists runs attentio
 one live SSE stream with their shared progress dots and `submitted/roster` counts (plus the
 launched count while a wave is still opening),
 and fetches a selected run's bounded detail - members, immutable artifacts and their on-demand
-diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's scorecards,
-Consensus's agreements and divergence cards, Panel vote's aggregate and ballots), and the decision
+diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's candidate columns,
+Consensus's agreements and divergence cards, Panel vote's rank matrix and ballots), and the decision
 that strategy asks for - over HTTP, refetching when that run's summary revises rather than polling.
 The strategy-neutral runtime pins one base commit, launches
 bounded *waves* of ordinary member tasks (creating every task in a wave before dispatching the
@@ -1793,6 +1796,20 @@ resolves its runner and model per call (a judging Persona's own overrides, else 
 `ensemble-comparison` job model), records every call on a durable ledger, and recovers a call
 interrupted by a restart by retrying it against the exact same evidence. It **recommends** a winner;
 it cannot promote one.
+
+**The decision is made from a dossier, not from three sections of the page.** When a run parks at
+`awaiting_decision` its Result section leads with **At stake** - the run's own intent, the one
+commit every candidate started from, the elapsed time and what the fleet has spent (unknown stays
+unknown, never `$0.00`) - and then draws one column per candidate composing what that candidate
+*reported*, what Mission Control *observed* (diffstat), what it cost, and how it was ranked, with
+**Evidence** opening its diff. Panel vote adds a judges x candidates **rank matrix** marking every
+cell where a judge broke with the panel, and quotes the ballot that ranked the winner worst in that
+judge's own words. The decision form sits at the bottom, after the evidence, and says before the
+click that a decision is recorded **once**. Afterwards the dossier persists read-only as the
+durable "why we picked B" record - what was promoted, the operator's rationale, and a **Restore**
+beside each losing column, which is where the fact that every loser's snapshot was *kept* finally
+becomes discoverable. The run's decision is also one click from the
+[attention inbox](#attention-inbox-one-place-to-drain-what-needs-you).
 
 **Finalization begins from a durable human decision and nothing else.** You confirm one eligible
 submission (or an explicit *no consensus*) through `POST /api/ensembles/:id/actions`; the decision
@@ -1923,6 +1940,33 @@ Ensembles are deliberately separate from [Workflows](#workflows-and-personas). A
 reviews exactly one session; an ensemble is the selection stage over several. They compose
 at promotion - a confirmed winner can be handed to a published workflow version - and that
 handoff crosses the same server-owned boundary any external result does.
+
+## Attention inbox (one place to drain what needs you)
+
+The topbar's **to answer** count opens the **attention inbox**: one ordered queue holding
+everything that is waiting on a person, so nothing depends on catching a toast or noticing a
+card. Its sections are fixed and never interleave, because they are different kinds of
+obligation:
+
+1. **Decisions** - an ensemble run parked at `awaiting_decision`, with its progress dots and
+   **Open dossier**. Nothing else in that run moves until it is answered.
+2. **Questions from agents** - every pending [review](#review-channel-mcp), grouped by the
+   session that raised it and **answered right here**: the same card the per-session review
+   modal draws, diff/plan/question and option menus included. A member of an ensemble carries
+   its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
+   whoever answers can tell they are steering one competitor of a comparison.
+3. **Members parked on a menu** - an ensemble member sitting on a terminal
+   [option menu](#answer-a-sessions-menu-from-the-dashboard). Listed, not answered: a pane
+   dialog is a transient TUI fact answered by keystrokes on the card, and it deep-links there.
+4. **Stuck finalizations and shipping gates** - a promotion that stopped on an error, and
+   parked no-mistakes gates no agent is driving.
+
+The count is **answers owed**, not rows: a session holding three questions is one row and
+three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides
+no severity, and is not a second notifier; [Alerts and Away mode](#alerts--away-mode) still own
+what interrupts you. Escape closes it, like every overlay. Per-session entry points are
+unchanged: a card's review affordance and a board tile's flag still open that session's own
+review modal.
 
 ## Roundup
 

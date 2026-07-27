@@ -1,18 +1,29 @@
-import { useMemo, useState } from "react";
-import type { EnsembleEvaluation, EnsembleSelectOneSelection } from "@shared/ensemble.ts";
+import { useMemo } from "react";
+import { ensembleIsTerminal, type EnsembleEvaluation } from "@shared/ensemble.ts";
 import { parseBestOfNComparison, type BestOfNComparison } from "@shared/ensemble-strategies/best-of-n.ts";
-import { Tooltip } from "../../components/Tooltip.tsx";
 import type { EnsembleResultContext } from "./index.ts";
+import { DecisionPanel } from "./DecisionPanel.tsx";
+import {
+  AtStake,
+  CandidateColumn,
+  DecisionRecord,
+  recordedDecision,
+} from "./dossier.tsx";
 
 /**
- * Best-of-N's result presentation: the anonymous scorecards the comparison produced, and -
+ * Best-of-N's result presentation: the anonymous comparison, one column per candidate, and -
  * only while the run awaits a person - the select-one decision panel. Everything strategy
  * specific about the OUTCOME lives here, so the generic detail and engine never branch on
  * `best_of_n`; a future strategy adds its own renderer to the registry beside this one.
  *
  * The evaluator judged blind, but the operator view is not blind: `subjectLabel` reveals which
- * member produced each artifact after the fact, while the scorecard keeps the rank/score the
+ * member produced each artifact after the fact, while the column keeps the rank/score the
  * anonymous comparison assigned.
+ *
+ * At the decision - and afterwards, as the durable record of it - this becomes a DOSSIER: what
+ * was at stake leads, each column composes that candidate's claims, observed diffstat and cost
+ * with its score, and the decision sits at the bottom where the evidence has already been read.
+ * The pieces are shared (`dossier.tsx`) and only the score line is this strategy's own words.
  */
 
 /** The newest succeeded comparison, parsed into a renderable, de-anonymised scorecard set. */
@@ -31,6 +42,11 @@ function latestComparison(
 
 export function BestOfNResult(ctx: EnsembleResultContext): React.JSX.Element | null {
   const found = useMemo(() => latestComparison(ctx.detail.evaluations), [ctx.detail.evaluations]);
+  const record = useMemo(() => recordedDecision(ctx.detail.decisions), [ctx.detail.decisions]);
+  const artifactById = useMemo(
+    () => new Map(ctx.detail.artifacts.map((artifact) => [artifact.id, artifact])),
+    [ctx.detail.artifacts],
+  );
   if (!found) {
     return (
       <p className="ensemble-empty">
@@ -40,8 +56,20 @@ export function BestOfNResult(ctx: EnsembleResultContext): React.JSX.Element | n
     );
   }
   const { evaluation, comparison } = found;
+  const status = ctx.detail.run.status;
+  // The read-only half of the dossier is gated on a TERMINAL run with a recorded decision, not
+  // on the decision row alone: while a run is finalizing the operator's answer is in flight, and
+  // presenting it as the settled record - with Restore beside the losers - would offer to reset a
+  // checkout the finalizer is at that moment resetting itself.
+  const settled = status !== null && ensembleIsTerminal(status) && record !== null;
+  const dossier = ctx.decision !== null || settled;
+  const restorable = settled && record!.readable && Boolean(ctx.onRestoreArtifact);
+
   return (
     <div className="ensemble-result">
+      {/* Above the Comparison header, not under it: the dossier is read top-down and the first
+          question is what this run was for, not which model ranked it. */}
+      {dossier && <AtStake detail={ctx.detail} />}
       <header className="ensemble-result-head">
         <h4>Comparison</h4>
         <small>
@@ -65,199 +93,49 @@ export function BestOfNResult(ctx: EnsembleResultContext): React.JSX.Element | n
           </ul>
         </div>
       )}
-      <ol className="ensemble-scorecards">
-        {comparison.scorecards.map((card) => {
-          const recommended = card.artifactId === comparison.recommendedArtifactId;
-          return (
-            <li
-              key={card.artifactId}
-              className={`ensemble-scorecard${recommended ? " recommended" : ""}`}
-            >
-              <header>
-                <span className="ensemble-rank" aria-label={`Rank ${card.rank}`}>
-                  #{card.rank}
-                </span>
-                <span className="ensemble-subject">{ctx.subjectLabel(card.artifactId)}</span>
-                {recommended && <span className="ensemble-recommended-tag">Recommended</span>}
-                <span className="ensemble-score">
-                  score {card.score}/100 · confidence {Math.round(card.confidence * 100)}%
-                </span>
-                {ctx.onOpenArtifact && (
-                  <Tooltip label="Open this candidate's diff and evidence">
-                    <button
-                      className="btn btn-ghost ensemble-evidence-btn"
-                      onClick={() => ctx.onOpenArtifact?.(card.artifactId)}
-                    >
-                      Evidence
-                    </button>
-                  </Tooltip>
-                )}
-              </header>
-              {card.rationale && <p className="ensemble-rationale">{card.rationale}</p>}
-              <div className="ensemble-scorecard-cols">
-                {card.strengths.length > 0 && (
-                  <div>
-                    <h6>Strengths</h6>
-                    <ul>
-                      {card.strengths.map((s, i) => (
-                        <li key={i}>{s}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {card.risks.length > 0 && (
-                  <div>
-                    <h6>Risks</h6>
-                    <ul>
-                      {card.risks.map((r, i) => (
-                        <li key={i}>{r}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </li>
-          );
-        })}
+      <ol className="ensemble-scorecards dossier-cols">
+        {comparison.scorecards.map((card) => (
+          <CandidateColumn
+            key={card.artifactId}
+            artifact={artifactById.get(card.artifactId) ?? null}
+            subjectLabel={ctx.subjectLabel(card.artifactId)}
+            verdict={{
+              rank: card.rank,
+              scoreLine: `score ${card.score}/100 · confidence ${Math.round(card.confidence * 100)}%`,
+              rationale: card.rationale,
+              strengths: card.strengths,
+              risks: card.risks,
+              recommended: card.artifactId === comparison.recommendedArtifactId,
+            }}
+            onOpenArtifact={
+              ctx.onOpenArtifact ? () => ctx.onOpenArtifact?.(card.artifactId) : undefined
+            }
+            onRestore={
+              restorable && card.artifactId !== record!.selectedArtifactId
+                ? () => ctx.onRestoreArtifact?.(card.artifactId)
+                : undefined
+            }
+            restorePending={ctx.restorePendingArtifactId === card.artifactId}
+          />
+        ))}
       </ol>
-      {ctx.decision && (
-        <BestOfNDecisionPanel
-          comparison={comparison}
-          subjectLabel={ctx.subjectLabel}
+      {ctx.decision ? (
+        <DecisionPanel
+          choices={comparison.scorecards.map((card) => ({
+            artifactId: card.artifactId,
+            label: `#${card.rank} ${ctx.subjectLabel(card.artifactId)}${
+              card.artifactId === comparison.recommendedArtifactId ? " (recommended)" : ""
+            }`,
+            tip: `Select ${ctx.subjectLabel(card.artifactId)} as the winner`,
+          }))}
+          recommendedArtifactId={comparison.recommendedArtifactId}
+          intro="The comparison recommends, it does not promote. Confirming a winner resets that member's checkout to its submitted snapshot and reaps every other worktree; the losers' snapshot refs are kept."
+          overrideWarning="You are overriding the recommendation. That is allowed; the evidence is above."
           decision={ctx.decision}
         />
-      )}
+      ) : settled ? (
+        <DecisionRecord record={record!} subjectLabel={ctx.subjectLabel} restorable={restorable} />
+      ) : null}
     </div>
-  );
-}
-
-function BestOfNDecisionPanel({
-  comparison,
-  subjectLabel,
-  decision,
-}: {
-  comparison: BestOfNComparison;
-  subjectLabel: (artifactId: string) => string;
-  decision: NonNullable<EnsembleResultContext["decision"]>;
-}): React.JSX.Element {
-  const [mode, setMode] = useState<"select" | "no_consensus">("select");
-  const [artifactId, setArtifactId] = useState<string>(comparison.recommendedArtifactId);
-  const [reason, setReason] = useState("");
-  const [rationale, setRationale] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
-
-  const selection: EnsembleSelectOneSelection =
-    mode === "select"
-      ? { kind: "selected", artifactId }
-      : { kind: "no_consensus", reason: reason.trim() };
-  const ready =
-    confirmed &&
-    !decision.busy &&
-    rationale.trim().length > 0 &&
-    (mode === "select" ? Boolean(artifactId) : reason.trim().length > 0);
-  const nonRecommended = mode === "select" && artifactId !== comparison.recommendedArtifactId;
-
-  return (
-    <form
-      className="ensemble-decision"
-      aria-label="Confirm a winner"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (ready) decision.onDecide(selection, rationale.trim());
-      }}
-    >
-      <h4>Confirm the outcome</h4>
-      <p className="ensemble-decision-intro">
-        The comparison recommends, it does not promote. Confirming a winner resets that member's
-        checkout to its submitted snapshot and reaps every other worktree; the losers' snapshot
-        refs are kept.
-      </p>
-      <fieldset className="ensemble-decision-choices">
-        <legend>Outcome</legend>
-        {comparison.scorecards.map((card) => (
-          <Tooltip key={card.artifactId} label={`Select ${subjectLabel(card.artifactId)} as the winner`}>
-            <label className="ensemble-decision-choice">
-              <input
-                type="radio"
-                name="ensemble-decision"
-                checked={mode === "select" && artifactId === card.artifactId}
-                onChange={() => {
-                  setMode("select");
-                  setArtifactId(card.artifactId);
-                }}
-              />
-              <span>
-                #{card.rank} {subjectLabel(card.artifactId)}
-                {card.artifactId === comparison.recommendedArtifactId && " (recommended)"}
-              </span>
-            </label>
-          </Tooltip>
-        ))}
-        <Tooltip label="Promote none; keep every candidate's snapshot">
-          <label className="ensemble-decision-choice">
-            <input
-              type="radio"
-              name="ensemble-decision"
-              checked={mode === "no_consensus"}
-              onChange={() => setMode("no_consensus")}
-            />
-            <span>No consensus - keep every snapshot, promote none</span>
-          </label>
-        </Tooltip>
-      </fieldset>
-      {mode === "no_consensus" && (
-        <label className="ensemble-field">
-          <span>Why there is no winner</span>
-          <textarea
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            rows={2}
-            required
-          />
-        </label>
-      )}
-      {nonRecommended && (
-        <p className="ensemble-warn" role="note">
-          You are overriding the recommendation. That is allowed; the evidence is above.
-        </p>
-      )}
-      <label className="ensemble-field">
-        <span>Rationale (required, recorded with the decision)</span>
-        <textarea
-          value={rationale}
-          onChange={(event) => setRationale(event.target.value)}
-          rows={2}
-          required
-        />
-      </label>
-      <Tooltip label="Confirm you understand the destructive effect before deciding">
-        <label className="ensemble-confirm-line">
-          <input
-            type="checkbox"
-            checked={confirmed}
-            onChange={(event) => setConfirmed(event.target.checked)}
-          />
-          <span>
-            {mode === "select"
-              ? "I understand the other worktrees will be reaped."
-              : "I understand no member is promoted and all snapshots are retained."}
-          </span>
-        </label>
-      </Tooltip>
-      {decision.error && (
-        <p className="ensemble-error" role="alert">
-          {decision.error}
-        </p>
-      )}
-      <Tooltip label="Record this decision and begin finalization">
-        <button type="submit" className="btn btn-primary" disabled={!ready}>
-          {decision.pending
-            ? "Recording…"
-            : mode === "select"
-              ? "Confirm winner"
-              : "Record no consensus"}
-        </button>
-      </Tooltip>
-    </form>
   );
 }

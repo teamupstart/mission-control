@@ -39,6 +39,7 @@ import {
  * so this list doubles as the inventory the parity test walks.
  */
 export const OVERLAY_IDS = {
+  attention: "attention",
   reviews: "reviews",
   dispatch: "dispatch",
   sitrep: "sitrep",

@@ -802,8 +802,11 @@ test("decision busy state and errors stay owned by their action surface", () => 
     new URL("../src/web/ensembles/EnsembleDetail.tsx", import.meta.url),
     "utf8",
   );
+  // The form itself is now the ONE hoisted `DecisionPanel`, shared by Best-of-N and Panel
+  // vote - so the "busy blocks submit" guarantee is asserted where it is written rather than
+  // once per strategy that happens to have copied it.
   const decisionSource = readFileSync(
-    new URL("../src/web/ensembles/results/BestOfN.tsx", import.meta.url),
+    new URL("../src/web/ensembles/results/DecisionPanel.tsx", import.meta.url),
     "utf8",
   );
   assert.match(detailSource, /busy: actionBusy/);

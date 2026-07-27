@@ -13,6 +13,7 @@ import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx"
 import { WorkflowVersionDetail, WorkflowVersionHistory } from "../src/web/workflows/WorkflowVersionHistory.tsx";
 import {
   nextWorkflowName,
+  WORKFLOW_REMOVED_UNSAVED_ERROR,
   WorkflowLoadError,
   workflowLifecycleError,
   workflowSelectionAfterRemoval,
@@ -336,6 +337,10 @@ test("workflow removal reconciles only a previously observed selected summary", 
     "workflow-1",
   );
   assert.equal(
+    workflowSelectionAfterRemoval(true, "workflow-removed", active, observed, true),
+    undefined,
+  );
+  assert.equal(
     workflowSelectionAfterRemoval(true, "workflow-removed", [], observed),
     null,
   );
@@ -348,9 +353,14 @@ test("workflow lifecycle refusals use the existing load error surface", () => {
   assert.match(workflowLifecycleError(refusal("workflow_not_archived")), /already restored/);
   assert.match(workflowLifecycleError(refusal("workflow_revision_conflict")), /changed in another tab/);
   assert.equal(workflowLifecycleError(new Error("network unavailable")), "network unavailable");
+  assert.match(WORKFLOW_REMOVED_UNSAVED_ERROR, /deleted elsewhere/);
+  assert.match(WORKFLOW_REMOVED_UNSAVED_ERROR, /unsaved changes cannot be saved/);
+  assert.doesNotMatch(WORKFLOW_REMOVED_UNSAVED_ERROR, /retry|reload/i);
 
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
   assert.match(source, /catch \(caught\) \{\s*draft\.showError\(workflowLifecycleError\(caught\)\)/);
+  assert.match(source, /draft\.dirty \|\| draft\.saving/);
+  assert.match(source, /draft\.showError\(workflowLifecycleError\(new Error\(WORKFLOW_REMOVED_UNSAVED_ERROR\)\)\)/);
 });
 
 test("last workflow restoration excludes archived history unless a version link requested it", () => {

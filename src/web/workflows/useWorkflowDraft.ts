@@ -149,6 +149,7 @@ export function useWorkflowDraft(
   workflowId: string | null,
   streamedSummary: WorkflowSummary | null,
   onDirtyChange: (dirty: boolean) => void,
+  autosavePaused = false,
 ): WorkflowDraftState {
   const [workflow, setWorkflow] = useState<WorkflowDefinition | null>(null);
   const [versions, setVersions] = useState<WorkflowVersionMetadata[]>([]);
@@ -351,10 +352,10 @@ export function useWorkflowDraft(
   }, [refreshVersions, streamedSummary]);
 
   useEffect(() => {
-    if (!dirty || saving || currentConflict) return;
+    if (autosavePaused || !dirty || saving || currentConflict) return;
     const timer = window.setTimeout(() => void saveNow(), 500);
     return () => window.clearTimeout(timer);
-  }, [currentConflict, dirty, saveNow, saving]);
+  }, [autosavePaused, currentConflict, dirty, saveNow, saving]);
 
   const publish = useCallback(async (): Promise<WorkflowVersion | null> => {
     const current = workflowRef.current;

@@ -79,17 +79,22 @@ export function workflowSelectionAfterRemoval(
   selectedId: string | null,
   summaries: WorkflowSummary[],
   observedIds: ReadonlySet<string>,
+  hasUnsavedChanges = false,
 ): string | null | undefined {
   if (
     !hasSnapshot
     || !selectedId
     || !observedIds.has(selectedId)
     || summaries.some((workflow) => workflow.id === selectedId)
+    || hasUnsavedChanges
   ) {
     return undefined;
   }
   return summaries.find((workflow) => workflow.archivedAt === null)?.id ?? null;
 }
+
+export const WORKFLOW_REMOVED_UNSAVED_ERROR =
+  "This workflow was deleted elsewhere. These unsaved changes cannot be saved because the workflow no longer exists. Copy anything you need before selecting another workflow or creating a new one.";
 
 export function workflowLifecycleError(caught: unknown): string {
   if (caught instanceof WorkflowApiError) {
@@ -170,7 +175,19 @@ export function WorkflowLibrary({
   const observedWorkflowIds = useRef(new Set<string>());
   const [selection, setSelection] = useState<WorkflowSelection>(null);
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
-  const draft = useWorkflowDraft(selectedId, streamed, onDirtyChange);
+  const removalTarget = workflowSelectionAfterRemoval(
+    hasSnapshot,
+    selectedId,
+    ordered,
+    observedWorkflowIds.current,
+  );
+  const selectedWorkflowRemoved = removalTarget !== undefined;
+  const draft = useWorkflowDraft(
+    selectedId,
+    streamed,
+    onDirtyChange,
+    selectedWorkflowRemoved,
+  );
   const workflow = draft.workflow;
   const validation = useMemo(
     () => workflow
@@ -249,14 +266,20 @@ export function WorkflowLibrary({
     setSelectedId(next);
   }, [active, ordered, selectedId]);
   useEffect(() => {
+    if (removalTarget === undefined) return;
     const next = workflowSelectionAfterRemoval(
       hasSnapshot,
       selectedId,
       ordered,
       observedWorkflowIds.current,
+      draft.dirty || draft.saving,
     );
-    if (next !== undefined) openWorkflow(next);
-  }, [hasSnapshot, openWorkflow, ordered, selectedId]);
+    if (next === undefined) {
+      draft.showError(workflowLifecycleError(new Error(WORKFLOW_REMOVED_UNSAVED_ERROR)));
+      return;
+    }
+    openWorkflow(next);
+  }, [draft.dirty, draft.saving, hasSnapshot, openWorkflow, ordered, removalTarget, selectedId]);
   useEffect(() => {
     if (!activePersonas.some((persona) => persona.id === palettePersona)) setPalettePersona(activePersonas[0]?.id ?? "");
   }, [activePersonas, palettePersona]);
@@ -301,14 +324,22 @@ export function WorkflowLibrary({
   const select = async (id: string): Promise<void> => {
     if (id === selectedId || transitionRef.current) return;
     await runTransition(async () => {
-      if (!(await draft.saveNow())) return;
+      if (selectedWorkflowRemoved) {
+        if (draft.saving) await draft.saveNow();
+      } else if (!(await draft.saveNow())) {
+        return;
+      }
       openWorkflow(id);
     });
   };
 
   const create = async (): Promise<void> => {
     await runTransition(async () => {
-      if (!(await draft.saveNow())) return;
+      if (selectedWorkflowRemoved) {
+        if (draft.saving) await draft.saveNow();
+      } else if (!(await draft.saveNow())) {
+        return;
+      }
       const response = await workflowRequest<CreateResponse>("/api/workflows", {
         method: "POST",
         body: JSON.stringify({ name: nextWorkflowName("Untitled workflow", ordered) }),

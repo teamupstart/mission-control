@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { episodeFromPlan, planFromVerdict } from "../src/server/foreman/verdict.ts";
+import { readFileSync } from "node:fs";
+import {
+  episodeFromPlan,
+  menuBlocksAnswer,
+  planFromVerdict,
+} from "../src/server/foreman/verdict.ts";
 import type { ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
 import { cheapActionOf, classifyDivergence } from "../src/server/foreman/triage.ts";
 import type { TriageOutcome } from "../src/server/foreman/triage.ts";
@@ -21,8 +26,16 @@ import { RecordEpisodeSchema } from "../src/shared/protocol.ts";
 // `shadowBoth` itself is not importable: `worker.ts` calls `main()` at import, which is
 // the same reason `episodeFromPlan` was extracted from `processSession` in the first
 // place. What is tested is therefore the seam the worker threads its measurement
-// through, plus the two pure functions that produce it - which between them is every
-// line of the change that decides what gets stored.
+// through, the delivery gate and pure functions that produce it, and a narrow source
+// contract pinning that normalization at the call site.
+
+const MENU = {
+  options: [
+    { number: 1, label: "Yes" },
+    { number: 2, label: "No" },
+  ],
+  highlighted: 1,
+};
 
 function terminalPending(over: Partial<Pending> = {}): Pending {
   return {
@@ -36,14 +49,14 @@ function terminalPending(over: Partial<Pending> = {}): Pending {
   };
 }
 
-function ctxFor(p: Pending): ReviewContext {
+function ctxFor(p: Pending, menu: ReviewContext["menu"] = null): ReviewContext {
   return {
     sessionId: "s1",
     promptMarker: p.marker,
     inputReviewId: p.inputReviewId,
     canSend: p.canSend,
     gate: p.gate ?? null,
-    menu: null,
+    menu,
   };
 }
 
@@ -59,12 +72,32 @@ function verdict(over: Partial<Verdict> = {}): Verdict {
 }
 
 /** One episode as the worker would record it, with or without a shadow measurement. */
-function record(shadow?: { cheapAction: "answer" | "escalate" | "skip" | "route-up"; divergence: "deferred" | "agree" | "cheap-over-eager" | "cheap-too-cautious" | "minor" }) {
-  const pending = terminalPending();
-  const ctx = ctxFor(pending);
-  const v = verdict();
+function record(
+  shadow?: {
+    cheapAction: "answer" | "escalate" | "skip" | "route-up";
+    divergence: "deferred" | "agree" | "cheap-over-eager" | "cheap-too-cautious" | "minor";
+  },
+  inputs: { pending?: Pending; ctx?: ReviewContext; verdict?: Verdict } = {},
+) {
+  const pending = inputs.pending ?? terminalPending();
+  const ctx = inputs.ctx ?? ctxFor(pending);
+  const v = inputs.verdict ?? verdict();
   const plan = planFromVerdict(v, ctx, false);
   return episodeFromPlan({ pending, ctx, pane: "$ npm test", verdict: v, tier: 2, shadow, plan });
+}
+
+function shadowRecord(cheap: TriageOutcome, fullVerdict: Verdict, ctx: ReviewContext) {
+  const cheapUnderOn =
+    cheap.kind === "dispose" && menuBlocksAnswer(cheap.verdict, ctx)
+      ? ({ kind: "route-up", reason: "menu-needs-a-row" } as const)
+      : cheap;
+  return record(
+    {
+      cheapAction: cheapActionOf(cheapUnderOn),
+      divergence: classifyDivergence(cheapUnderOn, fullVerdict),
+    },
+    { ctx, verdict: fullVerdict },
+  );
 }
 
 // ---- the measurement reaches the row --------------------------------------------------
@@ -121,6 +154,28 @@ const dispose = (action: Verdict["action"], tier: 0 | 1 = 1): TriageOutcome => (
   verdict: (action === "answer"
     ? { purpose: "p", classification: "other", action, answer: { text: "go", submit: true } }
     : { purpose: "p", classification: "other", action }) as Verdict,
+});
+
+test("shadow measures the cheap outcome after the same delivery gate as on", () => {
+  const pending = terminalPending();
+  const fullVerdict = verdict({ action: "escalate" });
+  const cheapAnswer = dispose("answer");
+
+  const menuEpisode = shadowRecord(cheapAnswer, fullVerdict, ctxFor(pending, MENU));
+  assert.equal(menuEpisode.cheapAction, "route-up");
+  assert.equal(menuEpisode.divergence, "deferred");
+  assert.equal(menuEpisode.tier, 2);
+
+  const promptEpisode = shadowRecord(cheapAnswer, fullVerdict, ctxFor(pending, null));
+  assert.equal(promptEpisode.cheapAction, "answer");
+  assert.equal(promptEpisode.divergence, "cheap-over-eager");
+  assert.equal(promptEpisode.tier, 2);
+
+  const worker = readFileSync(new URL("../src/server/foreman/worker.ts", import.meta.url), "utf8");
+  assert.match(
+    worker,
+    /const cheapUnderOn =\s+cheap\.kind === "dispose" && menuBlocksAnswer\(cheap\.verdict, ctx\)[\s\S]*?classifyDivergence\(cheapUnderOn, r\.verdict\)[\s\S]*?cheapActionOf\(cheapUnderOn\)/,
+  );
 });
 
 test("cheapActionOf names the cheap tier's own action, including its decline", () => {

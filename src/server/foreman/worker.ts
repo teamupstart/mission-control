@@ -1759,7 +1759,9 @@ async function fullReviewOnly(
  * it on the next line. It is now returned with the verdict and lands on the episode row,
  * which is what makes "is the cheap tier safe to turn on?" answerable from the app rather
  * than by grepping a worker's output. The `log()` stays - stdout is still useful while
- * watching one session - but it is no longer the only sink.
+ * watching one session - but it is no longer the only sink. The recorded cheap outcome
+ * models what `on` would actually do after its delivery gate: an answer the cheap tier
+ * cannot deliver to a menu is a route-up, not an answer.
  */
 async function shadowBoth(
   client: ForemanClient,
@@ -1778,7 +1780,11 @@ async function shadowBoth(
     fullReview(client, cfg, session, pending, ctx, captured),
   ]);
   if (!r) return null; // full review failed + handled; don't act on the cheap tier
-  const divergence = classifyDivergence(cheap, r.verdict);
+  const cheapUnderOn =
+    cheap.kind === "dispose" && menuBlocksAnswer(cheap.verdict, ctx)
+      ? ({ kind: "route-up", reason: "menu-needs-a-row" } as const)
+      : cheap;
+  const divergence = classifyDivergence(cheapUnderOn, r.verdict);
   log(
     `${session.name}: shadow ${divergence} ` +
       `(cheap=${describeCheap(cheap)} opus=${r.verdict.action}/${r.verdict.classification})`,
@@ -1787,7 +1793,7 @@ async function shadowBoth(
     verdict: r.verdict,
     // Still 2: the full review is what acted. See `episodeFromPlan`.
     tier: 2,
-    shadow: { cheapAction: cheapActionOf(cheap), divergence },
+    shadow: { cheapAction: cheapActionOf(cheapUnderOn), divergence },
   };
 }
 

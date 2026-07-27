@@ -139,14 +139,14 @@ Add coverage for these cases:
 
 1. An upgraded pre-feature database receives `turn_in_progress` with default `0`.
 2. A newly launched first turn and an acknowledged follow-up persist `1`.
-3. `turn_done` persists `0`.
+3. The final `turn_done`, after all accepted queued work completes, persists `0`.
 4. Clean shutdown preserves `1` while changing lifecycle status to `suspended`.
 5. Restore of an interrupted Claude session resumes the same conversation and sends
    exactly one continuation turn in that daemon lifetime.
 6. Restore of an interrupted Codex session uses its existing steer/start behavior.
 7. Restore of an idle SDK session sends nothing.
-8. A second restart before completion sends recovery again; a restart after `turn_done`
-   does not.
+8. A second restart before the final `turn_done` sends recovery again; a restart after that
+   final completion does not.
 9. A failed conversation resume still follows the existing eviction and task-settlement
    path.
 10. Clearing an active Codex thread confirms an idle replacement, persists `0`, and a

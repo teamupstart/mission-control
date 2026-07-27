@@ -262,11 +262,11 @@
   <ol>
     <li>Upgrade migration adds the column with default <code>0</code>.</li>
     <li>First prompts and acknowledged follow-ups persist <code>1</code>.</li>
-    <li><code>turn_done</code> persists <code>0</code>.</li>
+    <li>The final <code>turn_done</code>, after all accepted queued work completes, persists <code>0</code>.</li>
     <li>Clean shutdown preserves unfinished work while status becomes <code>suspended</code>.</li>
     <li>Interrupted Claude and Codex sessions receive one continuation in a daemon lifetime.</li>
     <li>Idle restored sessions receive nothing.</li>
-    <li>A second restart before completion retries recovery; a restart after completion does not.</li>
+    <li>A second restart before the final <code>turn_done</code> retries recovery; a restart after that final completion does not.</li>
     <li>Failed resume still takes the existing eviction and task-settlement path.</li>
     <li>Clearing an active Codex thread confirms an idle replacement, persists <code>0</code>, and a restart sends no continuation.</li>
   </ol>

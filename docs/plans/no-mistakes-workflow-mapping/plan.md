@@ -28,6 +28,8 @@ The one genuine gap if full parity is wanted: **deterministic command gates** (a
 graph vocabulary is exactly `session`, `persona`, `all_pass`, `end`. That would be a new
 "check node" kind - a plan-level extension, not a Persona. **Decided: not pursued.** CI
 enforces these checks at the PR head and the Inspector final gate makes them binding.
+**Superseded 2026-07-26**; `docs/plans/builtin-workflows/plan.md` owns the adopted check-node
+design and the retained Persona-versus-node rationale.
 
 ## How a no-mistakes run works (the machinery around the steps)
 
@@ -136,6 +138,7 @@ fix.
 **Translation: split three ways.**
 - The **command gate** has no home: no node kind runs a shell command. Decided: left to CI,
   which the Inspector final gate enforces at the PR head; no check-node kind is planned.
+  **Superseded 2026-07-26**; see `docs/plans/builtin-workflows/plan.md`.
 - The **evidence audit** becomes a **Test Evidence Auditor Persona**: it judges whether the
   submission's evidence demonstrates the stated intent end-to-end, and its fail verdict
   demands the specific evidence the Session must produce (a screenshot for a UI change, a
@@ -232,7 +235,7 @@ Session repairing on delivered findings. Nothing new to build beyond phase 5 its
 | rebase | Git machinery + agent conflict fixer | Outside the graph; repair-packet instruction if ever needed | Not a node, by design |
 | review (judge) | LLM judge, findings + risk | **Code Risk Reviewer Persona** | Yes |
 | review (fixer) | Pipeline-owned fix agent | Session repair loop (preview now; live in phase 4) | Preview yes; live is phase 4 |
-| test (command) | Deterministic exit-code gate | CI via the Inspector gate (adopted; no check node) | No |
+| test (command) | Deterministic exit-code gate | CI via the Inspector gate was the historical decision. **Superseded 2026-07-26**; see `docs/plans/builtin-workflows/plan.md`. | No in the 2026-07-23 plan; superseded |
 | test (evidence) | LLM evidence gatherer | **Test Evidence Auditor Persona** (judges; Session produces) | Yes |
 | document | Agent editor under policy | **Documentation Steward Persona** judges; Session edits | Yes |
 | lint | Command gate / agent fixer | Deterministic tooling or CI; Persona fit is poor | No; Lint Persona not adopted |
@@ -319,7 +322,8 @@ reproduces no-mistakes' "fix commits re-validate the whole branch" discipline.
   Inspector rather than performing delivery. Running both is coherent: personas gate the
   work, no-mistakes ships it, Inspector gates the shipped head.
 - **Deterministic command gates** - the adopted decision leaves them to CI and the
-  Inspector final gate.
+  Inspector final gate. **Superseded 2026-07-26**; see
+  `docs/plans/builtin-workflows/plan.md`.
 
 ## Adopted decisions
 
@@ -329,6 +333,7 @@ Submitted through the Mission Control dashboard review on 2026-07-23:
    Evidence Auditor, Documentation Steward. The Lint/Housekeeping option was not adopted.
 2. **Deterministic test/lint command gates**: leave outside the graph. CI enforces them at
    the PR head; the Inspector final gate makes them binding. No check-node kind is planned.
+   **Superseded 2026-07-26**; see `docs/plans/builtin-workflows/plan.md`.
 3. **Ship tail**: as planned - graph success shows a missing-PR wait offering the existing
    no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned delivery nodes.
 4. **Persona texts**: `.md` files shipped in-repo (`docs/personas/`). Originally decided as

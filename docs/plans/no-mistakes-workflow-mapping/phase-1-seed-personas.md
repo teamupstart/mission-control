@@ -27,8 +27,8 @@ In scope: the four `.md` files, one pinning test, the README section, and nothin
 Non-goals (decided in the source plan's dashboard review, 2026-07-23):
 
 - No Lint/Housekeeping Persona (a tool-less judge cannot run a linter).
-- No deterministic check-node kind; test/lint commands stay with CI and the Inspector
-  final gate.
+- No deterministic check-node kind in this phase. That decision was later superseded;
+  `docs/plans/builtin-workflows/plan.md` owns the adopted design.
 - No workflow-owned delivery nodes (push/PR/CI stay with no-mistakes and Inspector).
 - No auto-import, no built-in read-only Personas, no seeding into SQLite: the operator
   imports and owns their copies; the DB stays canonical.

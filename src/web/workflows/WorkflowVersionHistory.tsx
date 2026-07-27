@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { PersonaView, WorkflowVersion, WorkflowVersionMetadata } from "@shared/workflow.ts";
+import { personaSnapshotIsOutdated } from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -41,14 +42,14 @@ export function WorkflowVersionDetail({
       {version.graph.nodes.filter((node) => node.kind === "persona").map((node) => {
         if (node.kind !== "persona") return null;
         const current = live.get(node.persona.sourcePersonaId);
-        const stale = current && current.revision !== node.persona.sourceRevision;
+        const outdated = personaSnapshotIsOutdated(node.persona, current);
         return (
           <details key={node.id} className="workflow-version-persona">
             <Tooltip label={`Show the guidance ${node.persona.name} was published with`}>
               <summary>
                 {node.persona.name} · revision {node.persona.sourceRevision}
-                {stale ? " · outdated" : ""}
-                {!current || current.archivedAt !== null ? " · archived source" : ""}
+                {!current ? " · source unavailable" : outdated ? " · outdated" : ""}
+                {current !== undefined && current.archivedAt !== null ? " · archived source" : ""}
               </summary>
             </Tooltip>
             <p>{node.persona.runner ?? "App provider"} · {node.persona.model ?? "Provider default"}</p>

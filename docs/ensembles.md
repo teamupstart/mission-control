@@ -91,13 +91,13 @@ the same isolated members and the same submission path. The difference is step 6
 
 6. When every live member has submitted or terminated and **at least two** produced a snapshot, the
    daemon convenes a **panel**: two to five judges, each scoring *every* submission from one lens
-   alone. A lens is a built-in rubric (Correctness, Maintainability, Risk, Evidence, Scope) or an
-   operator-authored Persona pinned to an exact revision at creation. All the judges are asked in
-   **parallel** against ONE shared anonymous evidence packet built once, so a judge that disagrees
-   is disagreeing about the submissions rather than about what it happened to be shown. Two judges
-   may not share a built-in lens - a panel that agrees by construction is not a panel. Repeating an
-   operator-authored Persona is allowed when the operator deliberately wants multiple samples of
-   the same guidance.
+   alone. A lens is a strategy rubric (Correctness, Maintainability, Risk, Evidence, Scope) or a
+   Persona from the catalog, including an app-owned built-in, snapshotted exactly at creation. All
+   the judges are asked in **parallel** against ONE shared anonymous evidence packet built once, so
+   a judge that disagrees is disagreeing about the submissions rather than about what it happened
+   to be shown. Two judges may not share a strategy rubric - a panel that agrees by construction is
+   not a panel. Repeating a Persona is allowed when the operator deliberately wants multiple
+   samples of the same guidance.
 7. Each judge that reaches a provider call gets its own `ensemble_evaluations` row: its lens
    snapshot, the runner and model actually resolved, its bounded input fingerprint, and its typed
    per-artifact scores. A malformed reply or provider failure fails **that row only**. A lens this

@@ -587,6 +587,16 @@ export function buildApp(
   const personaFailure = (c: Context, result: Exclude<PersonaMutation, { ok: true }>) => {
     const code = `persona_${result.reason}`;
     if (result.reason === "not_found") return c.json({ error: "no such Persona", code }, 404);
+    // A built-in refusal is not a conflict a retry can clear, so it names the way forward
+    // rather than the state: the operator wants a copy they own, and Duplicate makes one.
+    if (result.reason === "builtin") {
+      return c.json({
+        error: "this Persona ships with Mission Control and cannot be edited or archived. "
+          + "Duplicate it to make a copy you own.",
+        code,
+        current: result.current,
+      }, 409);
+    }
     return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
   };
 

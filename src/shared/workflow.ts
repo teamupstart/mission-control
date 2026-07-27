@@ -61,7 +61,7 @@ export interface Persona {
   name: string;
   normalizedName: string;
   description: string;
-  /** Exact operator-authored bytes after UTF-8 decoding. Never normalize this field. */
+  /** Exact Markdown after UTF-8 decoding, whether operator-authored or shipped. Never normalize. */
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
@@ -69,6 +69,14 @@ export interface Persona {
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Shipped with the application rather than authored here.
+   *
+   * A built-in is app data, not operator data: it is not a row, it always carries the
+   * Markdown this build was made from, and it can be neither edited nor archived. Duplicate
+   * is the path to a customized copy, and that copy is an ordinary Persona like any other.
+   */
+  builtin: boolean;
 }
 
 export interface PersonaExecutionView {
@@ -95,8 +103,80 @@ export function normalizePersonaName(name: string): string {
   return name.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US");
 }
 
+export function personasForDisplay<
+  T extends Pick<Persona, "archivedAt" | "builtin" | "normalizedName">,
+>(personas: readonly T[]): T[] {
+  const liveOperatorNames = new Set(
+    personas
+      .filter((persona) => !persona.builtin && persona.archivedAt === null)
+      .map((persona) => persona.normalizedName),
+  );
+  return personas.filter(
+    (persona) => !persona.builtin || !liveOperatorNames.has(persona.normalizedName),
+  );
+}
+
+export function personaChoicesForDisplay<
+  T extends Pick<Persona, "archivedAt" | "builtin" | "id" | "normalizedName">,
+>(
+  personas: readonly T[],
+  retainedIds: readonly string[],
+): Array<{ persona: T; retained: boolean }> {
+  const visible = personasForDisplay(personas)
+    .filter((persona) => persona.archivedAt === null);
+  const visibleIds = new Set(visible.map((persona) => persona.id));
+  const retained = new Set(retainedIds);
+  return [
+    ...personas
+      .filter((persona) => retained.has(persona.id) && !visibleIds.has(persona.id))
+      .map((persona) => ({ persona, retained: true })),
+    ...visible.map((persona) => ({ persona, retained: false })),
+  ];
+}
+
+export function personaChoiceLabel(
+  persona: Pick<Persona, "archivedAt" | "builtin" | "name">,
+  retained: boolean,
+): string {
+  if (!retained) return persona.name;
+  if (persona.builtin) return `${persona.name} (Built-in, shadowed by your Persona)`;
+  if (persona.archivedAt !== null) return `${persona.name} (Archived)`;
+  return persona.name;
+}
+
 /** Workflow names use the same durable Unicode spelling rule as Persona names. */
 export const normalizeWorkflowName = normalizePersonaName;
+
+/**
+ * The name a Persona Markdown document carries: its first level-one heading.
+ *
+ * One rule for both readers of authored Markdown - the built-ins compiled into the build and
+ * an operator's **Import .md** - so a file imported by hand and the same file shipped with the
+ * app arrive under the same name instead of two spellings that only collide at the unique index.
+ */
+export function personaNameFromMarkdown(markdown: string, fallback: string): string {
+  return /^#[^\S\r\n]+(.+?)[^\S\r\n]*\r?$/m.exec(markdown)?.[1]?.trim() || fallback;
+}
+
+/**
+ * The one-line summary a Persona Markdown document carries: the paragraph under its heading.
+ *
+ * Derived rather than stored so the description cannot drift from the document it describes.
+ * A file with nothing but headings has no summary, and an empty description is a legal answer.
+ */
+export function personaDescriptionFromMarkdown(markdown: string): string {
+  const body = markdown.replace(/^[\s\S]*?^#[^\S\r\n]+.*?$/m, "");
+  const paragraph = (body === markdown ? markdown : body)
+    .split(/(?:\r?\n){2,}/)
+    .map((block) => block.trim())
+    .find((block) => block.length > 0 && !block.startsWith("#"));
+  if (paragraph === undefined) return "";
+  const collapsed = paragraph.replace(/\s+/gu, " ");
+  if (collapsed.length <= WORKFLOW_LIMITS.personaDescription) return collapsed;
+  const cut = collapsed.slice(0, WORKFLOW_LIMITS.personaDescription - 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
 
 export interface Point {
   x: number;
@@ -141,6 +221,15 @@ export interface PersonaSnapshot {
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
+}
+
+export function personaSnapshotIsOutdated(
+  snapshot: PersonaSnapshot,
+  current: Persona | null | undefined,
+): boolean {
+  if (!current) return true;
+  if (current.builtin) return snapshot.guidanceMarkdown !== current.guidanceMarkdown;
+  return snapshot.sourceRevision !== current.revision;
 }
 
 export type PublishedWorkflowNode =

@@ -11,6 +11,10 @@ import type {
   WorkflowVersionMetadata,
 } from "@shared/workflow.ts";
 import {
+  personaChoiceLabel,
+  personaChoicesForDisplay,
+} from "@shared/workflow.ts";
+import {
   ENSEMBLE_STRATEGY_INFO,
   type EnsembleStrategyInfo,
   type StrategyFormField,
@@ -814,8 +818,9 @@ function Roster({
  *
  * A judge is one built-in lens or one Persona, so a single select offers both in two groups rather
  * than a lens picker plus a Persona picker whose interaction the operator has to work out. Choosing
- * a Persona pins the revision it was chosen at, which is what makes the daemon refuse the launch if
- * that Persona moves on before the operator confirms - the same drift a base-commit pin removes.
+ * Choosing an operator-authored Persona pins its row revision so the daemon refuses the launch if
+ * that row moves on before confirmation. A built-in is immutable within this build and its exact
+ * current guidance is snapshotted when the Ensemble is created.
  *
  * The next free lens is what a new row defaults to, because the panel refuses duplicate built-in
  * lenses: defaulting to a repeat would add a row that is invalid the moment it appears.
@@ -843,14 +848,13 @@ function JudgePanel({
   issues: StrategyIssue[];
   onChange: (rows: Record<string, unknown>[]) => void;
 }): React.JSX.Element {
-  const usablePersonas = personas.filter((persona) => persona.archivedAt === null);
   const valueOf = (row: Record<string, unknown>): string => {
     const personaId = stringOrNull(row.personaId);
     return personaId === null ? String(row.lens ?? lenses[0]?.value ?? "") : `persona:${personaId}`;
   };
   const rowFor = (value: string): Record<string, unknown> => {
     if (value.startsWith("persona:")) {
-      const persona = usablePersonas.find((p) => p.id === value.slice("persona:".length));
+      const persona = personas.find((p) => p.id === value.slice("persona:".length));
       return {
         lens: lenses[0]?.value ?? "",
         personaId: persona?.id ?? null,
@@ -882,7 +886,14 @@ function JudgePanel({
       {rows.map((row, index) => {
         const value = valueOf(row);
         const lens = lenses.find((option) => option.value === value);
-        const isPersona = stringOrNull(row.personaId) !== null;
+        const personaId = stringOrNull(row.personaId);
+        const isPersona = personaId !== null;
+        const personaChoices = personaChoicesForDisplay(
+          personas,
+          personaId === null ? [] : [personaId],
+        );
+        const selectedPersonaAvailable = personaId === null
+          || personaChoices.some(({ persona }) => persona.id === personaId);
         const rowIssues = issues.filter((issue) => {
           const path = normalizeIssuePath(issue.path);
           return path === `${fieldKey}.${index}` || path.startsWith(`${fieldKey}.${index}.`);
@@ -904,11 +915,14 @@ function JudgePanel({
                     </option>
                   ))}
                 </optgroup>
-                {usablePersonas.length > 0 && (
-                  <optgroup label="Your Personas">
-                    {usablePersonas.map((persona) => (
+                {!selectedPersonaAvailable && (
+                  <option value={`persona:${personaId}`}>Unavailable: {personaId}</option>
+                )}
+                {personaChoices.length > 0 && (
+                  <optgroup label="Personas">
+                    {personaChoices.map(({ persona, retained }) => (
                       <option key={persona.id} value={`persona:${persona.id}`}>
-                        {persona.name} (rev {persona.revision})
+                        {personaChoiceLabel(persona, retained)} (rev {persona.revision})
                       </option>
                     ))}
                   </optgroup>
@@ -916,7 +930,7 @@ function JudgePanel({
               </select>
             </Tooltip>
             <span className="ensemble-judge-blurb">
-              {lens ? lens.help : "This judge uses your Persona's guidance, pinned at the revision above."}
+              {lens ? lens.help : "This judge uses the selected Persona's guidance, pinned at the revision above."}
             </span>
             <Tooltip label={`Remove judge ${index + 1}`}>
               <button
@@ -948,20 +962,26 @@ function EvaluatorPicker({
   issues: StrategyIssue[];
   onChange: (persona: PersonaView | null) => void;
 }): React.JSX.Element {
-  const usable = personas.filter((p) => p.archivedAt === null);
-  const selected = usable.find((p) => p.id === selectedId) ?? null;
+  const choices = personaChoicesForDisplay(
+    personas,
+    selectedId === null ? [] : [selectedId],
+  );
+  const selected = personas.find((persona) => persona.id === selectedId) ?? null;
+  const selectedAvailable = selectedId === null
+    || choices.some(({ persona }) => persona.id === selectedId);
   return (
     <Tooltip label="Which Persona (or the built-in rubric) guides the comparison">
     <label className="ensemble-field">
       <span className="ensemble-field-name">Judged by</span>
       <select
         value={selectedId ?? ""}
-        onChange={(e) => onChange(usable.find((p) => p.id === e.target.value) ?? null)}
+        onChange={(e) => onChange(personas.find((p) => p.id === e.target.value) ?? null)}
       >
         <option value="">Built-in rubric</option>
-        {usable.map((persona) => (
+        {!selectedAvailable && <option value={selectedId ?? ""}>Unavailable: {selectedId}</option>}
+        {choices.map(({ persona, retained }) => (
           <option key={persona.id} value={persona.id}>
-            {persona.name}
+            {personaChoiceLabel(persona, retained)}
           </option>
         ))}
       </select>

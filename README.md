@@ -1932,10 +1932,10 @@ The top-bar button opens the graph library and restores the last active workflow
 in this browser when it is still available.
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
-or Inspector setting. Phase 1 stores Personas in Mission Control's SQLite database. Its
-name, description, optional provider and model overrides, and guidance are revisioned
-together. Saves use compare-and-swap, so a second tab editing an older revision gets an
-explicit conflict and keeps its local text. Archive is soft: archived Personas are
+or Inspector setting. Personas you create or import live in Mission Control's SQLite
+database. Their name, description, optional provider and model overrides, and guidance are
+revisioned together. Saves use compare-and-swap, so a second tab editing an older revision
+gets an explicit conflict and keeps its local text. Archive is soft: archived Personas are
 read-only, remain addressable for future published history, and continue reserving their
 normalized names.
 
@@ -1952,25 +1952,41 @@ unknown to an older build is reported and falls back through the shared provider
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
 
-### Seed Personas you can import
+### Built-in Personas
 
-Four ready-made review roles ship in this repository under `docs/personas/`, distilled from
-the [no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. They are
-seeds, not built-ins: nothing imports them for you and nothing keeps your copy in sync with
-the file afterwards. Once imported they are ordinary Personas you own and can edit.
+Four ready-made review roles ship with the application, distilled from the
+[no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. Nothing has to be
+imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
+one immediately.
 
-| File | Imports as | What it judges |
-|---|---|---|
-| `docs/personas/intent-conformance-judge.md` | Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
-| `docs/personas/code-risk-reviewer.md` | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
-| `docs/personas/test-evidence-auditor.md` | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
-| `docs/personas/documentation-steward.md` | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
+| Persona | What it judges |
+|---|---|
+| Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
+| Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
+| Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
+| Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
 
-**Import .md** in the Personas tab takes the whole file body as the guidance and the file's
-first level-one heading as the name, so each of these arrives named as the table says.
-Description stays empty and the provider and model overrides stay unset, which is the
-app-wide resolution above. Import each file once: a second import of the same file is
-refused, because the first already reserved that name.
+They are **app data, not your data**, and the Personas tab marks each one `Built-in`. Each
+carries exactly the guidance the build was made from. An upgrade that improves a role updates
+the current catalog, so drafts and newly published versions use the new guidance. Existing
+published versions keep the guidance they were published with and history marks them
+outdated. Adopting the changed guidance requires publishing a new version. Opening a
+built-in shows it read-only: Save is disabled, Archive is absent, and there is a line saying
+why. **Duplicate** is the way to a version you own - the copy is an ordinary Persona with
+its own name, editable, archivable, and never touched by an upgrade. Their guidance is still
+exactly as visible as any other: Copy Markdown, Download .md and the preview all work.
+
+Because they always exist, their names are reserved: creating or renaming a Persona to
+`Code Risk Reviewer` is refused the way any duplicate name is. The one exception is
+historical - a Persona you imported from these documents before they shipped built-in keeps
+the name it already reserved, and the built-in it shadows stays hidden behind your copy.
+Archive or rename your copy to see the built-in.
+
+The authored Markdown is in this repository under `docs/personas/`, one document per role,
+and it is compiled into the build - run `npm run personas` after editing one, and commit the
+generated module. Each document's first level-one heading is the Persona's name and the
+paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
+an imported Persona's description stays empty.
 
 The four are written to compose as the example workflow in
 `docs/plans/no-mistakes-workflow-mapping/plan.md` - Intent Conformance Judge first as a cheap
@@ -2026,10 +2042,11 @@ Session-centered cycles, active Personas, graph limits, and finite bounded coord
 **Publish** is enabled only for a saved, conflict-free, valid revision. It is idempotent for
 that revision and creates an immutable version containing the exact name, description,
 Markdown, provider/model overrides, and revision of every Persona. Editing or archiving a
-Persona later never changes old versions; history marks its snapshot as outdated or its
-source as archived. To update a published design, edit the mutable draft and publish a new
-version. Opening a workflow fetches only bounded version metadata; selecting one history
-entry fetches that immutable graph and its exact Persona Markdown from the version route.
+Persona you own, or updating a shipped built-in in a later build, never changes old versions;
+history marks its snapshot as outdated or its source as archived. To update a published
+design, edit the mutable draft and publish a new version. Opening a workflow fetches only
+bounded version metadata; selecting one history entry fetches that immutable graph and its
+exact Persona Markdown from the version route.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Manual plus Preview remains the default. The
@@ -3950,6 +3967,7 @@ npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
+npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 ```
 

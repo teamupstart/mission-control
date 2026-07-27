@@ -130,6 +130,7 @@ export function PersonaEditorStatus({
   dirty,
   conflict,
   archived,
+  builtin = false,
   onReload,
   onDuplicate,
   onDownload = () => {},
@@ -137,10 +138,21 @@ export function PersonaEditorStatus({
   dirty: boolean;
   conflict: PersonaView | null;
   archived: boolean;
+  builtin?: boolean;
   onReload: () => void;
   onDuplicate: () => void;
   onDownload?: () => void;
 }): React.JSX.Element | null {
+  // Built-in first: it is the reason this editor is read-only, and an operator reading
+  // "Archived" about a Persona they never archived would go looking for the wrong control.
+  if (builtin) {
+    return (
+      <p className="persona-state builtin">
+        Built-in - this Persona ships with Mission Control and always carries the guidance this
+        build was made from. Duplicate it to make a copy you own and can edit.
+      </p>
+    );
+  }
   if (archived) return <p className="persona-state archived">Archived - this Persona is read-only.</p>;
   if (conflict) {
     return (
@@ -201,6 +213,7 @@ export function PersonaEditor({
   const [copied, setCopied] = useState(false);
   const [narrowPane, setNarrowPane] = useState<"edit" | "preview">("edit");
   const archived = persona?.archivedAt != null;
+  const builtin = persona?.builtin === true;
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
@@ -243,7 +256,9 @@ export function PersonaEditor({
   }
 
   async function save(asDuplicate = false): Promise<void> {
-    if (archived || saving || (persona !== null && !dirty && !asDuplicate)) return;
+    // A built-in has nothing to save: the daemon refuses the write, so stopping here keeps
+    // Cmd+S from turning a read-only Persona into an error banner.
+    if (archived || builtin || saving || (persona !== null && !dirty && !asDuplicate)) return;
     if (exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes) {
       setError(`Persona guidance exceeds ${WORKFLOW_LIMITS.personaGuidanceBytes} UTF-8 bytes`);
       return;
@@ -343,16 +358,27 @@ export function PersonaEditor({
     setError(null);
   }
 
-  const readOnly = archived;
+  const readOnly = archived || builtin;
+  const saveHint = builtin
+    ? "Built-in Personas cannot be edited - use Duplicate"
+    : archived
+      ? "This Persona is archived and cannot be edited"
+      : exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes
+        ? "Guidance is over the UTF-8 byte limit"
+        : persona !== null && !dirty
+          ? "No unsaved changes"
+          : "Save this Persona as a new revision";
   return (
-    <article className={`persona-editor${archived ? " is-archived" : ""}`}>
+    <article className={`persona-editor${archived ? " is-archived" : ""}${builtin ? " is-builtin" : ""}`}>
       <header className="persona-editor-head">
         <div>
-          <p className="workflow-eyebrow">{persona ? `Revision ${loadedRevision}` : "New Persona"}</p>
+          <p className="workflow-eyebrow">
+            {persona ? (builtin ? "Built-in Persona" : `Revision ${loadedRevision}`) : "New Persona"}
+          </p>
           <h3>{draft.name || "Untitled Persona"}</h3>
         </div>
         <div className="persona-actions">
-          <Tooltip label={readOnly ? "This Persona is archived and cannot be edited" : exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes ? "Guidance is over the UTF-8 byte limit" : persona !== null && !dirty ? "No unsaved changes" : "Save this Persona as a new revision"}>
+          <Tooltip label={saveHint}>
             <button className="btn" disabled={readOnly || saving || exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes || (persona !== null && !dirty)} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
           </Tooltip>
           <Tooltip label="Copy this Persona's guidance markdown to the clipboard">
@@ -362,11 +388,11 @@ export function PersonaEditor({
             <button className="btn btn-ghost" onClick={downloadMarkdown}>Download .md</button>
           </Tooltip>
           {persona && (
-            <Tooltip label="Copy this Persona into a new one">
+            <Tooltip label={builtin ? "Start an editable copy of this built-in Persona" : "Copy this Persona into a new one"}>
               <button className="btn btn-ghost" onClick={() => onDuplicate({ ...draft, name: `${draft.name} copy` })}>Duplicate</button>
             </Tooltip>
           )}
-          {persona && !archived && (
+          {persona && !archived && !builtin && (
             <Tooltip label="Archive this Persona - workflows already published keep their copy">
               <button className="btn btn-danger" onClick={() => void onArchive(persona)}>Archive</button>
             </Tooltip>
@@ -378,6 +404,7 @@ export function PersonaEditor({
         dirty={dirty}
         conflict={conflict}
         archived={archived}
+        builtin={builtin}
         onReload={reload}
         onDuplicate={() => void save(true)}
         onDownload={downloadMarkdown}

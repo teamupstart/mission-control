@@ -25,9 +25,12 @@ test("snapshot, upsert, archive, and reconnect produce one equivalent Persona ca
   clearWorkflowTables(db);
   const registry = new Registry();
   const manager = new PersonaManager(registry, new WorkflowStore(db));
-  assert.deepEqual(registry.snapshot().personas, []);
+  // A client that never authored a Persona still opens on the catalog this build ships, and
+  // it arrives in the snapshot rather than as events - so the reduction below starts there.
+  const opening = registry.snapshot().personas;
+  assert.equal(opening.length > 0 && opening.every((persona) => persona.builtin), true);
   const emptySnapshot = { type: "snapshot", ...registry.snapshot() } satisfies ServerEvent;
-  assert.deepEqual(emptySnapshot.personas, []);
+  assert.deepEqual(emptySnapshot.personas, opening);
 
   const events: ServerEvent[] = [];
   const unsubscribe = registry.subscribe((event) => events.push(event));
@@ -44,20 +47,35 @@ test("snapshot, upsert, archive, and reconnect produce one equivalent Persona ca
   assert.equal(archived.ok, true);
   unsubscribe();
 
-  assert.deepEqual(events.map((event) => event.type), ["persona_upsert", "persona_upsert"]);
-  const reduced = new Map<string, PersonaView>();
+  assert.equal(events.every((event) => event.type === "persona_upsert"), true);
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === "persona_upsert")
+      .filter((event) => !event.persona.builtin)
+      .map((event) => event.persona.id),
+    [created.persona.id, created.persona.id],
+  );
+  const reduced = new Map<string, PersonaView>(opening.map((persona) => [persona.id, persona]));
   for (const event of events) {
     if (event.type === "persona_upsert") reduced.set(event.persona.id, event.persona);
     if (event.type === "persona_remove") reduced.delete(event.id);
   }
   assert.deepEqual([...reduced.values()], registry.snapshot().personas);
-  assert.equal(registry.snapshot().personas[0]?.archivedAt, 200);
+  assert.equal(
+    registry.snapshot().personas.find((persona) => persona.id === created.persona.id)?.archivedAt,
+    200,
+  );
   const archivedSnapshot = { type: "snapshot", ...registry.snapshot() } satisfies ServerEvent;
   assert.deepEqual(archivedSnapshot.personas, registry.snapshot().personas);
 
   const reconnect = new Registry();
   new PersonaManager(reconnect, new WorkflowStore(db));
-  assert.deepEqual(reconnect.snapshot().personas, registry.snapshot().personas);
+  // Keyed, not sequenced: a reconnect rebuilds the catalog in name order while a live map is
+  // in the order things arrived, and no surface reads that order - the library sorts. Asserting
+  // the sequence would have failed the moment a second Persona existed, which says nothing.
+  const byId = (personas: readonly PersonaView[]) =>
+    Object.fromEntries(personas.map((persona) => [persona.id, persona]));
+  assert.deepEqual(byId(reconnect.snapshot().personas), byId(registry.snapshot().personas));
 });
 
 test("workflow summary snapshot, upsert, archive, and reconnect converge without graph JSON", () => {

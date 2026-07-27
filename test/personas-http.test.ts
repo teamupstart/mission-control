@@ -20,6 +20,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { BUILTIN_PERSONAS } = await import("../src/server/workflows/builtin-personas.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -160,8 +161,16 @@ test("DELETE is parsed soft archive: hidden from active list, readable, and immu
   assert.equal(archived.status, 200);
   assert.equal(typeof ((await archived.json()) as { archivedAt: number }).archivedAt, "number");
 
-  assert.deepEqual((await (await request("/api/personas")).json()) as unknown[], []);
-  const all = (await (await request("/api/personas?includeArchived=true")).json()) as Array<{ id: string }>;
+  // Every listing also carries the Personas this build ships, so "hidden" is asserted about
+  // the operator's own rows rather than about an empty catalog.
+  const authored = (list: Array<{ id: string; builtin: boolean }>) => list.filter((p) => !p.builtin);
+  assert.deepEqual(
+    authored((await (await request("/api/personas")).json()) as Array<{ id: string; builtin: boolean }>),
+    [],
+  );
+  const all = authored(
+    (await (await request("/api/personas?includeArchived=true")).json()) as Array<{ id: string; builtin: boolean }>,
+  );
   assert.equal(all[0]?.id, persona.id);
   assert.equal((await request(`/api/personas/${persona.id}`)).status, 200);
 
@@ -171,6 +180,58 @@ test("DELETE is parsed soft archive: hidden from active list, readable, and immu
   });
   assert.equal(edit.status, 409);
   assert.equal(((await edit.json()) as { code: string }).code, "persona_archived");
+});
+
+// The built-ins are the one part of the catalog HTTP cannot write. The refusal has to arrive
+// as a distinct code, because the browser's only alternative - "revision conflict" - reads as
+// something a reload would clear, and no reload will ever make this write succeed.
+test("built-in Personas are served, refuse edits and archives, and reserve their names", async () => {
+  const { request } = fixture();
+  const listed = (await (await request("/api/personas")).json()) as Array<{
+    id: string;
+    name: string;
+    builtin: boolean;
+    revision: number;
+    execution: { model: { id: string } };
+  }>;
+  const builtin = listed.find((persona) => persona.builtin);
+  assert.ok(builtin, "a fresh install serves the shipped Personas with no import");
+  assert.equal(listed.filter((persona) => persona.builtin).length, BUILTIN_PERSONAS.length);
+  // Served like any other Persona, including the resolved provider and model a run would use.
+  assert.equal(builtin.execution.model.id, "claude-sonnet-5");
+  assert.equal((await request(`/api/personas/${builtin.id}`)).status, 200);
+
+  const edit = await request(`/api/personas/${builtin.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ expectedRevision: builtin.revision, description: "Mine now" }),
+  });
+  assert.equal(edit.status, 409);
+  const failure = (await edit.json()) as { code: string; error: string; current: { id: string } };
+  assert.equal(failure.code, "persona_builtin");
+  assert.match(failure.error, /Duplicate it/);
+  assert.equal(failure.current.id, builtin.id);
+
+  const archived = await request(`/api/personas/${builtin.id}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedRevision: builtin.revision }),
+  });
+  assert.equal(archived.status, 409);
+  assert.equal(((await archived.json()) as { code: string }).code, "persona_builtin");
+
+  const taken = await request("/api/personas", {
+    method: "POST",
+    body: JSON.stringify({ name: builtin.name, guidanceMarkdown: "# Mine" }),
+  });
+  assert.equal(taken.status, 409);
+  assert.equal(((await taken.json()) as { code: string }).code, "persona_name_conflict");
+
+  // Duplicate is the way through, and its copy is an ordinary Persona.
+  const copy = await request("/api/personas", {
+    method: "POST",
+    body: JSON.stringify({ name: `${builtin.name} copy`, guidanceMarkdown: "# Mine" }),
+  });
+  assert.equal(copy.status, 201);
+  assert.equal(((await copy.json()) as { builtin: boolean }).builtin, false);
 });
 
 test("missing ids and invalid archive-list queries are explicit", async () => {

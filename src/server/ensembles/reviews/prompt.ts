@@ -39,9 +39,9 @@ export interface ComparativePromptInput {
   guidanceLabel: string;
   guidanceText: string;
   /**
-   * Whether the guidance text is fenced as data. A Persona's operator-authored Markdown is
-   * fenced so an instruction embedded in it cannot override the contract; the built-in rubric
-   * is our own authoritative ranking criteria and is presented as instructions.
+   * Whether the guidance text is fenced as data. Persona Markdown is fenced so an instruction
+   * embedded in it cannot override the contract; the strategy's built-in rubric is our own
+   * authoritative ranking criteria and is presented as instructions.
    */
   guidanceFenced: boolean;
   intent: string;

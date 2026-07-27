@@ -26,7 +26,7 @@ export type PersonaMutation =
   | { ok: true; persona: PersonaView }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived";
+      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived" | "builtin";
       current: PersonaView | null;
     };
 
@@ -94,8 +94,7 @@ export class PersonaManager {
     private readonly registry: Registry,
     readonly store = new WorkflowStore(),
   ) {
-    // Archived rows remain in the snapshot because published history may link to them.
-    registry.initializePersonas(this.store.listPersonas(true).map((persona) => personaView(persona)));
+    registry.initializePersonas(this.store.personaCatalog().map((persona) => personaView(persona)));
   }
 
   list(includeArchived = false): PersonaView[] {
@@ -142,7 +141,7 @@ export class PersonaManager {
 
   /** Re-project effective values after the app-wide provider changes at runtime. */
   refreshExecution(): void {
-    for (const persona of this.store.listPersonas(true)) {
+    for (const persona of this.store.personaCatalog()) {
       this.registry.upsertPersona(personaView(persona));
     }
   }
@@ -157,6 +156,9 @@ export class PersonaManager {
     const view = personaView(result.persona);
     // Archive is an upsert: the row remains addressable and its archived state is live data.
     this.registry.upsertPersona(view);
+    for (const persona of this.store.personaCatalog()) {
+      if (persona.builtin) this.registry.upsertPersona(personaView(persona));
+    }
     return { ok: true, persona: view };
   }
 }

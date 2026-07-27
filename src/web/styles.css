@@ -8209,6 +8209,32 @@ select.ensemble-judge-persona {
   border-color: color-mix(in oklab, var(--working) 45%, var(--border));
   background: color-mix(in oklab, var(--working) 12%, var(--panel));
 }
+/* A name that wraps keeps its own lines, and the tag stays on the first one: aligning to the
+   centre of a two-line name parks the chip in the gap between them. */
+.persona-list-name {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.persona-list-name > span {
+  min-width: 0;
+}
+/* Provenance, not state: this Persona came with the app, so the editor will open read-only.
+   Muted rather than toned, because it is never something to act on. */
+.persona-list-tag {
+  flex: none;
+  margin-top: 2px;
+  padding: 1px 5px;
+  font-size: 9.5px;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
 .persona-list-item small,
 .persona-list-empty {
   overflow: hidden;
@@ -8262,7 +8288,8 @@ select.ensemble-judge-persona {
   color: var(--attention);
   border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
 }
-.persona-state.archived {
+.persona-state.archived,
+.persona-state.builtin {
   color: var(--muted);
   background: var(--panel-2);
 }

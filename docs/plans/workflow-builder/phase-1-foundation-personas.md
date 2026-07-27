@@ -4,6 +4,9 @@ Status: **implemented**
 
 Parent: [Persona-driven workflow builder](./plan.md)
 
+> This phase describes the operator-authored Persona rows it introduced. App-owned built-in
+> Personas were added later; the README's Built-in Personas section owns their behavior.
+
 ## Outcome
 
 Mission Control has the durable foundation for all six workflow phases and a usable Persona

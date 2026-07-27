@@ -282,17 +282,32 @@ while `PoolPins.checkLeasePaths` protects every active check lease from the pool
 Startup restores those pins before the reaper or workflow pump starts. Pool acquisition,
 pinning, or other setup failure is infrastructure and never a fail verdict against the
 submission. Lease-return failure is retried separately while its durable row and pin remain,
-and no new attempt may acquire a second lease until return succeeds.
+and no new attempt may acquire a second lease until return succeeds. Every return first
+re-reads the canonical path and exact check-specific holder token. Available or missing means
+already returned, while a different holder is refused. This makes recovery safe across a
+crash after return succeeds but before the durable row is deleted. Since the current
+`treehouse return` accepts no holder, implementation must provide holder-aware return
+semantics or exclusive coordination across the comparison and destructive return; a
+non-atomic status precheck alone is insufficient.
 
 Each command runs behind a trusted supervisor in its own process group. The supervisor holds
 branch code behind a gate until its pid and operating-system process start time are durable.
 Timeout, cancellation, daemon shutdown, and startup recovery verify that identity, terminate
-the group, and wait for descendants before returning the reusable lease. A mismatched
-identity is treated as already gone rather than risking a signal to a recycled pid. Output is
-bounded, execution is timed, and only the final result lives in
+the group, and wait for descendants before returning the reusable lease. The supervisor
+remains the identifiable group owner until the group is empty, and closing an unreleased
+gate terminates it without running branch code. A mismatched identity is never signalled,
+but missing leader identity is not proof that descendants are gone. Confirmed group
+emptiness, not leader liveness, is required before lease return. Output is bounded,
+execution is timed, and only the final result lives in
 `workflow_node_attempts.output_json`. A missing executable is classified from the streaming
 spawn's `ENOENT`, not an `onPath` precheck that would resolve repository-relative paths
 against the daemon cwd.
+
+The full lease-lifetime, process-supervision, and crash-recovery protocol remains an
+implementation design obligation. Phase 2 must be estimated as a graph and settings slice
+plus a substantial check execution runtime, and the runtime becomes its own
+dependency-linked implementation unit if its concrete design is materially larger than the
+rest of the phase.
 
 The slot indirection trusts the command, not the code it executes. A command such as
 `npm test` still loads scripts and source from the branch under review. Checks therefore

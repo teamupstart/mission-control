@@ -96,14 +96,20 @@ Verified against `HEAD` at `0f5d045b`.
   `taskWorktrees`, so an active check lease would look abandoned. Phase 2 adds
   `checkLeasePaths`, populated from acquisition through confirmed return and restored before
   the reaper starts.
+- **`treehouse return` verifies no holder.** It accepts a path and can destructively return
+  a tree that was re-leased after a crash. Phase 2 requires an exact check-specific holder
+  token check before every return, treats available or missing as already returned, and
+  refuses a different holder. The implementation must make comparison and return
+  holder-aware or exclusively coordinated because separate CLI calls leave a race.
 - **`onPath` resolves slash-containing commands against the daemon cwd.** Phase 2 removes
   that precheck and classifies the real streaming spawn's `ENOENT`, so
   `./scripts/check` and `node_modules/.bin/tsc` resolve from the pinned lease.
 - **A direct-child kill does not stop test workers.** Phase 2 gives each command its own
   process group and terminates all descendants on timeout, cancellation, shutdown, and
   startup recovery before returning the reusable lease. A trusted supervisor gates branch
-  execution until pid plus process start time are durable, and recovery verifies both before
-  signalling.
+  execution until pid plus process start time are durable, remains the identifiable owner
+  until the group is empty, and terminates without running branch code if an unreleased gate
+  closes. Missing leader identity does not prove descendants are gone.
 - **Attempt failure cannot own lease cleanup.** `handleInfrastructureFailure` finishes the
   old attempt without output and creates a fresh retry. Phase 2 keeps lease state in the
   dedicated table, retries return separately, and prevents another attempt from becoming
@@ -132,11 +138,17 @@ even though it adds no `addColumn` call or dependent index.
 | Phase | Name | Direct prerequisites | Deliverable |
 |---|---|---|---|
 | 1 | Built-in workflows and No-Mistakes Review | planning session | `builtin` on the workflow types, `BUILTIN_WORKFLOWS`, the store merge and refusals, the shipped graph, read-only web treatment, README, tests |
-| 2 | The check node | planning session | `check` node kind end to end: types, zod, validation, slot-to-command settings, consent, crash-safe pooled execution, Graph-view rendering, README, tests |
+| 2 | The check node | planning session | Graph, settings, consent, and presentation plus a substantial crash-safe execution runtime covering durable leases, reaper pins, process supervision, idempotent holder-verified return, recovery, README, and tests; split the runtime into its own unit if implementation design shows it is materially larger |
 | 3 | Pipeline checks and No-Mistakes Review v2 | 1, 2 | `StageMember` union so checks render in the Pipeline editor, then a second built-in version adding the check gates |
 
 Three phases. Phase 1 and Phase 2 are independent vertical slices and may run concurrently.
 Phase 3 needs both: it consumes Phase 1's versioned built-in catalog and Phase 2's node kind.
+
+Phase 2 must be estimated as two implementation units, not as a small node-kind addition:
+the graph, settings, and presentation slice, and the check execution runtime. The plan fixes
+the runtime's safety requirements but leaves its concrete state machine and platform process
+model to implementation. If that design is materially larger than the rest of Phase 2, split
+the runtime into its own dependency-linked unit and make Phase 3 depend on both results.
 
 A fourth phase separating "Pipeline support for checks" from "No-Mistakes Review v2" was
 considered and rejected. The pipeline work has no consumer other than v2, and v2 must not

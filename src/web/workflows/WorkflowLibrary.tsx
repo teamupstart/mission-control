@@ -965,7 +965,11 @@ export function WorkflowLibrary({
             personas={personas}
             onBindVersion={workflow.archivedAt === null ? onBindVersion : undefined}
           />
-          {mode === "pipeline" && onBindWorkflow && (
+          {/* Archived is checked here as well as on the version-history binding above,
+              because these are two independent doors into the same bind flow and the server
+              refuses both. Offering one of them would start a flow whose only ending is a
+              409 the operator did not ask for. */}
+          {mode === "pipeline" && onBindWorkflow && workflow.archivedAt === null && (
             <section className="wf-pipeline-bind">
               <Tooltip label="Pick a session and a published version to run this workflow against">
                 <button className="btn" onClick={onBindWorkflow}>

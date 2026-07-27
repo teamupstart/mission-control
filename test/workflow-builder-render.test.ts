@@ -135,6 +135,10 @@ test("version history names immutable source revisions and never offers update-v
   assert.match(bindableDetail, /Bind this version/);
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
   assert.match(source, /onBindVersion=\{workflow\.archivedAt === null \? onBindVersion : undefined\}/);
+  // BOTH doors into the bind flow, not just the one. Version history was gated first and the
+  // pipeline-mode button was left open, so an archived workflow still offered a bind whose
+  // only ending is the server's 409. A gate on one of two entry points is not a gate.
+  assert.match(source, /mode === "pipeline" && onBindWorkflow && workflow\.archivedAt === null &&/);
 });
 
 test("published workflow nodes stay within the visible React Flow graph", () => {

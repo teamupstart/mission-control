@@ -1667,6 +1667,15 @@ export function App(): React.JSX.Element {
             <SettingsPage
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
+              // The return leg of the Workflows page's own "Workflow settings →" button:
+              // the settings panel's health tiles open the real run list rather than
+              // growing a second one. Through `navigate`, like every other route change,
+              // so the dirty-draft gate and history behave the same.
+              onOpenRuns={(filters) => navigate({
+                page: "workflows",
+                tab: "runs",
+                ...(Object.keys(filters).length > 0 ? { filters } : {}),
+              })}
               onLeave={() => navigate({ page: "fleet" })}
               foreman={foreman}
               cost={cost}

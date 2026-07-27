@@ -2489,6 +2489,14 @@ keeps its exact payload until a human resolves it. The daemon runs one non-overl
 workflow recovery and then hourly. A sweep failure stops only that sweep and appears in Workflow
 health; it never stops execution or delivery.
 
+The panel shows those limits **against a measurement**: how many finished runs the newest-kept
+cap actually ranks, and what the last sweep compacted and deleted (or that no sweep has run
+yet). That figure counts only the population the cap windows - completed or cancelled, with a
+completion time, and not pinned by an uncertain delivery - so it is comparable with the limit
+beside it. It is deliberately not the **Retained runs** counter under Workflow health, which
+counts every run row of any status and therefore climbs on active work no retention limit can
+remove.
+
 Run history is loaded 50 rows at a time and can be filtered by state, workflow id, or session.
 Filters are part of the bookmarkable hash. A selected run stays selected as SSE updates arrive.
 Events and workflow-owned model calls load in pages of at most 200 durable records. Raw run and
@@ -2502,10 +2510,27 @@ price, so the monetary field remains `null` and the UI says **Cost unavailable f
 It is never displayed as zero, inferred from the fleet ledger, or estimated.
 
 Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
-panel is open. It reports active runs, queued and running Persona calls, waiting and uncertain deliveries,
-Inspector gates, retained run count, recovery time, retention time, the last retention error code,
-and the last compacted and deleted counts. It contains no prompt, diff, transcript, Persona
-guidance, model output, or delivery payload.
+panel is open. It reports active runs, queued and running Persona calls, waiting, uncertain and
+delivered deliveries among retained run families, Inspector gates, retained run count, recovery
+time, retention time, the last retention error code, and the last compacted and deleted counts.
+It contains no prompt, diff, transcript, Persona guidance, model output, or delivery payload.
+
+Five of those counters lead as a **strip of tiles, in escalation order** - *Needs you*
+(uncertain deliveries), *Waiting*, *Inspector gates*, *Active*, *Delivered* - and each tile
+opens the nearest corresponding view in the
+[run list](#workflow-drafts-and-published-versions), applying a status filter where one exists.
+*Active* counts every run that has not finished - running, waiting and blocked alike - so it
+deliberately carries no status filter: no single run status means "active", and one would
+exclude rows the tile had just counted.
+The rest stay as a plain list beneath it: they are throughput and sweep bookkeeping, and
+rendering them in the same weight as "a repair may or may not have been typed into somebody's
+session" was what made the one counter that needs a human the least findable thing on the
+panel. **Delivered** is the fleet-wide count of deliveries confirmed typed into a session
+among run families retention still keeps. Compaction does not reduce it, because a compacted
+delivery keeps its state and loses only its content. Full run-family deletion does reduce it:
+once a finished family is older than `completedRunDays`, outside the newest
+`maxCompletedRuns`, and not pinned by an uncertain delivery, retention deletes its delivery
+rows too.
 
 For an offline backup, stop Mission Control and copy
 `$MISSION_HOME/harness.db` (by default `~/.mission-control/harness.db`) together with its `-wal`
@@ -3325,6 +3350,16 @@ legible thing on the page and the most important. **Every tile in the count stri
 filter**, and there is a tile for every state a row can be in, so the numbers always add
 up to the rows underneath - a strip that ignored the closed pull requests read "1 with
 findings, 0, 0, 0" over a table of fifty.
+
+**Workflows takes the same cards without the split**, because the console shape is three
+separable things and a panel should take the ones it has the data to be honest about. It has
+no ledger to put in a wide column: the Workflows page already owns the run list, with paging,
+live updates and per-run actions, and a second copy in a settings panel would disagree with
+the real one the first time either changed. So its single column stays a single column, and
+its health strip **navigates instead of filtering** - each tile opens the nearest
+corresponding run-list view, with a status filter where one exists, rather than pretending to
+select rows this panel does not have. Those tiles count fleet-wide totals over different
+populations and deliberately do not add up to anything.
 
 Foreman's ledger is **fleet-wide**, which is the one thing no other surface shows: every
 decision it has faced across every session, newest first, where before this the record

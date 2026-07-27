@@ -49,10 +49,10 @@ bucket has a tile, after the first cut shipped a strip that ignored 49 rows out 
 
 Workflows has no rows in this panel, and its numbers are fleet-wide SQL scalars from
 `WorkflowStatus`. Its tiles therefore **navigate** (to the Workflows page's run list,
-pre-filtered) instead of filtering in place, and they do **not** claim to sum to anything.
-That difference has to be visible in the code - a separate component, not an extra boolean
-on the existing one - or the next person to touch it will "fix" the missing tally and be
-wrong.
+using the nearest corresponding view and a status filter where one exists) instead of
+filtering in place, and they do **not** claim to sum to anything. That difference has to be
+visible in the code - a separate component, not an extra boolean on the existing one - or
+the next person to touch it will "fix" the missing tally and be wrong.
 
 ## Decisions
 

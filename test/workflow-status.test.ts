@@ -90,6 +90,11 @@ test("workflow status is on-demand, structured, bounded, and payload-free", () =
     waitingDeliveries: 0,
     uncertainDeliveries: 1,
     inspectorGates: 0,
+    // The run here is `running`, so it is outside the population `maxCompletedRuns` ranks -
+    // which is exactly the distinction `completedRunCount` exists to draw against
+    // `retainedRunCount` below, and why a fixture with one active run reports 1 and 0.
+    completedRunCount: 0,
+    deliveredDeliveries: 0,
     lastRecoveryAt: null,
     lastRetentionAt: null,
     lastRetentionError: null,

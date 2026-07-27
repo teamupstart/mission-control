@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import type { WorkflowCheckSlot, WorkflowConfig } from "@shared/workflow.ts";
+import type {
+  WorkflowCheckSlot,
+  WorkflowConfig,
+  WorkflowStatus,
+} from "@shared/workflow.ts";
 import {
   WORKFLOW_CHECK_SLOTS,
   checkCommandRoot,
@@ -9,6 +13,17 @@ import {
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import { resolveRepo } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import {
+  ConsoleCard,
+  ConsoleLinkStrip,
+  ConsoleState,
+  ConsoleSwitch,
+  type ConsoleLink,
+} from "./settings-console.tsx";
+import {
+  missionRouteHash,
+  type WorkflowRunFilters,
+} from "../workflows/useWorkflowRoute.ts";
 import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
@@ -21,6 +36,14 @@ import {
 // so the one switch in this app that can type into somebody's live agent session was the
 // one switch you could not find by searching for it. Same routes, same config blob, same
 // consent copy; what changed is that it is now where every other subsystem's settings are.
+//
+// It is drawn with the settings console's leaves (`settings-console.tsx`) and takes exactly
+// two of that shape's three pieces. It has NO ledger, and therefore no two-column split:
+// `WorkflowRuns.tsx` is already the run list - cursor paging, SSE reconciliation, per-run
+// actions, status chips - and the Workflows page header already links here. A run table in
+// this panel would be a second, worse copy of that one, in a third CSS vocabulary, and the
+// two would disagree the first time either changed. Its single column stays a single
+// column, and its strip navigates to the real list instead of filtering a fake one.
 //
 // The two confirmations go through the overlay registry (`WorkflowConfirmModal`) rather
 // than `window.confirm`, for that component's own reason: a native dialog is invisible to
@@ -108,10 +131,133 @@ export function retentionShortens(
   return RETENTION_FIELDS.some((field) => next[field.key] < current[field.key]);
 }
 
+/**
+ * The health strip's tiles: which `WorkflowStatus` scalar each shows, and which view of the
+ * REAL run list reading it continues in.
+ *
+ * Ordered by escalation, not by data type, which is the point of the strip existing at all.
+ * The twelve health scalars were a `<dl>` in which `uncertainDeliveries` - "a repair may or
+ * may not have been typed into somebody's session and only a human can tell" - was rendered
+ * in the same 10px grey as the count of Persona calls currently queued. Six of the twelve
+ * are zero on a healthy install, so the two that mean somebody must look were the least
+ * findable things on the panel.
+ *
+ * These counts do NOT sum, and no tile's count is the number of rows its link opens. They
+ * are independent scalars over three populations - in-flight or uncertain deliveries, runs,
+ * and delivered rows in retained run families - and the destination is the nearest honest
+ * view of what the tile counted, not a re-derivation of it. `hint` therefore says what
+ * clicking opens; see `ConsoleLinkStrip`.
+ */
+const STRIP_TILES = [
+  {
+    id: "needs-you",
+    label: "Needs you",
+    tone: "danger",
+    hint: "Deliveries that could not be confirmed as typed in - only you can tell. "
+      + "Opens the runs waiting on a session.",
+    filters: { status: "waiting_for_session" },
+    count: (s: WorkflowStatus) => s.uncertainDeliveries,
+  },
+  {
+    id: "waiting",
+    label: "Waiting",
+    tone: "attention",
+    hint: "Deliveries prepared or being sent right now. Opens the full run list.",
+    filters: {},
+    count: (s: WorkflowStatus) => s.waitingDeliveries,
+  },
+  {
+    id: "gates",
+    label: "Inspector gates",
+    tone: "attention",
+    hint: "Runs held at an Inspector gate. Opens the runs waiting for the Inspector.",
+    filters: { status: "waiting_for_inspector" },
+    count: (s: WorkflowStatus) => s.inspectorGates,
+  },
+  {
+    // "Active", not "Running", and it opens the WHOLE list rather than `status=running`.
+    // `activeRuns` is every run not completed, cancelled or failed - so a blocked run and a
+    // run waiting on a session are both in it - and the first cut labelled that "Running"
+    // and linked it to `status=running`. Three populations in one tile: a fleet with blocked
+    // work counted it here and then could not reach it through the tile that counted it.
+    //
+    // Counting only `running` rows would align the three, and it is the wrong repair: it
+    // would need a second scalar, and blocked runs would then appear in no tile at all,
+    // which is the state this strip exists to make visible. So the count stays the useful
+    // one and the label and destination move to meet it. There is no single `status` filter
+    // meaning "active", so the honest destination is the unfiltered list - the same one
+    // Waiting opens, for the same reason.
+    id: "active",
+    label: "Active",
+    tone: "plain",
+    hint: "Runs that have not finished, in any state - running, waiting or blocked. "
+      + "Opens the full run list.",
+    filters: {},
+    count: (s: WorkflowStatus) => s.activeRuns,
+  },
+  {
+    id: "delivered",
+    label: "Delivered",
+    tone: "ok",
+    hint: "Deliveries confirmed typed into a session among retained runs. "
+      + "Opens the completed runs.",
+    filters: { status: "completed" },
+    count: (s: WorkflowStatus) => s.deliveredDeliveries,
+  },
+] as const satisfies readonly {
+  id: string;
+  label: string;
+  tone: ConsoleLink["tone"];
+  hint: string;
+  filters: WorkflowRunFilters;
+  count: (status: WorkflowStatus) => number;
+}[];
+
+/** Where a tile goes, as the hash the Workflows page's own filter chips would produce. */
+function tileHref(filters: WorkflowRunFilters): string {
+  return missionRouteHash({
+    page: "workflows",
+    tab: "runs",
+    ...(Object.keys(filters).length > 0 ? { filters } : {}),
+  });
+}
+
+/**
+ * The strip's tiles for one status reading.
+ *
+ * Exported so a test can assert that each tile carries the scalar it claims - the failure
+ * this rules out is silent and permanent, because a tile wired to the wrong field still
+ * renders a plausible number and nothing on the panel contradicts it.
+ *
+ * A zero count still gets a tile. A missing tile reads as a missing subsystem, and "no
+ * retained delivery is confirmed as sent" is a reading an operator who has just enabled
+ * Live delivery specifically wants.
+ */
+export function workflowStripLinks(status: WorkflowStatus): ConsoleLink[] {
+  return STRIP_TILES.map((tile) => ({
+    id: tile.id,
+    label: tile.label,
+    tone: tile.tone,
+    hint: tile.hint,
+    count: tile.count(status),
+    href: tileHref(tile.filters),
+  }));
+}
+
 export function WorkflowSettingsPanel({
   state,
+  onOpenRuns,
 }: {
   state: WorkflowSettingsState;
+  /**
+   * Follow a health tile to the nearest corresponding Workflows run-list view.
+   *
+   * Its own prop rather than a widening of `SettingsNavigate`, which the other three panels
+   * take: that one is typed to settings categories, and this navigation leaves the settings
+   * page entirely. Optional, so a render test can mount the panel without a router - the
+   * tiles are still real links with real hashes, so nothing about them is untestable.
+   */
+  onOpenRuns?: (filters: WorkflowRunFilters) => void;
 }): React.JSX.Element {
   const { config, status, update, error } = state;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
@@ -283,9 +429,14 @@ export function WorkflowSettingsPanel({
     });
   };
 
+  const openTile = (id: string): void => {
+    const tile = STRIP_TILES.find((candidate) => candidate.id === id);
+    if (tile) onOpenRuns?.(tile.filters);
+  };
+
   return (
-    <section className="settings-section">
-      <p className="settings-hint">
+    <section className="settings-section sc-section sc-solo">
+      <p className="settings-hint sc-lede">
         Review workflows run Personas over a session's submitted work and route their
         verdicts back to it. What is configured here is the subsystem: whether repairs may be
         typed into a live session, where that is allowed, and how much run history is kept.
@@ -304,40 +455,60 @@ export function WorkflowSettingsPanel({
         </p>
       )}
 
-      <Tooltip label="Allow repair packets to be typed into sessions in the repositories below">
-        <label className="alert-row wf-settings-live" data-anchor="workflows/live-delivery">
-          <input
-            type="checkbox"
-            checked={liveEnabled}
-            disabled={!config || busy}
-            onChange={(event) => toggleLive(event.target.checked)}
-          />
-          <span>Enable Live workflow delivery</span>
-        </label>
-      </Tooltip>
+      <div className="sc-controls">
+        <ConsoleCard
+          title="Live delivery"
+          anchor="workflows/live-delivery"
+          action={(
+            <ConsoleSwitch
+              label="Enable Live workflow delivery"
+              tooltip="Allow repair packets to be typed into sessions in the repositories below"
+              checked={liveEnabled}
+              disabled={!config || busy}
+              // The one switch in this app that types into a live agent's terminal. Its
+              // blast radius is a keystroke in somebody's composer, not a comment on a pull
+              // request, and the tone is what says so before the confirm dialog does.
+              tone="danger"
+              onChange={toggleLive}
+            />
+          )}
+        >
+          {!config ? (
+            <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
+          ) : liveEnabled ? (
+            <ConsoleState tone="danger">
+              Live - repairs are typed into agent sessions
+            </ConsoleState>
+          ) : (
+            <ConsoleState tone="off">Off - nothing is delivered</ConsoleState>
+          )}
 
-      {liveEnabled && (
-        <p className="settings-warn wf-settings-live-warn">
-          Live bindings write into a real terminal pane. A repair packet is typed into the
-          agent's own composer, in the repositories listed below and nowhere else.
-        </p>
-      )}
+          {liveEnabled && (
+            <p className="settings-warn wf-settings-live-warn">
+              Live bindings write into a real terminal pane. A repair packet is typed into the
+              agent's own composer, in the repositories listed below and nowhere else.
+            </p>
+          )}
+        </ConsoleCard>
 
-      <div className="wf-settings-repos" data-anchor="workflows/allowlist">
-        <p className="settings-group-label">Allowed repositories</p>
-        {/* The scope-of-consent sentence sits with the list, not with the switch: it is
-            about the grant. "I turned Live on and it still previews" reads as a bug
-            without it. */}
-        <p className="settings-hint">
-          Live delivery only sends in these repositories - their worktrees count too,
-          wherever they live on disk. Removing one keeps existing bindings visible and
-          refuses their next delivery; nothing is silently downgraded to Preview.
-        </p>
-        {!config ? null : allowlist.length === 0 ? (
-          <p className="settings-hint wf-settings-empty">
-            No repositories yet - Live delivery has nowhere to send.
+        <ConsoleCard title="Allowed repositories" anchor="workflows/allowlist">
+          {/* The inline editor, deliberately NOT `TrustGrantSummary`. Workflows is not a
+              column of the Trust matrix, so pointing at Trust for a grant Trust does not
+              hold would be a dead link. If it should be a Trust column, that is its own
+              change - and it would move this list, not summarise it. */}
+          {/* The scope-of-consent sentence sits with the list, not with the switch: it is
+              about the grant. "I turned Live on and it still previews" reads as a bug
+              without it. */}
+          <p className="settings-hint">
+            Live delivery only sends in these repositories - their worktrees count too,
+            wherever they live on disk. Removing one keeps existing bindings visible and
+            refuses their next delivery; nothing is silently downgraded to Preview.
           </p>
-        ) : (
+          {!config ? null : allowlist.length === 0 ? (
+            <p className="settings-hint wf-settings-empty">
+              No repositories yet - Live delivery has nowhere to send.
+            </p>
+          ) : (
           <ul className="wf-settings-repo-list">
             {allowlist.map((repo) => (
               <li key={repo}>
@@ -383,7 +554,7 @@ export function WorkflowSettingsPanel({
             </button>
           </Tooltip>
         </div>
-      </div>
+        </ConsoleCard>
 
       <Tooltip label="Allow workflow Check nodes to run the commands configured below">
         <label className="alert-row wf-settings-checks" data-anchor="workflows/checks">
@@ -500,82 +671,148 @@ export function WorkflowSettingsPanel({
         </p>
       </div>
 
-      <div className="wf-settings-retention" data-anchor="workflows/retention">
-        <p className="settings-group-label">Run retention</p>
-        <p className="settings-hint">
-          Active, waiting, blocked, failed, orphaned and delivery-uncertain work is never
-          age-pruned. Completed and cancelled runs go through the two stages below.
-        </p>
-        <div className="wf-settings-retention-grid">
-          {RETENTION_FIELDS.map((field) => (
-            <Tooltip key={field.key} label={field.hint}>
-              <label>
-                <span>{field.label}</span>
-                <input
-                  type="number"
-                  min={field.min}
-                  max={field.max}
-                  value={retention[field.key]}
-                  disabled={!config || busy}
-                  onChange={(event) => setRetention((draft) => ({
-                    ...draft,
-                    [field.key]: event.target.value,
-                  }))}
-                />
-              </label>
-            </Tooltip>
-          ))}
-        </div>
-        <Tooltip label="Save these retention limits - shortening one asks first">
-          <button className="btn" disabled={!config || busy} onClick={applyRetention}>
-            Apply retention
-          </button>
-        </Tooltip>
-      </div>
-
-      <div className="wf-settings-health" data-anchor="workflows/health">
-        <p className="settings-group-label">Workflow health</p>
-        <p className="settings-hint">
-          Counters only, refreshed while this panel is open. No prompt, diff, transcript,
-          Persona guidance, model output or delivery payload passes through here.
-        </p>
-        {status ? (
-          <dl className="wf-settings-health-grid">
-            <div><dt>Retained runs</dt><dd>{status.retainedRunCount}</dd></div>
-            <div><dt>Active runs</dt><dd>{status.activeRuns}</dd></div>
-            <div><dt>Queued Persona calls</dt><dd>{status.queuedPersonaCalls}</dd></div>
-            <div><dt>Running Persona calls</dt><dd>{status.runningPersonaCalls}</dd></div>
-            <div><dt>Waiting deliveries</dt><dd>{status.waitingDeliveries}</dd></div>
-            <div><dt>Uncertain deliveries</dt><dd>{status.uncertainDeliveries}</dd></div>
-            <div><dt>Inspector gates</dt><dd>{status.inspectorGates}</dd></div>
-            <div>
-              <dt>Last recovery</dt>
-              <dd>
-                {status.lastRecoveryAt
-                  ? new Date(status.lastRecoveryAt).toLocaleString()
-                  : "Not yet run"}
-              </dd>
-            </div>
-            <div>
-              <dt>Last retention sweep</dt>
-              <dd>
-                {status.lastRetentionAt
-                  ? new Date(status.lastRetentionAt).toLocaleString()
-                  : "Not yet run"}
-              </dd>
-            </div>
-            <div><dt>Last compacted</dt><dd>{status.lastRetentionCompacted}</dd></div>
-            <div><dt>Last deleted</dt><dd>{status.lastRetentionDeleted}</dd></div>
-            <div><dt>Last sweep error</dt><dd>{status.lastRetentionError ?? "None"}</dd></div>
-          </dl>
-        ) : (
-          // "has not answered", not "has not answered YET": a null status is the pre-poll
-          // instant AND a daemon that has stopped answering, and the second is the one
-          // where a still-loading sentence would be read as a delay rather than a gap.
-          <p className="settings-hint wf-settings-empty">
-            Workflow health is unavailable - the daemon has not answered.
+        <ConsoleCard title="Run retention" anchor="workflows/retention">
+          <p className="settings-hint">
+            Active, waiting, blocked, failed, orphaned and delivery-uncertain work is never
+            age-pruned. Completed and cancelled runs go through the two stages below.
           </p>
-        )}
+          <div className="wf-settings-retention-grid">
+            {RETENTION_FIELDS.map((field) => (
+              <Tooltip key={field.key} label={field.hint}>
+                <label>
+                  <span>{field.label}</span>
+                  <input
+                    type="number"
+                    min={field.min}
+                    max={field.max}
+                    value={retention[field.key]}
+                    disabled={!config || busy}
+                    onChange={(event) => setRetention((draft) => ({
+                      ...draft,
+                      [field.key]: event.target.value,
+                    }))}
+                  />
+                </label>
+              </Tooltip>
+            ))}
+          </div>
+          {/* Sized to its label. A `.sc-card-body` is a flex column, so a bare button
+              stretches the full width of the card and reads as the panel's primary action
+              rather than as this card's Save. */}
+          <div className="wf-settings-apply">
+            <Tooltip label="Save these retention limits - shortening one asks first">
+              <button className="btn" disabled={!config || busy} onClick={applyRetention}>
+                Apply retention
+              </button>
+            </Tooltip>
+          </div>
+
+          {/* What the limits above are measured AGAINST. The panel set three of them and
+              showed no measurement of the thing being limited; the only related number on
+              the page was "Retained runs", under Health, which is `COUNT(*)` over every run
+              row of any status and so cannot be read against `maxCompletedRuns` at all.
+              `completedRunCount` is the population that limit actually ranks - finished,
+              with a completion time, not pinned by an uncertain delivery - so this is a
+              like-for-like reading rather than a ratio of two different questions. */}
+          <div className="wf-settings-readout">
+            <p className="sc-health-row">
+              <span>Finished runs ranked by this limit</span>
+              <span className="sc-health-value">
+                {status && config
+                  ? `${status.completedRunCount} of ${config.retention.maxCompletedRuns}`
+                  : "unknown"}
+              </span>
+            </p>
+            <p className="sc-health-row">
+              <span>Last sweep removed</span>
+              {/* Guarded on whether a sweep has ever run, rather than printing the zeros a
+                  never-swept daemon carries: "0 compacted, 0 deleted" is a reading, and a
+                  daemon that has not swept has not taken one. */}
+              <span className="sc-health-value">
+                {!status
+                  ? "unknown"
+                  : status.lastRetentionAt === null
+                    ? "not yet run"
+                    : `${status.lastRetentionCompacted} compacted, `
+                      + `${status.lastRetentionDeleted} deleted`}
+              </span>
+            </p>
+          </div>
+          <p className="settings-hint">
+            Only finished runs are ranked by the newest-kept limit. Everything still working,
+            waiting or failed sits outside that population and is never counted against it.
+          </p>
+        </ConsoleCard>
+
+        {/* The strip sits ABOVE the health card rather than inside it: it is the escalation
+            summary, and the card under it is the residue - throughput and sweep bookkeeping
+            that never means "somebody must look". Grouped with it, and more tightly than the
+            column's own rhythm, so the tiles read as that card's headline rather than as
+            something floating between two cards. */}
+        <div className="wf-settings-health-group">
+          {status && (
+            <ConsoleLinkStrip
+              stats={workflowStripLinks(status)}
+              // Withheld rather than stubbed when nothing is listening, so the tiles fall
+              // back to being plain links the browser follows instead of dead ones.
+              onOpen={onOpenRuns ? openTile : undefined}
+            />
+          )}
+
+          <ConsoleCard title="Workflow health" anchor="workflows/health">
+            <p className="settings-hint">
+              Counters only, refreshed while this panel is open. No prompt, diff, transcript,
+              Persona guidance, model output or delivery payload passes through here.
+            </p>
+            {status ? (
+              <>
+                <p className="sc-health-row">
+                  <span>Retained runs</span>
+                  <span className="sc-health-value">{status.retainedRunCount}</span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Queued Persona calls</span>
+                  <span className="sc-health-value">{status.queuedPersonaCalls}</span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Running Persona calls</span>
+                  <span className="sc-health-value">{status.runningPersonaCalls}</span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Last recovery</span>
+                  <span className="sc-health-value">
+                    {status.lastRecoveryAt
+                      ? new Date(status.lastRecoveryAt).toLocaleString()
+                      : "Not yet run"}
+                  </span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Last retention sweep</span>
+                  <span className="sc-health-value">
+                    {status.lastRetentionAt
+                      ? new Date(status.lastRetentionAt).toLocaleString()
+                      : "Not yet run"}
+                  </span>
+                </p>
+                <p className="sc-health-row">
+                  <span>Last sweep error</span>
+                  <span
+                    className={`sc-health-value${status.lastRetentionError ? " sc-health-bad" : ""}`}
+                  >
+                    {status.lastRetentionError ?? "None"}
+                  </span>
+                </p>
+              </>
+            ) : (
+              // "has not answered", not "has not answered YET": a null status is the pre-poll
+              // instant AND a daemon that has stopped answering, and the second is the one
+              // where a still-loading sentence would be read as a delay rather than a gap.
+              <p className="settings-hint wf-settings-empty">
+                Workflow health is unavailable - the daemon has not answered.
+              </p>
+            )}
+          </ConsoleCard>
+        </div>
       </div>
 
       {(localError ?? error) && (

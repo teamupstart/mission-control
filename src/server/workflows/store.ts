@@ -3754,6 +3754,8 @@ export class WorkflowStore {
     uncertainDeliveries: number;
     inspectorGates: number;
     retainedRunCount: number;
+    completedRunCount: number;
+    deliveredDeliveries: number;
   } {
     const scalar = (sql: string): number => Number(
       (this.db.prepare(sql).get() as { count: number }).count,
@@ -3795,6 +3797,28 @@ export class WorkflowStore {
       ),
       inspectorGates,
       retainedRunCount: scalar(`SELECT COUNT(*) AS count FROM workflow_runs`),
+      // The `ranked` population in `runRetention` above, counted rather than windowed -
+      // finished, with a completion time, and not pinned by an uncertain delivery. This is
+      // deliberately the SAME three predicates and not an approximation of them: the number
+      // exists so the settings panel can show `maxCompletedRuns` against the rows that limit
+      // actually ranks, and a count over a slightly different set would be a gauge that
+      // disagrees with the sweep it claims to describe.
+      completedRunCount: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_runs r
+          WHERE r.status IN ('completed', 'cancelled')
+            AND r.completed_at IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM workflow_deliveries d
+               WHERE d.run_id = r.id AND d.state = 'uncertain'
+            )`,
+      ),
+      // Among retained run families, compaction does not reduce this count: it blanks a
+      // delivered row's payload and coarsens its error but never its state. Full run-family
+      // deletion does reduce it because that stage removes the delivery rows too. The count
+      // therefore reports retained confirmation without reading one byte of what was typed.
+      deliveredDeliveries: scalar(
+        `SELECT COUNT(*) AS count FROM workflow_deliveries WHERE state = 'delivered'`,
+      ),
     };
   }
 

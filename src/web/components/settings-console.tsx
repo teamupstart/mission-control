@@ -28,6 +28,15 @@ import { Tooltip } from "./Tooltip.tsx";
 // One thing that is NOT shared: the danger tone. The Inspector's live mode publishes a
 // comment; YOLO mode writes to a default branch and nothing here can take it back. The
 // switch and the posture line take a `tone` per panel rather than inheriting one.
+//
+// The shape is also SEPARABLE, and Workflows is the panel that proves it. Three pieces live
+// here - the leaves (`ConsoleCard` / `ConsoleSwitch` / `ConsoleState` and the `sc-`
+// vocabulary), the count strip, and the two-column split - and a panel takes the ones it
+// has the data to be honest about. A ledger earns the wide column; Workflows has no ledger
+// to put there, because `WorkflowRuns.tsx` already owns the run list, so it keeps its single
+// column and takes `ConsoleLinkStrip` instead of `ConsoleStrip`. A panel given a wide empty
+// half to match its neighbours would be the layout imitating a shape rather than expressing
+// one.
 
 /** How loud a posture line is. `danger` is reserved for "this is acting on GitHub now". */
 export type ConsoleTone = "danger" | "attention" | "ok" | "off" | "unknown";
@@ -168,6 +177,91 @@ export function ConsoleStrip({
             <b>{s.count}</b>
             <span>{s.label}</span>
           </button>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+/** One tile in a strip that NAVIGATES: a fleet-wide count and where reading it continues. */
+export interface ConsoleLink {
+  id: string;
+  count: number;
+  label: string;
+  tone?: "attention" | "danger" | "ok" | "merged" | "plain";
+  /** What clicking it OPENS. Never "what it filters" - it filters nothing on this screen. */
+  hint: string;
+  /** The real destination, so the tile is a link and not a button wearing one. */
+  href: string;
+}
+
+/**
+ * A count strip whose tiles LEAVE the panel, for a panel that has no rows to filter.
+ *
+ * A sibling of `ConsoleStrip`, not a mode on it, and the difference is a claim about the
+ * numbers rather than about the markup. `ConsoleStrip`'s tiles are a fold over the ledger
+ * beside them: every row lands in exactly one bucket, so the tiles SUM to the rows and
+ * clicking one shows you precisely the rows it counted. `settings-console.test.ts` pins
+ * that, after the first cut shipped a strip that ignored 49 rows out of 50.
+ *
+ * These tiles sum to nothing, and must not be made to look as though they should. They are
+ * independent fleet-wide SQL scalars over different populations - runs in one, deliveries
+ * in another, and delivered rows among retained run families in a third. Compaction keeps
+ * their state, while deleting a run family removes its deliveries from this count, so adding
+ * the tiles up is not a smaller number of anything.
+ * There is also no ledger on the screen for them to be a filter over: the Workflows panel
+ * deliberately has no run list, because `WorkflowRuns.tsx` already is one, with paging, SSE
+ * reconciliation and per-run actions. A second, worse copy of it here would disagree with
+ * the real one the first time either changed.
+ *
+ * So a tile navigates to the nearest corresponding view in that real list, using a status
+ * filter where one exists, and its `hint` says what it opens rather than what it selects.
+ * Two things follow for anyone editing this later. **Do not add a total**, and do not "fix"
+ * the missing one - the absence is the honest reading. And **do not add `active` /
+ * `aria-pressed`**: a pressed state would promise that the panel now shows a subset, on a
+ * panel with nothing to subset.
+ *
+ * Tiles are real `<a href>` elements. The hash is a genuine deep link - copyable,
+ * middle-clickable, and the same URL the Workflows page's own filter chips produce - while
+ * the click handler routes through the app's `navigate`, so the dirty-draft gate and the
+ * history entry behave exactly as they do everywhere else.
+ *
+ * The `href` is the load-bearing half of that pair and the handler is the enhancement, which
+ * is why a strip mounted without one does NOT swallow the click: it lets the browser follow
+ * the hash, which the router's own `hashchange` listener picks up (dirty gate included). A
+ * `preventDefault` that ran before an absent handler would turn every tile into a link that
+ * looks live and does nothing.
+ */
+export function ConsoleLinkStrip({
+  stats,
+  onOpen,
+}: {
+  stats: readonly ConsoleLink[];
+  /**
+   * Follow a tile through the app's router. Receives the tile's id, never its href.
+   * Omit it and the tiles navigate as plain links instead.
+   */
+  onOpen?: (id: string) => void;
+}): React.JSX.Element {
+  return (
+    <div className="sc-strip sc-strip-links">
+      {stats.map((s) => (
+        <Tooltip key={s.id} label={s.hint}>
+          <a
+            className={`sc-stat sc-stat-link sc-stat-${s.tone ?? "plain"}`}
+            href={s.href}
+            onClick={(e) => {
+              // Left click with no modifier only: ⌘/ctrl/shift/middle keep their browser
+              // meanings, which is the whole reason this is an anchor.
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+              if (!onOpen) return;
+              e.preventDefault();
+              onOpen(s.id);
+            }}
+          >
+            <b>{s.count}</b>
+            <span>{s.label}</span>
+          </a>
         </Tooltip>
       ))}
     </div>

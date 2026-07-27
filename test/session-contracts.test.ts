@@ -149,6 +149,10 @@ test("schedule provenance rides inside Session.task, and a change to it still em
             maxMembers: 3,
             status: "active",
             resultLabel: null,
+            // Derived from live session state when the projection is rebuilt, and it rides inside
+            // `task` for the same reason every other field here does: `byJson` is what makes a
+            // member becoming blocked reach the card at all.
+            needsInput: false,
           },
         },
       }),

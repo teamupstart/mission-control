@@ -142,6 +142,9 @@ test("the live channel carries a compact summary and nothing a detail read owns"
     "launchedMembers",
     "maxMembers",
     "memberCount",
+    "membersNeedingInput",
+    "membersOut",
+    "membersReady",
     "outcomeKind",
     "readyArtifacts",
     "repoRoot",
@@ -316,6 +319,9 @@ test("a session's task summary names its ensemble member, and no Session field d
     maxMembers: 2,
     status: "active",
     resultLabel: "rank 1",
+    // The store cannot see a session, so its own answer is always `false` - the manager's
+    // projection is what joins it against live state. See `ensemble-needs-input.test.ts`.
+    needsInput: false,
   });
   assert.equal(store.taskLink("task-unrelated"), null);
   assert.deepEqual(registry.snapshot().sessions[0]?.task?.ensemble, store.taskLink("task-1"));

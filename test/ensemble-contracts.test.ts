@@ -17,13 +17,16 @@ import {
   ENSEMBLE_STRATEGY_IDS,
   ENSEMBLE_TERMINAL_STATUSES,
   ensembleIsRunnable,
+  ensembleMemberCounts,
   ensembleNeedsAttention,
+  ensembleStageWord,
   ensembleStrategyKey,
   knownDriverKey,
   missingDriverKeys,
   parseEnsembleStrategyKey,
   readEnsembleEnum,
   type CompiledEnsemblePlan,
+  type EnsembleMemberFact,
   type EnsembleRun,
   type EnsembleSummary,
 } from "../src/shared/ensemble.ts";
@@ -343,6 +346,120 @@ test("attention is derived once, so the daemon and the browser cannot disagree",
     ensembleNeedsAttention({ status: "running", unreadable: { reason: "x", fields: [] } }),
     true,
   );
+
+  // The blocked-member input, and the reason it is OPTIONAL: a caller holding only durable row
+  // state - the store, a persisted-row reader - passes nothing and gets exactly what it always
+  // got, while one that can see live sessions ORs a waiting member in. A run whose status still
+  // reads `running` while a candidate sits on an unanswered question is the disagreement between
+  // the red card and the "Active" run row that this closes.
+  assert.equal(
+    ensembleNeedsAttention({ status: "running", unreadable: null, membersNeedingInput: 0 }),
+    false,
+    "0 changes nothing",
+  );
+  for (const status of ENSEMBLE_STATUSES) {
+    assert.equal(
+      ensembleNeedsAttention({ status, unreadable: null, membersNeedingInput: 1 }),
+      true,
+      `a blocked member needs you whatever the run status says (${status})`,
+    );
+  }
+  // Members OUT are not an attention signal: a lost candidate already has its terminal-run and
+  // retry surfaces, and a barrier that can no longer be met fails the run, which does alert.
+  assert.equal(
+    ensembleNeedsAttention({ status: "running", unreadable: null, membersNeedingInput: 0 }),
+    false,
+  );
+});
+
+test("one stage vocabulary covers every status, so four surfaces cannot invent four words", () => {
+  const words = new Map(
+    ENSEMBLE_STATUSES.map((status) => [status, ensembleStageWord({ status, outcomeKind: null })]),
+  );
+  assert.deepEqual(Object.fromEntries(words), {
+    planning: "launching",
+    running: "working",
+    waiting: "waiting",
+    evaluating: "reviewing",
+    awaiting_decision: "waiting on you",
+    finalizing: "promoting",
+    cancelling: "cancelling",
+    completed: "done",
+    cancelled: "cancelled",
+    failed: "failed",
+  });
+  // Total, and never blank: a surface that fell back to the raw status id would print
+  // `awaiting_decision` at an operator.
+  for (const word of words.values()) assert.ok(word.length > 0);
+  // A row a NEWER build wrote reads as unreadable, never as a nearest match - the same rule the
+  // schedule store applies to an unknown enum.
+  assert.equal(ensembleStageWord({ status: null, outcomeKind: null }), "unreadable");
+  // An outcome does not change the word today, and the parameter is in the signature so that a
+  // later refinement of the terminal words lands HERE and not at a call site.
+  assert.equal(ensembleStageWord({ status: "completed", outcomeKind: "no_consensus" }), "done");
+});
+
+test("the three member counts are pairwise disjoint by construction, not by coincidence", () => {
+  const fact = (over: Partial<EnsembleMemberFact> & { id: string }): EnsembleMemberFact => ({
+    taskId: `task-${over.id}`,
+    status: "active",
+    ownsReadyArtifact: false,
+    ...over,
+  });
+  const blocked = new Set(["m-blocked", "m-submitted-blocked"]);
+  const facts: EnsembleMemberFact[] = [
+    fact({ id: "m-pending", status: "pending", taskId: null }),
+    fact({ id: "m-working" }),
+    fact({ id: "m-blocked" }),
+    // The double-count this shape exists to prevent: a submitted member that owns a ready
+    // artifact AND is sitting on a question is ONE member, and it is blocked, not ready.
+    fact({ id: "m-submitted-blocked", status: "submitted", ownsReadyArtifact: true }),
+    fact({ id: "m-submitted", status: "submitted", ownsReadyArtifact: true }),
+    // Eliminated members keep their ready artifacts; counted out, never ready.
+    fact({ id: "m-eliminated", status: "eliminated", ownsReadyArtifact: true }),
+    fact({ id: "m-failed", status: "failed" }),
+    fact({ id: "m-withdrawn", status: "withdrawn" }),
+    // Terminal but not out, so its work still counts - and its own dialog is not this run's
+    // problem, which is why a `retained` member is never blocked.
+    fact({ id: "m-retained", status: "retained", ownsReadyArtifact: true }),
+    fact({ id: "m-advanced", status: "advanced", ownsReadyArtifact: true }),
+    // A status this build cannot read is evidence of nothing: not launched, not out, not blocked,
+    // and NOT ready either, even holding a ready artifact - counted there it would make the three
+    // sum to more than `launchedMembers` and turn Phase 3's "working" remainder negative.
+    fact({ id: "m-future", status: null, ownsReadyArtifact: true }),
+  ];
+  const counts = ensembleMemberCounts(facts, (f) => blocked.has(f.id));
+  assert.deepEqual(counts, {
+    memberCount: 11,
+    launchedMembers: 9,
+    membersOut: 3,
+    membersNeedingInput: 2,
+    membersReady: 3,
+  });
+  // Pairwise disjoint, all three inside `launchedMembers`, and NOT a partition of it: `m-working`
+  // is in none of the three, which is exactly why a consumer computes "working" as the remainder.
+  assert.ok(
+    counts.membersOut + counts.membersNeedingInput + counts.membersReady < counts.launchedMembers,
+    "a plain working member is in none of the three",
+  );
+
+  // No registry: nothing is blocked, and the member that was blocked falls back to whichever of
+  // ready / neither its own row state earns. Never a member lost, and the bound still holds.
+  const undecorated = ensembleMemberCounts(facts, () => false);
+  assert.equal(undecorated.membersNeedingInput, 0);
+  assert.equal(undecorated.membersReady, 4, "the blocked submitter is ready when nobody can see it");
+  assert.equal(undecorated.membersOut, counts.membersOut);
+  assert.ok(
+    undecorated.membersOut + undecorated.membersNeedingInput + undecorated.membersReady <=
+      undecorated.launchedMembers,
+  );
+  assert.deepEqual(ensembleMemberCounts([], () => true), {
+    memberCount: 0,
+    launchedMembers: 0,
+    membersOut: 0,
+    membersNeedingInput: 0,
+    membersReady: 0,
+  });
 });
 
 test("summary, detail, and event wire schemas match their shared contracts", () => {
@@ -360,6 +477,9 @@ test("summary, detail, and event wire schemas match their shared contracts", () 
     launchedMembers: 1,
     maxMembers: 2,
     readyArtifacts: 0,
+    membersOut: 0,
+    membersNeedingInput: 0,
+    membersReady: 0,
     selectedMemberId: null,
     outcomeKind: null,
     unreadable: null,
@@ -375,6 +495,14 @@ test("summary, detail, and event wire schemas match their shared contracts", () 
     false,
   );
   assert.equal(EnsembleSummarySchema.safeParse({ ...summary, status: "future" }).success, false);
+  // The derived member counts are counts, not flags: a negative one is a bug upstream, not a
+  // signal, and the schema is what stops it reaching a rendering that would draw -1 dots.
+  assert.equal(EnsembleSummarySchema.safeParse({ ...summary, membersOut: -1 }).success, false);
+  assert.equal(
+    EnsembleSummarySchema.safeParse({ ...summary, membersNeedingInput: -1 }).success,
+    false,
+  );
+  assert.equal(EnsembleSummarySchema.safeParse({ ...summary, membersReady: -1 }).success, false);
 
   const event = {
     id: 1,

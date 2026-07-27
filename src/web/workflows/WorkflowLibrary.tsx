@@ -932,7 +932,7 @@ export function WorkflowLibrary({
             workflowId={workflow.id}
             versions={draft.versions}
             personas={personas}
-            onBindVersion={onBindVersion}
+            onBindVersion={workflow.archivedAt === null ? onBindVersion : undefined}
           />
           {mode === "pipeline" && onBindWorkflow && (
             <section className="wf-pipeline-bind">

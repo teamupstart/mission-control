@@ -588,6 +588,8 @@ export class WorkflowManager {
     if (!version) {
       return { ok: false, reason: "not_found", message: "No such immutable workflow version" };
     }
+    const workflowBlock = this.bindingWorkflowBlock(version);
+    if (workflowBlock) return workflowBlock;
     const triggerMode = input.triggerMode ?? version.bindingDefaults.triggerMode;
     const deliveryMode = input.deliveryMode ?? version.bindingDefaults.deliveryMode;
     const maxRepairRounds = input.maxRepairRounds ?? version.bindingDefaults.maxRepairRounds;
@@ -1544,6 +1546,8 @@ export class WorkflowManager {
         current: claimed,
       };
     }
+    const workflowBlock = this.bindingWorkflowBlock(version);
+    if (workflowBlock) return workflowBlock;
     const session = this.registry.getSession(input.sessionId);
     if (!session || session.state === "exited") {
       return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
@@ -2395,6 +2399,27 @@ export class WorkflowManager {
           message: "Foreman Complete requires Foreman plus measured hook and work-queue capabilities",
         };
       }
+    }
+    return null;
+  }
+
+  private bindingWorkflowBlock(
+    version: WorkflowVersion,
+  ): WorkflowRuntimeMutation<never> | null {
+    const workflow = this.store.getWorkflow(version.workflowId);
+    if (!workflow) {
+      return {
+        ok: false,
+        reason: "not_found",
+        message: "The workflow for this immutable version is unavailable",
+      };
+    }
+    if (workflow.archivedAt !== null) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This workflow is archived and must be restored before it can be bound",
+      };
     }
     return null;
   }

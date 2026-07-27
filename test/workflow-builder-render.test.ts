@@ -125,6 +125,15 @@ test("version history names immutable source revisions and never offers update-v
   assert.match(detail, />5</);
   assert.match(detail, /inspector_only/);
   assert.match(detail, /offer_prepare_pr/);
+  assert.doesNotMatch(detail, /Bind this version/);
+  const bindableDetail = renderToStaticMarkup(createElement(WorkflowVersionDetail, {
+    version,
+    personas: [],
+    onBindVersion: () => {},
+  }));
+  assert.match(bindableDetail, /Bind this version/);
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  assert.match(source, /onBindVersion=\{workflow\.archivedAt === null \? onBindVersion : undefined\}/);
 });
 
 test("published workflow nodes stay within the visible React Flow graph", () => {

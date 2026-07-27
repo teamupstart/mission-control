@@ -210,6 +210,36 @@ test("binding routes pin immutable versions, enforce one active owner, and refus
   const archived = await request(app, `/api/workflow-bindings/${binding.id}`, {}, "DELETE");
   assert.equal(archived.status, 200);
   assert.equal((await archived.json() as { state: string }).state, "archived");
+
+  const archivedWorkflow = await request(app, "/api/workflows/w", {
+    expectedDraftRevision: 1,
+  }, "DELETE");
+  assert.equal(archivedWorkflow.status, 200);
+  const archivedWorkflowBody = await archivedWorkflow.json() as {
+    workflow: { draftRevision: number };
+  };
+  assert.equal(workflows.store.getBinding(binding.id)?.state, "archived");
+
+  const refused = await request(app, "/api/workflow-bindings", {
+    workflowVersionId: "v",
+    sessionId: "session-1",
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: "This workflow is archived and must be restored before it can be bound",
+    code: "workflow_conflict",
+    current: null,
+  });
+
+  const restored = await request(app, "/api/workflows/w/unarchive", {
+    expectedDraftRevision: archivedWorkflowBody.workflow.draftRevision,
+  });
+  assert.equal(restored.status, 200);
+  const rebound = await request(app, "/api/workflow-bindings", {
+    workflowVersionId: "v",
+    sessionId: "session-1",
+  });
+  assert.equal(rebound.status, 201);
   await workflows.stop();
 });
 

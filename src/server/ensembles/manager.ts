@@ -263,8 +263,15 @@ export class EnsembleManager {
    * Both the loop guard and the staleness detector for the session edge below, which is why they
    * are two maps and not one: a run's counts can be unchanged while one member's own
    * `needsInput` moved (a second member picking up the question the first one dropped in the same
-   * tick), and the chip is drawn from the per-member value. Derived values only - nothing durable
-   * is cached here, so a restart rebuilds both from the store and the registry.
+   * tick), and the chip is drawn from the per-member value. That swap is the case the counts cannot
+   * see, so it is the case that decides where these may be written.
+   *
+   * PUBLISHED means published. Each is set only where the value actually left this process -
+   * `refreshProjection` for the links it pushed onto sessions, `publish` / the boot install for the
+   * counts - and never by a path that merely recomputed them. A cache written by a silent rebuild
+   * describes a push that never happened, and the guard reading it then skips the emit the cards
+   * were waiting for. Derived values only, so a restart rebuilds both from the store and the
+   * registry.
    */
   private publishedCounts = new Map<string, PublishedMemberCounts>();
   private publishedNeedsInput = new Map<string, boolean>();
@@ -447,9 +454,10 @@ export class EnsembleManager {
    * The guard is mandatory, not an optimization. `publish` -> `refreshProjection` ->
    * `resyncSessionTask` emits `session_upsert` for every session whose task chip changed, which
    * schedules this check again; without a guard that is an unbounded chain of microtasks. It
-   * terminates because both caches are written BEFORE those emits (`refreshLinks` writes
-   * `publishedNeedsInput`, and the pre-seed below writes `publishedCounts`), so the follow-up
-   * check recomputes exactly what it finds cached and returns.
+   * terminates because those emits only QUEUE a check, and both caches are written before the
+   * queue drains: `refreshProjection` records what it pushed, `rememberPublished` records the
+   * counts, and the pre-seed below covers the counts even earlier. Every follow-up check therefore
+   * recomputes exactly what it finds cached and returns.
    *
    * Both derived values are checked. The counts alone would leave the member's own chip stale
    * until an unrelated task event happened to rebuild the link map, since `refreshLinks` is
@@ -499,15 +507,23 @@ export class EnsembleManager {
     this.pendingSessionChecks.clear();
   }
 
-  /** Rebuilt rather than patched: a member LOSING its task matters as much as gaining one. */
+  /**
+   * Rebuilt rather than patched: a member LOSING its task matters as much as gaining one.
+   *
+   * `needsInput` is injected here rather than in the store, which cannot see a session. A task that
+   * has stopped being a member drops out of the map, so a stale `true` cannot outlive the link that
+   * carried it.
+   *
+   * This deliberately does NOT touch `publishedNeedsInput`. Rebuilding the map is not pushing it:
+   * `store.onTaskLinksChanged` calls straight in here and emits nothing at all, so recording those
+   * values as published would describe a push that never happened - and the session edge's guard,
+   * comparing against them, would then decline to emit the correction the cards are waiting for.
+   * `refreshProjection` is where a rebuild actually reaches a session, so that is where it is
+   * recorded.
+   */
   private refreshLinks(): void {
-    // `needsInput` is injected here rather than in the store, which cannot see a session, and the
-    // cache is written in the same pass so the session edge's guard describes what the projection
-    // now says. A task that has stopped being a member drops out of both, so a stale `true` cannot
-    // outlive the link that carried it.
     const awaiting = this.sessionsAwaitingOperator();
     const links = new Map<string, TaskEnsembleLink>();
-    const needsInput = new Map<string, boolean>();
     for (const row of this.store.listTaskLinks()) {
       // Both halves, the same two the count applies: the SESSION is holding a question and the
       // MEMBER is one this run is still waiting on. A chip that answered only the first would
@@ -515,15 +531,24 @@ export class EnsembleManager {
       const blocked =
         awaiting.has(row.taskId) && ensembleMemberAwaitsOperator(row.link.status);
       links.set(row.taskId, { ...row.link, needsInput: blocked });
-      needsInput.set(row.taskId, blocked);
     }
     this.links = links;
-    this.publishedNeedsInput = needsInput;
   }
 
+  /**
+   * Rebuild the links and push them onto every session whose chip they change.
+   *
+   * `registerEnsembleProjection` resyncs each session, so THIS is the moment a link reaches a card,
+   * and the per-member cache is recorded from what was pushed - after the resync, so the values are
+   * the ones that actually went out. The deferred checks those emits schedule read the cache later,
+   * on their own microtask, by which time it is current.
+   */
   private refreshProjection(): void {
     this.refreshLinks();
     this.registry.registerEnsembleProjection((taskId) => this.links.get(taskId) ?? null);
+    const pushed = new Map<string, boolean>();
+    for (const [taskId, link] of this.links) pushed.set(taskId, link.needsInput);
+    this.publishedNeedsInput = pushed;
   }
 
   /** Every run, as the compact projection - decorated, so an HTTP list matches the stream. */

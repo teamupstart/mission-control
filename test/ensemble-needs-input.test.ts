@@ -61,6 +61,8 @@ const request = {
 
 /** The member's own worktree, which is what correlates its dispatched Task to its session. */
 const MEMBER_CWD = "/ensemble-worktree";
+/** The second candidate's, since every member is cut its own checkout from the pinned base. */
+const SIBLING_CWD = "/ensemble-worktree-2";
 
 function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
@@ -80,6 +82,9 @@ function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
     ...over,
   };
 }
+
+const sibling = (over: Partial<DiscoveredSession> = {}): DiscoveredSession =>
+  discovered({ syntheticId: "sibling-session", name: "Candidate 2", cwd: SIBLING_CWD, pid: 2, tty: "ttys2", ...over });
 
 /**
  * The member's Task, with NO `sessionId`.
@@ -190,6 +195,28 @@ function scene() {
     },
     upserts(): EnsembleSummary[] {
       return events.flatMap((e) => (e.type === "ensemble_upsert" ? [e.ensemble] : []));
+    },
+    /**
+     * Launch the roster's second member onto its own session, so the run has TWO cards.
+     *
+     * Needed by the swap case below: one blocked member becoming unblocked while the other becomes
+     * blocked is the state where the run's own counts do not move, and it is the only thing left
+     * holding the per-member cache honest.
+     */
+    launchSibling(): { taskId: string; sessionId: string } {
+      store.setMemberStatus(members[1]!.id, ["pending"], "active", { taskId: "task-2" });
+      registry.upsertTask(memberTask({ id: "task-2", title: "Candidate 2", worktreePath: SIBLING_CWD }));
+      registry.applyDiscovery([discovered(), sibling()]);
+      const found = registry.snapshot().sessions.find((session) => session.cwd === SIBLING_CWD);
+      assert.ok(found, "the sibling member session must exist");
+      manager.publish(runId);
+      return { taskId: "task-2", sessionId: found.id };
+    },
+    /** The card of any session, by id - the sibling's included. */
+    cardOf(id: string): Session {
+      const session = registry.getSession(id);
+      assert.ok(session, `session ${id} must exist`);
+      return session;
     },
   };
 }
@@ -389,6 +416,50 @@ test("a member the run has finished with does not drag its attention up", async 
     assert.equal(s.live().attention, false);
     assert.equal(s.card().task?.ensemble?.needsInput, false);
     assertDisjoint(s.live());
+  } finally {
+    s.stop();
+  }
+});
+
+test("a link rebuild that pushed nothing does not count as published", async () => {
+  const s = scene();
+  const two = s.launchSibling();
+  try {
+    await s.review({});
+    assert.equal(s.live().membersNeedingInput, 1);
+    assert.equal(s.card().task?.ensemble?.needsInput, true);
+    assert.equal(s.cardOf(two.sessionId).task?.ensemble?.needsInput, false);
+    const published = s.upserts().length;
+
+    // The question moves from one candidate to the other in a single tick, so the RUN's counts do
+    // not move at all (1 blocked before, 1 blocked after) and the per-member cache is the only
+    // thing that can still notice. Between the session events and the deferred check, an unrelated
+    // member write fires `onTaskLinksChanged` - which rebuilds the link map and emits NOTHING.
+    //
+    // That rebuild must not be recorded as "published". Recorded, the deferred check compares the
+    // fresh answer against a cache describing a push that never happened, concludes nothing moved,
+    // and returns - leaving both cards carrying the previous tick's chip with no event coming to
+    // correct them. The counts would have hidden it for any change that also moved a count; the
+    // swap is the case where nothing else does.
+    s.registry.upsertReview(review({ sessionId: s.sessionId, status: "answered", resolvedAt: 20 }));
+    s.registry.upsertReview(review({ id: "review-sibling", sessionId: two.sessionId }));
+    s.store.setMemberStatus(s.members[1]!.id, ["active"], "active", { resultLabel: "rank 1" });
+    await settled();
+
+    assert.equal(s.live().membersNeedingInput, 1, "still exactly one member blocked");
+    assert.ok(s.upserts().length > published, "the swap is a real change and has to be announced");
+    // Both cards, which is the whole point: the answered one has to stop saying it is waiting.
+    assert.equal(s.card().task?.ensemble?.needsInput, false);
+    assert.equal(s.cardOf(two.sessionId).task?.ensemble?.needsInput, true);
+    // And the corrections were PUSHED, not merely computable on the next unrelated sweep.
+    const pushed = new Map<string, boolean | undefined>();
+    for (const event of s.events) {
+      if (event.type === "session_upsert") {
+        pushed.set(event.session.id, event.session.task?.ensemble?.needsInput);
+      }
+    }
+    assert.equal(pushed.get(s.sessionId), false);
+    assert.equal(pushed.get(two.sessionId), true);
   } finally {
     s.stop();
   }

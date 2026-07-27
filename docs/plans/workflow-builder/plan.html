@@ -78,7 +78,7 @@
   <div class="table-wrap"><table>
     <thead><tr><th>Area</th><th>Decision</th></tr></thead><tbody>
       <tr><td>Persona storage</td><td>SQLite is canonical for operator-authored Personas. Guidance is exact Markdown and can be copied, downloaded as <code>.md</code>, or imported; app-owned built-ins are compiled into the build.</td></tr>
-      <tr><td>Workflow editing</td><td>Mutable drafts and immutable published versions. Bindings pin a version.</td></tr>
+      <tr><td>Workflow editing</td><td>Mutable drafts and immutable published versions. Bindings pin a version. A definition can be deleted only before its first publish; published workflows retire through reversible archive so their immutable history remains.</td></tr>
       <tr><td>Cycles</td><td>Every legal cycle returns to the one Session node. The engine records the resubmission boundary internally; there is no checkpoint node in the palette. Persona-only cycles are rejected.</td></tr>
       <tr><td>Concurrency</td><td>Fan-out runs independent Personas concurrently. An explicit all-pass Join aggregates all predecessor results.</td></tr>
       <tr><td>Session feedback</td><td>Preview by default. Live delivery requires per-binding opt-in and the Workflows repo allowlist.</td></tr>
@@ -281,6 +281,8 @@
 GET/PATCH/DELETE  /api/personas/:id
 GET/POST          /api/workflows
 GET/PATCH/DELETE  /api/workflows/:id
+POST              /api/workflows/:id/unarchive
+POST              /api/workflows/:id/delete
 POST              /api/workflows/:id/validate
 POST              /api/workflows/:id/publish
 GET/POST          /api/workflow-bindings
@@ -294,6 +296,7 @@ POST              /api/workflow-runs/:id/retry
 POST              /api/workflow-runs/:id/resubmit
 POST              /api/sessions/:id/workflow-completion
 GET/PUT            /api/workflows/config</code></pre>
+  <p><code>DELETE /api/workflows/:id</code> remains soft archive for compatibility. Restore and the never-published hard delete use separate <code>POST</code> routes so an older client that means archive cannot reach the destructive action. Every mutating route uses <code>parseBody</code>.</p>
 
   <h2>Daemon architecture</h2>
   <p>The engine belongs in the daemon because Electron always starts it, the state is durable, and only the daemon may write SQLite.</p>

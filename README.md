@@ -797,15 +797,13 @@ that, back to the session's first turn. **Load older messages** does the same on
 for when you would rather not scroll. Nothing appears once you reach the beginning: a
 short session shows no control at all.
 
-What you have scrolled back to is kept, so switching to the Diff tab and back, collapsing
-a card, or moving between sessions returns you to the history you had - not to the tail
-again. It survives a dropped connection and a daemon restart too, unless the agent wrote
-more while the dashboard was away than the reconnect's window covers; then the panel
-starts from the recent turns again and scrolling up re-reads the rest. History is held per
-session for the browser tab, and released when a session goes away.
-
-Turns are anchored by byte offset in the session file, which is what makes each page abut
-the last exactly - no turn is skipped between pages, and none is shown twice.
+What you have scrolled back to is kept for recently viewed sessions, so switching to the
+Diff tab and back, collapsing a card, or moving between sessions usually returns you to
+the history you had - not to the tail again. It survives a dropped connection and a
+daemon restart too, unless the agent wrote more while the dashboard was away than the
+reconnect's window covers; then the panel starts from the recent turns again and
+scrolling up re-reads the rest. The cache lasts for the browser tab; an evicted entry can
+always be fetched again by scrolling up.
 
 ### Shadow reading: Claude's own session state
 
@@ -3200,10 +3198,8 @@ earns two surfaces a card has nowhere to put:
 
 ## How much conversation you see
 
-The Conversation panel opens on up to the session's **last 80 turns**, then streams new
-ones as the agent writes them. Its reader widens the transcript scan until it finds that
-many turns or reaches the 16 MB scan ceiling, so tool output and reasoning records in a
-Codex rollout do not crowd the conversation out of a fixed byte window.
+For the Conversation panel's complete, paged history, see
+[Reading a session's whole conversation](#reading-a-sessions-whole-conversation).
 
 One-shot context readers such as Foreman's reviewer and the goal refiner keep the opening
 turns plus the most recent ones, and mark the middle as elided when necessary. The work

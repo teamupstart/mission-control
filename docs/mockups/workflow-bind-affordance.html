@@ -531,7 +531,7 @@ kbd {
   <p class="note">
     Puts the action where its content lives. Empty, the tab explains what a binding is and offers one real
     button with room for a sentence - which a 92px pill never had. Bound, the same tab is where the run's
-    stages, gate and rounds go, instead of a chip that opens a modal over the session you were reading.
+    stages, gate and rounds go, instead of a chip that navigates away to the Workflows run detail.
     <strong>Click the Workflow tab.</strong> The header keeps only state.
   </p>
   <div class="cdetail" data-tabs>
@@ -624,13 +624,13 @@ kbd {
       replicate elsewhere.</li>
     <li><b>4</b> and <b>5</b> are the fixes if the complaint is that the header is full. Both remove the chip
       rather than restyling it, and both scale to the next feature that wants a slot there.</li>
-    <li><b>5</b> is the only one that also improves the <i>bound</i> case - today a run is a chip that opens a
-      modal.</li>
-    <li>Whichever wins, it lands in <b>two</b> files: <code>SessionCard.tsx:240-252</code> and
-      <code>ConsoleDetail.tsx:254-263</code> carry copies of this chip. Per the layout-parity rule a shared leaf
-      belongs in <code>session-bits.tsx</code> - this one never got one, which is why there are two copies to
-      keep in step. Option 5 additionally touches <code>SessionTile</code> and <code>RailRow</code>, since a
-      tab is not a mark those two can show.</li>
+    <li><b>5</b> is the only one that also improves the <i>bound</i> case - today a run is a chip that navigates
+      to its detail on the Workflows page.</li>
+    <li>The current affordance appears in <b>two</b> files: <code>SessionCard.tsx:240-252</code> and
+      <code>ConsoleDetail.tsx:254-263</code> carry copies of the chip. Per the layout-parity rule, the chosen
+      shared leaf belongs in <code>session-bits.tsx</code> - this one never got one, which is why there are two
+      copies to keep in step. Option 5 additionally touches <code>SessionTile</code> and <code>RailRow</code>,
+      since a tab is not a mark those two can show.</li>
   </ul>
 </section>
 

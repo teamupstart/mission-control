@@ -774,7 +774,7 @@ h1 {
     </div>
     <p class="cell-note">
       Same three controls, same order. Switches instead of raw checkboxes, a one-line description per row so
-      the hint paragraph stops carrying the explanation, and a rule separating the two local prefs from away
+      the hint paragraph stops carrying the explanation, and a rule separating the two delivery prefs from away
       mode - which is <strong>server state</strong> and survives the tab closing. Lowest-risk change.
     </p>
     <div class="stage">
@@ -873,7 +873,7 @@ h1 {
       <h2 class="cell-title">Channels + Away card</h2>
     </div>
     <p class="cell-note">
-      Splits the panel by <strong>what owns the state</strong>: two local browser prefs above, away mode below as its
+      Splits the panel by <strong>what owns the state</strong>: two per-machine delivery prefs above, away mode below as its
       own card that grows when it's on - elapsed time, how much is buffered, and a way into the digest.
       Today the digest is the payoff of away mode and the panel never mentions it.
     </p>
@@ -1144,10 +1144,10 @@ h1 {
   <h2>Reading these</h2>
   <ul>
     <li><b>A</b> and <b>B</b> are drop-in replacements - same state, same routes, only <code style="font-family:var(--mono)">AlertBar.tsx</code> and a CSS section change.</li>
-    <li><b>C</b> and <b>D</b> need the away buffer's count and elapsed time on the wire; the daemon already holds both (<code style="font-family:var(--mono)">away-buffer.ts</code>, <code style="font-family:var(--mono)">AwayConfig.awaySince</code>).</li>
+    <li><b>C</b> and <b>D</b> need the away buffer's count added to the wire; elapsed time already derives from the wired <code style="font-family:var(--mono)">AwayConfig.awaySince</code>, and the daemon holds the buffer in <code style="font-family:var(--mono)">away-buffer.ts</code>.</li>
     <li><b>E</b> needs a new per-kind preference store - the alert engine emits the kinds already, nothing persists a routing choice per kind.</li>
     <li><b>F</b> needs live alerts kept in client state rather than fired and forgotten, plus the deep-link each row implies. There is already an <code style="font-family:var(--mono)">AttentionInbox</code> component to borrow rows from.</li>
-    <li>Severity dots in <b>E</b> follow <code style="font-family:var(--mono)">AlertSeverity</code>: amber = attention (blocked on you, always delivered), grey = info (digest material).</li>
+    <li>Severity dots in <b>E</b> follow <code style="font-family:var(--mono)">AlertSeverity</code>: amber = attention (blocked on you, passes the delivery filter), grey = info (digest material).</li>
   </ul>
 </section>
 

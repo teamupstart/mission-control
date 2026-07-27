@@ -118,7 +118,16 @@ behaves exactly as version 1 did.
 `definition.currentVersionId` moves to version 2. `draftRevision` increments so the definition
 reads as changed.
 
-Build the graph with `compileStages` from a written `StagePipeline`, as in Phase 1.
+Build the graph with `compileStages` **at authoring time** and paste the result in as a literal
+with frozen ids, exactly as Phase 1 does. Do not call `compileStages` at module load:
+`workflow-stages.ts:369, 386, 396` mint `crypto.randomUUID()`, and node and edge ids reach
+`workflow_node_attempts.node_id` and `workflow_edge_receipts.edge_id` durably. Version 2's ids
+must be as stable as version 1's.
+
+Version 2 mints entirely fresh node ids rather than reusing version 1's. The two graphs are
+independent immutable artifacts, and a run pinned to one never consults the other, so shared
+ids would buy nothing and would invite exactly the cross-version confusion the pin exists to
+prevent.
 
 ### 4. README
 
@@ -193,6 +202,10 @@ It must not rename a slot, a built-in slug, or a version id.
 
 ## Cross-phase audit record
 
+- **Inherited from Phase 1's corrected defect**: the built-in graph is a committed literal with
+  frozen ids, never a module-load `compileStages` call. Phase 1's audit record has the full
+  reasoning. Version 2 is bound by the same rule and this phase states it inline so an
+  implementer reading only this file cannot reintroduce it.
 - **Against Phase 1**: consumes the versions-list catalog exactly as Phase 1 promised. No
   change to `builtinWorkflowId` / `builtinWorkflowVersionId`, the store merge, or the refusals.
   Version 1 immutability is asserted in this phase's tests rather than assumed.

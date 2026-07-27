@@ -130,10 +130,25 @@ Edges:
 | join | pass | end | terminal |
 | join | fail | session | return_for_changes |
 
-Node positions must satisfy `stageExpressible` so the workflow renders in the Pipeline editor
-rather than Graph view. Derive them with `compileStages` from a hand-written `StagePipeline`
-rather than hand-placing coordinates, and assert the round trip in the test. `LAYOUT` in
-`workflow-stages.ts` is the coordinate authority.
+**The graph is a committed literal with hardcoded node and edge ids. Do not call
+`compileStages` at module load.**
+
+`compileStages` mints `crypto.randomUUID()` for every member with a null `nodeId`, every new
+join, and every new edge (`workflow-stages.ts:369, 386, 396`). A graph compiled when the module
+loads would therefore have different node and edge ids on every daemon restart. Those ids are
+durable: `workflow_node_attempts.node_id` and `workflow_edge_receipts.edge_id` both reference
+them, so an in-flight run that spans a restart would hold attempts pointing at nodes the graph
+no longer contains. It also makes a nonsense of "immutable published version", which is the
+one thing a version is.
+
+Use `compileStages` **at authoring time** to produce the graph once, then paste the result in
+as a literal with its ids frozen. The test proves the literal is what the compiler would have
+produced structurally, which is what keeps the two from drifting without making the ids
+runtime-generated.
+
+Positions come from that same authoring pass, so they satisfy `stageExpressible` and the
+workflow renders in the Pipeline editor rather than Graph view. `LAYOUT` in
+`workflow-stages.ts` is the coordinate authority; do not hand-place coordinates.
 
 ### 4. The store merge (`src/server/workflows/store.ts`)
 
@@ -203,9 +218,16 @@ that an upgrade improving a Persona improves it with no gesture. Update the sent
 New `test/builtin-workflows.test.ts`:
 
 - The shipped graph validates clean against `validateWorkflowGraph` with the real built-in
-  Persona catalog: zero errors, zero warnings.
-- `projectStages(graph)` returns a pipeline (not `null`), so it renders in the Pipeline editor,
-  and `compileStages(projectStages(graph))` round-trips to the same graph.
+  Persona catalog: zero errors, zero warnings. **Verified during planning**: the graph below
+  returns `valid: true` with `diagnostics: []` and 13 edges.
+- `projectStages(graph)` returns a pipeline (not `null`), so it renders in the Pipeline editor.
+- Round trip, stated precisely because the naive form fails: assert
+  `projectStages(compileStages(p, graph)) === p` where **`p = projectStages(graph)`**, that is,
+  a pipeline whose members already carry real node ids. Comparing against a hand-written seed
+  with `nodeId: null` is not the invariant and will not hold, because the compiler mints ids
+  for null members.
+- Node and edge ids are stable across two module loads in the same test run, which is what
+  catches a reintroduced `compileStages`-at-load-time.
 - Every persona node's `sourcePersonaId` exists in `BUILTIN_PERSONAS`, and every snapshot's
   `guidanceMarkdown` equals the current built-in's, so `personaSnapshotIsOutdated` is false.
 - `completionPolicy` and `bindingDefaults` are exactly the adopted values.
@@ -266,6 +288,16 @@ Phase 3 must not:
   `WorkflowSummary`, Phase 2 edits `WorkflowDraftNode`, `WorkflowConfig` and adds
   `WORKFLOW_CHECK_SLOTS`) and in `README.md` (different subsections). No shared migration, no
   shared route.
+- **Defect found and corrected during planning, by executing the graph rather than reading
+  it.** The first draft said to derive the graph with `compileStages` from a hand-written
+  pipeline. Running it showed `compileStages` mints `crypto.randomUUID()` for null-id members,
+  joins and edges, so a module-load compile would change every node and edge id on each daemon
+  restart, stranding durable `workflow_node_attempts.node_id` and
+  `workflow_edge_receipts.edge_id` rows and making the "immutable" version mutable. Corrected
+  to a committed literal with frozen ids. Phase 3 inherits the same rule for version 2.
+- **The round-trip assertion was also wrong as first written** and is now stated against a
+  projected pipeline rather than a hand-written seed. Verified: the corrected form returns
+  true, the naive form returns false.
 - **Against Phase 3**: the versions-list catalog shape exists specifically so Phase 3 can
   append. Recorded as a binding contract above after noticing that a single-version catalog
   would strand Phase 3's upgrade path; this decision was moved into Phase 1 rather than being

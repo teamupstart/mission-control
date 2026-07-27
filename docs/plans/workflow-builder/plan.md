@@ -33,7 +33,7 @@ closed loop:
 | Area | Decision |
 |---|---|
 | Persona storage | SQLite is canonical for operator-authored Personas. Guidance is stored exactly as Markdown and can be copied, downloaded as `.md`, or imported from `.md`; app-owned built-ins are compiled into the build. |
-| Workflow editing | Workflows have a mutable draft and immutable published versions. A binding pins a published version so an edit cannot change an active run. A definition can be deleted only before its first publish; published workflows retire through reversible archive so their immutable history remains. |
+| Workflow editing | Workflows have a mutable draft and immutable published versions. A binding pins a published version so an edit cannot change an active run. The [README lifecycle guide](../../../README.md#retiring-a-workflow) owns the current archive, restore, and delete behavior. |
 | Cycles | The designer shows one Session node. Every legal cycle must return to it, which means "send changes back, wait for a new submission, then restart the Persona graph." The engine records that resubmission boundary internally; there is no checkpoint node in the palette. Persona-only cycles are rejected because they can spend indefinitely against unchanged evidence. |
 | Concurrency | Fan-out starts independent Persona nodes concurrently. An explicit `all-pass` Join waits for one verdict from every configured predecessor and aggregates failures. |
 | Session feedback | Preview is the default. Live delivery is an explicit per-binding choice and also requires the repo to be on the Workflows allowlist. |

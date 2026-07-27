@@ -2112,11 +2112,12 @@ each published version.
 ### Retiring a workflow
 
 **Archive** is the way to retire a published workflow, and it is soft and reversible.
-Archived workflows leave the default library listing, refuse edits and new bindings, but
-their published versions and past run history stay readable. Archiving is refused while any
-binding on the workflow is still active. **Restore** brings one back: the normalized name
-was never released while archived, so nothing can have taken it and there is no conflict to
-resolve. Show archived workflows with the checkbox under the library list.
+Archived workflows leave the default library listing and refuse edits, new bindings, and
+binding reattachment until restored. Existing bindings and in-flight runs remain intact,
+and published versions and run history stay readable. Archiving is refused while any binding
+on the workflow is still active. **Restore** brings one back: the normalized name was never
+released while archived, so nothing can have taken it and there is no conflict to resolve.
+Show archived workflows with the checkbox under the library list.
 
 **Delete** is offered only for a workflow that has never been published, and it removes the
 row outright. That restriction is what makes it safe rather than careful. A binding names a

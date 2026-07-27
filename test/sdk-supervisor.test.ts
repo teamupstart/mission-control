@@ -126,6 +126,13 @@ const START = {
   taskId: null,
 };
 
+const GATED_GIT = {
+  branch: "feature/no-mistakes",
+  root: "/wt/one",
+  repoRoot: "/repo",
+  nomistakesGated: true,
+};
+
 test("start persists a row, registers the card, and records the binding", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
@@ -158,6 +165,21 @@ test("start persists a row, registers the card, and records the binding", async 
     assert.equal(registry.getSession(session.id)?.agentSessionId, "agent-7");
     assert.equal(registry.getSession(session.id)?.meta?.modelId, "actual-model");
     assert.equal(registry.getSession(session.id)?.hooksSeen, true);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("start registers an SDK checkout's no-mistakes gate immediately", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry, { gitInfo: () => GATED_GIT });
+    const session = await supervisor.start(START);
+
+    assert.equal(session.nomistakesGated, true);
+    assert.deepEqual(registry.nomistakesPollCwds(), [START.cwd]);
   } finally {
     fake.restore();
   }
@@ -248,6 +270,7 @@ test("restore resumes the same conversation rather than starting a new one", asy
     const registry = new Registry();
     const supervisor = new SdkSupervisor(registry, {
       missionMcpDescriptor: async () => descriptor,
+      gitInfo: () => GATED_GIT,
     });
     await supervisor.restore();
 
@@ -261,6 +284,11 @@ test("restore resumes the same conversation rather than starting a new one", asy
     assert.equal(fake.calls[0]!.effort, "high");
     assert.deepEqual(fake.calls[0]!.mcp, descriptor);
     assert.ok(registry.getSession("sdk:restore-1"), "the card is back before the first sweep");
+    assert.equal(
+      registry.getSession("sdk:restore-1")?.nomistakesGated,
+      true,
+      "restoration reads the checkout before the first poll",
+    );
     // The row keeps the id it is being picked up from - it must not be blanked to `null`
     // and then re-learned, or a crash in that window loses the only thing a resume needs.
     assert.equal(getSdkSession("sdk:restore-1")?.agentSessionId, "agent-42");

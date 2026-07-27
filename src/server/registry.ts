@@ -3039,14 +3039,13 @@ export class Registry extends EventEmitter {
    * Driver-run sessions whose checkout has to be re-read, with the cwd to read it in.
    *
    * The counterpart to `applyDiscovery` for the one runtime that never passes through it.
-   * A pane-backed session's `gitBranch` is re-resolved from its cwd on every sweep, so it
-   * follows the agent onto whatever branch it cuts; a driver-run session is registered
-   * once, from `wt.branch` at dispatch, and nothing ever asked again. A pooled worktree is
-   * routinely leased with no branch at all, so that snapshot is `null` for the whole life
-   * of the session while the agent works on - and opens a PR from - a branch the daemon
-   * cannot see. `prPollTargets` then reports `branch: null`, the poller never spends a `gh`
-   * call on it, and `reconcilePrs` reads the resulting absence as "provably no PR" and
-   * RETRACTS the chip a hook had set optimistically.
+   * A pane-backed session's Git facts are re-resolved from its cwd on every sweep, so it
+   * follows the agent onto whatever branch it cuts and notices when no-mistakes gating is
+   * added or removed. A driver-run session is registered once and never passes through that
+   * sweep. Without this counterpart a pooled worktree can stay branchless for its whole
+   * session, and an SDK-only no-mistakes run is never polled because its checkout remains
+   * marked ungated. A terminal sibling can accidentally mask the latter by polling the
+   * shared branch on the SDK session's behalf.
    *
    * Scoped to `runtime === "sdk"` for the same reason `applyDiscovery`'s unseen-means-exited
    * loop is scoped to `"terminal"`: this is the arm for sessions the sweep cannot answer for,
@@ -3062,7 +3061,7 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Adopt the branch each driver-run session's checkout is actually on.
+   * Adopt the mutable Git facts for each driver-run session's checkout.
    *
    * `null` overwrites a known branch rather than being ignored, which is deliberate and is
    * exactly what a pane-backed session already does: a detached HEAD (every `git rebase`
@@ -3073,16 +3072,27 @@ export class Registry extends EventEmitter {
    * special case that held the last value here would be a third answer to "what branch is
    * this session on".
    *
-   * Only `gitBranch` is written. `cwd` is fixed for the life of a driver-run session, so
-   * `gitRoot` and `repoRoot` cannot have changed, and the launch-time answers the
-   * supervisor recorded for them stay authoritative.
+   * `cwd` is fixed for the life of a driver-run session, so `gitRoot` and `repoRoot` cannot
+   * have changed and the launch-time answers stay authoritative. The branch and
+   * `nomistakesGated` are mutable: agents cut branches, and no-mistakes can add its remote
+   * after the session launches.
    */
-  applyDriverBranches(branches: Map<string, string | null>): void {
-    for (const [id, branch] of branches) {
+  applyDriverGit(
+    snapshots: Map<string, { branch: string | null; nomistakesGated: boolean }>,
+  ): void {
+    for (const [id, snapshot] of snapshots) {
       const s = this.sessions.get(id);
       if (!s || s.runtime !== "sdk" || s.state === "exited") continue;
-      if (s.gitBranch === branch) continue;
-      const next: Session = { ...s, gitBranch: branch };
+      if (
+        s.gitBranch === snapshot.branch &&
+        s.nomistakesGated === snapshot.nomistakesGated
+      )
+        continue;
+      const next: Session = {
+        ...s,
+        gitBranch: snapshot.branch,
+        nomistakesGated: snapshot.nomistakesGated,
+      };
       this.sessions.set(next.id, next);
       if (!sessionEqual(s, next)) this.emitSession(next);
     }
@@ -5535,13 +5545,9 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   gitBranch: byValue,
   gitRoot: byValue,
   repoRoot: byValue,
-  // KNOWN GAP, carried over rather than endorsed. Unlike the identity fields above
-  // this is re-read every sweep (`hasNoMistakesRemote`) and IS rendered - the ◇ rail
-  // mark and the gated chip - so adding the no-mistakes remote to a live session's
-  // repo can go unshown until some other field happens to move. Rare enough to have
-  // never been noticed, and left alone here only because closing it would change
-  // what gets emitted, which this fail-closed refactor deliberately does not do.
-  nomistakesGated: alwaysEqual,
+  // Re-read from the checkout: no-mistakes can add or remove its remote while a session is
+  // live, and both the gated chip and whether the status poller visits the cwd follow it.
+  nomistakesGated: byValue,
   pid: byValue,
   permissionMode: byValue,
   terminals: terminalsEqual,

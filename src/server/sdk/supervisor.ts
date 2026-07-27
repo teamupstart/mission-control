@@ -12,6 +12,7 @@ import type { SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness
 import { sdkFor } from "../harness/index.ts";
 import { missionMcpDescriptor, type MissionMcpDescriptor } from "../mission-mcp.ts";
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
+import { gitInfo } from "../util/git.ts";
 import { sleep } from "../util/timers.ts";
 import {
   listSdkSessions,
@@ -72,6 +73,7 @@ export class SdkSupervisor {
     private readonly registry: Registry,
     private readonly deps: {
       missionMcpDescriptor?: typeof missionMcpDescriptor;
+      gitInfo?: typeof gitInfo;
     } = {},
   ) {}
 
@@ -149,6 +151,7 @@ export class SdkSupervisor {
       mcp: input.mcp,
       resume: null,
     });
+    const checkout = (this.deps.gitInfo ?? gitInfo)(input.cwd);
     return this.adopt({
       registration: {
         id,
@@ -159,6 +162,7 @@ export class SdkSupervisor {
         gitBranch: input.gitBranch ?? null,
         gitRoot: input.gitRoot ?? null,
         repoRoot: input.repoRoot ?? null,
+        nomistakesGated: checkout.nomistakesGated,
       },
       handle,
       durable: { taskId: input.taskId, model: input.model, effort: input.effort },
@@ -482,6 +486,7 @@ export class SdkSupervisor {
       mcp,
       resume: row.agentSessionId,
     });
+    const checkout = (this.deps.gitInfo ?? gitInfo)(row.cwd);
     this.adopt({
       registration: {
         id: row.id,
@@ -492,6 +497,7 @@ export class SdkSupervisor {
         gitBranch: task?.branch ?? null,
         gitRoot: row.cwd,
         repoRoot: task?.repoRoot ?? null,
+        nomistakesGated: checkout.nomistakesGated,
       },
       handle,
       durable: {
@@ -517,6 +523,7 @@ export class SdkSupervisor {
       if (!row.agent) return;
       const task = row.taskId ? this.registry.getTask(row.taskId) : null;
       if (this.registry.sdkRegistrationRefusal(row.id)) return;
+      const checkout = (this.deps.gitInfo ?? gitInfo)(row.cwd);
       this.registry.registerSdkSession({
         id: row.id,
         agent: row.agent,
@@ -526,6 +533,7 @@ export class SdkSupervisor {
         gitBranch: task?.branch ?? null,
         gitRoot: row.cwd,
         repoRoot: task?.repoRoot ?? null,
+        nomistakesGated: checkout.nomistakesGated,
       });
       this.registry.applyDriverEvent(row.id, {
         kind: "exited",

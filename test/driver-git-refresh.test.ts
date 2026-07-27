@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
-process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-driver-branch-"));
+process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-driver-git-"));
 const { Registry } = await import("../src/server/registry.ts");
-const { pollOnce, refreshDriverBranches } = await import("../src/server/discovery/poller.ts");
+const { pollOnce, refreshDriverGit } = await import("../src/server/discovery/poller.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 
 /**
- * What is at stake: a driver-run session's PR chip.
+ * What is at stake: a driver-run session's PR chip and no-mistakes pipeline.
  *
  * A pane-backed session's `gitBranch` is re-read from its cwd on every discovery sweep, so
  * it follows the agent onto whatever branch it cuts. A driver-run session never passes
@@ -24,10 +24,19 @@ const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
  * The retraction is the half that makes it worse than a missing decoration: a session that
  * is in neither `found` nor `skip` is read by `reconcilePrs` as "provably no PR", so a chip
  * the hook had set optimistically was actively wiped ~20s later.
+ *
+ * `nomistakesGated` had the same runtime split: terminal discovery re-read it on every
+ * sweep, while an SDK registration defaulted it to false forever. The status poller skips
+ * ungated checkouts, so an SDK-only session's real run stayed invisible. A terminal sibling
+ * sharing the checkout accidentally hid the defect by polling that branch on its behalf.
  */
 
 const PR = "https://github.com/o/r/pull/264";
 const BRANCH = "mancej/topbar-responsive-ladder";
+
+function gitSnapshot(branch: string | null, nomistakesGated = false) {
+  return { branch, nomistakesGated };
+}
 
 function sdkSession(reg: InstanceType<typeof Registry>, over: { gitBranch?: string | null } = {}) {
   return reg.registerSdkSession({
@@ -45,7 +54,7 @@ test("a driver-run session adopts a branch cut after it launched", () => {
   assert.equal(reg.snapshot().sessions[0]?.gitBranch, null, "leased with no branch");
 
   // The agent cuts its feature branch mid-run; the next sweep re-reads the checkout.
-  refreshDriverBranches(reg, () => BRANCH);
+  refreshDriverGit(reg, () => gitSnapshot(BRANCH));
 
   assert.equal(reg.snapshot().sessions[0]?.gitBranch, BRANCH);
 });
@@ -75,7 +84,7 @@ test("the adopted branch is what makes the PR poller ask, and the chip appear", 
   assert.equal(reg.snapshot().sessions[0]?.prUrl, null);
 
   // After it: the branch is real, so the PR is found and the chip is set.
-  refreshDriverBranches(reg, () => BRANCH);
+  refreshDriverGit(reg, () => gitSnapshot(BRANCH));
   await pollAndReconcilePrs(reg, lookup, async () => null);
 
   assert.deepEqual(asked, [BRANCH], "the adopted branch is what gets queried");
@@ -92,7 +101,7 @@ test("a detached HEAD reads as no branch, and does not invent one", () => {
   // `branchFromHead` returns null for a detached checkout - every `git rebase` passes
   // through one. Null must overwrite, exactly as it does for a pane-backed session, so the
   // first REAL branch is later adopted in place rather than looking like a branch change.
-  refreshDriverBranches(reg, () => null);
+  refreshDriverGit(reg, () => gitSnapshot(null));
 
   assert.equal(reg.snapshot().sessions[0]?.gitBranch, null);
 });
@@ -118,20 +127,20 @@ test("the refresh is scoped to driver-run sessions and never touches a pane-back
   ]);
   sdkSession(reg);
 
-  const read = (cwd: string): string | null => {
+  const read = (cwd: string) => {
     // The sweep already answered for the pane-backed session; asking again here would be a
     // second answer to the same question, on a different cadence.
     assert.equal(cwd, "/wt/pooled", "only the driver-run session's checkout is re-read");
-    return BRANCH;
+    return gitSnapshot(BRANCH);
   };
-  refreshDriverBranches(reg, read);
+  refreshDriverGit(reg, read);
 
   const byId = new Map(reg.snapshot().sessions.map((s) => [s.id, s]));
   assert.equal(byId.get("proc:ttys1:1:0")?.gitBranch, "mancej/from-the-sweep");
   assert.equal(byId.get("sdk:one")?.gitBranch, BRANCH);
 });
 
-test("an unchanged branch emits nothing", () => {
+test("an unchanged Git snapshot emits nothing", () => {
   const reg = new Registry();
   sdkSession(reg, { gitBranch: BRANCH });
 
@@ -139,12 +148,32 @@ test("an unchanged branch emits nothing", () => {
   reg.on("event", (e: { type: string }) => {
     if (e.type === "session_upsert") emitted++;
   });
-  refreshDriverBranches(reg, () => BRANCH);
+  refreshDriverGit(reg, () => gitSnapshot(BRANCH));
 
-  assert.equal(emitted, 0, "a steady branch must not churn SSE on every 1.5s tick");
+  assert.equal(emitted, 0, "steady Git state must not churn SSE on every 1.5s tick");
 });
 
-test("a failed terminal sweep does not skip the driver branch refresh", async () => {
+test("a driver-run session adopts no-mistakes gating and becomes a poll target", () => {
+  const reg = new Registry();
+  sdkSession(reg, { gitBranch: BRANCH });
+
+  let emitted = 0;
+  reg.on("event", (e: { type: string }) => {
+    if (e.type === "session_upsert") emitted++;
+  });
+  refreshDriverGit(reg, () => gitSnapshot(BRANCH, true));
+
+  assert.equal(reg.snapshot().sessions[0]?.nomistakesGated, true);
+  assert.deepEqual(reg.nomistakesPollCwds(), ["/wt/pooled"]);
+  assert.equal(emitted, 1, "a gate-only change must reach the card");
+
+  refreshDriverGit(reg, () => gitSnapshot(BRANCH, false));
+  assert.equal(reg.snapshot().sessions[0]?.nomistakesGated, false);
+  assert.deepEqual(reg.nomistakesPollCwds(), []);
+  assert.equal(emitted, 2, "removing the remote must also reach the card");
+});
+
+test("a failed terminal sweep does not skip the driver Git refresh", async () => {
   const reg = new Registry();
   sdkSession(reg);
 
@@ -156,11 +185,12 @@ test("a failed terminal sweep does not skip the driver branch refresh", async ()
       async () => {
         throw new Error("terminal backend unavailable");
       },
-      (registry) => refreshDriverBranches(registry, () => BRANCH),
+      (registry) => refreshDriverGit(registry, () => gitSnapshot(BRANCH, true)),
     );
   } finally {
     console.error = previousError;
   }
 
   assert.equal(reg.snapshot().sessions[0]?.gitBranch, BRANCH);
+  assert.equal(reg.snapshot().sessions[0]?.nomistakesGated, true);
 });

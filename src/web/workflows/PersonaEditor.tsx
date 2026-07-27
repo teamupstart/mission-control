@@ -211,7 +211,7 @@ export function PersonaEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [narrowPane, setNarrowPane] = useState<"edit" | "preview">("edit");
+  const [guidanceMode, setGuidanceMode] = useState<"editor" | "preview">("editor");
   const archived = persona?.archivedAt != null;
   const builtin = persona?.builtin === true;
 
@@ -461,38 +461,53 @@ export function PersonaEditor({
         </div>
       </section>
 
-      <div className="persona-narrow-toggle" role="group" aria-label="Persona guidance view">
-        <Tooltip label="Edit the guidance markdown">
-          <button className={narrowPane === "edit" ? "active" : ""} onClick={() => setNarrowPane("edit")}>Edit</button>
-        </Tooltip>
-        <Tooltip label="Preview the guidance as the reviewer will read it">
-          <button className={narrowPane === "preview" ? "active" : ""} onClick={() => setNarrowPane("preview")}>Preview</button>
-        </Tooltip>
-      </div>
-      <section className="persona-split">
-        <div className="persona-pane persona-edit-pane" data-mobile-active={narrowPane === "edit"}>
-          <header>
-            <span>Markdown</span>
-            <small className={exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes ? "is-over-limit" : ""}>
-              {exactBytes.toLocaleString()} / {WORKFLOW_LIMITS.personaGuidanceBytes.toLocaleString()} UTF-8 bytes
-            </small>
-          </header>
-          <div aria-label={`Editor for ${markdownPath(draft.name)}`}>
-            <FileEditor
-              path={markdownPath(draft.name)}
-              value={draft.guidanceMarkdown}
-              readOnly={readOnly}
-              lineSeparator={lineSeparator}
-              onChange={(guidanceMarkdown) => edit({ guidanceMarkdown })}
-              onBlur={() => {}}
-            />
+      <section className="persona-guidance" aria-label="Persona guidance">
+        <header className="file-toolbar persona-guidance-toolbar">
+          <span className="file-path mono">{markdownPath(draft.name)}</span>
+          <span className="file-language">Markdown</span>
+          <span className={`file-size${exactBytes > WORKFLOW_LIMITS.personaGuidanceBytes ? " is-over-limit" : ""}`}>
+            {exactBytes.toLocaleString()} / {WORKFLOW_LIMITS.personaGuidanceBytes.toLocaleString()} UTF-8 bytes
+          </span>
+          <span className="file-toolbar-spacer" />
+          <div className="file-mode" role="group" aria-label="Persona guidance view">
+            <Tooltip label="Render the guidance as the reviewer will read it">
+              <button
+                className={guidanceMode === "preview" ? "on" : ""}
+                aria-pressed={guidanceMode === "preview"}
+                onClick={() => setGuidanceMode("preview")}
+              >
+                Preview
+              </button>
+            </Tooltip>
+            <Tooltip label="Edit the guidance Markdown source">
+              <button
+                className={guidanceMode === "editor" ? "on" : ""}
+                aria-pressed={guidanceMode === "editor"}
+                onClick={() => setGuidanceMode("editor")}
+              >
+                Editor
+              </button>
+            </Tooltip>
           </div>
-        </div>
-        <div className="persona-pane persona-preview-pane" data-mobile-active={narrowPane === "preview"}>
-          <header><span>Preview</span></header>
-          <article className="persona-markdown markdown">
-            {draft.guidanceMarkdown ? <Markdown>{draft.guidanceMarkdown}</Markdown> : <p>Markdown preview appears here.</p>}
-          </article>
+        </header>
+        <div className="persona-guidance-content file-content">
+          {guidanceMode === "editor" && (
+            <div className="persona-editor-host" aria-label={`Editor for ${markdownPath(draft.name)}`}>
+              <FileEditor
+                path={markdownPath(draft.name)}
+                value={draft.guidanceMarkdown}
+                readOnly={readOnly}
+                lineSeparator={lineSeparator}
+                onChange={(guidanceMarkdown) => edit({ guidanceMarkdown })}
+                onBlur={() => {}}
+              />
+            </div>
+          )}
+          {guidanceMode === "preview" && (
+            <article className="persona-markdown file-markdown-preview markdown">
+              {draft.guidanceMarkdown ? <Markdown>{draft.guidanceMarkdown}</Markdown> : <p>Markdown preview appears here.</p>}
+            </article>
+          )}
         </div>
       </section>
     </article>

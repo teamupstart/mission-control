@@ -8484,8 +8484,7 @@ select.ensemble-judge-persona {
   text-transform: uppercase;
   color: var(--working);
 }
-.workflow-tabs,
-.persona-narrow-toggle {
+.workflow-tabs {
   display: flex;
   gap: 3px;
   padding: 3px;
@@ -8493,8 +8492,7 @@ select.ensemble-judge-persona {
   border-radius: 9px;
   background: var(--panel);
 }
-.workflow-tabs button,
-.persona-narrow-toggle button {
+.workflow-tabs button {
   padding: 7px 13px;
   font: inherit;
   font-size: 12px;
@@ -8504,8 +8502,7 @@ select.ensemble-judge-persona {
   border-radius: 6px;
   cursor: pointer;
 }
-.workflow-tabs button.active,
-.persona-narrow-toggle button.active {
+.workflow-tabs button.active {
   color: var(--fg);
   background: color-mix(in oklab, var(--working) 16%, var(--panel-2));
 }
@@ -8833,60 +8830,35 @@ select.ensemble-judge-persona {
 .persona-model-field .foreman-model-source {
   grid-column: 2 / -1;
 }
-.persona-narrow-toggle {
-  display: none;
-  align-self: flex-start;
-}
-.persona-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+.persona-guidance {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 430px;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 10px;
-}
-.persona-pane {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
   background: var(--panel);
 }
-.persona-pane + .persona-pane {
-  border-left: 1px solid var(--border);
-}
-.persona-pane > header {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 10px;
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--dim);
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.persona-pane > header .is-over-limit {
+.persona-guidance-toolbar .file-size.is-over-limit {
   color: var(--danger);
   font-weight: 700;
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
 }
-.persona-edit-pane .file-codemirror {
+.persona-editor-host {
+  display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 .persona-markdown {
-  flex: 1;
-  min-height: 0;
-  padding: 14px 18px 28px;
-  overflow: auto;
+  padding-bottom: 32px;
 }
 .persona-markdown > :first-child {
   margin-top: 0;
 }
 .persona-editor.is-archived .persona-fields,
-.persona-editor.is-archived .persona-split {
+.persona-editor.is-archived .persona-guidance {
   opacity: 0.82;
 }
 
@@ -9431,21 +9403,20 @@ select.ensemble-judge-persona {
   .persona-model-field .foreman-model-source {
     grid-column: auto;
   }
-  .persona-narrow-toggle {
-    display: flex;
+  .persona-guidance {
+    min-height: 520px;
   }
-  .persona-split {
-    display: block;
+  .persona-guidance-toolbar {
+    flex-wrap: wrap;
   }
-  .persona-pane {
+  .persona-guidance-toolbar .file-size {
+    order: 3;
+  }
+  .persona-guidance-toolbar .file-toolbar-spacer {
     display: none;
-    height: 520px;
   }
-  .persona-pane[data-mobile-active="true"] {
-    display: flex;
-  }
-  .persona-pane + .persona-pane {
-    border-left: 0;
+  .persona-guidance-toolbar .file-mode {
+    margin-left: auto;
   }
 }
 

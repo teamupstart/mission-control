@@ -106,5 +106,5 @@ test("workflow fail, uncertain, focus, disabled, and stale states have non-color
   assert.match(css, /stroke-dasharray/);
   assert.match(css, /\.wf-run-pruned/);
   assert.match(css, /\.workflow-node:focus-within/);
-  assert.match(css, /\.persona-pane > header \.is-over-limit/);
+  assert.match(css, /\.persona-guidance-toolbar \.file-size\.is-over-limit/);
 });

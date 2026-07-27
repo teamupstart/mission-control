@@ -1,0 +1,877 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Inspector + Shipping - panel redesign mockups</title>
+<style>
+:root{
+  color-scheme: dark;
+  --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+  --border:#232a33; --border-soft:#1b2129;
+  --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+  --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+  --exited:#707a88; --neutral:#8b94a3; --purple:#a371f7; --pr-merged:var(--purple);
+  --radius:13px;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.28);
+  --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --sans: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased}
+h2,h3,h4,p,ul,ol{margin:0}
+code{font-family:var(--mono);font-size:.92em;color:var(--muted)}
+button{font:inherit}
+
+/* ---------- mockup harness chrome (not part of the design) ---------- */
+.harness-top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  padding:12px 22px;background:rgba(10,12,15,.9);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.harness-title{font-size:12px;font-weight:640;letter-spacing:-.01em}
+.harness-title span{color:var(--dim);font-weight:450}
+.seg{display:inline-flex;padding:3px;gap:3px;background:var(--panel);border:1px solid var(--border);border-radius:10px}
+.seg button{padding:5px 12px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:11.5px;font-weight:560;cursor:pointer;transition:.14s}
+.seg button:hover{color:var(--fg)}
+.seg button.on{background:color-mix(in oklab,var(--working) 18%,transparent);color:var(--fg);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--working) 34%,var(--border))}
+.harness-key{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.04em}
+
+.rationale{margin:0 auto;max-width:1400px;padding:16px 22px 0}
+.rationale-in{display:flex;gap:14px;align-items:flex-start;padding:12px 14px;border:1px dashed var(--border);border-radius:10px;background:var(--panel-2)}
+.rationale-tag{flex:none;font-family:var(--mono);font-size:9.5px;font-weight:640;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--purple);border:1px solid color-mix(in oklab,var(--purple) 40%,var(--border));border-radius:20px;padding:3px 9px}
+.rationale p{font-size:11.5px;line-height:1.6;color:var(--muted)}
+.rationale strong{color:var(--fg);font-weight:600}
+
+/* ---------- settings page shell (existing app) ---------- */
+.settings-page{display:flex;align-items:stretch;max-width:1400px;width:100%;margin:0 auto;padding-bottom:80px}
+.settings-rail{flex:0 0 232px;display:flex;flex-direction:column;gap:2px;align-self:flex-start;position:sticky;top:70px;
+  padding:14px 12px 20px;border-right:1px solid var(--border-soft)}
+.settings-nav-label{display:flex;align-items:center;gap:4px 7px;margin:13px 6px 4px;font-family:var(--mono);font-size:9px;
+  font-weight:640;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
+.settings-nav-group:first-child .settings-nav-label{margin-top:2px}
+.settings-nav-label .settings-scope{margin-left:auto}
+.settings-scope{display:inline-flex;align-items:center;padding:2px 7px;border:1px solid var(--border);border-radius:20px;
+  font-family:var(--mono);font-size:9px;font-weight:640;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);white-space:nowrap}
+.settings-scope-browser{color:var(--working);border-color:color-mix(in oklab,var(--working) 40%,var(--border));background:color-mix(in oklab,var(--working) 9%,transparent)}
+.settings-scope-machine{color:var(--idle);border-color:color-mix(in oklab,var(--idle) 40%,var(--border));background:color-mix(in oklab,var(--idle) 9%,transparent)}
+.settings-scope-home{color:var(--attention);border-color:color-mix(in oklab,var(--attention) 45%,var(--border));background:color-mix(in oklab,var(--attention) 9%,transparent)}
+.settings-scope-github{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border));background:color-mix(in oklab,var(--danger) 9%,transparent)}
+.settings-nav-item{display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;font-size:12.5px;font-weight:540;color:var(--muted);
+  text-align:left;background:transparent;border:1px solid transparent;border-radius:8px;cursor:pointer;transition:.14s}
+.settings-nav-item:hover{background:var(--panel);color:var(--fg)}
+.settings-nav-item.is-active{background:color-mix(in oklab,var(--working) 14%,transparent);
+  border-color:color-mix(in oklab,var(--working) 30%,var(--border));color:var(--fg);font-weight:600}
+.settings-nav-icon{flex:none;width:18px;font-size:14px;line-height:1;text-align:center;color:var(--dim)}
+.settings-nav-item.is-active .settings-nav-icon{color:var(--fg)}
+/* A settings form is a reading column, not a billboard: capped so a label and its control
+   stay in one eye movement. The ops-console variant opts out, because its right half is a
+   table that earns the width. */
+.settings-pane{flex:1 1 auto;min-width:0;max-width:1040px;padding:16px 26px 0 26px}
+.settings-pane.wide{max-width:none}
+.settings-panel-head{display:flex;align-items:center;gap:12px;margin:0 0 16px;padding-bottom:10px;border-bottom:1px solid var(--border-soft)}
+.settings-panel-head h2{font-size:17px;font-weight:650;letter-spacing:-.01em}
+.settings-panel-head .settings-scope{margin-left:auto}
+.settings-hint{font-size:11.5px;line-height:1.6;color:var(--dim)}
+.settings-group-label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.link{padding:0;border:0;background:transparent;color:var(--working);font:inherit;font-size:11.5px;cursor:pointer}
+.link:hover{text-decoration:underline}
+
+/* ---------- shared new primitives ---------- */
+.switch{position:relative;flex:none;width:38px;height:22px;border-radius:999px;background:var(--panel-2);
+  border:1px solid var(--border);cursor:pointer;transition:.16s}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:999px;background:var(--exited);transition:.16s}
+.switch.on{background:color-mix(in oklab,var(--danger) 26%,var(--panel-2));border-color:color-mix(in oklab,var(--danger) 55%,var(--border))}
+.switch.on::after{left:18px;background:var(--danger)}
+.switch.on.safe{background:color-mix(in oklab,var(--idle) 24%,var(--panel-2));border-color:color-mix(in oklab,var(--idle) 50%,var(--border))}
+.switch.on.safe::after{background:var(--idle)}
+
+.dot{flex:none;width:7px;height:7px;border-radius:999px;background:var(--exited)}
+.dot.ok{background:var(--idle);box-shadow:0 0 0 3px color-mix(in oklab,var(--idle) 16%,transparent)}
+.dot.warn{background:var(--attention);box-shadow:0 0 0 3px color-mix(in oklab,var(--attention) 16%,transparent)}
+.dot.bad{background:var(--danger);box-shadow:0 0 0 3px color-mix(in oklab,var(--danger) 16%,transparent)}
+.dot.live{background:var(--working);box-shadow:0 0 0 3px color-mix(in oklab,var(--working) 16%,transparent)}
+
+.chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;border:1px solid var(--border);
+  background:var(--panel-2);font-size:10.5px;color:var(--muted);white-space:nowrap}
+.chip.mono{font-family:var(--mono);font-size:10px}
+.chip.ok{color:var(--idle);border-color:color-mix(in oklab,var(--idle) 38%,var(--border));background:color-mix(in oklab,var(--idle) 10%,transparent)}
+.chip.warn{color:var(--attention);border-color:color-mix(in oklab,var(--attention) 40%,var(--border));background:color-mix(in oklab,var(--attention) 10%,transparent)}
+.chip.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 40%,var(--border));background:color-mix(in oklab,var(--danger) 10%,transparent)}
+.chip.merged{color:var(--pr-merged);border-color:color-mix(in oklab,var(--pr-merged) 40%,var(--border));background:color-mix(in oklab,var(--pr-merged) 10%,transparent)}
+
+.field{padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg-2);color:var(--fg);
+  font-size:12px;font-family:var(--sans)}
+.field.mono{font-family:var(--mono);font-size:11.5px}
+select.field{appearance:none;padding-right:26px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+  background-position:calc(100% - 14px) 11px,calc(100% - 9px) 11px;background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+
+.pillbar{display:inline-flex;padding:3px;gap:3px;background:var(--bg-2);border:1px solid var(--border);border-radius:9px}
+.pillbar button{padding:5px 13px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:11.5px;font-weight:560;cursor:pointer}
+.pillbar button.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.4)}
+.pillbar button.on.danger{color:color-mix(in oklab,var(--danger) 80%,var(--fg));box-shadow:0 1px 2px rgba(0,0,0,.4),inset 0 0 0 1px color-mix(in oklab,var(--danger) 40%,transparent)}
+
+/* ============================================================= */
+/*  VARIANT A - Posture card                                      */
+/* ============================================================= */
+.posture{display:flex;align-items:flex-start;gap:14px;padding:16px 18px;border-radius:var(--radius);
+  border:1px solid color-mix(in oklab,var(--danger) 30%,var(--border));
+  background:linear-gradient(180deg,color-mix(in oklab,var(--danger) 9%,var(--panel)) 0%,var(--panel) 100%);
+  box-shadow:var(--shadow)}
+.posture.is-off{border-color:var(--border);background:var(--panel)}
+.posture.is-dry{border-color:color-mix(in oklab,var(--attention) 28%,var(--border));
+  background:linear-gradient(180deg,color-mix(in oklab,var(--attention) 8%,var(--panel)) 0%,var(--panel) 100%)}
+.posture-mark{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:10px;
+  border:1px solid var(--border);background:var(--bg-2);font-size:15px;color:var(--muted)}
+.posture.is-live .posture-mark{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 40%,var(--border))}
+.posture-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:5px}
+.posture-line{font-size:14.5px;font-weight:600;letter-spacing:-.01em;line-height:1.35}
+.posture-line em{font-style:normal;color:var(--danger)}
+.posture-sub{font-size:11.5px;line-height:1.6;color:var(--dim)}
+.posture-facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.posture-switch{display:flex;flex-direction:column;align-items:center;gap:6px;flex:none;padding-left:6px}
+.posture-switch span{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+
+.setgroup{margin-top:22px}
+.setgroup > .settings-group-label{margin-bottom:8px}
+.setcard{border:1px solid var(--border);border-radius:11px;background:var(--panel);overflow:hidden}
+.setrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:center;padding:14px 16px;border-top:1px solid var(--border-soft)}
+.setrow:first-child{border-top:0}
+.setrow-label{display:flex;flex-direction:column;gap:3px}
+.setrow-label b{font-size:12.5px;font-weight:580}
+.setrow-label small{font-size:11px;line-height:1.55;color:var(--dim);max-width:56ch}
+.setrow-ctl{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;max-width:420px}
+.setrow-ctl .settings-hint{flex-basis:100%;text-align:right}
+.setrow.stack{grid-template-columns:1fr}
+.setrow.stack .setrow-ctl{justify-content:flex-start}
+
+.blockers{margin-top:14px;border:1px solid color-mix(in oklab,var(--attention) 30%,var(--border));border-radius:11px;
+  background:color-mix(in oklab,var(--attention) 7%,var(--panel));overflow:hidden}
+.blockers-head{display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:12px;font-weight:600;
+  color:color-mix(in oklab,var(--attention) 82%,var(--fg));border-bottom:1px solid color-mix(in oklab,var(--attention) 20%,transparent)}
+.blockers li{display:flex;align-items:center;gap:9px;padding:9px 14px;font-size:11.5px;line-height:1.5;color:var(--muted);
+  border-top:1px solid color-mix(in oklab,var(--attention) 12%,transparent)}
+.blockers li:first-child{border-top:0}
+.blockers li .link{margin-left:auto;white-space:nowrap}
+.blockers ul{list-style:none;padding:0}
+.blockers li .glyph{flex:none;width:14px;text-align:center;color:var(--attention)}
+
+/* ledger, shared by A + B */
+.ledger{margin-top:22px}
+.ledger-head{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.ledger-head .settings-group-label{margin-right:auto}
+.ledger-counts{display:flex;gap:6px}
+.ltable{border:1px solid var(--border);border-radius:11px;background:var(--panel);overflow:hidden}
+.lrow{display:grid;grid-template-columns:1fr auto 92px;gap:12px;align-items:center;padding:9px 14px;border-top:1px solid var(--border-soft);font-size:12px}
+.lrow:first-child{border-top:0}
+.lrow:hover{background:var(--panel-2)}
+.lrow.retired{opacity:.55}
+.lrow a{color:var(--fg);text-decoration:none;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow a:hover{text-decoration:underline}
+.lrow .when{color:var(--dim);font-size:11px;text-align:right;font-variant-numeric:tabular-nums}
+.lrow .pr{display:flex;align-items:center;gap:8px;min-width:0}
+.lrow .title{color:var(--dim);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ============================================================= */
+/*  VARIANT B - Gate pipeline                                     */
+/* ============================================================= */
+.pipe{margin-top:16px;border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden}
+.pipe-head{display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--panel-2);border-bottom:1px solid var(--border)}
+.pipe-head h3{font-size:13px;font-weight:620}
+.pipe-head .settings-hint{margin-top:2px}
+.pipe-head .switch{margin-left:auto}
+.step{position:relative;display:grid;grid-template-columns:26px 1fr;gap:14px;padding:15px 16px 15px 14px;border-top:1px solid var(--border-soft)}
+.step:first-of-type{border-top:0}
+.step-mark{position:relative;display:flex;justify-content:center;padding-top:3px}
+.step-mark .ring{width:16px;height:16px;border-radius:999px;border:2px solid var(--border);background:var(--bg-2);display:grid;place-items:center;
+  font-size:9px;color:var(--dim);z-index:1}
+.step.on .ring{border-color:var(--idle);color:var(--idle)}
+.step.blocked .ring{border-color:var(--attention);color:var(--attention)}
+.step.off .ring{border-color:var(--exited)}
+.step-mark::after{content:"";position:absolute;top:20px;bottom:-22px;width:2px;background:var(--border-soft)}
+.step:last-of-type .step-mark::after{display:none}
+.step.on .step-mark::after{background:color-mix(in oklab,var(--idle) 40%,var(--border-soft))}
+.step-body{display:flex;flex-direction:column;gap:7px;min-width:0}
+.step-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.step-title{font-size:12.5px;font-weight:580}
+.step-title small{margin-left:8px;font-weight:450;color:var(--dim);font-size:11px}
+.step-top .ctl{margin-left:auto;display:flex;align-items:center;gap:9px}
+.step-note{font-size:11.5px;line-height:1.6;color:var(--dim);max-width:74ch}
+.step-note b{color:var(--muted);font-weight:560}
+.step.blocked .step-note{color:color-mix(in oklab,var(--attention) 70%,var(--muted))}
+.step.foreign{background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(255,255,255,.012) 8px 16px)}
+.step-owner{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);
+  border:1px solid var(--border);border-radius:20px;padding:2px 7px}
+.pipe-out{display:flex;align-items:center;gap:10px;padding:13px 16px;border-top:1px solid var(--border);background:var(--panel-2);font-size:12px}
+.pipe-out b{font-weight:600}
+.pipe-out .chip{margin-left:auto}
+
+/* ============================================================= */
+/*  VARIANT C - Operations console                                */
+/* ============================================================= */
+.split{display:grid;grid-template-columns:minmax(330px,360px) minmax(0,1fr);gap:22px;align-items:start;margin-top:4px}
+.cpanel{border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden}
+.cpanel + .cpanel{margin-top:14px}
+.cpanel-head{display:flex;align-items:center;gap:9px;padding:11px 14px;border-bottom:1px solid var(--border-soft);background:var(--panel-2)}
+.cpanel-head h4{font-family:var(--mono);font-size:9.5px;font-weight:640;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.cpanel-head .switch{margin-left:auto}
+.cpanel-body{padding:13px 14px;display:flex;flex-direction:column;gap:13px}
+.cfield{display:flex;flex-direction:column;gap:6px}
+.cfield-top{display:flex;align-items:center;gap:8px}
+.cfield-top label{font-size:12px;font-weight:560}
+.cfield-top .ctl{margin-left:auto}
+.cfield small{font-size:11px;line-height:1.5;color:var(--dim)}
+.cstate{display:flex;align-items:center;gap:9px;padding:11px 14px;font-size:12px;font-weight:560;
+  border-bottom:1px solid var(--border-soft)}
+.cstate.live{color:color-mix(in oklab,var(--danger) 78%,var(--fg));background:color-mix(in oklab,var(--danger) 10%,transparent)}
+.cstate.armed{color:color-mix(in oklab,var(--attention) 80%,var(--fg));background:color-mix(in oklab,var(--attention) 9%,transparent)}
+
+.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+.stat{padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--panel)}
+.stat b{display:block;font-size:20px;font-weight:640;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}
+.stat span{display:block;margin-top:3px;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.stat.attn b{color:var(--attention)} .stat.bad b{color:var(--danger)} .stat.ok b{color:var(--idle)} .stat.mg b{color:var(--pr-merged)}
+
+.tbl{border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden}
+.tbl-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--panel-2)}
+.tbl-head h4{font-size:12px;font-weight:600;margin-right:auto}
+.tbl-filter{display:inline-flex;gap:2px;padding:2px;background:var(--bg-2);border:1px solid var(--border);border-radius:7px}
+.tbl-filter button{padding:3px 9px;border:0;border-radius:5px;background:transparent;color:var(--dim);font-size:10.5px;cursor:pointer}
+.tbl-filter button.on{background:var(--panel);color:var(--fg)}
+.trow{display:grid;grid-template-columns:170px 1fr 150px 104px;gap:12px;align-items:center;padding:10px 14px;
+  border-top:1px solid var(--border-soft);font-size:12px}
+.trow.head{border-top:0;padding:7px 14px;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);background:var(--bg-2)}
+.trow:hover:not(.head){background:var(--panel-2)}
+.trow a{color:var(--fg);text-decoration:none;font-variant-numeric:tabular-nums;white-space:nowrap}
+.trow a:hover{text-decoration:underline}
+.trow .t{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow .w{color:var(--dim);font-size:11px;text-align:right;font-variant-numeric:tabular-nums}
+.trow.retired{opacity:.5}
+.progress{position:relative;height:4px;border-radius:999px;background:var(--bg-2);overflow:hidden;width:74px}
+.progress i{position:absolute;inset:0 auto 0 0;background:var(--attention)}
+.soakcell{display:flex;align-items:center;gap:8px;color:var(--attention);font-size:11px;white-space:nowrap}
+
+.repochips{display:flex;flex-wrap:wrap;gap:6px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+
+<div class="harness-top">
+  <div class="harness-title">Panel redesign mockups <span>· Inspector &amp; Shipping · same tokens, same copy contracts</span></div>
+  <div class="seg" id="panelSeg">
+    <button data-panel="inspector" class="on">Inspector</button>
+    <button data-panel="shipping">Shipping</button>
+  </div>
+  <div class="seg" id="variantSeg">
+    <button data-variant="a" class="on">A · Posture card</button>
+    <button data-variant="b">B · Gate pipeline</button>
+    <button data-variant="c">C · Ops console</button>
+  </div>
+  <div class="harness-key">mockup - nothing here is wired</div>
+</div>
+
+<div class="rationale"><div class="rationale-in">
+  <span class="rationale-tag" id="ratTag">A</span>
+  <p id="ratText"></p>
+</div></div>
+
+<div class="settings-page">
+  <aside class="settings-rail">
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">This screen <span class="settings-scope settings-scope-browser">This browser</span></div>
+      <button class="settings-nav-item"><span class="settings-nav-icon">▦</span>Display</button>
+      <button class="settings-nav-item"><span class="settings-nav-icon">⌨</span>Keyboard</button>
+    </div>
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">Sessions <span class="settings-scope settings-scope-machine">This machine</span></div>
+      <button class="settings-nav-item"><span class="settings-nav-icon">⚙</span>Harnesses</button>
+      <button class="settings-nav-item"><span class="settings-nav-icon">✦</span>Skills</button>
+      <button class="settings-nav-item"><span class="settings-nav-icon">$</span>Cost</button>
+    </div>
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">Background work <span class="settings-scope settings-scope-machine">This machine</span></div>
+      <button class="settings-nav-item"><span class="settings-nav-icon">●</span>Foreman</button>
+      <button class="settings-nav-item"><span class="settings-nav-icon">⌘</span>Workflows</button>
+      <button class="settings-nav-item"><span class="settings-nav-icon">⇊</span>Task sources</button>
+      <button class="settings-nav-item"><span class="settings-nav-icon">◈</span>Models</button>
+    </div>
+    <div class="settings-nav-group">
+      <div class="settings-nav-label">Leaves the machine <span class="settings-scope settings-scope-github">Acts on GitHub</span></div>
+      <button class="settings-nav-item is-active" id="railInspector"><span class="settings-nav-icon">⌕</span>Inspector</button>
+      <button class="settings-nav-item" id="railShipping"><span class="settings-nav-icon">⚑</span>Shipping</button>
+      <button class="settings-nav-item"><span class="settings-nav-icon">⛨</span>Trust</button>
+    </div>
+  </aside>
+
+  <main class="settings-pane" id="pane"></main>
+</div>
+
+<script>
+/* ------------------------------------------------------------------ */
+/* sample state - one consistent world across all six mockups          */
+/* ------------------------------------------------------------------ */
+const PRS = [
+  {repo:"mancej/ai-harness", n:231, title:"feat(schedules): missed-policy recovery", ins:"2 findings", insTone:"warn", ship:"soaking · 6m of 10", shipTone:"warn", soak:60, when:"4m ago"},
+  {repo:"mancej/ai-harness", n:230, title:"fix(codex): rollout scan cap", ins:"clean", insTone:"ok", ship:"waiting on CI", shipTone:"", when:"22m ago"},
+  {repo:"mancej/ai-harness", n:229, title:"refactor(terminal): bindPane lock", ins:"clean", insTone:"ok", ship:"merged", shipTone:"merged", when:"1h ago", retired:true},
+  {repo:"mancej/ai-harness", n:228, title:"docs(ensembles): extension contract", ins:"failed · gh rate limit", insTone:"bad", ship:"not looked at yet", shipTone:"", when:"3h ago"},
+  {repo:"mancej/ai-harness", n:227, title:"test(schedule): pre-feature db seed", ins:"queued", insTone:"", ship:"unresolved threads", shipTone:"warn", when:"not yet reviewed"},
+  {repo:"acme/storefront", n:12, title:"chore: bump deps", ins:"clean", insTone:"ok", ship:"repo not allowed to merge", shipTone:"bad", when:"2d ago", retired:true},
+];
+
+const RATIONALE = {
+  a: "<strong>Posture card.</strong> Lead with one sentence stating what this subsystem will do to GitHub <em>right now</em>, with the master switch inside it - so the answer to \"is this armed?\" needs no reading. Settings drop into a labelled two-column card (label + description left, control right) instead of a vertical stack of loose labels. Every blocker that used to be its own amber paragraph collapses into one <em>Why nothing is happening</em> checklist, so three problems read as three lines with three fixes rather than three walls.",
+  b: "<strong>Gate pipeline.</strong> Both panels describe a machine that runs a pull request through gates, so draw the gates. Each step is a rail row with a state ring and its own setting inline; the steps this panel does <em>not</em> own (the Inspector's verdict, for Shipping) are drawn hatched and labelled with their owner, which turns the dependency warnings into an unlit link in a visible chain. The last row states the outcome. Best at teaching the system; heaviest per pixel.",
+  c: "<strong>Ops console.</strong> Split the pane: controls compact on the left, the per-PR ledger promoted to a real table on the right with a count strip above it. The ledger is the thing an operator opens this panel to read - today it is a footnote at the bottom in 12px - and the config is a handful of knobs that are set once. Dense, and the only one that scales past a dozen pull requests."
+};
+
+/* ------------------------------------------------------------------ */
+const el = (h) => { const d=document.createElement('div'); d.innerHTML=h.trim(); return d.firstElementChild; };
+
+const headInspector = `<div class="settings-panel-head"><h2>Inspector</h2><span class="settings-scope settings-scope-github">Acts on GitHub</span></div>`;
+const headShipping  = `<div class="settings-panel-head"><h2>Shipping</h2><span class="settings-scope settings-scope-github">Acts on GitHub</span></div>`;
+
+/* ============================ INSPECTOR ============================ */
+
+const inspectorA = () => `
+${headInspector}
+
+<div class="posture is-live">
+  <div class="posture-mark">⌕</div>
+  <div class="posture-body">
+    <p class="posture-line">Reviewing our pull requests and <em>posting comments to GitHub</em> in 3 repositories.</p>
+    <p class="posture-sub">Only the pull requests Mission Control opened, judged against each repository's <code>INSPECTOR.md</code>. It answers replies in its own threads, re-reviews on every push, and closes threads a push has fixed.</p>
+    <div class="posture-facts">
+      <span class="chip mono">claude · sonnet-4-6</span>
+      <span class="chip mono">3 repos</span>
+      <span class="chip ok">last review 4m ago</span>
+    </div>
+  </div>
+  <div class="posture-switch"><span>on</span><button class="switch on" aria-label="Run the Inspector"></button></div>
+</div>
+
+<div class="blockers">
+  <div class="blockers-head"><span>⚠</span> One thing is limiting what gets reviewed</div>
+  <ul>
+    <li><span class="glyph">◔</span> <span><b>acme/storefront</b> is not in the Inspector's grant, so its pull requests are reviewed but never commented on.</span> <button class="link">Fix in Trust →</button></li>
+  </ul>
+</div>
+
+<div class="setgroup">
+  <p class="settings-group-label">What it does with what it finds</p>
+  <div class="setcard">
+    <div class="setrow">
+      <div class="setrow-label"><b>Mode</b><small>Dry run computes findings and shows them below; live publishes them under your GitHub account, publicly on a public repo.</small></div>
+      <div class="setrow-ctl">
+        <div class="pillbar"><button>Dry run</button><button class="on danger">Live</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="setgroup">
+  <p class="settings-group-label">Which model judges</p>
+  <div class="setcard">
+    <div class="setrow">
+      <div class="setrow-label"><b>Provider</b><small>Claude gets read-only tools scoped to the worktree; Codex reviews the supplied diff with no repository tools.</small></div>
+      <div class="setrow-ctl"><select class="field"><option>Claude</option><option>Codex</option><option>Pi</option></select></div>
+    </div>
+    <div class="setrow">
+      <div class="setrow-label"><b>Model</b><small>Blank falls back to the ladder. One isolated call per review.</small></div>
+      <div class="setrow-ctl">
+        <input class="field mono" style="width:230px" value="" placeholder="claude-sonnet-4-6 (default)" />
+        <span class="settings-hint">Resolving to <code>claude-sonnet-4-6</code> from the built-in fallback.</span>
+      </div>
+    </div>
+    <div class="setrow">
+      <div class="setrow-label"><b>Reviewed repositories</b><small>Worktrees of a granted repo count too, wherever they live on disk.</small></div>
+      <div class="setrow-ctl">
+        <div class="repochips">
+          <span class="chip mono">mancej/ai-harness</span><span class="chip mono">mancej/treehouse</span><span class="chip mono">mancej/pi</span>
+        </div>
+        <button class="link">Manage in Trust →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="ledger">
+  <div class="ledger-head">
+    <p class="settings-group-label">Recent inspections</p>
+    <div class="ledger-counts">
+      <span class="chip warn">1 with findings</span><span class="chip ok">3 clean</span><span class="chip bad">1 failed</span>
+    </div>
+  </div>
+  <div class="ltable">
+    ${PRS.map(p=>`
+    <div class="lrow${p.retired?' retired':''}">
+      <div class="pr"><a href="#">${p.repo}#${p.n}</a><span class="title">${p.title}</span></div>
+      <span class="chip ${p.insTone}">${p.ins}</span>
+      <span class="when">${p.when}</span>
+    </div>`).join("")}
+  </div>
+  <p class="settings-hint" style="margin-top:8px">A pull request appears here the moment Mission Control opens one - in dry run this list is the only place its findings exist.</p>
+</div>`;
+
+const inspectorB = () => `
+${headInspector}
+<p class="settings-hint" style="max-width:78ch">Reviews the pull requests Mission Control opened - and only those - against the repository's <code>INSPECTOR.md</code>. Each stage below is a gate; the setting that governs a gate sits on its own row.</p>
+
+<div class="pipe">
+  <div class="pipe-head">
+    <div>
+      <h3>The review pass</h3>
+      <p class="settings-hint">Runs on every push to one of our pull requests.</p>
+    </div>
+    <button class="switch on" aria-label="Run the Inspector"></button>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">✓</div></div>
+    <div class="step-body">
+      <div class="step-top"><span class="step-title">1 · A pull request we opened appears<small>6 tracked, 4 open</small></span></div>
+      <p class="step-note">Adoption is by authorship, never by URL sniffing: only a PR our own <code>gh pr create</code> opened, or one a no-mistakes run reported, is ever adopted. <b>Strangers' pull requests are out of scope by construction.</b></p>
+    </div>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">✓</div></div>
+    <div class="step-body">
+      <div class="step-top">
+        <span class="step-title">2 · It is judged</span>
+        <div class="ctl">
+          <select class="field"><option>Claude</option><option>Codex</option><option>Pi</option></select>
+          <input class="field mono" style="width:240px" placeholder="claude-sonnet-4-6 (default)" />
+        </div>
+      </div>
+      <p class="step-note">One isolated call per review. Claude receives read-only tools scoped to the worktree; Codex reviews the supplied diff with no repository tools. Blank model = the resolution ladder decides.</p>
+    </div>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">✓</div></div>
+    <div class="step-body">
+      <div class="step-top">
+        <span class="step-title">3 · Findings are published</span>
+        <div class="ctl"><div class="pillbar"><button>Dry run</button><button class="on danger">Live</button></div></div>
+      </div>
+      <p class="step-note">Live posts review comments to GitHub under your account, public on a public repository, and answers replies in its own threads. Dry run stops here and records everything in the ledger below - which is then the only place the findings exist.</p>
+    </div>
+  </div>
+
+  <div class="step blocked">
+    <div class="step-mark"><div class="ring">!</div></div>
+    <div class="step-body">
+      <div class="step-top">
+        <span class="step-title">4 · …but only in granted repositories</span>
+        <div class="ctl"><span class="chip warn">3 of 4 repos</span><button class="link">Manage in Trust →</button></div>
+      </div>
+      <p class="step-note"><b>acme/storefront</b> is reviewed but never commented on - it holds no review grant. Worktrees of a granted repo count too, wherever they live on disk.</p>
+    </div>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">✓</div></div>
+    <div class="step-body">
+      <div class="step-top"><span class="step-title">5 · A later push closes what it fixed</span></div>
+      <p class="step-note">Re-review on every push; threads whose finding is gone are resolved by the Inspector itself, so an open thread always means something outstanding.</p>
+    </div>
+  </div>
+
+  <div class="pipe-out">
+    <span class="dot live"></span><b>Outcome:</b> a reviewed pull request with no open threads is what Shipping's YOLO mode waits for. <span class="chip">3 qualify now</span>
+  </div>
+</div>
+
+<div class="ledger">
+  <div class="ledger-head">
+    <p class="settings-group-label">Recent inspections</p>
+    <div class="ledger-counts"><span class="chip warn">1 with findings</span><span class="chip ok">3 clean</span><span class="chip bad">1 failed</span></div>
+  </div>
+  <div class="ltable">
+    ${PRS.map(p=>`
+    <div class="lrow${p.retired?' retired':''}">
+      <div class="pr"><a href="#">${p.repo}#${p.n}</a><span class="title">${p.title}</span></div>
+      <span class="chip ${p.insTone}">${p.ins}</span>
+      <span class="when">${p.when}</span>
+    </div>`).join("")}
+  </div>
+</div>`;
+
+const inspectorC = () => `
+${headInspector}
+<div class="split">
+  <div>
+    <div class="cpanel">
+      <div class="cpanel-head"><h4>Inspector</h4><button class="switch on" aria-label="Run the Inspector"></button></div>
+      <div class="cstate live"><span class="dot bad"></span> Live · posting to GitHub</div>
+      <div class="cpanel-body">
+        <div class="cfield">
+          <div class="cfield-top"><label>Mode</label><div class="ctl"><div class="pillbar"><button>Dry</button><button class="on danger">Live</button></div></div></div>
+          <small>Live publishes review comments under your account - public on a public repo. Dry run records them in the ledger and posts nothing.</small>
+        </div>
+        <div class="cfield">
+          <div class="cfield-top"><label>Provider</label><div class="ctl"><select class="field"><option>Claude</option><option>Codex</option><option>Pi</option></select></div></div>
+          <small>Claude gets read-only tools scoped to the worktree; Codex reviews the diff alone.</small>
+        </div>
+        <div class="cfield">
+          <div class="cfield-top"><label>Model</label></div>
+          <input class="field mono" placeholder="claude-sonnet-4-6 (default)" />
+          <small>Blank clears the override. Resolving to <code>claude-sonnet-4-6</code>.</small>
+        </div>
+      </div>
+    </div>
+
+    <div class="cpanel">
+      <div class="cpanel-head"><h4>May post in</h4></div>
+      <div class="cpanel-body">
+        <div class="repochips">
+          <span class="chip mono">mancej/ai-harness</span><span class="chip mono">mancej/treehouse</span><span class="chip mono">mancej/pi</span>
+          <span class="chip mono warn">acme/storefront · no grant</span>
+        </div>
+        <small class="settings-hint">Reviewed everywhere; commented on only here. Worktrees of a granted repo count too. <button class="link">Manage in Trust →</button></small>
+      </div>
+    </div>
+
+    <div class="cpanel">
+      <div class="cpanel-head"><h4>Health</h4></div>
+      <div class="cpanel-body">
+        <div class="cfield-top"><label style="font-weight:450;color:var(--muted)">Last sweep</label><div class="ctl"><span class="chip ok">4m ago</span></div></div>
+        <div class="cfield-top"><label style="font-weight:450;color:var(--muted)">Last error</label><div class="ctl"><span class="chip bad">gh rate limit · 3h ago</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="strip">
+      <div class="stat attn"><b>1</b><span>with findings</span></div>
+      <div class="stat ok"><b>3</b><span>clean</span></div>
+      <div class="stat"><b>1</b><span>queued</span></div>
+      <div class="stat bad"><b>1</b><span>failed</span></div>
+    </div>
+    <div class="tbl">
+      <div class="tbl-head">
+        <h4>Inspections</h4>
+        <div class="tbl-filter"><button class="on">All</button><button>Open</button><button>Needs work</button><button>Failed</button></div>
+      </div>
+      <div class="trow head"><span>Pull request</span><span>Title</span><span>Verdict</span><span style="text-align:right">Reviewed</span></div>
+      ${PRS.map(p=>`
+      <div class="trow${p.retired?' retired':''}">
+        <a href="#">${p.repo}#${p.n}</a>
+        <span class="t">${p.title}</span>
+        <span><span class="chip ${p.insTone}">${p.ins}</span></span>
+        <span class="w">${p.when}</span>
+      </div>`).join("")}
+    </div>
+    <p class="settings-hint" style="margin-top:9px">In dry run this table is the only place the Inspector's findings exist - nothing is posted, and nothing else in the app shows them.</p>
+  </div>
+</div>`;
+
+/* ============================ SHIPPING ============================= */
+
+const shippingA = () => `
+${headShipping}
+
+<div class="posture is-live">
+  <div class="posture-mark">⚑</div>
+  <div class="posture-body">
+    <p class="posture-line">YOLO mode is armed - clean pull requests <em>merge themselves</em> into the base branch after 10 minutes.</p>
+    <p class="posture-sub">Merges are performed on GitHub under your account. Nothing in Mission Control can undo one. A PR qualifies only once the Inspector reviewed the current push with nothing outstanding, CI is green, no thread is unresolved, and the soak window has passed.</p>
+    <div class="posture-facts">
+      <span class="chip mono">squash</span>
+      <span class="chip mono">2 repos</span>
+      <span class="chip warn">1 soaking</span>
+      <span class="chip merged">1 merged today</span>
+    </div>
+  </div>
+  <div class="posture-switch"><span>armed</span><button class="switch on" aria-label="YOLO mode"></button></div>
+</div>
+
+<div class="blockers">
+  <div class="blockers-head"><span>⚠</span> Armed, but two things stop pull requests qualifying</div>
+  <ul>
+    <li><span class="glyph">◔</span> <span>The Inspector is in <b>dry run</b>, so it reviews but publishes nothing - and YOLO will not merge on a review nobody can see.</span> <button class="link">Set it to live in Inspector →</button></li>
+    <li><span class="glyph">◔</span> <span>The Inspector may not review <b>acme/storefront</b>, so nothing there will ever merge.</span> <button class="link">Fix in Trust →</button></li>
+  </ul>
+</div>
+
+<div class="setgroup">
+  <p class="settings-group-label">The safety valve</p>
+  <div class="setcard">
+    <div class="setrow">
+      <div class="setrow-label"><b>Soak time</b><small>The window in which somebody can look at what an agent proposed and say no. Zero means merge the moment everything else passes.</small></div>
+      <div class="setrow-ctl"><input class="field mono" style="width:76px;text-align:right" value="10" /><span style="color:var(--muted);font-size:12px">minutes open</span></div>
+    </div>
+    <div class="setrow">
+      <div class="setrow-label"><b>How to merge</b><small>The same three methods GitHub offers. Squash keeps one commit per pull request on the base branch.</small></div>
+      <div class="setrow-ctl"><div class="pillbar"><button class="on">Squash</button><button>Merge commit</button><button>Rebase</button></div></div>
+    </div>
+    <div class="setrow">
+      <div class="setrow-label"><b>Repositories that may merge themselves</b><small>Its own list, not the Inspector's - letting it comment on a repo is not the same permission as letting it merge there.</small></div>
+      <div class="setrow-ctl">
+        <div class="repochips"><span class="chip mono">mancej/ai-harness</span><span class="chip mono warn">acme/storefront</span></div>
+        <button class="link">Manage in Trust →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="setgroup">
+  <p class="settings-group-label">When a task's pull request merges</p>
+  <p class="settings-hint" style="margin:-4px 0 8px;max-width:78ch">Applies to <b style="color:var(--muted)">any</b> merge of a task's pull request, including one you performed on GitHub yourself. Mission Control marks the task complete either way - it never gives the task Kill's failed outcome.</p>
+  <div class="setcard">
+    <div class="setrow">
+      <div class="setrow-label"><b>Close the finished session</b><small>Frees a slot for a new backlog task.</small></div>
+      <div class="setrow-ctl"><button class="switch on safe" aria-label="close session after merge"></button></div>
+    </div>
+    <div class="setrow stack">
+      <div class="setrow-ctl"><p class="settings-hint" style="text-align:left">A finished agent otherwise counts against the fleet ceiling for as long as it lives. Its checkout is reclaimed only when it holds no uncommitted or untracked files; otherwise it is kept for Clean up.</p></div>
+    </div>
+  </div>
+</div>
+
+<div class="ledger">
+  <div class="ledger-head">
+    <p class="settings-group-label">Where each pull request stands</p>
+    <div class="ledger-counts"><span class="chip warn">1 soaking</span><span class="chip">2 waiting</span><span class="chip merged">1 merged</span></div>
+  </div>
+  <div class="ltable">
+    ${PRS.map(p=>`
+    <div class="lrow${p.retired&&p.shipTone!=='merged'?' retired':''}">
+      <div class="pr"><a href="#">${p.repo}#${p.n}</a><span class="title">${p.title}</span></div>
+      <span class="chip ${p.shipTone}">${p.ship}</span>
+      <span class="when">${p.when}</span>
+    </div>`).join("")}
+  </div>
+  <p class="settings-hint" style="margin-top:8px">An auto-merger's failure mode is not merging the wrong thing - it is merging nothing and never saying why. This is where that is said, per pull request.</p>
+</div>`;
+
+const shippingB = () => `
+${headShipping}
+<p class="settings-hint" style="max-width:78ch">What lands without you. A pull request Mission Control opened passes every gate below, in order, before YOLO mode merges it. Two of these gates belong to the Inspector - they are shown because either one silently stops everything here.</p>
+
+<div class="pipe">
+  <div class="pipe-head">
+    <div>
+      <h3>YOLO mode</h3>
+      <p class="settings-hint">The only switch in this app that writes to a default branch.</p>
+    </div>
+    <button class="switch on" aria-label="YOLO mode"></button>
+  </div>
+
+  <div class="step foreign on">
+    <div class="step-mark"><div class="ring">✓</div></div>
+    <div class="step-body">
+      <div class="step-top"><span class="step-title">1 · The Inspector reviewed the current push</span><span class="step-owner">Inspector</span></div>
+      <p class="step-note">Findings must be published, not merely computed - a review nobody can see is not one this gate can read.</p>
+    </div>
+  </div>
+
+  <div class="step foreign blocked">
+    <div class="step-mark"><div class="ring">!</div></div>
+    <div class="step-body">
+      <div class="step-top"><span class="step-title">2 · …and it is allowed to review this repository</span><span class="step-owner">Inspector</span><div class="ctl"><button class="link">Fix in Trust →</button></div></div>
+      <p class="step-note"><b>acme/storefront</b> holds a merge grant here but no review grant there, so its pull requests reach this gate and stop for good.</p>
+    </div>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">✓</div></div>
+    <div class="step-body">
+      <div class="step-top"><span class="step-title">3 · CI is green and no thread is unresolved</span></div>
+      <p class="step-note">Read from GitHub at merge time, not from what we last saw. A human's unresolved comment blocks the merge exactly like a finding does.</p>
+    </div>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">◷</div></div>
+    <div class="step-body">
+      <div class="step-top">
+        <span class="step-title">4 · It has soaked</span>
+        <div class="ctl"><input class="field mono" style="width:70px;text-align:right" value="10" /><span style="color:var(--muted);font-size:11.5px">minutes open</span></div>
+      </div>
+      <p class="step-note">The window in which somebody can look at what an agent proposed and say no. Zero means merge as soon as everything else passes. <b>#231 has 4 minutes left.</b></p>
+    </div>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">✓</div></div>
+    <div class="step-body">
+      <div class="step-top">
+        <span class="step-title">5 · …and this repository may merge itself</span>
+        <div class="ctl"><span class="chip mono">mancej/ai-harness</span><button class="link">Manage in Trust →</button></div>
+      </div>
+      <p class="step-note">Its own list, not the Inspector's - letting it comment on a repo is not the same permission as letting it merge there.</p>
+    </div>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">→</div></div>
+    <div class="step-body">
+      <div class="step-top">
+        <span class="step-title">6 · Merge</span>
+        <div class="ctl"><div class="pillbar"><button class="on">Squash</button><button>Merge commit</button><button>Rebase</button></div></div>
+      </div>
+      <p class="step-note">Performed on GitHub under your account, landing on the base branch. <b>Nothing in Mission Control can undo one.</b></p>
+    </div>
+  </div>
+
+  <div class="step on">
+    <div class="step-mark"><div class="ring">✓</div></div>
+    <div class="step-body">
+      <div class="step-top">
+        <span class="step-title">7 · Afterwards<small>fires on any merge, including yours</small></span>
+        <div class="ctl"><span style="font-size:11.5px;color:var(--muted)">close the session</span><button class="switch on safe" aria-label="close session after merge"></button></div>
+      </div>
+      <p class="step-note">The task is marked complete either way - it never gets Kill's failed outcome. This decides only whether the finished agent stays: closing it frees a fleet slot and reclaims the checkout when it holds nothing uncommitted; keeping it lets the autopilot hand it the next task in place, context and all.</p>
+    </div>
+  </div>
+
+  <div class="pipe-out">
+    <span class="dot warn"></span><b>Right now:</b> 1 pull request is soaking, 2 are held at a gate, 1 can never merge. <span class="chip warn">see below</span>
+  </div>
+</div>
+
+<div class="ledger">
+  <div class="ledger-head">
+    <p class="settings-group-label">Where each pull request stands</p>
+    <div class="ledger-counts"><span class="chip warn">1 soaking</span><span class="chip">2 waiting</span><span class="chip merged">1 merged</span></div>
+  </div>
+  <div class="ltable">
+    ${PRS.map(p=>`
+    <div class="lrow${p.retired&&p.shipTone!=='merged'?' retired':''}">
+      <div class="pr"><a href="#">${p.repo}#${p.n}</a><span class="title">${p.title}</span></div>
+      <span class="chip ${p.shipTone}">${p.ship}</span>
+      <span class="when">${p.when}</span>
+    </div>`).join("")}
+  </div>
+</div>`;
+
+const shippingC = () => `
+${headShipping}
+<div class="split">
+  <div>
+    <div class="cpanel">
+      <div class="cpanel-head"><h4>YOLO mode</h4><button class="switch on" aria-label="YOLO mode"></button></div>
+      <div class="cstate live"><span class="dot bad"></span> Armed · merges to the base branch</div>
+      <div class="cpanel-body">
+        <div class="cfield">
+          <div class="cfield-top"><label>Soak</label><div class="ctl"><input class="field mono" style="width:64px;text-align:right" value="10" /> <span style="font-size:11.5px;color:var(--muted)">min</span></div></div>
+          <small>The window in which somebody can say no. Zero merges as soon as everything else passes.</small>
+        </div>
+        <div class="cfield">
+          <div class="cfield-top"><label>Method</label></div>
+          <div class="pillbar"><button class="on">Squash</button><button>Commit</button><button>Rebase</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cpanel">
+      <div class="cpanel-head"><h4>Prerequisites</h4></div>
+      <div class="cpanel-body" style="gap:9px">
+        <div class="cfield-top"><span class="dot ok"></span><label style="font-weight:450">Inspector running</label><div class="ctl"><span class="chip ok">on</span></div></div>
+        <div class="cfield-top"><span class="dot warn"></span><label style="font-weight:450">Publishing findings</label><div class="ctl"><button class="link">dry run →</button></div></div>
+        <div class="cfield-top"><span class="dot warn"></span><label style="font-weight:450">Review grants cover merge grants</label><div class="ctl"><button class="link">1 gap →</button></div></div>
+        <small class="settings-hint">Each unmet line is a reason a pull request qualifies for nothing, silently.</small>
+      </div>
+    </div>
+
+    <div class="cpanel">
+      <div class="cpanel-head"><h4>May merge in</h4></div>
+      <div class="cpanel-body">
+        <div class="repochips"><span class="chip mono">mancej/ai-harness</span><span class="chip mono warn">acme/storefront</span></div>
+        <small class="settings-hint">Its own list, not the Inspector's. <button class="link">Manage in Trust →</button></small>
+      </div>
+    </div>
+
+    <div class="cpanel">
+      <div class="cpanel-head"><h4>After any merge</h4><button class="switch on safe" aria-label="close session after merge"></button></div>
+      <div class="cpanel-body">
+        <small>Close the completed session and free a fleet slot. Fires on merges you perform yourself too. The task is marked complete either way; the checkout is reclaimed only when it holds nothing uncommitted.</small>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="strip">
+      <div class="stat attn"><b>1</b><span>soaking</span></div>
+      <div class="stat"><b>2</b><span>held at a gate</span></div>
+      <div class="stat bad"><b>1</b><span>can never merge</span></div>
+      <div class="stat mg"><b>1</b><span>merged today</span></div>
+    </div>
+    <div class="tbl">
+      <div class="tbl-head">
+        <h4>Merge queue</h4>
+        <div class="tbl-filter"><button class="on">All</button><button>Blocked</button><button>Soaking</button><button>Merged</button></div>
+      </div>
+      <div class="trow head"><span>Pull request</span><span>Title</span><span>Standing</span><span style="text-align:right">Last event</span></div>
+
+      <div class="trow">
+        <a href="#">mancej/ai-harness#231</a><span class="t">feat(schedules): missed-policy recovery</span>
+        <span class="soakcell"><span class="progress"><i style="width:60%"></i></span>6m of 10</span>
+        <span class="w">4m ago</span>
+      </div>
+      <div class="trow">
+        <a href="#">mancej/ai-harness#230</a><span class="t">fix(codex): rollout scan cap</span>
+        <span><span class="chip">waiting on CI</span></span><span class="w">22m ago</span>
+      </div>
+      <div class="trow retired">
+        <a href="#">mancej/ai-harness#229</a><span class="t">refactor(terminal): bindPane lock</span>
+        <span><span class="chip merged">merged · squash</span></span><span class="w">1h ago</span>
+      </div>
+      <div class="trow">
+        <a href="#">mancej/ai-harness#228</a><span class="t">docs(ensembles): extension contract</span>
+        <span><span class="chip">not looked at yet</span></span><span class="w">3h ago</span>
+      </div>
+      <div class="trow">
+        <a href="#">mancej/ai-harness#227</a><span class="t">test(schedule): pre-feature db seed</span>
+        <span><span class="chip warn">unresolved threads</span></span><span class="w">not yet</span>
+      </div>
+      <div class="trow">
+        <a href="#">acme/storefront#12</a><span class="t">chore: bump deps</span>
+        <span><span class="chip bad">no review grant</span></span><span class="w">2d ago</span>
+      </div>
+    </div>
+    <p class="settings-hint" style="margin-top:9px">An auto-merger's failure mode is not merging the wrong thing - it is merging nothing and never saying why. Every row states its reason verbatim, including a refusal <code>gh</code> gave us that this app cannot interpret.</p>
+  </div>
+</div>`;
+
+/* ------------------------------------------------------------------ */
+const VIEWS = {
+  inspector:{a:inspectorA,b:inspectorB,c:inspectorC},
+  shipping:{a:shippingA,b:shippingB,c:shippingC},
+};
+let panel="inspector", variant="a";
+function render(){
+  const pane = document.getElementById('pane');
+  pane.className = 'settings-pane' + (variant === 'c' ? ' wide' : '');
+  pane.innerHTML = VIEWS[panel][variant]();
+  document.getElementById('ratTag').textContent = variant.toUpperCase();
+  document.getElementById('ratText').innerHTML = RATIONALE[variant];
+  document.getElementById('railInspector').classList.toggle('is-active', panel==='inspector');
+  document.getElementById('railShipping').classList.toggle('is-active', panel==='shipping');
+  document.querySelectorAll('#panelSeg button').forEach(b=>b.classList.toggle('on', b.dataset.panel===panel));
+  document.querySelectorAll('#variantSeg button').forEach(b=>b.classList.toggle('on', b.dataset.variant===variant));
+}
+document.getElementById('panelSeg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b)return; panel=b.dataset.panel; render();
+});
+document.getElementById('variantSeg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b)return; variant=b.dataset.variant; render();
+});
+document.getElementById('railInspector').addEventListener('click',()=>{panel='inspector';render()});
+document.getElementById('railShipping').addEventListener('click',()=>{panel='shipping';render()});
+document.addEventListener('keydown',e=>{
+  if(e.key==='1'||e.key==='2'||e.key==='3'){variant=['a','b','c'][+e.key-1];render()}
+  if(e.key==='i'){panel='inspector';render()} if(e.key==='s'){panel='shipping';render()}
+});
+/* mockup switches are inert except for their own visual state */
+document.addEventListener('click',e=>{
+  const s=e.target.closest('.switch'); if(s){s.classList.toggle('on');}
+  const p=e.target.closest('.pillbar button, .tbl-filter button');
+  if(p){[...p.parentElement.children].forEach(c=>c.classList.remove('on')); p.classList.add('on');}
+});
+render();
+</script>
+</body>
+</html>

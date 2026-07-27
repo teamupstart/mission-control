@@ -9384,6 +9384,25 @@ select.ensemble-judge-persona {
   letter-spacing: 0.06em;
   color: var(--dim);
 }
+/* A stacked radio group with a legend, for panels that render one choice per line rather
+   than a segmented control. Named for what it IS, not for the panel that had it first:
+   these rules lived on `.inspector-modes` and the Models panel borrowed that class, so
+   when the Inspector's own mode control became a segmented one the borrower silently lost
+   its fieldset reset - an unstyled legend, and a browser-default border round the group. */
+.settings-radios {
+  margin: 10px 0 4px;
+  padding: 0;
+  border: 0;
+}
+.settings-radios legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .kb-row {
   display: flex;
   align-items: center;
@@ -10410,12 +10429,12 @@ select.ensemble-judge-persona {
 }
 
 /* ---- Models settings category (which provider does the app's own offline work) ----
-   Deliberately thin: the panel reuses `.inspector-modes` for its provider radio group and
+   Deliberately thin: the panel reuses `.settings-radios` for its provider radio group and
    `.foreman-model*` for its fields, because both are the shared widget's markup and a third
    class vocabulary would be three selectors to keep in step for one control. Only what is
    genuinely this panel's lands here. */
 /* Separated from the intro prose the way `.foreman-models` is from the fieldset above it -
-   `.inspector-modes` sits directly under a radio group in its own panel and only needs 10px. */
+   `.settings-radios` carries only the 10px a group under a heading needs. */
 .llm-runners {
   margin-top: 18px;
 }
@@ -10668,8 +10687,7 @@ select.foreman-model-input {
    `.settings-hint`, `.alert-row`) and only add the two grids and the repo list that have no
    equivalent there. */
 .wf-settings-live {
-  /* Same reason as `.inspector-toggle`: a master toggle directly under a blurb otherwise
-     touches the text. */
+  /* A master toggle directly under a blurb otherwise touches the text. */
   margin-top: 12px;
 }
 .wf-settings-repos,
@@ -10783,29 +10801,561 @@ select.foreman-model-input {
   overflow-wrap: anywhere;
 }
 
-/* ---- Inspector settings category ---- */
-/* The master toggle sits directly under the blurb, which leaves it touching the text.
-   Scoped rather than added to `.alert-row`, which the alerts panel packs deliberately
-   tightly into a list. */
-.inspector-toggle {
-  margin-top: 12px;
+/* ---- the outbound console (Inspector + Shipping) ----
+   The two categories whose writes leave this machine are drawn as one shape: a narrow
+   control column beside a wide per-pull-request ledger. They looked alike before this
+   section existed, in two parallel class vocabularies that had already drifted - which is
+   how a chip restyled on one side and not the other ends up implying that "posts a
+   comment" and "lands a commit on the default branch" work differently. One vocabulary,
+   `oc-`, and the panels differ only where the CONSEQUENCE differs (the danger tone).
+
+   Why the ledger got the wide column: it is what an operator opens either panel to read.
+   In dry run it is the only place the Inspector's findings exist at all, and on the
+   Shipping side it is the entire answer to "why has nothing merged" - which is an
+   auto-merger's real failure mode. It was a 12px list under a vertical form.
+   See `src/web/components/outbound-console.tsx`. */
+.settings-pane > .settings-section.oc-section {
+  /* The 900px reading column is right for a form and wrong for a form beside a table. */
+  max-width: none;
 }
-.inspector-modes {
-  margin: 10px 0 4px;
-  padding: 0;
-  border: 0;
+.oc-lede {
+  margin: 0 0 14px;
+  max-width: 84ch;
 }
-.inspector-modes legend {
-  padding: 0;
-  margin-bottom: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+.oc-split {
+  display: grid;
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+/* One column below the width where the ledger stops being a table and starts being a
+   stack of wrapped cells. The controls lead, because on a narrow window you came here to
+   change something. */
+@media (max-width: 1080px) {
+  .oc-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.oc-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.oc-ledger {
+  min-width: 0;
+}
+
+/* ---- a control card ---- */
+.oc-card {
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.oc-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 13px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.oc-card-title {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--muted);
 }
-/* The only warning in this app about something leaving the machine. Shown for as long as
-   live is selected, not just at the moment it is clicked - the risk is ongoing. */
+.oc-card-head .oc-switch {
+  margin-left: auto;
+}
+.oc-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 13px;
+}
+/* The card body owns its own rhythm through `gap`, so anything that arrives carrying a
+   margin from the flat-form layout (every `.settings-hint`, and the warnings) would add a
+   second, uneven one on top of it. */
+.oc-card-body > .settings-warn,
+.oc-card-body > .settings-hint,
+.oc-card-body > p {
+  margin: 0;
+}
+
+/* ---- the master switch ----
+   A real checkbox with `appearance: none`, not a div with an onClick: this is the control
+   that arms an unattended merge, and it has to be reachable from the keyboard and
+   announce itself. The visible label is the card's title; the accessible name is the
+   `.sr-only` span inside. */
+.oc-switch {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.oc-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.oc-switch-track {
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+.oc-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--exited);
+  transition:
+    left 0.16s ease,
+    background 0.16s ease;
+}
+/* The on colour is the CONSEQUENCE, not the state: red for the two switches that publish
+   or merge under the operator's GitHub account, green for one whose only effect is local
+   (closing a finished session). A single accent for "on" would have made those read the
+   same. */
+.oc-switch-danger input:checked + .oc-switch-track {
+  background: color-mix(in oklab, var(--danger) 26%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--danger) 55%, var(--border));
+}
+.oc-switch-danger input:checked + .oc-switch-track::after {
+  background: var(--danger);
+}
+.oc-switch-ok input:checked + .oc-switch-track {
+  background: color-mix(in oklab, var(--idle) 24%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--idle) 50%, var(--border));
+}
+.oc-switch-ok input:checked + .oc-switch-track::after {
+  background: var(--idle);
+}
+.oc-switch input:checked + .oc-switch-track::after {
+  left: 18px;
+}
+.oc-switch input:focus-visible + .oc-switch-track {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.oc-switch input:disabled + .oc-switch-track {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- the posture line ----
+   Directly under the switch, in every state, because a checkbox cannot tell the four
+   apart and three of them look like "on". */
+.oc-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 560;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.oc-state-danger {
+  color: color-mix(in oklab, var(--danger) 78%, var(--fg));
+  background: color-mix(in oklab, var(--danger) 10%, var(--panel-2));
+}
+.oc-state-attention {
+  color: color-mix(in oklab, var(--attention) 80%, var(--fg));
+  background: color-mix(in oklab, var(--attention) 9%, var(--panel-2));
+}
+.oc-state-ok {
+  color: color-mix(in oklab, var(--idle) 80%, var(--fg));
+  background: color-mix(in oklab, var(--idle) 9%, var(--panel-2));
+}
+.oc-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--exited);
+}
+.oc-dot-danger {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--danger) 16%, transparent);
+}
+.oc-dot-attention {
+  background: var(--attention);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 16%, transparent);
+}
+.oc-dot-ok {
+  background: var(--idle);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--idle) 16%, transparent);
+}
+.oc-dot-unknown {
+  background: var(--muted);
+}
+
+/* ---- a labelled control inside a card ---- */
+.oc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.oc-field-label {
+  display: block;
+  padding: 0;
+  font-size: 11.5px;
+  font-weight: 580;
+  color: var(--fg);
+}
+.oc-field > .settings-hint {
+  margin: 0;
+}
+select.oc-input {
+  max-width: 100%;
+}
+/* ModelField brings its own boxed row from the Foreman panel, which inside a card is a
+   box in a box. Flatten it here rather than forking the component: the widget's guts -
+   the provider-filtered `<select>`, the resolution note - are exactly what this panel
+   wants, and a second copy would drift on the first bug fix. */
+.oc-model .foreman-model-row {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+.oc-model .foreman-models-hint {
+  margin: 0 0 8px;
+}
+.oc-model select.foreman-model-input {
+  max-width: 100%;
+}
+/* The soak field. Sized to the value it holds - four digits at most - because a
+   full-width box for "10" reads as a text field somebody forgot to constrain. */
+.oc-number .alert-row {
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  cursor: default;
+}
+.oc-number input[type="number"] {
+  width: 76px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+}
+.oc-number input[type="number"]:disabled {
+  opacity: 0.55;
+}
+
+/* ---- segmented radios (mode, merge method) ----
+   Radios, still: the segmented look is `appearance: none` over real inputs, so arrow keys
+   walk the group and the fieldset's legend names it. */
+.oc-seg-row {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.oc-seg-opt {
+  position: relative;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.oc-seg-opt input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.oc-seg-opt:hover {
+  color: var(--fg);
+}
+.oc-seg-opt.is-on {
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.oc-seg-opt:has(input:focus-visible) {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+.oc-seg-opt:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---- an unmet prerequisite (Shipping's three gotchas) ---- */
+.oc-blocker {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: color-mix(in oklab, var(--attention) 72%, var(--fg));
+}
+.oc-blocker .oc-dot {
+  position: relative;
+  top: -1px;
+}
+.oc-blocker.is-met {
+  color: var(--muted);
+}
+.oc-blocker .settings-link {
+  white-space: nowrap;
+}
+
+/* ---- the Inspector's health card ---- */
+.oc-health-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.oc-health-value {
+  margin-left: auto;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.oc-health-bad {
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.oc-after-merge {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+/* ---- the count strip: every tile is the filter that selects it ---- */
+.oc-strip {
+  display: grid;
+  /* `auto-fit` rather than a fixed count: the strip has one tile per BUCKET, and how many
+     buckets a panel has is the panel's business - hard-coding four here is how a fifth
+     tile silently became a second row of one. */
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.oc-stat {
+  display: block;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+.oc-stat:hover {
+  border-color: var(--muted);
+}
+.oc-stat.is-active {
+  border-color: var(--working);
+  background: color-mix(in oklab, var(--working) 10%, var(--panel));
+}
+.oc-stat b {
+  display: block;
+  font-size: 20px;
+  font-weight: 640;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.oc-stat span {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.oc-stat-attention b {
+  color: var(--attention);
+}
+.oc-stat-danger b {
+  color: var(--danger);
+}
+.oc-stat-ok b {
+  color: var(--idle);
+}
+.oc-stat-merged b {
+  color: var(--pr-merged);
+}
+
+/* ---- the ledger table ---- */
+.oc-table {
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.oc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.oc-head h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.oc-clear {
+  margin-left: auto;
+  padding: 3px 9px;
+  border: 1px solid color-mix(in oklab, var(--working) 34%, var(--border));
+  border-radius: 20px;
+  background: color-mix(in oklab, var(--working) 10%, transparent);
+  color: var(--working);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.oc-clear:hover {
+  border-color: var(--working);
+}
+.oc-row {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 13px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+.oc-table-inspector .oc-row {
+  grid-template-columns: minmax(0, 1fr) 148px 74px 104px;
+}
+.oc-table-shipping .oc-row {
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 104px;
+}
+.oc-row-head {
+  padding: 6px 13px;
+  border-top: 0;
+  background: var(--bg-2);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.oc-row:not(.oc-row-head):hover {
+  background: var(--panel-2);
+}
+/* A closed pull request is out of the sweep for good, so it reads as history rather than
+   as work in hand. Without this the list is dominated by rows nothing will ever act on
+   again, and the two or three PRs actually in the queue are invisible inside it. */
+.oc-row.is-retired {
+  opacity: 0.55;
+}
+.oc-pr {
+  color: var(--fg);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-pr:hover {
+  text-decoration: underline;
+}
+.oc-verdict,
+.oc-standing {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-verdict-findings {
+  color: var(--attention);
+}
+.oc-verdict-clean {
+  color: var(--idle);
+}
+.oc-verdict-failed {
+  color: var(--danger);
+}
+.oc-standing-soaking {
+  color: var(--attention);
+}
+.oc-standing-blocked {
+  color: var(--danger);
+}
+/* The same token the PR chip uses for a merged pull request, so "merged" is one colour
+   across the app rather than a green here and a purple on the card. */
+.oc-standing-merged {
+  color: var(--pr-merged);
+}
+.oc-fixed {
+  color: var(--dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.oc-when {
+  color: var(--dim);
+  font-size: 11px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.oc-empty {
+  margin: 0;
+  padding: 16px 13px;
+}
+.oc-foot {
+  margin: 9px 2px 0;
+}
+
+/* ---- warnings shared by both outbound panels ----
+   `settings-warn` is the app-wide attention block; the two panels differ below it only
+   where the consequence differs. */
 .settings-warn {
   margin: 10px 0 0;
   padding: 9px 12px;
@@ -10816,189 +11366,30 @@ select.foreman-model-input {
   border: 1px solid color-mix(in oklab, var(--attention) 32%, transparent);
   border-radius: 8px;
 }
-/* The Inspector's live warning is the strongest one here - it is the only setting in the
-   app whose consequence is public - so it gets the danger tone rather than settings-warn's
-   attention tone. */
+/* The Inspector's live warning is the strongest one in that panel - it is the only
+   setting whose consequence is public - so it gets the danger tone rather than
+   settings-warn's attention tone. */
 .inspector-live-warn {
   color: color-mix(in oklab, var(--danger) 86%, var(--fg));
   background: color-mix(in oklab, var(--danger) 10%, var(--panel-2));
   border-color: color-mix(in oklab, var(--danger) 34%, transparent);
 }
-/* The daemon has not answered yet, so the panel is showing nothing rather than the safe
-   posture. Muted, because it is an absence of information and not a finding. */
-.inspector-unknown {
-  color: var(--muted);
-  background: var(--panel-2);
-  border-color: color-mix(in oklab, var(--muted) 28%, transparent);
-}
-.inspector-log {
-  margin-top: 18px;
-}
-.inspector-log-list {
-  margin: 6px 0 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.inspector-log-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-}
-.inspector-log-row:hover {
-  background: var(--panel-2);
-}
-/* A closed pull request is out of the sweep for good, so it reads as history rather than
-   as work in hand. Without this the list is dominated by rows nothing will ever act on
-   again, and the two or three PRs actually in the queue are invisible inside it. */
-.inspector-log-row.is-retired .inspector-log-pr {
-  color: var(--muted);
-}
-.inspector-log-pr {
-  color: var(--fg);
-  text-decoration: none;
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.inspector-log-pr:hover {
-  text-decoration: underline;
-}
-.inspector-log-state {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.inspector-log-failed {
-  color: var(--danger);
-}
-.inspector-log-when {
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-/* ---- Shipping settings category (YOLO mode) ----
-   Deliberately built from the Inspector category's pieces one section up: the two panels
-   are the same shape (a master toggle, a warning that stays up, an allowlist, a per-PR
-   ledger), and a second visual language for the same shape would only suggest they work
-   differently. What differs is the tone of the warning, because what differs is the
-   consequence. */
-.ship-toggle {
-  margin-top: 12px;
-}
-/* The strongest warning in the app. The Inspector's live mode publishes a comment; this
-   one lands a commit on the base branch, and nothing here can take it back. */
+/* Stronger still. The Inspector's live mode publishes a comment; this one lands a commit
+   on the base branch, and nothing here can take it back. */
 .ship-live-warn {
   color: color-mix(in oklab, var(--danger) 86%, var(--fg));
   background: color-mix(in oklab, var(--danger) 12%, var(--panel-2));
   border-color: color-mix(in oklab, var(--danger) 40%, transparent);
 }
-/* Armed, but nothing can qualify - the Inspector is off. An impediment, not a danger, so
-   it keeps the attention tone `.settings-warn` already carries. */
-.ship-needs-inspector {
-  margin-top: 8px;
-}
+/* The daemon has not answered yet, so the panel is showing nothing rather than the safe
+   posture. Muted, because it is an absence of information and not a finding. */
+.inspector-unknown,
 .ship-unknown {
   color: var(--muted);
   background: var(--panel-2);
   border-color: color-mix(in oklab, var(--muted) 28%, transparent);
 }
-.ship-soak {
-  margin-top: 16px;
-}
-/* The shared `NumberSetting` is styled by whatever contains it (see `.foreman-knobs`),
-   so the field takes the panel's scale here rather than the popover's. Sized to the value
-   it holds - four digits at most - because a full-width box for "10" reads as a text
-   field somebody forgot to constrain. */
-.ship-soak .alert-row {
-  margin-top: 6px;
-  color: var(--muted);
-  cursor: default;
-}
-.ship-soak input[type="number"] {
-  width: 76px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-2);
-  color: var(--fg);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-.ship-soak input[type="number"]:disabled {
-  opacity: 0.55;
-}
-.ship-methods {
-  margin: 16px 0 4px;
-  padding: 0;
-  border: 0;
-}
-.ship-methods legend {
-  padding: 0;
-  margin-bottom: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.ship-log {
-  margin-top: 18px;
-}
-.ship-log-list {
-  margin: 6px 0 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.ship-log-row {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-}
-.ship-log-row:hover {
-  background: var(--panel-2);
-}
-.ship-log-pr {
-  color: var(--fg);
-  text-decoration: none;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.ship-log-pr:hover {
-  text-decoration: underline;
-}
-/* The reason column is the point of this list, so it gets the flexible track and is
-   allowed to be a sentence. It truncates rather than wraps: these rows are scanned. */
-.ship-log-state {
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* The same token the PR chip uses for a merged pull request, so "merged" is one colour
-   across the app rather than a green here and a purple on the card. */
-.ship-log-merged {
-  color: var(--pr-merged);
-}
-.ship-log-when {
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
+
 
 /* ---- Trust matrix (the view over the three allowlists) ----
    Beside Shipping deliberately: it is the other half of the same feature - Shipping's,

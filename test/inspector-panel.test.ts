@@ -181,7 +181,22 @@ test("retired rows are marked so a finished list cannot read as a backlog", () =
       ],
     }),
   );
-  assert.match(html, /inspector-log-row is-retired/);
+  assert.match(html, /oc-row is-retired/);
   // The live one must NOT pick the marker up, or the distinction says nothing.
-  assert.match(html, /class="inspector-log-row"/);
+  assert.match(html, /class="oc-row"/);
+});
+
+// The model control. Asserted as a `<select>` rather than by its value, because the shape
+// IS the requirement: a free-text box invites a Claude id while Codex is selected, which
+// the config route accepts (`ModelIdSchema` is a shell-injection guard, not a catalog
+// check) and which then fails at spawn time, once, in a log nobody is reading.
+test("the model is a picker filtered by the provider, never a free-text box", () => {
+  const html = render(
+    state({ config: InspectorConfigSchema.parse({ enabled: true, runner: "codex" }) }),
+  );
+  assert.match(html, /<select[^>]*id="inspector-model"/);
+  assert.doesNotMatch(html, /<input[^>]*id="inspector-model"/);
+  // Filtered: Codex's catalog, and none of Claude's.
+  assert.match(html, /GPT-5\.6 Sol/);
+  assert.doesNotMatch(html, /Opus 5/);
 });

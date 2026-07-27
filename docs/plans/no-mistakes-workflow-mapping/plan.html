@@ -118,7 +118,11 @@
     current node kind runs a command; the graph vocabulary is exactly <code>session</code>,
     <code>persona</code>, <code>all_pass</code>, <code>end</code>. That would be a new "check
     node" kind - a plan-level extension, not a Persona. <b>Decided: not pursued.</b> CI
-    enforces these checks at the PR head and the Inspector final gate makes them binding.</p>
+    enforces these checks at the PR head and the Inspector final gate makes them binding.
+    <b>Superseded 2026-07-26</b> by
+    <code>docs/plans/builtin-workflows/plan.md</code>, which adopts a check node kind. The
+    original reasoning holds for why a command gate is not a <i>Persona</i>; it does not hold
+    for why it is not a <i>node</i>.</p>
   </div>
 
   <h2 id="machinery">How a no-mistakes run works (the machinery around the steps)</h2>
@@ -281,7 +285,10 @@
   <ul>
     <li>The <b>command gate</b> has no home: no node kind runs a shell command. Decided: left
       to CI, which the Inspector final gate enforces at the PR head; no check-node kind is
-      planned.</li>
+      planned. <b>Superseded 2026-07-26</b> by
+      <code>docs/plans/builtin-workflows/plan.md</code>, which adopts a check node kind. The
+      original reasoning holds for why a command gate is not a <i>Persona</i>; it does not
+      hold for why it is not a <i>node</i>.</li>
     <li>The <b>evidence audit</b> becomes a <b>Test Evidence Auditor Persona</b>: it judges
       whether the submission's evidence demonstrates the stated intent end-to-end, and its fail
       verdict demands the specific evidence the Session must produce (a screenshot for a UI
@@ -370,7 +377,7 @@
         <tr><td>rebase</td><td>Git machinery + agent conflict fixer</td><td>Outside the graph; repair-packet instruction if ever needed</td><td>Not a node, by design</td></tr>
         <tr><td>review (judge)</td><td>LLM judge, findings + risk</td><td><b>Code Risk Reviewer Persona</b></td><td>Yes</td></tr>
         <tr><td>review (fixer)</td><td>Pipeline-owned fix agent</td><td>Session repair loop (preview now; live in phase 4)</td><td>Preview yes; live is phase 4</td></tr>
-        <tr><td>test (command)</td><td>Deterministic exit-code gate</td><td>CI via the Inspector gate (adopted; no check node)</td><td>No</td></tr>
+        <tr><td>test (command)</td><td>Deterministic exit-code gate</td><td>CI via the Inspector gate was the historical decision. <b>Superseded 2026-07-26</b> by <code>docs/plans/builtin-workflows/plan.md</code>, which adopts a check node kind. The original reasoning holds for why a command gate is not a <i>Persona</i>; it does not hold for why it is not a <i>node</i>.</td><td>No in the 2026-07-23 plan; superseded</td></tr>
         <tr><td>test (evidence)</td><td>LLM evidence gatherer</td><td><b>Test Evidence Auditor Persona</b> (judges; Session produces)</td><td>Yes</td></tr>
         <tr><td>document</td><td>Agent editor under policy</td><td><b>Documentation Steward Persona</b> judges; Session edits</td><td>Yes</td></tr>
         <tr><td>lint</td><td>Command gate / agent fixer</td><td>Deterministic tooling or CI; Persona fit is poor</td><td>No; Lint Persona not adopted</td></tr>
@@ -512,8 +519,10 @@
       coherent: personas gate the work, no-mistakes ships it, Inspector gates the shipped
       head.</li>
     <li><b>Deterministic command gates</b> - the adopted decision leaves them to CI and the
-      Inspector final gate. <b>Superseded 2026-07-26</b>:
-      <code>docs/plans/builtin-workflows/plan.md</code> adopts a check node kind.</li>
+      Inspector final gate. <b>Superseded 2026-07-26</b> by
+      <code>docs/plans/builtin-workflows/plan.md</code>, which adopts a check node kind. The
+      original reasoning holds for why a command gate is not a <i>Persona</i>; it does not
+      hold for why it is not a <i>node</i>.</li>
   </ul>
 
   <h2 id="decisions">Adopted decisions</h2>
@@ -525,10 +534,11 @@
     <li><b>Deterministic test/lint command gates</b>: leave outside the graph. CI enforces
       them at the PR head; the Inspector final gate makes them binding. No check-node kind is
       planned. <b>Superseded 2026-07-26</b> by
-      <code>docs/plans/builtin-workflows/plan.md</code>, which adopts one. The reasoning here
-      holds for why a command gate is not a <i>Persona</i>; it does not hold for why it is not
-      a <i>node</i>. Deferring every deterministic check to CI lets a repair round pass all
-      four judges and only then discover the branch does not compile.</li>
+      <code>docs/plans/builtin-workflows/plan.md</code>, which adopts a check node kind. The
+      original reasoning holds for why a command gate is not a <i>Persona</i>; it does not
+      hold for why it is not a <i>node</i>. Deferring every deterministic check to CI lets a
+      repair round pass all four judges and only then discover the branch does not
+      compile.</li>
     <li><b>Ship tail</b>: as planned - graph success shows a missing-PR wait offering
       the existing no-mistakes/PR wrap-up, then the Inspector final gate. No workflow-owned
       delivery nodes.</li>

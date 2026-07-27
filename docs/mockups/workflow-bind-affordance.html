@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workflow bind affordance - mockups</title>
+<style>
+/* Tokens lifted verbatim from src/web/styles.css. */
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f;
+  --bg-2: #0e1116;
+  --panel: #14181e;
+  --panel-2: #171c23;
+  --border: #232a33;
+  --border-soft: #1b2129;
+  --fg: #e7ebf1;
+  --muted: #939eae;
+  --dim: #7c8798;
+
+  --working: #4a9eff;
+  --idle: #35c08a;
+  --attention: #f6a733;
+  --danger: #f85149;
+  --neutral: #8b94a3;
+  --purple: #a371f7;
+
+  --agent-accent: #d97757; /* AGENT_IDENTITY.claude.accent */
+
+  --radius: 13px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 40px 32px 96px;
+  background: radial-gradient(1100px 620px at 12% -8%, #121722 0%, transparent 62%), var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1000px; margin: 0 auto; }
+
+.eyebrow {
+  font-size: 10.5px; font-weight: 640; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--dim); margin: 0 0 10px;
+}
+h1 { margin: 0 0 12px; font-size: 27px; font-weight: 640; letter-spacing: -0.016em; }
+.lede { margin: 0; font-size: 13.5px; line-height: 1.65; color: var(--muted); }
+.lede code, .note code, .legend code {
+  font-family: var(--mono); font-size: 0.92em; color: var(--fg);
+  background: var(--panel-2); border: 1px solid var(--border-soft);
+  border-radius: 4px; padding: 1px 5px;
+}
+.page-head { border-bottom: 1px solid var(--border-soft); padding-bottom: 24px; margin-bottom: 34px; }
+
+/* ---- one option block ---- */
+.opt { margin-bottom: 30px; }
+.opt-head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; }
+.opt-key {
+  flex: none; font-family: var(--mono); font-size: 10px; font-weight: 640;
+  letter-spacing: 0.05em; color: var(--bg); background: var(--muted);
+  border-radius: 4px; padding: 2px 6px; line-height: 1.3;
+}
+.opt-key.is-now { background: var(--danger); color: #fff; }
+.opt-title { margin: 0; font-size: 15px; font-weight: 620; letter-spacing: -0.008em; }
+.opt-tag {
+  margin-left: auto; flex: none; font-size: 10px; font-weight: 620;
+  letter-spacing: 0.05em; text-transform: uppercase; color: var(--dim);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
+}
+.note { margin: 0 0 14px; font-size: 12px; line-height: 1.65; color: var(--dim); max-width: 88ch; }
+.note strong { color: var(--muted); font-weight: 600; }
+
+/* ---- the detail-pane replica ---- */
+.cdetail {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.detail-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 14px 22px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.agent-dot {
+  flex: none; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--agent-accent);
+}
+.detail-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.detail-title h3 {
+  margin: 0; font-size: 15px; font-weight: 620; letter-spacing: -0.01em; color: var(--fg);
+  white-space: nowrap;
+}
+.where { font-size: 11.5px; color: var(--dim); }
+.detail-head-spacer { flex: 1; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px 3px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 560; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge-working { color: var(--working); background: color-mix(in oklab, var(--working) 15%, transparent); }
+
+/* meta row */
+.detail-sub {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin: 0; padding: 10px 22px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+.kv { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 11.5px; }
+.kv dt {
+  flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  text-transform: uppercase; color: var(--dim);
+}
+.kv dd {
+  margin: 0; color: var(--muted); font-size: 11.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mono { font-family: var(--mono); }
+.branch { color: var(--idle); }
+
+/* tab strip */
+.detail-tabs { display: flex; gap: 2px; padding: 0 22px; border-bottom: 1px solid var(--border-soft); }
+.detail-tab {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 13px; font: inherit; font-size: 12.5px; font-weight: 600;
+  color: var(--muted); background: none; border: 0; cursor: pointer;
+}
+.detail-tab:hover { color: var(--fg); }
+.detail-tab.on { color: var(--fg); }
+.detail-tab.on::after {
+  content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px;
+  height: 2px; border-radius: 2px; background: var(--working);
+}
+kbd {
+  font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px; line-height: 1.3;
+}
+.detail-body-stub {
+  padding: 16px 22px 20px;
+  min-height: 46px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+/* ============ 0. the chip as it ships ============ */
+.workflow-bind-chip {
+  border: 1px solid color-mix(in srgb, var(--working) 35%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--working) 9%, var(--panel));
+  color: var(--fg);
+  font: inherit; font-size: 11px; line-height: 1;
+  padding: 5px 8px; white-space: nowrap; cursor: pointer;
+}
+.workflow-bind-chip:hover { border-color: var(--working); }
+
+/* ============ 1. quiet slot ============ */
+.bind-slot {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit; font-size: 11px; line-height: 1;
+  padding: 5px 9px; white-space: nowrap; cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+.bind-slot:hover {
+  color: var(--fg);
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--working) 55%, var(--border));
+  background: color-mix(in srgb, var(--working) 10%, transparent);
+}
+.bind-slot .mark { font-size: 10px; opacity: 0.8; }
+
+/* ============ 2. icon only ============ */
+.bind-ico {
+  position: relative;
+  flex: none;
+  width: 25px; height: 25px;
+  display: inline-flex; align-items: center; justify-content: center;
+  /* --border alone is invisible against --panel at 25px; the dash needs to read as an
+     empty slot, which it cannot do if you have to hunt for its outline. */
+  border: 1px dashed color-mix(in srgb, var(--dim) 52%, var(--border));
+  border-radius: 50%;
+  background: transparent; color: var(--muted);
+  font: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+.bind-ico:hover {
+  color: var(--fg); border-style: solid;
+  border-color: color-mix(in srgb, var(--working) 55%, var(--border));
+  background: color-mix(in srgb, var(--working) 10%, transparent);
+}
+.tip {
+  position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: var(--fg); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; white-space: nowrap;
+  box-shadow: var(--shadow); z-index: 5;
+  opacity: 0; pointer-events: none; transition: opacity 0.12s ease;
+}
+.bind-ico:hover .tip, .tip.always { opacity: 1; }
+
+/* ============ 3. hover reveal ============ */
+.reveal-head .bind-slot {
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+.reveal-head:hover .bind-slot,
+.reveal-head:focus-within .bind-slot { opacity: 1; }
+.hoverhint {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10.5px; color: var(--dim); margin-left: 2px;
+}
+.hoverhint::before {
+  content: "↑"; font-size: 11px;
+}
+
+/* ============ 4. overflow menu ============ */
+.more-btn {
+  flex: none; width: 26px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 14px; line-height: 1; color: var(--muted);
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  cursor: pointer;
+}
+.more-btn:hover, .more-btn[aria-expanded="true"] {
+  color: var(--fg); background: var(--panel-2); border-color: var(--border);
+}
+.more-wrap { position: relative; flex: none; }
+.menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 10;
+  width: 208px; padding: 5px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow);
+  display: none; flex-direction: column; gap: 1px;
+}
+.menu[data-open="true"] { display: flex; }
+.menu button {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  font: inherit; font-size: 12px; color: var(--fg); text-align: left;
+  background: transparent; border: 0; border-radius: 6px;
+  padding: 7px 9px; cursor: pointer;
+}
+.menu button:hover { background: var(--panel-2); }
+.menu button .mk { flex: none; width: 14px; text-align: center; color: var(--dim); font-size: 11px; }
+.menu-sep { height: 1px; background: var(--border-soft); margin: 4px 2px; }
+
+/* ============ 5. workflow tab ============ */
+.tab-empty {
+  display: flex; align-items: center; gap: 14px;
+  margin: 16px 22px 20px;
+  padding: 16px 18px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg-2) 60%, transparent);
+}
+.tab-empty .glyph {
+  flex: none; font-size: 20px; color: var(--muted);
+  width: 34px; height: 34px; border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); background: var(--panel);
+}
+.tab-empty-text { flex: 1; min-width: 0; }
+.tab-empty-title { display: block; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.tab-empty-sub {
+  display: block; font-size: 11.5px; line-height: 1.5; color: var(--dim); margin-top: 3px;
+}
+.btn-primary {
+  flex: none; font: inherit; font-size: 12px; font-weight: 600;
+  color: var(--bg); background: var(--working); border: 0;
+  border-radius: 8px; padding: 7px 13px; cursor: pointer;
+}
+.btn-primary:hover { filter: brightness(1.08); }
+
+/* ============ 6. meta-row field ============ */
+.kv-unset dd { color: var(--dim); display: flex; align-items: baseline; gap: 7px; }
+.kv-bind {
+  font: inherit; font-size: 11.5px; color: var(--working);
+  background: transparent; border: 0; padding: 0;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, var(--working) 45%, transparent);
+}
+.kv-bind:hover { text-decoration-color: var(--working); }
+
+/* ---- legend ---- */
+.legend {
+  margin-top: 44px; padding-top: 22px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12.5px; line-height: 1.8; color: var(--muted);
+}
+.legend h2 { font-size: 13px; font-weight: 620; color: var(--fg); margin: 0 0 10px; }
+.legend ul { margin: 0 0 18px; padding-left: 18px; }
+.legend li { margin-bottom: 5px; }
+.legend b { color: var(--fg); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page-head">
+  <p class="eyebrow">Mission Control · session header</p>
+  <h1>Where the workflow bind lives</h1>
+  <p class="lede">
+    Six alternatives to the <code>+ workflow</code> chip, each drawn into a full Console detail header
+    so it is judged at real density. <b>They are live</b> - hover option 3, click the <code>⋯</code> in 4,
+    click the tabs in 5.
+  </p>
+</header>
+
+<!-- ================= 0 ================= -->
+<section class="opt">
+  <div class="opt-head">
+    <span class="opt-key is-now">NOW</span>
+    <h2 class="opt-title">As it ships</h2>
+    <span class="opt-tag">baseline</span>
+  </div>
+  <p class="note">
+    The reason it grates: <code>.workflow-bind-chip</code> shares its <strong>entire</strong> visual definition
+    with <code>.workflow-chip</code> (<code>styles.css:87-103</code>) - same <code>--working</code> blue pill,
+    same border. But they are opposite things. One reports <strong>state</strong> that exists; this one offers an
+    <strong>action</strong> for state that doesn't. So a call-to-action sits in the status row wearing the status
+    colour, two chips away from the real <code>working</code> badge - and it renders on every session with no
+    workflow bound, which is nearly all of them.
+  </p>
+  <div class="cdetail">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        <h3>Create Five Alert Panel Mockups</h3>
+        <span class="where">wezterm</span>
+      </div>
+      <button class="workflow-bind-chip">＋ workflow</button>
+      <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+      <span class="detail-head-spacer"></span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/26fdc138-1358-4a08-bdaa-a3e11802057f</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⑂ harness/create-five-alert-panel-mockups</dd></div>
+    </dl>
+    <div class="detail-tabs">
+      <button class="detail-tab"><kbd>g</kbd> Conversation</button>
+      <button class="detail-tab on"><kbd>q</kbd> Work queue</button>
+      <button class="detail-tab">Gate</button>
+      <button class="detail-tab"><kbd>d</kbd> Diff</button>
+      <button class="detail-tab"><kbd>f</kbd> Files</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 1 ================= -->
+<section class="opt">
+  <div class="opt-head">
+    <span class="opt-key">1</span>
+    <h2 class="opt-title">Quiet slot</h2>
+    <span class="opt-tag">CSS only</span>
+  </div>
+  <p class="note">
+    Same position, same words, opposite weight. A dashed neutral outline is the established grammar for
+    <strong>an empty slot you may fill</strong>, so it stops competing with the badge beside it and only takes
+    the blue on hover. Smallest possible change - one new rule, delete the shared selector - and it keeps the
+    discoverability the other five trade away.
+  </p>
+  <div class="cdetail">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        <h3>Create Five Alert Panel Mockups</h3>
+        <span class="where">wezterm</span>
+      </div>
+      <button class="bind-slot"><span class="mark">＋</span> workflow</button>
+      <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+      <span class="detail-head-spacer"></span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/26fdc138-1358-4a08-bdaa-a3e11802057f</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⑂ harness/create-five-alert-panel-mockups</dd></div>
+    </dl>
+    <div class="detail-tabs">
+      <button class="detail-tab"><kbd>g</kbd> Conversation</button>
+      <button class="detail-tab on"><kbd>q</kbd> Work queue</button>
+      <button class="detail-tab">Gate</button>
+      <button class="detail-tab"><kbd>d</kbd> Diff</button>
+      <button class="detail-tab"><kbd>f</kbd> Files</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2 ================= -->
+<section class="opt">
+  <div class="opt-head">
+    <span class="opt-key">2</span>
+    <h2 class="opt-title">Icon only</h2>
+    <span class="opt-tag">~24px instead of ~92px</span>
+  </div>
+  <p class="note">
+    Drops to the glyph <code>WorkflowChip</code> already uses (<code>⌁</code>), with the words moving into the
+    tooltip that exists today. Buys back most of the row for a header that keeps accreting chips.
+    The cost is honest: an unlabelled icon is <strong>not discoverable</strong> for a feature most operators
+    have not used yet. Hover it.
+  </p>
+  <div class="cdetail">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        <h3>Create Five Alert Panel Mockups</h3>
+        <span class="where">wezterm</span>
+      </div>
+      <button class="bind-ico">⌁<span class="tip">Bind a published workflow version</span></button>
+      <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+      <span class="detail-head-spacer"></span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/26fdc138-1358-4a08-bdaa-a3e11802057f</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⑂ harness/create-five-alert-panel-mockups</dd></div>
+    </dl>
+    <div class="detail-tabs">
+      <button class="detail-tab"><kbd>g</kbd> Conversation</button>
+      <button class="detail-tab on"><kbd>q</kbd> Work queue</button>
+      <button class="detail-tab">Gate</button>
+      <button class="detail-tab"><kbd>d</kbd> Diff</button>
+      <button class="detail-tab"><kbd>f</kbd> Files</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3 ================= -->
+<section class="opt">
+  <div class="opt-head">
+    <span class="opt-key">3</span>
+    <h2 class="opt-title">Reveal on hover</h2>
+    <span class="opt-tag">zero cost at rest</span>
+  </div>
+  <p class="note">
+    Nothing in the row until you go near it. <strong>Hover the header below</strong> to bring it in.
+    Costs nothing when you are not looking for it, but it is invisible to a keyboard user until focus lands
+    (hence <code>:focus-within</code> here) and to anyone who never happens to hover - so this one really wants
+    a second home in a menu or the palette, which makes it option 4 with extra steps.
+  </p>
+  <div class="cdetail">
+    <header class="detail-head reveal-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        <h3>Create Five Alert Panel Mockups</h3>
+        <span class="where">wezterm</span>
+      </div>
+      <button class="bind-slot"><span class="mark">＋</span> workflow</button>
+      <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+      <span class="detail-head-spacer"></span>
+      <span class="hoverhint">hover the header</span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/26fdc138-1358-4a08-bdaa-a3e11802057f</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⑂ harness/create-five-alert-panel-mockups</dd></div>
+    </dl>
+    <div class="detail-tabs">
+      <button class="detail-tab"><kbd>g</kbd> Conversation</button>
+      <button class="detail-tab on"><kbd>q</kbd> Work queue</button>
+      <button class="detail-tab">Gate</button>
+      <button class="detail-tab"><kbd>d</kbd> Diff</button>
+      <button class="detail-tab"><kbd>f</kbd> Files</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4 ================= -->
+<section class="opt">
+  <div class="opt-head">
+    <span class="opt-key">4</span>
+    <h2 class="opt-title">Overflow menu</h2>
+    <span class="opt-tag">solves the next four chips too</span>
+  </div>
+  <p class="note">
+    The header already carries <code>PrChip</code>, <code>InspectorChip</code>, <code>WorkflowChip</code>,
+    <code>EnsembleChip</code>, <code>StateBadge</code>, <code>RuntimeMetaRow</code> and <code>CostChip</code>,
+    and it only grows. One <code>⋯</code> gives every <strong>action</strong> a home and leaves the row to
+    <strong>state</strong> - which is the distinction the current chip breaks. <strong>Click it.</strong>
+  </p>
+  <div class="cdetail">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        <h3>Create Five Alert Panel Mockups</h3>
+        <span class="where">wezterm</span>
+      </div>
+      <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+      <span class="detail-head-spacer"></span>
+      <span class="more-wrap">
+        <button class="more-btn" data-menu aria-expanded="false">⋯</button>
+        <div class="menu">
+          <button><span class="mk">⌁</span> Bind workflow…</button>
+          <button><span class="mk">◆</span> Start ensemble…</button>
+          <div class="menu-sep"></div>
+          <button><span class="mk">✎</span> Rename session</button>
+          <button><span class="mk">⎘</span> Copy path</button>
+          <button><span class="mk">↺</span> Reset session</button>
+        </div>
+      </span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/26fdc138-1358-4a08-bdaa-a3e11802057f</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⑂ harness/create-five-alert-panel-mockups</dd></div>
+    </dl>
+    <div class="detail-tabs">
+      <button class="detail-tab"><kbd>g</kbd> Conversation</button>
+      <button class="detail-tab on"><kbd>q</kbd> Work queue</button>
+      <button class="detail-tab">Gate</button>
+      <button class="detail-tab"><kbd>d</kbd> Diff</button>
+      <button class="detail-tab"><kbd>f</kbd> Files</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5 ================= -->
+<section class="opt">
+  <div class="opt-head">
+    <span class="opt-key">5</span>
+    <h2 class="opt-title">A Workflow tab</h2>
+    <span class="opt-tag">gives the bound run a home too</span>
+  </div>
+  <p class="note">
+    Puts the action where its content lives. Empty, the tab explains what a binding is and offers one real
+    button with room for a sentence - which a 92px pill never had. Bound, the same tab is where the run's
+    stages, gate and rounds go, instead of a chip that opens a modal over the session you were reading.
+    <strong>Click the Workflow tab.</strong> The header keeps only state.
+  </p>
+  <div class="cdetail" data-tabs>
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        <h3>Create Five Alert Panel Mockups</h3>
+        <span class="where">wezterm</span>
+      </div>
+      <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+      <span class="detail-head-spacer"></span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/26fdc138-1358-4a08-bdaa-a3e11802057f</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⑂ harness/create-five-alert-panel-mockups</dd></div>
+    </dl>
+    <div class="detail-tabs">
+      <button class="detail-tab" data-tab="g"><kbd>g</kbd> Conversation</button>
+      <button class="detail-tab on" data-tab="q"><kbd>q</kbd> Work queue</button>
+      <button class="detail-tab" data-tab="gate">Gate</button>
+      <button class="detail-tab" data-tab="w"><kbd>w</kbd> Workflow</button>
+      <button class="detail-tab" data-tab="d"><kbd>d</kbd> Diff</button>
+      <button class="detail-tab" data-tab="f"><kbd>f</kbd> Files</button>
+    </div>
+    <div class="detail-body-stub" data-panel="g" hidden>The transcript.</div>
+    <div class="detail-body-stub" data-panel="q">Three items queued · Foreman is driving item 2 of 3.</div>
+    <div class="detail-body-stub" data-panel="gate" hidden>No gate run on this session yet.</div>
+    <div data-panel="w" hidden>
+      <div class="tab-empty">
+        <span class="glyph">⌁</span>
+        <span class="tab-empty-text">
+          <span class="tab-empty-title">No workflow bound</span>
+          <span class="tab-empty-sub">Bind a published version to run this session through its stages and gate.</span>
+        </span>
+        <button class="btn-primary">Bind workflow…</button>
+      </div>
+    </div>
+    <div class="detail-body-stub" data-panel="d" hidden>4 files changed, +212 -18.</div>
+    <div class="detail-body-stub" data-panel="f" hidden>Browse the checkout.</div>
+  </div>
+</section>
+
+<!-- ================= 6 ================= -->
+<section class="opt">
+  <div class="opt-head">
+    <span class="opt-key">6</span>
+    <h2 class="opt-title">An unset field in the meta row</h2>
+    <span class="opt-tag">reads as data, not a CTA</span>
+  </div>
+  <p class="note">
+    The row under the header already answers "what is true of this session" - path, branch. Workflow is the
+    same kind of fact, and a dim <code>none</code> with a quiet <code>bind</code> link states plainly that it
+    is <strong>unset</strong> rather than shouting an invitation. In words rather than a dash glyph because
+    that is what the app already says for an empty value (<code>KeyboardPanel</code>'s "unset",
+    <code>WorkflowProperties</code>'s "None"). Also the only option where the bound and unbound
+    states occupy the identical spot, so nothing in the header reflows when a binding lands.
+    Its cost is visible below: <code>.detail-sub</code> is <code>flex-wrap: wrap</code>, and against a full
+    worktree path a third field takes a <strong>second line</strong> - so this one buys a calmer header by
+    spending a row of vertical space on every session.
+  </p>
+  <div class="cdetail">
+    <header class="detail-head">
+      <span class="agent-dot"></span>
+      <div class="detail-title">
+        <h3>Create Five Alert Panel Mockups</h3>
+        <span class="where">wezterm</span>
+      </div>
+      <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+      <span class="detail-head-spacer"></span>
+    </header>
+    <dl class="detail-sub">
+      <div class="kv"><dt>path</dt><dd class="mono">~/.mission-control/worktrees/26fdc138-1358-4a08-bdaa-a3e11802057f</dd></div>
+      <div class="kv"><dt>branch</dt><dd class="mono branch">⑂ harness/create-five-alert-panel-mockups</dd></div>
+      <div class="kv kv-unset"><dt>workflow</dt><dd>none<button class="kv-bind">bind</button></dd></div>
+    </dl>
+    <div class="detail-tabs">
+      <button class="detail-tab"><kbd>g</kbd> Conversation</button>
+      <button class="detail-tab on"><kbd>q</kbd> Work queue</button>
+      <button class="detail-tab">Gate</button>
+      <button class="detail-tab"><kbd>d</kbd> Diff</button>
+      <button class="detail-tab"><kbd>f</kbd> Files</button>
+    </div>
+  </div>
+</section>
+
+<section class="legend">
+  <h2>Picking one</h2>
+  <ul>
+    <li><b>1</b> is the fix if the complaint is purely visual - one CSS rule, no behaviour change, nothing to
+      replicate elsewhere.</li>
+    <li><b>4</b> and <b>5</b> are the fixes if the complaint is that the header is full. Both remove the chip
+      rather than restyling it, and both scale to the next feature that wants a slot there.</li>
+    <li><b>5</b> is the only one that also improves the <i>bound</i> case - today a run is a chip that opens a
+      modal.</li>
+    <li>Whichever wins, it lands in <b>two</b> files: <code>SessionCard.tsx:240-252</code> and
+      <code>ConsoleDetail.tsx:254-263</code> carry copies of this chip. Per the layout-parity rule a shared leaf
+      belongs in <code>session-bits.tsx</code> - this one never got one, which is why there are two copies to
+      keep in step. Option 5 additionally touches <code>SessionTile</code> and <code>RailRow</code>, since a
+      tab is not a mark those two can show.</li>
+  </ul>
+</section>
+
+</div>
+
+<script>
+document.addEventListener("click", (e) => {
+  const more = e.target.closest("[data-menu]");
+  document.querySelectorAll(".menu").forEach((m) => {
+    const own = more && more.parentElement.contains(m);
+    const open = own && m.dataset.open !== "true";
+    m.dataset.open = String(open);
+    if (own) more.setAttribute("aria-expanded", String(open));
+  });
+  if (more) return;
+
+  const tab = e.target.closest("[data-tab]");
+  if (tab) {
+    const root = tab.closest("[data-tabs]");
+    root.querySelectorAll("[data-tab]").forEach((t) => t.classList.toggle("on", t === tab));
+    root.querySelectorAll("[data-panel]").forEach((p) => {
+      p.hidden = p.dataset.panel !== tab.dataset.tab;
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,1177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alert panel mockups - Mission Control</title>
+<style>
+/* Tokens lifted verbatim from src/web/styles.css so these read as the real app. */
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f;
+  --bg-2: #0e1116;
+  --panel: #14181e;
+  --panel-2: #171c23;
+  --border: #232a33;
+  --border-soft: #1b2129;
+  --fg: #e7ebf1;
+  --muted: #939eae;
+  --dim: #7c8798;
+
+  --working: #4a9eff;
+  --idle: #35c08a;
+  --attention: #f6a733;
+  --danger: #f85149;
+  --exited: #707a88;
+  --neutral: #8b94a3;
+  --select: #35c08a;
+  --purple: #a371f7;
+  --foreman: var(--purple);
+
+  --radius: 13px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 40px 32px 96px;
+  background:
+    radial-gradient(1100px 620px at 12% -8%, #121722 0%, transparent 62%),
+    var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- page chrome ---- */
+.page-head {
+  max-width: 1280px;
+  margin: 0 auto 40px;
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 24px;
+}
+.eyebrow {
+  font-size: 10.5px;
+  font-weight: 640;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin: 0 0 10px;
+}
+h1 {
+  margin: 0 0 12px;
+  font-size: 27px;
+  font-weight: 640;
+  letter-spacing: -0.016em;
+}
+.lede {
+  margin: 0;
+  max-width: 72ch;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+.lede code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.grid {
+  max-width: 1280px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 28px;
+  align-items: start;
+}
+
+/* ---- one mockup cell ---- */
+.cell {
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 20px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.cell-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 6px;
+}
+.cell-key {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 640;
+  letter-spacing: 0.05em;
+  color: var(--bg);
+  background: var(--muted);
+  border-radius: 4px;
+  padding: 2px 6px;
+  line-height: 1.3;
+}
+.cell-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 620;
+  letter-spacing: -0.008em;
+}
+.cell-note {
+  margin: 0 0 18px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+.cell-note strong { color: var(--muted); font-weight: 600; }
+
+/* ---- topbar replica, so each panel is judged in situ ---- */
+.stage {
+  position: relative;
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 0 0 26px;
+  overflow: hidden;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  height: 46px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-soft);
+  background: linear-gradient(var(--panel-2), var(--bg-2));
+}
+.tb-dispatch {
+  margin-right: auto;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--working) 34%, var(--border));
+  border-radius: 8px;
+  padding: 5px 11px;
+}
+.tb-glyph {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 5px 7px;
+  background: transparent;
+}
+.tb-glyph .count {
+  font-size: 10px;
+  font-weight: 640;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 5px;
+  line-height: 1.5;
+}
+.tb-bell {
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  background: color-mix(in oklab, var(--working) 10%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 22%, transparent);
+}
+.stage-body {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px;
+  min-height: 30px;
+}
+/* Faint card silhouettes behind the popover, like the screenshot's context. */
+.stage::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: 120px;
+  height: 44px;
+  border: 1px solid var(--border-soft);
+  border-left: 2px solid color-mix(in oklab, var(--attention) 60%, var(--border));
+  border-radius: 8px;
+  background: var(--panel);
+  opacity: 0.6;
+}
+
+/* ---- the popover itself (baseline from .alert-pop) ---- */
+.pop {
+  position: relative;
+  z-index: 2;
+  width: 268px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+/* 280 rather than today's 260: the per-row descriptions only stop wrapping to two
+   lines at this width, and a two-line row makes the panel taller than the hint it
+   replaced. */
+.pop-a { width: 280px; }
+.pop-wide { width: 300px; }
+.pop-xwide { width: 320px; }
+
+.hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+/* ---- shared: the app's own pill switch (.pal-switch) ---- */
+.sw {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  border-radius: 9px;
+  background: var(--border);
+  transition: background 0.14s ease;
+  cursor: pointer;
+}
+.sw::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition: left 0.14s ease, background 0.14s ease;
+}
+.sw[data-on="true"] { background: var(--working); }
+.sw[data-on="true"]::after { left: 14px; background: #fff; }
+.sw[data-tone="purple"][data-on="true"] { background: var(--purple); }
+.sw[data-disabled="true"] { opacity: 0.4; cursor: default; }
+
+/* A whole row that is the click target for its switch. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 8px;
+  margin: 0 -8px;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+.row:hover { background: var(--panel-2); }
+.row-text { min-width: 0; flex: 1; }
+.row-label {
+  display: block;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--fg);
+}
+.row-sub {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--dim);
+  margin-top: 2px;
+}
+.row[data-disabled="true"] { cursor: default; }
+.row[data-disabled="true"] .row-label { color: var(--dim); }
+/* Monochrome marks, not emoji: the app spends its colour emoji on the topbar button
+   (🔔 / 🔕 / 🌙) and a panel of full-colour glyphs out-shouts the switches. */
+.row-ico {
+  flex: none;
+  /* Hangs off the LABEL line, not the centre of a two-line block - centred, it reads
+     as belonging to the description underneath. */
+  align-self: flex-start;
+  margin-top: 1px;
+  width: 15px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+
+.sep {
+  height: 1px;
+  background: var(--border-soft);
+  margin: 2px -14px;
+}
+.sec-label {
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.btn-primary {
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--working);
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.btn-quiet {
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.btn-quiet:hover { color: var(--fg); border-color: var(--muted); }
+
+/* ================= A. refined rows ================= */
+
+/* ================= B. reachability header ================= */
+.reach {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: -14px -14px 0;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--idle) 9%, transparent);
+  /* The panel's own radius, less its 1px border - a tinted strip pulled to the edge
+     squares off the corner it sits in otherwise. */
+  border-radius: 11px 11px 0 0;
+}
+.reach .dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--idle);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--idle) 20%, transparent);
+}
+.reach-text { min-width: 0; flex: 1; }
+.reach-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.35;
+  color: color-mix(in oklab, var(--idle) 70%, var(--fg));
+  letter-spacing: -0.004em;
+}
+.reach-sub {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--dim);
+  margin-top: 1px;
+}
+.reach[data-tone="muted"] { background: color-mix(in oklab, var(--attention) 10%, transparent); }
+.reach[data-tone="muted"] .dot {
+  background: var(--attention);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 20%, transparent);
+}
+.reach[data-tone="muted"] .reach-title { color: color-mix(in oklab, var(--attention) 74%, var(--fg)); }
+.reach[data-tone="away"] { background: color-mix(in oklab, var(--purple) 11%, transparent); }
+.reach[data-tone="away"] .dot {
+  background: var(--purple);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--purple) 22%, transparent);
+}
+.reach[data-tone="away"] .reach-title { color: color-mix(in oklab, var(--purple) 62%, var(--fg)); }
+
+/* ================= C. two cards ================= */
+.card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.card[data-on="true"] {
+  border-color: color-mix(in oklab, var(--purple) 42%, var(--border));
+  background: color-mix(in oklab, var(--purple) 9%, var(--panel-2));
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.meta-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 9px;
+  border-top: 1px dashed color-mix(in oklab, var(--purple) 28%, var(--border));
+}
+.meta-fig {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: color-mix(in oklab, var(--purple) 55%, var(--fg));
+}
+.meta-strip .btn-quiet { margin-left: auto; }
+
+/* ================= D. away-first segmented ================= */
+.seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.seg button {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 9px 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.14s ease;
+}
+.seg button .glyph { font-size: 14px; line-height: 1.1; }
+.seg button:hover { color: var(--fg); }
+.seg button[aria-pressed="true"] {
+  color: var(--fg);
+  background: var(--panel);
+  border-color: var(--border);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+}
+.seg button[aria-pressed="true"][data-tone="away"] {
+  color: color-mix(in oklab, var(--purple) 55%, var(--fg));
+  border-color: color-mix(in oklab, var(--purple) 45%, var(--border));
+  background: color-mix(in oklab, var(--purple) 13%, var(--panel));
+}
+.chips { display: flex; gap: 6px; }
+.chip {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--dim);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 6px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.chip:hover { color: var(--fg); }
+.chip[data-on="true"] {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 48%, var(--border));
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+}
+.chip .tick { font-size: 10px; opacity: 0.75; }
+
+/* ================= E. routing matrix ================= */
+.mx { width: 100%; border-collapse: collapse; }
+.mx th {
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--dim);
+  text-align: center;
+  padding: 0 0 7px;
+  font-family: var(--sans);
+}
+.mx th:first-child { text-align: left; }
+.mx td {
+  padding: 5px 0;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+.mx tbody tr:first-child td { border-top: 0; }
+.mx td.kind { color: var(--fg); }
+.mx td.kind .sev {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 7px;
+  vertical-align: 1px;
+}
+.sev-att { background: var(--attention); }
+.sev-info { background: var(--neutral); opacity: 0.55; }
+.mx td.cell-sw { width: 42px; text-align: center; }
+.box {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  cursor: pointer;
+  position: relative;
+  vertical-align: middle;
+}
+.box[data-on="true"] {
+  background: var(--working);
+  border-color: var(--working);
+}
+.box[data-on="true"]::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 1.7px 1.7px 0;
+  transform: rotate(43deg);
+}
+.box[data-locked="true"] {
+  cursor: default;
+  background: color-mix(in oklab, var(--purple) 40%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--purple) 55%, var(--border));
+}
+.box[data-locked="true"]::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 1.7px 1.7px 0;
+  transform: rotate(43deg);
+  opacity: 0.75;
+}
+.box[data-off-locked="true"] {
+  cursor: default;
+  background: var(--bg);
+  border-style: dashed;
+}
+.box[data-off-locked="true"]::after { content: none; }
+
+/* ================= F. live inbox ================= */
+.inbox-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -14px -14px 0;
+  padding: 10px 14px 9px;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 11px 11px 0 0;
+}
+.inbox-head .sec-label { flex: 1; }
+.pill-count {
+  font-size: 10px;
+  font-weight: 640;
+  color: var(--bg);
+  background: var(--attention);
+  border-radius: 999px;
+  padding: 1px 6px;
+  line-height: 1.5;
+}
+.feed { display: flex; flex-direction: column; margin: 0 -14px; }
+.feed-item {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px 14px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  background: transparent;
+  border-top: 0; border-right: 0; border-bottom: 0;
+  font: inherit;
+  width: 100%;
+  min-width: 0;
+}
+.feed-item:hover { background: var(--panel-2); }
+.feed-item[data-sev="attention"] { border-left-color: var(--attention); }
+.feed-item[data-sev="info"] { border-left-color: var(--border); }
+.feed-ico { flex: none; font-size: 11.5px; width: 15px; text-align: center; margin-top: 1px; }
+.feed-text { min-width: 0; flex: 1; overflow: hidden; }
+.feed-title {
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.feed-body {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--dim);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.feed-age {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.65;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.feed-sep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px 3px;
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.feed-sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+.inbox-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 -14px -14px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-2);
+  border-radius: 0 0 11px 11px;
+}
+.foot-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.foot-toggle:hover { color: var(--fg); }
+.foot-toggle .sw { width: 24px; height: 14px; }
+.foot-toggle .sw::after { width: 10px; height: 10px; }
+.foot-toggle .sw[data-on="true"]::after { left: 12px; }
+.inbox-foot .btn-quiet { margin-left: auto; }
+
+.legend {
+  max-width: 1280px;
+  margin: 44px auto 0;
+  padding-top: 22px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--muted);
+}
+.legend h2 {
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--fg);
+  margin: 0 0 8px;
+}
+.legend ul { margin: 0; padding-left: 18px; }
+.legend li { margin-bottom: 4px; }
+.legend b { color: var(--fg); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <p class="eyebrow">Mission Control · topbar</p>
+  <h1>Alert panel mockups</h1>
+  <p class="lede">
+    Six directions for the bell popover, from a drop-in refinement to a rethink of what the panel is for.
+    All six use the app's real tokens and its existing pill-switch language (<code>.pal-switch</code>), so what
+    you see is what it would look like shipped. <b>The switches are live</b> - click them; B, C and D
+    recompute their status line from the actual state, including the "nothing can reach you" case
+    <code>AlertBar.tsx</code> currently spells out in a paragraph.
+  </p>
+</header>
+
+<main class="grid">
+
+  <!-- ============ A ============ -->
+  <section class="cell">
+    <div class="cell-head">
+      <span class="cell-key">A</span>
+      <h2 class="cell-title">Refined rows</h2>
+    </div>
+    <p class="cell-note">
+      Same three controls, same order. Switches instead of raw checkboxes, a one-line description per row so
+      the hint paragraph stops carrying the explanation, and a rule separating the two local prefs from away
+      mode - which is <strong>server state</strong> and survives the tab closing. Lowest-risk change.
+    </p>
+    <div class="stage">
+      <div class="topbar">
+        <button class="tb-dispatch">+ Dispatch</button>
+        <span class="tb-glyph">🛠 <span class="count">2</span></span>
+        <span class="tb-glyph">⚙</span>
+        <span class="tb-glyph tb-bell">🔔</span>
+      </div>
+      <div class="stage-body">
+        <div class="pop pop-a">
+          <button class="row" data-toggle="a1">
+            <span class="row-ico">▣</span>
+            <span class="row-text">
+              <span class="row-label">Desktop notifications</span>
+              <span class="row-sub">Toast when a session needs you</span>
+            </span>
+            <span class="sw" id="a1" data-on="true"></span>
+          </button>
+          <button class="row" data-toggle="a2">
+            <span class="row-ico">♪</span>
+            <span class="row-text">
+              <span class="row-label">Sound</span>
+              <span class="row-sub">Chime on the same events</span>
+            </span>
+            <span class="sw" id="a2" data-on="true"></span>
+          </button>
+          <div class="sep"></div>
+          <button class="row" data-toggle="a3">
+            <span class="row-ico">☾</span>
+            <span class="row-text">
+              <span class="row-label">Away mode</span>
+              <span class="row-sub">Buffers all but blockers</span>
+            </span>
+            <span class="sw" id="a3" data-tone="purple" data-on="false"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ B ============ -->
+  <section class="cell">
+    <div class="cell-head">
+      <span class="cell-key">B</span>
+      <h2 class="cell-title">Reachability header</h2>
+    </div>
+    <p class="cell-note">
+      Leads with the answer to the only question you open this for: <strong>can anything actually reach me?</strong>
+      The three-way hint logic already in the code becomes a coloured status strip instead of a paragraph you
+      have to read. Turn both channels off and watch it go amber.
+    </p>
+    <div class="stage">
+      <div class="topbar">
+        <button class="tb-dispatch">+ Dispatch</button>
+        <span class="tb-glyph">🛠 <span class="count">2</span></span>
+        <span class="tb-glyph">⚙</span>
+        <span class="tb-glyph tb-bell">🔔</span>
+      </div>
+      <div class="stage-body">
+        <div class="pop" data-reach-group="b">
+          <div class="reach" data-tone="ok" data-reach-strip>
+            <span class="dot"></span>
+            <span class="reach-text">
+              <span class="reach-title" data-reach-title>You're reachable</span>
+              <span class="reach-sub" data-reach-sub>Desktop and sound · everything interrupts</span>
+            </span>
+          </div>
+          <button class="row" data-toggle="b1" data-reach-input="desktop">
+            <span class="row-ico">▣</span>
+            <span class="row-text"><span class="row-label">Desktop notifications</span></span>
+            <span class="sw" id="b1" data-on="true"></span>
+          </button>
+          <button class="row" data-toggle="b2" data-reach-input="sound">
+            <span class="row-ico">♪</span>
+            <span class="row-text"><span class="row-label">Sound</span></span>
+            <span class="sw" id="b2" data-on="true"></span>
+          </button>
+          <button class="row" data-toggle="b3" data-reach-input="away">
+            <span class="row-ico">☾</span>
+            <span class="row-text">
+              <span class="row-label">Away mode</span>
+              <span class="row-sub">Buffers all but blockers</span>
+            </span>
+            <span class="sw" id="b3" data-tone="purple" data-on="false"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ C ============ -->
+  <section class="cell">
+    <div class="cell-head">
+      <span class="cell-key">C</span>
+      <h2 class="cell-title">Channels + Away card</h2>
+    </div>
+    <p class="cell-note">
+      Splits the panel by <strong>what owns the state</strong>: two local browser prefs above, away mode below as its
+      own card that grows when it's on - elapsed time, how much is buffered, and a way into the digest.
+      Today the digest is the payoff of away mode and the panel never mentions it.
+    </p>
+    <div class="stage">
+      <div class="topbar">
+        <button class="tb-dispatch">+ Dispatch</button>
+        <span class="tb-glyph">🛠 <span class="count">2</span></span>
+        <span class="tb-glyph">⚙</span>
+        <span class="tb-glyph tb-bell">🌙</span>
+      </div>
+      <div class="stage-body">
+        <div class="pop pop-wide">
+          <span class="sec-label">How you're reached</span>
+          <button class="row" data-toggle="c1">
+            <span class="row-ico">▣</span>
+            <span class="row-text"><span class="row-label">Desktop notifications</span></span>
+            <span class="sw" id="c1" data-on="true"></span>
+          </button>
+          <button class="row" data-toggle="c2">
+            <span class="row-ico">♪</span>
+            <span class="row-text"><span class="row-label">Sound</span></span>
+            <span class="sw" id="c2" data-on="true"></span>
+          </button>
+          <div class="card" data-on="true" id="c-card">
+            <div class="card-head">
+              <span class="row-ico">☾</span>
+              <span class="card-title">Away mode</span>
+              <span class="sw" id="c3" data-tone="purple" data-on="true" data-toggle-self data-card="c-card"></span>
+            </div>
+            <p class="hint">Only things blocked on you get through. Everything else is waiting.</p>
+            <div class="meta-strip">
+              <span class="meta-fig">away 1h 04m</span>
+              <span class="meta-fig">· 7 buffered</span>
+              <button class="btn-quiet">Digest</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ D ============ -->
+  <section class="cell">
+    <div class="cell-head">
+      <span class="cell-key">D</span>
+      <h2 class="cell-title">Away-first, segmented</h2>
+    </div>
+    <p class="cell-note">
+      Inverts the hierarchy. <strong>At the desk / Away</strong> is the decision you actually come here to make -
+      it gets the hero control - and the two channels shrink to chips underneath. One click to flip, no
+      hunting for the third checkbox in a list of three that all look alike.
+    </p>
+    <div class="stage">
+      <div class="topbar">
+        <button class="tb-dispatch">+ Dispatch</button>
+        <span class="tb-glyph">🛠 <span class="count">2</span></span>
+        <span class="tb-glyph">⚙</span>
+        <span class="tb-glyph tb-bell">🌙</span>
+      </div>
+      <div class="stage-body">
+        <div class="pop" data-seg-group="d">
+          <div class="seg">
+            <button data-seg="desk" aria-pressed="false">
+              <span class="glyph">🔔</span>
+              At the desk
+            </button>
+            <button data-seg="away" data-tone="away" aria-pressed="true">
+              <span class="glyph">🌙</span>
+              Away
+            </button>
+          </div>
+          <p class="hint" data-seg-hint>Blockers still interrupt. Everything else lands in the digest - <b style="color:var(--muted)">7 waiting</b>, away 1h 04m.</p>
+          <div class="sep"></div>
+          <span class="sec-label">Interrupt via</span>
+          <div class="chips">
+            <button class="chip" data-chip="d1" data-on="true"><span class="tick">✓</span> Desktop</button>
+            <button class="chip" data-chip="d2" data-on="true"><span class="tick">✓</span> Sound</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ E ============ -->
+  <section class="cell">
+    <div class="cell-head">
+      <span class="cell-key">E</span>
+      <h2 class="cell-title">Per-kind routing</h2>
+    </div>
+    <p class="cell-note">
+      Exposes the alert engine directly: one row per <code style="font-family:var(--mono);font-size:11px">AlertKind</code>,
+      dot coloured by severity. The third column is <strong>read-only</strong> - it shows what away mode would let
+      through, which is exactly <code style="font-family:var(--mono);font-size:11px">deliverable()</code>. Most control,
+      most surface; needs a real appetite for per-kind prefs the server doesn't store yet.
+    </p>
+    <div class="stage">
+      <div class="topbar">
+        <button class="tb-dispatch">+ Dispatch</button>
+        <span class="tb-glyph">🛠 <span class="count">2</span></span>
+        <span class="tb-glyph">⚙</span>
+        <span class="tb-glyph tb-bell">🔔</span>
+      </div>
+      <div class="stage-body">
+        <div class="pop pop-xwide">
+          <table class="mx">
+            <thead>
+              <tr><th>Alert</th><th>Desk</th><th>Sound</th><th>Away</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="kind"><span class="sev sev-att"></span>Needs you</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-locked="true"></span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev sev-att"></span>Review waiting</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-locked="true"></span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev sev-att"></span>Gate parked</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
+                <td class="cell-sw"><span class="box" data-locked="true"></span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev sev-att"></span>Foreman escalated</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-locked="true"></span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev sev-att"></span>Looks stuck</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
+                <td class="cell-sw"><span class="box" data-locked="true"></span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev sev-info"></span>Task done</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
+                <td class="cell-sw"><span class="box" data-off-locked="true"></span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev sev-info"></span>Went idle</td>
+                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
+                <td class="cell-sw"><span class="box" data-off-locked="true"></span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="sep"></div>
+          <button class="row" data-toggle="e1">
+            <span class="row-ico">☾</span>
+            <span class="row-text">
+              <span class="row-label">Away mode</span>
+              <span class="row-sub">Dashed column = held for the digest</span>
+            </span>
+            <span class="sw" id="e1" data-tone="purple" data-on="true"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ F ============ -->
+  <section class="cell">
+    <div class="cell-head">
+      <span class="cell-key">F</span>
+      <h2 class="cell-title">Live inbox</h2>
+    </div>
+    <p class="cell-note">
+      The biggest rethink: the bell opens <strong>the alerts</strong>, not the alert settings. What's blocked on you
+      now, then what's buffered, each row deep-linking to its session; the three prefs shrink to a footer.
+      The bell already carries a count - this makes clicking it answer the question the count raises.
+    </p>
+    <div class="stage">
+      <div class="topbar">
+        <button class="tb-dispatch">+ Dispatch</button>
+        <span class="tb-glyph">🛠 <span class="count">2</span></span>
+        <span class="tb-glyph">⚙</span>
+        <span class="tb-glyph tb-bell">🔔 <span class="count" style="background:var(--attention);color:var(--bg);border-color:transparent">3</span></span>
+      </div>
+      <div class="stage-body">
+        <div class="pop pop-wide">
+          <div class="inbox-head">
+            <span class="sec-label">Needs you</span>
+            <span class="pill-count">3</span>
+          </div>
+          <div class="feed">
+            <button class="feed-item" data-sev="attention">
+              <span class="feed-ico">▲</span>
+              <span class="feed-text">
+                <span class="feed-title">unify persona editor needs you</span>
+                <span class="feed-body">permission · Bash(git push)</span>
+              </span>
+              <span class="feed-age">2m</span>
+            </button>
+            <button class="feed-item" data-sev="attention">
+              <span class="feed-ico">◆</span>
+              <span class="feed-text">
+                <span class="feed-title">canvas node sizing - gate parked</span>
+                <span class="feed-body">gate parked at review</span>
+              </span>
+              <span class="feed-age">14m</span>
+            </button>
+            <button class="feed-item" data-sev="attention">
+              <span class="feed-ico">✦</span>
+              <span class="feed-text">
+                <span class="feed-title">alert panel mockups - Foreman needs your call</span>
+                <span class="feed-body">a design fork was escalated to you</span>
+              </span>
+              <span class="feed-age">31m</span>
+            </button>
+            <span class="feed-sep">Buffered · 4</span>
+            <button class="feed-item" data-sev="info">
+              <span class="feed-ico">✓</span>
+              <span class="feed-text">
+                <span class="feed-title">Task done: continue interrupted sessions</span>
+                <span class="feed-body">merged in #292</span>
+              </span>
+              <span class="feed-age">48m</span>
+            </button>
+            <button class="feed-item" data-sev="info">
+              <span class="feed-ico">·</span>
+              <span class="feed-text">
+                <span class="feed-title">deliver Pi tasks through native dispatch went idle</span>
+                <span class="feed-body">waiting for review</span>
+              </span>
+              <span class="feed-age">1h</span>
+            </button>
+          </div>
+          <div class="inbox-foot">
+            <button class="foot-toggle" data-toggle="f1"><span class="sw" id="f1" data-on="true"></span> Desktop</button>
+            <button class="foot-toggle" data-toggle="f2"><span class="sw" id="f2" data-on="true"></span> Sound</button>
+            <button class="btn-quiet">🌙 Away</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<section class="legend">
+  <h2>Reading these</h2>
+  <ul>
+    <li><b>A</b> and <b>B</b> are drop-in replacements - same state, same routes, only <code style="font-family:var(--mono)">AlertBar.tsx</code> and a CSS section change.</li>
+    <li><b>C</b> and <b>D</b> need the away buffer's count and elapsed time on the wire; the daemon already holds both (<code style="font-family:var(--mono)">away-buffer.ts</code>, <code style="font-family:var(--mono)">AwayConfig.awaySince</code>).</li>
+    <li><b>E</b> needs a new per-kind preference store - the alert engine emits the kinds already, nothing persists a routing choice per kind.</li>
+    <li><b>F</b> needs live alerts kept in client state rather than fired and forgotten, plus the deep-link each row implies. There is already an <code style="font-family:var(--mono)">AttentionInbox</code> component to borrow rows from.</li>
+    <li>Severity dots in <b>E</b> follow <code style="font-family:var(--mono)">AlertSeverity</code>: amber = attention (blocked on you, always delivered), grey = info (digest material).</li>
+  </ul>
+</section>
+
+<script>
+// Minimal interactivity so the states can actually be judged, not just looked at.
+function flip(el) { el.dataset.on = el.dataset.on === "true" ? "false" : "true"; }
+
+document.addEventListener("click", (e) => {
+  const row = e.target.closest("[data-toggle]");
+  if (row) {
+    flip(document.getElementById(row.dataset.toggle));
+    syncReach();
+    return;
+  }
+  const self = e.target.closest("[data-toggle-self]");
+  if (self) {
+    flip(self);
+    const card = document.getElementById(self.dataset.card);
+    if (card) card.dataset.on = self.dataset.on;
+    return;
+  }
+  const chip = e.target.closest("[data-chip]");
+  if (chip) { flip(chip); return; }
+  const box = e.target.closest("[data-box]");
+  if (box) { flip(box); return; }
+  const seg = e.target.closest("[data-seg]");
+  if (seg) {
+    const group = seg.closest("[data-seg-group]");
+    group.querySelectorAll("[data-seg]").forEach((b) => {
+      b.setAttribute("aria-pressed", String(b === seg));
+    });
+    const away = seg.dataset.seg === "away";
+    group.querySelector("[data-seg-hint]").innerHTML = away
+      ? 'Blockers still interrupt. Everything else lands in the digest - <b style="color:var(--muted)">7 waiting</b>, away 1h 04m.'
+      : 'Everything reaches you as it happens.';
+    return;
+  }
+});
+
+// B: the status strip is derived, never typed - the same three-way the component's
+// hint text already computes.
+function syncReach() {
+  document.querySelectorAll("[data-reach-group]").forEach((group) => {
+    const val = (k) => group.querySelector('[data-reach-input="' + k + '"] .sw').dataset.on === "true";
+    const desktop = val("desktop"), sound = val("sound"), away = val("away");
+    const strip = group.querySelector("[data-reach-strip]");
+    const title = group.querySelector("[data-reach-title]");
+    const sub = group.querySelector("[data-reach-sub]");
+    const channels = [desktop && "desktop", sound && "sound"].filter(Boolean).join(" and ");
+
+    if (!desktop && !sound) {
+      strip.dataset.tone = "muted";
+      title.textContent = "Nothing can reach you";
+      sub.textContent = away
+        ? "Both channels off - you'll only get the digest"
+        : "Both channels off - the dashboard is the only signal";
+    } else if (away) {
+      strip.dataset.tone = "away";
+      title.textContent = "Away · 1h 04m";
+      sub.textContent = "Blockers via " + channels + " · 7 waiting in the digest";
+    } else {
+      strip.dataset.tone = "ok";
+      title.textContent = "You're reachable";
+      sub.textContent = channels.charAt(0).toUpperCase() + channels.slice(1) + " · everything interrupts";
+    }
+  });
+}
+syncReach();
+</script>
+
+</body>
+</html>

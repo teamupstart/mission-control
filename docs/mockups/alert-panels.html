@@ -233,7 +233,9 @@ h1 {
    replaced. */
 .pop-a { width: 280px; }
 .pop-wide { width: 300px; }
-.pop-xwide { width: 320px; }
+.pop-xwide { width: 344px; }
+
+[hidden] { display: none !important; }
 
 .hint {
   margin: 0;
@@ -540,6 +542,18 @@ h1 {
   margin-right: 7px;
   vertical-align: 1px;
 }
+.mx td.kind .sev-pair {
+  display: inline-flex;
+  gap: 2px;
+  width: 14px;
+  margin-right: 7px;
+  vertical-align: 1px;
+}
+.mx td.kind .sev-pair .sev {
+  width: 5px;
+  height: 5px;
+  margin: 0;
+}
 .sev-att { background: var(--attention); }
 .sev-info { background: var(--neutral); opacity: 0.55; }
 .mx td.cell-sw { width: 42px; text-align: center; }
@@ -592,6 +606,17 @@ h1 {
   border-style: dashed;
 }
 .box[data-off-locked="true"]::after { content: none; }
+.route-mixed {
+  display: inline-block;
+  cursor: default;
+  padding: 2px 4px;
+  border: 1px dashed color-mix(in oklab, var(--purple) 45%, var(--border));
+  border-radius: 4px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 8px;
+  line-height: 1;
+}
 
 /* ================= F. live inbox ================= */
 .inbox-head {
@@ -876,10 +901,12 @@ h1 {
             <div class="card-head">
               <span class="row-ico">☾</span>
               <span class="card-title">Away mode</span>
-              <span class="sw" id="c3" data-tone="purple" data-on="true" data-toggle-self data-card="c-card"></span>
+              <span class="sw" id="c3" data-tone="purple" data-on="true" data-toggle-self data-card="c-card" data-details="c-away-meta"></span>
             </div>
-            <p class="hint">Only things blocked on you get through. Everything else is waiting.</p>
-            <div class="meta-strip">
+            <p class="hint" data-state-copy
+              data-on-copy="Only things blocked on you get through. Everything else is waiting."
+              data-off-copy="Away mode is off. Alerts arrive through the channels above.">Only things blocked on you get through. Everything else is waiting.</p>
+            <div class="meta-strip" id="c-away-meta">
               <span class="meta-fig">away 1h 04m</span>
               <span class="meta-fig">· 7 buffered</span>
               <button class="btn-quiet">Digest</button>
@@ -940,9 +967,10 @@ h1 {
     </div>
     <p class="cell-note">
       Exposes the alert engine directly: one row per <code style="font-family:var(--mono);font-size:11px">AlertKind</code>,
-      dot coloured by severity. The third column is <strong>read-only</strong> - it shows what away mode would let
-      through, which is exactly <code style="font-family:var(--mono);font-size:11px">deliverable()</code>. Most control,
-      most surface; needs a real appetite for per-kind prefs the server doesn't store yet.
+      with paired dots where a kind can emit either severity. The Away column is <strong>read-only</strong> because
+      <code style="font-family:var(--mono);font-size:11px">deliverable()</code> derives routing from each alert's
+      severity: attention passes and info waits. Most control, most surface; needs a real appetite for per-kind prefs
+      the server doesn't store yet.
     </p>
     <div class="stage">
       <div class="topbar">
@@ -977,7 +1005,13 @@ h1 {
                 <td class="cell-sw"><span class="box" data-locked="true"></span></td>
               </tr>
               <tr>
-                <td class="kind"><span class="sev sev-att"></span>Foreman escalated</td>
+                <td class="kind"><span class="sev sev-info"></span>Task done</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
+                <td class="cell-sw"><span class="box" data-off-locked="true"></span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev sev-att"></span>Task failed</td>
                 <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
                 <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
                 <td class="cell-sw"><span class="box" data-locked="true"></span></td>
@@ -989,16 +1023,28 @@ h1 {
                 <td class="cell-sw"><span class="box" data-locked="true"></span></td>
               </tr>
               <tr>
-                <td class="kind"><span class="sev sev-info"></span>Task done</td>
+                <td class="kind"><span class="sev sev-att"></span>Foreman escalated</td>
                 <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
-                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
-                <td class="cell-sw"><span class="box" data-off-locked="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-locked="true"></span></td>
               </tr>
               <tr>
                 <td class="kind"><span class="sev sev-info"></span>Went idle</td>
                 <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
                 <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
                 <td class="cell-sw"><span class="box" data-off-locked="true"></span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev-pair"><span class="sev sev-att"></span><span class="sev sev-info"></span></span>Workflow event</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
+                <td class="cell-sw"><span class="route-mixed">severity</span></td>
+              </tr>
+              <tr>
+                <td class="kind"><span class="sev-pair"><span class="sev sev-att"></span><span class="sev sev-info"></span></span>Ensemble event</td>
+                <td class="cell-sw"><span class="box" data-box data-on="true"></span></td>
+                <td class="cell-sw"><span class="box" data-box data-on="false"></span></td>
+                <td class="cell-sw"><span class="route-mixed">severity</span></td>
               </tr>
             </tbody>
           </table>
@@ -1025,7 +1071,8 @@ h1 {
     <p class="cell-note">
       The biggest rethink: the bell opens <strong>the alerts</strong>, not the alert settings. What's blocked on you
       now, then what's buffered, each row deep-linking to its session; the three prefs shrink to a footer.
-      The bell already carries a count - this makes clicking it answer the question the count raises.
+      This adds a count to the bell, while actionable counts live elsewhere in the topbar today, and makes clicking
+      the new count answer the question it raises.
     </p>
     <div class="stage">
       <div class="topbar">
@@ -1108,7 +1155,27 @@ h1 {
 
 <script>
 // Minimal interactivity so the states can actually be judged, not just looked at.
-function flip(el) { el.dataset.on = el.dataset.on === "true" ? "false" : "true"; }
+function syncToggleState(el) {
+  const on = el.dataset.on === "true";
+  if (el.dataset.card) {
+    const card = document.getElementById(el.dataset.card);
+    if (card) {
+      card.dataset.on = String(on);
+      const copy = card.querySelector("[data-state-copy]");
+      if (copy) copy.textContent = on ? copy.dataset.onCopy : copy.dataset.offCopy;
+    }
+  }
+  if (el.dataset.details) {
+    const details = document.getElementById(el.dataset.details);
+    if (details) details.hidden = !on;
+  }
+  el.querySelectorAll(".tick").forEach((tick) => { tick.hidden = !on; });
+}
+
+function flip(el) {
+  el.dataset.on = el.dataset.on === "true" ? "false" : "true";
+  syncToggleState(el);
+}
 
 document.addEventListener("click", (e) => {
   const row = e.target.closest("[data-toggle]");
@@ -1120,8 +1187,6 @@ document.addEventListener("click", (e) => {
   const self = e.target.closest("[data-toggle-self]");
   if (self) {
     flip(self);
-    const card = document.getElementById(self.dataset.card);
-    if (card) card.dataset.on = self.dataset.on;
     return;
   }
   const chip = e.target.closest("[data-chip]");
@@ -1141,6 +1206,8 @@ document.addEventListener("click", (e) => {
     return;
   }
 });
+
+document.querySelectorAll("[data-on]").forEach(syncToggleState);
 
 // B: the status strip is derived, never typed - the same three-way the component's
 // hint text already computes.

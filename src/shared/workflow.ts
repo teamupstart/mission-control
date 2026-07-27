@@ -632,14 +632,46 @@ export function checkCommandFor(
   cwd: string | null,
   repoRoot: string | null,
   slot: WorkflowCheckSlot,
-): string[] | null {
+): WorkflowCheckCommand | null {
   let best: WorkflowCheckCommand | null = null;
   for (const entry of config.checkCommands) {
     if (entry.slot !== slot) continue;
     if (!repoAllowlisted(cwd, repoRoot, [entry.repoRoot])) continue;
     if (!best || entry.repoRoot.length > best.repoRoot.length) best = entry;
   }
-  return best ? [...best.command] : null;
+  // The whole ENTRY, not just its argv. The matched root is not decoration: when a nested
+  // entry wins, it is also the directory that command has to run in, and a caller handed
+  // only the argv has no way to know that - it would run the package's command at the top
+  // of the repository and report the answer as the package's.
+  return best ? { ...best, command: [...best.command] } : null;
+}
+
+/**
+ * Where a matched command runs, as a path RELATIVE to the repository's checkout.
+ *
+ * Relative, never absolute, and that is the load-bearing part. The execution runtime does
+ * not run in the operator's own directory: it leases a pooled worktree of `repoRoot` and
+ * pins it to the submission's captured commit, so the configured `/repo/packages/web` has
+ * to become `packages/web` and be joined onto whatever tree was leased. Handing an absolute
+ * path down would run the check against the operator's live checkout instead of the
+ * reviewed commit.
+ *
+ * `""` means the checkout root, and it is the answer for every shape except a genuinely
+ * nested entry - including an entry that sits ABOVE the repository (a broad rule covering
+ * several projects says nothing about which subdirectory to stand in) and one matched
+ * through `cwd` from outside the repository tree. Degrading those to the root is the safe
+ * direction: the root is where a repository-wide command expects to be.
+ */
+export function checkCommandSubpath(
+  repoRoot: string | null,
+  entryRoot: string,
+): string {
+  if (!repoRoot) return "";
+  const root = repoRoot.length > 1 && repoRoot.endsWith("/") ? repoRoot.slice(0, -1) : repoRoot;
+  const entry = entryRoot.length > 1 && entryRoot.endsWith("/") ? entryRoot.slice(0, -1) : entryRoot;
+  if (entry === root) return "";
+  // A boundary match, like the allowlist's: `/repo-backup` is not inside `/repo`.
+  return entry.startsWith(`${root}/`) ? entry.slice(root.length + 1) : "";
 }
 
 /**

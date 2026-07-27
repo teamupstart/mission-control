@@ -3,6 +3,7 @@ import {
   WORKFLOW_EXECUTION_LIMITS,
   checkBlockedReason,
   checkCommandFor,
+  checkCommandSubpath,
   formatCheckCommand,
   type WorkflowCheckOutcome,
   type WorkflowCheckSlot,
@@ -49,6 +50,20 @@ export interface CheckExecutionRequest {
   command: string[];
   /** The repository the submission belongs to, for the runtime to resolve a checkout from. */
   repoRoot: string;
+  /**
+   * Where inside that checkout the command runs, relative to its root. `""` is the root.
+   *
+   * Present because command resolution lets a nested entry beat a repository-wide one - the
+   * monorepo case, where `/repo/packages/web` overrides `/repo`. Without this the runtime
+   * receives only the repository and would run the package's command at the top of the
+   * tree, which for most build tools succeeds against the wrong target rather than failing
+   * loudly.
+   *
+   * RELATIVE on purpose: the runtime runs in a pooled worktree pinned to the captured
+   * commit, not in the operator's own directory, so this is joined onto whatever tree it
+   * leased. See `checkCommandSubpath`.
+   */
+  workingSubpath: string;
   /** The commit the submission captured, or null when the capture recorded none. */
   headSha: string | null;
 }
@@ -185,14 +200,15 @@ export async function runCheck(
   // Unconfigured is asked FIRST, before consent. A repository nobody wrote a command for is
   // not a repository the operator failed to authorize, and telling them to switch checks on
   // would send them to a setting that would change nothing.
-  const command = checkCommandFor(config, input.cwd, input.repoRoot, slot);
-  if (!command) {
+  const entry = checkCommandFor(config, input.cwd, input.repoRoot, slot);
+  if (!entry) {
     return outcome(
       slot,
       "skipped",
       `No ${slot} command is configured for this repository, so this gate was skipped.`,
     );
   }
+  const command = entry.command;
 
   const blocked = checkBlockedReason(config, input.cwd, input.repoRoot);
   if (blocked) return outcome(slot, "unavailable", blocked, { command });
@@ -217,6 +233,9 @@ export async function runCheck(
     slot,
     command,
     repoRoot: input.repoRoot,
+    // Derived from the entry that WON, not from the binding, so a nested monorepo command
+    // runs where it was configured rather than at the top of the repository.
+    workingSubpath: checkCommandSubpath(input.repoRoot, entry.repoRoot),
     headSha: input.headSha,
   });
   if (result.kind === "infrastructure") return { kind: "infrastructure", reason: result.reason };

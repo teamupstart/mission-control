@@ -7,6 +7,7 @@ import {
   WORKFLOW_LIMITS,
   checkBlockedReason,
   checkCommandFor,
+  checkCommandSubpath,
   formatCheckCommand,
   parseCheckCommand,
   type WorkflowCheckSlot,
@@ -163,6 +164,40 @@ test("the executor receives the argv, the repository and the captured commit", a
   // The CAPTURED commit, not a live HEAD: a gate has to judge the tree the submission
   // recorded, or a push landing mid-review changes what was gated.
   assert.equal(stub.seen[0]!.headSha, "a".repeat(40));
+  // A repository-wide entry runs at the checkout root.
+  assert.equal(stub.seen[0]!.workingSubpath, "");
+});
+
+test("a nested command reaches the executor with the directory it was configured in", async () => {
+  // The monorepo case, end to end. Resolution already preferred the nested entry, but the
+  // executor was handed only the repository - so the package's command would have run at the
+  // top of the tree, which most build tools do not refuse: they succeed against the wrong
+  // target and the gate reports that as this submission's answer.
+  const stub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
+  const config = configWith({
+    checksEnabled: true,
+    repoAllowlist: [REPO],
+    checkCommands: [
+      { repoRoot: REPO, slot: "test", command: ["npm", "test"] },
+      { repoRoot: `${REPO}/packages/web`, slot: "test", command: ["pnpm", "-C", ".", "test"] },
+    ],
+  });
+  await runCheck({
+    slot: "test",
+    config,
+    // The session stands in the package, which is how the nested entry is selected at all.
+    cwd: `${REPO}/packages/web`,
+    repoRoot: REPO,
+    headSha: "b".repeat(40),
+  }, { execute: stub.execute });
+
+  assert.equal(stub.seen.length, 1);
+  assert.deepEqual(stub.seen[0]!.command, ["pnpm", "-C", ".", "test"], "the nested argv won");
+  // The repository is still what gets leased and pinned...
+  assert.equal(stub.seen[0]!.repoRoot, REPO);
+  // ...and this is where inside it the command runs. Relative, so the runtime joins it onto
+  // the pooled worktree it provisioned rather than onto the operator's live checkout.
+  assert.equal(stub.seen[0]!.workingSubpath, "packages/web");
 });
 
 test("a command with nowhere to run it is unavailable rather than guessed at", async () => {
@@ -264,18 +299,45 @@ test("command resolution matches a worktree of a configured repository, longest 
       { repoRoot: "/repos/thing", slot: "lint", command: ["lint-it"] },
     ],
   });
+  const argv = (cwd: string | null, root: string | null, slot: WorkflowCheckSlot) =>
+    checkCommandFor(config, cwd, root, slot)?.command ?? null;
   // The MOST SPECIFIC entry wins, so a monorepo subdirectory can override the tree-wide one.
-  assert.deepEqual(checkCommandFor(config, null, "/repos/thing", "test"), ["narrow"]);
-  assert.deepEqual(checkCommandFor(config, null, "/repos/other", "test"), ["broad"]);
-  assert.deepEqual(checkCommandFor(config, null, "/repos/thing", "lint"), ["lint-it"]);
-  assert.equal(checkCommandFor(config, null, "/repos/thing", "build"), null);
-  assert.equal(checkCommandFor(config, null, "/elsewhere", "test"), null);
+  assert.deepEqual(argv(null, "/repos/thing", "test"), ["narrow"]);
+  assert.deepEqual(argv(null, "/repos/other", "test"), ["broad"]);
+  assert.deepEqual(argv(null, "/repos/thing", "lint"), ["lint-it"]);
+  assert.equal(argv(null, "/repos/thing", "build"), null);
+  assert.equal(argv(null, "/elsewhere", "test"), null);
   // A session standing in a pooled worktree outside the repo is the NORMAL dispatch shape,
   // and its cwd is the only clue when repoRoot is absent. Matching on either is what stops
   // every dispatched session from silently skipping every gate.
-  assert.deepEqual(checkCommandFor(config, "/repos/thing/src", null, "test"), ["narrow"]);
+  assert.deepEqual(argv("/repos/thing/src", null, "test"), ["narrow"]);
   // A boundary match, not a prefix: `/repos-backup` is a different repository.
-  assert.equal(checkCommandFor(config, null, "/repos-backup", "test"), null);
+  assert.equal(argv(null, "/repos-backup", "test"), null);
+  // The MATCHED ROOT comes back too, because when a nested entry wins it is also the
+  // directory that command has to run in. Returning only the argv is what let a package's
+  // command be handed to the runtime with nothing but the parent repository.
+  assert.equal(checkCommandFor(config, null, "/repos/thing", "test")?.repoRoot, "/repos/thing");
+  assert.equal(checkCommandFor(config, null, "/repos/other", "test")?.repoRoot, "/repos");
+});
+
+test("a nested command's execution directory is relative to the checkout, not absolute", () => {
+  // Relative because the runtime does not run in the operator's directory: it leases a
+  // pooled worktree of the repository and pins it to the captured commit, so an absolute
+  // path would run the check against the live checkout instead of the reviewed commit.
+  assert.equal(checkCommandSubpath("/repo", "/repo/packages/web"), "packages/web");
+  assert.equal(checkCommandSubpath("/repo/", "/repo/packages/web"), "packages/web");
+  assert.equal(checkCommandSubpath("/repo", "/repo/packages/web/"), "packages/web");
+  // The root itself, and the two shapes that are not a subdirectory of it at all: an entry
+  // ABOVE the repository is a broad rule that names no subdirectory, and one outside the
+  // tree was matched through cwd. Both run at the checkout root, which is where a
+  // repository-wide command expects to be.
+  assert.equal(checkCommandSubpath("/repo", "/repo"), "");
+  assert.equal(checkCommandSubpath("/repo", "/"), "");
+  assert.equal(checkCommandSubpath("/repo/packages/web", "/repo"), "");
+  assert.equal(checkCommandSubpath("/repo", "/elsewhere/pkg"), "");
+  // A boundary match, like the allowlist's: `/repo-backup` is not inside `/repo`.
+  assert.equal(checkCommandSubpath("/repo", "/repo-backup/pkg"), "");
+  assert.equal(checkCommandSubpath(null, "/repo/pkg"), "");
 });
 
 test("the resolved argv is a copy, so a caller cannot edit the stored config", () => {
@@ -283,7 +345,7 @@ test("the resolved argv is a copy, so a caller cannot edit the stored config", (
     checkCommands: [{ repoRoot: REPO, slot: "test", command: ["npm", "test"] }],
   });
   const resolved = checkCommandFor(config, null, REPO, "test");
-  resolved!.push("--bail");
+  resolved!.command.push("--bail");
   assert.deepEqual(config.checkCommands[0]!.command, ["npm", "test"]);
 });
 

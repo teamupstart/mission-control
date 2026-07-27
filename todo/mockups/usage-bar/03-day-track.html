@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage bar 3 - Day track</title>
+<link rel="stylesheet" href="usage-bar.css">
+</head>
+<body>
+
+<div class="page-head">
+  <h1>3. Day track</h1>
+  <p>The only variant that shows something the current bar cannot: <b>where the money
+  went</b> (spend split by harness, on one stacked track) and <b>where each window lands by its own
+  reset</b> (the hatched extension). The solid part of a meter is measured, the hatched part is the
+  forecast, and a window whose forecast reaches the wall is the one in trouble - the same fact
+  <code>projectRunway</code> already computes, drawn instead of phrased.</p>
+</div>
+
+<nav class="mock-nav">
+  <a href="index.html"><i>all</i> Compare all five</a>
+  <a href="01-spine.html"><i>1</i> Spine</a>
+  <a href="02-gauges.html"><i>2</i> Gauges</a>
+  <a href="03-day-track.html" aria-current="page"><i>3</i> Day track</a>
+  <a href="04-ledger.html"><i>4</i> Ledger</a>
+  <a href="05-triage.html"><i>5</i> Triage</a>
+</nav>
+
+<section class="showcase" id="day-track">
+  <h2><span>3</span> Day track <em>131px · 26px more</em></h2>
+    <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u3">
+          <div class="u3-spend">
+            <div class="u3-head">
+              <span class="n">$552.23</span>
+              <span class="l">estimated today</span>
+              <span class="r"><span><b>$5.61</b>/hr</span><span><b>856M</b> tok</span><span><b>$39.44</b>/PR</span></span>
+            </div>
+            <div class="u3-stack">
+              <i style="width:78%; --agent-accent: #d97757"></i>
+              <i style="width:22%; --agent-accent: #10a37f"></i>
+            </div>
+            <div class="u3-legend">
+              <span><i class="agent-dot a-claude"></i>Claude <b>$431.02</b><em>78%</em></span>
+              <span><i class="agent-dot a-codex"></i>Codex <b>$121.21</b><em>22%</em></span>
+            </div>
+          </div>
+          <div class="u3-windows">
+            <div class="u3-win" data-tone="ok">
+              <span class="who"><i class="agent-dot a-claude"></i>Claude 5-hr</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:31%"></i><i class="proj" style="left:31%; width:15%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">clears</span>
+            </div>
+            <div class="u3-win" data-tone="high">
+              <span class="who"><i class="agent-dot a-claude"></i>Claude 7-day</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:91%"></i><i class="proj" style="left:91%; width:9%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">~6h 51m<s>wall before reset</s></span>
+            </div>
+            <div class="u3-win" data-tone="ok">
+              <span class="who"><i class="agent-dot a-codex"></i>Codex 1-week</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:19%"></i><i class="proj" style="left:19%; width:15%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">clears</span>
+            </div>
+            <div class="u3-wlegend">
+              <span><i class="k-spent"></i>spent</span>
+              <span><i class="k-proj"></i>projected by reset</span>
+              <span><i class="k-wall"></i>limit</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Answering the two questions the strip currently raises and does
+    not answer: which harness is spending it, and how close does this window get before it
+    resets.</p></div>
+    <div><h3>Costs</h3><p>The most ink of the five, and the widest - it needs the room. Claude's
+    terracotta against Codex's green measures <b>ΔE 5.3 under tritanopia</b>, so the segment
+    labels are load-bearing, not decoration: hue alone must never be the channel.</p></div>
+    <div><h3>Code it touches</h3><p>Needs per-harness subtotals in <code>FleetCost</code> (the
+    usage ledger already records <code>agent</code>) and a projected-percentage-at-reset from
+    <code>projectRunway</code>. The one variant with a server change.</p></div>
+  </div>
+</section>
+
+<section class="showcase">
+  <h2>Narrow <span>940px</span> <em>laptop, or a window at half width</em></h2>
+  <p class="lede">Same bar in the width where the topbar's responsive ladder starts shedding ink.
+  What wraps first, and whether it still reads, is part of the choice.</p>
+  <div class="frame narrow">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u3">
+          <div class="u3-spend">
+            <div class="u3-head">
+              <span class="n">$552.23</span>
+              <span class="l">estimated today</span>
+              <span class="r"><span><b>$5.61</b>/hr</span><span><b>856M</b> tok</span><span><b>$39.44</b>/PR</span></span>
+            </div>
+            <div class="u3-stack">
+              <i style="width:78%; --agent-accent: #d97757"></i>
+              <i style="width:22%; --agent-accent: #10a37f"></i>
+            </div>
+            <div class="u3-legend">
+              <span><i class="agent-dot a-claude"></i>Claude <b>$431.02</b><em>78%</em></span>
+              <span><i class="agent-dot a-codex"></i>Codex <b>$121.21</b><em>22%</em></span>
+            </div>
+          </div>
+          <div class="u3-windows">
+            <div class="u3-win" data-tone="ok">
+              <span class="who"><i class="agent-dot a-claude"></i>Claude 5-hr</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:31%"></i><i class="proj" style="left:31%; width:15%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">clears</span>
+            </div>
+            <div class="u3-win" data-tone="high">
+              <span class="who"><i class="agent-dot a-claude"></i>Claude 7-day</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:91%"></i><i class="proj" style="left:91%; width:9%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">~6h 51m<s>wall before reset</s></span>
+            </div>
+            <div class="u3-win" data-tone="ok">
+              <span class="who"><i class="agent-dot a-codex"></i>Codex 1-week</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:19%"></i><i class="proj" style="left:19%; width:15%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">clears</span>
+            </div>
+            <div class="u3-wlegend">
+              <span><i class="k-spent"></i>spent</span>
+              <span><i class="k-proj"></i>projected by reset</span>
+              <span><i class="k-wall"></i>limit</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

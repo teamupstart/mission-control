@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage bar 5 - Triage</title>
+<link rel="stylesheet" href="usage-bar.css">
+</head>
+<body>
+
+<div class="page-head">
+  <h1>5. Triage</h1>
+  <p>Stops treating three windows as an inventory. <b>One window is the binding
+  constraint</b> - it gets a sentence, a meter and the tint; the others become pips that say only
+  that they are fine. Spend is demoted to the right edge, because on a Pro/Max plan the dollars are
+  notional and the window is the thing that stops work. When nothing is constrained the whole bar
+  goes quiet and green (second frame).</p>
+</div>
+
+<nav class="mock-nav">
+  <a href="index.html"><i>all</i> Compare all five</a>
+  <a href="01-spine.html"><i>1</i> Spine</a>
+  <a href="02-gauges.html"><i>2</i> Gauges</a>
+  <a href="03-day-track.html"><i>3</i> Day track</a>
+  <a href="04-ledger.html"><i>4</i> Ledger</a>
+  <a href="05-triage.html" aria-current="page"><i>5</i> Triage</a>
+</nav>
+
+<section class="showcase" id="triage">
+  <h2><span>5</span> Triage <em>72px · 33px less</em></h2>
+    <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <div class="u5" data-tone="high">
+          <div class="u5-alert">
+            <span class="u5-glyph">⚠</span>
+            <div class="u5-said">
+              <div class="say"><b>~6h 51m</b> left on <span class="who"><i class="agent-dot a-claude"></i>Claude's 7-day limit</span></div>
+              <div class="sub">
+                <span class="meter" data-tone="high"><i style="width:91%"></i></span>
+                <span>91% used</span><span>resets in 3d 4h</span><span>at current quota rate</span>
+              </div>
+            </div>
+          </div>
+          <div class="u5-pips">
+            <span class="u5-pip" title="Claude 5-hr: 31% used, resets in 2h 12m - clears."><i class="agent-dot a-claude"></i><span class="win">5H</span><span class="meter" data-tone="ok"><i style="width:31%"></i></span>clears</span>
+            <span class="u5-pip" title="Codex 1-week: 19% used, resets in 5d 9h - clears."><i class="agent-dot a-codex"></i><span class="win">1W</span><span class="meter" data-tone="ok"><i style="width:19%"></i></span>clears</span>
+          </div>
+          <div class="u5-spend">
+            <span class="n">$552.23</span>
+            <span class="rest"><span><b>$5.61</b>/hr</span><span><b>856M</b> tok</span><span><b>$39.44</b>/PR</span></span>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <p class="caption">Same bar, nothing constrained</p>
+  <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <div class="u5" data-tone="ok">
+          <div class="u5-alert">
+            <span class="u5-glyph">✓</span>
+            <div class="u5-said">
+              <div class="say">All three limits <b>clear</b> at the current rate</div>
+              <div class="sub"><span>soonest reset in 2h 12m</span><span>nothing projected to run out</span></div>
+            </div>
+          </div>
+          <div class="u5-pips">
+            <span class="u5-pip"><i class="agent-dot a-claude"></i><span class="win">5H</span><span class="meter" data-tone="ok"><i style="width:31%"></i></span>31%</span>
+            <span class="u5-pip"><i class="agent-dot a-claude"></i><span class="win">7D</span><span class="meter" data-tone="ok"><i style="width:44%"></i></span>44%</span>
+            <span class="u5-pip"><i class="agent-dot a-codex"></i><span class="win">1W</span><span class="meter" data-tone="ok"><i style="width:19%"></i></span>19%</span>
+          </div>
+          <div class="u5-spend">
+            <span class="n">$118.40</span>
+            <span class="rest"><span><b>$1.90</b>/hr</span><span><b>184M</b> tok</span><span><b>$29.60</b>/PR</span></span>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>2</b></div>
+      <div class="col c-idle">IDLE<b>3</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>0</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Not being ignored. The strip exists so a rate limit is never a
+    surprise, and this is the only variant where the thing about to stop your fleet is the
+    largest text on the row.</p></div>
+    <div><h3>Costs</h3><p>Detail goes behind a hover. Two windows constrained at once needs a
+    rule (promote both, or promote the nearest and count the rest), and "which window is binding"
+    becomes a shared predicate someone has to own.</p></div>
+    <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> plus a <code>bindingWindow()</code>
+    helper beside <code>projectRunway</code> in <code>@shared/cost.ts</code>, keeping the ranking
+    with the projection inputs instead of embedding it in the JSX.</p></div>
+  </div>
+</section>
+
+<section class="showcase">
+  <h2>Narrow <span>940px</span> <em>laptop, or a window at half width</em></h2>
+  <p class="lede">Same bar in the width where the topbar's responsive ladder starts shedding ink.
+  What wraps first, and whether it still reads, is part of the choice.</p>
+  <div class="frame narrow">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <div class="u5" data-tone="high">
+          <div class="u5-alert">
+            <span class="u5-glyph">⚠</span>
+            <div class="u5-said">
+              <div class="say"><b>~6h 51m</b> left on <span class="who"><i class="agent-dot a-claude"></i>Claude's 7-day limit</span></div>
+              <div class="sub">
+                <span class="meter" data-tone="high"><i style="width:91%"></i></span>
+                <span>91% used</span><span>resets in 3d 4h</span><span>at current quota rate</span>
+              </div>
+            </div>
+          </div>
+          <div class="u5-pips">
+            <span class="u5-pip" title="Claude 5-hr: 31% used, resets in 2h 12m - clears."><i class="agent-dot a-claude"></i><span class="win">5H</span><span class="meter" data-tone="ok"><i style="width:31%"></i></span>clears</span>
+            <span class="u5-pip" title="Codex 1-week: 19% used, resets in 5d 9h - clears."><i class="agent-dot a-codex"></i><span class="win">1W</span><span class="meter" data-tone="ok"><i style="width:19%"></i></span>clears</span>
+          </div>
+          <div class="u5-spend">
+            <span class="n">$552.23</span>
+            <span class="rest"><span><b>$5.61</b>/hr</span><span><b>856M</b> tok</span><span><b>$39.44</b>/PR</span></span>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

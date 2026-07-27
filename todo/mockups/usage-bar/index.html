@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage bar - five alternatives</title>
+<link rel="stylesheet" href="usage-bar.css">
+</head>
+<body>
+
+<div class="page-head">
+  <h1>The usage bar, five ways</h1>
+  <p>Same fleet, same moment, five shapes. Real tokens from <code>src/web/styles.css</code>, real
+  figures from the screenshot ($552.23 today, $5.61/hr, 856M tokens, $39.44/PR), and the three
+  windows the strip is reporting on: Claude 5-hr at 31% (clears), Claude 7-day at 91%
+  (<b>~6h 51m</b> of runway), Codex 1-week at 19% (clears). Each is drawn in place, between the real topbar and the board, so its vertical cost is
+  honest - and every height quoted below is <b>measured off the rendered page</b>, against
+  today's 105px.</p>
+  <p>Only the usage row is under review. Everything above it is drawn as flat grey
+  placeholders, because the topbar's own controls are <b>not part of this change</b>; the
+  board columns beneath are today's, for scale.</p>
+  <p>What is wrong with today's bar, in one line: four figures at equal weight, and the one
+  forward-looking fact on the strip - a 7-day window that runs out this afternoon - is the
+  smallest thing on it, three-quarters of the way to the right edge, behind the phrase
+  "limit runway" written out three times.</p>
+</div>
+
+<nav class="mock-nav">
+  <a href="index.html" aria-current="page"><i>all</i> Compare all five</a>
+  <a href="01-spine.html"><i>1</i> Spine</a>
+  <a href="02-gauges.html"><i>2</i> Gauges</a>
+  <a href="03-day-track.html"><i>3</i> Day track</a>
+  <a href="04-ledger.html"><i>4</i> Ledger</a>
+  <a href="05-triage.html"><i>5</i> Triage</a>
+</nav>
+
+<!-- ============================== CURRENT ============================== -->
+<section class="showcase" id="current">
+  <h2>Current <span>ships today</span> <em>105px tall</em></h2>
+  <p class="lede">FleetStrip as it stands: a tinted panel, four stat tiles, three runway blocks
+  pushed to the far edge.</p>
+
+  <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="fleet-strip">
+          <div class="fs-stats">
+            <div class="fs-stat"><span class="fs-n fs-n-cost">$552.23</span><span class="fs-l">estimated cost today</span></div>
+            <div class="fs-stat"><span class="fs-n">$5.61<span class="fs-unit">/hr</span></span><span class="fs-l">estimated rate</span></div>
+            <div class="fs-stat"><span class="fs-n">856M</span><span class="fs-l">tokens today</span></div>
+            <div class="fs-stat"><span class="fs-n">$39.44</span><span class="fs-l">cost / PR</span></div>
+          </div>
+          <div class="fs-windows">
+            <div class="fs-runway" data-tone="ok">
+              <div class="runway-head"><span>Claude · 5-hr limit runway</span><b>clears</b></div>
+              <div class="runway-meter"><span class="runway-fill" style="width:31%; --pct:31"></span></div>
+            </div>
+            <div class="fs-runway" data-tone="high">
+              <div class="runway-head"><span>Claude · 7-day limit runway</span><b>~6h 51m</b></div>
+              <div class="runway-meter"><span class="runway-fill" style="width:91%; --pct:91"></span></div>
+            </div>
+            <div class="fs-runway" data-tone="ok">
+              <div class="runway-head"><span>Codex · 1-week limit runway</span><b>clears</b></div>
+              <div class="runway-meter"><span class="runway-fill" style="width:19%; --pct:19"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== 1 SPINE ============================== -->
+<section class="showcase" id="spine">
+  <h2><span>1</span> Spine <em>38px · 67px less</em></h2>
+  <p class="lede">The panel goes away and the strip becomes one line of the topbar. Spend reads as
+  a sentence with one figure leading; each window collapses to a chip - agent dot, window token,
+  micro-meter, verdict - so "limit runway" is never written out. <b>The constrained chip tints
+  itself</b>, which is the only ink on the row that competes with the lead figure.</p>
+
+  <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <div class="u1">
+          <div class="u1-spend">
+            <span class="u1-lead">$552.23</span>
+            <span class="u1-sec">
+              <span>today</span>
+              <s>·</s><b>$5.61</b><span>/hr</span>
+              <s>·</s><b>856M</b><span>tokens</span>
+              <s>·</s><b>$39.44</b><span>/PR</span>
+            </span>
+          </div>
+          <div class="u1-chips">
+            <span class="u1-chip" data-tone="ok" title="Claude 5-hr window: 31% used, resets in 2h 12m. At this rate the window resets before you exhaust it.">
+              <i class="agent-dot a-claude"></i><span class="win">5H</span>
+              <span class="meter"><i style="width:31%"></i></span>
+              <span class="val">clears</span>
+            </span>
+            <span class="u1-chip" data-tone="high" title="Claude 7-day window: 91% used, resets in 3d 4h. At this rate it is exhausted in about 6 hours 51 minutes.">
+              <i class="agent-dot a-claude"></i><span class="win">7D</span>
+              <span class="meter"><i style="width:91%"></i></span>
+              <span class="val">~6h 51m</span>
+            </span>
+            <span class="u1-chip" data-tone="ok" title="Codex 1-week window: 19% used, resets in 5d 9h. At this rate the window resets before you exhaust it.">
+              <i class="agent-dot a-codex"></i><span class="win">1W</span>
+              <span class="meter"><i style="width:19%"></i></span>
+              <span class="val">clears</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Vertical space and glanceability. <b>Roughly half the height</b>
+    of today's strip, and it survives the topbar's responsive ladder by shedding the trailing
+    secondary figures, then the chips' meters, before it ever wraps.</p></div>
+    <div><h3>Costs</h3><p>No room for labels, so <code>5H</code> / <code>7D</code> / <code>1W</code>
+    have to be learned once, and the window's reset time moves into the tooltip. Least room to grow
+    if a fourth window appears.</p></div>
+    <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> only, plus the
+    <code>.fleet-strip</code> section of <code>styles.css</code>. No new server data. A window
+    token has to come off the harness rather than the label string.</p></div>
+  </div>
+</section>
+
+<!-- ============================== 2 GAUGES ============================== -->
+<section class="showcase" id="gauges">
+  <h2><span>2</span> Gauges <em>118px · 13px more</em></h2>
+  <p class="lede">Inverts the priority: the windows are the constraint, so they get the drawn form
+  and the dollars become a small block. Each arc is one window - <b>the arc is % consumed, the
+  figure in its mouth is the projection</b>, and the line under it carries the reset. This is what
+  the existing <code>view: "plan"</code> mode is reaching for when the dollars are notional.</p>
+
+  <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u2">
+          <div class="u2-spend">
+            <div class="u2-hero">
+              <span class="n">$552.23</span>
+              <span class="l">estimated today</span>
+            </div>
+            <div class="u2-mini">
+              <div><b>$5.61</b> per hour</div>
+              <div><b>856M</b> tokens</div>
+              <div><b>$39.44</b> per PR · 14 today</div>
+            </div>
+          </div>
+          <div class="u2-gauges">
+            <div class="u2-gauge" data-tone="ok" title="Claude 5-hr window: 31% used, resets in 2h 12m. At this rate the window resets before you exhaust it.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="37.0 119.4"/>
+              </svg>
+              <div class="cap">clears</div>
+              <div class="who"><i class="agent-dot a-claude"></i>Claude 5-hr</div>
+              <div class="rst">31% · resets 2h 12m</div>
+            </div>
+            <div class="u2-gauge" data-tone="high" title="Claude 7-day window: 91% used, resets in 3d 4h. At this rate it is exhausted in about 6 hours 51 minutes.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="108.6 119.4"/>
+              </svg>
+              <div class="cap">~6h 51m</div>
+              <div class="who"><i class="agent-dot a-claude"></i>Claude 7-day</div>
+              <div class="rst">91% · resets 3d 4h</div>
+            </div>
+            <div class="u2-gauge" data-tone="ok" title="Codex 1-week window: 19% used, resets in 5d 9h. At this rate the window resets before you exhaust it.">
+              <svg width="92" height="50" viewBox="0 0 92 50" aria-hidden="true">
+                <path class="u2-arc-track" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"/>
+                <path class="u2-arc-fill" d="M8,44 A38,38 0 0 1 84,44" fill="none" stroke-width="7" stroke-linecap="round"
+                      stroke-dasharray="22.7 119.4"/>
+              </svg>
+              <div class="cap">clears</div>
+              <div class="who"><i class="agent-dot a-codex"></i>Codex 1-week</div>
+              <div class="rst">19% · resets 5d 9h</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Reading three windows as three states without comparing bar
+    lengths. An arc at 91% is unmistakable at any zoom, and the reset time is on the face rather
+    than in a tooltip.</p></div>
+    <div><h3>Costs</h3><p class="cost-note">The tallest of the five - taller than what ships now,
+    so it wants to be the folded-open state rather than the default. Arcs are also poor at
+    comparing two similar values, which bars do for free.</p></div>
+    <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> plus a small arc component. Nothing
+    new from the server: <code>usedPercentage</code>, <code>resetsAt</code> and
+    <code>projectRunway</code> already carry all three faces.</p></div>
+  </div>
+</section>
+
+<!-- ============================== 3 DAY TRACK ============================== -->
+<section class="showcase" id="day-track">
+  <h2><span>3</span> Day track <em>131px · 26px more</em></h2>
+  <p class="lede">The only variant that shows something the current bar cannot: <b>where the money
+  went</b> (spend split by harness, on one stacked track) and <b>where each window lands by its own
+  reset</b> (the hatched extension). The solid part of a meter is measured, the hatched part is the
+  forecast, and a window whose forecast reaches the wall is the one in trouble - the same fact
+  <code>projectRunway</code> already computes, drawn instead of phrased.</p>
+
+  <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u3">
+          <div class="u3-spend">
+            <div class="u3-head">
+              <span class="n">$552.23</span>
+              <span class="l">estimated today</span>
+              <span class="r"><span><b>$5.61</b>/hr</span><span><b>856M</b> tok</span><span><b>$39.44</b>/PR</span></span>
+            </div>
+            <div class="u3-stack">
+              <i style="width:78%; --agent-accent: #d97757"></i>
+              <i style="width:22%; --agent-accent: #10a37f"></i>
+            </div>
+            <div class="u3-legend">
+              <span><i class="agent-dot a-claude"></i>Claude <b>$431.02</b><em>78%</em></span>
+              <span><i class="agent-dot a-codex"></i>Codex <b>$121.21</b><em>22%</em></span>
+            </div>
+          </div>
+          <div class="u3-windows">
+            <div class="u3-win" data-tone="ok">
+              <span class="who"><i class="agent-dot a-claude"></i>Claude 5-hr</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:31%"></i><i class="proj" style="left:31%; width:15%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">clears</span>
+            </div>
+            <div class="u3-win" data-tone="high">
+              <span class="who"><i class="agent-dot a-claude"></i>Claude 7-day</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:91%"></i><i class="proj" style="left:91%; width:9%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">~6h 51m<s>wall before reset</s></span>
+            </div>
+            <div class="u3-win" data-tone="ok">
+              <span class="who"><i class="agent-dot a-codex"></i>Codex 1-week</span>
+              <span class="u3-lane"><span class="u3-track"><i class="spent" style="width:19%"></i><i class="proj" style="left:19%; width:15%"></i></span><span class="u3-wall"></span></span>
+              <span class="val">clears</span>
+            </div>
+            <div class="u3-wlegend">
+              <span><i class="k-spent"></i>spent</span>
+              <span><i class="k-proj"></i>projected by reset</span>
+              <span><i class="k-wall"></i>limit</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Answering the two questions the strip currently raises and does
+    not answer: which harness is spending it, and how close does this window get before it
+    resets.</p></div>
+    <div><h3>Costs</h3><p>The most ink of the five, and the widest - it needs the room. Claude's
+    terracotta against Codex's green measures <b>ΔE 5.3 under tritanopia</b>, so the segment
+    labels are load-bearing, not decoration: hue alone must never be the channel.</p></div>
+    <div><h3>Code it touches</h3><p>Needs per-harness subtotals in <code>FleetCost</code> (the
+    usage ledger already records <code>agent</code>) and a projected-percentage-at-reset from
+    <code>projectRunway</code>. The one variant with a server change.</p></div>
+  </div>
+</section>
+
+<!-- ============================== 4 LEDGER ============================== -->
+<section class="showcase" id="ledger">
+  <h2><span>4</span> Ledger <em>136px · 31px more</em></h2>
+  <p class="lede">The instrument-panel reading. Two hairline-ruled tables, right-aligned mono
+  figures, no tint and no panel accent. Every window is a row, so a fourth harness or a fifth
+  window costs one line and reflows nothing. <b>Severity is a leading flag plus a coloured
+  figure</b>, never a coloured surface - so the bar stays quiet until something is actually
+  wrong, and this doubles as the accessible table view of the same data.</p>
+
+  <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <span class="usage-toggle">Usage</span>
+        <div class="u4">
+          <div class="u4-spend">
+            <h4>Today</h4>
+            <table>
+              <tr><td class="k">estimated cost</td><td class="v cost">$552.23</td><td class="aside">API equivalent</td></tr>
+              <tr><td class="k">estimated rate</td><td class="v">$5.61/hr</td><td class="aside">last hour</td></tr>
+              <tr><td class="k">tokens</td><td class="v">856M</td><td class="aside">all tiers</td></tr>
+              <tr><td class="k">cost per PR</td><td class="v">$39.44</td><td class="aside">14 PRs</td></tr>
+            </table>
+          </div>
+          <div class="u4-windows">
+            <h4>Quota windows</h4>
+            <table>
+              <tr data-tone="ok">
+                <td class="who"><span class="u4-flag"></span><i class="agent-dot a-claude"></i>Claude 5-hr</td>
+                <td class="pct">31%</td>
+                <td class="bar"><span class="meter"><i style="width:31%"></i></span></td>
+                <td class="run">clears</td>
+                <td class="rst">resets 2h 12m</td>
+              </tr>
+              <tr data-tone="high">
+                <td class="who"><span class="u4-flag">⚠</span><i class="agent-dot a-claude"></i>Claude 7-day</td>
+                <td class="pct">91%</td>
+                <td class="bar"><span class="meter"><i style="width:91%"></i></span></td>
+                <td class="run">~6h 51m</td>
+                <td class="rst">resets 3d 4h</td>
+              </tr>
+              <tr data-tone="ok">
+                <td class="who"><span class="u4-flag"></span><i class="agent-dot a-codex"></i>Codex 1-week</td>
+                <td class="pct">19%</td>
+                <td class="bar"><span class="meter"><i style="width:19%"></i></span></td>
+                <td class="run">clears</td>
+                <td class="rst">resets 5d 9h</td>
+              </tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Precision and growth. Five columns of aligned figures read
+    faster than five tooltips, the percentage stops being tooltip-only, and N windows is a
+    <code>map</code> over rows with no layout to re-tune.</p></div>
+    <div><h3>Costs</h3><p>Deliberately unglamorous, and the least glanceable at arm's length -
+    it rewards reading rather than seeing. Wants a real column ruler, so it is the variant most
+    likely to look cramped on a 13" screen.</p></div>
+    <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> and its stylesheet section.
+    No new data. Also the cheapest to make accessible: it is already a table.</p></div>
+  </div>
+</section>
+
+<!-- ============================== 5 TRIAGE ============================== -->
+<section class="showcase" id="triage">
+  <h2><span>5</span> Triage <em>72px · 33px less</em></h2>
+  <p class="lede">Stops treating three windows as an inventory. <b>One window is the binding
+  constraint</b> - it gets a sentence, a meter and the tint; the others become pips that say only
+  that they are fine. Spend is demoted to the right edge, because on a Pro/Max plan the dollars are
+  notional and the window is the thing that stops work. When nothing is constrained the whole bar
+  goes quiet and green (second frame).</p>
+
+  <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <div class="u5" data-tone="high">
+          <div class="u5-alert">
+            <span class="u5-glyph">⚠</span>
+            <div class="u5-said">
+              <div class="say"><b>~6h 51m</b> left on <span class="who"><i class="agent-dot a-claude"></i>Claude's 7-day limit</span></div>
+              <div class="sub">
+                <span class="meter" data-tone="high"><i style="width:91%"></i></span>
+                <span>91% used</span><span>resets in 3d 4h</span><span>at current quota rate</span>
+              </div>
+            </div>
+          </div>
+          <div class="u5-pips">
+            <span class="u5-pip" title="Claude 5-hr: 31% used, resets in 2h 12m - clears."><i class="agent-dot a-claude"></i><span class="win">5H</span><span class="meter" data-tone="ok"><i style="width:31%"></i></span>clears</span>
+            <span class="u5-pip" title="Codex 1-week: 19% used, resets in 5d 9h - clears."><i class="agent-dot a-codex"></i><span class="win">1W</span><span class="meter" data-tone="ok"><i style="width:19%"></i></span>clears</span>
+          </div>
+          <div class="u5-spend">
+            <span class="n">$552.23</span>
+            <span class="rest"><span><b>$5.61</b>/hr</span><span><b>856M</b> tok</span><span><b>$39.44</b>/PR</span></span>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>4</b></div>
+      <div class="col c-idle">IDLE<b>1</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>1</b></div>
+    </div>
+  </div>
+
+  <p class="caption">Same bar, nothing constrained</p>
+  <div class="frame">
+    <header class="tb">
+      <div class="tb-row tb-ghost">
+        <span class="ghost-label">existing topbar - not part of this change</span>
+        <span class="tb-spacer"></span>
+        <span class="ghost-pill w1"></span><span class="ghost-pill w2"></span><span class="ghost-pill w3"></span><span class="ghost-pill w4"></span>
+      </div>
+      <div class="usage">
+        <div class="u5" data-tone="ok">
+          <div class="u5-alert">
+            <span class="u5-glyph">✓</span>
+            <div class="u5-said">
+              <div class="say">All three limits <b>clear</b> at the current rate</div>
+              <div class="sub"><span>soonest reset in 2h 12m</span><span>nothing projected to run out</span></div>
+            </div>
+          </div>
+          <div class="u5-pips">
+            <span class="u5-pip"><i class="agent-dot a-claude"></i><span class="win">5H</span><span class="meter" data-tone="ok"><i style="width:31%"></i></span>31%</span>
+            <span class="u5-pip"><i class="agent-dot a-claude"></i><span class="win">7D</span><span class="meter" data-tone="ok"><i style="width:44%"></i></span>44%</span>
+            <span class="u5-pip"><i class="agent-dot a-codex"></i><span class="win">1W</span><span class="meter" data-tone="ok"><i style="width:19%"></i></span>19%</span>
+          </div>
+          <div class="u5-spend">
+            <span class="n">$118.40</span>
+            <span class="rest"><span><b>$1.90</b>/hr</span><span><b>184M</b> tok</span><span><b>$29.60</b>/PR</span></span>
+          </div>
+        </div>
+      </div>
+    </header>
+    <div class="board">
+      <div class="col c-backlog">BACKLOG<b>2</b></div>
+      <div class="col c-needs">NEEDS YOU<b>0</b></div>
+      <div class="col c-working">WORKING<b>2</b></div>
+      <div class="col c-idle">IDLE<b>3</b></div>
+      <div class="col c-unconf">UNCONFIRMED<b>0</b></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div><h3>Optimises for</h3><p>Not being ignored. The strip exists so a rate limit is never a
+    surprise, and this is the only variant where the thing about to stop your fleet is the
+    largest text on the row.</p></div>
+    <div><h3>Costs</h3><p>Detail goes behind a hover. Two windows constrained at once needs a
+    rule (promote both, or promote the nearest and count the rest), and "which window is binding"
+    becomes a shared predicate someone has to own.</p></div>
+    <div><h3>Code it touches</h3><p><code>FleetStrip.tsx</code> plus a <code>bindingWindow()</code>
+    helper beside <code>projectRunway</code> in <code>@shared/cost.ts</code>, keeping the ranking
+    with the projection inputs instead of embedding it in the JSX.</p></div>
+  </div>
+</section>
+
+</body>
+</html>

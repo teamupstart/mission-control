@@ -314,12 +314,21 @@ PATCH  /api/personas/:id
 DELETE /api/personas/:id
 
 GET    /api/personas/:id/versions?beforeVersion=&limit=
+GET    /api/personas/:id/versions/:versionId
 POST   /api/personas/:id/versions
 PUT    /api/personas/:id/active-version
 ```
 
 `POST /api/personas` creates only the stable definition. It does not create or activate a
 version; those remain two explicit calls to the version-creation and activation routes above.
+
+The paginated versions route returns metadata summaries only. Selecting a saved history entry
+fetches its immutable body through `GET /api/personas/:id/versions/:versionId`, which verifies
+that the version belongs to the Persona named in the path and returns its exact Markdown,
+runner/model overrides, change note, version number, and creation timestamp. A missing version or
+cross-Persona id mismatch returns 404; archived Personas remain readable through this route
+because history must survive retirement. Built-in sources have no version id or row, so their
+read-only compiled-in body continues to come from the Persona detail response.
 
 Every mutating route gets a shared Zod schema in `src/shared/protocol.ts` and goes through
 `parseBody`. Version creation and activation accept `expectedRevision`. A stale tab receives
@@ -428,6 +437,8 @@ versions:
 - search by name and description;
 - provenance and eligibility badges;
 - selected active version and paginated version history;
+- selecting any saved history entry fetches that exact immutable body from its version-detail
+  route; the list response never carries every Markdown body;
 - exact Markdown editor and preview;
 - Copy Markdown, Download `.md`, Import `.md`, and Duplicate;
 - **Save new version** with optional change note;
@@ -516,13 +527,15 @@ workflow version or run changed.
 ### Phase 2 - Version API and compact live catalog
 
 - Add shared schemas and Persona routes.
-- Change Registry/SSE to summaries and move bodies/history to bounded HTTP reads.
+- Change Registry/SSE to summaries, keep version lists metadata-only, and fetch one selected
+  resource or exact saved version body through bounded HTTP reads.
 - Preserve the worker-facing Foreman instructions route with source metadata.
 - Remove the mutating Foreman instructions route and migrate every in-repository caller to
   separate version-creation and CAS-protected activation requests.
 
-Exit: a caller can append, list, and activate versions with CAS, and two tabs cannot overwrite or
-activate across each other; no route combines saving and activation.
+Exit: a caller can append, list, retrieve one exact historical body, and activate versions with
+CAS, and two tabs cannot overwrite or activate across each other; no route combines saving and
+activation.
 
 ### Phase 3 - Independent Persona settings UI
 
@@ -633,6 +646,8 @@ Foreman instructions as an unversioned string.
 - Settings registry, routing, keyboard navigation, search, and scope badges include Personas;
 - the old Workflows Persona hash redirects;
 - version list is paginated and Markdown is not sent in the SSE snapshot;
+- selecting an inactive historical version retrieves its exact Markdown without returning bodies
+  for the rest of the page, while a cross-Persona version id returns 404;
 - dirty edits survive conflict and are guarded on navigation;
 - built-ins expose Duplicate but no Save/Activate/Archive;
 - Foreman exposes Save version and Activate but no workflow eligibility;
@@ -648,7 +663,7 @@ Foreman instructions as an unversioned string.
 | A stale ensemble request silently snapshots a newer active Persona | Persist `personaVersionId`, require it still be active at validation, and compile only that exact immutable row. |
 | Foreman leaks into a generic Persona picker or forged evaluator request | Filter on `stageEligible` in every workflow and ensemble picker and enforce the same policy in the manager. |
 | Foreman version text accidentally grants authority | Keep every operational/consent field in `ForemanConfig`; reuse the existing prompt ratchet unchanged. |
-| SSE grows with every version | Stream only compact Persona summaries and fetch selected Markdown/history over bounded HTTP. |
+| SSE or version-list responses grow with every saved body | Stream only compact Persona summaries, keep paginated history metadata-only, and fetch one ownership-validated version body on selection. |
 | Migration invents history that never existed | Backfill exactly one v1 from current bytes and state plainly that overwritten revisions are unrecoverable. |
 | Draft migration writes pins that the current schema strips | Land the draft type and Zod support in Phase 1 before the transactional rewrite and parse migrated graphs in tests. |
 | Empty instructions collapse to default | Use `activeVersionId = null` only for Built-in default; an empty saved version is a real row. |

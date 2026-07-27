@@ -611,11 +611,19 @@ PATCH  /api/personas/:id
 DELETE /api/personas/:id
 
 GET    /api/personas/:id/versions?beforeVersion=&amp;limit=
+GET    /api/personas/:id/versions/:versionId
 POST   /api/personas/:id/versions
 PUT    /api/personas/:id/active-version
 </code></pre>
 <p><code>POST /api/personas</code> creates only the stable definition. It does not create or activate a
 version; those remain two explicit calls to the version-creation and activation routes above.</p>
+<p>The paginated versions route returns metadata summaries only. Selecting a saved history entry
+fetches its immutable body through <code>GET /api/personas/:id/versions/:versionId</code>, which verifies
+that the version belongs to the Persona named in the path and returns its exact Markdown,
+runner/model overrides, change note, version number, and creation timestamp. A missing version or
+cross-Persona id mismatch returns 404; archived Personas remain readable through this route
+because history must survive retirement. Built-in sources have no version id or row, so their
+read-only compiled-in body continues to come from the Persona detail response.</p>
 <p>Every mutating route gets a shared Zod schema in <code>src/shared/protocol.ts</code> and goes through
 <code>parseBody</code>. Version creation and activation accept <code>expectedRevision</code>. A stale tab receives
 409 plus the current summary; its local Markdown remains untouched.</p>
@@ -707,6 +715,8 @@ versions:</p>
 <li>search by name and description;</li>
 <li>provenance and eligibility badges;</li>
 <li>selected active version and paginated version history;</li>
+<li>selecting any saved history entry fetches that exact immutable body from its version-detail
+route; the list response never carries every Markdown body;</li>
 <li>exact Markdown editor and preview;</li>
 <li>Copy Markdown, Download <code>.md</code>, Import <code>.md</code>, and Duplicate;</li>
 <li><strong>Save new version</strong> with optional change note;</li>
@@ -836,13 +846,15 @@ workflow version or run changed.</p>
 <h3>Phase 2 - Version API and compact live catalog</h3>
 <ul>
 <li>Add shared schemas and Persona routes.</li>
-<li>Change Registry/SSE to summaries and move bodies/history to bounded HTTP reads.</li>
+<li>Change Registry/SSE to summaries, keep version lists metadata-only, and fetch one selected
+resource or exact saved version body through bounded HTTP reads.</li>
 <li>Preserve the worker-facing Foreman instructions route with source metadata.</li>
 <li>Remove the mutating Foreman instructions route and migrate every in-repository caller to
 separate version-creation and CAS-protected activation requests.</li>
 </ul>
-<p>Exit: a caller can append, list, and activate versions with CAS, and two tabs cannot overwrite or
-activate across each other; no route combines saving and activation.</p>
+<p>Exit: a caller can append, list, retrieve one exact historical body, and activate versions with
+CAS, and two tabs cannot overwrite or activate across each other; no route combines saving and
+activation.</p>
 <h3>Phase 3 - Independent Persona settings UI</h3>
 <ul>
 <li>Add the Settings category and search entries.</li>
@@ -947,6 +959,8 @@ guidance.</li>
 <li>Settings registry, routing, keyboard navigation, search, and scope badges include Personas;</li>
 <li>the old Workflows Persona hash redirects;</li>
 <li>version list is paginated and Markdown is not sent in the SSE snapshot;</li>
+<li>selecting an inactive historical version retrieves its exact Markdown without returning bodies
+for the rest of the page, while a cross-Persona version id returns 404;</li>
 <li>dirty edits survive conflict and are guarded on navigation;</li>
 <li>built-ins expose Duplicate but no Save/Activate/Archive;</li>
 <li>Foreman exposes Save version and Activate but no workflow eligibility;</li>
@@ -983,8 +997,8 @@ guidance.</li>
 <td>Keep every operational/consent field in <code>ForemanConfig</code>; reuse the existing prompt ratchet unchanged.</td>
 </tr>
 <tr>
-<td>SSE grows with every version</td>
-<td>Stream only compact Persona summaries and fetch selected Markdown/history over bounded HTTP.</td>
+<td>SSE or version-list responses grow with every saved body</td>
+<td>Stream only compact Persona summaries, keep paginated history metadata-only, and fetch one ownership-validated version body on selection.</td>
 </tr>
 <tr>
 <td>Migration invents history that never existed</td>

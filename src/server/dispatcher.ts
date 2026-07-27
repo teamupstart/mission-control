@@ -106,9 +106,9 @@ export function dispatchPermissionModeArgs(agent: AgentType): string[] {
 }
 
 /**
- * Turns a task into a live agent: provision an isolated worktree, launch the
- * agent in a detached terminal home there, wait for passive discovery and readiness to
- * bind that exact live session, then inject the task as its first prompt.
+ * Turns a task into a live agent: provision an isolated worktree, launch the agent through
+ * its selected runtime, bind that exact live session, then deliver the task as turn one
+ * through the harness's native launch or pane-input path.
  *
  * Every step patches the task through the registry so progress streams to the UI
  * over SSE. `dispatch` never throws - a failure lands the task in `failed` with a

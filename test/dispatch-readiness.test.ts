@@ -17,8 +17,9 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // reading - so `injectPrompt` returned ok and the task was marked `running` against a
 // session that sat empty for 13 minutes.
 //
-// These pin the two signals that replace the guesswork: the first hook (proof the
-// agent can read) and the `working` transition (proof it actually did).
+// These pin the two signals that replace the guesswork for pane-delivered prompts: the first
+// hook (proof the agent can read) and the `working` transition (proof it actually did). Pi's
+// native launch-message path is pinned separately below and never writes turn one to the pane.
 
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-readiness-"));
 process.env.MISSION_HOME = home;

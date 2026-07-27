@@ -510,7 +510,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
           : CODEX_EFFORT_LEVELS;
       },
       // `-c` parses its value as TOML, falling back to a raw string. The level is a
-      // closed enum, so it is both valid here and safe on tmux's shell command line.
+      // closed enum, so every value rendered here is valid for that parser.
       launchArgs: (level) => ["-c", `model_reasoning_effort=${level}`],
       sessionPicker: {
         kind: "shortcuts",

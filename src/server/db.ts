@@ -2354,7 +2354,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
   }
 }
 
-/** A stale/newer effort value cannot be trusted onto tmux's shell command line. */
+/** A stale/newer effort value cannot be trusted as a harness launch option. */
 function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
   return raw && supportsEffort(agent, raw as NonNullable<Task["effort"]>)
     ? (raw as Task["effort"])

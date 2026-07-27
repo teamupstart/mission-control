@@ -147,6 +147,7 @@ export function WorkflowPage({
           <WorkflowLibrary
             summaries={workflowSummaries}
             personas={personas}
+            hasSnapshot={hasSnapshot}
             onDirtyChange={onDirtyChange}
             onBindVersion={onBindVersion}
             onBindWorkflow={onBindWorkflow}

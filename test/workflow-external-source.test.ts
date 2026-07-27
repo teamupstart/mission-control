@@ -212,6 +212,46 @@ test("repeated and concurrent claims resolve to one binding, one run, and one fi
   await workflows.stop();
 });
 
+test("archived workflows refuse new external bindings without invalidating existing claims", async () => {
+  seedVersion("archived");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("archived-session")]);
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  const source = { kind: "ensemble" as const, sourceId: "ens-archived", resultId: "member-1" };
+  const input = {
+    source,
+    workflowVersionId: "v-archived",
+    sessionId: "archived-session",
+  };
+
+  const archived = workflows.archive("w-archived", 1);
+  assert.equal(archived.ok, true);
+  const refused = workflows.ensureExternalBinding(input);
+  assert.equal(refused.ok, false);
+  if (refused.ok) return;
+  assert.equal(refused.reason, "conflict");
+  assert.match(refused.message, /archived and must be restored/);
+  assert.equal(workflows.store.claimBySourceKey(externalSourceKey(source, "v-archived")), null);
+
+  const restored = workflows.unarchive("w-archived", 2);
+  assert.equal(restored.ok, true);
+  const created = workflows.ensureExternalBinding(input);
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+  workflows.archiveBinding(created.value.binding.id);
+  const rearchived = workflows.archive("w-archived", 3);
+  assert.equal(rearchived.ok, true);
+
+  const repeated = workflows.ensureExternalBinding(input);
+  assert.equal(repeated.ok, true);
+  if (!repeated.ok) return;
+  assert.equal(repeated.value.binding.id, created.value.binding.id);
+  assert.equal(repeated.value.created, false);
+  assert.equal(repeated.value.binding.state, "archived");
+  await workflows.stop();
+});
+
 test("an active binding on that conversation is a typed conflict, never an adoption", async () => {
   seedVersion("conflict");
   const registry = new Registry();

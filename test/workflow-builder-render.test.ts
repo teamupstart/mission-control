@@ -13,9 +13,13 @@ import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx"
 import { WorkflowVersionDetail, WorkflowVersionHistory } from "../src/web/workflows/WorkflowVersionHistory.tsx";
 import {
   nextWorkflowName,
+  WORKFLOW_REMOVED_UNSAVED_ERROR,
   WorkflowLoadError,
+  workflowLifecycleError,
+  workflowSelectionAfterRemoval,
   workflowSelectionRestore,
 } from "../src/web/workflows/WorkflowLibrary.tsx";
+import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import {
   clearRequestedWorkflowVersion,
   readRequestedWorkflowVersion,
@@ -122,6 +126,19 @@ test("version history names immutable source revisions and never offers update-v
   assert.match(detail, />5</);
   assert.match(detail, /inspector_only/);
   assert.match(detail, /offer_prepare_pr/);
+  assert.doesNotMatch(detail, /Bind this version/);
+  const bindableDetail = renderToStaticMarkup(createElement(WorkflowVersionDetail, {
+    version,
+    personas: [],
+    onBindVersion: () => {},
+  }));
+  assert.match(bindableDetail, /Bind this version/);
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  assert.match(source, /onBindVersion=\{workflow\.archivedAt === null \? onBindVersion : undefined\}/);
+  // BOTH doors into the bind flow, not just the one. Version history was gated first and the
+  // pipeline-mode button was left open, so an archived workflow still offered a bind whose
+  // only ending is the server's 409. A gate on one of two entry points is not a gate.
+  assert.match(source, /mode === "pipeline" && onBindWorkflow && workflow\.archivedAt === null &&/);
 });
 
 test("published workflow nodes stay within the visible React Flow graph", () => {
@@ -202,12 +219,66 @@ test("autosave conflict recovery offers reload and duplicate without overwriting
   assert.match(source, /if \(!draft\.conflict && !\(await draft\.saveNow\(\)\)\) return;/);
 });
 
+/** The exact `<button …>` whose text is `label`, so an attribute assertion cannot drift onto a neighbour. */
+function buttonFor(source: string, label: string): string {
+  const end = source.indexOf(`>${label}</button>`);
+  assert.notEqual(end, -1, `no ${label} button in WorkflowLibrary`);
+  const start = source.lastIndexOf("<button", end);
+  assert.notEqual(start, -1, `${label} button has no opening tag`);
+  return source.slice(start, end);
+}
+
 test("workflow transitions lock every editor surface until the latest draft is durable", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
   assert.match(source, /transitionRef\.current = true/);
   assert.match(source, /await runTransition\(async \(\) => \{[\s\S]*await draft\.saveNow\(\)/);
   assert.match(source, /readOnly=\{transitioning \|\| workflow\.archivedAt !== null\}/);
-  assert.match(source, /disabled=\{transitioning \|\| workflow\.archivedAt !== null\}/);
+  // Every lifecycle control stands down mid-transition. Archived-ness is NOT among their
+  // disabled conditions any more: since Restore arrived, an archived workflow swaps Archive
+  // out for Restore instead of showing a dead Archive button, so that half of the old guard
+  // lives in the render branch asserted below.
+  for (const label of ["Delete", "Archive", "Restore"]) {
+    assert.match(buttonFor(source, label), /disabled=\{transitioning\}/, `${label} ignores transitioning`);
+  }
+  assert.match(source, /workflow\.archivedAt === null \? \(/);
+});
+
+test("delete is offered only before the first publish, and restore only when archived", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  // The browser mirrors the daemon's `published` refusal so the operator never reaches a 409
+  // that only tells them what they cannot do.
+  // BOTH halves, matching the store's own guard. `versions` is a second request that is `[]`
+  // while in flight, so the list alone offered Delete on a published workflow until it landed.
+  // `currentVersionId` arrives with the workflow detail, which is what makes this right on
+  // first paint rather than one round trip later.
+  assert.match(source, /workflow\?\.currentVersionId === null/);
+  assert.match(source, /&& draft\.versions\.length === 0;/);
+  assert.match(source, /\{neverPublished && \(/);
+  // Delete is a POST to its own path: reusing `DELETE /api/workflows/:id` would make the
+  // destructive path reachable by any client that still means "archive" by that verb.
+  assert.match(source, /\/delete`, \{ method: "POST"/);
+  assert.match(source, /\/unarchive`, \{ method: "POST"/);
+  // Archive keeps its confirmation and so does Delete; Restore destroys nothing and has none.
+  assert.match(source, /title: "Delete workflow"/);
+  assert.match(source, /cannot be undone/);
+  assert.doesNotMatch(buttonFor(source, "Restore"), /setConfirm/);
+});
+
+test("archive copy states the active-binding block, not just what survives", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  // `archiveWorkflowCas` refuses with `active_binding`, so an archive is not something the
+  // operator can always complete. All three archive strings are read independently - a
+  // hovered tooltip, the dialog body, the confirm button's own tooltip - so each has to carry
+  // the block as well as the reassurance. These said only "published versions stay readable",
+  // which promised continuity for runs in a case the guard never permits.
+  const archiveCopy = [
+    /label="Archive this workflow - blocked while a binding is active; published versions stay readable"/,
+    /body: `Archive \$\{workflow\.name\}\? Archiving is blocked while any binding is still active\./,
+    /confirmHint: "Archives the workflow unless a binding is still active - its published versions stay readable"/,
+  ];
+  for (const pattern of archiveCopy) assert.match(source, pattern);
+  // The retired wording, which the daemon has never been able to honour.
+  assert.doesNotMatch(source, /runs already bound to them keep working/);
 });
 
 test("generated create and duplicate names honor normalized durable uniqueness", () => {
@@ -242,6 +313,80 @@ test("workflow detail load failures remain visible without a loaded workflow", (
   assert.match(html, /role="alert"/);
   assert.match(html, /Could not load workflow/);
   assert.match(html, /Retry/);
+});
+
+test("workflow removal reconciles only a previously observed selected summary", () => {
+  const active = [{
+    id: "workflow-1", name: "Review", description: "", draftRevision: 1,
+    currentVersionId: null, publishedVersion: null, archivedAt: null, updatedAt: 1,
+    errorCount: 0, warningCount: 0, nodeCount: 2, personaCount: 0,
+  }];
+  const archived = { ...active[0]!, id: "workflow-archived", archivedAt: 2 };
+  const observed = new Set(["workflow-removed"]);
+
+  assert.equal(
+    workflowSelectionAfterRemoval(false, "workflow-removed", [], observed),
+    undefined,
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(true, "workflow-removed", [], new Set()),
+    undefined,
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(
+      true,
+      "workflow-archived",
+      [...active, archived],
+      new Set(["workflow-archived"]),
+    ),
+    undefined,
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(true, "workflow-removed", active, observed),
+    "workflow-1",
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(true, "workflow-removed", active, observed, true),
+    undefined,
+  );
+  assert.equal(
+    workflowSelectionAfterRemoval(true, "workflow-removed", [], observed),
+    null,
+  );
+});
+
+test("leaving a tombstoned dirty draft takes an explicit discard", () => {
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  // The banner tells the operator to copy what they need before selecting another workflow or
+  // creating one. Both paths correctly skip the usual saveNow() guard, because the workflow is
+  // gone and a save can only fail - and that is exactly why nothing else stood between a stray
+  // click on the list and the draft being dropped. An instruction the UI does not enforce is
+  // not a warning, it is a caption on data loss.
+  assert.match(source, /Copy anything you need before selecting another workflow or creating a new one/);
+  assert.match(source, /if \(!selectedWorkflowRemoved \|\| !draft\.dirty\) return false;/);
+  // Both doors, not one. Each returns early when the confirmation takes over.
+  assert.match(source, /if \(requireTombstoneDiscard\(\(\) => void selectNow\(id\)\)\) return;/);
+  assert.match(source, /if \(requireTombstoneDiscard\(\(\) => void createNow\(\)\)\) return;/);
+  // A confirmation, not a block: refusing to navigate would strand the operator on a
+  // workflow that no longer exists.
+  assert.match(source, /confirmLabel: "Discard and continue"/);
+});
+
+test("workflow lifecycle refusals use the existing load error surface", () => {
+  const refusal = (code: string) => new WorkflowApiError("request refused", 409, { code });
+
+  assert.match(workflowLifecycleError(refusal("workflow_published")), /already been published/);
+  assert.match(workflowLifecycleError(refusal("workflow_not_archived")), /already restored/);
+  assert.match(workflowLifecycleError(refusal("workflow_revision_conflict")), /changed in another tab/);
+  assert.equal(workflowLifecycleError(new Error("network unavailable")), "network unavailable");
+  assert.match(WORKFLOW_REMOVED_UNSAVED_ERROR, /deleted elsewhere/);
+  assert.match(WORKFLOW_REMOVED_UNSAVED_ERROR, /unsaved changes cannot be saved/);
+  assert.doesNotMatch(WORKFLOW_REMOVED_UNSAVED_ERROR, /retry|reload/i);
+
+  const source = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url)), "utf8");
+  assert.match(source, /catch \(caught\) \{\s*draft\.showError\(workflowLifecycleError\(caught\)\)/);
+  assert.match(source, /draft\.dirty \|\| draft\.saving/);
+  assert.match(source, /draft\.showError\(workflowLifecycleError\(new Error\(WORKFLOW_REMOVED_UNSAVED_ERROR\)\)\)/);
 });
 
 test("last workflow restoration excludes archived history unless a version link requested it", () => {

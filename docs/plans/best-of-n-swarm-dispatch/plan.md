@@ -1337,7 +1337,7 @@ clicking W opens the Workflow Run.
 | Cleanup fails | Remain finalizing with the exact member error; retry cleanup |
 | Winner session disappeared | Create one replacement Task at snapshotSha |
 | Existing Workflow binding owns winner | Block handoff; require explicit keep-existing or remove-binding choice |
-| Workflow version is archived after ensemble creation | Pinned immutable version remains executable; its display says archived source |
+| Workflow is archived before handoff claims a binding | Block the new binding until restore; retain the pinned immutable-version display as archived history |
 | Live Workflow consent was revoked | Do not downgrade; remain finalizing with an authorization recovery action |
 | Winner HEAD differs or its working tree is dirty during Workflow capture | Refuse the handoff, restore snapshotSha cleanly, then resume the same external submission |
 | Crash after binding but before ensemble update | Stable binding claim returns the same binding and submission |

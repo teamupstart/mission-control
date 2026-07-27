@@ -136,6 +136,8 @@ export interface WorkflowDraftState {
   publish: () => Promise<WorkflowVersion | null>;
   duplicate: (name: string) => Promise<WorkflowSummary | null>;
   clearConflict: () => void;
+  clearError: () => void;
+  showError: (message: string) => void;
   canUndo: boolean;
   canRedo: boolean;
   undo: () => void;
@@ -147,6 +149,7 @@ export function useWorkflowDraft(
   workflowId: string | null,
   streamedSummary: WorkflowSummary | null,
   onDirtyChange: (dirty: boolean) => void,
+  autosavePaused = false,
 ): WorkflowDraftState {
   const [workflow, setWorkflow] = useState<WorkflowDefinition | null>(null);
   const [versions, setVersions] = useState<WorkflowVersionMetadata[]>([]);
@@ -273,7 +276,10 @@ export function useWorkflowDraft(
       conflictRef.current,
       savedFingerprintRef.current,
     );
-    if (preflight === "blocked") return false;
+    if (preflight === "blocked") {
+      setError("Reload or duplicate your changes before continuing");
+      return false;
+    }
     if (preflight === "clean" && versionRefreshRef.current !== workflowRef.current?.id) return true;
     const request = (async (): Promise<boolean> => {
       setSaving(true);
@@ -346,10 +352,10 @@ export function useWorkflowDraft(
   }, [refreshVersions, streamedSummary]);
 
   useEffect(() => {
-    if (!dirty || saving || currentConflict) return;
+    if (autosavePaused || !dirty || saving || currentConflict) return;
     const timer = window.setTimeout(() => void saveNow(), 500);
     return () => window.clearTimeout(timer);
-  }, [currentConflict, dirty, saveNow, saving]);
+  }, [autosavePaused, currentConflict, dirty, saveNow, saving]);
 
   const publish = useCallback(async (): Promise<WorkflowVersion | null> => {
     const current = workflowRef.current;
@@ -419,6 +425,8 @@ export function useWorkflowDraft(
       conflictRef.current = null;
       setConflict(null);
     },
+    clearError: () => setError(null),
+    showError: (message: string) => setError(message),
     canUndo: history.current.length > 0,
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),

@@ -188,7 +188,8 @@ Add focused tests for:
 - continuation delivery deduplication;
 - external claim/binding/submission idempotency at every crash point;
 - dirty/wrong-HEAD Workflow capture restoration and same-submission resume;
-- active binding conflict, explicit skip, removed linked run, archived pinned version, and unavailable/revoked Live refusal;
+- active binding conflict, explicit skip, removed linked run, an archived workflow refusing a new
+  handoff while an existing external claim stays idempotent, and unavailable/revoked Live refusal;
 - active ensemble member normal Workflow-binding refusal with no Workflow→Ensemble import;
 - cancel retains refs; restore creates/reuses a normal Task;
 - explicit deletion confirmation, generated-ref validation, crash resume, no Task/Workflow deletion, and `ensemble_remove`;

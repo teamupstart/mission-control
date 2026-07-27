@@ -12,7 +12,7 @@ import {
 export function WorkflowVersionDetail({
   version,
   personas,
-  onBindVersion = () => {},
+  onBindVersion,
 }: {
   version: WorkflowVersion;
   personas: PersonaView[];
@@ -21,11 +21,13 @@ export function WorkflowVersionDetail({
   const live = new Map(personas.map((persona) => [persona.id, persona]));
   return (
     <div className="workflow-version-detail">
-      <Tooltip label="Run this published version against a session">
-        <button className="btn workflow-version-bind" onClick={() => onBindVersion(version)}>
-          Bind this version
-        </button>
-      </Tooltip>
+      {onBindVersion && (
+        <Tooltip label="Run this published version against a session">
+          <button className="btn workflow-version-bind" onClick={() => onBindVersion(version)}>
+            Bind this version
+          </button>
+        </Tooltip>
+      )}
       <WorkflowCanvas graph={version.graph} personas={personas} readOnly />
       <dl>
         <div><dt>Trigger</dt><dd>{version.bindingDefaults.triggerMode}</dd></div>
@@ -65,7 +67,7 @@ export function WorkflowVersionHistory({
   workflowId,
   versions,
   personas,
-  onBindVersion = () => {},
+  onBindVersion,
 }: {
   workflowId?: string;
   versions: WorkflowVersionMetadata[];

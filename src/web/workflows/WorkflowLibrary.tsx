@@ -32,7 +32,7 @@ import {
 } from "./WorkflowConfirmModal.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
 import { useWorkflowDraft, workflowPublishBlocked } from "./useWorkflowDraft.ts";
-import { workflowRequest } from "./workflowApi.ts";
+import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 import {
   readLastWorkflowId,
   readRequestedWorkflowVersion,
@@ -72,6 +72,42 @@ export function workflowSelectionRestore(
     if (requested) return requested.id;
   }
   return active.find((workflow) => workflow.id === rememberedId)?.id ?? active[0]?.id;
+}
+
+export function workflowSelectionAfterRemoval(
+  hasSnapshot: boolean,
+  selectedId: string | null,
+  summaries: WorkflowSummary[],
+  observedIds: ReadonlySet<string>,
+  hasUnsavedChanges = false,
+): string | null | undefined {
+  if (
+    !hasSnapshot
+    || !selectedId
+    || !observedIds.has(selectedId)
+    || summaries.some((workflow) => workflow.id === selectedId)
+    || hasUnsavedChanges
+  ) {
+    return undefined;
+  }
+  return summaries.find((workflow) => workflow.archivedAt === null)?.id ?? null;
+}
+
+export const WORKFLOW_REMOVED_UNSAVED_ERROR =
+  "This workflow was deleted elsewhere. These unsaved changes cannot be saved because the workflow no longer exists. Copy anything you need before selecting another workflow or creating a new one.";
+
+export function workflowLifecycleError(caught: unknown): string {
+  if (caught instanceof WorkflowApiError) {
+    switch (caught.body?.code) {
+      case "workflow_published":
+        return "This workflow has already been published. Archive it instead of deleting it.";
+      case "workflow_not_archived":
+        return "This workflow was already restored. Reload the latest draft before trying again.";
+      case "workflow_revision_conflict":
+        return "This workflow changed in another tab. Reload the latest draft before trying again.";
+    }
+  }
+  return caught instanceof Error ? caught.message : "Workflow action failed";
 }
 
 export function WorkflowLoadError({
@@ -115,12 +151,14 @@ export function workflowEditorMode(
 export function WorkflowLibrary({
   summaries,
   personas,
+  hasSnapshot,
   onDirtyChange,
   onBindVersion = () => {},
   onBindWorkflow,
 }: {
   summaries: WorkflowSummary[];
   personas: PersonaView[];
+  hasSnapshot: boolean;
   onDirtyChange: (dirty: boolean) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
   /** Opens the binding dialog with no session pinned. Absent in surfaces App does not host. */
@@ -134,9 +172,22 @@ export function WorkflowLibrary({
   const [transitioning, setTransitioning] = useState(false);
   const transitionRef = useRef(false);
   const selectionInitialized = useRef(false);
+  const observedWorkflowIds = useRef(new Set<string>());
   const [selection, setSelection] = useState<WorkflowSelection>(null);
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
-  const draft = useWorkflowDraft(selectedId, streamed, onDirtyChange);
+  const removalTarget = workflowSelectionAfterRemoval(
+    hasSnapshot,
+    selectedId,
+    ordered,
+    observedWorkflowIds.current,
+  );
+  const selectedWorkflowRemoved = removalTarget !== undefined;
+  const draft = useWorkflowDraft(
+    selectedId,
+    streamed,
+    onDirtyChange,
+    selectedWorkflowRemoved,
+  );
   const workflow = draft.workflow;
   const validation = useMemo(
     () => workflow
@@ -149,6 +200,16 @@ export function WorkflowLibrary({
     [personas, workflow?.completionPolicy, workflow?.draft],
   );
   const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
+  // The same rule the daemon enforces in `deleteWorkflowCas`, and BOTH halves of it for the
+  // same reason the store checks both: `currentVersionId` is the pointer, the version list is
+  // the truth. The pointer is what makes this correct on first paint - it arrives with the
+  // workflow detail, while `versions` is a second request that is briefly `[]` in flight, so
+  // asking the list alone offered Delete on a published workflow until that request landed.
+  // Gating on it keeps the refusal out of the operator's way rather than letting them reach a
+  // 409 that only tells them what they cannot do.
+  const neverPublished = Boolean(workflow)
+    && workflow?.currentVersionId === null
+    && draft.versions.length === 0;
   const activePersonas = useMemo(
     () => personasForDisplay(personas).filter((persona) => persona.archivedAt === null),
     [personas],
@@ -178,6 +239,19 @@ export function WorkflowLibrary({
   const [assertiveAnnouncement, setAssertiveAnnouncement] = useState("");
   const previousValidationErrors = useRef(new Set<string>());
   const [mobileDrawer, setMobileDrawer] = useState<"library" | "properties" | null>(null);
+  const openWorkflow = useCallback((id: string | null): void => {
+    selectionInitialized.current = true;
+    rememberWorkflowId(id);
+    setSelection(null);
+    // A surface choice belongs to the workflow it was made on, so the next one opens on
+    // whatever IT expresses rather than inheriting the last draft's fallback.
+    setChosenMode(null);
+    setConfirm(null);
+    setSelectedId(id);
+  }, []);
+  useEffect(() => {
+    for (const summary of ordered) observedWorkflowIds.current.add(summary.id);
+  }, [ordered]);
   useEffect(() => {
     const explicitlyRequestedId = ordered.find((summary) =>
       readRequestedWorkflowVersion(summary.id) !== null)?.id ?? null;
@@ -198,6 +272,21 @@ export function WorkflowLibrary({
     setSelectedId(next);
   }, [active, ordered, selectedId]);
   useEffect(() => {
+    if (removalTarget === undefined) return;
+    const next = workflowSelectionAfterRemoval(
+      hasSnapshot,
+      selectedId,
+      ordered,
+      observedWorkflowIds.current,
+      draft.dirty || draft.saving,
+    );
+    if (next === undefined) {
+      draft.showError(workflowLifecycleError(new Error(WORKFLOW_REMOVED_UNSAVED_ERROR)));
+      return;
+    }
+    openWorkflow(next);
+  }, [draft.dirty, draft.saving, hasSnapshot, openWorkflow, ordered, removalTarget, selectedId]);
+  useEffect(() => {
     if (!activePersonas.some((persona) => persona.id === palettePersona)) setPalettePersona(activePersonas[0]?.id ?? "");
   }, [activePersonas, palettePersona]);
   useEffect(() => {
@@ -213,17 +302,6 @@ export function WorkflowLibrary({
     }
   }, [validation?.diagnostics]);
 
-  const openWorkflow = (id: string | null): void => {
-    selectionInitialized.current = true;
-    rememberWorkflowId(id);
-    setSelection(null);
-    // A surface choice belongs to the workflow it was made on, so the next one opens on
-    // whatever IT expresses rather than inheriting the last draft's fallback.
-    setChosenMode(null);
-    setConfirm(null);
-    setSelectedId(id);
-  };
-
   // Memoised because `WorkflowCanvas` lists it in the dependency array that projects its
   // node array, and that projection is synced into React Flow's store from an effect: a
   // fresh closure every render would re-run the sync every render, which is the churn the
@@ -238,31 +316,78 @@ export function WorkflowLibrary({
     if (transitionRef.current) return;
     transitionRef.current = true;
     setTransitioning(true);
+    draft.clearError();
     try {
       await work();
+    } catch (caught) {
+      draft.showError(workflowLifecycleError(caught));
     } finally {
       transitionRef.current = false;
       setTransitioning(false);
     }
   };
 
-  const select = async (id: string): Promise<void> => {
-    if (id === selectedId || transitionRef.current) return;
+  /**
+   * Leaving a TOMBSTONED draft is the discard, so it takes a deliberate answer.
+   *
+   * The banner tells the operator to copy what they need before selecting another workflow
+   * or creating one. Nothing enforced that: both paths skip the usual `saveNow()` guard,
+   * correctly - the workflow is gone and a save can only fail - and then dropped the draft on
+   * the next click of the list. This is what makes the banner's instruction true. It is a
+   * confirmation rather than a block because refusing to navigate would strand the operator
+   * on a workflow that no longer exists.
+   *
+   * Returns whether it took over; the caller proceeds only when it did not.
+   */
+  const requireTombstoneDiscard = (proceed: () => void): boolean => {
+    if (!selectedWorkflowRemoved || !draft.dirty) return false;
+    setConfirm({
+      title: "Discard unsaved changes",
+      body: `${workflow?.name ?? "This workflow"} was deleted elsewhere, so these unsaved changes cannot be saved anywhere. Leaving now discards them for good.`,
+      confirmLabel: "Discard and continue",
+      confirmHint: "Discards these unsavable changes and leaves the deleted workflow",
+      danger: true,
+      onConfirm: proceed,
+    });
+    return true;
+  };
+
+  const selectNow = async (id: string): Promise<void> => {
     await runTransition(async () => {
-      if (!(await draft.saveNow())) return;
+      if (selectedWorkflowRemoved) {
+        if (draft.saving) await draft.saveNow();
+      } else if (!(await draft.saveNow())) {
+        return;
+      }
       openWorkflow(id);
     });
   };
 
-  const create = async (): Promise<void> => {
+  const select = async (id: string): Promise<void> => {
+    if (id === selectedId || transitionRef.current) return;
+    if (requireTombstoneDiscard(() => void selectNow(id))) return;
+    await selectNow(id);
+  };
+
+  const createNow = async (): Promise<void> => {
     await runTransition(async () => {
-      if (!(await draft.saveNow())) return;
+      if (selectedWorkflowRemoved) {
+        if (draft.saving) await draft.saveNow();
+      } else if (!(await draft.saveNow())) {
+        return;
+      }
       const response = await workflowRequest<CreateResponse>("/api/workflows", {
         method: "POST",
         body: JSON.stringify({ name: nextWorkflowName("Untitled workflow", ordered) }),
       });
       openWorkflow(response.summary.id);
     });
+  };
+
+  const create = async (): Promise<void> => {
+    if (transitionRef.current) return;
+    if (requireTombstoneDiscard(() => void createNow())) return;
+    await createNow();
   };
 
   const duplicate = async (): Promise<void> => {
@@ -627,22 +752,59 @@ export function WorkflowLibrary({
                 )}
               </div>
               <div className="workflow-toolbar-group workflow-toolbar-ship">
-                <Tooltip label="Archive this workflow - published versions stay readable">
-                  <button className="btn btn-danger-ghost" disabled={transitioning || workflow.archivedAt !== null} onClick={() => setConfirm({
-                    title: "Archive workflow",
-                    body: `Archive ${workflow.name}? Published versions remain readable, and runs already bound to them keep working.`,
-                    confirmLabel: "Archive",
-                    confirmHint: "Archives the workflow - its published versions stay readable",
-                    danger: true,
-                    onConfirm: () => void runTransition(async () => {
-                      if (!(await draft.saveNow())) return;
+                {neverPublished && (
+                  <Tooltip label="Delete this workflow permanently - offered only before its first publish">
+                    <button className="btn btn-danger-ghost" disabled={transitioning} onClick={() => setConfirm({
+                      title: "Delete workflow",
+                      body: `Delete ${workflow.name}? It has never been published, so there are no versions, bindings, or run history to keep. This cannot be undone.`,
+                      confirmLabel: "Delete",
+                      confirmHint: "Permanently deletes this never-published workflow",
+                      danger: true,
+                      onConfirm: () => void runTransition(async () => {
+                        if (!(await draft.saveNow())) return;
+                        const current = draft.current();
+                        if (!current) return;
+                        await workflowRequest(`/api/workflows/${current.id}/delete`, { method: "POST", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                        openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
+                      }),
+                    })}>Delete</button>
+                  </Tooltip>
+                )}
+                {workflow.archivedAt === null ? (
+                  // All three strings state the same two facts, because each is read on its
+                  // own: an ACTIVE binding blocks the archive outright (`archiveWorkflowCas`
+                  // refuses with `active_binding`), and what survives one is the published
+                  // versions. Saying only the second, as these did, offered reassurance for a
+                  // case the guard never lets happen.
+                  <Tooltip label="Archive this workflow - blocked while a binding is active; published versions stay readable">
+                    <button className="btn btn-danger-ghost" disabled={transitioning} onClick={() => setConfirm({
+                      title: "Archive workflow",
+                      body: `Archive ${workflow.name}? Archiving is blocked while any binding is still active. Published versions and past run history stay readable, and you can restore it later.`,
+                      confirmLabel: "Archive",
+                      confirmHint: "Archives the workflow unless a binding is still active - its published versions stay readable",
+                      danger: true,
+                      onConfirm: () => void runTransition(async () => {
+                        if (!(await draft.saveNow())) return;
+                        const current = draft.current();
+                        if (!current) return;
+                        await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                        openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
+                      }),
+                    })}>Archive</button>
+                  </Tooltip>
+                ) : (
+                  // No confirmation: restoring destroys nothing, and the name it reclaims was
+                  // never released, so nothing else can be holding it.
+                  <Tooltip label="Restore this workflow to the active library">
+                    <button className="btn" disabled={transitioning} onClick={() => void runTransition(async () => {
                       const current = draft.current();
                       if (!current) return;
-                      await workflowRequest(`/api/workflows/${current.id}`, { method: "DELETE", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
-                      openWorkflow(active.find((item) => item.id !== current.id)?.id ?? null);
-                    }),
-                  })}>Archive</button>
-                </Tooltip>
+                      await workflowRequest(`/api/workflows/${current.id}/unarchive`, { method: "POST", body: JSON.stringify({ expectedDraftRevision: current.draftRevision }) });
+                      await draft.reload();
+                      setAnnouncement(`Restored ${current.name}`);
+                    })}>Restore</button>
+                  </Tooltip>
+                )}
                 <Tooltip label={validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
                   <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null })} onClick={() => void draft.publish()}>Publish</button>
                 </Tooltip>
@@ -843,9 +1005,13 @@ export function WorkflowLibrary({
             workflowId={workflow.id}
             versions={draft.versions}
             personas={personas}
-            onBindVersion={onBindVersion}
+            onBindVersion={workflow.archivedAt === null ? onBindVersion : undefined}
           />
-          {mode === "pipeline" && onBindWorkflow && (
+          {/* Archived is checked here as well as on the version-history binding above,
+              because these are two independent doors into the same bind flow and the server
+              refuses both. Offering one of them would start a flow whose only ending is a
+              409 the operator did not ask for. */}
+          {mode === "pipeline" && onBindWorkflow && workflow.archivedAt === null && (
             <section className="wf-pipeline-bind">
               <Tooltip label="Pick a session and a published version to run this workflow against">
                 <button className="btn" onClick={onBindWorkflow}>

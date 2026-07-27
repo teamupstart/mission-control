@@ -332,7 +332,8 @@ moves the active pointer.</p>
 <li>no database row;</li>
 <li>no save, activate, archive, or rename;</li>
 <li>exact content comes from the current build;</li>
-<li>Duplicate creates an operator-owned Persona with version 1;</li>
+<li>Duplicate creates an operator-owned Persona with version 1 but leaves it inactive until the
+operator separately activates it;</li>
 <li>workflow publish still embeds their exact Markdown.</li>
 <li>ensemble compilation snapshots their exact current-build bytes into the durable run plan.</li>
 </ul>
@@ -381,9 +382,11 @@ version 3.</p>
 </ul>
 <p>Built-in nodes continue to store the built-in Persona id because built-ins deliberately have no
 version rows. Their exact bytes are frozen at workflow publish, as they are today.</p>
-<p>Published workflow graphs continue embedding full Persona snapshots. New snapshots add
-<code>sourcePersonaVersionId</code> and <code>sourceVersion</code>; legacy snapshots with only <code>sourceRevision</code> remain
-readable. Runs continue using only the published snapshot, never a live Persona lookup.</p>
+<p>Published workflow graphs continue embedding full Persona snapshots. The read schema keeps
+<code>sourcePersonaVersionId</code> and <code>sourceVersion</code> optional so legacy snapshots with only
+<code>sourceRevision</code> remain readable without rewriting their JSON. New operator snapshots always
+populate both fields; new built-in snapshots set both to null because built-ins have no version
+rows. Runs continue using only the published snapshot, never a live Persona lookup.</p>
 <h3>5. Ensemble evaluators pin versions at creation</h3>
 <p>Every ensemble evaluator Persona selection is another consumer of the same domain. Replace
 <code>personaRevision</code> in Best-of-N, Consensus, and every Panel Vote judge config with
@@ -534,7 +537,9 @@ run plan;</li>
 </ul>
 <p>The existing <code>revision</code> becomes the definition-level CAS token. Do not reset it during
 migration. The legacy <code>guidance_md</code>, <code>runner_id</code>, and <code>model_id</code> columns remain inert upgrade
-fossils after the cutover; new code must not dual-write them.</p>
+fossils after the cutover; new code must not dual-write them. A new definition still binds a
+constant empty string to the legacy <code>guidance_md NOT NULL</code> column on insert, but no read or update
+uses that placeholder as Persona content.</p>
 <p>The unique <code>(persona_id, version)</code> index belongs beside the new <code>persona_versions</code> table.
 Indexes that mention the new columns on the existing <code>personas</code> table cannot run before
 <code>migrate()</code>, so create these only after the <code>addColumn</code> calls:</p>
@@ -550,8 +555,9 @@ Store methods validate the active version belongs to the Persona inside the same
 <h3>Data migration</h3>
 <p>Before the migration transaction runs, extend the shared <code>WorkflowDraftNode</code> type and Zod graph
 schema to accept <code>personaVersionId</code> on mutable-Persona nodes, and update every draft
-parse/serialize boundary to preserve it. Then run one idempotent transaction after the new
-columns and table exist:</p>
+parse/serialize boundary to preserve it. After the new columns and table exist, check a durable
+<code>app_config</code> migration marker. When it is absent, run one transaction and write the marker as its
+last step:</p>
 <ol>
 <li>For every existing operator Persona without a version, insert version 1 from its current
 exact Markdown, runner, and model, then set it active.</li>
@@ -568,11 +574,16 @@ revisions cannot be reconstructed and the migration must not invent them.</li>
 <li>Upgrade every mutable-Persona node in <code>workflow_definitions.draft_graph_json</code> to the
 backfilled version id. Built-in nodes remain id-only.</li>
 <li>Leave <code>workflow_versions</code>, bindings, runs, attempts, and verdicts byte-for-byte unchanged.</li>
+<li>Write the migration marker.</li>
 </ol>
-<p>Migration tests must seed a pre-feature database. Fresh-database tests cannot prove that the
-new columns, partial indexes, legacy empty-string behavior, or graph rewrite work on an
-operator's existing state. They must also parse the rewritten graph through the new shared schema
-inside the transaction test so a schema that strips the pin cannot pass.</p>
+<p>The marker is the retry boundary: a failed transaction leaves it absent and retries the complete
+conversion, while a post-feature Persona intentionally created without a version is never
+mistaken for a legacy row on a later restart.</p>
+<p>Migration tests must seed a pre-feature database. Fresh-database tests cannot prove that the new
+columns, partial indexes, legacy empty-string behavior, or graph rewrite work on an operator's
+existing state. They must also parse the rewritten graph through the new shared schema inside the
+transaction test so a schema that strips the pin cannot pass, and restart after creating a
+post-feature definition with no version to prove the migration does not fabricate version 1.</p>
 <h2>Server architecture</h2>
 <h3>Extract a Persona domain</h3>
 <p>Personas currently live inside workflow modules. Move the reusable contracts and persistence
@@ -640,6 +651,10 @@ same activation route with a null version id.</p>
 <p>Ensemble create and preview keep their existing routes, but their Best-of-N, Consensus, and Panel
 Vote schemas replace <code>personaRevision</code> with <code>personaVersionId</code>. The manager resolves the exact
 version before compilation and never reconstructs it from the definition-level CAS revision.</p>
+<p>New preview/create requests reject the legacy revision shape. Durable-config readers retain a
+separate compatibility schema for existing <code>personaRevision</code> records; those records execute or
+render their already-compiled guidance and are never submitted through the new live-resolution
+path.</p>
 <h3>Live state</h3>
 <p>Keep the existing top-level <code>personas</code> SSE collection and <code>persona_upsert</code> event, but make the
 payload a compact summary:</p>

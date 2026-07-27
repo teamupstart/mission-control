@@ -930,7 +930,7 @@ function JudgePanel({
               </select>
             </Tooltip>
             <span className="ensemble-judge-blurb">
-              {lens ? lens.help : "This judge uses your Persona's guidance, pinned at the revision above."}
+              {lens ? lens.help : "This judge uses the selected Persona's guidance, pinned at the revision above."}
             </span>
             <Tooltip label={`Remove judge ${index + 1}`}>
               <button

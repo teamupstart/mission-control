@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import type {
   Persona,
   PublishedWorkflowGraph,
+  WorkflowCheckSlot,
   WorkflowDraftGraph,
 } from "../src/shared/workflow.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
@@ -18,7 +19,10 @@ import {
   projectStages,
   stageBlockers,
   stageExpressible,
+  stageContents,
   stageName,
+  stageSummary,
+  type Stage,
   type StagePipeline,
 } from "../src/shared/workflow-stages.ts";
 
@@ -50,15 +54,23 @@ const pipeline = (stages: StagePipeline["stages"]): StagePipeline => ({
   stages,
 });
 
-const solo = (personaId: string, nodeId: string | null = personaId) => ({
+const solo = (personaId: string, nodeId: string | null = personaId): Stage => ({
   joinId: null,
-  members: [{ nodeId, personaId }],
+  members: [{ nodeId, kind: "persona", personaId }],
 });
 
-const parallel = (joinId: string | null, ids: readonly string[]) => ({
+const parallel = (joinId: string | null, ids: readonly string[]): Stage => ({
   joinId,
-  members: ids.map((id) => ({ nodeId: id, personaId: id })),
+  members: ids.map((id) => ({ nodeId: id, kind: "persona", personaId: id })),
 });
+
+/** A check member, named by its slot the way `solo` is named by its Persona. */
+const gate = (slot: WorkflowCheckSlot, nodeId: string | null = `check-${slot}`): Stage => ({
+  joinId: null,
+  members: [{ nodeId, kind: "check", slot }],
+});
+
+const mixed = (joinId: string | null, members: Stage["members"]): Stage => ({ joinId, members });
 
 const validation = (graph: WorkflowDraftGraph) =>
   validateWorkflowGraph({ graph, personas, completionPolicy: { kind: "none" } });
@@ -110,8 +122,8 @@ test("adding a reviewer reuses every id the edit did not touch", () => {
   const previousKeys = edgeKeys(before);
   const after = compileStages(
     pipeline([{ joinId: null, members: [
-      { nodeId: "intent", personaId: "intent" },
-      { nodeId: null, personaId: "security" },
+      { nodeId: "intent", kind: "persona", personaId: "intent" },
+      { nodeId: null, kind: "persona", personaId: "security" },
     ] }]),
     before,
   );
@@ -156,7 +168,10 @@ test("reordering stages keeps node ids and every route that still means the same
     assert.equal(keys.get(key), previousKeys.get(key), `edge ${key} was reminted`);
   }
   assert.deepEqual(
-    projectStages(after)!.stages.map((stage) => stage.members[0]!.personaId),
+    projectStages(after)!.stages.map((stage) => {
+      const member = stage.members[0]!;
+      return member.kind === "persona" ? member.personaId : member.slot;
+    }),
     ["security", "intent"],
   );
   assert.deepEqual(validation(after), { valid: true, diagnostics: [] });
@@ -168,8 +183,8 @@ test("a brand-new stage mints its own join without disturbing the stage before i
     pipeline([
       solo("intent"),
       { joinId: null, members: [
-        { nodeId: null, personaId: "security" },
-        { nodeId: null, personaId: "style" },
+        { nodeId: null, kind: "persona", personaId: "security" },
+        { nodeId: null, kind: "persona", personaId: "style" },
       ] },
     ]),
     before,
@@ -179,7 +194,10 @@ test("a brand-new stage mints its own join without disturbing the stage before i
   const gate = projected.stages[1]!.joinId!;
   const minted = projected.stages[1]!.members.map((member) => member.nodeId!);
   assert.equal(new Set([gate, ...minted, "intent", "session", "end"]).size, 6);
-  assert.deepEqual(projected.stages[1]!.members.map((member) => member.personaId), ["security", "style"]);
+  assert.deepEqual(
+    projected.stages[1]!.members.map((member) => member.kind === "persona" ? member.personaId : member.slot),
+    ["security", "style"],
+  );
   assert.deepEqual(validation(after), { valid: true, diagnostics: [] });
 });
 
@@ -353,42 +371,118 @@ test("names come from Personas and stages, and never from an id", () => {
   for (const node of draft.nodes) assert.equal(ids.has(nodeLabel(draft, node, personas)), false);
 });
 
-// ---- Check nodes are legal graph, and not yet pipeline ----
+// ---- Check nodes are pipeline members ----
 //
-// This is a DELIBERATE, temporary narrowing, and it is checked here rather than left to fall
-// out of the walk. `StageMember` is `{ nodeId, personaId }`, so a check has nowhere to sit;
-// routing such a graph to the Graph view is an existing tested path, not a dead surface.
-// What is at stake is the SENTENCE: without an explicit blocker a check between two stages
-// reports "routes to Check · test, which is not a reviewer" and one off to the side reports
-// "is not part of the pipeline", and neither tells the operator it is the node KIND that
-// keeps them in Graph view rather than how they wired it.
+// The narrowing that lived here is gone: `StageMember` is a union, so a check sits in a stage
+// exactly where a Persona does. What is at stake now is that the compiler and the projection
+// agree about it. The round trip is the whole contract - a shipped built-in whose graph
+// projected but did not compile back to itself would silently rewrite its own durable node
+// ids the first time an operator opened it - and it has to hold for a stage of checks and for
+// a stage that MIXES the two, because the compiler treats members uniformly and a projection
+// that special-cased either kind would be a second source of truth for what a stage contains.
 
-test("a graph containing a Check is not stage-expressible, and says why", () => {
-  const draft = freshDraft();
-  draft.nodes.push({ id: "gate", kind: "check", slot: "typecheck", position: { x: 220, y: 60 } });
-  draft.edges.push(
-    { id: "a", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
-    { id: "b", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
-    { id: "c", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
-  );
-  // The graph itself is perfectly legal - this is not a validation failure.
-  assert.deepEqual(validation(draft), { valid: true, diagnostics: [] });
-
-  assert.equal(stageExpressible(draft), false);
-  assert.equal(projectStages(draft), null);
-  const blockers = stageBlockers(draft, personas);
-  assert.equal(blockers.length, 1, "one reason, naming the node kind");
-  assert.match(blockers[0]!, /Check node/);
-  assert.match(blockers[0]!, /Check · typecheck/);
-  assert.match(blockers[0]!, /Graph view/);
+test("pipelines containing checks survive the round trip, mixed stages included", () => {
+  const cases: StagePipeline[] = [
+    pipeline([gate("typecheck")]),
+    pipeline([gate("test")]),
+    // Two checks in one stage: the shape No-Mistakes Review v2 ships, and the reason Phase 2
+    // had to let a Check be a Join predecessor.
+    pipeline([mixed("build-gate", [
+      { nodeId: "check-typecheck", kind: "check", slot: "typecheck" },
+      { nodeId: "check-test", kind: "check", slot: "test" },
+    ])]),
+    // A Persona and a check agreeing on the same submission.
+    pipeline([mixed("mixed-gate", [
+      { nodeId: "intent", kind: "persona", personaId: "intent" },
+      { nodeId: "check-lint", kind: "check", slot: "lint" },
+    ])]),
+    // The full shape: deterministic gate, cheap judge, parallel deep review.
+    pipeline([
+      mixed("build-gate", [
+        { nodeId: "check-typecheck", kind: "check", slot: "typecheck" },
+        { nodeId: "check-test", kind: "check", slot: "test" },
+      ]),
+      solo("intent"),
+      parallel("gate", ["security", "style"]),
+    ]),
+  ];
+  for (const expected of cases) {
+    const compiled = compileStages(expected, empty);
+    assert.deepEqual(projectStages(compiled), expected);
+    assert.deepEqual(stageBlockers(compiled), [], "a check-containing graph is stage-expressible");
+    assert.equal(stageExpressible(compiled), true);
+    assert.deepEqual(validation(compiled), { valid: true, diagnostics: [] });
+  }
 });
 
-test("a Check parked off to the side blocks for the same stated reason", () => {
-  // An unwired check would otherwise be reported as "is not part of the pipeline", which is
-  // true of any stray node and says nothing about why this one can never be part of it.
-  const draft = freshDraft();
-  draft.nodes.push({ id: "gate", kind: "check", slot: "lint", position: { x: 220, y: 220 } });
-  assert.match(stageBlockers(draft, personas)[0]!, /Check node/);
+test("adding and removing a check reuses every id the edit did not touch", () => {
+  // Same claim as the Persona case, made separately because it is the compiler's check arm
+  // that is new: an autosave that re-minted the nodes around an added gate would manufacture
+  // CAS churn and break undo while the screen looked correct.
+  const before = compileStages(pipeline([solo("intent")]), empty);
+  const withCheck = compileStages(
+    pipeline([mixed("mixed-gate", [
+      { nodeId: "intent", kind: "persona", personaId: "intent" },
+      { nodeId: null, kind: "check", slot: "typecheck" },
+    ])]),
+    before,
+  );
+  assert.deepEqual(validation(withCheck), { valid: true, diagnostics: [] });
+  const minted = projectStages(withCheck)!.stages[0]!.members[1]!.nodeId!;
+  assert.ok(minted, "the compiler mints the id for a member the editor added");
+  assert.ok(withCheck.nodes.some((node) => node.id === "intent"), "the Persona kept its identity");
+  // Every route that existed before and still means the same thing keeps its edge id.
+  const survivingKeys = edgeKeys(before);
+  for (const [key, id] of edgeKeys(withCheck)) {
+    const previous = survivingKeys.get(key);
+    if (previous) assert.equal(id, previous, `route ${key} was re-minted`);
+  }
+
+  // And taking it back out returns the pipeline to what it was, ids included.
+  const removed = compileStages(pipeline([solo("intent")]), withCheck);
+  assert.deepEqual(projectStages(removed), pipeline([solo("intent")]));
+  assert.equal(removed.nodes.filter((node) => node.kind === "check").length, 0);
+  assert.equal(removed.nodes.filter((node) => node.kind === "all_pass").length, 0);
+  assert.deepEqual(validation(removed), { valid: true, diagnostics: [] });
+});
+
+test("a stage says what it holds, counted by kind", () => {
+  // `stageContents` is the count alone, so a caller wanting it mid-sentence does not trim the
+  // rule back off the end of `stageSummary` with a string replace that would silently stop
+  // matching the day the wording changed.
+  assert.equal(stageContents(parallel("g", ["security", "style"])), "2 reviewers");
+  assert.equal(stageContents(solo("intent")), "1 reviewer");
+  // One sentence, shared by the editor and the run monitor. "2 reviewers" was correct only
+  // while a member could not be anything else.
+  assert.equal(stageSummary(solo("intent")), "1 reviewer");
+  assert.equal(stageSummary(gate("test")), "1 check");
+  assert.equal(stageSummary(parallel("g", ["security", "style"])), "2 reviewers · all must pass");
+  assert.equal(
+    stageSummary(mixed("g", [
+      { nodeId: "a", kind: "check", slot: "typecheck" },
+      { nodeId: "b", kind: "check", slot: "test" },
+    ])),
+    "2 checks · all must pass",
+  );
+  assert.equal(
+    stageSummary(mixed("g", [
+      { nodeId: "a", kind: "persona", personaId: "intent" },
+      { nodeId: "b", kind: "check", slot: "lint" },
+    ])),
+    "1 reviewer, 1 check · all must pass",
+  );
+});
+
+test("a single-check stage is named by its slot, and a check still blocks when miswired", () => {
+  const one = compileStages(pipeline([gate("build")]), empty);
+  assert.equal(stageName(projectStages(one)!.stages[0]!, 0, personas), "Check · build");
+
+  // A check parked off to the side is a stray node like any other now - the phase-2 blocker
+  // that named the node KIND is gone, because the kind is no longer the reason.
+  const island = compileStages(pipeline([solo("intent")]), empty);
+  island.nodes.push({ id: "stray", kind: "check", slot: "lint", position: { x: 60, y: 400 } });
+  assert.deepEqual(stageBlockers(island, personas), ["Check · lint is not part of the pipeline."]);
+  assert.equal(projectStages(island), null);
 });
 
 test("a Check node is labelled by its slot everywhere a name is printed", () => {

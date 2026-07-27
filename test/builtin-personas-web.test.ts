@@ -114,8 +114,10 @@ test("shadowed built-ins resolve while Persona pickers show the operator row", (
   }));
   assert.match(pipeline, /Code Risk Reviewer/);
   assert.doesNotMatch(pipeline, /Missing persona/);
-  assert.match(pipeline, /<option value="operator">CODE RISK REVIEWER<\/option>/);
-  assert.doesNotMatch(pipeline, /<option value="builtin:code-risk-reviewer">/);
+  // The option VALUE carries the kind as well as the id now, since one control offers both
+  // Personas and check slots.
+  assert.match(pipeline, /<option value="persona:operator">CODE RISK REVIEWER<\/option>/);
+  assert.doesNotMatch(pipeline, /<option value="persona:builtin:code-risk-reviewer">/);
 
   const properties = renderToStaticMarkup(createElement(WorkflowProperties, {
     workflow,

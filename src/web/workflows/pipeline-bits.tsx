@@ -74,11 +74,17 @@ export function PipelineStatusChip({ status }: { status: PipelineStatus }): Reac
 }
 
 /**
- * One reviewer inside a stage. `meta` is the `runner · model` line; `actions` is the trailing
+ * One member inside a stage. `meta` is the `runner · model` line; `actions` is the trailing
  * control slot (Remove here, "open verdict" for the monitor).
+ *
+ * `kind` is what separates a reviewer from a deterministic check, and it is a CHIP rather than
+ * a different row: the two are peers in a stage - same routes, same join, same reorder - and
+ * drawing them as two shapes would say they behave differently. A check's `name` is its bare
+ * slot, so the chip supplies the noun that "test" alone next to a Persona's name does not.
  */
 export function ReviewerRow({
   name,
+  kind = "persona",
   meta = null,
   status = null,
   state = "idle",
@@ -86,6 +92,7 @@ export function ReviewerRow({
   item = {},
 }: {
   name: string;
+  kind?: "persona" | "check";
   meta?: string | null;
   status?: PipelineStatus | null;
   state?: PipelineItemState;
@@ -93,9 +100,12 @@ export function ReviewerRow({
   item?: PipelineItemProps;
 }): React.JSX.Element {
   return (
-    <li className={`wf-pipeline-reviewer${stateClass(state)}`} {...itemAttributes(item)}>
+    <li className={`wf-pipeline-reviewer is-${kind}${stateClass(state)}`} {...itemAttributes(item)}>
       <span className="wf-pipeline-reviewer-body">
-        <span className="wf-pipeline-reviewer-name">{name}</span>
+        <span className="wf-pipeline-reviewer-name">
+          {kind === "check" && <span className="wf-pipeline-check-mark">Check</span>}
+          {name}
+        </span>
         {meta && <span className="wf-pipeline-reviewer-meta">{meta}</span>}
       </span>
       {status && <PipelineStatusChip status={status} />}

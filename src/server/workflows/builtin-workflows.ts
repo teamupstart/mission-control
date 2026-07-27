@@ -6,12 +6,13 @@ import {
   type PublishedWorkflowGraph,
   type WorkflowCompletionPolicy,
   type WorkflowDefinition,
+  type WorkflowCheckSlot,
   type WorkflowDraftGraph,
   type WorkflowEdge,
   type WorkflowBindingDefaults,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
-import { compileStages, type StagePipeline } from "@shared/workflow-stages.ts";
+import { compileStages, type StageMember, type StagePipeline } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
 
 /**
@@ -164,6 +165,7 @@ interface BuiltinWorkflowSource {
   versions: readonly {
     pipeline: StagePipeline;
     bindingDefaults: WorkflowBindingDefaults;
+    sourceDraftRevision: number;
   }[];
 }
 
@@ -176,8 +178,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     id: builtinWorkflowVersionId(source.slug, index + 1),
     workflowId: builtinWorkflowId(source.slug),
     version: index + 1,
-    // A built-in has one draft revision, because a build has exactly one copy of the graph.
-    sourceDraftRevision: 1,
+    sourceDraftRevision: source.versions[index]!.sourceDraftRevision,
     graph: publishBuiltinGraph(graph),
     completionPolicy: source.completionPolicy,
     bindingDefaults: source.versions[index]!.bindingDefaults,
@@ -195,7 +196,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
       draft: graphs[graphs.length - 1]!,
       completionPolicy: source.completionPolicy,
       bindingDefaults: current.bindingDefaults,
-      draftRevision: 1,
+      draftRevision: current.sourceDraftRevision,
       currentVersionId: current.id,
       archivedAt: null,
       createdAt: 0,
@@ -209,14 +210,18 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
 const NO_MISTAKES_REVIEW_SLUG = "no-mistakes-review";
 
 /**
- * Node identities for every No-Mistakes Review version.
+ * Node identities for No-Mistakes Review, shared by every version that runs the same node.
  *
  * Named after the role rather than the position, because a later version may reorder the
  * stages and the id has to keep meaning the same reviewer to every attempt row already
- * written against it.
+ * written against it. Version 3 is the worked example: it puts a deterministic stage in front
+ * of Intent Conformance, and Intent Conformance is still `nmr-intent-conformance`.
  */
 const NO_MISTAKES_REVIEW_NODES = {
   session: "nmr-session",
+  typecheck: "nmr-check-typecheck",
+  test: "nmr-check-test",
+  build: "nmr-build-join",
   intent: "nmr-intent-conformance",
   risk: "nmr-code-risk",
   evidence: "nmr-test-evidence",
@@ -224,6 +229,12 @@ const NO_MISTAKES_REVIEW_NODES = {
   depth: "nmr-depth-join",
   end: "nmr-end",
 } as const;
+
+const reviewer = (nodeId: string, slug: string): StageMember =>
+  ({ nodeId, kind: "persona", personaId: builtinPersonaId(slug) });
+
+const check = (nodeId: string, slot: WorkflowCheckSlot): StageMember =>
+  ({ nodeId, kind: "check", slot });
 
 /**
  * Intent first as the cheap gate, then the three deep reviews in parallel behind it.
@@ -240,26 +251,85 @@ const NO_MISTAKES_REVIEW_V1: StagePipeline = {
   stages: [
     {
       joinId: null,
-      members: [{
-        nodeId: NO_MISTAKES_REVIEW_NODES.intent,
-        personaId: builtinPersonaId("intent-conformance-judge"),
-      }],
+      members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
     },
     {
       joinId: NO_MISTAKES_REVIEW_NODES.depth,
       members: [
-        {
-          nodeId: NO_MISTAKES_REVIEW_NODES.risk,
-          personaId: builtinPersonaId("code-risk-reviewer"),
-        },
-        {
-          nodeId: NO_MISTAKES_REVIEW_NODES.evidence,
-          personaId: builtinPersonaId("test-evidence-auditor"),
-        },
-        {
-          nodeId: NO_MISTAKES_REVIEW_NODES.documentation,
-          personaId: builtinPersonaId("documentation-steward"),
-        },
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+      ],
+    },
+  ],
+};
+
+/**
+ * Version 2: the version 1 graph with Live delivery as its binding default.
+ *
+ * Kept as its own literal so a later graph edit cannot change a version that existing bindings
+ * already name.
+ */
+const NO_MISTAKES_REVIEW_V2: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      joinId: null,
+      members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
+    },
+    {
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+      ],
+    },
+  ],
+};
+
+/**
+ * Version 3: the same review stages, behind a deterministic gate.
+ *
+ * Written out in full rather than composed from version 1's stages, and the duplication is
+ * the POINT. A shipped version is frozen for its lifetime, so these literals are a changelog,
+ * not a DRY opportunity: shared stage arrays would mean an edit intended for version 4
+ * silently rewriting the graph two years of bindings are already pinned to, and the test that
+ * pins version 1 against a literal would be the only thing between that and an operator.
+ *
+ * The gate is first because a change that does not compile should not cost four model calls.
+ * The two checks sit in ONE stage, so `compileStages` mints a join for them and both must pass
+ * before Intent Conformance is activated - which is why Phase 2's validator had to accept a
+ * Check as a Join predecessor.
+ *
+ * On a machine with no command configured for either slot both checks are `skipped` and pass,
+ * so this version behaves exactly as version 2 did. That is what makes shipping check gates in
+ * a built-in safe: the workflow is bound on repositories this build has never seen.
+ */
+const NO_MISTAKES_REVIEW_V3: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      joinId: NO_MISTAKES_REVIEW_NODES.build,
+      members: [
+        check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
+        check(NO_MISTAKES_REVIEW_NODES.test, "test"),
+      ],
+    },
+    {
+      joinId: null,
+      members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
+    },
+    {
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
       ],
     },
   ],
@@ -275,10 +345,12 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_SLUG,
     name: "No-Mistakes Review",
     description:
-      "The four built-in review roles, composed the way they were written to compose: Intent "
-      + "Conformance as the cheap first gate, then Code Risk, Test Evidence and Documentation "
-      + "in parallel behind it. Every fail returns to the session for repair, and a passed "
-      + "review is gated on the Inspector finding nothing on the pull request.",
+      "A deterministic typecheck and test gate, then the four built-in review roles composed "
+      + "the way they were written to compose: Intent Conformance as the cheap first judge, "
+      + "then Code Risk, Test Evidence and Documentation in parallel behind it. A slot with no "
+      + "command configured for the repository is skipped and passes. Every fail returns to "
+      + "the session for repair, and a passed review is gated on the Inspector finding nothing "
+      + "on the pull request.",
     // The delivery tail the engine already owns: a passed graph waits on an adopted PR at the
     // reviewed head, findings restart the whole review, and a run with no PR yet offers
     // Prepare PR in session rather than waiting silently.
@@ -287,18 +359,23 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       onFindings: "restart_workflow",
       missingPrAction: "offer_prepare_pr",
     },
-    // Version 1 remains byte-for-byte addressable for existing bindings. Version 2 changes
-    // only the binding posture: newly bound No-Mistakes reviews return deterministic repair
-    // packets automatically once the operator has enabled Live delivery and allowlisted the
-    // repository. The graph and every durable node/edge identity stay unchanged.
+    // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
+    // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     versions: [
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
         bindingDefaults: DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+        sourceDraftRevision: 1,
       },
       {
-        pipeline: NO_MISTAKES_REVIEW_V1,
+        pipeline: NO_MISTAKES_REVIEW_V2,
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 1,
+      },
+      {
+        pipeline: NO_MISTAKES_REVIEW_V3,
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 2,
       },
     ],
   }),

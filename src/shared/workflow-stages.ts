@@ -29,14 +29,33 @@ export type StageNode = WorkflowDraftNode | PublishedWorkflowNode;
 /** Only the two fields naming resolution needs, so a `PersonaView[]` passes unchanged. */
 export type StagePersonaNames = readonly Pick<Persona, "id" | "name">[];
 
-export interface StageMember {
-  /**
-   * `null` marks a reviewer that exists in no graph yet - the editor adding one constructs it
-   * that way. `compileStages` is the only minter of real ids; callers recover them by
-   * re-projecting the compiled graph.
-   */
-  nodeId: string | null;
-  personaId: PersonaId;
+/**
+ * One thing a stage runs: a Persona reviewing, or a Check gating.
+ *
+ * `nodeId: null` marks a member that exists in no graph yet - the editor adding one constructs
+ * it that way. `compileStages` is the only minter of real ids; callers recover them by
+ * re-projecting the compiled graph.
+ *
+ * The discriminant is on BOTH arms rather than only on the check, and that is the point of
+ * writing it this way: every existing `member.personaId` read fails typecheck until it has
+ * said which kind it meant. A bare Persona arm plus an optional `slot` would compile
+ * everywhere and be silently wrong in each place nobody revisited.
+ */
+export type StageMember =
+  | { nodeId: string | null; kind: "persona"; personaId: PersonaId }
+  | { nodeId: string | null; kind: "check"; slot: WorkflowCheckSlot };
+
+/** The node kinds a stage member is drawn from. Session, End and Join are structure. */
+export type StageMemberNode = Extract<StageNode, { kind: "persona" | "check" }>;
+
+const isMemberKind = (kind: StageNode["kind"]): kind is "persona" | "check" =>
+  kind === "persona" || kind === "check";
+
+/** The member a node IS, which is the projection's half of the round trip. */
+function memberOf(node: StageMemberNode): StageMember {
+  return node.kind === "check"
+    ? { nodeId: node.id, kind: "check", slot: node.slot }
+    : { nodeId: node.id, kind: "persona", personaId: personaIdOf(node) };
 }
 
 export interface Stage {
@@ -120,7 +139,38 @@ function withSnapshotNames(graph: StageGraph, personas: StagePersonaNames): Stag
 export function stageName(stage: Stage, index: number, personas: StagePersonaNames): string {
   const only = stage.members.length === 1 ? stage.members[0] : null;
   if (!only) return `Stage ${index + 1}`;
+  if (only.kind === "check") return checkLabel(only.slot);
   return personas.find((persona) => persona.id === only.personaId)?.name ?? "Missing persona";
+}
+
+/**
+ * What a stage HOLDS, counted by kind: "1 reviewer", "2 checks", "1 reviewer, 1 check".
+ *
+ * Shared rather than spelled at each surface because the editor and the run monitor draw the
+ * same stage: "2 reviewers" was correct only while a member could not be anything else, and
+ * two surfaces each growing their own check-aware variant of it is how the same stage starts
+ * describing itself two ways.
+ */
+export function stageContents(stage: Stage): string {
+  const reviewers = stage.members.filter((member) => member.kind === "persona").length;
+  const checks = stage.members.length - reviewers;
+  return [
+    ...(reviewers > 0 ? [`${reviewers} reviewer${reviewers === 1 ? "" : "s"}`] : []),
+    ...(checks > 0 ? [`${checks} check${checks === 1 ? "" : "s"}`] : []),
+  ].join(", ");
+}
+
+/**
+ * The stage's subtitle: what it holds, plus the rule it runs under.
+ *
+ * Split from `stageContents` rather than trimmed back out of it by the callers that want only
+ * the count - a caller doing string surgery on this suffix would silently stop trimming the
+ * day the wording changed, and say "and its 3 reviewers · all must pass:" in the middle of a
+ * confirmation sentence.
+ */
+export function stageSummary(stage: Stage): string {
+  const contents = stageContents(stage);
+  return stage.members.length > 1 ? `${contents} · all must pass` : contents;
 }
 
 /**
@@ -149,7 +199,7 @@ interface Analysis {
 
 type Entry =
   | { kind: "end" }
-  | { kind: "personas"; ids: string[] }
+  | { kind: "members"; ids: string[] }
   | { kind: "blocked"; blocker: string };
 
 /**
@@ -177,22 +227,6 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
   }
   if (structural.length > 0) return { pipeline: null, blockers: structural };
 
-  // A Check is a legal graph node and not yet a pipeline member: `StageMember` is
-  // `{ nodeId, personaId }`, so the editor has nowhere to put one. Refused HERE, before the
-  // walk, rather than left to fall out of it - a check between two stages would otherwise be
-  // reported as "routes to Check · test, which is not a reviewer" and one parked off to the
-  // side as "is not part of the pipeline", and neither tells the operator that the Graph
-  // view is showing because of the node kind rather than because of how they wired it.
-  //
-  // Deliberately temporary. Widening `StageMember` is a later phase's work, and a union
-  // half-widened across two phases is a second source of truth for what a stage contains.
-  const checks = graph.nodes.filter(isKind("check"));
-  if (checks.length > 0) {
-    return blocked(
-      `The Pipeline editor cannot show a Check node yet, so ${checkLabel(checks[0]!.slot)} keeps this workflow in Graph view.`,
-    );
-  }
-
   const session = sessions[0]!;
   const end = ends[0]!;
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
@@ -210,8 +244,11 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
       return { kind: "blocked", blocker: `${from} routes to a node that does not exist.` };
     }
     const kinds = new Set(targets.map((target) => target!.kind));
-    if (kinds.size > 1) {
-      return { kind: "blocked", blocker: `${from} splits between reviewers and the End node.` };
+    // Reviewers and checks MIX inside one stage - they are both things that produce a verdict
+    // on the same submission - so the split that is still refused is a route reaching the End
+    // and something else, which is a fork no stage can stand for.
+    if (kinds.has("end") && kinds.size > 1) {
+      return { kind: "blocked", blocker: `${from} splits between the End node and the rest of the pipeline.` };
     }
     for (const edge of edges) used.add(edge.id);
     if (kinds.has("end")) {
@@ -223,17 +260,18 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
       }
       return { kind: "end" };
     }
-    if (!kinds.has("persona")) {
-      return { kind: "blocked", blocker: `${from} routes to ${label(targets[0]!)}, which is not a reviewer.` };
+    const stranger = targets.find((target) => !isMemberKind(target!.kind));
+    if (stranger) {
+      return { kind: "blocked", blocker: `${from} routes to ${label(stranger)}, which is neither a reviewer nor a check.` };
     }
     if (edges.some((edge) => edge.targetPort !== "activate")) {
-      return { kind: "blocked", blocker: `${from} routes to a reviewer without activating it.` };
+      return { kind: "blocked", blocker: `${from} routes to ${label(targets[0]!)} without activating it.` };
     }
     const ids = edges.map((edge) => edge.target);
     if (new Set(ids).size !== ids.length) {
-      return { kind: "blocked", blocker: `${from} routes to the same reviewer more than once.` };
+      return { kind: "blocked", blocker: `${from} routes to the same node more than once.` };
     }
-    return { kind: "personas", ids };
+    return { kind: "members", ids };
   };
 
   const returnsToSession = (edges: WorkflowEdge[]): boolean =>
@@ -248,8 +286,8 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
     : entryFrom(submitted, "Session", "Session has no submitted route.");
 
   const stages: Stage[] = [];
-  while (entry.kind === "personas") {
-    const members = entry.ids.map((id) => byId.get(id) as Extract<StageNode, { kind: "persona" }>);
+  while (entry.kind === "members") {
+    const members = entry.ids.map((id) => byId.get(id) as StageMemberNode);
     const repeated = members.find((node) => visited.has(node.id));
     if (repeated) return blocked(`${label(repeated)} appears more than once in the pipeline.`);
     for (const node of members) visited.add(node.id);
@@ -263,7 +301,7 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
         return blocked(`${label(only)}'s fail route does not return to Session.`);
       }
       used.add(fail[0]!.id);
-      stages.push({ joinId: null, members: [{ nodeId: only.id, personaId: personaIdOf(only) }] });
+      stages.push({ joinId: null, members: [memberOf(only)] });
       onwardEdges = outgoing(only.id, "pass");
       onwardFrom = `${label(only)}'s pass route`;
     } else {
@@ -302,10 +340,7 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
       }
       used.add(joinFail[0]!.id);
       visited.add(join.id);
-      stages.push({
-        joinId: join.id,
-        members: members.map((node) => ({ nodeId: node.id, personaId: personaIdOf(node) })),
-      });
+      stages.push({ joinId: join.id, members: members.map(memberOf) });
       onwardEdges = outgoing(join.id, "pass");
       onwardFrom = `${stageLabel}'s pass route`;
     }
@@ -410,12 +445,13 @@ export function compileStages(
     if (stage.members.length === 0) continue;
     const members = stage.members.map((member, row) => {
       const id = member.nodeId ?? crypto.randomUUID();
-      nodes.push({
-        id,
-        kind: "persona",
-        personaId: member.personaId,
-        position: positionAt(column, row),
-      });
+      const position = positionAt(column, row);
+      // Identical for both kinds apart from what the node carries: a check takes the same
+      // routes, the same join and the same column a Persona in its position would, which is
+      // what lets the compiler treat a mixed stage as one stage.
+      nodes.push(member.kind === "check"
+        ? { id, kind: "check", slot: member.slot, position }
+        : { id, kind: "persona", personaId: member.personaId, position });
       return id;
     });
     // A join exists exactly when the stage has to agree with itself before moving on.

@@ -273,7 +273,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
   const shipped = summaries.find((item) => item.id === BUILTIN_ID);
   assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
   assert.equal(shipped.builtin, true);
-  assert.equal(shipped.publishedVersion, 2);
+  assert.equal(shipped.publishedVersion, 3, "the newest shipped version is the current one");
 
   const detail = await request(`/api/workflows/${BUILTIN_ID}`);
   assert.equal(detail.status, 200);
@@ -282,23 +282,36 @@ test("the shipped workflow is readable through the existing workflow routes", as
     versions: Array<{ version: number }>;
   };
   assert.equal(detailBody.workflow.builtin, true);
-  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@2`);
-  assert.deepEqual(detailBody.versions.map((version) => version.version), [2, 1]);
+  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@3`);
+  // Newest first, and prior versions are STILL served: bindings pinned to them resolve
+  // through the same route after the catalog gained version 3.
+  assert.deepEqual(detailBody.versions.map((version) => version.version), [3, 2, 1]);
 
   const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
   assert.equal(versions.status, 200);
-  const version = await request(`/api/workflows/${BUILTIN_ID}/versions/1`);
-  assert.equal(version.status, 200);
-  const versionBody = await version.json() as { id: string; graph: { nodes: unknown[] } };
-  assert.equal(versionBody.id, `${BUILTIN_ID}@1`);
-  assert.ok(versionBody.graph.nodes.length > 0);
-  const currentVersion = await request(`/api/workflows/${BUILTIN_ID}/versions/2`);
-  assert.equal(currentVersion.status, 200);
+  for (const number of [1, 2, 3]) {
+    const version = await request(`/api/workflows/${BUILTIN_ID}/versions/${number}`);
+    assert.equal(version.status, 200, `version ${number} is no longer served`);
+    const versionBody = await version.json() as {
+      id: string;
+      graph: { nodes: Array<{ kind: string }> };
+    };
+    assert.equal(versionBody.id, `${BUILTIN_ID}@${number}`);
+    assert.ok(versionBody.graph.nodes.length > 0);
+    // Versions 1 and 2 predate the check node and must not acquire one: an operator bound to
+    // either never agreed to run commands on their machine.
+    assert.equal(
+      versionBody.graph.nodes.filter((node) => node.kind === "check").length,
+      number < 3 ? 0 : 2,
+    );
+  }
+  const liveVersion = await request(`/api/workflows/${BUILTIN_ID}/versions/2`);
   assert.equal(
-    ((await currentVersion.json()) as { bindingDefaults: { deliveryMode: string } })
+    ((await liveVersion.json()) as { bindingDefaults: { deliveryMode: string } })
       .bindingDefaults.deliveryMode,
     "live",
   );
+  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/4`)).status, 404);
 });
 
 test("every mutating workflow route 409s on the shipped workflow and names Duplicate", async () => {

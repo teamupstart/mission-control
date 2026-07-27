@@ -1056,3 +1056,135 @@ test("a check does not spend a review slot, and a review does not spend a check 
   await waitFor(() => store.getRun("run-check-budget")?.status === "completed");
   await engine.stop();
 });
+
+// ---- The shipped workflow's deterministic gate, end to end ----
+//
+// What is at stake is the entire reason No-Mistakes Review version 3 exists: a change that
+// does not compile must cost ZERO model calls. That claim is about the shipped graph, not
+// about a graph a test drew, so this drives the real catalog entry - if a future edit
+// reordered the stages or wired the gate's pass route past the reviewers, every assertion
+// above would still pass and this one would not.
+
+const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
+
+const shippedV3 = () => {
+  const builtin = BUILTIN_WORKFLOWS.find((item) => item.definition.id === "builtin-workflow:no-mistakes-review")!;
+  return builtin.versions[2]!.graph;
+};
+
+/** A runner that fails the test if a Persona is ever asked to review. */
+const forbiddenRunner = (id: LlmRunnerId): LlmRunner => ({
+  id,
+  label: id,
+  runInThread: null,
+  sandbox: null,
+  litter: null,
+  killLiveRuns() {},
+  async run() {
+    throw new Error("a Persona was asked to review a change whose deterministic gate failed");
+  },
+});
+
+test("the shipped v3 gate fails a broken build at stage 1 with zero Persona calls spent", async () => {
+  const store = seedSubmission("nmr-gate", shippedV3());
+  const spawned: string[] = [];
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: forbiddenRunner,
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      workflowConfig: () => checkConfig({
+        checkCommands: [
+          { repoRoot: "/repo", slot: "typecheck" as const, command: ["npm", "run", "typecheck"] },
+          { repoRoot: "/repo", slot: "test" as const, command: ["npm", "test"] },
+        ],
+      }),
+      checkDeps: {
+        execute: async (request) => {
+          spawned.push(request.slot);
+          // Typecheck is broken; the test command would have passed. One failing gate is
+          // enough, which is what an all-pass Join means.
+          return request.slot === "typecheck"
+            ? {
+                kind: "exited",
+                exitCode: 2,
+                output: "src/thing.ts(4,1): error TS2345: nope\n",
+                truncatedBytes: 0,
+              }
+            : { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 };
+        },
+      },
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission("submission-nmr-gate");
+  await waitFor(() => store.getRun("run-nmr-gate")?.status === "waiting_for_session");
+  await waitFor(() => store.listDeliveries("run-nmr-gate").length === 1);
+  await manager.stop();
+
+  const attempts = store.listAttempts("submission-nmr-gate");
+  // THE assertion. Not one Persona node was attempted, so not one model call was spent.
+  assert.deepEqual(
+    attempts.filter((item) => item.persona !== null).map((item) => item.nodeId),
+    [],
+    "a Persona ran behind a failing deterministic gate",
+  );
+  for (const id of ["nmr-intent-conformance", "nmr-code-risk", "nmr-test-evidence", "nmr-documentation"]) {
+    assert.ok(!attempts.some((item) => item.nodeId === id), `${id} was attempted`);
+  }
+  // Both checks in the stage ran - they are peers on one submission, not a short-circuit.
+  assert.deepEqual([...spawned].sort(), ["test", "typecheck"]);
+
+  // And the failure came back as a repair packet naming the gate and quoting its own output.
+  const gate = attempts.find((item) => item.nodeId === "nmr-check-typecheck")!;
+  assert.equal((gate.verdict as { verdict: string }).verdict, "fail");
+  const delivery = store.listDeliveries("run-nmr-gate")[0]!;
+  assert.match(delivery.payload, /## Check · typecheck/);
+  assert.match(delivery.payload, /TS2345/);
+  assert.equal(store.getSubmission("submission-nmr-gate")?.status, "waiting_for_session");
+});
+
+test("the shipped v3 gate passes untouched on a machine that configured no commands", async () => {
+  // The safety property that makes shipping check gates in a built-in defensible: with
+  // nothing configured the stage is skipped, passes, and the workflow behaves as version 1
+  // did - so the four reviewers DO run, which is the other half of the claim.
+  const store = seedSubmission("nmr-unconfigured", shippedV3());
+  const reviewed: string[] = [];
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: (id) => ({
+        ...passingRunner(id),
+        async run(...args: unknown[]) {
+          reviewed.push(id);
+          return passingRunner(id).run(...(args as Parameters<LlmRunner["run"]>));
+        },
+      }),
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      // Checks enabled and the repository authorized, but NO command for either slot.
+      workflowConfig: () => checkConfig({ checkCommands: [] }),
+      checkDeps: {
+        execute: async () => {
+          throw new Error("an unconfigured slot must never reach the execution runtime");
+        },
+      },
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission("submission-nmr-unconfigured");
+  await waitFor(() => store.getRun("run-nmr-unconfigured")?.status === "completed", 10_000);
+  await manager.stop();
+
+  const attempts = store.listAttempts("submission-nmr-unconfigured");
+  const gate = attempts.find((item) => item.nodeId === "nmr-check-typecheck")!;
+  assert.equal((gate.verdict as { verdict: string }).verdict, "pass");
+  // A skip is never mistaken for a gate that ran: it says which of the two happened.
+  assert.match(JSON.stringify(gate.verdict), /skip|configur/i);
+  // The reviewers behind it ran, so the workflow did what version 1 does.
+  for (const id of ["nmr-intent-conformance", "nmr-code-risk", "nmr-test-evidence", "nmr-documentation"]) {
+    assert.ok(attempts.some((item) => item.nodeId === id), `${id} did not run`);
+  }
+  assert.equal(store.getRun("run-nmr-unconfigured")?.status, "completed");
+});

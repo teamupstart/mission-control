@@ -2116,19 +2116,36 @@ what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Version 1
-is preserved for bindings that already pin it, and version 2 is current. There is nothing to
-author and nothing to import - it is in the Workflows tab of a fresh install, already
-published, and can be bound to a session immediately.
+and version 2 are preserved for bindings that already pin them, and version 3 is current.
+There is nothing to author and nothing to import - it is in the Workflows tab of a fresh
+install, already published, and can be bound to a session immediately.
 
-It is the four built-in Personas wired the way they were written to compose. Intent
-Conformance Judge is stage 1, the cheap gate: there is no point spending three deeper reviews
+Stage 1 is a deterministic gate: the [`typecheck` and `test` checks](#check-nodes), placed
+ahead of every reviewer so that a change which does not compile costs no model calls at all.
+Both are evaluated on the same submission and both must pass at their All-pass Join before
+anything behind them starts, so one failing gate returns the submission to the session with
+the command's own output and **no Persona runs**.
+
+Note the build you are on: as the [Check nodes](#check-nodes) section explains, this build
+ships the node, the configuration and the run contract but **not yet the runtime that spawns
+check commands**, so today both slots are recorded and pass regardless of what you configure.
+The stage is wired and the graph is correct ahead of that runtime landing.
+
+**A slot with no command configured for the repository is skipped, and a skipped check
+passes.** That is what makes it safe to ship check gates in a workflow that gets bound on
+machines this build has never seen: with nothing configured, version 3 behaves exactly as
+version 2 did, and the run records a skip note saying so. Configure the commands under
+Settings → Workflows to turn the gate on for a repository.
+
+Behind it are the four built-in Personas wired the way they were written to compose. Intent
+Conformance Judge is stage 2, the cheap gate: there is no point spending three deeper reviews
 on a change that has already drifted from what was asked. Code Risk Reviewer, Test Evidence
-Auditor and Documentation Steward are stage 2, running **in parallel on the same submission**
+Auditor and Documentation Steward are stage 3, running **in parallel on the same submission**
 and aggregating into one combined repair packet at their All-pass Join. Every fail returns to
 the session for repair. A passed review is gated on the
 [Inspector final gate](#inspector-final-gate) finding nothing on the pull request:
 findings restart the whole review, and a run with no pull request yet offers **Prepare PR in
-session** rather than waiting silently. Version 2 defaults to Manual trigger and Live
+session** rather than waiting silently. Versions 2 and 3 default to Manual trigger and Live
 delivery, so a failed review returns its deterministic repair packet to the bound session
 automatically. Live still requires the subsystem switch and repository allowlist, and every
 binding can override the version default. Version 1 retains its original Manual and Preview
@@ -2153,6 +2170,13 @@ An upgrade that improves one of the four Personas improves this workflow too, wi
 from you: it always carries the guidance and the graph the build was made from. Improving the
 shipped workflow itself appends a **new version** rather than editing the one you may be bound
 to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
+
+Version 3 is that rule in practice. Versions 1 and 2 - the same four reviewers with no check
+stage - are still in the catalog and still resolve, so a binding created against either before
+the upgrade keeps running its pinned graph, without check nodes and without touching your
+machine. New bindings take version 3 because it is the current version. Adopting the newer
+version on an existing binding means creating a new binding, which is the same gesture
+adopting any newly published version already requires.
 
 The graph is not stored in your database at all, which is what makes all of that true without
 a seeding step that could half-run. It is compiled into the build beside the Persona documents.
@@ -2192,10 +2216,16 @@ node and Inspector is not a graph node.
 The Pipeline view is offered exactly when a draft *is* a pipeline: one Session, a linear chain
 of stages, one End, and nothing else. A graph drawn freehand that is not - two End nodes, a
 fail routed somewhere other than Session, a Join fed from two different stages - opens in
-Graph with a banner naming each reason in a sentence. A graph containing a Check node also
-opens in Graph, with a banner saying so; the Pipeline editor cannot show one yet. Both views
-write ordinary draft graphs, so a draft moves between them freely and existing workflows need
-no migration.
+Graph with a banner naming each reason in a sentence. Both views write ordinary draft graphs,
+so a draft moves between them freely and existing workflows need no migration.
+
+A stage holds **reviewers and checks alike**. The add control on every stage offers your
+Personas and the four check slots in one list, a check appears as a row marked `Check` named
+by its slot, and it reorders, moves between stages and deletes with the same drag and the
+same keys a reviewer does (Alt+Up / Alt+Down to reorder, Delete to remove). A stage of two
+checks gets its All-pass Join like any other parallel stage. Checks are offered even before
+you have authored a Persona, because the slots are a fixed vocabulary rather than something
+you configure here.
 
 ### Check nodes (gating on a command)
 

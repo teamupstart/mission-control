@@ -9322,7 +9322,28 @@ select.ensemble-judge-persona {
   border-radius: 9px;
   background: var(--panel-2);
 }
-.wf-pipeline-reviewer-name { font-size: 11.5px; font-weight: 600; overflow-wrap: anywhere; }
+.wf-pipeline-reviewer-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* A check is a PEER of a reviewer in a stage, so it keeps the same row shape and differs by
+   a chip and a cooler edge. Drawing it as another kind of card would say the two take
+   different routes, which is exactly what the compiler guarantees they do not. */
+.wf-pipeline-reviewer.is-check { border-style: dashed; }
+.wf-pipeline-check-mark {
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
 .wf-pipeline-reviewer-actions button,
 .wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }
 .wf-pipeline-empty {

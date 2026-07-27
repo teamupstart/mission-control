@@ -311,3 +311,50 @@ test("a record larger than the scan ceiling cannot strand older history", () => 
   assert.deepEqual(spoken(oldest.messages), ["EARLY"]);
   assert.equal(oldest.atStart, true);
 });
+
+test("a page that parses to nothing still leaves its tool call attached to its narration", () => {
+  // The seam repair walks BACKWARD from a page to attach a leading tool-only assistant to
+  // the turn it narrates, and it stops as soon as a batch will not join. The worry is what
+  // happens when the page itself parses to nothing - a rollout's tool OUTPUT records carry
+  // no turn - because then there is no leading message to join to, the walk stops on the
+  // `custom_tool_call` sitting just above, and it looks as though that tool can never
+  // reach the `agent_message` above THAT.
+  //
+  // It reaches it, and this pins the reason: a batch that fails to join is DISCARDED
+  // rather than emitted, so those records stay unread and the next page parses the tool
+  // call and its narration together - one batch, correct grouping. The output record is
+  // deliberately larger than the scan ceiling so growth cannot sidestep the case by simply
+  // widening until it finds a turn.
+  const path = join(dir, "empty-page-tool-seam.jsonl");
+  const ts = new Date(0).toISOString();
+  const records: unknown[] = [
+    { type: "session_meta", timestamp: ts, payload: { cwd: "/repo", session_id: "s1", timestamp: ts } },
+    { type: "event_msg", timestamp: ts, payload: { type: "user_message", message: "ASK" } },
+    { type: "event_msg", timestamp: ts, payload: { type: "agent_message", message: "SAY" } },
+    { type: "custom_tool_call", timestamp: ts, payload: { call_id: "c0", name: "shell", arguments: "ls" } },
+    {
+      type: "response_item",
+      timestamp: ts,
+      payload: { type: "custom_tool_call_output", call_id: "c0", output: "x".repeat(17 * 1024 * 1024) },
+    },
+  ];
+  writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+
+  const init = codex.initial(path);
+  assert.deepEqual(init.messages, [], "the opening window is pure tool output, so it renders nothing");
+  assert.equal(init.atStart, false, "and it must not claim the session started here");
+
+  const walk = walkBack(codex, path);
+  assert.deepEqual(
+    complete(walk.messages),
+    complete(wholeCodex(path)),
+    "the tool stays on the assistant turn that narrated it, exactly as a whole-file parse groups it",
+  );
+  assert.equal(walk.messages.length, 2);
+  assert.deepEqual(walk.messages[1]?.tools, [{ name: "shell", input: "ls" }]);
+  assert.equal(
+    walk.messages.filter((m) => !m.text && m.tools.length > 0).length,
+    0,
+    "no orphaned tool-only turn is left behind at the boundary",
+  );
+});

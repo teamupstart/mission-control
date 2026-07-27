@@ -1,11 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptMessage } from "../src/shared/types.ts";
-import { claudeTranscript } from "../src/server/harness/claude/transcript.ts";
-import { codexTranscript } from "../src/server/harness/codex/transcript.ts";
+import { claudeTranscript, toMessage } from "../src/server/harness/claude/transcript.ts";
+import { codexTranscript, parseCodexMessages } from "../src/server/harness/codex/transcript.ts";
 
 // What is at stake: whether the operator can read a conversation they can see the agent
 // having.
@@ -85,6 +85,13 @@ function writeCodex(name: string, turns: number): { path: string; texts: string[
     lines.push(JSON.stringify({ type: "event_msg", timestamp, payload: { type: "user_message", message: ask } }));
     lines.push(JSON.stringify({ type: "event_msg", timestamp, payload: { type: "agent_message", message: say } }));
     lines.push(
+      JSON.stringify({
+        type: "custom_tool_call",
+        timestamp,
+        payload: { call_id: `c${i}`, name: `tool-${i}`, arguments: JSON.stringify({ turn: i }) },
+      }),
+    );
+    lines.push(
       JSON.stringify({ type: "response_item", timestamp, payload: { type: "custom_tool_call_output", call_id: `c${i}`, output: filler } }),
     );
   }
@@ -99,6 +106,31 @@ const codex = codexTranscript.messages!;
 const spoken = (messages: TranscriptMessage[]): string[] =>
   messages.filter((m) => m.text).map((m) => m.text);
 
+const complete = (messages: TranscriptMessage[]) =>
+  messages.map((message) => ({
+    role: message.role,
+    text: message.text,
+    tools: message.tools.map((tool) => ({ name: tool.name, input: tool.input })),
+  }));
+
+function wholeClaude(path: string): TranscriptMessage[] {
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .flatMap((line) => {
+      if (!line) return [];
+      const message = toMessage(JSON.parse(line));
+      return message ? [message] : [];
+    });
+}
+
+function wholeCodex(path: string): TranscriptMessage[] {
+  const records = readFileSync(path, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  return parseCodexMessages(records);
+}
+
 /**
  * Walk a whole session by chaining `before` from the stream's opening window.
  *
@@ -109,9 +141,9 @@ function walkBack(
   read: { initial: (p: string) => { messages: TranscriptMessage[]; start: number; atStart: boolean } ;
           before: (p: string, o: number) => { messages: TranscriptMessage[]; start: number; end: number; atStart: boolean } },
   path: string,
-): { texts: string[]; pages: number } {
+): { messages: TranscriptMessage[]; texts: string[]; pages: number } {
   const init = read.initial(path);
-  let texts = spoken(init.messages);
+  let messages = init.messages;
   let anchor = init.start;
   let atStart = init.atStart;
   let pages = 0;
@@ -119,13 +151,13 @@ function walkBack(
     const page = read.before(path, anchor);
     assert.equal(page.end, anchor, "a page must end exactly where the held history begins");
     assert.ok(page.start < anchor, "a page must move the anchor or the scroll-back never ends");
-    texts = [...spoken(page.messages), ...texts];
+    messages = [...page.messages, ...messages];
     anchor = page.start;
     atStart = page.atStart;
     pages++;
     assert.ok(pages < 200, "walk did not terminate");
   }
-  return { texts, pages };
+  return { messages, texts: spoken(messages), pages };
 }
 
 test("scrolling back reaches every turn of a session far longer than one window", () => {
@@ -144,6 +176,7 @@ test("scrolling back reaches every turn of a session far longer than one window"
   const walk = walkBack(claude, path);
   assert.ok(walk.pages > 1, "a session this long takes several pages to walk");
   assert.deepEqual(walk.texts, texts, "the walk reconstructs the conversation exactly");
+  assert.deepEqual(complete(walk.messages), complete(wholeClaude(path)));
 });
 
 test("pages abut, so no turn is dropped into a gap or rendered twice", () => {
@@ -154,6 +187,7 @@ test("pages abut, so no turn is dropped into a gap or rendered twice", () => {
   // started late produces.
   assert.equal(new Set(walk.texts).size, walk.texts.length, "no turn appears twice");
   assert.deepEqual(walk.texts, texts, "and none is missing");
+  assert.deepEqual(complete(walk.messages), complete(wholeClaude(path)));
 });
 
 test("a rollout walks back correctly even though its synthesized ids cannot de-dupe", () => {
@@ -163,6 +197,38 @@ test("a rollout walks back correctly even though its synthesized ids cannot de-d
   const { path, texts } = writeCodex("rollout.jsonl", 200);
   const walk = walkBack(codex, path);
   assert.deepEqual(walk.texts, texts, "every turn, once, in order");
+  assert.deepEqual(complete(walk.messages), complete(wholeCodex(path)));
+});
+
+test("a boundary between an agent message and tool call keeps one assistant turn", () => {
+  const path = join(dir, "tool-seam.jsonl");
+  const text = "A".repeat(600 * 1024);
+  const records = [
+    {
+      type: "session_meta",
+      timestamp: new Date(0).toISOString(),
+      payload: { cwd: "/repo", session_id: "s1" },
+    },
+    {
+      type: "event_msg",
+      timestamp: new Date(1000).toISOString(),
+      payload: { type: "agent_message", message: text },
+    },
+    {
+      type: "custom_tool_call",
+      timestamp: new Date(1000).toISOString(),
+      payload: { call_id: "seam-tool", name: "shell", arguments: "pwd" },
+    },
+  ];
+  writeFileSync(path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+
+  const init = codex.initial(path);
+  assert.deepEqual(complete(init.messages), complete(parseCodexMessages(records)));
+  assert.equal(init.messages.length, 1);
+  assert.deepEqual(init.messages[0]?.tools, [{ name: "shell", input: "pwd" }]);
+
+  const window = codex.window(path, 12, 48);
+  assert.deepEqual(complete(window.messages), complete(parseCodexMessages(records)));
 });
 
 test("the first page reports atStart, so the panel stops offering to load more", () => {

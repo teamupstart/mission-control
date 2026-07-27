@@ -176,6 +176,10 @@ export function transcriptSize(path: string): number | null {
 export type JsonlMessagesSpec = {
   /** See `TranscriptMessages.narration`. */
   narration(path: string): string | null;
+  joinBatches?: (
+    earlier: TranscriptMessage[],
+    later: TranscriptMessage[],
+  ) => { earlier: TranscriptMessage[]; later: TranscriptMessage[] } | null;
 } & (
   | { parse: TranscriptLineParser; parseBatch?: undefined }
   | { parseBatch: (records: unknown[]) => TranscriptMessage[]; parse?: undefined }
@@ -200,6 +204,35 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     }
     const out = spec.parseBatch(records);
     return limit && out.length > limit ? out.slice(-limit) : out;
+  };
+  const repairLeadingBatch = (
+    path: string,
+    start: number,
+    messages: TranscriptMessage[],
+  ): { start: number; messages: TranscriptMessage[] } => {
+    if (!spec.joinBatches || start <= 0) return { start, messages };
+    let begin = start;
+    let scanned = 0;
+    let later = messages;
+    while (begin > 0 && scanned < MAX_SCAN_BYTES) {
+      const previous = previousRecordStart(path, begin);
+      if (previous === null || previous >= begin) break;
+      const bytes = begin - previous;
+      if (scanned + bytes > MAX_SCAN_BYTES) break;
+      const text = readRange(path, previous, begin).toString("utf8");
+      const earlier = parseMany(text ? text.split("\n") : []);
+      if (earlier.length === 0) {
+        begin = previous;
+        scanned += bytes;
+        continue;
+      }
+      const joined = spec.joinBatches(earlier, later);
+      if (!joined) break;
+      begin = previous;
+      scanned += bytes;
+      later = [...joined.earlier, ...joined.later];
+    }
+    return { start: begin, messages: later };
   };
 
   /**
@@ -226,10 +259,22 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     }
     // Tail begins mid-file (drop the partial first line) but ends at EOF (keep the last
     // line - parseLines drops it only if it isn't valid JSON).
-    const tail = grow(size, tailTurns, WINDOW_TAIL_BYTES, (bytes) =>
-      parseMany(completeLines(readRange(path, size - bytes, size), bytes < size, false)),
-    );
-    if (tail.bytes >= size) {
+    let tailStart = size;
+    const tail = grow(size, tailTurns, WINDOW_TAIL_BYTES, (bytes) => {
+      const anchor = size - bytes;
+      const buf = readRange(path, anchor, size);
+      let from = 0;
+      if (anchor > 0) {
+        const nl = buf.indexOf(NL);
+        from = nl >= 0 ? nl + 1 : buf.length;
+      }
+      const start = anchor + from;
+      const parsed = parseMany(completeLines(buf.subarray(from), false, false));
+      const repaired = repairLeadingBatch(path, start, parsed);
+      tailStart = repaired.start;
+      return repaired.messages;
+    });
+    if (tailStart === 0) {
       // The tail grew to the whole file, so head and tail come out of ONE parse - which
       // is what makes ids comparable, and what lets this report honestly that nothing
       // was elided when the conversation is short enough to fit.
@@ -240,7 +285,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     }
     // Head begins at byte 0 (first line is whole) but ends mid-file (drop the partial
     // last line), and stops short of wherever the tail began.
-    const headLimit = size - tail.bytes;
+    const headLimit = tailStart;
     const head = grow(headLimit, headTurns, WINDOW_HEAD_BYTES, (bytes) =>
       parseMany(completeLines(readRange(path, 0, bytes), false, true)),
     ).messages.slice(0, headTurns);
@@ -339,7 +384,9 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       begin = anchor + from;
       pos = anchor + end;
       const text = buf.subarray(from, end).toString("utf8");
-      return parseMany(text ? text.split("\n") : []);
+      const repaired = repairLeadingBatch(path, begin, parseMany(text ? text.split("\n") : []));
+      begin = repaired.start;
+      return repaired.messages;
     };
     const { messages } = grow(size, INIT_LIMIT, INIT_TAIL_BYTES, read);
     return { messages, pos, start: begin, atStart: begin <= 0 };
@@ -387,7 +434,9 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       }
       begin = anchor + from;
       const text = buf.subarray(from).toString("utf8");
-      return parseMany(text ? text.split("\n") : []);
+      const repaired = repairLeadingBatch(path, begin, parseMany(text ? text.split("\n") : []));
+      begin = repaired.start;
+      return repaired.messages;
     };
     let messages: TranscriptMessage[];
     try {

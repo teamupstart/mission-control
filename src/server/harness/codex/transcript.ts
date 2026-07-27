@@ -133,6 +133,32 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
   return out;
 }
 
+export function joinCodexBatches(
+  earlier: TranscriptMessage[],
+  later: TranscriptMessage[],
+): { earlier: TranscriptMessage[]; later: TranscriptMessage[] } | null {
+  const left = earlier.at(-1);
+  const right = later[0];
+  if (
+    !left ||
+    left.role !== "assistant" ||
+    !right ||
+    right.role !== "assistant" ||
+    right.text !== "" ||
+    right.tools.length === 0 ||
+    !right.id.startsWith("tool:")
+  ) {
+    return null;
+  }
+  return {
+    earlier: [
+      ...earlier.slice(0, -1),
+      { ...left, tools: [...left.tools, ...right.tools] },
+    ],
+    later: later.slice(1),
+  };
+}
+
 export function latestCodexNarration(lines: string[]): string | null {
   let active = false;
   let narration: string | null = null;
@@ -156,6 +182,7 @@ export const codexTranscript: TranscriptSpec = {
   passiveRead: readRolloutPassive,
   messages: jsonlMessages({
     parseBatch: parseCodexMessages,
+    joinBatches: joinCodexBatches,
     narration: (path) => latestCodexNarration(readTailLines(path, 128 * 1024)),
   }),
   retain: (live) => {

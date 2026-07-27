@@ -785,6 +785,31 @@ prompt is pasted, then the Enter that submits it is swallowed. The text is sitti
 composer unsubmitted, and the error says exactly that - leave copy-mode and press
 <kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
 
+### Reading a session's whole conversation
+
+The Conversation tab opens on the session's **recent** turns, and scrolls back through the
+rest on demand. A card open reads a bounded tail rather than the file - a long session's
+transcript runs to tens of megabytes, most of it tool output - so the panel is quick to
+open whatever the session has been doing.
+
+Scroll to the top of the log and the page above loads automatically, then the page above
+that, back to the session's first turn. **Load older messages** does the same on click,
+for when you would rather not scroll. Nothing appears once you reach the beginning: a
+short session shows no control at all.
+
+What you have scrolled back to is kept for recently viewed sessions, so switching to the
+Diff tab and back, collapsing a card, or moving between sessions usually returns you to
+the history you had - not to the tail again. The cache lasts for the browser tab; an
+evicted entry can always be fetched again by scrolling up.
+
+A dropped connection or a daemon restart costs you nothing either: the panel reconnects
+by telling the daemon how far it already has, and gets back only the turns written while
+it was away. Your place in the conversation does not move. It starts over from the recent
+turns in two cases only - the transcript was cleared or replaced under it (a `/clear`), or
+the agent wrote more than a reconnect can honestly be said to have missed. Both are the
+honest answer rather than a continuation with an invisible hole in it, and scrolling up
+re-reads whatever was dropped.
+
 ### Shadow reading: Claude's own session state
 
 Claude Code ships `claude agents --json`, which lists every live session - background and
@@ -3195,10 +3220,8 @@ earns two surfaces a card has nowhere to put:
 
 ## How much conversation you see
 
-The Conversation panel opens on up to the session's **last 80 turns**, then streams new
-ones as the agent writes them. Its reader widens the transcript scan until it finds that
-many turns or reaches the 16 MB scan ceiling, so tool output and reasoning records in a
-Codex rollout do not crowd the conversation out of a fixed byte window.
+For the Conversation panel's complete, paged history, see
+[Reading a session's whole conversation](#reading-a-sessions-whole-conversation).
 
 One-shot context readers such as Foreman's reviewer and the goal refiner keep the opening
 turns plus the most recent ones, and mark the middle as elided when necessary. The work

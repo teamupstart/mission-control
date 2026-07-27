@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import type {
   ForemanEpisode,
   ToolCall,
@@ -9,8 +9,18 @@ import type {
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
-import { api } from "../lib/api.ts";
+import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import {
+  appendLive,
+  backAnchor,
+  flattenHistory,
+  prependPage,
+  readHistory,
+  resumeAnchor,
+  resumeTail,
+  seedTail,
+} from "../lib/transcript-history.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
 import { mergeEpisodes } from "../lib/episodes.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
@@ -35,6 +45,17 @@ const ORIGIN_LABEL: Record<TurnOrigin, string> = {
   harness: "mission control",
   workflow: "workflow",
 };
+
+/**
+ * Reconnect backoff for the transcript stream, which this panel drives itself rather than
+ * leaving to `EventSource` (see the stream effect for why).
+ *
+ * The floor is short because the common drop is a daemon restart and the reader is
+ * watching the log while it happens; the ceiling keeps a session whose transcript has gone
+ * for good from retrying in a tight loop for as long as the card stays open.
+ */
+const RECONNECT_MIN_MS = 1000;
+const RECONNECT_MAX_MS = 8000;
 
 /**
  * Imperative surface the card holds onto so the send shortcut can reach this panel's
@@ -119,7 +140,15 @@ export function TranscriptPanel({
   // The body below was written against these two names and still is; only the PROP changed.
   const sessionId = session.id;
   const agent = session.agent;
-  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
+  // Hydrated from the history map rather than starting empty, so re-opening a session
+  // you had scrolled back through shows that scroll-back immediately instead of blanking
+  // to the stream's tail and making you find your place again.
+  const [messages, setMessages] = useState<TranscriptMessage[]>(() =>
+    flattenHistory(readHistory(sessionId)),
+  );
+  const [canLoadOlder, setCanLoadOlder] = useState(() => backAnchor(readHistory(sessionId)) !== null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<string | null>(null);
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
@@ -128,6 +157,13 @@ export function TranscriptPanel({
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const atBottom = useRef(true);
+  const historyEpoch = useRef(0);
+  /**
+   * Scroll height captured just before a page of older turns is spliced in above the
+   * reader, so the layout effect below can put back what prepending pushed down.
+   * Null when no restore is pending.
+   */
+  const pendingRestore = useRef<number | null>(null);
   const drop = useImageDrop({ attachments, onChange: setAttachments, disabled: !canSend });
 
   // The reply box is deliberately NOT conditioned on the transcript. Replying needs a
@@ -204,35 +240,152 @@ export function TranscriptPanel({
   }, [resetNonce]);
 
   useEffect(() => {
-    setMessages([]);
+    historyEpoch.current += 1;
+    // Show whatever this session already has while the stream connects, instead of
+    // clearing to "Loading…" and throwing away scroll-back the map still holds.
+    setMessages(flattenHistory(readHistory(sessionId)));
+    setCanLoadOlder(backAnchor(readHistory(sessionId)) !== null);
+    setLoadingOlder(false);
+    setOlderError(null);
     setStatus("connecting");
     setNote("");
-    const es = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`);
-    es.onmessage = (ev) => {
-      let msg: TranscriptStreamMsg;
-      try {
-        msg = JSON.parse(ev.data) as TranscriptStreamMsg;
-      } catch {
-        return;
-      }
-      if (msg.type === "init") {
-        setMessages(msg.messages);
-        setStatus("live");
-      } else if (msg.type === "append") {
-        setMessages((prev) => mergeById(prev, msg.messages));
-      } else if (msg.type === "unavailable") {
-        setStatus("unavailable");
-        setNote(msg.reason);
-      }
-    };
-    // EventSource auto-reconnects on transient errors; keep the last view.
-    return () => es.close();
-  }, [sessionId]);
+    // The reconnect is OURS, not the browser's.
+    //
+    // `EventSource` retries the URL it was constructed with, which would pin `?from=` to
+    // whatever offset this mount started at - so a reconnect an hour in would ask the
+    // server to replay an hour of turns it already has. Reconnecting by hand is what lets
+    // each attempt carry the offset the reader has actually reached, which is the whole
+    // point of resuming: the anchor never moves, so the pages scrolled back to survive.
+    let es: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let delay = RECONNECT_MIN_MS;
+    let closed = false;
 
-  // Follow the tail only when the reader is already at the bottom.
-  useEffect(() => {
+    const connect = (): void => {
+      if (closed) return;
+      const from = resumeAnchor(sessionId);
+      const base = `/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`;
+      es = new EventSource(from === null ? base : `${base}?from=${encodeURIComponent(String(from))}`);
+      es.onopen = () => {
+        delay = RECONNECT_MIN_MS;
+      };
+      es.onmessage = (ev) => {
+        let msg: TranscriptStreamMsg;
+        try {
+          msg = JSON.parse(ev.data) as TranscriptStreamMsg;
+        } catch {
+          return;
+        }
+        if (msg.type === "init") {
+          // The start-over path: a first connect, or a resume the server refused because
+          // the file moved or too much was written to bridge. `seedTail` keeps whatever
+          // pages still abut this window and reports what survived.
+          const next = seedTail(sessionId, msg);
+          setMessages(flattenHistory(next));
+          setCanLoadOlder(backAnchor(next) !== null);
+          setStatus("live");
+        } else if (msg.type === "resume") {
+          // The reconnect path: the reader keeps every page and the anchor stays put, so
+          // only genuinely missed turns arrive. A cache that has since been dropped (a
+          // reset, an eviction) leaves nothing to continue, so fall back to seeding.
+          const next = resumeTail(sessionId, msg);
+          if (next) {
+            setMessages(flattenHistory(next));
+            setCanLoadOlder(backAnchor(next) !== null);
+          } else {
+            setMessages((prev) => mergeById(prev, msg.messages));
+          }
+          setStatus("live");
+        } else if (msg.type === "append") {
+          const next = appendLive(sessionId, msg.messages, msg.pos);
+          if (next) setMessages(flattenHistory(next));
+          else setMessages((prev) => mergeById(prev, msg.messages));
+        } else if (msg.type === "unavailable") {
+          setStatus("unavailable");
+          setNote(msg.reason);
+        }
+      };
+      es.onerror = () => {
+        // Close before retrying: left open, the browser starts its own reconnect against
+        // the stale URL and we would have two streams on one session.
+        es?.close();
+        es = null;
+        if (closed) return;
+        retry = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, RECONNECT_MAX_MS);
+      };
+    };
+    connect();
+
+    return () => {
+      closed = true;
+      historyEpoch.current += 1;
+      if (retry) clearTimeout(retry);
+      es?.close();
+    };
+  }, [resetNonce, sessionId]);
+
+  /**
+   * Fetch the page above what we hold and splice it in.
+   *
+   * Guarded on `loadingOlder` because the scroll handler fires continuously while the
+   * reader sits at the top: without it one flick would launch a dozen overlapping
+   * requests for the same anchor, and the winners would each try to prepend the same
+   * range.
+   */
+  const loadOlder = useCallback(async () => {
+    if (loadingOlder) return;
+    const anchor = backAnchor(readHistory(sessionId));
+    if (anchor === null) {
+      setCanLoadOlder(false);
+      return;
+    }
+    setLoadingOlder(true);
+    setOlderError(null);
+    const requestEpoch = historyEpoch.current;
+    const res = await fetchTranscriptBefore(sessionId, anchor);
+    if (requestEpoch !== historyEpoch.current) return;
+    if (!res.ok) {
+      setOlderError(res.error);
+      setLoadingOlder(false);
+      return;
+    }
+    // Measured before the state change so the layout effect can hold the reader's place;
+    // React commits the taller list before paint, so reading it here is the last chance.
+    pendingRestore.current = logRef.current?.scrollHeight ?? null;
+    const next = prependPage(sessionId, res);
+    if (next) {
+      setMessages(flattenHistory(next));
+      setCanLoadOlder(backAnchor(next) !== null);
+    } else {
+      // The page did not abut what we hold - the file moved under the request. Nothing is
+      // spliced, so nothing needs restoring.
+      pendingRestore.current = null;
+      setCanLoadOlder(backAnchor(readHistory(sessionId)) !== null);
+    }
+    setLoadingOlder(false);
+  }, [loadingOlder, sessionId]);
+
+  /**
+   * Keep the reader's place across both kinds of list growth.
+   *
+   * Prepending older turns pushes everything down by exactly the height that arrived, so
+   * the scroll offset has to gain the same amount or the content the reader was looking
+   * at slides off the bottom of the viewport. That correction must happen before paint -
+   * in a passive effect it renders as a visible jump - which is what makes this the one
+   * layout effect in the panel. Appends are the ordinary case and only follow the tail
+   * when the reader was already there.
+   */
+  useLayoutEffect(() => {
     const el = logRef.current;
-    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const before = pendingRestore.current;
+    if (before !== null) {
+      pendingRestore.current = null;
+      el.scrollTop += el.scrollHeight - before;
+      return;
+    }
+    if (atBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   // Deliberately don't grab focus when the panel opens. Focus mode is opened with
@@ -242,7 +395,12 @@ export function TranscriptPanel({
   // the (prominent, full-width) reply box drops in when it's time to respond.
   function onScroll(): void {
     const el = logRef.current;
-    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (!el) return;
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    // Reaching for the top is the request to see what came before. Fired a little short
+    // of the edge so the page is already arriving by the time the reader gets there, and
+    // never while one is in flight or the file has nothing older.
+    if (canLoadOlder && !loadingOlder && el.scrollTop < 120) void loadOlder();
   }
 
   /**
@@ -296,14 +454,30 @@ export function TranscriptPanel({
             where its decisions are the ONLY account of what happened. The reason
             line stays above them, so "no transcript" is still said rather than
             implied by its absence. */}
-        {status === "unavailable" && episodes.length === 0 ? (
-          <p className="transcript-empty">{note}</p>
-        ) : messages.length === 0 && episodes.length === 0 ? (
+        {status === "unavailable" && <p className="transcript-empty">{note}</p>}
+        {(canLoadOlder || loadingOlder || olderError) && (
+          <div className="transcript-older">
+            {olderError ? (
+              <Tooltip label={olderError}>
+                <button type="button" className="transcript-older-btn" onClick={() => void loadOlder()}>
+                  Couldn't load older messages - retry
+                </button>
+              </Tooltip>
+            ) : loadingOlder ? (
+              <span className="transcript-older-note">Loading older messages…</span>
+            ) : (
+              <Tooltip label="Read further back in this session's transcript">
+                <button type="button" className="transcript-older-btn" onClick={() => void loadOlder()}>
+                  Load older messages
+                </button>
+              </Tooltip>
+            )}
+          </div>
+        )}
+        {status !== "unavailable" && messages.length === 0 && episodes.length === 0 && (
           <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
-        ) : (
-          <>
-            {status === "unavailable" && <p className="transcript-empty">{note}</p>}
-            {mergeEpisodes(transcriptRows(messages), episodes).map((row) =>
+        )}
+        {mergeEpisodes(transcriptRows(messages), episodes).map((row) =>
               row.kind === "episode" ? (
                 <div
                   key={`ep-${row.episode.id}`}
@@ -317,8 +491,6 @@ export function TranscriptPanel({
               ) : (
                 <Turn key={row.id} m={row.message} agentLabel={AGENT_IDENTITY[agent].speaker} onOpenFile={onOpenFile} />
               ),
-            )}
-          </>
         )}
       </div>
 

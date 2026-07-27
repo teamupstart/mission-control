@@ -28,6 +28,7 @@ import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
 import type { SessionViewProps } from "./components/layouts/types.ts";
 import { dropMessageDrafts } from "./lib/drafts.ts";
+import { dropHistory } from "./lib/transcript-history.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useCost } from "./useCost.ts";
@@ -225,11 +226,11 @@ export function App(): React.JSX.Element {
   const [resetNonces, setResetNonces] = useState<Record<string, number>>({});
   const files = useSessionFilesStore(connected);
 
-  // A session was reset: forget its half-written send and reply text (the reset
-  // discarded the task they were about), and bump its nonce so an open reply box
-  // remounts empty rather than keeping stale text behind the closing modal.
+  // A session was reset: forget its half-written messages and conversation history,
+  // then bump its nonce so open conversation state reseeds from the cleared stores.
   const onSessionReset = useCallback((id: string) => {
     dropMessageDrafts(id);
+    dropHistory(id);
     files.drop(id);
     setResetNonces((m) => ({ ...m, [id]: (m[id] ?? 0) + 1 }));
   }, [files.drop]);

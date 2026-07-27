@@ -108,6 +108,7 @@ import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
+import { attributeTranscript } from "./transcript-attribution.ts";
 import {
   claimForemanLease,
   foremanStatus,
@@ -1271,7 +1272,7 @@ export function buildApp(
   // Live transcript for the expanded card (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
   // One-shot transcript window for a non-streaming reader (Foreman's triage
-  // reviewer, and the queue verifier).
+  // reviewer, the queue verifier, and the dashboard's scroll-back).
   //
   // `?since=<byteOffset>` reads FORWARD from an offset - how the queue scopes a
   // window to one work item. A turn count can't do that: a 48-turn window can span
@@ -1279,6 +1280,12 @@ export function buildApp(
   // filtering it by timestamp would silently drop an item's earliest turns (the
   // ones that establish what the agent set out to do). The transcript is
   // append-only, so a stored file size is an exact, O(1) item boundary.
+  //
+  // `?before=<byteOffset>` reads BACKWARD from one, which is what lets the conversation
+  // panel scroll past the turns its stream opened on. Same anchor currency for the same
+  // reason, and it chains: each page reports the `start` the next call passes back. The
+  // panel is the only caller, but it belongs on this route rather than the SSE stream
+  // because it is a request for history, not a subscription to new turns.
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -1288,6 +1295,20 @@ export function buildApp(
     // judging a session it couldn't read.
     const t = sessionMessages(session);
     if (!t) return c.json({ messages: [], truncated: false, unavailable: true });
+    // Read `before` off the raw query, not through Number(): `Number("")` is 0, and a 0
+    // that arrived as an absent parameter would answer "no older history" for every
+    // caller that forgot to send one - the same trap `since` sits in below.
+    const beforeRaw = c.req.query("before");
+    if (beforeRaw !== undefined && beforeRaw !== "") {
+      const before = Number(beforeRaw);
+      if (!Number.isSafeInteger(before) || before < 0) {
+        return c.json({ error: "before must be a byte offset" }, 400);
+      }
+      const turns = Number(c.req.query("turns"));
+      const want = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : undefined;
+      const page = t.read.before(t.path, before, want);
+      return c.json({ ...page, messages: attributeTranscript(session.id, page.messages) });
+    }
     const since = Number(c.req.query("since"));
     if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));
     const turns = Number(c.req.query("turns"));

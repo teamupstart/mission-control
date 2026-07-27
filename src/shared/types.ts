@@ -2129,12 +2129,47 @@ export type TurnOrigin = "foreman" | "harness" | "workflow";
 
 /**
  * Messages on the per-session transcript SSE stream
- * (`GET /api/sessions/:id/transcript/stream`). `init` carries the recent
- * history on connect; `append` streams new turns as the agent writes them.
+ * (`GET /api/sessions/:id/transcript/stream`). `init` carries the recent history on
+ * connect, `resume` continues one the reader already has, and `append` streams new turns
+ * as the agent writes them.
+ *
+ * `init` carries the BYTE RANGE it was read from, and both ends earn their place. `start`
+ * is what `GET /api/sessions/:id/transcript?before=` pages back from, so older history is
+ * reachable instead of merely absent; `atStart` is how the panel knows to stop offering.
+ * Without them the panel could not tell a session that said eighty things from one that
+ * said eight hundred, and silently drew the second as the first.
+ *
+ * Every message-bearing variant carries `pos`, the offset the reader has now consumed to.
+ * That is what a reconnect hands back as `?from=`, and it is the whole reason `resume`
+ * exists: an `init` re-states a window anchored at the CURRENT end of the file, so any
+ * turn written meanwhile slides that anchor forward and strands the scrollback above it.
+ * A session that is actively working writes turns constantly, which made "you lost your
+ * place" the normal outcome of a dropped connection rather than a rare one.
  */
 export type TranscriptStreamMsg =
-  | { type: "init"; messages: TranscriptMessage[] }
-  | { type: "append"; messages: TranscriptMessage[] }
+  | {
+      type: "init";
+      messages: TranscriptMessage[];
+      /** Byte offset of the first turn in `messages` - the back-paging anchor. */
+      start: number;
+      /** True when `start` is the top of the file, so nothing older exists. */
+      atStart: boolean;
+      /** Byte offset just past the last turn - what a later reconnect resumes from. */
+      pos: number;
+    }
+  | {
+      /**
+       * Turns written since the offset the reader asked to continue from.
+       *
+       * Carries no `start`: the reader keeps the anchor and the pages it already had, so
+       * a reconnect costs it nothing. The server sends this only when it can cover the
+       * gap exactly; otherwise it sends `init` and the reader starts over honestly.
+       */
+      type: "resume";
+      messages: TranscriptMessage[];
+      pos: number;
+    }
+  | { type: "append"; messages: TranscriptMessage[]; pos: number }
   | { type: "unavailable"; reason: string };
 
 // ---- session diff (changes vs the source branch) ----

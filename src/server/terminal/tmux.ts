@@ -2,6 +2,7 @@ import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { plainName, plainValidate } from "./names.ts";
+import { shellCommand } from "./shell.ts";
 import type {
   DetachedSessionSpec,
   Key,
@@ -397,10 +398,12 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
 
     sessions: {
       async spawnDetached(spec: DetachedSessionSpec) {
-        // With multiple trailing arguments tmux execs the argv directly. `--` keeps a
-        // binary or flag-first argv beginning with a dash out of `new-session`'s own parser.
+        // tmux 3.3+ preserves multiple trailing argv elements, but older supported versions
+        // join them into shell text. Encode one command for both paths so a prompt remains
+        // one literal argument everywhere. `--` keeps a binary or flag-first command out of
+        // `new-session`'s own parser.
         const created = await cmd(
-          ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, "--", ...spec.argv],
+          ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, "--", shellCommand(spec.argv)],
           "tmux new-session failed",
           { timeoutMs: SESSION_TIMEOUT_MS },
         );

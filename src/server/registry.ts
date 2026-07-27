@@ -1328,11 +1328,29 @@ export class Registry extends EventEmitter {
     evt: Extract<SdkEvent, { kind: "bound" }>,
     now: number,
   ): void {
-    const { agentSessionId, transcriptPath, pid } = evt;
+    const { agentSessionId, transcriptPath, modelId, pid } = evt;
     const next: Session = {
       ...s,
       agentSessionId,
       transcriptPath,
+      // A bound driver knows the actual model before the passive file reader does. Seed
+      // only that fact: context and effort still come from the transcript/rollout and can
+      // replace this driver-sourced placeholder on their next ordinary poll.
+      meta: modelId
+        ? metaFromRead(
+            {
+              modelId,
+              contextTokens: null,
+              contextWindow: null,
+              contextPct: null,
+              longContext: parseContextWindowSize(modelId).longContext,
+              thinkingLevel: null,
+              effortRevision: null,
+            },
+            "driver",
+            now,
+          )
+        : s.meta,
       pid: pid !== null && Number.isInteger(pid) && pid > 0 ? pid : s.pid,
       instrumented: true,
       stateConfirmed: true,

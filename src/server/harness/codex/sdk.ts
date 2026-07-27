@@ -649,6 +649,7 @@ class CodexSdkSession implements SdkSessionHandle {
       // it is about to write, which is what keeps `codexTranscript` and `codexUsage`
       // working on an embedded session with no arm of their own.
       transcriptPath: thread.thread.path,
+      modelId: this.modelId,
       pid: this.client.pid,
     });
     this.publishThreadStatus(thread.thread.status);

@@ -205,6 +205,7 @@ test("a launch initializes, starts a thread, binds it, and delivers turn one", a
     kind: "bound",
     agentSessionId: THREAD.id,
     transcriptPath: THREAD.path,
+    modelId: "gpt-5.6-sol",
     pid: 4242,
   });
 
@@ -1198,6 +1199,7 @@ test("a rejected clear keeps the old thread bound and usable", async () => {
       kind: "bound",
       agentSessionId: THREAD.id,
       transcriptPath: THREAD.path,
+      modelId: "gpt-5.6-sol",
       pid: 4242,
     }],
   );

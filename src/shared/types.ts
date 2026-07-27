@@ -120,12 +120,14 @@ export const PERMISSION_MODES = [
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
- * Where a session's runtime metadata came from, in descending authority:
- * `statusline` is Claude's own live accounting (exact), `transcript` is our
- * passive read of the JSONL (approximate), `codex-rollout` is Codex's session
- * file. The daemon never lets a lower-authority read clobber a fresh statusLine.
+ * Where a session's runtime metadata came from. `statusline` is Claude's own live
+ * accounting (exact), `driver` is the model an embedded runtime reports when it
+ * binds, `transcript` is our passive read of Claude's JSONL (approximate), and
+ * `codex-rollout` is Codex's session file. The daemon never lets either passive
+ * file source clobber a fresh statusLine; a driver reading seeds the model until
+ * its file source supplies the rest of the row.
  */
-export type MetaSource = "statusline" | "transcript" | "codex-rollout";
+export type MetaSource = "statusline" | "driver" | "transcript" | "codex-rollout";
 
 /**
  * Live runtime facts about a session's model, thinking level, and context usage -

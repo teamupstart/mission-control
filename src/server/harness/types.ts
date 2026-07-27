@@ -735,6 +735,13 @@ export type SdkEvent =
       agentSessionId: string;
       transcriptPath: string | null;
       /**
+       * The model the harness actually bound, not merely the launch-time request.
+       *
+       * Required even when unknown so a new driver cannot accidentally leave an idle or
+       * resumed card blank while waiting for a transcript record that may never arrive.
+       */
+      modelId: string | null;
+      /**
        * The subprocess the driver spawned, or null when there is no separate process to
        * name. This is the ONE place a pid can arrive for a driver-run session.
        */

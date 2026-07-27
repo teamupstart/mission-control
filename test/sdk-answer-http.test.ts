@@ -161,6 +161,7 @@ function seed(registry: Registry_, request: SessionRequest | null, id = "sdk:one
     kind: "bound",
     agentSessionId: "agent-1",
     transcriptPath: null,
+    modelId: null,
     pid: null,
   });
   if (request) registry.applyDriverEvent(id, { kind: "request", request });
@@ -543,6 +544,7 @@ test("scheduled Codex controls wait for rollout observation before changing the 
     kind: "bound",
     agentSessionId: "thread-1",
     transcriptPath: rolloutPath,
+    modelId: "gpt-5.6-sol",
     pid: 123,
   });
   registry.applyRuntimeMeta(

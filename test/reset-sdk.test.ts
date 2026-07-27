@@ -179,6 +179,7 @@ function registerBound(registry: InstanceType<typeof Registry>, id: string, cwd:
     kind: "bound",
     agentSessionId: "agent-old",
     transcriptPath: `${cwd}/agent-old.jsonl`,
+    modelId: null,
     pid: null,
   } satisfies SdkEvent);
 }
@@ -213,6 +214,7 @@ test("a cleared rebind transfers the work episode; an ordinary one does not", as
           kind: "bound",
           agentSessionId: "agent-new",
           transcriptPath: `${clone}/agent-new.jsonl`,
+          modelId: null,
           pid: null,
           cleared: true,
         } satisfies SdkEvent);
@@ -250,6 +252,7 @@ test("a cleared rebind that reports no transcript path yet still transfers", asy
         kind: "bound",
         agentSessionId: "agent-new",
         transcriptPath: null,
+        modelId: null,
         pid: null,
         cleared: true,
       } satisfies SdkEvent);
@@ -280,6 +283,7 @@ test("a driver clear cannot re-adopt the transcript it was giving up", () => {
     kind: "bound",
     agentSessionId: "agent-old",
     transcriptPath: "/wt/x/agent-old.jsonl",
+    modelId: null,
     pid: null,
   });
   const armed = registry.resetWorkEpisode(id, {
@@ -292,6 +296,7 @@ test("a driver clear cannot re-adopt the transcript it was giving up", () => {
     agentSessionId: "agent-new",
     // The path of the conversation being discarded - the one thing a real clear cannot report.
     transcriptPath: "/wt/x/agent-old.jsonl",
+    modelId: null,
     pid: null,
     cleared: true,
   });
@@ -313,6 +318,7 @@ test("an unproven rotation leaves the episode awaiting, and says so", async () =
         kind: "bound",
         agentSessionId: "agent-other",
         transcriptPath: `${clone}/agent-other.jsonl`,
+        modelId: null,
         pid: null,
       } satisfies SdkEvent);
     }, 5);

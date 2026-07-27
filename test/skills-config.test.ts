@@ -1,6 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -145,7 +145,7 @@ test("a patch that can't work is refused BEFORE anything is written", () => {
 test("one blocked skill does NOT wedge every other toggle in the panel", () => {
   applySkillsConfig({ enabled: true, skills: { beta: true } }, NOW);
   // Someone drops a real directory over beta's link - now permanently blocked.
-  rmSync(join(claudeSkills, "mission-beta"), { force: true });
+  unlinkSync(join(claudeSkills, "mission-beta"));
   mkdirSync(join(claudeSkills, "mission-beta"), { recursive: true });
 
   // Every later pass reports beta's problem, forever. Scoping the refusal to the ids the
@@ -246,7 +246,7 @@ test("an unreadable catalog never unlinks a live skill", () => {
 
 test("startup reconcile heals a link deleted by hand, and tells every session", () => {
   applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
-  rmSync(join(claudeSkills, "mission-alpha"));
+  unlinkSync(join(claudeSkills, "mission-alpha"));
 
   const healed = reconcileSkills(NOW + 1);
 
@@ -273,7 +273,7 @@ test("drift is reported on every read, so a failed startup reconcile isn't invis
   applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
   assert.deepEqual(skillDrift(getSkillsConfig(), readCatalog()), [], "healthy: nothing to say");
 
-  rmSync(join(claudeSkills, "mission-alpha"));
+  unlinkSync(join(claudeSkills, "mission-alpha"));
 
   const drift = skillDrift(getSkillsConfig(), readCatalog());
   assert.equal(drift.length, 1);
@@ -282,7 +282,7 @@ test("drift is reported on every read, so a failed startup reconcile isn't invis
 
 test("drift tells a MISSING link apart from a foreign one - they need opposite answers", () => {
   applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
-  rmSync(join(claudeSkills, "mission-alpha"));
+  unlinkSync(join(claudeSkills, "mission-alpha"));
   mkdirSync(join(claudeSkills, "mission-alpha"), { recursive: true });
 
   // One is ours to repair, the other is the operator's to move. `classify` folds them

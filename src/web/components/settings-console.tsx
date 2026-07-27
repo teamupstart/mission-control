@@ -214,12 +214,12 @@ export interface ConsoleLink {
  * reconciliation and per-run actions. A second, worse copy of it here would disagree with
  * the real one the first time either changed.
  *
- * So a tile navigates to that real list, pre-filtered to the nearest view of what it
- * counted, and its `hint` says what it opens rather than what it selects. Two things follow
- * for anyone editing this later. **Do not add a total**, and do not "fix" the missing one -
- * the absence is the honest reading. And **do not add `active` / `aria-pressed`**: a
- * pressed state would promise that the panel now shows a subset, on a panel with nothing to
- * subset.
+ * So a tile navigates to the nearest corresponding view in that real list, using a status
+ * filter where one exists, and its `hint` says what it opens rather than what it selects.
+ * Two things follow for anyone editing this later. **Do not add a total**, and do not "fix"
+ * the missing one - the absence is the honest reading. And **do not add `active` /
+ * `aria-pressed`**: a pressed state would promise that the panel now shows a subset, on a
+ * panel with nothing to subset.
  *
  * Tiles are real `<a href>` elements. The hash is a genuine deep link - copyable,
  * middle-clickable, and the same URL the Workflows page's own filter chips produce - while

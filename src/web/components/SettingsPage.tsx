@@ -144,8 +144,8 @@ export function SettingsPage({
   /** Move to another category - a hash navigation, so back/forward walk the categories. */
   onNavigate: (category: SettingsCategoryId) => void;
   /**
-   * Leave the settings page for the Workflows run list, pre-filtered. Only the Workflows
-   * panel's health tiles use it.
+   * Leave the settings page for a Workflows run-list view, optionally filtered. Only the
+   * Workflows panel's health tiles use it.
    *
    * Deliberately NOT part of `onNavigate`: that one is typed to `SettingsCategoryId`,
    * because every other navigation this page performs stays inside it. Widening it to carry
@@ -209,8 +209,8 @@ export function SettingsPage({
   const taskSources = useTaskSources();
   // Owned here for the same reason as the four above: nothing outside this page reads the
   // Workflow config, so it polls only while the page is open. Its poll is load-bearing
-  // rather than tidy - the health counters beside the switches are what it keeps moving,
-  // which is what let the drawer's Refresh health button go.
+  // rather than tidy - the health strip, retention readout and health card are what it
+  // keeps moving, which is what let the drawer's Refresh health button go.
   const workflowSettings = useWorkflowSettings();
   // The formatting toggle's store, owned here so the search palette can flip it inline -
   // `AppearancePanel` reads the same module-level store, so there is no second copy to keep

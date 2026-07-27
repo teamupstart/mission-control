@@ -8,7 +8,8 @@ of the shared module and class vocabulary (D1) and must merge first.
 **Settings → Workflows** stops being a flat stack of a checkbox, a repo editor, three number
 boxes and a twelve-row `<dl>`, and becomes the console's control column: cards, a posture
 line, a switch that carries its blast radius in its colour, and a **health strip whose tiles
-navigate** to the runs they count. Two things become legible that are not today:
+navigate** to the nearest corresponding view in the real run list. Two things become
+legible that are not today:
 
 1. **Retention has a readout.** The panel sets three limits and shows no measurement of the
    thing being limited. `maxCompletedRuns` is capped at 1000 by default and the only related
@@ -44,7 +45,7 @@ In:
 - The panel redrawn with `ConsoleCard` / `ConsoleSwitch` / `ConsoleState`, all four existing
   anchors preserved.
 - A **navigating** health strip (`ConsoleLinkStrip`), tiles counting `WorkflowStatus` scalars
-  and deep-linking into the Workflows page's run list, pre-filtered.
+  and deep-linking into the nearest corresponding view in the Workflows page's run list.
 - A retention readout: what the limits are measured against.
 - One new scalar, `deliveredDeliveries`, because "did Live delivery ever actually type
   anything in" is currently unanswerable fleet-wide.
@@ -121,7 +122,7 @@ to somewhere else. Its doc comment must say why it exists - that `ConsoleStrip`'
 filter over rows on the same screen and sum to them, and that these count a fleet-wide scalar
 and sum to nothing - so nobody later "fixes" the missing tally.
 
-Tiles, in escalation order, each navigating to the runs list pre-filtered:
+Tiles, in escalation order, each navigating to the nearest available runs-list view:
 
 | Tile | Count | Tone | Goes to |
 |---|---|---|---|
@@ -175,7 +176,7 @@ bookkeeping. They stay as a compact key/value list inside the Health card, keepi
 
 - The panel is the console's control column, with every existing anchor intact and the
   retention limits shown against a real measurement.
-- Clicking a health tile lands on the Workflows page's run list, filtered to that state.
+- Clicking a health tile lands on the run-list view specified in the tile mapping above.
 - No run row, cursor or SSE subscription exists in the settings panel.
 - `npm run typecheck`, `npm test`, `npm run build` green; README's Workflows section and the
   settings-page console sentence updated in the same change.

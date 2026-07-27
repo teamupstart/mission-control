@@ -2517,14 +2517,15 @@ It contains no prompt, diff, transcript, Persona guidance, model output, or deli
 
 Five of those counters lead as a **strip of tiles, in escalation order** - *Needs you*
 (uncertain deliveries), *Waiting*, *Inspector gates*, *Running*, *Delivered* - and each tile
-opens the [run list](#workflow-drafts-and-published-versions), pre-filtered to the nearest view
-of what it counted. The rest stay as a plain list beneath it: they are throughput and sweep
-bookkeeping, and rendering them in the same weight as "a repair may or may not have been typed
-into somebody's session" was what made the one counter that needs a human the least findable
-thing on the panel. **Delivered** is the fleet-wide count of deliveries confirmed typed into a
-session among run families retention still keeps. Compaction does not reduce it, because a
-compacted delivery keeps its state and loses only its content. Full run-family deletion does
-reduce it: once a finished family is older than `completedRunDays`, outside the newest
+opens the nearest corresponding view in the
+[run list](#workflow-drafts-and-published-versions), applying a status filter where one exists.
+The rest stay as a plain list beneath it: they are throughput and sweep bookkeeping, and
+rendering them in the same weight as "a repair may or may not have been typed into somebody's
+session" was what made the one counter that needs a human the least findable thing on the
+panel. **Delivered** is the fleet-wide count of deliveries confirmed typed into a session
+among run families retention still keeps. Compaction does not reduce it, because a compacted
+delivery keeps its state and loses only its content. Full run-family deletion does reduce it:
+once a finished family is older than `completedRunDays`, outside the newest
 `maxCompletedRuns`, and not pinned by an uncertain delivery, retention deletes its delivery
 rows too.
 
@@ -3352,10 +3353,10 @@ separable things and a panel should take the ones it has the data to be honest a
 no ledger to put in a wide column: the Workflows page already owns the run list, with paging,
 live updates and per-run actions, and a second copy in a settings panel would disagree with
 the real one the first time either changed. So its single column stays a single column, and
-its health strip **navigates instead of filtering** - each tile opens that run list,
-pre-filtered, rather than pretending to select rows this panel does not have. Those tiles
-count fleet-wide totals over different populations and deliberately do not add up to
-anything.
+its health strip **navigates instead of filtering** - each tile opens the nearest
+corresponding run-list view, with a status filter where one exists, rather than pretending to
+select rows this panel does not have. Those tiles count fleet-wide totals over different
+populations and deliberately do not add up to anything.
 
 Foreman's ledger is **fleet-wide**, which is the one thing no other surface shows: every
 decision it has faced across every session, newest first, where before this the record

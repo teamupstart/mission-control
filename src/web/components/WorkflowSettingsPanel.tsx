@@ -237,7 +237,7 @@ export function WorkflowSettingsPanel({
 }: {
   state: WorkflowSettingsState;
   /**
-   * Follow a health tile to the Workflows page's run list, pre-filtered.
+   * Follow a health tile to the nearest corresponding Workflows run-list view.
    *
    * Its own prop rather than a widening of `SettingsNavigate`, which the other three panels
    * take: that one is typed to settings categories, and this navigation leaves the settings

@@ -11715,8 +11715,8 @@ select.sc-input {
   color: inherit;
   text-decoration: none;
 }
-/* Anchors are not focusable-by-default in the way the button tiles are styled through, and
-   a keyboard user tabbing this strip has to see where they are. */
+/* Anchor tiles do not inherit the button tiles' focus styling, and a keyboard user tabbing
+   this strip has to see where they are. */
 .sc-stat-link:focus-visible {
   outline: 2px solid var(--working);
   outline-offset: 2px;

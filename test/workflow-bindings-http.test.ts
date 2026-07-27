@@ -295,6 +295,69 @@ test("positive disappearance orphans, compatible reattach is explicit, and conve
   await workflows.stop();
 });
 
+test("an orphaned binding cannot reattach until its workflow is restored", async () => {
+  seedRuntimeVersion("archived-reattach", {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+    ],
+    edges: [{ id: "end", source: "session", sourcePort: "submitted", target: "end", targetPort: "terminal" }],
+  });
+  const registry = new Registry();
+  registry.applyDiscovery([discovered({ syntheticId: "reattach-old", tty: "ttys14" })]);
+  const personas = new PersonaManager(registry);
+  const workflows = new WorkflowManager(registry, personas.store);
+  workflows.start();
+  const app = buildApp(
+    registry,
+    new ReviewManager(registry),
+    new TaskManager(registry),
+    new QueueManager(registry),
+    undefined,
+    personas,
+    workflows,
+  );
+
+  const created = await request(app, "/api/workflow-bindings", {
+    workflowVersionId: "v-archived-reattach",
+    sessionId: "reattach-old",
+  });
+  assert.equal(created.status, 201);
+  const binding = await created.json() as { id: string };
+  registry.emit("event", { type: "session_remove", id: "reattach-old" });
+  assert.equal(workflows.store.getBinding(binding.id)?.state, "orphaned");
+
+  const archived = await request(app, "/api/workflows/w-archived-reattach", {
+    expectedDraftRevision: 1,
+  }, "DELETE");
+  assert.equal(archived.status, 200);
+  const archivedBody = await archived.json() as { workflow: { draftRevision: number } };
+  registry.applyDiscovery([discovered({ syntheticId: "reattach-new", tty: "ttys15" })]);
+
+  const refused = await request(app, `/api/workflow-bindings/${binding.id}/reattach`, {
+    sessionId: "reattach-new",
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: "This workflow is archived and must be restored before it can be reattached",
+    code: "workflow_conflict",
+    current: null,
+  });
+  assert.equal(workflows.store.getBinding(binding.id)?.state, "orphaned");
+  assert.equal(workflows.store.getBinding(binding.id)?.sessionId, null);
+
+  const restored = await request(app, "/api/workflows/w-archived-reattach/unarchive", {
+    expectedDraftRevision: archivedBody.workflow.draftRevision,
+  });
+  assert.equal(restored.status, 200);
+  const reattached = await request(app, `/api/workflow-bindings/${binding.id}/reattach`, {
+    sessionId: "reattach-new",
+  });
+  assert.equal(reattached.status, 200);
+  assert.equal((await reattached.json() as { state: string }).state, "active");
+  await workflows.stop();
+});
+
 test("the first completed discovery orphans bindings whose sessions disappeared during downtime", async () => {
   const registry = new Registry();
   const personas = new PersonaManager(registry);

@@ -857,6 +857,12 @@ export class WorkflowManager {
   ): WorkflowRuntimeMutation<WorkflowBinding> {
     const binding = this.store.getBinding(bindingId);
     if (!binding) return { ok: false, reason: "not_found", message: "No such workflow binding" };
+    const version = this.store.getWorkflowVersionById(binding.workflowVersionId);
+    if (!version) {
+      return { ok: false, reason: "not_found", message: "No such immutable workflow version" };
+    }
+    const workflowBlock = this.bindingWorkflowBlock(version, "reattached");
+    if (workflowBlock) return workflowBlock;
     const session = this.registry.getSession(sessionId);
     if (!session || session.state === "exited") {
       return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
@@ -2405,6 +2411,7 @@ export class WorkflowManager {
 
   private bindingWorkflowBlock(
     version: WorkflowVersion,
+    action = "bound",
   ): WorkflowRuntimeMutation<never> | null {
     const workflow = this.store.getWorkflow(version.workflowId);
     if (!workflow) {
@@ -2418,7 +2425,7 @@ export class WorkflowManager {
       return {
         ok: false,
         reason: "conflict",
-        message: "This workflow is archived and must be restored before it can be bound",
+        message: `This workflow is archived and must be restored before it can be ${action}`,
       };
     }
     return null;

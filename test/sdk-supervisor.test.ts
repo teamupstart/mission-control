@@ -230,6 +230,102 @@ test("a completed turn preserves durability while an accepted follow-up remains"
   }
 });
 
+test("a follow-up is durably recoverable before the driver can accept it", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    handle.send = async (turn) => {
+      handle.sent.push(turn);
+      assert.equal(
+        getSdkSession(session.id)?.turnInProgress,
+        true,
+        "SQLite is marked before the vendor boundary",
+      );
+      return "started";
+    };
+
+    assert.equal(await supervisor.send(session.id, { text: "follow up" }), "started");
+    assert.deepEqual(handle.sent, [{ text: "follow up" }]);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a rejected follow-up releases only its recovery reservation", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.send = async () => {
+      assert.equal(
+        getSdkSession(session.id)?.turnInProgress,
+        true,
+        "the attempted follow-up is durable while acceptance is pending",
+      );
+      throw new Error("driver rejected");
+    };
+
+    await assert.rejects(
+      () => supervisor.send(session.id, { text: "follow up" }),
+      /driver rejected/,
+    );
+    assert.equal(
+      getSdkSession(session.id)?.turnInProgress,
+      true,
+      "the original accepted turn remains recoverable",
+    );
+
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    await assert.rejects(
+      () => supervisor.send(session.id, { text: "try once more" }),
+      /driver rejected/,
+    );
+    assert.equal(
+      getSdkSession(session.id)?.turnInProgress,
+      false,
+      "a rejected send with no older work does not leave a false recovery latch",
+    );
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a failed recovery write prevents the driver from accepting the turn", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    openDb().exec(`
+      CREATE TRIGGER reject_sdk_turn_reservation
+      BEFORE UPDATE OF turn_in_progress ON sdk_sessions
+      WHEN OLD.id = '${session.id}'
+      BEGIN
+        SELECT RAISE(FAIL, 'reservation refused');
+      END;
+    `);
+
+    await assert.rejects(
+      () => supervisor.send(session.id, { text: "must not be accepted" }),
+      /reservation refused/,
+    );
+    assert.deepEqual(handle.sent, [], "the driver boundary is never crossed");
+  } finally {
+    openDb().exec("DROP TRIGGER IF EXISTS reject_sdk_turn_reservation");
+    fake.restore();
+  }
+});
+
 test("start registers an SDK checkout's no-mistakes gate immediately", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);

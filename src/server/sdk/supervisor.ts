@@ -285,20 +285,34 @@ export class SdkSupervisor {
    */
   send(id: string, turn: SdkTurn): Promise<SdkSendDisposition> {
     return this.serialize(id, async (handle) => {
+      const unfinished = this.unfinishedTurns.get(id) ?? 0;
+      // Cross the durable boundary BEFORE the driver can accept the turn. If this write
+      // fails, delivery must reject without invoking the driver; accepting first leaves a
+      // crash window where restart reads an idle row and silently drops acknowledged work.
+      setSdkSessionTurnInProgress(id, true);
+      this.unfinishedTurns.set(id, unfinished + 1);
       this.acceptingTurns.add(id);
       try {
         const disposition = await handle.send(turn);
-        this.acceptingTurns.delete(id);
-        const unfinished = this.unfinishedTurns.get(id) ?? 0;
-        this.unfinishedTurns.set(
-          id,
-          disposition === "steered" ? Math.max(1, unfinished) : unfinished + 1,
-        );
-        this.recordTurnInProgress(id, true);
+        if (disposition === "steered") {
+          // Steering joins the active turn instead of creating another completion to wait
+          // for. Release this send's pessimistic reservation, while conservatively keeping
+          // one outstanding turn if the driver knew it was working before our event pump did.
+          this.unfinishedTurns.set(
+            id,
+            Math.max(1, (this.unfinishedTurns.get(id) ?? 1) - 1),
+          );
+        }
         return disposition;
       } catch (err) {
-        this.acceptingTurns.delete(id);
+        // The driver rejected the turn, so it will not produce a completion for the slot we
+        // reserved. Retire exactly that slot; any older accepted turn remains recoverable.
+        const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
+        this.unfinishedTurns.set(id, remaining);
+        this.recordTurnInProgress(id, remaining > 0);
         throw err;
+      } finally {
+        this.acceptingTurns.delete(id);
       }
     });
   }
@@ -472,10 +486,11 @@ export class SdkSupervisor {
   /**
    * Best-effort durable mirror of the driver's turn lifecycle.
    *
-   * A write failure cannot change an already-acknowledged delivery into a rejection: the
-   * caller would reasonably retry text the harness already accepted. Binding and status
-   * writes remain lifecycle-critical; this recovery hint logs and leaves the live session
-   * truthful instead of converting a bookkeeping failure into duplicate work.
+   * A write failure after delivery cannot change an already-acknowledged turn into a
+   * rejection: the caller would reasonably retry text the harness already accepted.
+   * Pre-delivery reservation is deliberately stricter and writes directly in `send`, before
+   * the driver is invoked. Lifecycle events and rejected-send rollback use this best-effort
+   * mirror, preferring an extra recovery prompt over silently losing accepted work.
    */
   private recordTurnInProgress(id: string, turnInProgress: boolean): void {
     try {

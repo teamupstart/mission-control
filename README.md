@@ -2516,9 +2516,12 @@ time, retention time, the last retention error code, and the last compacted and 
 It contains no prompt, diff, transcript, Persona guidance, model output, or delivery payload.
 
 Five of those counters lead as a **strip of tiles, in escalation order** - *Needs you*
-(uncertain deliveries), *Waiting*, *Inspector gates*, *Running*, *Delivered* - and each tile
+(uncertain deliveries), *Waiting*, *Inspector gates*, *Active*, *Delivered* - and each tile
 opens the nearest corresponding view in the
 [run list](#workflow-drafts-and-published-versions), applying a status filter where one exists.
+*Active* counts every run that has not finished - running, waiting and blocked alike - so it
+deliberately carries no status filter: no single run status means "active", and one would
+exclude rows the tile had just counted.
 The rest stay as a plain list beneath it: they are throughput and sweep bookkeeping, and
 rendering them in the same weight as "a repair may or may not have been typed into somebody's
 session" was what made the one counter that needs a human the least findable thing on the

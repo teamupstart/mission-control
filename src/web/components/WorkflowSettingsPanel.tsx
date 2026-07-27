@@ -175,11 +175,24 @@ const STRIP_TILES = [
     count: (s: WorkflowStatus) => s.inspectorGates,
   },
   {
-    id: "running",
-    label: "Running",
+    // "Active", not "Running", and it opens the WHOLE list rather than `status=running`.
+    // `activeRuns` is every run not completed, cancelled or failed - so a blocked run and a
+    // run waiting on a session are both in it - and the first cut labelled that "Running"
+    // and linked it to `status=running`. Three populations in one tile: a fleet with blocked
+    // work counted it here and then could not reach it through the tile that counted it.
+    //
+    // Counting only `running` rows would align the three, and it is the wrong repair: it
+    // would need a second scalar, and blocked runs would then appear in no tile at all,
+    // which is the state this strip exists to make visible. So the count stays the useful
+    // one and the label and destination move to meet it. There is no single `status` filter
+    // meaning "active", so the honest destination is the unfiltered list - the same one
+    // Waiting opens, for the same reason.
+    id: "active",
+    label: "Active",
     tone: "plain",
-    hint: "Runs that have not finished, in any state. Opens the running runs.",
-    filters: { status: "running" },
+    hint: "Runs that have not finished, in any state - running, waiting or blocked. "
+      + "Opens the full run list.",
+    filters: {},
     count: (s: WorkflowStatus) => s.activeRuns,
   },
   {

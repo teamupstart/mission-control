@@ -251,7 +251,7 @@ test("each health tile carries the scalar it claims", () => {
   assert.equal(byId.get("needs-you")?.count, STATUS.uncertainDeliveries);
   assert.equal(byId.get("waiting")?.count, STATUS.waitingDeliveries);
   assert.equal(byId.get("gates")?.count, STATUS.inspectorGates);
-  assert.equal(byId.get("running")?.count, STATUS.activeRuns);
+  assert.equal(byId.get("active")?.count, STATUS.activeRuns);
   assert.equal(byId.get("delivered")?.count, STATUS.deliveredDeliveries);
   assert.equal(byId.size, 5, "a tile added or dropped silently changes what the strip means");
 });
@@ -304,11 +304,28 @@ test("the tiles deep-link into the real run list, pre-filtered", () => {
   const byId = new Map(workflowStripLinks(STATUS).map((tile) => [tile.id, tile]));
   assert.equal(byId.get("needs-you")?.href, "#/workflows/runs?status=waiting_for_session");
   assert.equal(byId.get("gates")?.href, "#/workflows/runs?status=waiting_for_inspector");
-  assert.equal(byId.get("running")?.href, "#/workflows/runs?status=running");
   assert.equal(byId.get("delivered")?.href, "#/workflows/runs?status=completed");
   // Waiting deliveries have no single run status that means them, so the tile opens the
   // whole list rather than inventing a filter that would show the wrong rows.
   assert.equal(byId.get("waiting")?.href, "#/workflows/runs");
+});
+
+// A tile must not count a population its own link cannot reach. `activeRuns` is every run
+// that has not finished - running, waiting AND blocked - so the first cut's "Running" label
+// pointing at `status=running` meant a fleet with blocked work counted it on this tile and
+// then landed on a list that excluded it. Three populations in one tile, and the reason this
+// asserts the ABSENCE of the narrower filter rather than just the presence of the new one.
+test("the Active tile does not link to a filter narrower than what it counts", () => {
+  const byId = new Map(workflowStripLinks(STATUS).map((tile) => [tile.id, tile]));
+  const active = byId.get("active");
+  assert.ok(active, "the tile counting activeRuns should be the Active tile");
+  assert.equal(active.label, "Active", "the label has to name what activeRuns counts");
+  assert.equal(active.href, "#/workflows/runs");
+  assert.doesNotMatch(
+    active.href,
+    /status=/,
+    "no single run status means 'active', so any status filter here excludes rows it counted",
+  );
 });
 
 // A null status draws no strip at all rather than five zeroes: zeroes would be a reading,

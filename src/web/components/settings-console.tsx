@@ -36,7 +36,7 @@ import { Tooltip } from "./Tooltip.tsx";
 // to put there, because `WorkflowRuns.tsx` already owns the run list, so it keeps its single
 // column and takes `ConsoleLinkStrip` instead of `ConsoleStrip`. A panel given a wide empty
 // half to match its neighbours would be the layout imitating a shape rather than expressing
-// one. See `docs/plans/settings-ops-console/plan.md`.
+// one.
 
 /** How loud a posture line is. `danger` is reserved for "this is acting on GitHub now". */
 export type ConsoleTone = "danger" | "attention" | "ok" | "off" | "unknown";

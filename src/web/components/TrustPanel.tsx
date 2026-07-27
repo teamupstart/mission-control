@@ -336,9 +336,9 @@ export function TrustPanel({
 }
 
 /**
- * The grant-count summary the three outbound panels show where their repo editor used to be,
- * plus the deep-link into Trust. Colocated here because "how many repos hold this grant, and
- * where do you change it" is the matrix's vocabulary, not each panel's.
+ * The grant-count summary the three grant-consuming panels show where their repo editor used
+ * to be, plus the deep-link into Trust. Colocated here because "how many repos hold this grant,
+ * and where do you change it" is the matrix's vocabulary, not each panel's.
  */
 export function TrustGrantSummary({
   configured,

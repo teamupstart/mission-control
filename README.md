@@ -2698,15 +2698,16 @@ Pick the posture with the **Cheap tier** control in **Settings → Foreman**:
 | **on** | the cheap tier disposes the easy cases; the full review fires only on route-up |
 | **off** | every new prompt gets a full review (the pre-tier behavior) |
 
-**Shadow's measurement is in the panel**, in the decisions ledger's *Cheap tier* column:
-each row carries what the cheap tier would have done and how that compared, and
-`cheap-over-eager` - after applying the same delivery gate as **on**, the cheap tier would
-have answered where the full review would not - is called out in red. That is the number
-to watch before flipping to **on**, and it is the whole reason the posture exists. A row
-shows this column only where a measurement was actually taken: **off** makes no cheap call
-and under **on** the cheap tier *is* the decision, so neither has a second opinion to
-compare against, and those rows stay blank rather than reading as agreement. Rows recorded
-before this shipped are blank for the same reason.
+**Shadow's measurement is in the panel**, in the decisions ledger's *Cheap tier* column.
+The panel shows that column only while **shadow** is selected, because that is the only
+posture that takes a second measurement. Each measured row carries what the cheap tier
+would have done and how that compared, and `cheap-over-eager` - after applying the same
+delivery gate as **on**, the cheap tier would have answered where the full review would
+not - is called out in red. That is the number to watch before flipping to **on**, and it
+is the whole reason the posture exists. Within the column, **off** rows stay blank because
+they made no cheap call, **on** rows stay blank because the cheap tier was the decision
+rather than a second opinion, and rows recorded before this shipped stay blank because no
+measurement was persisted. None of those blanks is reported as agreement.
 
 The tier that produced the verdict is reported separately, and honestly: under shadow it
 is always the full review, because that is the verdict that acted.

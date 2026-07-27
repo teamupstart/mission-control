@@ -9624,7 +9624,7 @@ select.ensemble-judge-persona {
   line-height: 1.5;
   color: var(--dim);
 }
-/* The one link style for in-page settings navigation and in-place fixes: the outbound
+/* The one link style for in-page settings navigation and in-place fixes: the console
    panels' "Manage in Trust", Shipping's dependency warnings, and Trust's dagger fixes. A
    button, not an `<a>`, because these are `onNavigate` route changes and config writes, not
    hrefs; it wraps on its own so it never widens a warning past the pane. Reads as blue
@@ -11636,8 +11636,8 @@ select.sc-input {
   margin: 9px 2px 0;
 }
 
-/* ---- warnings shared by both outbound panels ----
-   `settings-warn` is the app-wide attention block; the two panels differ below it only
+/* ---- settings warnings ----
+   `settings-warn` is the app-wide attention block; individual panels differ below it only
    where the consequence differs. */
 .settings-warn {
   margin: 10px 0 0;

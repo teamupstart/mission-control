@@ -232,7 +232,7 @@ export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
  * The optional `anchor` is a transient UI concern, never part of the route/hash (that
  * grammar is Phase 1's, category-only): `SettingsPage` changes the route and, after the
  * target panel is on screen, scrolls its `data-anchor` target into view and flashes it.
- * The three outbound panels use this to deep-link into Trust, and Shipping's dependency
+ * The three settings consoles use this to deep-link into Trust, and Shipping's dependency
  * warnings use it to land on the exact Inspector control they name.
  */
 export type SettingsNavigate = (category: SettingsCategoryId, anchor?: string) => void;

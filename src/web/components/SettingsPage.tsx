@@ -238,7 +238,7 @@ export function SettingsPage({
     [richText, setRichText, harnesses.config, harnesses.update, skills.view, skills.update, cost.status, cost.update],
   );
 
-  // Deep-link with a flash: a panel (Shipping's dependency warnings, the outbound panels'
+  // Deep-link with a flash: a panel (Shipping's dependency warnings, the settings consoles'
   // "Manage in Trust") asks to move to a category and light up one control there. The route
   // change is App's `onNavigate`; the flash is this page's, because the anchor is a
   // transient pointer at a control and was deliberately kept out of the hash grammar (which

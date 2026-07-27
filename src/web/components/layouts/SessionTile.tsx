@@ -71,7 +71,7 @@ export function SessionTile({
   onDropConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void;
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
-  /** Open the Scheduled Catalog from a scheduled task's tile flag. */
+  /** Open Recurring Missions from a scheduled task's tile flag. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
   /** Live schedule names by id, for the tile flag's hover copy. */
   scheduleNameById?: ReadonlyMap<string, string>;

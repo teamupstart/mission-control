@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
@@ -353,7 +353,7 @@ function remove(path: string, out: ReconcileResult): boolean {
   try {
     // The path is a symlink (classify said so), so this unlinks it and never
     // recurses into whatever it points at.
-    rmSync(path);
+    unlinkSync(path);
     return true;
   } catch (err) {
     out.problems.push(`couldn't remove ${path}: ${msg(err)}`);

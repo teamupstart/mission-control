@@ -5,31 +5,37 @@ import { Tooltip } from "./Tooltip.tsx";
 import { ScheduleCatalog } from "./schedules/ScheduleCatalog.tsx";
 import { ScheduleDetail } from "./schedules/ScheduleDetail.tsx";
 import { ScheduleEditor } from "./schedules/ScheduleEditor.tsx";
-import { ScheduleHistory } from "./schedules/ScheduleHistory.tsx";
-import { SchedulePreview } from "./schedules/SchedulePreview.tsx";
+import { ScheduleSpine } from "./schedules/ScheduleSpine.tsx";
 import { sortSchedulesForCatalog } from "../lib/schedules.ts";
-import type { ScheduleDefinitionPayload } from "../lib/api.ts";
 
 /**
- * The Scheduled Catalog overlay: one mounted surface that routes between catalog/detail,
- * create/edit, preview, and run history.
+ * The Recurring Missions overlay: one mounted surface that routes between catalog/detail,
+ * create/edit, and the deep-linked run history.
  *
  * Registered through the shared `<Overlay>` primitive (see Overlay.tsx), so it is counted
  * as open, stands the global shortcuts down, and owns Escape - App never hand-maintains a
  * stand-down list. App owns only the cross-surface state (open, deep-link target, and the
  * callbacks that close a Sitrep/Dispatch surface before opening Missions); the screen a
- * schedule is shown on is local here and survives while the overlay is mounted.
+ * mission is shown on is local here and survives while the overlay is mounted.
  *
  * The catalog is `MissionState.schedules` and nothing else - it is SSE-owned and never
- * polled. History is the one page-oriented read, fetched on demand inside `ScheduleHistory`.
- * A deep link from a generated task can carry an occurrence id, which opens straight to that
- * run's history even for an archived schedule the live catalog no longer lists.
+ * polled. History is the one page-oriented read, fetched on demand inside `ScheduleSpine`.
+ *
+ * **There used to be four screens and now there are three.** Preview and Run history each
+ * answered half a question about the mission the operator had just been looking at, and
+ * both are now the two halves of one time axis inside the detail. The `history` route
+ * survives for a single case the detail cannot serve: a generated task's deep link into a
+ * mission the live catalog no longer lists, because it was archived. That route renders the
+ * SAME spine, standalone, over the schedule the history page carries with it.
+ *
+ * One vocabulary throughout: these are recurring MISSIONS. The heading used to say
+ * "Recurring missions" under an eyebrow saying "Recurring Missions", beside a topbar button
+ * saying "Missions", routing to screens called "Occurrence preview" and "Run history".
  */
 
 type Screen =
   | { kind: "catalog" }
   | { kind: "editor"; scheduleId: string | null }
-  | { kind: "preview"; scheduleId: string }
   | {
       kind: "history";
       scheduleId: string;
@@ -37,19 +43,6 @@ type Screen =
       /** The deep-linked occurrence's instant, so history opens the exact run. */
       scheduledFor: number | null;
     };
-
-/** Build a preview definition from a saved schedule's active revision (Preview screen). */
-function scheduleToDefinition(schedule: MissionSchedule): ScheduleDefinitionPayload | null {
-  if (!schedule.template || !schedule.overlapPolicy || !schedule.missedPolicy) return null;
-  return {
-    name: schedule.name,
-    expression: schedule.expression,
-    timezone: schedule.timezone,
-    overlapPolicy: schedule.overlapPolicy,
-    missedPolicy: schedule.missedPolicy,
-    template: schedule.template,
-  };
-}
 
 export function RecurringMissionsPanel({
   schedules,
@@ -67,7 +60,7 @@ export function RecurringMissionsPanel({
   hasSnapshot: boolean;
   /** A schedule to open on, from a generated task's provenance deep link. */
   initialScheduleId?: string | null;
-  /** An occurrence to open history at; its presence sends the panel straight to history. */
+  /** An occurrence to open in the mission's spine. */
   initialOccurrenceId?: string | null;
   /** The occurrence's instant, so history can open the exact run without a page cap. */
   initialScheduledFor?: number | null;
@@ -80,7 +73,9 @@ export function RecurringMissionsPanel({
   const sorted = useMemo(() => sortSchedulesForCatalog(schedules), [schedules]);
 
   const [screen, setScreen] = useState<Screen>(() =>
-    initialScheduleId && initialOccurrenceId
+    initialScheduleId &&
+    initialOccurrenceId &&
+    !schedules.some((schedule) => schedule.id === initialScheduleId)
       ? {
           kind: "history",
           scheduleId: initialScheduleId,
@@ -127,6 +122,13 @@ export function RecurringMissionsPanel({
     return schedules.find((schedule) => schedule.id === screen.scheduleId) ?? null;
   }, [schedules, screen]);
 
+  useEffect(() => {
+    if (screen.kind !== "history") return;
+    if (!schedules.some((schedule) => schedule.id === screen.scheduleId)) return;
+    setSelectedId(screen.scheduleId);
+    setScreen({ kind: "catalog" });
+  }, [schedules, screen]);
+
   function handleClose(): void {
     if (editorBusy) return;
     if (screen.kind === "editor" && editorDirty) {
@@ -155,13 +157,11 @@ export function RecurringMissionsPanel({
   const title =
     screen.kind === "editor"
       ? screen.scheduleId
-        ? "Edit recurring mission"
-        : "Create recurring mission"
-      : screen.kind === "preview"
-        ? "Occurrence preview"
-        : screen.kind === "history"
-          ? "Run history"
-          : "Scheduled Catalog";
+        ? "Edit mission"
+        : "New mission"
+      : screen.kind === "history"
+        ? "Run history"
+        : "Missions";
 
   return (
     <Overlay
@@ -174,7 +174,11 @@ export function RecurringMissionsPanel({
     >
       <header className="rm-topline" inert={confirmDiscard !== null}>
         <div className="rm-topline-titles">
-          <span className="rm-eyebrow">Recurring Missions</span>
+          <span className="rm-eyebrow">Recurring missions</span>
+          {/* tabIndex -1, so no keyboard user can ever land here by tabbing; the focus
+              exists only to move an assistive-tech reader's cursor to the new screen. The
+              browser still applied :focus-visible to it, painting a full-width ring across
+              the panel on every open - see .rm-topline-titles h2:focus in styles.css. */}
           <h2 ref={headingRef} tabIndex={-1}>
             {title}
           </h2>
@@ -193,9 +197,9 @@ export function RecurringMissionsPanel({
               </button>
             </Tooltip>
           ) : (
-            <Tooltip label="Back to the catalog">
+            <Tooltip label="Back to the mission list">
               <button className="btn" onClick={handleBack} disabled={editorBusy}>
-                ← Catalog
+                ← Missions
               </button>
             </Tooltip>
           )}
@@ -226,16 +230,15 @@ export function RecurringMissionsPanel({
               <ScheduleDetail
                 key={selectedSchedule.id}
                 schedule={selectedSchedule}
-                onEdit={() => setScreen({ kind: "editor", scheduleId: selectedSchedule.id })}
-                onPreview={() => setScreen({ kind: "preview", scheduleId: selectedSchedule.id })}
-                onHistory={() =>
-                  setScreen({
-                    kind: "history",
-                    scheduleId: selectedSchedule.id,
-                    occurrenceId: null,
-                    scheduledFor: null,
-                  })
+                initialOccurrenceId={
+                  selectedSchedule.id === initialScheduleId ? initialOccurrenceId : null
                 }
+                initialScheduledFor={
+                  selectedSchedule.id === initialScheduleId ? initialScheduledFor : null
+                }
+                onEdit={() => setScreen({ kind: "editor", scheduleId: selectedSchedule.id })}
+                onOpenTask={onOpenTask}
+                resolveTaskLink={resolveTaskLink}
                 onArchived={() => {
                   // Archive removes it from the live catalog via SSE; drop the selection so
                   // the reconcile effect picks a neighbour on the next render.
@@ -244,7 +247,7 @@ export function RecurringMissionsPanel({
               />
             ) : (
               <div className="rm-detail rm-detail-empty">
-                <p className="rm-empty">Select a schedule, or create a new recurring mission.</p>
+                <p className="rm-empty">Select a mission, or create a new one.</p>
               </div>
             )}
           </div>
@@ -254,7 +257,7 @@ export function RecurringMissionsPanel({
           (screen.scheduleId !== null && !routedSchedule ? (
             <div className="rm-detail rm-detail-empty">
               <p className="rm-empty">This schedule is no longer available.</p>
-              <Tooltip label="Return to the scheduled catalog">
+              <Tooltip label="Return to the mission list">
                 <button className="btn" onClick={() => toCatalog()}>
                   Back to catalog
                 </button>
@@ -270,26 +273,30 @@ export function RecurringMissionsPanel({
             />
           ))}
 
-        {screen.kind === "preview" && <PreviewScreen schedule={routedSchedule} />}
-
         {screen.kind === "history" && (
-          <ScheduleHistory
-            scheduleId={screen.scheduleId}
-            fallbackName={routedSchedule?.name ?? null}
-            initialOccurrenceId={screen.occurrenceId}
-            initialScheduledFor={screen.scheduledFor}
-            onOpenTask={onOpenTask}
-            resolveTaskLink={resolveTaskLink}
-          />
+          <div className="rm-detail rm-detail-standalone">
+            <div className="rm-detail-body">
+              <ScheduleSpine
+                key={screen.scheduleId}
+                scheduleId={screen.scheduleId}
+                schedule={routedSchedule}
+                fallbackName={routedSchedule?.name ?? null}
+                initialOccurrenceId={screen.occurrenceId}
+                initialScheduledFor={screen.scheduledFor}
+                onOpenTask={onOpenTask}
+                resolveTaskLink={resolveTaskLink}
+              />
+            </div>
+          </div>
         )}
       </div>
 
       {confirmDiscard && (
         <div className="rm-confirm">
-          <div className="rm-confirm-box" role="alertdialog" aria-label="Discard unsaved schedule">
-            <p>Discard this unsaved schedule?</p>
+          <div className="rm-confirm-box" role="alertdialog" aria-label="Discard unsaved mission">
+            <p>Discard this unsaved mission?</p>
             <div className="rm-confirm-actions">
-              <Tooltip label="Keep editing this schedule">
+              <Tooltip label="Keep editing this mission">
                 <button
                   ref={keepEditingRef}
                   className="btn"
@@ -320,24 +327,5 @@ export function RecurringMissionsPanel({
         </div>
       )}
     </Overlay>
-  );
-}
-
-function PreviewScreen({ schedule }: { schedule: MissionSchedule | null }): React.JSX.Element {
-  if (!schedule) return <p className="rm-empty">Select a schedule to preview.</p>;
-  const definition = scheduleToDefinition(schedule);
-  if (!definition) {
-    return <p className="rm-empty">This schedule cannot be previewed as read.</p>;
-  }
-  return (
-    <div className="rm-preview-screen">
-      <div className="rm-panel-head">
-        <h3>{schedule.name} · next occurrences</h3>
-        <span className="rm-dim rm-tiny">
-          {schedule.timezone} · revision {schedule.revision}
-        </span>
-      </div>
-      <SchedulePreview definition={definition} excludeScheduleId={schedule.id} />
-    </div>
   );
 }

@@ -2,6 +2,7 @@ import {
   cronFieldCount,
   normalizeCronExpression,
   type MissionSchedule,
+  type ScheduleExecutionMode,
   type ScheduleHealth,
   type ScheduleMissedPolicy,
   type ScheduleOccurrence,
@@ -11,7 +12,7 @@ import {
 } from "@shared/schedules.ts";
 
 /**
- * Presentation-only helpers for the Scheduled Catalog.
+ * Presentation-only helpers for the Recurring Missions surface.
  *
  * The hard line this module holds: it does NO date math and NO policy. Cron enumeration,
  * DST calculation, missed-run policy, and health thresholds are ALL server-owned
@@ -33,6 +34,34 @@ import {
 /** The catalog's status-pill class for a schedule's server-derived health. */
 export function scheduleHealthTone(health: ScheduleHealth): string {
   return health;
+}
+
+/**
+ * The health pill's WORD. `ScheduleHealth` is a server token, not a label, and printing it
+ * raw put a lowercase `attention` in front of the operator where a sentence belonged. The
+ * tone above and this are the same fact spelled for two audiences - CSS and a human - so
+ * they stay side by side.
+ */
+export function scheduleHealthLabel(health: ScheduleHealth): string {
+  if (health === "healthy") return "Healthy";
+  if (health === "paused") return "Paused";
+  return "Needs attention";
+}
+
+/**
+ * How an execution mode reads to an operator.
+ *
+ * `null` is a real input - a mode written by a newer build - and it says so rather than
+ * falling back to the one this build happens to run, which is the same fail-closed rule
+ * the schedule store holds. The raw token stays visible beside this label in the detail's
+ * Configuration disclosure, where an exact stored value is the point; everywhere else the
+ * sentence is what belongs on screen.
+ */
+export function executionModeLabel(mode: ScheduleExecutionMode | null): string {
+  if (mode === "local-catchup") return "Durable local catch-up";
+  if (mode === "os-wake") return "OS-assisted wake";
+  if (mode === "remote-runner") return "Always-on Mission runner";
+  return "Unreadable by this build";
 }
 
 /** A short, human sentence for each health reason, for the detail panel. */
@@ -195,6 +224,28 @@ export function delayIsLate(delayMs: number): boolean {
   return delayMs > 60_000;
 }
 
+/** A bare "7h 20m" span, for the spine's gap marker. Never says "late" - a gap is not a verdict. */
+export function formatSpan(ms: number): string {
+  const totalMinutes = Math.max(1, Math.round(ms / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  return `${minutes}m`;
+}
+
+/**
+ * "in 17h 07m" for an instant still ahead, or null when it is not.
+ *
+ * Distance from a clock we already hold to an instant the DAEMON computed - it neither
+ * enumerates a cadence nor decides when anything runs, which is the line this module holds.
+ */
+export function formatCountdown(at: number, now: number): string | null {
+  if (at <= now) return null;
+  return `in ${formatSpan(at - now)}`;
+}
+
 // ---- cadence labels ----
 
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -252,6 +303,34 @@ export function cadenceLabel(expression: string): string {
     }
   }
   return normalized;
+}
+
+/**
+ * The identity strip's one-line cadence: "Every day at 12:40 AM · America/New_York".
+ *
+ * A sentence built from `cadenceLabel`'s two-part answer, never a second parser. When that
+ * label did not recognise the shape it hands back the raw expression, which has no " · "
+ * to split on - and this hands the raw expression straight through rather than wrapping a
+ * cron string in prose that claims to have read it.
+ */
+export function cadenceSentence(expression: string, timezone: string | null): string {
+  const label = cadenceLabel(expression);
+  const zone = timezone ? ` · ${timezone}` : "";
+  const parts = label.split(" · ");
+  if (parts.length !== 2) return `${label}${zone}`;
+  const [when = "", time = ""] = parts;
+  const singular = WEEKDAY_PLURALS.indexOf(when);
+  const lead =
+    when === "Daily"
+      ? "Every day"
+      : when === "Weekdays"
+        ? "Every weekday"
+        : when === "Weekends"
+          ? "Every weekend day"
+          : singular >= 0
+            ? `Every ${WEEKDAY_NAMES[singular]}`
+            : when;
+  return `${lead} at ${time}${zone}`;
 }
 
 function ordinalDay(day: number): string {

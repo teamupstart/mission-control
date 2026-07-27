@@ -182,7 +182,7 @@ export function App(): React.JSX.Element {
   // this in one go. Reset whenever we leave settings (below), so returning via the gear
   // never reopens a palette the operator closed.
   const [searchOpen, setSearchOpen] = useState(false);
-  // The Scheduled Catalog overlay. `missionsTarget` carries an optional deep link from a
+  // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
   // generated task's provenance mark - a schedule, and the occurrence whose history to open
   // - so opening Missions from a card lands on the right run rather than the catalog root.
   const [missionsOpen, setMissionsOpen] = useState(false);
@@ -395,7 +395,7 @@ export function App(): React.JSX.Element {
     setMissionsTarget(null);
   }, []);
   /**
-   * Open the Scheduled Catalog, optionally deep-linked to one schedule's run history.
+   * Open Recurring Missions, optionally deep-linked to one schedule's run history.
    *
    * Stands the other operator overlays down first - opening Missions from a Sitrep row or
    * a dispatch surface should not leave one hanging behind it - then opens with the deep

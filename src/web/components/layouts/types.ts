@@ -114,7 +114,7 @@ export interface SessionViewProps {
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: (sessionId: string) => void;
   /**
-   * Open the Scheduled Catalog at a schedule (optionally at one occurrence in its
+   * Open Recurring Missions at a schedule (optionally at one occurrence in its
    * history), from a generated task's provenance mark. A deep link, not a session
    * action: it changes no session state, focus, expansion, drag, or keyboard behavior.
    */

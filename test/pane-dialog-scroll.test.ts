@@ -91,7 +91,21 @@ function isDetailPaneDialog(selector: string): boolean {
     if (character === ")" || character === "]") depth -= 1;
     if (depth === 0 && (character === "+" || character === "~")) lineageStart = i + 1;
   }
-  return /\.detail-conv(?![\w-])/.test(prefix.slice(lineageStart));
+  const lineage = prefix.slice(lineageStart);
+  depth = 0;
+  for (let i = 0; i < lineage.length; i += 1) {
+    const character = lineage[i];
+    if (character === "(" || character === "[") depth += 1;
+    if (character === ")" || character === "]") depth -= 1;
+    if (
+      depth === 0 &&
+      lineage.startsWith(".detail-conv", i) &&
+      !/[\w-]/.test(lineage[i + ".detail-conv".length] ?? "")
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasCap(property: string, value: string): boolean {
@@ -180,6 +194,7 @@ test("the global cap guard rejects height and overflow regressions", () => {
     ".pane-dialog { max-height: 20rem; }",
     ".card .pane-dialog { overflow: auto; }",
     ".detail-conv > .pane-dialog, .card .pane-dialog { overflow-y: scroll; }",
+    ":is(.detail-conv, .card) > .pane-dialog { max-height: 20rem; overflow: auto; }",
   ];
 
   for (const source of counterexamples) {

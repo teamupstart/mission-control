@@ -21,6 +21,7 @@ import type {
   WorkflowSubmission,
   WorkflowVersion,
 } from "../src/shared/workflow.ts";
+import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
 import { WorkflowRunView, WorkflowRunsEmpty } from "../src/web/workflows/WorkflowRuns.tsx";
 import { workflowRunLoadError } from "../src/web/workflows/run-model.ts";
 import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
@@ -396,6 +397,59 @@ test("a live run is drawn on its authored pipeline, in persona and stage names",
   assert.match(html, /Queued/);
   assert.match(html, /Not started/);
   assertNoGraphIds(html);
+});
+
+test("a check row and its stage use deterministic status vocabulary", () => {
+  const checkVersion: WorkflowVersion = {
+    ...version,
+    id: "check-version",
+    graph: {
+      nodes: [
+        { id: "check-session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "check-typecheck", kind: "check", slot: "typecheck", position: { x: 200, y: 0 } },
+        { id: "check-end", kind: "end", outcome: "Approved", position: { x: 400, y: 0 } },
+      ],
+      edges: [
+        {
+          id: "check-submit",
+          source: "check-session",
+          sourcePort: "submitted",
+          target: "check-typecheck",
+          targetPort: "activate",
+        },
+        {
+          id: "check-pass",
+          source: "check-typecheck",
+          sourcePort: "pass",
+          target: "check-end",
+          targetPort: "terminal",
+        },
+        {
+          id: "check-fail",
+          source: "check-typecheck",
+          sourcePort: "fail",
+          target: "check-session",
+          targetPort: "return_for_changes",
+        },
+      ],
+    },
+  };
+  const pipeline = (status: string): string => renderToStaticMarkup(createElement(RunPipeline, {
+    version: checkVersion,
+    statuses: { "check-typecheck": status },
+    session: { tone: "running", label: "Under review" },
+    end: { tone: "waiting", label: "Not reached" },
+    metaFor: () => null,
+    repair: null,
+  }));
+
+  const running = pipeline("running");
+  assert.match(running, /Running/);
+  assert.doesNotMatch(running, /Reviewing/);
+
+  const errored = pipeline("error");
+  assert.match(errored, /Check failed to run/);
+  assert.doesNotMatch(errored, /Provider error/);
 });
 
 test("the round scrubber defaults to the latest round and scopes what it says", () => {

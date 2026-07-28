@@ -345,12 +345,12 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_SLUG,
     name: "No-Mistakes Review",
     description:
-      "A deterministic typecheck and test gate, then the four built-in review roles composed "
-      + "the way they were written to compose: Intent Conformance as the cheap first judge, "
-      + "then Code Risk, Test Evidence and Documentation in parallel behind it. A slot with no "
-      + "command configured for the repository is skipped and passes. Every fail returns to "
-      + "the session for repair, and a passed review is gated on the Inspector finding nothing "
-      + "on the pull request.",
+      "A typecheck and test stage, then the four built-in review roles composed the way they "
+      + "were written to compose: Intent Conformance as the cheap first judge, then Code Risk, "
+      + "Test Evidence and Documentation in parallel behind it. This build does not yet spawn "
+      + "configured commands, so configured checks are recorded as not run and passed; "
+      + "unconfigured slots are skipped and pass. Every fail returns to the session for repair, "
+      + "and a passed review is gated on the Inspector finding nothing on the pull request.",
     // The delivery tail the engine already owns: a passed graph waits on an adopted PR at the
     // reviewed head, findings restart the whole review, and a run with no PR yet offers
     // Prepare PR in session rather than waiting silently.

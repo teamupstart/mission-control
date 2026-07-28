@@ -218,6 +218,20 @@ const REVIEWER_STATUSES: Record<
   cancelled: { tone: "waiting", label: "Cancelled" },
 };
 
+const CHECK_STATUSES: Record<
+  WorkflowNodeAttemptState | PersonaVerdict["verdict"],
+  PipelineStatus
+> = {
+  pass: { tone: "passed", label: "Passed" },
+  fail: { tone: "failed", label: "Failed" },
+  queued: { tone: "waiting", label: "Queued" },
+  running: { tone: "running", label: "Running" },
+  retry_wait: { tone: "waiting", label: "Retrying" },
+  completed: { tone: "waiting", label: "No result" },
+  error: { tone: "failed", label: "Check failed to run" },
+  cancelled: { tone: "waiting", label: "Cancelled" },
+};
+
 /**
  * One reviewer's chip. An absent status is a reviewer this round has not reached, which is
  * a different thing from one that finished with nothing to say.
@@ -228,18 +242,24 @@ export function reviewerStatus(raw: string | undefined): PipelineStatus {
     ?? { tone: "waiting", label: raw.replaceAll("_", " ") };
 }
 
+export function checkStatus(raw: string | undefined): PipelineStatus {
+  if (!raw) return { tone: "waiting", label: "Not started" };
+  return CHECK_STATUSES[raw as keyof typeof CHECK_STATUSES]
+    ?? { tone: "waiting", label: raw.replaceAll("_", " ") };
+}
+
 /**
- * A stage's own chip, folded from its reviewers: the worst thing that happened wins, then
+ * A stage's own chip, folded from its members: the worst thing that happened wins, then
  * whatever is still moving, and "passed" only once every member of the stage passed - which
  * is exactly the all-pass rule the stage is compiled from.
  */
 export function stageStatus(members: readonly PipelineStatus[]): PipelineStatus {
-  if (members.length === 0) return { tone: "waiting", label: "No reviewers" };
+  if (members.length === 0) return { tone: "waiting", label: "No members" };
   if (members.some((status) => status.tone === "failed")) {
-    return { tone: "failed", label: "Changes requested" };
+    return { tone: "failed", label: "Failed" };
   }
   if (members.some((status) => status.tone === "running")) {
-    return { tone: "running", label: "Reviewing" };
+    return { tone: "running", label: "Running" };
   }
   if (members.every((status) => status.tone === "passed")) {
     return { tone: "passed", label: members.length > 1 ? "All passed" : "Passed" };

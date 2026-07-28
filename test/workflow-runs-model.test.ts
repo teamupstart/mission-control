@@ -17,6 +17,7 @@ import type {
 } from "../src/shared/workflow.ts";
 import {
   checkOutcomeOf,
+  checkStatus,
   checkStatusView,
   endStatus,
   errorView,
@@ -186,6 +187,14 @@ test("a reviewer with no attempt this round has not started, which is not 'nothi
   assert.deepEqual(reviewerStatus("some_new_state"), { tone: "waiting", label: "some new state" });
 });
 
+test("a check uses deterministic status vocabulary", () => {
+  assert.deepEqual(checkStatus(undefined), { tone: "waiting", label: "Not started" });
+  assert.deepEqual(checkStatus("running"), { tone: "running", label: "Running" });
+  assert.deepEqual(checkStatus("error"), { tone: "failed", label: "Check failed to run" });
+  assert.deepEqual(checkStatus("pass"), { tone: "passed", label: "Passed" });
+  assert.deepEqual(checkStatus("fail"), { tone: "failed", label: "Failed" });
+});
+
 test("a stage passes only when all of it passed, and any failure wins", () => {
   const pass = reviewerStatus("pass");
   const fail = reviewerStatus("fail");
@@ -198,6 +207,9 @@ test("a stage passes only when all of it passed, and any failure wins", () => {
   assert.equal(stageStatus([fail, running]).tone, "failed");
   assert.equal(stageStatus([pass, running]).tone, "running");
   assert.equal(stageStatus([pass, queued]).tone, "waiting");
+  assert.equal(stageStatus([fail]).label, "Failed");
+  assert.equal(stageStatus([running]).label, "Running");
+  assert.equal(stageStatus([]).label, "No members");
 });
 
 test("the End terminus never reads the live run onto an older round", () => {

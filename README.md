@@ -2135,7 +2135,8 @@ The stage is wired and the graph is correct ahead of that runtime landing.
 passes.** That is what makes it safe to ship check gates in a workflow that gets bound on
 machines this build has never seen: with nothing configured, version 3 behaves exactly as
 version 2 did, and the run records a skip note saying so. Configure the commands under
-Settings → Workflows to turn the gate on for a repository.
+Settings → Workflows to prepare the gate for the execution runtime when it ships. In this
+build, a configured slot is still recorded as not run and passed rather than activated.
 
 Behind it are the four built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending three deeper reviews

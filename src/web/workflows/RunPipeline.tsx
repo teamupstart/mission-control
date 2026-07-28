@@ -16,7 +16,7 @@ import {
   type PipelineStatus,
 } from "./pipeline-bits.tsx";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
-import { reviewerStatus, stageStatus } from "./run-model.ts";
+import { checkStatus, reviewerStatus, stageStatus } from "./run-model.ts";
 
 /**
  * The run, drawn on the pipeline its author drew.
@@ -109,7 +109,9 @@ export function RunPipeline({
               ? member.slot
               : node ? nodeLabel(graph, node, personaNames) : "Missing persona",
             meta: member.nodeId ? metaFor(member.nodeId) : null,
-            status: reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined),
+            status: member.kind === "check"
+              ? checkStatus(member.nodeId ? statuses[member.nodeId] : undefined)
+              : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined),
           };
         });
         const parallel = stage.members.length > 1;

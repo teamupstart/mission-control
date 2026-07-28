@@ -9,6 +9,7 @@ import type {
 } from "./types.ts";
 import {
   MAX_COMPARE_ARTIFACTS,
+  artifactTouchesPath,
   buildFileMatrix,
   capCompareSelection,
   compareClaim,
@@ -78,6 +79,7 @@ export function EnsembleCompare({
       setFilesCache((current) => new Map(current).set(artifactId, { status: "loading" }));
       void fetchArtifactFiles(runId, artifactId).then((result) => {
         if (activeRunId.current !== runId) return;
+        if (!result.ok) requestedFiles.current.delete(artifactId);
         setFilesCache((current) =>
           new Map(current).set(
             artifactId,
@@ -100,6 +102,7 @@ export function EnsembleCompare({
       setPatchCache((current) => new Map(current).set(key, { status: "loading" }));
       void fetchArtifactFilePatch(runId, artifactId, compare.path).then((result) => {
         if (activeRunId.current !== runId) return;
+        if (!result.ok) requestedPatches.current.delete(key);
         setPatchCache((current) =>
           new Map(current).set(
             key,
@@ -160,10 +163,18 @@ export function EnsembleCompareView({
   // A partial union would briefly invent "only #N" marks before the slower columns arrive.
   // Keep the matrix empty until every selected artifact's complete stats are present.
   const matrix = filesComplete ? buildFileMatrix(filesByArtifact) : [];
-  const pathTouched =
-    path === null ||
-    [...filesByArtifact.values()].some((files) => files.some((file) => file.path === path));
-  const untouchedPath = path !== null && filesComplete && !pathTouched;
+  const pathTouchedByArtifact = new Map(
+    path === null
+      ? []
+      : selectedIds.map((artifactId) => [
+          artifactId,
+          artifactTouchesPath(filesByArtifact.get(artifactId) ?? [], path),
+        ]),
+  );
+  const untouchedPath =
+    path !== null &&
+    filesComplete &&
+    selectedIds.every((artifactId) => pathTouchedByArtifact.get(artifactId) === false);
   const columnsStyle = {
     "--ensemble-compare-columns": String(Math.max(2, selectedIds.length)),
   } as CSSProperties;
@@ -341,6 +352,7 @@ export function EnsembleCompareView({
                   path={path}
                   subjectLabel={subjectLabel}
                   patchCache={patchCache}
+                  pathTouchedByArtifact={pathTouchedByArtifact}
                   untouchedPath={untouchedPath}
                   style={columnsStyle}
                 />
@@ -430,6 +442,7 @@ function ComparePanes({
   path,
   subjectLabel,
   patchCache,
+  pathTouchedByArtifact,
   untouchedPath,
   style,
 }: {
@@ -437,6 +450,7 @@ function ComparePanes({
   path: string;
   subjectLabel: (artifactId: string) => string;
   patchCache: ComparePatchCache;
+  pathTouchedByArtifact: ReadonlyMap<string, boolean>;
   untouchedPath: boolean;
   style: CSSProperties;
 }): React.JSX.Element {
@@ -450,6 +464,7 @@ function ComparePanes({
       <div className="ensemble-compare-panes" style={style}>
         {artifactIds.map((artifactId) => {
           const entry = patchCache.get(comparePatchKey(artifactId, path));
+          const pathTouched = pathTouchedByArtifact.get(artifactId);
           return (
             <article className="ensemble-compare-pane" key={artifactId}>
               <h5>{subjectLabel(artifactId)}</h5>
@@ -470,7 +485,9 @@ function ComparePanes({
                     <pre>{entry.value.patch}</pre>
                   ) : (
                     <p className="ensemble-muted">
-                      {untouchedPath ? "Not touched by this candidate." : "No text patch for this file."}
+                      {pathTouched === false
+                        ? "Not touched by this candidate."
+                        : "No text patch for this file."}
                     </p>
                   )}
                 </>

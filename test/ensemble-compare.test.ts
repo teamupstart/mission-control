@@ -23,6 +23,7 @@ import {
   type ComparePatchCache,
 } from "../src/web/ensembles/EnsembleCompare.tsx";
 import {
+  artifactTouchesPath,
   buildFileMatrix,
   capCompareSelection,
   chooseCompareArtifactIds,
@@ -280,6 +281,16 @@ test("the file matrix unions, orders, marks only-in files, and preserves rename/
   assert.equal(rows[3]!.cells["art-1"], undefined);
 });
 
+test("path touch evidence is candidate-scoped and includes both sides of a rename", () => {
+  const files = [
+    file("src/moved.ts", 1, 1, { oldPath: "src/old.ts" }),
+    file("src/other.ts", 1, 0),
+  ];
+  assert.equal(artifactTouchesPath(files, "src/moved.ts"), true);
+  assert.equal(artifactTouchesPath(files, "src/old.ts"), true);
+  assert.equal(artifactTouchesPath(files, "src/missing.ts"), false);
+});
+
 test("selection is unique, eligible, and capped at three columns", () => {
   const eligible = ["a", "b", "c", "d"];
   assert.deepEqual(capCompareSelection(["a", "a", "missing", "b", "c", "d"], eligible), [
@@ -410,6 +421,9 @@ test("three loaded candidates render a matrix, aligned panes, and truncation dis
   assert.match(html, /Open in every snapshot/);
   assert.match(html, /Patch truncated · 2\.0 KiB omitted/);
   assert.match(html, /diff --git a\/src\/shared\.ts/);
+  assert.match(html, /Not touched by this candidate/);
+  assert.doesNotMatch(html, /Not touched by the selected candidates/);
+  assert.doesNotMatch(html, /No text patch for this file/);
   assert.match(html, /cost \$0\.00|\$0\.00/);
   assert.match(html, /not reported/);
 });

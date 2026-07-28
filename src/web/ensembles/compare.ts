@@ -49,6 +49,13 @@ export interface CompareClaim {
   confidence: number | null;
 }
 
+export function artifactTouchesPath(
+  files: readonly EnsembleArtifactFile[],
+  path: string,
+): boolean {
+  return files.some((file) => file.path === path || file.oldPath === path);
+}
+
 /** Ready commit snapshots are the only artifact adapter the compare workspace understands. */
 export function eligibleCompareArtifacts(
   detail: Pick<EnsembleRunDetailResponse, "artifacts">,

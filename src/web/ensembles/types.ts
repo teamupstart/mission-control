@@ -72,6 +72,11 @@ export interface EnsembleArtifactPatch {
   filesChanged: number;
   insertions: number;
   deletions: number;
+  /**
+   * Null for the whole artifact, one entry for a per-file cut, and [] when filesOnly omitted
+   * patch material. `files` remains complete in every case.
+   */
+  patchPaths: string[] | null;
   /** The patch text, up to the caller's byte budget. */
   patch: string;
   truncated: boolean;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
 import type {
   EnsembleArtifact,
@@ -28,7 +28,13 @@ import {
 import { EnsemblePipeline } from "./EnsemblePipeline.tsx";
 import { EnsembleTimeline } from "./EnsembleTimeline.tsx";
 import { EnsembleArtifacts } from "./EnsembleArtifacts.tsx";
+import { EnsembleCompare } from "./EnsembleCompare.tsx";
 import { EnsembleActions } from "./EnsembleActions.tsx";
+import {
+  chooseCompareArtifactIds,
+  eligibleCompareArtifacts,
+  type CompareControl,
+} from "./compare.ts";
 import { ENSEMBLE_RESULT_RENDERERS } from "./results/index.ts";
 
 /**
@@ -74,6 +80,15 @@ export function EnsembleDetail({
   const { run } = detail;
   const [restorePendingId, setRestorePendingId] = useState<string | null>(null);
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
+  const [compare, setCompare] = useState<CompareControl | null>(null);
+  const compareRef = useRef<HTMLElement>(null);
+
+  // Both control channels name artifacts inside ONE run. A route change must not briefly open
+  // the previous run's evidence in the next run while its component-scoped fetch caches reset.
+  useEffect(() => {
+    setOpenArtifactId(null);
+    setCompare(null);
+  }, [run.id]);
 
   // The detail wire is intentionally durable-only. Live lanes join through the Task pointer
   // already present on each session, and reviews join through that session id. Kept here (rather
@@ -185,6 +200,26 @@ export function EnsembleDetail({
     onAction({ kind: "restore_artifact", artifactId });
   };
 
+  const openCompare = (artifactIds: string[], path: string): void => {
+    const eligibleIds = eligibleCompareArtifacts(detail).map((artifact) => artifact.id);
+    const scoredArtifactId = artifactIds[0];
+    if (!scoredArtifactId) return;
+    // Renderers supply the activation-safe pair for a first click. The same pure chooser keeps an
+    // operator's existing 2-3 column selection when it already includes this scorecard's artifact.
+    const target = chooseCompareArtifactIds({
+      scoredArtifactId,
+      currentSelection: compare?.artifactIds ?? [],
+      recommendedArtifactId: artifactIds[1] ?? null,
+      rankedArtifactIds: artifactIds,
+      eligibleArtifactIds: eligibleIds,
+    });
+    if (!target) return;
+    setCompare({ artifactIds: target, path });
+    window.requestAnimationFrame(() => {
+      compareRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
   return (
     <article className="ensemble-detail" aria-label={`Ensemble ${run.title}`}>
       <header className="ensemble-detail-head">
@@ -279,6 +314,7 @@ export function EnsembleDetail({
             detail={detail}
             subjectLabel={subjectLabel}
             onOpenArtifact={(artifactId) => setOpenArtifactId(artifactId)}
+            onOpenCompare={openCompare}
             // The SAME restore the Artifacts section runs, not a second path: it goes through
             // `onAction`, so its "Restoring…" clears on the controller's own pending flag and a
             // 409 lands where every other action's does.
@@ -308,6 +344,15 @@ export function EnsembleDetail({
           onManualSubmit={onManualSubmit}
         />
       </section>
+
+      <EnsembleCompare
+        key={run.id}
+        detail={detail}
+        subjectLabel={subjectLabel}
+        compare={compare}
+        onCompareChange={setCompare}
+        sectionRef={compareRef}
+      />
 
       <section className="ensemble-section" aria-label="Artifacts">
         <h4>Artifacts</h4>

@@ -161,10 +161,10 @@ interface BuiltinWorkflowSource {
   slug: string;
   name: string;
   description: string;
-  completionPolicy: WorkflowCompletionPolicy;
   /** Ascending. Index 0 is version 1, and the last entry is what the draft shows. */
   versions: readonly {
     pipeline: StagePipeline;
+    completionPolicy: WorkflowCompletionPolicy;
     bindingDefaults: WorkflowBindingDefaults;
     sourceDraftRevision: number;
   }[];
@@ -181,7 +181,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     version: index + 1,
     sourceDraftRevision: source.versions[index]!.sourceDraftRevision,
     graph: publishBuiltinGraph(graph),
-    completionPolicy: source.completionPolicy,
+    completionPolicy: source.versions[index]!.completionPolicy,
     bindingDefaults: source.versions[index]!.bindingDefaults,
     // Not published on this machine and carrying no edit history, so there is no instant to
     // report. Surfaces print "Built-in" where they print a row's dates.
@@ -192,7 +192,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     name: source.name,
     description: source.description,
     draft: graphs[graphs.length - 1]!,
-    completionPolicy: source.completionPolicy,
+    completionPolicy: current.completionPolicy,
     bindingDefaults: current.bindingDefaults,
   };
   const duplicable = CreateWorkflowSchema.safeParse(duplicateSeed);
@@ -208,7 +208,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
       normalizedName: normalizeWorkflowName(source.name),
       description: source.description,
       draft: graphs[graphs.length - 1]!,
-      completionPolicy: source.completionPolicy,
+      completionPolicy: current.completionPolicy,
       bindingDefaults: current.bindingDefaults,
       draftRevision: current.sourceDraftRevision,
       currentVersionId: current.id,
@@ -365,31 +365,50 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       + "configured commands, so configured checks are recorded as not run and passed; "
       + "unconfigured slots are skipped and pass. Every fail returns to the session for repair, "
       + "and a passed review is gated on the Inspector finding nothing on the pull request.",
-    // The delivery tail the engine already owns: a passed graph waits on an adopted PR at the
-    // reviewed head, findings restart the whole review, and a run with no PR yet offers
-    // Prepare PR in session rather than waiting silently.
-    completionPolicy: {
-      kind: "inspector",
-      onFindings: "restart_workflow",
-      missingPrAction: "offer_prepare_pr",
-    },
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
+    // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
+    // Inspector again instead of rerunning the already-passed review workflow.
     versions: [
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "restart_workflow",
+          missingPrAction: "offer_prepare_pr",
+        },
         bindingDefaults: DEFAULT_WORKFLOW_BINDING_DEFAULTS,
         sourceDraftRevision: 1,
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V2,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "restart_workflow",
+          missingPrAction: "offer_prepare_pr",
+        },
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 1,
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "restart_workflow",
+          missingPrAction: "offer_prepare_pr",
+        },
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 2,
+      },
+      {
+        pipeline: NO_MISTAKES_REVIEW_V3,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "inspector_only",
+          missingPrAction: "offer_prepare_pr",
+        },
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 3,
       },
     ],
   }),

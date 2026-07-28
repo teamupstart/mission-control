@@ -21,10 +21,8 @@ beforeEach(() => {
   openDb().exec("DELETE FROM app_config");
 });
 
-test("ships off: auto mode on dispatch is not on by default", () => {
-  // Flipping a dispatched session into auto lets it act without stopping for prompts -
-  // a posture the operator opts into, never a default.
-  assert.equal(getHarnessesConfig().autoModeOnDispatch, false);
+test("ships with auto mode on dispatch enabled", () => {
+  assert.equal(getHarnessesConfig().autoModeOnDispatch, true);
 });
 
 test("enabling persists and reads back on", () => {

@@ -271,9 +271,9 @@ function HarnessCard({
 
 export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.Element {
   const { config, update, error } = state;
-  // `config` is null only in the pre-poll instant; the switch reads off (its shipped
+  // `config` is null only in the pre-poll instant; the switch reads on (its shipped
   // default) and disables until the first read lands, so a toggle can't race the fetch.
-  const autoMode = config?.autoModeOnDispatch ?? false;
+  const autoMode = config?.autoModeOnDispatch ?? true;
 
   return (
     <section className="settings-section">

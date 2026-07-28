@@ -52,16 +52,16 @@ test("the mode a dispatch arms is one this driver can actually launch", () => {
   // embedded runtime has for "auto mode on dispatch". A mode with no posture would make an
   // auto dispatch silently fall back to the operator's own config.
   const onDispatch = HARNESS_CAPABILITIES.codex.permissionModes?.onDispatch;
-  assert.equal(onDispatch, "askForApproval");
+  assert.equal(onDispatch, "approveForMe");
   const posture = codexPosture(onDispatch!);
   // The same posture `prepareCodexLaunch` gives an auto terminal launch
   // (`--sandbox workspace-write --ask-for-approval on-request`), so flipping the runtime
   // does not change what a dispatched Codex is allowed to do.
   assert.equal(posture?.sandbox, "workspace-write");
   assert.equal(posture?.approvalPolicy, "on-request");
-  // ...with approvals routed to the human, which is the whole reason an embedded session
-  // has a card that can answer them.
-  assert.equal(posture?.approvalsReviewer, "user");
+  // ...with eligible approvals routed through Codex's native auto reviewer. Requests it
+  // does not approve still arrive on the embedded session's card.
+  assert.equal(posture?.approvalsReviewer, "auto_review");
 });
 
 test("the two profiles that share a sandbox are separated only by their reviewer", () => {

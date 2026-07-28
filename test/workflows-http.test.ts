@@ -314,6 +314,47 @@ test("the shipped workflow is readable through the existing workflow routes", as
   assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/4`)).status, 404);
 });
 
+test("the shipped workflow duplicates through the same create boundary as the dashboard", async () => {
+  const { request } = fixture();
+  const detail = await request(`/api/workflows/${BUILTIN_ID}`);
+  assert.equal(detail.status, 200);
+  const source = (await detail.json() as {
+    workflow: {
+      description: string;
+      draft: unknown;
+      completionPolicy: unknown;
+      bindingDefaults: unknown;
+    };
+  }).workflow;
+
+  const duplicate = await request("/api/workflows", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "No-Mistakes Review copy",
+      description: source.description,
+      draft: source.draft,
+      completionPolicy: source.completionPolicy,
+      bindingDefaults: source.bindingDefaults,
+    }),
+  });
+  const duplicateBody = await duplicate.text();
+  assert.equal(duplicate.status, 201, duplicateBody);
+  const copied = JSON.parse(duplicateBody) as {
+    workflow: {
+      builtin: boolean;
+      description: string;
+      draft: unknown;
+      completionPolicy: unknown;
+      bindingDefaults: unknown;
+    };
+  };
+  assert.equal(copied.workflow.builtin, false);
+  assert.equal(copied.workflow.description, source.description);
+  assert.deepEqual(copied.workflow.draft, source.draft);
+  assert.deepEqual(copied.workflow.completionPolicy, source.completionPolicy);
+  assert.deepEqual(copied.workflow.bindingDefaults, source.bindingDefaults);
+});
+
 test("every mutating workflow route 409s on the shipped workflow and names Duplicate", async () => {
   const { request } = fixture();
   const revision = JSON.stringify({ expectedDraftRevision: 1 });

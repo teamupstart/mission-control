@@ -284,9 +284,11 @@ function MemberCard({
       )}
       {session ? (
         <details className="ensemble-lane-history" open={member.status === "failed"}>
-          <Tooltip label="Show or hide this member's recorded attempts and artifacts">
-            <summary>Attempt &amp; artifact history</summary>
-          </Tooltip>
+          <summary>
+            <Tooltip label="Show or hide this member's recorded attempts and artifacts">
+              <span>Attempt &amp; artifact history</span>
+            </Tooltip>
+          </summary>
           <DurableState
             attempts={attempts}
             artifacts={artifacts}

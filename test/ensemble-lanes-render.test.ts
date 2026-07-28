@@ -157,6 +157,7 @@ test("a joined member lane renders live tone, activity, goal, elapsed, last even
   assert.match(html, /elapsed 8m/);
   assert.match(html, /last event 2m ago/);
   assert.match(html, /≈\$0\.42/);
+  assert.match(html, /<details class="ensemble-lane-history"><summary>/);
 });
 
 test("a joined member lane uses the parked-gate attention tone", () => {

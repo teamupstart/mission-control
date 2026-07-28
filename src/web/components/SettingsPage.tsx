@@ -28,6 +28,7 @@ import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { SettingsStatus } from "@shared/types.ts";
+import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import {
   SETTINGS_CATEGORIES,
@@ -136,6 +137,7 @@ export function SettingsPage({
   layout,
   onLayoutChange,
   settingsStatus,
+  workflowSummaries = [],
   searchOpen = false,
   onSearchOpenChange,
 }: {
@@ -183,6 +185,8 @@ export function SettingsPage({
    * NOT come from here: it derives from the App-owned `foreman` prop above.
    */
   settingsStatus: SettingsStatus | null;
+  /** Published Workflow catalog used by the dispatch-default picker. */
+  workflowSummaries?: WorkflowSummary[];
   /**
    * Whether the ⌘K search palette is open. App owns it so the shortcut can open the
    * palette from the fleet (navigate here, then open) as well as from inside the page.
@@ -387,7 +391,14 @@ export function SettingsPage({
       case "foreman":
         return <ForemanSettingsPanel state={foreman} onNavigate={navigateWithAnchor} />;
       case "workflows":
-        return <WorkflowSettingsPanel state={workflowSettings} onOpenRuns={onOpenRuns} />;
+        return (
+          <WorkflowSettingsPanel
+            state={workflowSettings}
+            workflows={workflowSummaries}
+            foremanEnabled={foreman.config?.enabled ?? false}
+            onOpenRuns={onOpenRuns}
+          />
+        );
       case "cost":
         return <CostSettingsPanel state={cost} />;
       case "inspector":

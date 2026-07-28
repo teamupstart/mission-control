@@ -273,7 +273,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
   const shipped = summaries.find((item) => item.id === BUILTIN_ID);
   assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
   assert.equal(shipped.builtin, true);
-  assert.equal(shipped.publishedVersion, 3, "the newest shipped version is the current one");
+  assert.equal(shipped.publishedVersion, 4, "the newest shipped version is the current one");
 
   const detail = await request(`/api/workflows/${BUILTIN_ID}`);
   assert.equal(detail.status, 200);
@@ -282,14 +282,14 @@ test("the shipped workflow is readable through the existing workflow routes", as
     versions: Array<{ version: number }>;
   };
   assert.equal(detailBody.workflow.builtin, true);
-  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@3`);
+  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@4`);
   // Newest first, and prior versions are STILL served: bindings pinned to them resolve
-  // through the same route after the catalog gained version 3.
-  assert.deepEqual(detailBody.versions.map((version) => version.version), [3, 2, 1]);
+  // through the same route after the catalog gained version 4.
+  assert.deepEqual(detailBody.versions.map((version) => version.version), [4, 3, 2, 1]);
 
   const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
   assert.equal(versions.status, 200);
-  for (const number of [1, 2, 3]) {
+  for (const number of [1, 2, 3, 4]) {
     const version = await request(`/api/workflows/${BUILTIN_ID}/versions/${number}`);
     assert.equal(version.status, 200, `version ${number} is no longer served`);
     const versionBody = await version.json() as {
@@ -311,7 +311,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
       .bindingDefaults.deliveryMode,
     "live",
   );
-  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/4`)).status, 404);
+  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/5`)).status, 404);
 });
 
 test("the shipped workflow duplicates through the same create boundary as the dashboard", async () => {

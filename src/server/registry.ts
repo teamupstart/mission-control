@@ -185,6 +185,14 @@ export interface SdkSessionRegistration {
   agent: AgentType;
   name: string;
   cwd: string;
+  /**
+   * The durable harness-native identity when restoring a known conversation.
+   *
+   * Fresh launches omit it until the driver's `bound` event. Restores already know it from
+   * SQLite and must publish it on the first session frame: briefly falling back to the
+   * synthetic SDK id makes workflow bindings believe the conversation changed.
+   */
+  agentSessionId?: string | null;
   pid?: number;
   permissionMode?: PermissionMode | null;
   gitBranch?: string | null;
@@ -1176,8 +1184,8 @@ export class Registry extends EventEmitter {
       // Nothing holds a pane to name this session, so the supervisor that launched it said
       // what it is called - which is what this `NameSource` value records.
       nameSource: "sdk",
-      // The driver has not reported `bound` yet, so this is the same "launched, not yet
-      // talking" window a SessionStart hook closes for a pane-backed session.
+      // Fresh launches learn this from `bound`; restored sessions carry the durable identity
+      // immediately so note-keyed state never observes a synthetic-id interlude.
       state: "starting",
       cwd: input.cwd,
       gitBranch: input.gitBranch ?? null,
@@ -1193,7 +1201,7 @@ export class Registry extends EventEmitter {
       tty: null,
       permissionMode: input.permissionMode ?? null,
       terminals: [],
-      agentSessionId: null,
+      agentSessionId: input.agentSessionId ?? null,
       transcriptPath: null,
       instrumented: false,
       stateConfirmed: false,

@@ -202,6 +202,14 @@ test("Inspector is a closed workflow-level completion policy", () => {
     }),
     { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" },
   );
+  assert.deepEqual(
+    WorkflowCompletionPolicySchema.parse({
+      kind: "inspector",
+      onFindings: "restart_workflow",
+      missingPrAction: "prepare_pr",
+    }),
+    { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "prepare_pr" },
+  );
   assert.throws(() =>
     WorkflowCompletionPolicySchema.parse({
       kind: "inspector",

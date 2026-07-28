@@ -363,12 +363,19 @@ export interface WorkflowValidationResult {
 export const INSPECTOR_FINDINGS_POLICIES = ["restart_workflow", "inspector_only"] as const;
 export type InspectorFindingsPolicy = (typeof INSPECTOR_FINDINGS_POLICIES)[number];
 
+export const WORKFLOW_MISSING_PR_ACTIONS = [
+  "wait",
+  "offer_prepare_pr",
+  "prepare_pr",
+] as const;
+export type WorkflowMissingPrAction = (typeof WORKFLOW_MISSING_PR_ACTIONS)[number];
+
 export type WorkflowCompletionPolicy =
   | { kind: "none" }
   | {
       kind: "inspector";
       onFindings: InspectorFindingsPolicy;
-      missingPrAction: "wait" | "offer_prepare_pr";
+      missingPrAction: WorkflowMissingPrAction;
     };
 
 export const WORKFLOW_TRIGGER_MODES = ["manual", "foreman_complete"] as const;

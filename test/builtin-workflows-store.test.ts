@@ -413,7 +413,7 @@ test("the real shipped catalog resolves all of No-Mistakes Review's durable vers
   // what actually sit in `workflow_bindings.workflow_version_id` on operators' machines and
   // are append-only for that reason.
   const store = new WorkflowStore(db, BUILTIN_PERSONAS);
-  for (const version of [1, 2, 3]) {
+  for (const version of [1, 2, 3, 4]) {
     const id = `builtin-workflow:no-mistakes-review@${version}`;
     assert.equal(builtinWorkflowVersionId("no-mistakes-review", version), id);
     const resolved = store.getWorkflowVersionById(id);
@@ -430,4 +430,15 @@ test("the real shipped catalog resolves all of No-Mistakes Review's durable vers
   assert.equal(v2.bindingDefaults.deliveryMode, "live");
   const v3 = store.getWorkflowVersionById("builtin-workflow:no-mistakes-review@3")!;
   assert.equal(v3.graph.nodes.filter((node) => node.kind === "check").length, 2);
+  assert.deepEqual(v3.completionPolicy, {
+    kind: "inspector",
+    onFindings: "restart_workflow",
+    missingPrAction: "offer_prepare_pr",
+  });
+  const v4 = store.getWorkflowVersionById("builtin-workflow:no-mistakes-review@4")!;
+  assert.deepEqual(v4.completionPolicy, {
+    kind: "inspector",
+    onFindings: "restart_workflow",
+    missingPrAction: "prepare_pr",
+  });
 });

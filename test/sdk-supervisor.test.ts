@@ -499,6 +499,11 @@ test("restore resumes the same conversation rather than starting a new one", asy
     assert.deepEqual(fake.calls[0]!.mcp, descriptor);
     assert.ok(registry.getSession("sdk:restore-1"), "the card is back before the first sweep");
     assert.equal(
+      registry.getSession("sdk:restore-1")?.agentSessionId,
+      "agent-42",
+      "the first restored frame keeps the durable note key instead of publishing a false conversation change",
+    );
+    assert.equal(
       registry.getSession("sdk:restore-1")?.nomistakesGated,
       true,
       "restoration reads the checkout before the first poll",

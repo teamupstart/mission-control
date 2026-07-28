@@ -21,6 +21,7 @@ import {
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
+  WORKFLOW_MISSING_PR_ACTIONS,
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
   WORKFLOW_NODE_ATTEMPT_STATES,
@@ -2207,7 +2208,7 @@ export const WorkflowCompletionPolicySchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("inspector"),
     onFindings: z.enum(INSPECTOR_FINDINGS_POLICIES),
-    missingPrAction: z.enum(["wait", "offer_prepare_pr"]),
+    missingPrAction: z.enum(WORKFLOW_MISSING_PR_ACTIONS),
   }),
 ]);
 

@@ -11,6 +11,15 @@ how to run it, read `README.md`.
 NEVER RERUN no-mistakes skill after it passes and you are addressing inspector feedback. Instead, always fix the inspector 
 issues, resolve merge any conflicts, push the code, monitor the CI / PR for new inspector comments or conflicts, and repeat, conflicts, and repeat it's green.
 
+## macOS Electron tests
+
+`npm test` includes `test/workflow-builder-electron.test.ts`, whose two geometry cases launch
+a real Electron GUI. Codex's macOS Seatbelt sandbox denies the LaunchServices and WindowServer
+services Electron needs, causing an OS `SIGABRT` crash report before fixture code runs. When
+`CODEX_SANDBOX=seatbelt`, run `npm test` or the focused `npm run test:electron` with scoped
+outside-sandbox approval. The test preflight deliberately fails with that instruction before
+launching Electron if an agent forgets; do not remove or bypass it with Chromium flags.
+
 ## Architecture
 
 | Where | Entry | What |

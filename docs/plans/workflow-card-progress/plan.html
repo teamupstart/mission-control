@@ -195,7 +195,7 @@
       </figure>
 
       <h2>Investigated findings</h2>
-      <p class="meta">Verified against <code>HEAD</code> at <code>46d30b41</code>.</p>
+      <p class="meta">Verified against <code>main</code> at <code>985aaa23</code>.</p>
 
       <h3>The derivation already exists and must not be duplicated</h3>
       <p>
@@ -255,6 +255,23 @@
         comment states the exact trap: "a skipped or unavailable check still finishes as a passing
         attempt, so without this the chip would report 'Passed' for a command that was never
         spawned." The ladder must pass <code>checkOutcomeFor</code> for the same reason.
+      </p>
+
+      <h3>The built-in moved to version 4 while this plan was being written</h3>
+      <p>
+        <code>BUILTIN_WORKFLOWS</code> holds <code>no-mistakes-review</code> at
+        <strong>version 4</strong>. Its stages match the mockups exactly, but
+        <code>completionPolicy</code> moved from one fact about the workflow to one fact per
+        version: v4 reuses v3's pipeline and sets <code>onFindings: "inspector_only"</code> where
+        v3 set <code>"restart_workflow"</code> (#305), so Inspector findings now open an
+        inspector-only submission rather than restarting the whole review.
+        <code>missingPrAction: "offer_prepare_pr"</code> is unchanged across all four.
+      </p>
+      <p>
+        The consequence the ladder must respect: <strong>a round can legitimately contain no
+        persona review at all.</strong> <code>runRounds</code> already flags such a round
+        <code>inspectorOnly</code>. A ladder that drew three pending reviewers for one would be
+        wrong in what is now the normal path after findings.
       </p>
 
       <h3>A case the mockups never drew</h3>

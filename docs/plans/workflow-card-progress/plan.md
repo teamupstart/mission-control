@@ -37,7 +37,7 @@ rail. It is explicitly **not** put on the collapsed 330px grid card or the board
 
 ## Investigated findings
 
-Verified against `HEAD` at `46d30b41`.
+Verified against `main` at `985aaa23`.
 
 ### The derivation already exists and must not be duplicated
 
@@ -112,11 +112,24 @@ command that was never spawned." The ladder must pass `checkOutcomeFor` for the 
 
 ### The built-in the mockups draw is real
 
-`BUILTIN_WORKFLOWS` holds one entry, `no-mistakes-review`, currently at **version 3**
-(`builtin-workflows.ts:357-394`). Its v3 stages match the mockups exactly: stage 1 is two checks
+`BUILTIN_WORKFLOWS` holds one entry, `no-mistakes-review`, currently at **version 4**
+(`builtin-workflows.ts:365-414`). Its stages match the mockups exactly: stage 1 is two checks
 (`typecheck`, `test`), stage 2 is the single-member Intent Conformance Judge, stage 3 is Code
 Risk Reviewer + Test Evidence Auditor + Documentation Steward, bookended by `nmr-session` and
 `nmr-end` with `endOutcome: "Complete"` and an `inspector` completion policy.
+
+**Version 4 reuses version 3's pipeline** and differs only in its completion policy, which moved
+from being one fact about the workflow to one fact per version. v4 sets
+`onFindings: "inspector_only"` where v3 set `"restart_workflow"`, so Inspector findings now
+produce an inspector-only submission instead of restarting the whole review
+(`fix(workflows): recheck Inspector without rerunning Persona reviews`, #305).
+`missingPrAction: "offer_prepare_pr"` is unchanged across all four.
+
+That has a consequence the ladder must respect: **a round can legitimately contain no persona
+review at all.** `runRounds` already flags such a round `inspectorOnly`, and
+`WorkflowRunSummary.bypassedPersonaReview` records that it happened. A ladder that drew the full
+stage list for an inspector-only round would show three reviewers as pending forever in the run
+state that is now the normal path after findings.
 
 ### The session-to-run join is by session id, but the binding's identity is not
 

@@ -77,6 +77,13 @@ or on an uncertain delivery. Today all of that is one pill reading `Preview · R
   `summary`, `requestedChanges: RequestedChange[]` and `confidence`. `RequestedChange`
   (`:1252-1258`) has `title`, `rationale`, `evidence[]`, optional `path`/`line`.
 - `maxRepairRounds` defaults to 5 (`workflow.ts:387-390`), bounds 1-20 (`:32-33`).
+- **A round can legitimately contain no persona review at all.** The shipped built-in is at
+  version 4 (`builtin-workflows.ts:365-414`), whose completion policy sets
+  `onFindings: "inspector_only"` (#305): Inspector findings now open an inspector-only
+  submission instead of restarting the whole review. `WorkflowSubmission.mode` is
+  `full_workflow | inspector_only` (`workflow.ts:447-448`), `runRounds` (`run-model.ts:168`)
+  already flags such a round `inspectorOnly`, and `WorkflowRunSummary.bypassedPersonaReview`
+  records that it happened.
 
 ## Implementation steps
 
@@ -158,6 +165,14 @@ Render, as a `<ul className="wf-ladder">` of `<li className="wf-ladder-rung">`:
 - **End rung** - terminal, `pipeline.endOutcome`, status from `endStatus(...)`.
 - A single `wf-ladder-actrow` with one "Open run" button calling `onOpenRun`.
 
+**The inspector-only round is a distinct shape, not a degenerate full one.** When the selected
+submission's `mode === "inspector_only"`, no persona ran and none will in that round. Do **not**
+draw the stage rungs as pending: say the round bypassed persona review and draw the Session,
+gate and End rungs only. Since the shipped built-in went to `onFindings: "inspector_only"` at
+version 4, this is the normal path after Inspector findings, not an edge case - a ladder showing
+three reviewers stuck at "pending" forever would be the most common wrong drawing this component
+could produce.
+
 Every rung carries exactly one of `is-passed | is-running | is-failed | is-waiting | is-pending`
 and optionally `is-terminal`, so CSS owns the spine and node shape.
 
@@ -217,6 +232,9 @@ non-stage-expressible version links out to the Runs page instead.
   `output_json` holds a `WorkflowCheckOutcome` with `status: "skipped"`.
 - `test/workflow-ladder-fallback.test.ts` - a version whose graph is not stage-expressible
   renders the chip-plus-link fallback and no `wf-ladder-rung`.
+- `test/workflow-ladder-inspector-only.test.ts` - a submission with `mode: "inspector_only"`
+  renders the bypass sentence and **no pending stage rungs**. This is the shipped built-in's
+  normal path after findings since version 4, so it is a first-class case, not an edge one.
 - Extend nothing in `session-leaf-parity.test.ts`; assert only that it still passes.
 
 ## Data, API and compatibility

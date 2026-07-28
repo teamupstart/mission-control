@@ -16,7 +16,7 @@ page `plan.html` beside it). Source design: `mockups.html`, Option D.
 
 ## Investigated findings (what the repository actually does)
 
-Verified against `HEAD` at `46d30b41`.
+Verified against `main` at `985aaa23`.
 
 - **The derivation exists and is complete.** `projectStages` (`workflow-stages.ts:376`) yields
   `StagePipeline { sessionId, endId, endOutcome, stages }` with `StageMember` a discriminated
@@ -65,10 +65,20 @@ Verified against `HEAD` at `46d30b41`.
 - **`maxRepairRounds` defaults to 5, not the mockups' 6** (`workflow.ts:387-390`, bounds 1-20 at
   `:32-33`). Read from the run; hardcode nothing.
 - **The built-in the mockups draw is real and current.** `BUILTIN_WORKFLOWS` holds
-  `no-mistakes-review` at version 3 (`builtin-workflows.ts:357-394`): stage 1 two checks
+  `no-mistakes-review` at **version 4** (`builtin-workflows.ts:365-414`): stage 1 two checks
   (`typecheck`, `test`), stage 2 the single-member Intent Conformance Judge, stage 3 Code Risk
   Reviewer + Test Evidence Auditor + Documentation Steward, bookended `nmr-session` / `nmr-end`
   with `endOutcome: "Complete"` and an `inspector` completion policy.
+- **Version 4 landed while this plan was being written (#305) and changes what a round can
+  contain.** `completionPolicy` moved from one fact about the workflow to one fact per version;
+  v4 reuses v3's pipeline but sets `onFindings: "inspector_only"` where v3 set
+  `"restart_workflow"`. Inspector findings now open an **inspector-only submission** rather than
+  restarting the whole review, so **a round can legitimately contain no persona review at all**.
+  `runRounds` (`run-model.ts:168`) already flags such a round `inspectorOnly` and
+  `WorkflowRunSummary.bypassedPersonaReview` records that it happened. Phase 1 owns drawing that
+  honestly; a ladder that listed three pending reviewers for an inspector-only round would be
+  wrong in what is now the normal path after findings. `missingPrAction: "offer_prepare_pr"` is
+  unchanged across all four versions, so Phase 2's Prepare PR arm is unaffected.
 - **The session join already exists.** `App.tsx:587-595` builds `workflowRunBySession` by newest
   `updatedAt` per `run.sessionId`, and `SessionViewProps` already carries
   `workflowRunBySession`, `onOpenWorkflowRun` and `onBindWorkflow` (`types.ts:117-119`).

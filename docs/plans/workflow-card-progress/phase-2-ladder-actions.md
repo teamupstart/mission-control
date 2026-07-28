@@ -58,9 +58,13 @@ easier to get wrong - every guard the Runs page puts on these actions comes acro
   `inspector_recheck_requested` event (`:1185`).
 - **Prepare PR in session** appears only for `waiting_for_pr` with wait reason `missing_pr` or
   `unadopted_pr` *and* `missingPrAction === "offer_prepare_pr"` (`WorkflowRuns.tsx:475-482`);
-  route `POST /api/workflow-runs/:id/prepare-pr` (`routes.ts:1010-1019`). The built-in's policy is
-  `{ kind: "inspector", onFindings: "restart_workflow", missingPrAction: "offer_prepare_pr" }`
-  (`builtin-workflows.ts:371-375`), so this arm is live for the shipped workflow.
+  route `POST /api/workflow-runs/:id/prepare-pr` (`routes.ts:1010-1019`). The shipped built-in is
+  at **version 4**, whose policy is
+  `{ kind: "inspector", onFindings: "inspector_only", missingPrAction: "offer_prepare_pr" }`
+  (`builtin-workflows.ts:404-410`), so this arm is live. Note `completionPolicy` is now per
+  version rather than per workflow (#305), and `onFindings` moved from `"restart_workflow"` to
+  `"inspector_only"` at v4 - but `missingPrAction` is `"offer_prepare_pr"` on all four versions,
+  so read the policy off the run's own version rather than assuming the current default.
 - **Mark delivered** (`WorkflowRuns.tsx:903`): tooltip "Confirm the exact packet already reached
   the inspected pane"; modal title "Mark this packet delivered"; body "Confirm you inspected the
   session's pane and this exact repair prompt is in it. Marking it delivered ends the recovery.";

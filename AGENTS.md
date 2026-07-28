@@ -176,8 +176,9 @@ A session is drawn by **four** components, only one of which is `SessionCard`:
   example: the figure in three surfaces, an `≈$` glyph in the rail's `marks`, and one shared
   `costIsNotable` (`@shared/cost.ts`) deciding where the line sits - not three thresholds.
 - Console detail CSS reaches into shared components with descendant selectors
-  (`.detail-conv > .transcript`, `.detail-foot .actions`). Changing `TranscriptPanel` or
-  `ActionBar` DOM can break console/board with no compile-time signal.
+  (`.detail-conv > .pane-dialog`, `.detail-conv > .transcript`, `.detail-foot .actions`).
+  Changing `PaneDialogPrompt`, `TranscriptPanel`, or `ActionBar` DOM can break console/board
+  with no compile-time signal.
 - A **fourth layout** also needs: the render switch, `expandedForView`, Escape's collapse
   branch, the expand chord and `CommandBar` in `App.tsx`; `layoutNav.ts`; `LayoutPanel`'s glyph
   ternary. All three fall through to grid/board defaults for unknown modes.

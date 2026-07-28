@@ -97,7 +97,6 @@ export function runAction(
         () => {
           if (actions.get(key) !== entry) return;
           actions.delete(key);
-          clearRunActionErrors(runId);
           emit(runId);
         },
         (caught) => {

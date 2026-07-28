@@ -116,7 +116,7 @@ test("dropping a removed run clears pending entries permanently", async () => {
   assert.equal(isRunActionPending(runId, "prepare-pr"), false);
 });
 
-test("starting or succeeding another action clears a stale run error", async () => {
+test("starting another action clears stale errors but preserves later concurrent failures", async () => {
   const runId = "run-stale-error";
   runAction(
     runId,
@@ -146,7 +146,11 @@ test("starting or succeeding another action clears a stale run error", async () 
 
   successful.resolve();
   await settle();
+  assert.match(actionError(runId), /later delivery failure/);
+
+  runAction(runId, "recheck-inspector", async () => {}, () => {});
   assert.doesNotMatch(actionError(runId), /later delivery failure/);
+  await settle();
   dropRunActions(runId);
 });
 

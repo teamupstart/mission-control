@@ -20,8 +20,13 @@ import {
   DecisionRecord,
   DissentLines,
   RankMatrix,
+  RationaleText,
   recordedDecision,
 } from "./dossier.tsx";
+import {
+  chooseCompareArtifactIds,
+  eligibleCompareArtifacts,
+} from "../compare.ts";
 
 /**
  * Panel vote's result presentation: the aggregate ranking, how much the judges disagreed, each
@@ -97,6 +102,9 @@ export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element |
   const settled = status !== null && ensembleIsTerminal(status) && record !== null;
   const dossier = ctx.decision !== null || settled;
   const restorable = settled && record!.readable && Boolean(ctx.onRestoreArtifact);
+  const eligibleIds = eligibleCompareArtifacts(ctx.detail).map((artifact) => artifact.id);
+  const rankedIds = aggregate.entries.map((entry) => entry.artifactId);
+  const recommendedArtifactId = aggregate.tied ? null : aggregate.recommendedArtifactId;
 
   if (verdicts.length === 0) {
     return (
@@ -223,16 +231,31 @@ export function PanelVoteResult(ctx: EnsembleResultContext): React.JSX.Element |
                 </div>
               )}
               <ol className="ensemble-ballot-cards">
-                {verdict.scorecards.map((card) => (
-                  <li key={card.artifactId}>
-                    <span className="ensemble-rank">#{card.rank}</span>{" "}
-                    <span className="ensemble-subject">{ctx.subjectLabel(card.artifactId)}</span>{" "}
-                    <span className="ensemble-muted">
-                      score {card.score}/100 · confidence {Math.round(card.confidence * 100)}%
-                    </span>
-                    {card.rationale && <p className="ensemble-rationale">{card.rationale}</p>}
-                  </li>
-                ))}
+                {verdict.scorecards.map((card) => {
+                  const compareArtifactIds = chooseCompareArtifactIds({
+                    scoredArtifactId: card.artifactId,
+                    currentSelection: [],
+                    recommendedArtifactId,
+                    rankedArtifactIds: rankedIds,
+                    eligibleArtifactIds: eligibleIds,
+                  });
+                  return (
+                    <li key={card.artifactId}>
+                      <span className="ensemble-rank">#{card.rank}</span>{" "}
+                      <span className="ensemble-subject">{ctx.subjectLabel(card.artifactId)}</span>{" "}
+                      <span className="ensemble-muted">
+                        score {card.score}/100 · confidence {Math.round(card.confidence * 100)}%
+                      </span>
+                      {card.rationale && (
+                        <RationaleText
+                          rationale={card.rationale}
+                          artifactIds={compareArtifactIds}
+                          onOpenCompare={ctx.onOpenCompare}
+                        />
+                      )}
+                    </li>
+                  );
+                })}
               </ol>
             </details>
           );

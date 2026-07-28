@@ -5,6 +5,7 @@ import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
+import { dropRunActions } from "./workflows/run-action-store.ts";
 
 /**
  * Unknown event types already warned about. A version-skewed daemon emitting an
@@ -185,6 +186,7 @@ export function useEventStream(): MissionState {
           setWorkflowRuns((prev) => new Map(prev).set(msg.run.id, msg.run));
           break;
         case "workflow_run_remove":
+          dropRunActions(msg.id);
           setWorkflowRuns((prev) => {
             const next = new Map(prev);
             next.delete(msg.id);

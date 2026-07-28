@@ -8,6 +8,7 @@ import type { PanelAggregate, PanelVerdict } from "@shared/ensemble-strategies/p
 import { fmtUsd } from "../../lib/format.ts";
 import { Tooltip } from "../../components/Tooltip.tsx";
 import type { EnsembleRunDetailResponse } from "../types.ts";
+import { detectRationalePaths } from "../compare.ts";
 import { agentCostSummary, fmtElapsed, shortSha } from "../format.ts";
 
 /**
@@ -115,6 +116,8 @@ export function CandidateColumn({
   subjectLabel,
   verdict,
   onOpenArtifact,
+  compareArtifactIds,
+  onOpenCompare,
   onRestore,
   restorePending,
   children,
@@ -124,6 +127,9 @@ export function CandidateColumn({
   subjectLabel: string;
   verdict: CandidateVerdict;
   onOpenArtifact?: () => void;
+  /** Activation-safe target chosen by the strategy renderer for this scorecard's rationale. */
+  compareArtifactIds?: string[] | null;
+  onOpenCompare?: (artifactIds: string[], path: string) => void;
   /** Present only on a losing column of a decided run - see the note above. */
   onRestore?: () => void;
   restorePending?: boolean;
@@ -198,7 +204,13 @@ export function CandidateColumn({
         </div>
       </div>
 
-      {verdict.rationale && <p className="ensemble-rationale">{verdict.rationale}</p>}
+      {verdict.rationale && (
+        <RationaleText
+          rationale={verdict.rationale}
+          artifactIds={compareArtifactIds}
+          onOpenCompare={onOpenCompare}
+        />
+      )}
       {/* Both wrappers are drawn only when they have something in them: they are margined
           boxes, and an empty one is an artifact the reader has to account for. Panel vote's
           columns carry neither - a panel has no single rationale, and its judges' strengths
@@ -248,6 +260,44 @@ export function CandidateColumn({
       )}
     </li>
   );
+}
+
+/**
+ * Rationale paths are buttons only when a compare controller and a distinct pair both exist.
+ * Detection never waits for the file union; Compare validates the path after activation.
+ */
+export function RationaleText({
+  rationale,
+  artifactIds,
+  onOpenCompare,
+}: {
+  rationale: string;
+  artifactIds?: string[] | null;
+  onOpenCompare?: (artifactIds: string[], path: string) => void;
+}): React.JSX.Element {
+  const paths = detectRationalePaths(rationale);
+  if (!onOpenCompare || !artifactIds || artifactIds.length < 2 || paths.length === 0) {
+    return <p className="ensemble-rationale">{rationale}</p>;
+  }
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const token of paths) {
+    if (token.start > cursor) parts.push(rationale.slice(cursor, token.start));
+    parts.push(
+      <Tooltip label={`Compare ${token.path}`} key={`${token.start}:${token.path}`}>
+        <button
+          type="button"
+          className="ensemble-rationale-path"
+          onClick={() => onOpenCompare(artifactIds, token.path)}
+        >
+          {token.path}
+        </button>
+      </Tooltip>,
+    );
+    cursor = token.end;
+  }
+  if (cursor < rationale.length) parts.push(rationale.slice(cursor));
+  return <p className="ensemble-rationale">{parts}</p>;
 }
 
 /**

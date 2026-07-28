@@ -1,6 +1,6 @@
 name: CI
 
-# Exercises the repository's quality gates - typecheck, unit tests, build, and a boot
+# Exercises the repository's quality gates - typecheck, tests, build, and a boot
 # smoke - on every push to main and every pull request. Mirrors `make check` (typecheck
 # + tests) plus a production build and a check that the built bundles actually RUN.
 #

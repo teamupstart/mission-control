@@ -7313,6 +7313,118 @@ select:not([multiple]) option:focus-visible {
 .ensemble-tone-done { color: var(--idle); }
 .ensemble-tone-failed { color: var(--danger); }
 
+/* The run's glance path is a connected rail because these are real ordered execution
+   stages, not a decorative set of status cards. State colours reuse the fleet vocabulary:
+   blue in flight, green walked, red stopped, grey ahead. */
+.ensemble-pipeline {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--working) 5%, transparent), transparent 45%),
+    var(--panel);
+  padding: 14px;
+}
+
+.ensemble-pipeline ol {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ensemble-pipeline-step {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  color: var(--dim);
+}
+
+.ensemble-pipeline-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 11px;
+  right: -4px;
+  width: calc(100% - 30px);
+  border-top: 1px solid var(--border);
+}
+
+.ensemble-pipeline-marker {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  flex: 0 0 23px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--dim);
+  font: 700 10px/1 var(--mono);
+}
+
+.ensemble-pipeline-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  min-width: 0;
+  padding-right: 6px;
+  background: var(--panel);
+}
+
+.ensemble-pipeline-copy strong {
+  color: currentColor;
+  font-size: 12px;
+}
+
+.ensemble-pipeline-copy span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+
+.ensemble-pipeline-step.is-active {
+  color: var(--working);
+}
+
+.ensemble-pipeline-step.is-active .ensemble-pipeline-marker {
+  border-color: var(--working);
+  background: color-mix(in srgb, var(--working) 16%, var(--panel));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--working) 10%, transparent);
+}
+
+.ensemble-pipeline-step.is-complete {
+  color: var(--idle);
+}
+
+.ensemble-pipeline-step.is-complete .ensemble-pipeline-marker {
+  border-color: color-mix(in srgb, var(--idle) 55%, var(--border));
+}
+
+.ensemble-pipeline-step.is-failed {
+  color: var(--danger);
+}
+
+.ensemble-pipeline-step.is-failed .ensemble-pipeline-marker {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--panel));
+}
+
+.ensemble-pipeline-barrier {
+  margin: 12px 0 0;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 9px;
+  color: var(--attention);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .ensemble-facts {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -7430,6 +7542,109 @@ select:not([multiple]) option:focus-visible {
   font-size: 12px;
 }
 
+.ensemble-member-lane {
+  background:
+    linear-gradient(110deg, color-mix(in srgb, var(--working) 4%, transparent), transparent 42%),
+    var(--panel);
+}
+
+.ensemble-lane-tone {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--neutral);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--neutral) 14%, transparent);
+}
+
+.ensemble-lane-tone-working { background: var(--working); }
+.ensemble-lane-tone-idle { background: var(--idle); }
+.ensemble-lane-tone-attention { background: var(--attention); }
+.ensemble-lane-tone-exited { background: var(--exited); }
+.ensemble-lane-tone-neutral { background: var(--neutral); }
+
+.ensemble-lane-state {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ensemble-lane-live {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  padding: 9px 10px;
+}
+
+.ensemble-lane-activity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  font-size: 12px;
+}
+
+.ensemble-lane-activity > :first-child {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.ensemble-lane-live .goal {
+  margin: 0;
+}
+
+.ensemble-lane-history {
+  margin-top: 9px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+
+.ensemble-lane-history > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ensemble-lane-history[open] > summary {
+  color: var(--fg);
+}
+
+.ensemble-lane-asks {
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--attention) 6%, var(--panel));
+  padding: 10px;
+}
+
+.ensemble-lane-asks > h6 {
+  margin: 0 0 9px;
+  color: var(--attention);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ensemble-lane-protocols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: 10px;
+}
+
+.ensemble-lane-protocols > .review,
+.ensemble-lane-protocols > .pane-dialog {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
+}
+
 .ensemble-member-durable-state {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -7541,6 +7756,375 @@ select:not([multiple]) option:focus-visible {
   padding: 10px;
   font-size: 11.5px;
   white-space: pre;
+}
+
+/* Compare workspace: the matrix is the instrument panel. Its first column stays pinned while
+   candidate evidence moves under it, so "which file am I judging?" never becomes memory work.
+   Claims and panes share the same column grammar; every patch owns its own horizontal scroller,
+   and neither grid can widen the page body. */
+.ensemble-compare {
+  --ensemble-compare-columns: 2;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ensemble-compare-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ensemble-compare-heading h4 {
+  margin: 0;
+}
+
+.ensemble-compare-heading p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ensemble-compare-count {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--muted);
+  font: 600 10.5px/1.3 var(--mono);
+}
+
+.ensemble-compare-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 12px 0 0;
+  border: 0;
+  padding: 0;
+}
+
+.ensemble-compare-picker legend {
+  width: 100%;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ensemble-compare-picker label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  padding: 6px 9px;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.ensemble-compare-picker label:has(input:checked) {
+  border-color: color-mix(in srgb, var(--working) 55%, var(--border));
+  background: color-mix(in srgb, var(--working) 8%, var(--panel));
+}
+
+.ensemble-compare-picker label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ensemble-compare-picker span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ensemble-compare-claims-grid,
+.ensemble-compare-panes {
+  display: grid;
+  grid-template-columns: repeat(var(--ensemble-compare-columns), minmax(280px, 1fr));
+  gap: 10px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.ensemble-compare-claims-grid {
+  margin-top: 12px;
+  padding-bottom: 4px;
+}
+
+.ensemble-compare-claim {
+  min-width: 280px;
+  border: 1px solid var(--border-soft);
+  border-top: 2px solid color-mix(in srgb, var(--working) 55%, var(--border));
+  border-radius: 8px;
+  background: var(--bg-2);
+  padding: 9px 10px;
+}
+
+.ensemble-compare-claim h5 {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.ensemble-compare-claim > p {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+}
+
+.ensemble-compare-claim dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 18px;
+  margin: 8px 0 0;
+}
+
+.ensemble-compare-claim dt {
+  color: var(--muted);
+  font-size: 9.5px;
+  text-transform: uppercase;
+}
+
+.ensemble-compare-claim dd {
+  margin: 1px 0 0;
+  font: 600 11px/1.3 var(--mono);
+}
+
+.ensemble-compare-score {
+  color: var(--working);
+  font-variant-numeric: tabular-nums;
+}
+
+.ensemble-compare-matrix-scroll {
+  max-width: 100%;
+  margin-top: 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+}
+
+.ensemble-compare-matrix {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ensemble-compare-matrix th,
+.ensemble-compare-matrix td {
+  min-width: 135px;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 7px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ensemble-compare-matrix th:first-child {
+  position: sticky;
+  z-index: 1;
+  left: 0;
+  min-width: 240px;
+  max-width: 420px;
+  background: var(--panel);
+}
+
+.ensemble-compare-matrix thead th {
+  color: var(--muted);
+  background: var(--bg-2);
+  font-weight: 600;
+}
+
+.ensemble-compare-matrix thead th:first-child {
+  z-index: 2;
+  background: var(--bg-2);
+}
+
+.ensemble-compare-matrix tbody tr:last-child th,
+.ensemble-compare-matrix tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ensemble-compare-matrix tbody tr:hover th,
+.ensemble-compare-matrix tbody tr:hover td,
+.ensemble-compare-matrix tr.is-open th,
+.ensemble-compare-matrix tr.is-open td {
+  background: color-mix(in srgb, var(--working) 7%, var(--panel));
+}
+
+.ensemble-compare-matrix tr.is-untouched th,
+.ensemble-compare-matrix tr.is-untouched td {
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+  color: var(--attention);
+}
+
+.ensemble-compare-matrix th button {
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ensemble-compare-matrix th button:hover {
+  color: var(--working);
+}
+
+.ensemble-compare-matrix td small {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ensemble-compare-churn {
+  font-family: var(--mono);
+}
+
+.ensemble-compare-only {
+  display: inline-block;
+  margin-left: 7px;
+  border: 1px solid color-mix(in srgb, var(--attention) 45%, var(--border));
+  border-radius: 999px;
+  padding: 1px 5px;
+  color: var(--attention);
+  font-size: 9.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ensemble-compare-absent {
+  color: var(--dim);
+}
+
+.ensemble-compare-file {
+  max-width: 100%;
+  margin-top: 12px;
+  overflow: clip;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+
+.ensemble-compare-file-head {
+  position: sticky;
+  z-index: 3;
+  top: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  padding: 8px 10px;
+}
+
+.ensemble-compare-file-head > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ensemble-compare-file-head > code {
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+
+.ensemble-compare-file-head > strong {
+  color: var(--attention);
+  font-size: 11px;
+}
+
+.ensemble-compare-panes {
+  padding: 10px;
+}
+
+.ensemble-compare-load-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ensemble-compare-load-error button {
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 7px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ensemble-compare-load-error button:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.ensemble-compare-pane {
+  min-width: 280px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.ensemble-compare-pane h5 {
+  overflow: hidden;
+  margin: 0;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 7px 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+
+.ensemble-compare-pane > p {
+  margin: 8px 9px;
+  font-size: 11px;
+}
+
+.ensemble-compare-pane > pre {
+  max-height: 460px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  background: var(--bg);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.ensemble-rationale-path {
+  display: inline;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--working) 55%, transparent);
+  background: transparent;
+  padding: 0;
+  color: var(--working);
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--mono);
+}
+
+.ensemble-rationale-path:hover {
+  border-bottom-color: currentColor;
 }
 
 /* Timeline */
@@ -8315,6 +8899,20 @@ select:not([multiple]) option:focus-visible {
 }
 
 @media (max-width: 760px) {
+  .ensemble-pipeline ol {
+    grid-template-columns: 1fr;
+  }
+
+  .ensemble-pipeline-step:not(:last-child)::after {
+    top: 23px;
+    bottom: -9px;
+    left: 11px;
+    right: auto;
+    width: 0;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+
   .ensemble-member-durable-state,
   .ensemble-stage-payload-grid {
     grid-template-columns: 1fr;
@@ -13550,6 +14148,22 @@ select.sc-input {
   gap: 13px;
   padding: 16px 22px;
 }
+/* A driver request can carry four questions at once, and unlike the transcript it has
+   no bounded child of its own. With visible overflow its automatic flex minimum is the
+   height of every question, so the form refuses the detail pane's squeeze and is clipped
+   by `.detail-body`; the later questions and Submit button then have no scroll path.
+
+   Bound only the fixed-height Console/Board detail instance. Grid cards keep the shared
+   dialog's natural height, while the detail form gives ground to the transcript and
+   scrolls internally. The floor keeps the form a useful reading surface on short windows;
+   `min()` lets that floor scale down with the viewport instead of recreating the clip. */
+.detail-conv > .pane-dialog {
+  flex: 0 1 auto;
+  min-height: min(200px, 30dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .detail-conv > .transcript {
   flex: 1 1 auto;
   min-height: 120px;
@@ -13592,6 +14206,356 @@ select.sc-input {
 .detail-pane > .nm-log-open {
   flex: none;
 }
+
+/* ---- workflow stage ladder ---- */
+
+/* The detail pane's cheap axis is height, but the transcript still owns the remaining room.
+   A long workflow scrolls inside its reading surface instead of pushing the composer away. */
+.detail-conv > .wf-ladder-panel {
+  flex: 0 1 auto;
+  max-height: min(52dvh, 560px);
+  overflow-y: auto;
+}
+.wf-ladder-panel,
+.wf-ladder-feedback,
+.wf-ladder-fallback {
+  flex: none;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel-2) 88%, var(--bg));
+}
+.wf-ladder-panel {
+  padding: 12px 14px 11px;
+  scrollbar-color: var(--border) transparent;
+}
+.wf-ladder-feedback,
+.wf-ladder-fallback {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.wf-ladder-fallback {
+  flex-wrap: wrap;
+}
+.wf-ladder-feedback[aria-busy="true"] {
+  color: var(--dim);
+}
+.wf-ladder-error {
+  flex: 1;
+  min-width: 180px;
+  margin: 0;
+  line-height: 1.45;
+}
+.wf-ladder-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.wf-ladder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--working);
+}
+.wf-ladder-version,
+.wf-ladder-round {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.wf-ladder-runstate {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in oklab, currentColor 12%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+}
+.wf-ladder-round {
+  margin-left: auto;
+}
+.wf-ladder-bypass {
+  margin: 9px 0 0;
+  padding: 7px 9px;
+  border-left: 2px solid var(--attention);
+  background: color-mix(in oklab, var(--attention) 8%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.wf-ladder {
+  list-style: none;
+  margin: 0;
+  padding: 12px 0 2px;
+}
+.wf-ladder-rung {
+  --wf-ladder-tone: var(--dim);
+  position: relative;
+  min-width: 0;
+  padding: 0 0 15px 29px;
+  color: var(--fg);
+}
+.wf-ladder-rung:last-child {
+  padding-bottom: 2px;
+}
+.wf-ladder-rung.workflow-running {
+  --wf-ladder-tone: var(--working);
+}
+.wf-ladder-rung.workflow-waiting {
+  --wf-ladder-tone: var(--attention);
+}
+.wf-ladder-rung.workflow-passed {
+  --wf-ladder-tone: var(--idle);
+}
+.wf-ladder-rung.workflow-failed,
+.wf-ladder-rung.workflow-blocked {
+  --wf-ladder-tone: var(--danger);
+}
+/* One connector per gap: the final rung never grows a line below its terminal mark. */
+.wf-ladder-rung:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 15px;
+  bottom: -1px;
+  left: 7px;
+  width: 1px;
+  background: color-mix(in oklab, var(--wf-ladder-tone) 46%, var(--border));
+}
+.wf-ladder-rung::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--wf-ladder-tone);
+  border-radius: 50%;
+  background: var(--panel-2);
+  box-sizing: border-box;
+}
+.wf-ladder-rung.is-passed::after,
+.wf-ladder-rung.is-failed::after {
+  background: var(--wf-ladder-tone);
+}
+.wf-ladder-rung.is-running::after {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--wf-ladder-tone) 22%, transparent);
+}
+.wf-ladder-rung.is-pending::after {
+  border-radius: 1px;
+  transform: rotate(45deg);
+  background: transparent;
+}
+.wf-ladder-rung.is-terminal:not(.is-pending)::after {
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+.wf-ladder-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.wf-ladder-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.wf-ladder-title strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+.wf-ladder-sub {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.wf-ladder-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--wf-ladder-tone);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.wf-ladder-members {
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wf-ladder-member {
+  --wf-ladder-member-tone: var(--dim);
+  min-width: 0;
+  padding-left: 1px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.wf-ladder-member.workflow-running {
+  --wf-ladder-member-tone: var(--working);
+}
+.wf-ladder-member.workflow-waiting {
+  --wf-ladder-member-tone: var(--attention);
+}
+.wf-ladder-member.workflow-passed {
+  --wf-ladder-member-tone: var(--idle);
+}
+.wf-ladder-member.workflow-failed {
+  --wf-ladder-member-tone: var(--danger);
+}
+.wf-ladder-member-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.wf-ladder-member-mark {
+  flex: none;
+  width: 11px;
+  color: var(--wf-ladder-member-tone);
+  text-align: center;
+}
+.wf-ladder-member-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--wf-ladder-member-tone);
+  font-weight: 600;
+}
+.wf-ladder-member-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+}
+.wf-ladder-member-meta,
+.wf-ladder-member-note {
+  display: block;
+  margin: 2px 0 0 17px;
+  color: var(--dim);
+  line-height: 1.4;
+}
+.wf-ladder-member-note {
+  color: var(--muted);
+}
+.wf-ladder-why,
+.wf-ladder-sentence {
+  margin: 7px 0 0;
+  padding: 7px 9px;
+  border-left: 2px solid var(--wf-ladder-tone);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--wf-ladder-tone) 9%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.wf-ladder-why {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.wf-ladder-why strong {
+  color: var(--fg);
+}
+.wf-ladder-repeat {
+  margin: 5px 0 0;
+  color: color-mix(in oklab, var(--danger) 78%, var(--fg));
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.wf-ladder-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 7px 0 0;
+}
+.wf-ladder-meta > div {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.wf-ladder-meta dt {
+  color: var(--dim);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.wf-ladder-meta dd {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.wf-ladder-actrow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+}
+.wf-ladder-rung > .wf-ladder-actrow {
+  justify-content: flex-start;
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+}
+.wf-ladder-action.btn {
+  min-height: 27px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.wf-ladder-action.btn:disabled {
+  opacity: 0.58;
+  color: var(--dim);
+  border-color: var(--border-soft);
+  background: transparent;
+}
+.wf-ladder-open {
+  flex: none;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--panel);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wf-ladder-open:hover {
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+  color: var(--fg);
+}
+.wf-ladder-open:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.wf-ladder-action-error {
+  flex: none;
+  margin: -5px 0 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in oklab, var(--danger) 38%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--danger) 8%, var(--panel-2));
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 /* The other tabs are short - let the whole pane scroll. */
 .detail-pane {
   flex: 1;

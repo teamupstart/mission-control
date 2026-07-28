@@ -293,6 +293,31 @@ export const fetchEnsembleArtifactPatch = (runId: string, artifactId: string, ma
     }`,
   );
 
+/** Complete file stats for one artifact, with no patch bytes. Used by the compare matrix. */
+export const fetchArtifactFiles = (runId: string, artifactId: string) =>
+  ensembleJson<EnsembleArtifactPatch>(
+    "GET",
+    `/api/ensembles/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/patch?filesOnly=1`,
+  );
+
+/**
+ * One exact repo-relative path from one artifact. The route deliberately accepts one `path` per
+ * request; compare fans these out instead of growing an unbounded multi-path query string.
+ */
+export function fetchArtifactFilePatch(
+  runId: string,
+  artifactId: string,
+  path: string,
+  maxBytes?: number,
+) {
+  const params = new URLSearchParams({ path });
+  if (maxBytes !== undefined) params.set("maxBytes", String(maxBytes));
+  return ensembleJson<EnsembleArtifactPatch>(
+    "GET",
+    `/api/ensembles/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/patch?${params}`,
+  );
+}
+
 /**
  * The side-effect-free launch/budget/handoff estimate. Always returns a body: `ok: false`
  * with per-field `issues` for an invalid draft is the ordinary case, not an error.

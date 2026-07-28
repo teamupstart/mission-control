@@ -9,6 +9,10 @@ import {
   DecisionRecord,
   recordedDecision,
 } from "./dossier.tsx";
+import {
+  chooseCompareArtifactIds,
+  eligibleCompareArtifacts,
+} from "../compare.ts";
 
 /**
  * Best-of-N's result presentation: the anonymous comparison, one column per candidate, and -
@@ -64,6 +68,8 @@ export function BestOfNResult(ctx: EnsembleResultContext): React.JSX.Element | n
   const settled = status !== null && ensembleIsTerminal(status) && record !== null;
   const dossier = ctx.decision !== null || settled;
   const restorable = settled && record!.readable && Boolean(ctx.onRestoreArtifact);
+  const eligibleIds = eligibleCompareArtifacts(ctx.detail).map((artifact) => artifact.id);
+  const rankedIds = comparison.scorecards.map((card) => card.artifactId);
 
   return (
     <div className="ensemble-result">
@@ -94,30 +100,41 @@ export function BestOfNResult(ctx: EnsembleResultContext): React.JSX.Element | n
         </div>
       )}
       <ol className="ensemble-scorecards dossier-cols">
-        {comparison.scorecards.map((card) => (
-          <CandidateColumn
-            key={card.artifactId}
-            artifact={artifactById.get(card.artifactId) ?? null}
-            subjectLabel={ctx.subjectLabel(card.artifactId)}
-            verdict={{
-              rank: card.rank,
-              scoreLine: `score ${card.score}/100 · confidence ${Math.round(card.confidence * 100)}%`,
-              rationale: card.rationale,
-              strengths: card.strengths,
-              risks: card.risks,
-              recommended: card.artifactId === comparison.recommendedArtifactId,
-            }}
-            onOpenArtifact={
-              ctx.onOpenArtifact ? () => ctx.onOpenArtifact?.(card.artifactId) : undefined
-            }
-            onRestore={
-              restorable && card.artifactId !== record!.selectedArtifactId
-                ? () => ctx.onRestoreArtifact?.(card.artifactId)
-                : undefined
-            }
-            restorePending={ctx.restorePendingArtifactId === card.artifactId}
-          />
-        ))}
+        {comparison.scorecards.map((card) => {
+          const compareArtifactIds = chooseCompareArtifactIds({
+            scoredArtifactId: card.artifactId,
+            currentSelection: [],
+            recommendedArtifactId: comparison.recommendedArtifactId,
+            rankedArtifactIds: rankedIds,
+            eligibleArtifactIds: eligibleIds,
+          });
+          return (
+            <CandidateColumn
+              key={card.artifactId}
+              artifact={artifactById.get(card.artifactId) ?? null}
+              subjectLabel={ctx.subjectLabel(card.artifactId)}
+              verdict={{
+                rank: card.rank,
+                scoreLine: `score ${card.score}/100 · confidence ${Math.round(card.confidence * 100)}%`,
+                rationale: card.rationale,
+                strengths: card.strengths,
+                risks: card.risks,
+                recommended: card.artifactId === comparison.recommendedArtifactId,
+              }}
+              onOpenArtifact={
+                ctx.onOpenArtifact ? () => ctx.onOpenArtifact?.(card.artifactId) : undefined
+              }
+              compareArtifactIds={compareArtifactIds}
+              onOpenCompare={ctx.onOpenCompare}
+              onRestore={
+                restorable && card.artifactId !== record!.selectedArtifactId
+                  ? () => ctx.onRestoreArtifact?.(card.artifactId)
+                  : undefined
+              }
+              restorePending={ctx.restorePendingArtifactId === card.artifactId}
+            />
+          );
+        })}
       </ol>
       {ctx.decision ? (
         <DecisionPanel

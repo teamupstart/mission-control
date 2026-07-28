@@ -1209,7 +1209,17 @@ export class WorkflowManager {
       state,
       now,
     });
-    if (entered) this.publishRun(run.id);
+    if (entered) {
+      this.publishRun(run.id);
+      if (
+        waitReason === "missing_pr"
+        && version.completionPolicy.missingPrAction === "prepare_pr"
+        && binding.deliveryMode === "live"
+        && binding.sessionId
+      ) {
+        this.scheduleAutomaticPr(run.id, submission.id, now);
+      }
+    }
     return true;
   }
 
@@ -1262,7 +1272,7 @@ export class WorkflowManager {
     }
     if (
       run.status !== "waiting_for_pr"
-      || version.completionPolicy.missingPrAction !== "offer_prepare_pr"
+      || !["offer_prepare_pr", "prepare_pr"].includes(version.completionPolicy.missingPrAction)
       || !["missing_pr", "unadopted_pr"].includes(gate.waitReason ?? "")
       || !binding.sessionId
     ) {
@@ -2653,6 +2663,23 @@ export class WorkflowManager {
   }
 
   private recoverWaitingDeliveries(): void {
+    for (const run of this.store.listRuns()) {
+      if (run.status !== "waiting_for_pr") continue;
+      const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+      const binding = this.store.getBinding(run.bindingId);
+      const submission = this.store.latestSubmission(run.id);
+      const gate = this.gateState(run);
+      if (
+        version?.completionPolicy.kind !== "inspector"
+        || version.completionPolicy.missingPrAction !== "prepare_pr"
+        || binding?.state !== "active"
+        || binding.deliveryMode !== "live"
+        || !binding.sessionId
+        || !submission
+        || gate?.waitReason !== "missing_pr"
+      ) continue;
+      this.scheduleAutomaticPr(run.id, submission.id);
+    }
     const waitingSubmissions = this.store.listSubmissionsByState("waiting_for_session");
     const submissionRecovery = new Set(waitingSubmissions.map((submission) => submission.id));
     for (const submission of waitingSubmissions) {
@@ -2700,6 +2727,39 @@ export class WorkflowManager {
       });
       this.publishRun(submission.runId);
     }));
+  }
+
+  private scheduleAutomaticPr(runId: string, submissionId: string, now = Date.now()): void {
+    this.trackDeliveryTask(
+      this.preparePr(runId, `automatic:${submissionId}`, now)
+        .then((result) => {
+          if (result.ok) return;
+          const run = this.store.getRun(runId);
+          if (!run || run.status !== "waiting_for_pr") return;
+          this.store.appendEvent(runId, "pr_handoff_automatic_deferred", {
+            submissionId,
+            reason: result.reason,
+            message: result.message,
+          });
+          this.publishRun(runId);
+        })
+        .catch((error) => {
+          const run = this.store.getRun(runId);
+          if (!run || runIsTerminal(run)) return;
+          const message = error instanceof Error ? error.message : String(error);
+          this.store.setRunState(
+            runId,
+            "blocked",
+            "pr_handoff_prepare_error",
+            (this.gateState(run) as unknown as WorkflowJson | null) ?? { submissionId, error: message },
+          );
+          this.store.appendEvent(runId, "pr_handoff_prepare_error", {
+            submissionId,
+            error: message,
+          });
+          this.publishRun(runId);
+        }),
+    );
   }
 
   private schedulePreparedDelivery(deliveryId: string): void {

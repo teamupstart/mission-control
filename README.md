@@ -1137,9 +1137,16 @@ selection and add the task to the backlog while Foreman is off. When the task is
 Foreman must be enabled and the selected harness must support its completion boundary; the
 Workflow is then bound to the session and starts when Foreman reports **Complete**. Set the
 machine-wide choice under **Settings → Workflows → Dispatch default** to preselect it for
-every new single-agent dispatch. The dispatch form can override that choice for one task,
-including an explicit **None** that finishes without a Workflow. Once the task has a session,
-this selection is frozen so the task row and the already-armed Workflow cannot disagree.
+every new single-agent dispatch. New installations start on the built-in **No-Mistakes
+Review** workflow. That default stores the workflow identity rather than today's version, so
+each new binding takes the newest immutable version shipped at the time (see
+[Built-in workflows](#built-in-workflows)) while older bindings stay pinned. The dispatch
+form can override that choice for one task, including an explicit **None** that finishes
+without a Workflow. Once the task has a session, this selection is frozen so the task row and
+the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
+Recurring Missions inherit the same machine default when they create an ordinary task.
+Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
+Workflow belongs only at its final N-to-one handoff.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
@@ -1790,8 +1797,13 @@ Runs is the monitoring, evidence, decision, recovery and history surface: it wea
 counting the runs the daemon marks as needing attention, and lists runs attention-first from the
 one live SSE stream with their shared progress dots and `submitted/roster` counts (plus the
 launched count while a wave is still opening),
-and fetches a selected run's bounded detail - members, immutable artifacts and their on-demand
-diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's candidate columns,
+and fetches a selected run's bounded detail. A **Launch -> Work -> Review -> Decide -> Promote**
+pipeline names the active stage in operator words and explains a waiting barrier (“waiting for 1
+more submission” or “waiting on you”). Live members render as lanes with session tone, activity,
+goal, elapsed time, last-event age and live cost; a blocked member's review form and verified
+pane/driver dialog are answerable there without leaving the run, while attempt and artifact
+histories fold behind a disclosure. The rest of the bounded detail carries immutable artifacts and
+their on-demand diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's candidate columns,
 Consensus's agreements and divergence cards, Panel vote's rank matrix and ballots), and the decision
 that strategy asks for - over HTTP, refetching when that run's summary revises rather than polling.
 The strategy-neutral runtime pins one base commit, launches
@@ -1832,6 +1844,14 @@ durable "why we picked B" record - what was promoted, the operator's rationale, 
 beside each losing column, which is where the fact that every loser's snapshot was *kept* finally
 becomes discoverable. The run's decision is also one click from the
 [attention inbox](#attention-inbox-one-place-to-drain-what-needs-you).
+
+Below the live Members lanes, **Compare** opens when two ready snapshots exist. Pick two or three
+candidates to get a churn-sorted file-touch matrix with rename/binary/“only #N” marks, an aligned
+claims strip (summary, checks, frozen cost and any score/rank/confidence), and synchronized
+side-by-side panes for one exact file. Scorecard rationale paths open the matching matrix row; if
+the selected candidates did not touch that path, Compare says so explicitly. See
+[Comparing snapshots file by file](docs/ensembles.md#comparing-snapshots-file-by-file) for the
+selection, evidence and truncation behavior.
 
 **Finalization begins from a durable human decision and nothing else.** You confirm one eligible
 submission (or an explicit *no consensus*) through `POST /api/ensembles/:id/actions`; the decision
@@ -1978,8 +1998,9 @@ obligation:
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
 3. **Members parked on a menu** - an ensemble member sitting on a terminal
-   [option menu](#answer-a-sessions-menu-from-the-dashboard). Listed, not answered: a pane
-   dialog is a transient TUI fact answered by keystrokes on the card, and it deep-links there.
+   [option menu](#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
+   inbox: it deep-links to the session card, while the member's live lane in the run detail
+   also renders the verified pane dialog in place.
 4. **Stuck finalizations and shipping gates** - a promotion that stopped on an error, and
    parked no-mistakes gates no agent is driving.
 
@@ -2145,7 +2166,7 @@ your copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 3 are preserved for bindings that already pin them, and version 4 is current. There is
+through 5 are preserved for bindings that already pin them, and version 6 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -2158,7 +2179,7 @@ so one failing gate returns the submission to the session with the command's own
 
 The [Check nodes](#check-nodes) section owns the current execution status and the rules for
 configured, unconfigured and unauthorized slots. In this build those rules make versions 3
-and 4 follow the same Persona review path as version 2 while preserving the deterministic
+through 6 follow the same Persona review path as version 2 while preserving the deterministic
 stage in the graph.
 
 Behind it are the four built-in Personas wired the way they were written to compose. Intent
@@ -2168,18 +2189,19 @@ Auditor and Documentation Steward are stage 3, running **in parallel on the same
 and aggregating into one combined repair packet at their All-pass Join. Every fail returns to
 the session for repair. A passed review is gated on the
 [Inspector final gate](#inspector-final-gate) finding nothing on the pull request:
-in current version 4, findings require the session to fix, verify, commit and push, then
+in versions 4 through 6, findings require the session to fix, verify, commit and push, then
 Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
-through 3 retain their original whole-workflow restart behavior. A run with no pull request
-yet offers **Prepare PR in session** rather than waiting silently. That handoff explicitly
-invokes the bound harness's **Pull Request** skill; if the skill is disabled, its link has
-drifted, or the live session has not loaded the current skill generation yet, the action
-refuses without advancing the run or falling back to an ordinary prose instruction.
-Versions 2 through 4
-default to Manual trigger and Live delivery, so a failed review returns its deterministic
-repair packet to the bound session automatically. Live still requires the subsystem switch
-and repository allowlist, and every binding can override the version default. Version 1
-retains its original Manual and Preview defaults for existing pinned bindings.
+through 3 retain their original whole-workflow restart behavior. Versions 5 and 6
+automatically return a passed, PR-less review to the session to prepare the pull request;
+earlier versions offer **Prepare PR in session** instead. Both paths explicitly invoke the
+bound harness's **Pull Request** skill; if the skill is disabled, its link has drifted, or
+the live session has not loaded the current skill generation yet, the handoff refuses
+without advancing the run or falling back to an ordinary prose instruction.
+Versions 2 through 5 retain their
+Manual trigger and Live delivery defaults, while current version 6 defaults to Foreman
+complete and Live. Live still requires the subsystem switch and repository allowlist, and
+every binding can override the version default. Version 1 retains its original Manual and
+Preview defaults for existing pinned bindings.
 
 Like the built-in Personas it is **app data, not your data**, and the workflow list marks it
 `Built-in`. Opening it shows it read-only: it draws in the Pipeline view with every editing
@@ -2201,13 +2223,14 @@ from you: it always carries the guidance and the graph the build was made from. 
 shipped workflow itself appends a **new version** rather than editing the one you may be bound
 to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
 
-Versions 3 and 4 are that rule in practice. Version 3 added the deterministic check stage;
-version 4 preserves that graph and changes only the immutable Inspector-findings policy.
-Versions 1 and 2 - the same four reviewers with no check stage - and version 3 are still in
-the catalog and still resolve, so an existing binding keeps running its pinned graph and
-whole-workflow restart policy. New bindings take version 4 because it is current. Adopting
-the newer version on an existing binding means creating a new binding, which is the same
-gesture adopting any newly published version already requires.
+Versions 3 through 6 are that rule in practice. Version 3 added the deterministic check
+stage; version 4 preserves that graph and changes only the immutable Inspector-findings
+policy; version 5 automatically prepares a missing pull request; and version 6 makes Foreman
+complete the default trigger. Every earlier version remains in the catalog and still
+resolves, so an existing binding keeps its pinned graph, policies, and binding defaults.
+New bindings take version 6 because it is current. Adopting the newer version on an existing
+binding means creating a new binding, which is the same gesture adopting any newly published
+version already requires.
 
 The graph is not stored in your database at all, which is what makes all of that true without
 a seeding step that could half-run. It is compiled into the build beside the Persona documents.
@@ -2322,9 +2345,9 @@ bounded version metadata; selecting one history entry fetches that immutable gra
 exact Persona Markdown from the version route.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
-or Live delivery, and a repair-round limit. Manual plus Preview remains the default. The
-optional Inspector final gate and its missing-PR and findings policies are immutable parts of
-each published version.
+or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
+new workflows. The optional Inspector final gate and its missing-PR and findings policies are
+immutable parts of each published version.
 
 ### Retiring a workflow
 
@@ -2391,6 +2414,18 @@ summaries update over the existing SSE stream, while detailed evidence and timel
 loaded only for the selected run. Cards, Console, and Board show the same workflow status.
 
 ### Watching a run
+
+When a session has a bound run, its Console and Board detail pane shows a vertical stage
+ladder above the transcript. Passed stages collapse, the active or failed stage names its
+members, and an objection, Inspector wait, or uncertain delivery opens in place. Preview
+feedback can be copied there. The failing rung also reports a member that has failed consecutive
+repair rounds, the signal of a non-converging repair loop. At the Inspector gate, **Recheck
+Inspector** evaluates the wait again and **Open PR** opens the adopted pull request. A waiting
+run with a missing or unadopted PR also offers **Prepare PR in session** when its immutable run
+policy permits preparation. An uncertain delivery can be resolved under the same confirmation
+and typed-phrase guards as the Runs page. Use **Open run** for the full evidence and timeline.
+A published version whose graph cannot be expressed as stages keeps the existing workflow chip
+here and links to the Runs page, where its read-only graph remains available.
 
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show
@@ -2526,11 +2561,12 @@ head, records an immutable attempt-free bypass submission, and reviews that head
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
 
-If no adopted PR exists, the published policy either waits or offers **Prepare PR in session**. That
-human action sends a deterministic commit, push, and PR prompt through Preview or Live delivery;
-the gate itself never pushes or opens a pull request. **Recheck Inspector** only reevaluates the
-current durable observation and remains waiting until Inspector's normal sweep has seen a new
-head.
+If no adopted PR exists, the published policy waits, offers **Prepare PR in session**, or prepares
+it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate
+itself never pushes or opens a pull request. The offered action prepares the packet under Preview
+or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
+**Recheck Inspector** only reevaluates the current durable observation and remains waiting until
+Inspector's normal sweep has seen a new head.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the
@@ -4383,7 +4419,8 @@ npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
+npm test               # full test suite, including real Electron GUI geometry checks
+npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
 npm run smoke          # boot the built bundles and check they actually run (after build)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks

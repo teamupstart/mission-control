@@ -35,6 +35,7 @@ import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
 
 type Tab = "conversation" | "queue" | "gate" | "diff" | "files";
 
@@ -403,6 +404,12 @@ export function ConsoleDetail({
                 sessionId={session.id}
                 fixes={session.nomistakesFixes}
                 onOpenDiff={(sha) => view.onOpenDiff(session.id, sha)}
+              />
+            )}
+            {workflowRun && (
+              <WorkflowLadderPanel
+                run={workflowRun}
+                onOpenRun={() => view.onOpenWorkflowRun?.(workflowRun.id)}
               />
             )}
             <TranscriptPanel

@@ -15,10 +15,10 @@
  * every review appears exactly once, which is what keeps two agents' option menus in one
  * document from sharing a radio group.
  *
- * The component itself is covered by source scan rather than by rendering, for the reason
- * `overlay-registry.test.ts` gives about `ReviewModal`: it draws `ReviewCard`, which reaches
- * `react-diff-view`'s stylesheet, and this runner cannot load a `.css` import. The fold above
- * it is where the decisions are, and it is pure on purpose.
+ * The component itself remains covered by source scan rather than rendering because the fold
+ * above it is where the ordering and counting decisions live. ReviewCard's vendor stylesheet is
+ * now loaded at the browser entry, so server-rendered lane tests can exercise the shared card
+ * without teaching the Node runner about CSS.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -291,7 +291,7 @@ test("a task with no ensemble link takes the ordinary path", () => {
   assert.equal(item?.kind === "session_reviews" && item.context, null);
 });
 
-// ---- the component, from source (see the header for why it is not rendered) ----
+// ---- the component, from source (the fold above is the behavioural unit) ----
 
 const inbox = readFileSync(
   fileURLToPath(new URL("../src/web/components/AttentionInbox.tsx", import.meta.url)),

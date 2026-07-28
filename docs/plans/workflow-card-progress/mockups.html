@@ -1,0 +1,3378 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bound workflow progress on a session card &middot; mockups</title>
+    <style>
+      /* ==========================================================================
+         Tokens, copied verbatim from src/web/styles.css so these mockups are the
+         real palette rather than an approximation of it.
+         ========================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #0a0c0f;
+        --bg-2: #0e1116;
+        --panel: #14181e;
+        --panel-2: #171c23;
+        --border: #232a33;
+        --border-soft: #1b2129;
+        --fg: #e7ebf1;
+        --muted: #939eae;
+        --dim: #7c8798;
+
+        --working: #4a9eff;
+        --idle: #35c08a;
+        --attention: #f6a733;
+        --danger: #f85149;
+        --exited: #707a88;
+        --neutral: #8b94a3;
+        --select: #35c08a;
+        --purple: #a371f7;
+        --foreman: var(--purple);
+        --pr-open: #3fb950;
+        --pr-merged: var(--purple);
+        --cost: var(--purple);
+
+        --radius: 13px;
+        --shadow:
+          0 1px 2px rgba(0, 0, 0, 0.4),
+          0 8px 24px rgba(0, 0, 0, 0.28);
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ==========================================================================
+         Presentation chrome for this document only. `mk-` prefix so nothing here
+         could ever be mistaken for a class the app ships.
+         ========================================================================== */
+      .mk-page {
+        max-width: 1360px;
+        margin: 0 auto;
+        padding: 40px 32px 120px;
+      }
+      .mk-masthead {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 26px;
+        margin-bottom: 34px;
+      }
+      .mk-eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin: 0 0 10px;
+      }
+      .mk-masthead h1 {
+        margin: 0 0 14px;
+        font-size: 30px;
+        font-weight: 660;
+        letter-spacing: -0.015em;
+      }
+      .mk-lede {
+        margin: 0;
+        max-width: 78ch;
+        color: var(--muted);
+        font-size: 14.5px;
+        line-height: 1.65;
+      }
+      .mk-lede strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .mk-lede code,
+      .mk-prose code,
+      .mk-note code,
+      .mk-cost code {
+        font-family: var(--mono);
+        font-size: 0.9em;
+        color: var(--fg);
+        background: color-mix(in oklab, var(--working) 9%, var(--bg-2));
+        border: 1px solid var(--border-soft);
+        border-radius: 4px;
+        padding: 0 4px;
+      }
+
+      .mk-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 0 -32px 34px;
+        padding: 12px 32px;
+        background: color-mix(in oklab, var(--bg) 88%, transparent);
+        backdrop-filter: blur(14px);
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .mk-toolbar-label {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-right: 2px;
+      }
+      .mk-filter {
+        font: inherit;
+        font-size: 11.5px;
+        font-weight: 560;
+        color: var(--muted);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 5px 12px;
+        cursor: pointer;
+        transition:
+          color 0.14s ease,
+          border-color 0.14s ease,
+          background 0.14s ease;
+      }
+      .mk-filter:hover {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+      }
+      .mk-filter[aria-pressed="true"] {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--select) 60%, var(--border));
+        background: color-mix(in oklab, var(--select) 14%, var(--panel));
+      }
+      .mk-toolbar-jump {
+        margin-left: auto;
+        display: flex;
+        gap: 6px;
+      }
+      .mk-toolbar-jump a {
+        font-size: 11.5px;
+        color: var(--dim);
+        text-decoration: none;
+        padding: 5px 9px;
+        border-radius: 7px;
+      }
+      .mk-toolbar-jump a:hover {
+        color: var(--fg);
+        background: var(--panel);
+      }
+
+      .mk-section {
+        margin: 0 0 66px;
+        scroll-margin-top: 80px;
+      }
+      .mk-section-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+      .mk-num {
+        flex: none;
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 9px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--working);
+      }
+      .mk-section-head h2 {
+        margin: 4px 0 0;
+        font-size: 20px;
+        font-weight: 640;
+        letter-spacing: -0.01em;
+      }
+      .mk-section-head .mk-sub {
+        margin: 3px 0 0;
+        font-size: 12.5px;
+        color: var(--dim);
+      }
+      .mk-prose {
+        max-width: 82ch;
+        margin: 0 0 20px 50px;
+        color: var(--muted);
+        font-size: 13.5px;
+        line-height: 1.68;
+      }
+      .mk-prose strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .mk-prose p {
+        margin: 0 0 11px;
+      }
+      .mk-prose ul {
+        margin: 0 0 11px;
+        padding-left: 20px;
+      }
+      .mk-prose li {
+        margin-bottom: 5px;
+      }
+
+      .mk-deck {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(392px, 1fr));
+        gap: 20px;
+        margin-left: 50px;
+      }
+      .mk-slot {
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        min-width: 0;
+      }
+      .mk-slot-label {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .mk-slot-label b {
+        color: var(--muted);
+        font-weight: 620;
+      }
+      .mk-slot-note {
+        font-size: 11.5px;
+        color: var(--dim);
+        line-height: 1.5;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+
+      .mk-cost {
+        margin: 22px 0 0 50px;
+        padding: 14px 16px;
+        border: 1px solid var(--border-soft);
+        border-left: 3px solid var(--working);
+        border-radius: 0 9px 9px 0;
+        background: color-mix(in oklab, var(--working) 5%, var(--bg-2));
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--muted);
+        max-width: 96ch;
+      }
+      .mk-cost h4 {
+        margin: 0 0 7px;
+        font-size: 11px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--working);
+        font-weight: 640;
+      }
+      .mk-cost ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .mk-cost li {
+        margin-bottom: 4px;
+      }
+      .mk-cost li:last-child {
+        margin-bottom: 0;
+      }
+      .mk-cost.is-warn {
+        border-left-color: var(--attention);
+        background: color-mix(in oklab, var(--attention) 5%, var(--bg-2));
+      }
+      .mk-cost.is-warn h4 {
+        color: var(--attention);
+      }
+      .mk-cost.is-good {
+        border-left-color: var(--idle);
+        background: color-mix(in oklab, var(--idle) 5%, var(--bg-2));
+      }
+      .mk-cost.is-good h4 {
+        color: var(--idle);
+      }
+
+      .mk-parity {
+        margin: 22px 0 0 50px;
+        padding: 16px 18px;
+        border: 1px dashed var(--border);
+        border-radius: 11px;
+        background: var(--bg-2);
+      }
+      .mk-parity h4 {
+        margin: 0 0 12px;
+        font-size: 11px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--dim);
+        font-weight: 640;
+      }
+      .mk-parity-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 18px;
+        align-items: start;
+      }
+      .mk-parity-cell {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        min-width: 0;
+      }
+      .mk-parity-cell > span:first-child {
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+
+      table.mk-table {
+        width: calc(100% - 50px);
+        margin-left: 50px;
+        border-collapse: collapse;
+        font-size: 12.5px;
+      }
+      table.mk-table th,
+      table.mk-table td {
+        text-align: left;
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: top;
+      }
+      table.mk-table th {
+        font-size: 10.5px;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--dim);
+        font-weight: 620;
+        border-bottom-color: var(--border);
+      }
+      table.mk-table td {
+        color: var(--muted);
+      }
+      table.mk-table td:first-child {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--fg);
+        white-space: nowrap;
+      }
+      /* Scoped for the same specificity reason as `.wf-rail .wf-seg-*`: `table.mk-table td`
+         carries a type selector and would otherwise win, leaving every verdict muted. */
+      table.mk-table td.mk-yes {
+        color: var(--idle);
+      }
+      table.mk-table td.mk-no {
+        color: var(--danger);
+      }
+      table.mk-table td.mk-partial {
+        color: var(--attention);
+      }
+
+      /* State filter. Every card declares the run state it draws, so the toolbar can
+         collapse the page to one state and compare the four options like with like. */
+      body[data-state="all"] .mk-slot {
+        display: flex;
+      }
+      body:not([data-state="all"]) .mk-slot[data-state] {
+        display: none;
+      }
+      body[data-state="running"] .mk-slot[data-state="running"],
+      body[data-state="changes"] .mk-slot[data-state="changes"],
+      body[data-state="gate"] .mk-slot[data-state="gate"],
+      body[data-state="blocked"] .mk-slot[data-state="blocked"] {
+        display: flex;
+      }
+
+      /* ==========================================================================
+         App surfaces, copied from src/web/styles.css. Anything below this line is
+         what the dashboard already renders today.
+         ========================================================================== */
+      .card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 13px;
+        padding: 15px 17px 13px;
+        background: linear-gradient(var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .card::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: var(--tone-color, var(--neutral));
+      }
+      .tone-working {
+        --tone-color: var(--working);
+      }
+      .tone-idle {
+        --tone-color: var(--idle);
+      }
+      .tone-attention {
+        --tone-color: var(--attention);
+      }
+      .tone-neutral {
+        --tone-color: var(--neutral);
+      }
+      .card.attention {
+        border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+        box-shadow:
+          var(--shadow),
+          0 0 0 1px color-mix(in oklab, var(--attention) 30%, transparent),
+          0 0 24px color-mix(in oklab, var(--attention) 16%, transparent);
+      }
+      .card-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        row-gap: 7px;
+      }
+      .agent-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex: none;
+        background: var(--agent-accent, var(--neutral));
+        box-shadow: 0 0 8px color-mix(in oklab, var(--agent-accent, var(--neutral)) 60%, transparent);
+      }
+      .card-title {
+        min-width: 0;
+        flex: 1;
+      }
+      .card-title h2 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 640;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .name-source {
+        display: block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 9px 3px 8px;
+        border-radius: 999px;
+        font-size: 11.5px;
+        font-weight: 560;
+        white-space: nowrap;
+        border: 1px solid transparent;
+      }
+      .badge-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .badge-working {
+        color: var(--working);
+        background: color-mix(in oklab, var(--working) 15%, transparent);
+      }
+      .badge-idle {
+        color: var(--idle);
+        background: color-mix(in oklab, var(--idle) 14%, transparent);
+      }
+      .badge-attention {
+        color: var(--attention);
+        background: color-mix(in oklab, var(--attention) 18%, transparent);
+      }
+      .badge-attention .badge-dot {
+        animation: blink 1.1s steps(2, start) infinite;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0.25;
+        }
+      }
+      .goal {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--fg);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        flex: none;
+      }
+      .goal-heuristic {
+        color: var(--muted);
+      }
+      .card-meta {
+        display: flex;
+        gap: 18px;
+        margin: 0;
+        flex-wrap: wrap;
+      }
+      .card-meta dt {
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--dim);
+        margin-bottom: 2px;
+      }
+      .card-meta dd {
+        margin: 0;
+        font-size: 12.5px;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 260px;
+      }
+      .mono {
+        font-family: var(--mono);
+      }
+      .branch {
+        color: var(--fg);
+      }
+      .branch::before {
+        content: "\2325 ";
+        color: var(--dim);
+      }
+      .card-runtime-line {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+      }
+      .card-runtime {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        margin: 0;
+      }
+      .rt-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        line-height: 1;
+        padding: 3px 7px;
+        border-radius: 6px;
+        border: 1px solid var(--border-soft);
+        background: var(--panel-2);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .rt-model {
+        color: var(--fg);
+        font-weight: 550;
+      }
+      .rt-1m {
+        font-size: 8.5px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        padding: 1px 3px;
+        border-radius: 3px;
+        color: var(--working);
+        background: color-mix(in oklab, var(--working) 16%, transparent);
+      }
+      .rt-ctx {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .rt-meter {
+        position: relative;
+        display: block;
+        width: 44px;
+        height: 5px;
+        border-radius: 3px;
+        overflow: hidden;
+        background: color-mix(in oklab, var(--border) 70%, var(--panel));
+      }
+      .rt-meter-fill {
+        display: block;
+        height: 100%;
+        border-radius: 3px;
+        background: var(--idle);
+      }
+      .rt-ctx-num {
+        font-variant-numeric: tabular-nums;
+      }
+      .cost-chip {
+        color: var(--cost);
+        border-color: color-mix(in oklab, var(--cost) 32%, var(--border-soft));
+        background: color-mix(in oklab, var(--cost) 12%, var(--panel-2));
+        font-variant-numeric: tabular-nums;
+        font-weight: 550;
+      }
+      .activity {
+        margin: 0;
+        font-size: 12.5px;
+        color: var(--muted);
+        line-height: 1.4;
+        border-left: 2px solid var(--border);
+        padding-left: 10px;
+      }
+      .card-foot {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 7px;
+        row-gap: 5px;
+        font-size: 11.5px;
+        color: var(--muted);
+        padding-top: 3px;
+        border-top: 1px solid var(--border-soft);
+      }
+      .agent-name {
+        color: var(--muted);
+      }
+      .dot-sep {
+        color: var(--dim);
+      }
+      .dim {
+        color: var(--dim);
+      }
+      .spacer {
+        flex: 1;
+      }
+      .gated {
+        color: var(--idle);
+        font-size: 10.5px;
+        font-weight: 560;
+        padding: 1px 6px;
+        border-radius: 5px;
+        background: color-mix(in oklab, var(--idle) 12%, transparent);
+      }
+      .mode {
+        font-size: 10.5px;
+        font-weight: 560;
+        padding: 1px 6px;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--muted);
+      }
+      .pr-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in oklab, var(--pr-open) 45%, var(--border));
+        color: var(--pr-open);
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      /* The existing workflow chip and its tone vocabulary, verbatim. */
+      .workflow-chip,
+      .workflow-bind-chip {
+        border: 1px solid color-mix(in srgb, var(--working) 35%, var(--border));
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--working) 9%, var(--panel));
+        color: var(--fg);
+        font: inherit;
+        font-size: 11px;
+        line-height: 1;
+        padding: 5px 8px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .workflow-running {
+        color: var(--working);
+      }
+      .workflow-waiting {
+        color: var(--attention);
+      }
+      .workflow-blocked,
+      .workflow-failed {
+        color: var(--danger);
+      }
+      .workflow-passed {
+        color: var(--idle);
+      }
+
+      /* The no-mistakes strip, verbatim, for the reference panel. */
+      .nm-strip {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        padding: 10px 11px;
+        border: 1px solid var(--border-soft);
+        border-radius: 9px;
+        background: color-mix(in oklab, var(--idle) 5%, var(--bg-2));
+        font-size: 12px;
+      }
+      .nm-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .nm-brand {
+        color: var(--idle);
+        font-weight: 620;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+      }
+      .nm-status {
+        font-size: 11px;
+        font-weight: 560;
+        padding: 1px 7px;
+        border-radius: 999px;
+        color: var(--muted);
+        background: color-mix(in oklab, var(--neutral) 14%, transparent);
+      }
+      .nm-status-running {
+        color: var(--working);
+        background: color-mix(in oklab, var(--working) 15%, transparent);
+      }
+      .nm-summary {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 520;
+      }
+      .nm-elapsed {
+        display: flex;
+        align-items: baseline;
+        gap: 5px;
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+      .nm-elapsed-glyph {
+        color: var(--working);
+        font-size: 10.5px;
+      }
+      .nm-elapsed-time {
+        color: var(--fg);
+        font-weight: 560;
+        font-variant-numeric: tabular-nums;
+      }
+      .nm-stage {
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.35;
+      }
+      .nm-stage strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .nm-pipe {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+      }
+      .nm-dot {
+        width: 12px;
+        height: 6px;
+        border-radius: 3px;
+        background: var(--dim);
+      }
+      .nm-done {
+        background: var(--idle);
+      }
+      .nm-run {
+        background: var(--working);
+      }
+      .nm-pending {
+        background: color-mix(in oklab, var(--dim) 60%, transparent);
+      }
+
+      /* Board tile + rail, verbatim, for the layout-parity rows. */
+      .tile {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        width: 100%;
+        padding: 10px 11px 9px 13px;
+        text-align: left;
+        color: var(--fg);
+        background: linear-gradient(var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+      }
+      .tile::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        border-radius: 10px 0 0 10px;
+        background: var(--tone-color, var(--neutral));
+      }
+      .tile-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .tile-name {
+        flex: 1;
+        min-width: 0;
+        font-size: 12.5px;
+        font-weight: 640;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tile-goal {
+        font-size: 11.5px;
+        line-height: 1.4;
+        color: var(--muted);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .tile-gate {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .tile-gate-row {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        min-width: 0;
+        font-size: 10.5px;
+      }
+      .gate-brand {
+        flex: none;
+        color: var(--dim);
+      }
+      .gate-step {
+        min-width: 0;
+        font-weight: 640;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .gate-step.gate-working {
+        color: var(--working);
+      }
+      .gate-step.gate-attention {
+        color: var(--attention);
+      }
+      .gate-step.gate-danger {
+        color: var(--danger);
+      }
+      .gate-pos {
+        flex: none;
+        margin-left: auto;
+        color: var(--dim);
+        font-variant-numeric: tabular-nums;
+      }
+      .tile-rail {
+        display: flex;
+        gap: 2px;
+      }
+      .tile-rail > span {
+        flex: 1;
+        height: 3px;
+        border-radius: 2px;
+        background: var(--border);
+      }
+      .tile-rail .tr-completed {
+        background: var(--idle);
+      }
+      .tile-rail .tr-running {
+        background: var(--working);
+      }
+      .tile-rail .tr-awaiting_approval {
+        background: var(--attention);
+      }
+      .tile-rail .tr-failed {
+        background: var(--danger);
+      }
+      .tile-marks {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: wrap;
+      }
+      .tile-flag {
+        padding: 1px 6px;
+        font-size: 10px;
+        font-weight: 650;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        background: var(--bg-2);
+      }
+      /* The tone has to be restated at this specificity. `.tile-flag` sets `color: var(--muted)`
+         and is declared later in the file than `.workflow-running`, so at equal specificity the
+         flag wins and every workflow tile flag renders grey whatever the run is doing. Worth
+         noting for whoever builds this: the SHIPPED stylesheet has the same collision, and
+         `.tf-workflow` there sets no colour at all, so today's board flag is un-toned. */
+      .tile-flag.tf-workflow.workflow-running {
+        color: var(--working);
+        border-color: color-mix(in oklab, var(--working) 48%, var(--border));
+      }
+      .tile-flag.tf-workflow.workflow-waiting {
+        color: var(--attention);
+        border-color: color-mix(in oklab, var(--attention) 48%, var(--border));
+      }
+      .tile-flag.tf-workflow.workflow-failed {
+        color: var(--danger);
+        border-color: color-mix(in oklab, var(--danger) 48%, var(--border));
+      }
+      .tile-foot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .tile-branch {
+        flex: 1;
+        min-width: 0;
+        font-family: var(--mono);
+        color: var(--idle);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* The console rail row, approximated closely enough to judge the glyph slot. */
+      .rail-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--panel);
+        font-size: 12px;
+      }
+      .rail-name {
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: var(--fg);
+        font-weight: 560;
+      }
+      .rail-marks {
+        display: flex;
+        gap: 5px;
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .rail-workflow {
+        font-weight: 800;
+      }
+
+      /* ==========================================================================
+         PROPOSED. `wf-` prefix, matching the workflow feature's existing web
+         prefix and sitting beside `.wf-pipeline-*` / `.wf-run-*`. Everything from
+         here down is new surface these mockups are asking for.
+         ========================================================================== */
+      .wf-strip {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        padding: 10px 11px;
+        border: 1px solid var(--border-soft);
+        border-radius: 9px;
+        background: color-mix(in oklab, var(--working) 5%, var(--bg-2));
+        font-size: 12px;
+      }
+      /* The strip takes the tone of what the run needs, not of what it is doing: an
+         amber frame is the card saying "this one is on you". */
+      .wf-strip.is-attention {
+        border-color: color-mix(in oklab, var(--attention) 32%, var(--border-soft));
+        background: color-mix(in oklab, var(--attention) 6%, var(--bg-2));
+      }
+      .wf-strip.is-danger {
+        border-color: color-mix(in oklab, var(--danger) 32%, var(--border-soft));
+        background: color-mix(in oklab, var(--danger) 6%, var(--bg-2));
+      }
+
+      .wf-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .wf-brand {
+        color: var(--working);
+        font-weight: 620;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wf-ver {
+        flex: none;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .wf-status {
+        flex: none;
+        font-size: 11px;
+        font-weight: 560;
+        padding: 1px 7px;
+        border-radius: 999px;
+        color: var(--muted);
+        background: color-mix(in oklab, var(--neutral) 14%, transparent);
+      }
+      .wf-status-running {
+        color: var(--working);
+        background: color-mix(in oklab, var(--working) 15%, transparent);
+      }
+      .wf-status-waiting {
+        color: var(--attention);
+        background: color-mix(in oklab, var(--attention) 15%, transparent);
+      }
+      .wf-status-failed {
+        color: #ff7b72;
+        background: color-mix(in oklab, var(--danger) 15%, transparent);
+      }
+      .wf-status-passed {
+        color: var(--idle);
+        background: color-mix(in oklab, var(--idle) 16%, transparent);
+      }
+      .wf-round {
+        flex: none;
+        margin-left: auto;
+        font-size: 11px;
+        color: var(--dim);
+        font-variant-numeric: tabular-nums;
+      }
+      .wf-round b {
+        color: var(--muted);
+        font-weight: 620;
+      }
+
+      .wf-elapsed {
+        display: flex;
+        align-items: baseline;
+        gap: 5px;
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+      .wf-elapsed-glyph {
+        color: var(--working);
+        font-size: 10.5px;
+      }
+      .wf-elapsed-time {
+        color: var(--fg);
+        font-weight: 560;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .wf-stage {
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.35;
+      }
+      .wf-stage strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .wf-stage-pos {
+        color: var(--muted);
+      }
+
+      /* --- the rail: one segment per stage, plus a separated terminal gate segment.
+             Full width rather than the strip's 12px dots, matching what a board tile
+             already draws for a no-mistakes run. --- */
+      .wf-rail {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+      }
+      .wf-rail > span {
+        flex: 1;
+        height: 5px;
+        border-radius: 3px;
+        background: color-mix(in oklab, var(--dim) 34%, transparent);
+      }
+      /* Scoped under `.wf-rail`, exactly as the shipped `.tile-rail .tr-*` rules are, and
+         for the same reason: `.wf-rail > span` carries the geometry and so also carries a
+         type selector. An unscoped `.wf-seg-passed` loses to it on specificity and every
+         segment silently stays grey. */
+      .wf-rail .wf-seg-passed {
+        background: var(--idle);
+      }
+      .wf-rail .wf-seg-running {
+        background: var(--working);
+        animation: wf-pulse 1.5s ease-in-out infinite;
+      }
+      .wf-rail .wf-seg-waiting {
+        background: var(--attention);
+      }
+      .wf-rail .wf-seg-failed {
+        background: var(--danger);
+      }
+      /* A stage nothing ran in. Hatched rather than tinted: "skipped" and "not run"
+         are not the same claim as "passed", and a flat green would say they were. */
+      .wf-rail .wf-seg-degraded {
+        background: repeating-linear-gradient(
+          115deg,
+          color-mix(in oklab, var(--idle) 55%, transparent) 0 3px,
+          color-mix(in oklab, var(--idle) 10%, transparent) 3px 6px
+        );
+      }
+      /* The terminal gate is a place in the pipeline, not a footnote under it. Narrow,
+         and set off by a gap so it reads as "and then the Inspector". */
+      .wf-rail .wf-seg-gate {
+        flex: 0 0 30px;
+        margin-left: 6px;
+        position: relative;
+      }
+      .wf-rail .wf-seg-gate::before {
+        content: "";
+        position: absolute;
+        left: -5px;
+        top: -2px;
+        bottom: -2px;
+        width: 1px;
+        background: var(--border);
+      }
+      @keyframes wf-pulse {
+        50% {
+          opacity: 0.42;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .wf-rail .wf-seg-running,
+        .wf-member.is-running .wf-member-glyph,
+        .wf-rd.is-running i,
+        .badge-attention .badge-dot {
+          animation: none;
+        }
+      }
+
+      .wf-line {
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.4;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .wf-line strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .wf-line.is-attention {
+        color: var(--attention);
+      }
+      .wf-line.is-danger {
+        color: #ff7b72;
+      }
+
+      /* Requested changes, in the shape `.nm-findings` uses for findings. */
+      .wf-changes {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .wf-changes li {
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.4;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .wf-who {
+        color: var(--fg);
+        font-weight: 560;
+        margin-right: 5px;
+      }
+      .wf-count {
+        font-size: 9.5px;
+        text-transform: uppercase;
+        font-weight: 640;
+        padding: 1px 5px;
+        border-radius: 4px;
+        margin-right: 6px;
+        color: #ff7b72;
+        background: color-mix(in oklab, var(--danger) 15%, transparent);
+        white-space: nowrap;
+      }
+
+      .wf-actrow {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        padding-top: 2px;
+      }
+      .wf-btn {
+        font: inherit;
+        font-size: 11.5px;
+        padding: 4px 10px;
+        border-radius: 7px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .wf-btn:hover {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+      }
+      .wf-btn-primary {
+        color: var(--working);
+        border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+        background: color-mix(in oklab, var(--working) 12%, var(--panel));
+      }
+      .wf-btn-warn {
+        color: var(--attention);
+        border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+        background: color-mix(in oklab, var(--attention) 12%, var(--panel));
+      }
+
+      /* --- Option B: the reviewer roster --- */
+      .wf-roster {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 5px 6px;
+      }
+      .wf-member {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        max-width: 100%;
+        min-width: 0;
+        font-size: 11px;
+        line-height: 1;
+        padding: 4px 8px 4px 6px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--bg-2);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .wf-member-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .wf-member-glyph {
+        flex: none;
+        font-size: 10px;
+        line-height: 1;
+      }
+      /* A check is not a reviewer. Dashed, exactly as the pipeline editor draws it. */
+      .wf-member.is-check {
+        border-style: dashed;
+      }
+      .wf-member.is-passed {
+        color: var(--idle);
+        border-color: color-mix(in oklab, var(--idle) 42%, var(--border));
+        background: color-mix(in oklab, var(--idle) 9%, var(--bg-2));
+      }
+      .wf-member.is-running {
+        color: var(--working);
+        border-color: color-mix(in oklab, var(--working) 48%, var(--border));
+        background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
+      }
+      .wf-member.is-running .wf-member-glyph {
+        animation: wf-pulse 1.5s ease-in-out infinite;
+      }
+      .wf-member.is-failed {
+        color: #ff7b72;
+        border-color: color-mix(in oklab, var(--danger) 48%, var(--border));
+        background: color-mix(in oklab, var(--danger) 10%, var(--bg-2));
+      }
+      .wf-member.is-waiting {
+        color: var(--attention);
+        border-color: color-mix(in oklab, var(--attention) 42%, var(--border));
+        background: color-mix(in oklab, var(--attention) 9%, var(--bg-2));
+      }
+      .wf-member.is-pending {
+        color: var(--dim);
+        border-style: dotted;
+      }
+      /* Degraded members carry the reason, never a tick: "Skipped" and "Not run" are
+         states an operator has to be able to see they are trusting. */
+      .wf-member.is-degraded {
+        color: var(--dim);
+        border-color: var(--border);
+        background: repeating-linear-gradient(
+          115deg,
+          color-mix(in oklab, var(--dim) 12%, transparent) 0 4px,
+          transparent 4px 8px
+        );
+      }
+      .wf-member-meta {
+        flex: none;
+        font-size: 9.5px;
+        font-weight: 640;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        opacity: 0.85;
+      }
+      .wf-seam {
+        flex: none;
+        color: var(--border);
+        font-size: 12px;
+        padding: 0 1px;
+      }
+      .wf-stagemark {
+        flex: none;
+        font-size: 9.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--dim);
+        padding-right: 1px;
+      }
+
+      /* --- Option C: the repair loop --- */
+      .wf-rounds {
+        display: flex;
+        align-items: stretch;
+        gap: 4px;
+      }
+      .wf-rd {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        align-items: center;
+        font-size: 9.5px;
+        font-weight: 640;
+        letter-spacing: 0.03em;
+        color: var(--dim);
+      }
+      .wf-rd i {
+        display: block;
+        width: 100%;
+        height: 5px;
+        border-radius: 3px;
+        background: color-mix(in oklab, var(--dim) 26%, transparent);
+      }
+      .wf-rd.is-failed {
+        color: #ff7b72;
+      }
+      .wf-rd.is-failed i {
+        background: var(--danger);
+      }
+      .wf-rd.is-running {
+        color: var(--working);
+      }
+      .wf-rd.is-running i {
+        background: var(--working);
+        animation: wf-pulse 1.5s ease-in-out infinite;
+      }
+      .wf-rd.is-waiting {
+        color: var(--attention);
+      }
+      .wf-rd.is-waiting i {
+        background: var(--attention);
+      }
+      .wf-rd.is-passed {
+        color: var(--idle);
+      }
+      .wf-rd.is-passed i {
+        background: var(--idle);
+      }
+      /* Rounds the run is still allowed to spend, drawn but unclaimed. */
+      .wf-rd.is-unspent i {
+        background: repeating-linear-gradient(
+          115deg,
+          color-mix(in oklab, var(--dim) 22%, transparent) 0 3px,
+          transparent 3px 6px
+        );
+      }
+      .wf-rd.is-lost {
+        color: color-mix(in oklab, var(--dim) 70%, transparent);
+      }
+      .wf-rd.is-lost i {
+        background: color-mix(in oklab, var(--dim) 14%, transparent);
+      }
+      .wf-substage {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+      }
+      .wf-substage > span {
+        flex: 1;
+        height: 3px;
+        border-radius: 2px;
+        background: color-mix(in oklab, var(--dim) 30%, transparent);
+      }
+      .wf-repeat {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        font-size: 11.5px;
+        line-height: 1.4;
+        color: var(--attention);
+        padding: 6px 8px;
+        border-radius: 7px;
+        border: 1px solid color-mix(in oklab, var(--attention) 30%, var(--border-soft));
+        background: color-mix(in oklab, var(--attention) 8%, transparent);
+      }
+      .wf-repeat.is-danger {
+        color: #ff7b72;
+        border-color: color-mix(in oklab, var(--danger) 32%, var(--border-soft));
+        background: color-mix(in oklab, var(--danger) 8%, transparent);
+      }
+      .wf-repeat b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+
+      /* --- Option D: the stage ladder --- */
+      .wf-ladder {
+        display: flex;
+        flex-direction: column;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .wf-rung {
+        position: relative;
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        padding: 4px 0 4px 0;
+        min-width: 0;
+      }
+      /* The spine. Drawn on every rung but the last, so the column never overshoots
+         the terminal node the way a single absolutely-positioned line does.
+         Lifted off `--border`: that token is tuned for hairlines on `--panel`, and on the
+         strip's tinted background a 1px run of it is invisible, which costs the ladder the
+         one line that makes it a ladder. */
+      .wf-rung:not(:last-child)::before {
+        content: "";
+        position: absolute;
+        left: 5px;
+        top: 16px;
+        bottom: -3px;
+        width: 1px;
+        background: color-mix(in oklab, var(--dim) 55%, transparent);
+      }
+      /* A passed rung's spine is the path the run actually took, so it carries that. */
+      .wf-rung.is-passed:not(:last-child)::before {
+        background: color-mix(in oklab, var(--idle) 45%, transparent);
+      }
+      .wf-rung.is-failed:not(:last-child)::before {
+        background: color-mix(in oklab, var(--danger) 45%, transparent);
+      }
+      .wf-node {
+        position: relative;
+        z-index: 1;
+        flex: none;
+        width: 11px;
+        height: 11px;
+        margin-top: 4px;
+        border-radius: 50%;
+        border: 1.5px solid var(--border);
+        background: var(--bg-2);
+      }
+      .wf-rung.is-passed .wf-node {
+        border-color: var(--idle);
+        background: var(--idle);
+      }
+      .wf-rung.is-running .wf-node {
+        border-color: var(--working);
+        background: color-mix(in oklab, var(--working) 40%, var(--bg-2));
+        box-shadow: 0 0 0 3px color-mix(in oklab, var(--working) 18%, transparent);
+      }
+      .wf-rung.is-failed .wf-node {
+        border-color: var(--danger);
+        background: var(--danger);
+      }
+      .wf-rung.is-waiting .wf-node {
+        border-color: var(--attention);
+        background: color-mix(in oklab, var(--attention) 40%, var(--bg-2));
+      }
+      .wf-rung.is-terminal .wf-node {
+        border-radius: 2px;
+        transform: rotate(45deg);
+      }
+      .wf-rung-body {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .wf-rung-top {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+      }
+      .wf-rung-name {
+        min-width: 0;
+        font-size: 12px;
+        font-weight: 560;
+        color: var(--fg);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wf-rung.is-pending .wf-rung-name {
+        color: var(--dim);
+        font-weight: 500;
+      }
+      .wf-rung-state {
+        flex: none;
+        margin-left: auto;
+        font-size: 10.5px;
+        font-weight: 600;
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .wf-rung.is-passed .wf-rung-state {
+        color: var(--idle);
+      }
+      .wf-rung.is-running .wf-rung-state {
+        color: var(--working);
+      }
+      .wf-rung.is-failed .wf-rung-state {
+        color: #ff7b72;
+      }
+      .wf-rung.is-waiting .wf-rung-state {
+        color: var(--attention);
+      }
+      .wf-rung-sub {
+        font-size: 11px;
+        color: var(--dim);
+        line-height: 1.4;
+      }
+      .wf-rung-why {
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.4;
+        padding: 5px 8px;
+        margin-top: 3px;
+        border-radius: 6px;
+        border-left: 2px solid color-mix(in oklab, var(--danger) 55%, transparent);
+        background: color-mix(in oklab, var(--danger) 7%, transparent);
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .wf-members-inline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 6px;
+        margin-top: 3px;
+      }
+      .wf-mini {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10.5px;
+        color: var(--dim);
+      }
+      .wf-mini b {
+        font-weight: 560;
+        color: var(--muted);
+      }
+      .wf-mini.is-passed b {
+        color: var(--idle);
+      }
+      .wf-mini.is-failed b {
+        color: #ff7b72;
+      }
+      .wf-mini.is-running b {
+        color: var(--working);
+      }
+
+      .wf-more {
+        font: inherit;
+        font-size: 11px;
+        color: var(--dim);
+        background: none;
+        border: 0;
+        padding: 2px 0 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      .wf-more:hover {
+        color: var(--working);
+      }
+    </style>
+  </head>
+  <body data-state="all">
+    <div class="mk-page">
+      <header class="mk-masthead">
+        <p class="mk-eyebrow">Mission Control &middot; design options</p>
+        <h1>Showing a bound workflow, as it executes, on the card</h1>
+        <p class="mk-lede">
+          A no-mistakes run gets a whole embedded strip on the card: a named stage, a segmented
+          rail, a ticking clock, findings and the buttons to answer a gate. A bound
+          <strong>workflow</strong> run gets one pill in the header that says
+          <code>Preview &middot; R2</code>, and everything else lives two clicks away on the Runs
+          page. These four options close that gap. Each one draws the same four run states so they
+          can be compared like with like, and each states what it would cost to build.
+        </p>
+      </header>
+
+      <nav class="mk-toolbar" aria-label="Mockup controls">
+        <span class="mk-toolbar-label">Run state</span>
+        <button class="mk-filter" data-filter="all" aria-pressed="true" type="button">All four</button>
+        <button class="mk-filter" data-filter="running" aria-pressed="false" type="button">
+          Reviewing
+        </button>
+        <button class="mk-filter" data-filter="changes" aria-pressed="false" type="button">
+          Changes requested
+        </button>
+        <button class="mk-filter" data-filter="gate" aria-pressed="false" type="button">
+          Inspector gate
+        </button>
+        <button class="mk-filter" data-filter="blocked" aria-pressed="false" type="button">
+          Blocked
+        </button>
+        <span class="mk-toolbar-jump">
+          <a href="#today">Today</a>
+          <a href="#option-a">A</a>
+          <a href="#option-b">B</a>
+          <a href="#option-c">C</a>
+          <a href="#option-d">D</a>
+          <a href="#compare">Compare</a>
+        </span>
+      </nav>
+
+      <!-- ================================================================== -->
+      <section class="mk-section" id="today">
+        <div class="mk-section-head">
+          <span class="mk-num">0</span>
+          <div>
+            <h2>What the card draws today</h2>
+            <p class="mk-sub">
+              Both of these are shipped surfaces, rendered here from the real stylesheet.
+            </p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            The asymmetry is the whole brief. On the left, a no-mistakes run: you can tell from
+            across the room which step it is on, how far through it is, and how long it has been
+            there. On the right, a workflow run in an identical situation: a pill.
+          </p>
+        </div>
+        <div class="mk-deck">
+          <div class="mk-slot">
+            <span class="mk-slot-label"
+              ><b>Shipped</b> no-mistakes strip
+              <span class="mk-slot-note">NomistakesStrip.tsx</span></span
+            >
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <p class="activity">running Bash</p>
+              <div class="nm-strip">
+                <div class="nm-head">
+                  <span class="nm-brand">&#9671; no-mistakes</span>
+                  <span class="nm-status nm-status-running">running</span>
+                  <span class="nm-summary">1 auto-fix</span>
+                </div>
+                <div class="nm-elapsed">
+                  <span class="nm-elapsed-glyph">&#9719;</span>
+                  <span>running for</span>
+                  <span class="nm-elapsed-time mono">14m02s</span>
+                </div>
+                <div class="nm-stage">
+                  <strong>ci</strong><span class="nm-stage-pos"> &middot; step 9 of 9</span>
+                </div>
+                <div class="nm-pipe">
+                  <span class="nm-dot nm-done"></span><span class="nm-dot nm-done"></span
+                  ><span class="nm-dot nm-done"></span><span class="nm-dot nm-done"></span
+                  ><span class="nm-dot nm-done"></span><span class="nm-dot nm-done"></span
+                  ><span class="nm-dot nm-done"></span><span class="nm-dot nm-done"></span
+                  ><span class="nm-dot nm-run"></span>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="gated">&#9671; gated</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">2m ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <div class="mk-slot">
+            <span class="mk-slot-label"
+              ><b>Shipped</b> workflow chip
+              <span class="mk-slot-note">session-bits.tsx</span></span
+            >
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-running">&#9033; Preview &middot; R2</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <p class="activity">running Bash</p>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">2m ago</span>
+              </footer>
+            </article>
+            <p class="mk-slot-note">
+              The chip already knows more than it shows.
+              <code>WorkflowRunSummary</code> carries <code>activePersonaNames</code>,
+              <code>failedPersonaCount</code>, <code>round</code> / <code>maxRepairRounds</code>,
+              <code>gate</code>, <code>gatePrNumber</code>, <code>gateHeadShort</code> and the
+              uncertain-delivery counts. Nothing on any of the four session drawings reads any of
+              them.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================== -->
+      <section class="mk-section" id="option-a">
+        <div class="mk-section-head">
+          <span class="mk-num">A</span>
+          <div>
+            <h2>Gate rail</h2>
+            <p class="mk-sub">
+              The no-mistakes shape, applied verbatim, with the Inspector as its own segment.
+            </p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            One segment per <strong>stage</strong>, full width, exactly as a board tile already
+            draws a no-mistakes run. Above it, the stage name and position; below it, one line of
+            why. The move that makes this more than a copy is the
+            <strong>terminal gate segment</strong>: the Inspector wait is drawn as a place in the
+            pipeline, set off by a hairline, rather than as a sentence underneath. A run parked at
+            the gate looks parked.
+          </p>
+          <p>
+            A stage where nothing actually ran is <strong>hatched, not green</strong>. Today the
+            built-in workflow records unconfigured checks as skipped-and-passed, and a flat green
+            segment would tell the operator a gate held when no command was run.
+          </p>
+        </div>
+
+        <div class="mk-deck">
+          <!-- A / reviewing -->
+          <div class="mk-slot" data-state="running">
+            <span class="mk-slot-label"><b>A1</b> reviewing</span>
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-running">&#9033; Preview &middot; R2</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-running">reviewing</span>
+                  <span class="wf-round">round <b>2</b> / 6</span>
+                </div>
+                <div class="wf-elapsed">
+                  <span class="wf-elapsed-glyph">&#9719;</span>
+                  <span>running for</span>
+                  <span class="wf-elapsed-time mono">3m12s</span>
+                </div>
+                <div class="wf-stage">
+                  <strong>Stage 3</strong
+                  ><span class="wf-stage-pos"> &middot; stage 3 of 3 &middot; 3 reviewers</span>
+                </div>
+                <div class="wf-rail">
+                  <span class="wf-seg-degraded"></span>
+                  <span class="wf-seg-passed"></span>
+                  <span class="wf-seg-running"></span>
+                  <span class="wf-seg-gate"></span>
+                </div>
+                <div class="wf-line">
+                  &#8627; Code Risk passed &middot; <strong>Test Evidence</strong> and
+                  <strong>Documentation</strong> still reviewing
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">14s ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <!-- A / changes -->
+          <div class="mk-slot" data-state="changes">
+            <span class="mk-slot-label"><b>A2</b> changes requested</span>
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-waiting">&#9033; Review changes</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip is-attention">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-failed">changes requested</span>
+                  <span class="wf-round">round <b>2</b> / 6</span>
+                </div>
+                <div class="wf-stage">
+                  <strong>Stage 3</strong
+                  ><span class="wf-stage-pos"> &middot; 2 of 3 reviewers want changes</span>
+                </div>
+                <div class="wf-rail">
+                  <span class="wf-seg-degraded"></span>
+                  <span class="wf-seg-passed"></span>
+                  <span class="wf-seg-failed"></span>
+                  <span class="wf-seg-gate"></span>
+                </div>
+                <ul class="wf-changes">
+                  <li>
+                    <span class="wf-count">2</span><span class="wf-who">Test Evidence Auditor</span
+                    >No end-to-end evidence that the alert panel renders for an away session.
+                  </li>
+                  <li>
+                    <span class="wf-count">1</span><span class="wf-who">Documentation Steward</span
+                    >The README Keyboard table still omits the new chord.
+                  </li>
+                </ul>
+                <div class="wf-line is-attention">
+                  &#10558; Returned to the session for repair &middot; round 3 runs the whole
+                  pipeline again
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">31s ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <!-- A / gate -->
+          <div class="mk-slot" data-state="gate">
+            <span class="mk-slot-label"><b>A3</b> Inspector gate</span>
+            <article class="card tone-attention attention" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <a class="pr-chip" href="#">&#9903; #301</a>
+                <button class="workflow-chip workflow-waiting">&#9033; Inspector gate</button>
+                <span class="badge badge-attention"><span class="badge-dot"></span>needs you</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip is-attention">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-waiting">Inspector gate</span>
+                  <span class="wf-round">round <b>3</b> / 6</span>
+                </div>
+                <div class="wf-elapsed">
+                  <span class="wf-elapsed-glyph" style="color: var(--attention)">&#9719;</span>
+                  <span>waiting for</span>
+                  <span class="wf-elapsed-time mono">6m48s</span>
+                </div>
+                <div class="wf-stage">
+                  <strong>All reviewers passed</strong
+                  ><span class="wf-stage-pos"> &middot; gated on the Inspector</span>
+                </div>
+                <div class="wf-rail">
+                  <span class="wf-seg-passed"></span>
+                  <span class="wf-seg-passed"></span>
+                  <span class="wf-seg-passed"></span>
+                  <span class="wf-seg-gate wf-seg-waiting"></span>
+                </div>
+                <div class="wf-line is-attention">
+                  &#9719; Inspector has the pull request and has not finished reviewing it &middot;
+                  <strong>#301</strong> &middot; <span class="mono">4f2ab19c</span>
+                </div>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-primary" type="button">Recheck Inspector</button>
+                  <button class="wf-btn" type="button">Open PR</button>
+                  <button class="wf-btn" type="button">Open run</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">6m ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <!-- A / blocked -->
+          <div class="mk-slot" data-state="blocked">
+            <span class="mk-slot-label"><b>A4</b> blocked</span>
+            <article class="card tone-attention attention" style="--agent-accent: #10a37f">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Migrate the schedules panel to the settings console</h2>
+                  <span class="name-source">wezterm &middot; harness-9</span>
+                </div>
+                <button class="workflow-chip workflow-blocked">&#9033; Workflow blocked</button>
+                <span class="badge badge-attention"><span class="badge-dot"></span>needs you</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Move the recurring missions panel behind the shared settings console shell without
+                changing any of its routes
+              </p>
+              <div class="wf-strip is-danger">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-failed">blocked</span>
+                  <span class="wf-round">round <b>6</b> / 6</span>
+                </div>
+                <div class="wf-stage">
+                  <strong>Out of repair rounds</strong
+                  ><span class="wf-stage-pos"> &middot; round limit</span>
+                </div>
+                <div class="wf-rail">
+                  <span class="wf-seg-passed"></span>
+                  <span class="wf-seg-passed"></span>
+                  <span class="wf-seg-failed"></span>
+                  <span class="wf-seg-gate"></span>
+                </div>
+                <div class="wf-line is-danger">
+                  <strong>Test Evidence Auditor</strong> requested changes in every one of the last
+                  four rounds. The pipeline will not run again without you.
+                </div>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-warn" type="button">Restart full workflow</button>
+                  <button class="wf-btn" type="button">Open run</button>
+                  <button class="wf-btn" type="button">Cancel run</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Codex</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">22m ago</span>
+              </footer>
+            </article>
+          </div>
+        </div>
+
+        <div class="mk-parity">
+          <h4>How A degrades into the other three session drawings</h4>
+          <div class="mk-parity-row">
+            <div class="mk-parity-cell">
+              <span>Board tile</span>
+              <div class="tile tone-working" style="--agent-accent: #d97757">
+                <span class="tile-head">
+                  <span class="agent-dot"></span>
+                  <span class="tile-name">harness-14</span>
+                </span>
+                <span class="tile-goal">Resolve all Inspector review comments on PR #301</span>
+                <span class="tile-gate">
+                  <span class="tile-gate-row">
+                    <span class="gate-brand">&#9033;</span>
+                    <span class="gate-step gate-working">Stage 3</span>
+                    <span class="gate-pos">R2 &middot; 3 / 3</span>
+                  </span>
+                  <span class="tile-rail">
+                    <span class="tr-completed"></span><span class="tr-completed"></span
+                    ><span class="tr-running"></span>
+                  </span>
+                </span>
+                <span class="tile-marks">
+                  <span class="tile-flag tf-workflow workflow-running">&#9033; Preview R2</span>
+                </span>
+                <span class="tile-foot">
+                  <span class="tile-branch">harness/channels-away-panel</span>
+                  <span>14s</span>
+                </span>
+              </div>
+            </div>
+            <div class="mk-parity-cell">
+              <span>Console rail</span>
+              <div class="rail-row">
+                <span class="agent-dot" style="--agent-accent: #d97757"></span>
+                <span class="rail-name">harness-14</span>
+                <span class="rail-marks">
+                  <span class="rail-workflow workflow-running" title="Workflow: Stage 3 of 3"
+                    >&#9033;</span
+                  >
+                  <span>&#8776;$</span>
+                </span>
+              </div>
+              <p class="mk-slot-note">
+                The rail already has a <code>&#9033;</code> mark. A gains a tone on it and nothing
+                else, because a rail row has no width for a bar.
+              </p>
+            </div>
+            <div class="mk-parity-cell">
+              <span>Console / board detail</span>
+              <p class="mk-slot-note">
+                Same strip, unchanged. The detail pane has the width for the changes list to run
+                three lines instead of two, which is the only difference.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="mk-cost is-good">
+          <h4>What A costs</h4>
+          <ul>
+            <li>
+              <code>WorkflowRunSummary</code> gains a bounded
+              <code>stages: { name, status, degraded }[]</code> plus
+              <code>stageIndex</code> and <code>startedAt</code>. Everything else it already
+              carries.
+            </li>
+            <li>
+              One new leaf in <code>session-bits.tsx</code> (<code>WorkflowStrip</code>), one CSS
+              section, one <code>SESSION_FIELD_COMPARATORS</code> entry if the summary ever moves
+              onto <code>Session</code> (it does not have to: the browser already joins runs to
+              sessions by id in <code>App.tsx</code>).
+            </li>
+            <li>
+              Reuses the vocabulary an operator already learned from no-mistakes. Nothing new to
+              teach.
+            </li>
+            <li>
+              <strong>Weakness:</strong> the rail is anonymous. Which of the three reviewers failed
+              only appears in the list underneath, and with four or more parallel reviewers that
+              list clamps.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ================================================================== -->
+      <section class="mk-section" id="option-b">
+        <div class="mk-section-head">
+          <span class="mk-num">B</span>
+          <div>
+            <h2>Reviewer roster</h2>
+            <p class="mk-sub">Named members instead of anonymous segments.</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            A workflow's stages are not interchangeable steps the way <code>lint</code> and
+            <code>ci</code> are. They are <strong>named judges with opinions</strong>, and which one
+            objected is the single most useful fact about a failed round. B spends the vertical
+            space that A saves on saying so: every member is a chip carrying its own name, its own
+            state glyph and its own tone, wrapping across stage seams.
+          </p>
+          <p>
+            Checks are <strong>dashed</strong>, matching how the pipeline editor already
+            distinguishes them, and a check that did not actually run says
+            <code>NOT RUN</code> on its face rather than wearing a tick.
+          </p>
+        </div>
+
+        <div class="mk-deck">
+          <div class="mk-slot" data-state="running">
+            <span class="mk-slot-label"><b>B1</b> reviewing</span>
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-running">&#9033; Preview &middot; R2</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-running">reviewing</span>
+                  <span class="wf-round">round <b>2</b> / 6 &middot; 3m12s</span>
+                </div>
+                <div class="wf-roster">
+                  <span class="wf-member is-check is-degraded"
+                    ><span class="wf-member-glyph">&#9675;</span
+                    ><span class="wf-member-name">typecheck</span
+                    ><span class="wf-member-meta">not run</span></span
+                  >
+                  <span class="wf-member is-check is-degraded"
+                    ><span class="wf-member-glyph">&#9675;</span
+                    ><span class="wf-member-name">test</span
+                    ><span class="wf-member-meta">not run</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-passed"
+                    ><span class="wf-member-glyph">&#10003;</span
+                    ><span class="wf-member-name">Intent Conformance</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-passed"
+                    ><span class="wf-member-glyph">&#10003;</span
+                    ><span class="wf-member-name">Code Risk</span></span
+                  >
+                  <span class="wf-member is-running"
+                    ><span class="wf-member-glyph">&#9679;</span
+                    ><span class="wf-member-name">Test Evidence</span></span
+                  >
+                  <span class="wf-member is-running"
+                    ><span class="wf-member-glyph">&#9679;</span
+                    ><span class="wf-member-name">Documentation</span></span
+                  >
+                </div>
+                <div class="wf-line">
+                  &#8627; 2 of 3 reviewers still out &middot; all must pass to reach the Inspector
+                  gate
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">14s ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <div class="mk-slot" data-state="changes">
+            <span class="mk-slot-label"><b>B2</b> changes requested</span>
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-waiting">&#9033; Review changes</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip is-attention">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-failed">changes requested</span>
+                  <span class="wf-round">round <b>2</b> / 6</span>
+                </div>
+                <div class="wf-roster">
+                  <span class="wf-member is-check is-degraded"
+                    ><span class="wf-member-glyph">&#9675;</span
+                    ><span class="wf-member-name">typecheck</span
+                    ><span class="wf-member-meta">not run</span></span
+                  >
+                  <span class="wf-member is-check is-degraded"
+                    ><span class="wf-member-glyph">&#9675;</span
+                    ><span class="wf-member-name">test</span
+                    ><span class="wf-member-meta">not run</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-passed"
+                    ><span class="wf-member-glyph">&#10003;</span
+                    ><span class="wf-member-name">Intent Conformance</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-passed"
+                    ><span class="wf-member-glyph">&#10003;</span
+                    ><span class="wf-member-name">Code Risk</span></span
+                  >
+                  <span class="wf-member is-failed"
+                    ><span class="wf-member-glyph">&#10007;</span
+                    ><span class="wf-member-name">Test Evidence</span
+                    ><span class="wf-member-meta">2</span></span
+                  >
+                  <span class="wf-member is-failed"
+                    ><span class="wf-member-glyph">&#10007;</span
+                    ><span class="wf-member-name">Documentation</span
+                    ><span class="wf-member-meta">1</span></span
+                  >
+                </div>
+                <ul class="wf-changes">
+                  <li>
+                    <span class="wf-who">Test Evidence Auditor</span>No end-to-end evidence that the
+                    alert panel renders for an away session.
+                  </li>
+                </ul>
+                <button class="wf-more" type="button">+2 more requested changes</button>
+                <div class="wf-line is-attention">
+                  &#10558; Returned to the session for repair &middot; round 3 of 6
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">31s ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <div class="mk-slot" data-state="gate">
+            <span class="mk-slot-label"><b>B3</b> Inspector gate</span>
+            <article class="card tone-attention attention" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <a class="pr-chip" href="#">&#9903; #301</a>
+                <button class="workflow-chip workflow-waiting">&#9033; Inspector gate</button>
+                <span class="badge badge-attention"><span class="badge-dot"></span>needs you</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip is-attention">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-waiting">Inspector gate</span>
+                  <span class="wf-round">round <b>3</b> / 6</span>
+                </div>
+                <div class="wf-roster">
+                  <span class="wf-member is-check is-degraded"
+                    ><span class="wf-member-glyph">&#9675;</span
+                    ><span class="wf-member-name">2 checks</span
+                    ><span class="wf-member-meta">not run</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-passed"
+                    ><span class="wf-member-glyph">&#10003;</span
+                    ><span class="wf-member-name">Intent Conformance</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-passed"
+                    ><span class="wf-member-glyph">&#10003;</span
+                    ><span class="wf-member-name">3 reviewers</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-waiting"
+                    ><span class="wf-member-glyph">&#9719;</span
+                    ><span class="wf-member-name">Inspector</span
+                    ><span class="wf-member-meta">#301</span></span
+                  >
+                </div>
+                <div class="wf-line is-attention">
+                  &#9719; Inspector has the pull request and has not finished reviewing it &middot;
+                  head <span class="mono">4f2ab19c</span>
+                </div>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-primary" type="button">Recheck Inspector</button>
+                  <button class="wf-btn" type="button">Open PR</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">6m ago</span>
+              </footer>
+            </article>
+            <p class="mk-slot-note">
+              Passed stages collapse to a count (<code>3 reviewers &#10003;</code>) once the run has
+              moved past them. Names earn their space while they can still change; after that the
+              gate needs the room.
+            </p>
+          </div>
+
+          <div class="mk-slot" data-state="blocked">
+            <span class="mk-slot-label"><b>B4</b> blocked, provider error</span>
+            <article class="card tone-attention attention" style="--agent-accent: #10a37f">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Migrate the schedules panel to the settings console</h2>
+                  <span class="name-source">wezterm &middot; harness-9</span>
+                </div>
+                <button class="workflow-chip workflow-blocked">&#9033; Workflow blocked</button>
+                <span class="badge badge-attention"><span class="badge-dot"></span>needs you</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Move the recurring missions panel behind the shared settings console shell without
+                changing any of its routes
+              </p>
+              <div class="wf-strip is-danger">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-failed">blocked</span>
+                  <span class="wf-round">round <b>4</b> / 6</span>
+                </div>
+                <div class="wf-roster">
+                  <span class="wf-member is-check is-passed"
+                    ><span class="wf-member-glyph">&#10003;</span
+                    ><span class="wf-member-name">typecheck</span></span
+                  >
+                  <span class="wf-member is-check is-failed"
+                    ><span class="wf-member-glyph">&#10007;</span
+                    ><span class="wf-member-name">test</span
+                    ><span class="wf-member-meta">exit 1</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-pending"
+                    ><span class="wf-member-glyph">&#9675;</span
+                    ><span class="wf-member-name">Intent Conformance</span></span
+                  >
+                  <span class="wf-seam">&#8594;</span>
+                  <span class="wf-member is-pending"
+                    ><span class="wf-member-glyph">&#9675;</span
+                    ><span class="wf-member-name">3 reviewers</span></span
+                  >
+                </div>
+                <div class="wf-line is-danger">
+                  <strong>Provider error.</strong> Three infrastructure attempts failed on
+                  <span class="mono">claude-sonnet-4-5</span>; no reviewer reached a verdict.
+                </div>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-primary" type="button">Retry provider call</button>
+                  <button class="wf-btn" type="button">Open run</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Codex</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">22m ago</span>
+              </footer>
+            </article>
+          </div>
+        </div>
+
+        <div class="mk-parity">
+          <h4>How B degrades into the other three session drawings</h4>
+          <div class="mk-parity-row">
+            <div class="mk-parity-cell">
+              <span>Board tile</span>
+              <div class="tile tone-working" style="--agent-accent: #d97757">
+                <span class="tile-head">
+                  <span class="agent-dot"></span>
+                  <span class="tile-name">harness-14</span>
+                </span>
+                <span class="tile-goal">Resolve all Inspector review comments on PR #301</span>
+                <span class="tile-gate">
+                  <span class="tile-gate-row">
+                    <span class="gate-brand">&#9033;</span>
+                    <span class="gate-step gate-danger">Test Evidence</span>
+                    <span class="gate-pos">R2 &middot; 2 fail</span>
+                  </span>
+                  <span class="tile-rail">
+                    <span class="tr-completed"></span><span class="tr-completed"></span
+                    ><span class="tr-failed"></span>
+                  </span>
+                </span>
+                <span class="tile-marks">
+                  <span class="tile-flag tf-workflow workflow-failed">&#9033; 2 want changes</span>
+                </span>
+                <span class="tile-foot">
+                  <span class="tile-branch">harness/channels-away-panel</span>
+                  <span>31s</span>
+                </span>
+              </div>
+              <p class="mk-slot-note">
+                The tile names the <em>blocking</em> member, which is what B is for. It cannot fit
+                the roster, so it names one and counts the rest.
+              </p>
+            </div>
+            <div class="mk-parity-cell">
+              <span>Console rail</span>
+              <div class="rail-row">
+                <span class="agent-dot" style="--agent-accent: #d97757"></span>
+                <span class="rail-name">harness-14</span>
+                <span class="rail-marks">
+                  <span
+                    class="rail-workflow workflow-failed"
+                    title="Workflow: Test Evidence Auditor requested changes"
+                    >&#9033;</span
+                  >
+                  <span>&#8776;$</span>
+                </span>
+              </div>
+            </div>
+            <div class="mk-parity-cell">
+              <span>Console / board detail</span>
+              <p class="mk-slot-note">
+                Detail is where B is best: the roster stops wrapping at ~520px, so all six members
+                sit on two lines and every requested change is readable without the
+                <code>+2 more</code> fold.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="mk-cost is-warn">
+          <h4>What B costs</h4>
+          <ul>
+            <li>
+              <code>WorkflowRunSummary</code> gains a bounded
+              <code>members: { name, kind, state, degraded, changeCount }[]</code>. That is the
+              biggest addition of the four options, and it needs a cap plus a documented collapse
+              rule, or a fifteen-persona workflow makes one card taller than the viewport.
+            </li>
+            <li>
+              Needs the collapse rule to be a real design decision, not a slice: passed stages
+              become counts, the current stage keeps names. Write it down or every future stage
+              count re-litigates it.
+            </li>
+            <li>
+              <strong>Weakness:</strong> at the grid's 330px minimum, six members wrap to three
+              lines. The strip is roughly 30% taller than A in the running state, on the card that
+              needs the least attention.
+            </li>
+            <li>
+              <strong>Strength:</strong> it answers "who objected" without a click, which is the
+              question a failed round actually raises.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ================================================================== -->
+      <section class="mk-section" id="option-c">
+        <div class="mk-section-head">
+          <span class="mk-num">C</span>
+          <div>
+            <h2>Repair loop</h2>
+            <p class="mk-sub">Rounds as the primary axis, stages as the secondary one.</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            A no-mistakes run is a line: nine steps, one direction, done. A workflow run is a
+            <strong>loop</strong>. Any fail returns the submission to the session and the whole
+            pipeline runs again, up to <code>maxRepairRounds</code>. A and B both draw the loop as
+            if it were a line and put the round in a corner.
+          </p>
+          <p>
+            C inverts that. The top rail is the <strong>rounds</strong>, one segment each, spent
+            ones tinted by how they ended and unspent ones hatched; the thin rail underneath is the
+            current round's stages. That makes the two facts that actually need a human legible at a
+            glance: <strong>how many attempts are left</strong>, and
+            <strong>whether it is failing the same way every time</strong>. The repeat-offender line
+            is only computable on this axis.
+          </p>
+        </div>
+
+        <div class="mk-deck">
+          <div class="mk-slot" data-state="running">
+            <span class="mk-slot-label"><b>C1</b> reviewing</span>
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-running">&#9033; Preview &middot; R2</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-running">reviewing</span>
+                  <span class="wf-round">3m12s</span>
+                </div>
+                <div class="wf-rounds">
+                  <span class="wf-rd is-failed">R1<i></i></span>
+                  <span class="wf-rd is-running">R2<i></i></span>
+                  <span class="wf-rd is-unspent">R3<i></i></span>
+                  <span class="wf-rd is-unspent">R4<i></i></span>
+                  <span class="wf-rd is-unspent">R5<i></i></span>
+                  <span class="wf-rd is-unspent">R6<i></i></span>
+                </div>
+                <div class="wf-stage">
+                  <strong>Round 2</strong
+                  ><span class="wf-stage-pos"> &middot; stage 3 of 3 &middot; Test Evidence, Documentation</span>
+                </div>
+                <div class="wf-substage">
+                  <span style="background: var(--idle)"></span>
+                  <span style="background: var(--idle)"></span>
+                  <span style="background: var(--working)"></span>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">14s ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <div class="mk-slot" data-state="changes">
+            <span class="mk-slot-label"><b>C2</b> changes requested, twice over</span>
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-waiting">&#9033; Review changes</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip is-attention">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-failed">changes requested</span>
+                  <span class="wf-round">4 rounds left</span>
+                </div>
+                <div class="wf-rounds">
+                  <span class="wf-rd is-failed">R1<i></i></span>
+                  <span class="wf-rd is-failed">R2<i></i></span>
+                  <span class="wf-rd is-unspent">R3<i></i></span>
+                  <span class="wf-rd is-unspent">R4<i></i></span>
+                  <span class="wf-rd is-unspent">R5<i></i></span>
+                  <span class="wf-rd is-unspent">R6<i></i></span>
+                </div>
+                <div class="wf-repeat">
+                  <span>&#9888;</span>
+                  <span
+                    ><b>Test Evidence Auditor</b> has requested changes in both rounds, on the same
+                    file. Repairing again may not be the move.</span
+                  >
+                </div>
+                <ul class="wf-changes">
+                  <li>
+                    <span class="wf-who">Test Evidence Auditor</span>No end-to-end evidence that the
+                    alert panel renders for an away session.
+                  </li>
+                  <li>
+                    <span class="wf-who">Documentation Steward</span>The README Keyboard table still
+                    omits the new chord.
+                  </li>
+                </ul>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">31s ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <div class="mk-slot" data-state="gate">
+            <span class="mk-slot-label"><b>C3</b> Inspector gate</span>
+            <article class="card tone-attention attention" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <a class="pr-chip" href="#">&#9903; #301</a>
+                <button class="workflow-chip workflow-waiting">&#9033; Inspector gate</button>
+                <span class="badge badge-attention"><span class="badge-dot"></span>needs you</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Resolve all Inspector review comments on PR #301, push fixes to the existing branch,
+                and verify CI and review threads are green
+              </p>
+              <div class="wf-strip is-attention">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-waiting">Inspector gate</span>
+                  <span class="wf-round">3 rounds left</span>
+                </div>
+                <div class="wf-rounds">
+                  <span class="wf-rd is-failed">R1<i></i></span>
+                  <span class="wf-rd is-failed">R2<i></i></span>
+                  <span class="wf-rd is-waiting">R3<i></i></span>
+                  <span class="wf-rd is-unspent">R4<i></i></span>
+                  <span class="wf-rd is-unspent">R5<i></i></span>
+                  <span class="wf-rd is-unspent">R6<i></i></span>
+                </div>
+                <div class="wf-stage">
+                  <strong>Round 3 passed every reviewer</strong
+                  ><span class="wf-stage-pos"> &middot; parked at the Inspector for 6m48s</span>
+                </div>
+                <div class="wf-line is-attention">
+                  &#9719; Inspector has the pull request and has not finished reviewing it &middot;
+                  <strong>#301</strong> &middot; <span class="mono">4f2ab19c</span>
+                </div>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-primary" type="button">Recheck Inspector</button>
+                  <button class="wf-btn" type="button">Open PR</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">6m ago</span>
+              </footer>
+            </article>
+            <p class="mk-slot-note">
+              Findings from the Inspector open an <strong>inspector-only submission</strong> under
+              <code>onFindings: "inspector_only"</code>, which is what the shipped built-in has
+              done since version 4; version 3 and earlier restarted the whole review
+              (<code>"restart_workflow"</code>), and both spellings are still addressable because
+              the policy is pinned per published version. Either way the gate consumes a round, so
+              that remains a fact this axis can show and the others cannot - but what the next
+              round actually RUNS differs, so read the policy off the run's own version rather
+              than assuming the current default.
+            </p>
+          </div>
+
+          <div class="mk-slot" data-state="blocked">
+            <span class="mk-slot-label"><b>C4</b> out of rounds</span>
+            <article class="card tone-attention attention" style="--agent-accent: #10a37f">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Migrate the schedules panel to the settings console</h2>
+                  <span class="name-source">wezterm &middot; harness-9</span>
+                </div>
+                <button class="workflow-chip workflow-blocked">&#9033; Workflow blocked</button>
+                <span class="badge badge-attention"><span class="badge-dot"></span>needs you</span>
+              </header>
+              <p class="goal goal-heuristic">
+                Move the recurring missions panel behind the shared settings console shell without
+                changing any of its routes
+              </p>
+              <div class="wf-strip is-danger">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-failed">round limit</span>
+                  <span class="wf-round">0 rounds left</span>
+                </div>
+                <div class="wf-rounds">
+                  <span class="wf-rd is-failed">R1<i></i></span>
+                  <span class="wf-rd is-failed">R2<i></i></span>
+                  <span class="wf-rd is-failed">R3<i></i></span>
+                  <span class="wf-rd is-failed">R4<i></i></span>
+                  <span class="wf-rd is-failed">R5<i></i></span>
+                  <span class="wf-rd is-failed">R6<i></i></span>
+                </div>
+                <div class="wf-repeat is-danger">
+                  <span>&#9888;</span>
+                  <span
+                    ><b>Test Evidence Auditor</b> requested changes in all six rounds. Six repair
+                    cycles spent, roughly <b>$4.10</b> of reviewer calls, same objection each
+                    time.</span
+                  >
+                </div>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-warn" type="button">Restart full workflow</button>
+                  <button class="wf-btn" type="button">Open run</button>
+                  <button class="wf-btn" type="button">Cancel run</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Codex</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">22m ago</span>
+              </footer>
+            </article>
+          </div>
+        </div>
+
+        <div class="mk-parity">
+          <h4>How C degrades into the other three session drawings</h4>
+          <div class="mk-parity-row">
+            <div class="mk-parity-cell">
+              <span>Board tile</span>
+              <div class="tile tone-attention" style="--agent-accent: #10a37f">
+                <span class="tile-head">
+                  <span class="agent-dot"></span>
+                  <span class="tile-name">harness-9</span>
+                </span>
+                <span class="tile-goal">Migrate the schedules panel to the settings console</span>
+                <span class="tile-gate">
+                  <span class="tile-gate-row">
+                    <span class="gate-brand">&#9033;</span>
+                    <span class="gate-step gate-danger">Out of repair rounds</span>
+                    <span class="gate-pos">6 / 6</span>
+                  </span>
+                  <span class="tile-rail">
+                    <span class="tr-failed"></span><span class="tr-failed"></span
+                    ><span class="tr-failed"></span><span class="tr-failed"></span
+                    ><span class="tr-failed"></span><span class="tr-failed"></span>
+                  </span>
+                </span>
+                <span class="tile-marks">
+                  <span class="tile-flag tf-workflow workflow-failed">&#9033; blocked</span>
+                </span>
+                <span class="tile-foot">
+                  <span class="tile-branch">harness/schedules-settings-console</span>
+                  <span>22m</span>
+                </span>
+              </div>
+              <p class="mk-slot-note">
+                The tile rail becomes the round rail. Six red segments is a very loud, very cheap
+                signal, and it costs the tile nothing it was not already drawing.
+              </p>
+            </div>
+            <div class="mk-parity-cell">
+              <span>Console rail</span>
+              <div class="rail-row">
+                <span class="agent-dot" style="--agent-accent: #10a37f"></span>
+                <span class="rail-name">harness-9</span>
+                <span class="rail-marks">
+                  <span class="rail-workflow workflow-failed" title="Workflow: out of repair rounds"
+                    >&#9033;</span
+                  >
+                  <span>&#8776;$</span>
+                </span>
+              </div>
+            </div>
+            <div class="mk-parity-cell">
+              <span>Console / board detail</span>
+              <p class="mk-slot-note">
+                Detail can afford both rails plus the per-round reviewer names, which is very close
+                to the Runs page round scrubber. That overlap is worth deciding deliberately rather
+                than growing into.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="mk-cost is-warn">
+          <h4>What C costs</h4>
+          <ul>
+            <li>
+              <code>WorkflowRunSummary</code> gains
+              <code>rounds: { round, outcome, blockingMember }[]</code> (bounded by
+              <code>maxRepairRounds</code>, which is already capped at 20) plus the current round's
+              stage states.
+            </li>
+            <li>
+              The repeat-offender sentence is a genuine server-side derivation, not a projection:
+              "the same member failed N rounds running". It belongs beside
+              <code>compactGate</code> in <code>workflows/store.ts</code>, computed once, never in
+              the browser.
+            </li>
+            <li>
+              <strong>Weakness:</strong> two rails means two things to read, and in the common
+              healthy case (round 1, sailing through) the round rail is five hatched segments
+              saying nothing.
+            </li>
+            <li>
+              <strong>Strength:</strong> it is the only option that surfaces a repair loop burning
+              money without converging, which is the failure mode that costs the most and is
+              currently invisible until someone opens the Runs page.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ================================================================== -->
+      <section class="mk-section" id="option-d">
+        <div class="mk-section-head">
+          <span class="mk-num">D</span>
+          <div>
+            <h2>Stage ladder</h2>
+            <p class="mk-sub">
+              Vertical, for the Console and Board detail panes, where height is the cheap axis.
+            </p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            The other three fight for horizontal room on a 330px card. The detail pane has neither
+            that constraint nor that shape: it is a tall column, and the thing worth showing there
+            is the <strong>whole pipeline with the failing stage opened in place</strong>. D is a
+            spine with one rung per stage, reviewers nested under theirs, and the rejected verdict
+            expanded inline where you are already looking.
+          </p>
+          <p>
+            D is not an alternative to A/B/C so much as their detail-pane companion. It is drawn
+            here as a standalone option because it could also ship alone, with the collapsed card
+            keeping only today's chip.
+          </p>
+        </div>
+
+        <div class="mk-deck">
+          <div class="mk-slot" data-state="running">
+            <span class="mk-slot-label"><b>D1</b> reviewing</span>
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-running">&#9033; Preview &middot; R2</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <div class="wf-strip">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-running">reviewing</span>
+                  <span class="wf-round">round <b>2</b> / 6 &middot; 3m12s</span>
+                </div>
+                <ul class="wf-ladder">
+                  <li class="wf-rung is-passed is-terminal">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Session</span>
+                        <span class="wf-rung-state">Submitted</span>
+                      </span>
+                      <span class="wf-rung-sub">Evidence captured at 4f2ab19c</span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-passed">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Stage 1</span>
+                        <span class="wf-rung-state">None ran</span>
+                      </span>
+                      <span class="wf-members-inline">
+                        <span class="wf-mini"
+                          >&#9675; <b>Check &middot; typecheck</b> not run</span
+                        >
+                        <span class="wf-mini">&#9675; <b>Check &middot; test</b> not run</span>
+                      </span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-passed">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Intent Conformance Judge</span>
+                        <span class="wf-rung-state">Passed</span>
+                      </span>
+                      <span class="wf-rung-sub">92% confident &middot; 41s &middot; $0.0182</span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-running">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Stage 3</span>
+                        <span class="wf-rung-state">Running</span>
+                      </span>
+                      <span class="wf-members-inline">
+                        <span class="wf-mini is-passed"
+                          >&#10003; <b>Code Risk Reviewer</b> passed</span
+                        >
+                        <span class="wf-mini is-running"
+                          >&#9679; <b>Test Evidence Auditor</b> reviewing</span
+                        >
+                        <span class="wf-mini is-running"
+                          >&#9679; <b>Documentation Steward</b> reviewing</span
+                        >
+                      </span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-pending is-terminal">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Complete</span>
+                        <span class="wf-rung-state">Not reached</span>
+                      </span>
+                      <span class="wf-rung-sub">Gated on the Inspector once every stage passes</span>
+                    </span>
+                  </li>
+                </ul>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">14s ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <div class="mk-slot" data-state="changes">
+            <span class="mk-slot-label"><b>D2</b> changes requested, opened in place</span>
+            <article class="card tone-working" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <button class="workflow-chip workflow-waiting">&#9033; Review changes</button>
+                <span class="badge badge-working"><span class="badge-dot"></span>working</span>
+              </header>
+              <div class="wf-strip is-attention">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-failed">changes requested</span>
+                  <span class="wf-round">round <b>2</b> / 6</span>
+                </div>
+                <ul class="wf-ladder">
+                  <li class="wf-rung is-passed">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Stage 1 &middot; 2 checks</span>
+                        <span class="wf-rung-state">None ran</span>
+                      </span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-passed">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Intent Conformance Judge</span>
+                        <span class="wf-rung-state">Passed</span>
+                      </span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-failed">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Stage 3 &middot; 3 reviewers</span>
+                        <span class="wf-rung-state">Failed</span>
+                      </span>
+                      <span class="wf-members-inline">
+                        <span class="wf-mini is-passed"
+                          >&#10003; <b>Code Risk Reviewer</b> passed</span
+                        >
+                        <span class="wf-mini is-failed"
+                          >&#10007; <b>Test Evidence Auditor</b> 2 changes</span
+                        >
+                        <span class="wf-mini is-failed"
+                          >&#10007; <b>Documentation Steward</b> 1 change</span
+                        >
+                      </span>
+                      <span class="wf-rung-why">
+                        <b>Test Evidence Auditor:</b> No end-to-end evidence that the alert panel
+                        renders for an away session. The added test asserts the reducer, not the
+                        rendered card.
+                      </span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-waiting">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Back to Session</span>
+                        <span class="wf-rung-state">Repair round 3</span>
+                      </span>
+                      <span class="wf-rung-sub">
+                        Repair packet prepared. Preview never types it into the session.
+                      </span>
+                    </span>
+                  </li>
+                </ul>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-primary" type="button">Copy feedback</button>
+                  <button class="wf-btn" type="button">Open run</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">31s ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <div class="mk-slot" data-state="gate">
+            <span class="mk-slot-label"><b>D3</b> Inspector gate</span>
+            <article class="card tone-attention attention" style="--agent-accent: #d97757">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Implement the Channels + Away card alert panel</h2>
+                  <span class="name-source">tmux &middot; harness-14</span>
+                </div>
+                <a class="pr-chip" href="#">&#9903; #301</a>
+                <button class="workflow-chip workflow-waiting">&#9033; Inspector gate</button>
+                <span class="badge badge-attention"><span class="badge-dot"></span>needs you</span>
+              </header>
+              <div class="wf-strip is-attention">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-waiting">Inspector gate</span>
+                  <span class="wf-round">round <b>3</b> / 6</span>
+                </div>
+                <ul class="wf-ladder">
+                  <li class="wf-rung is-passed">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Every stage</span>
+                        <span class="wf-rung-state">All passed</span>
+                      </span>
+                      <span class="wf-rung-sub">2 checks not run &middot; 4 reviewers passed</span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-waiting">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Inspector gate</span>
+                        <span class="wf-rung-state">Waiting 6m48s</span>
+                      </span>
+                      <span class="wf-rung-sub">
+                        Inspector has the pull request and has not finished reviewing it.
+                      </span>
+                      <span class="wf-members-inline">
+                        <span class="wf-mini">pull request <b>#301</b></span>
+                        <span class="wf-mini">target head <b class="mono">4f2ab19c</b></span>
+                        <span class="wf-mini">posture <b>live</b></span>
+                      </span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-pending is-terminal">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Complete</span>
+                        <span class="wf-rung-state">Not reached</span>
+                      </span>
+                    </span>
+                  </li>
+                </ul>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-primary" type="button">Recheck Inspector</button>
+                  <button class="wf-btn" type="button">Open PR</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Claude Code</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">6m ago</span>
+              </footer>
+            </article>
+          </div>
+
+          <div class="mk-slot" data-state="blocked">
+            <span class="mk-slot-label"><b>D4</b> blocked, uncertain delivery</span>
+            <article class="card tone-attention attention" style="--agent-accent: #10a37f">
+              <header class="card-head">
+                <span class="agent-dot"></span>
+                <div class="card-title">
+                  <h2>Migrate the schedules panel to the settings console</h2>
+                  <span class="name-source">wezterm &middot; harness-9</span>
+                </div>
+                <button class="workflow-chip workflow-blocked">&#9033; Workflow blocked</button>
+                <span class="badge badge-attention"><span class="badge-dot"></span>needs you</span>
+              </header>
+              <div class="wf-strip is-danger">
+                <div class="wf-head">
+                  <span class="wf-brand">&#9033; No-Mistakes Review</span>
+                  <span class="wf-ver">v3</span>
+                  <span class="wf-status wf-status-failed">delivery uncertain</span>
+                  <span class="wf-round">round <b>4</b> / 6</span>
+                </div>
+                <ul class="wf-ladder">
+                  <li class="wf-rung is-failed">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Stage 3 &middot; 3 reviewers</span>
+                        <span class="wf-rung-state">Failed</span>
+                      </span>
+                      <span class="wf-members-inline">
+                        <span class="wf-mini is-failed"
+                          >&#10007; <b>Code Risk Reviewer</b> 3 changes</span
+                        >
+                      </span>
+                    </span>
+                  </li>
+                  <li class="wf-rung is-failed">
+                    <span class="wf-node"></span>
+                    <span class="wf-rung-body">
+                      <span class="wf-rung-top">
+                        <span class="wf-rung-name">Repair delivery</span>
+                        <span class="wf-rung-state">Uncertain</span>
+                      </span>
+                      <span class="wf-rung-why">
+                        The write was lost or may have landed. It is never sent again automatically.
+                        Inspect the pane, then resolve it below.
+                      </span>
+                    </span>
+                  </li>
+                </ul>
+                <div class="wf-actrow">
+                  <button class="wf-btn wf-btn-primary" type="button">Mark delivered</button>
+                  <button class="wf-btn wf-btn-warn" type="button">Discard, send new round</button>
+                  <button class="wf-btn" type="button">Open run</button>
+                </div>
+              </div>
+              <footer class="card-foot">
+                <span class="agent-name">Codex</span>
+                <span class="mode">auto</span>
+                <span class="spacer"></span>
+                <span class="dim">22m ago</span>
+              </footer>
+            </article>
+            <p class="mk-slot-note">
+              An uncertain delivery is the one workflow state that is genuinely dangerous to guess
+              about, and it is the state a chip can least afford to reduce to one word. D gives it
+              its own rung with the exact shipped sentence.
+            </p>
+          </div>
+        </div>
+
+        <div class="mk-parity">
+          <h4>How D degrades into the other three session drawings</h4>
+          <div class="mk-parity-row">
+            <div class="mk-parity-cell">
+              <span>Grid card, collapsed</span>
+              <p class="mk-slot-note">
+                D does not fit a collapsed 330px card and should not try. Shipping D alone means the
+                grid keeps today's chip; shipping D beside A means the ladder is what the chevron
+                expands into.
+              </p>
+            </div>
+            <div class="mk-parity-cell">
+              <span>Board tile</span>
+              <p class="mk-slot-note">
+                Unchanged from A: one gate line plus a rail. A tile is 7px gaps and two-line clamps;
+                a ladder there would double every column's height.
+              </p>
+            </div>
+            <div class="mk-parity-cell">
+              <span>Console rail</span>
+              <p class="mk-slot-note">Unchanged: a toned <code>&#9033;</code> glyph.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="mk-cost">
+          <h4>What D costs</h4>
+          <ul>
+            <li>
+              Needs per-attempt detail the SSE summary deliberately does not carry, so it is an HTTP
+              fetch on open (the Runs page detail endpoint already returns exactly this), not a
+              widening of <code>WorkflowRunSummary</code>. That is the cheapest server change of the
+              four and the most expensive client one.
+            </li>
+            <li>
+              Overlaps the Runs page. If D ships, decide out loud whether the Runs page pipeline
+              strip stays as-is or becomes this; two drawings of one run is how they drift.
+            </li>
+            <li>
+              <strong>Strength:</strong> it is the only option with room for the actual objection,
+              in the reviewer's own words, without a click.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ================================================================== -->
+      <section class="mk-section" id="compare">
+        <div class="mk-section-head">
+          <span class="mk-num">&#8721;</span>
+          <div>
+            <h2>Side by side</h2>
+            <p class="mk-sub">What each option answers without a click.</p>
+          </div>
+        </div>
+        <table class="mk-table">
+          <thead>
+            <tr>
+              <th>Question a glance should answer</th>
+              <th>A rail</th>
+              <th>B roster</th>
+              <th>C loop</th>
+              <th>D ladder</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>How far through is it?</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-partial">per round</td>
+              <td class="mk-yes">yes</td>
+            </tr>
+            <tr>
+              <td>Which stage is executing?</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-yes">yes</td>
+            </tr>
+            <tr>
+              <td>Who objected?</td>
+              <td class="mk-partial">in the list</td>
+              <td class="mk-yes">on its face</td>
+              <td class="mk-yes">on its face</td>
+              <td class="mk-yes">with the reason</td>
+            </tr>
+            <tr>
+              <td>Did a check actually run?</td>
+              <td class="mk-yes">hatched</td>
+              <td class="mk-yes">labelled</td>
+              <td class="mk-no">no</td>
+              <td class="mk-yes">labelled</td>
+            </tr>
+            <tr>
+              <td>How many repair rounds are left?</td>
+              <td class="mk-partial">a counter</td>
+              <td class="mk-partial">a counter</td>
+              <td class="mk-yes">the whole rail</td>
+              <td class="mk-partial">a counter</td>
+            </tr>
+            <tr>
+              <td>Is it failing the same way every round?</td>
+              <td class="mk-no">no</td>
+              <td class="mk-no">no</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-no">no</td>
+            </tr>
+            <tr>
+              <td>Is it parked at the Inspector?</td>
+              <td class="mk-yes">own segment</td>
+              <td class="mk-yes">own chip</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-yes">own rung</td>
+            </tr>
+            <tr>
+              <td>Fits a 330px grid card</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-partial">wraps to 3 lines</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-no">no</td>
+            </tr>
+            <tr>
+              <td>Fits a board tile unchanged</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-partial">names one member</td>
+              <td class="mk-yes">yes</td>
+              <td class="mk-no">no</td>
+            </tr>
+            <tr>
+              <td>Widens the SSE summary</td>
+              <td class="mk-partial">stages[]</td>
+              <td class="mk-no">members[]</td>
+              <td class="mk-no">rounds[] + stages[]</td>
+              <td class="mk-yes">not at all</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="mk-cost is-good" style="margin-top: 26px">
+          <h4>The pairing worth considering</h4>
+          <ul>
+            <li>
+              <strong>A on the collapsed card and tile, D in the detail pane.</strong> A reuses a
+              vocabulary operators already read fluently and costs the smallest summary widening;
+              D uses the axis the detail pane actually has. Neither duplicates the other, and the
+              four session drawings each get the version that fits them.
+            </li>
+            <li>
+              <strong>Take C's one derivation regardless of which shape wins.</strong> "The same
+              member has failed N rounds running" is the signal that a repair loop is burning
+              tokens without converging, and it is currently invisible on every surface. It is a
+              sentence, computable in <code>workflows/store.ts</code>, and it can sit in A's
+              <code>.wf-line</code> slot without any of C's second rail.
+            </li>
+            <li>
+              <strong>Do not tint a degraded stage green in any of them.</strong> The shipped
+              built-in records unconfigured checks as skipped-and-passed. Whatever ships has to keep
+              saying so.
+            </li>
+          </ul>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const filters = Array.from(document.querySelectorAll(".mk-filter"));
+      for (const button of filters) {
+        button.addEventListener("click", () => {
+          const next = button.dataset.filter;
+          document.body.dataset.state = next;
+          for (const other of filters) {
+            other.setAttribute("aria-pressed", String(other === button));
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

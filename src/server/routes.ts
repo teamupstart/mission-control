@@ -213,7 +213,11 @@ import type {
   WorkflowValidationMutation,
 } from "./workflows/manager.ts";
 import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES } from "@shared/workflow.ts";
-import { getWorkflowConfig, setWorkflowConfig } from "./workflows/config.ts";
+import {
+  getWorkflowConfig,
+  resolveTaskWorkflowId,
+  setWorkflowConfig,
+} from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
 import type { ScheduleService } from "./schedules/manager.ts";
 import { SCHEDULE_HISTORY_DEFAULT_LIMIT } from "@shared/schedules.ts";
@@ -788,7 +792,14 @@ export function buildApp(
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, ArchiveWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.archive(c.req.param("id"), parsed.data.expectedDraftRevision);
+    const id = c.req.param("id");
+    const selected = manager.get(id)?.workflow ?? null;
+    if (selected && !selected.builtin && getWorkflowConfig().defaultWorkflowId === id) {
+      return c.json({
+        error: "Choose another dispatch default before archiving this workflow",
+      }, 409);
+    }
+    const result = manager.archive(id, parsed.data.expectedDraftRevision);
     return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
   app.post("/api/workflows/:id/unarchive", async (c) => {
@@ -808,7 +819,14 @@ export function buildApp(
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, DeleteWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.remove(c.req.param("id"), parsed.data.expectedDraftRevision);
+    const id = c.req.param("id");
+    const selected = manager.get(id)?.workflow ?? null;
+    if (selected && !selected.builtin && getWorkflowConfig().defaultWorkflowId === id) {
+      return c.json({
+        error: "Choose another dispatch default before deleting this workflow",
+      }, 409);
+    }
+    const result = manager.remove(id, parsed.data.expectedDraftRevision);
     return result.ok ? c.json({ ok: true, id: result.id }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
   app.post("/api/workflows/:id/validate", async (c) => {
@@ -2855,10 +2873,7 @@ export function buildApp(
   app.post("/api/tasks", async (c) => {
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
-    const workflowId =
-      parsed.data.workflowId === undefined
-        ? getWorkflowConfig().defaultWorkflowId
-        : parsed.data.workflowId;
+    const workflowId = resolveTaskWorkflowId(parsed.data.workflowId);
     const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
     const repoRoot = resolved.repoRoot;

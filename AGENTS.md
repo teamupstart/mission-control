@@ -11,6 +11,15 @@ how to run it, read `README.md`.
 NEVER RERUN no-mistakes skill after it passes and you are addressing inspector feedback. Instead, always fix the inspector 
 issues, resolve merge any conflicts, push the code, monitor the CI / PR for new inspector comments or conflicts, and repeat, conflicts, and repeat it's green.
 
+## macOS Electron tests
+
+`npm test` includes `test/workflow-builder-electron.test.ts`, whose two geometry cases launch
+a real Electron GUI. Codex's macOS Seatbelt sandbox denies the LaunchServices and WindowServer
+services Electron needs, causing an OS `SIGABRT` crash report before fixture code runs. When
+`CODEX_SANDBOX=seatbelt`, run `npm test` or the focused `npm run test:electron` with scoped
+outside-sandbox approval. The test preflight deliberately fails with that instruction before
+launching Electron if an agent forgets; do not remove or bypass it with Chromium flags.
+
 ## Architecture
 
 | Where | Entry | What |
@@ -167,8 +176,9 @@ A session is drawn by **four** components, only one of which is `SessionCard`:
   example: the figure in three surfaces, an `≈$` glyph in the rail's `marks`, and one shared
   `costIsNotable` (`@shared/cost.ts`) deciding where the line sits - not three thresholds.
 - Console detail CSS reaches into shared components with descendant selectors
-  (`.detail-conv > .transcript`, `.detail-foot .actions`). Changing `TranscriptPanel` or
-  `ActionBar` DOM can break console/board with no compile-time signal.
+  (`.detail-conv > .pane-dialog`, `.detail-conv > .transcript`, `.detail-foot .actions`).
+  Changing `PaneDialogPrompt`, `TranscriptPanel`, or `ActionBar` DOM can break console/board
+  with no compile-time signal.
 - A **fourth layout** also needs: the render switch, `expandedForView`, Escape's collapse
   branch, the expand chord and `CommandBar` in `App.tsx`; `layoutNav.ts`; `LayoutPanel`'s glyph
   ternary. All three fall through to grid/board defaults for unknown modes.
@@ -991,7 +1001,9 @@ are `block-element` with per-feature prefixes (`wq-`, `nm-`, `rt-`, `qc-`, `tf-`
    under Configuration; new `make` target → Commands; new shortcut → the Keyboard table. Stale
    docs are a rejected change, not a follow-up.
 2. **Tests.** `node:test` + `node:assert/strict`, flat in `test/` as `<feature>-<aspect>.test.ts`.
-   React via `renderToStaticMarkup` from `react-dom/server` - no jsdom, no testing-library.
+   React unit coverage uses `renderToStaticMarkup` from `react-dom/server` - no jsdom, no
+   testing-library. Real GUI exceptions need a documented reason and the macOS Electron
+   preflight above.
    Route tests call `buildApp(...)` with stub registries. Open each file with a comment about
    what is at stake, not what the test does. A test that touches the db or state dir must set
    `HARNESS_HOME` to a fresh temp dir **before importing anything that resolves it** (the

@@ -232,7 +232,10 @@ export class SdkSupervisor {
       status: "starting",
       turnInProgress: durable.turnInProgress,
     });
-    const session = this.registry.registerSdkSession(registration);
+    const session = this.registry.registerSdkSession({
+      ...registration,
+      agentSessionId: durable.agentSessionId ?? null,
+    });
     this.handles.set(registration.id, handle);
     this.unfinishedTurns.set(
       registration.id,

@@ -1596,6 +1596,8 @@ export function App(): React.JSX.Element {
               }
               ensembleSummaries={ensembleSummaries}
               ensembleAttentionCount={ensembleAttentionCount}
+              sessions={sessions}
+              reviews={pendingReviews}
               hasSnapshot={hasSnapshot}
               selectedEnsembleId={
                 route.page === "workflows" && route.tab === "ensembles"

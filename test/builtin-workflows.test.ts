@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
+} from "../src/shared/builtin-workflow.ts";
+import {
+  DEFAULT_WORKFLOW_CONFIG,
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   normalizeWorkflowName,
   personaSnapshotIsOutdated,
@@ -146,11 +151,13 @@ test("ids are prefixed, versions ascend, and the definition names the newest", (
       assert.equal(version.id, builtinWorkflowVersionId(slug, index + 1));
       assert.equal(version.workflowId, definition.id);
       assert.equal(version.publishedAt, 0);
-      if (version === versions[versions.length - 1]) {
-        assert.deepEqual(version.completionPolicy, definition.completionPolicy);
-      }
     });
     assert.equal(definition.currentVersionId, versions[versions.length - 1]!.id);
+    assert.deepEqual(
+      definition.completionPolicy,
+      versions[versions.length - 1]!.completionPolicy,
+      "the definition exposes the newest version's completion policy",
+    );
     assert.deepEqual(definition.bindingDefaults, versions[versions.length - 1]!.bindingDefaults);
     // The draft is the newest version's graph with the snapshots taken back off, so opening
     // the built-in shows what a binding to its current version would run.
@@ -167,11 +174,26 @@ test("ids are prefixed, versions ascend, and the definition names the newest", (
 
 const noMistakesReview = () => {
   const builtin = BUILTIN_WORKFLOWS.find(
-    (candidate) => candidate.definition.id === builtinWorkflowId("no-mistakes-review"),
+    (candidate) => candidate.definition.id === NO_MISTAKES_REVIEW_WORKFLOW_ID,
   );
   assert.ok(builtin, "the shipped slug is append-only; Phase 3 must not rename it");
   return builtin;
 };
+
+test("new tasks default to the newest immutable No-Mistakes Review version", () => {
+  const builtin = noMistakesReview();
+  assert.equal(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId, builtin.definition.id);
+  assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
+  assert.equal(
+    builtin.definition.currentVersionId,
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 6),
+  );
+  assert.equal(
+    builtin.definition.currentVersionId,
+    builtin.versions.at(-1)!.id,
+    "the stable task default must resolve through the definition's newest immutable version",
+  );
+});
 
 /** The members of each stage, named by Persona id or by slot, so a mixed stage reads as one. */
 const shapeOf = (graph: WorkflowDraftGraph) => {
@@ -184,25 +206,28 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and final gate", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 4);
-  assert.deepEqual(builtin.versions[0]!.bindingDefaults, DEFAULT_WORKFLOW_BINDING_DEFAULTS);
-  assert.deepEqual(builtin.versions[1]!.bindingDefaults, {
+  assert.equal(builtin.versions.length, 6);
+  assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+  });
+  for (const historical of builtin.versions.slice(1, 5)) {
+    assert.deepEqual(historical.bindingDefaults, {
+      triggerMode: "manual",
+      deliveryMode: "live",
+      maxRepairRounds: 5,
+    });
+  }
+  assert.deepEqual(builtin.versions[5]!.bindingDefaults, {
     ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
     deliveryMode: "live",
   });
-  assert.deepEqual(builtin.versions[2]!.bindingDefaults, {
-    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
-    deliveryMode: "live",
-  });
-  assert.deepEqual(builtin.versions[3]!.bindingDefaults, {
-    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
-    deliveryMode: "live",
-  });
-  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[3]!.bindingDefaults);
+  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[5]!.bindingDefaults);
   assert.deepEqual(builtin.definition.completionPolicy, {
     kind: "inspector",
     onFindings: "inspector_only",
-    missingPrAction: "offer_prepare_pr",
+    missingPrAction: "prepare_pr",
   });
 
   // Version 1's shape, read from version 1 rather than from the draft: the draft is now
@@ -307,13 +332,9 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
   ]);
 });
 
-test("version 4 repushes and rechecks Inspector, preserving the earlier workflow versions", () => {
+test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 4, "one workflow, four versions");
-  assert.equal(
-    builtin.definition.currentVersionId,
-    builtinWorkflowVersionId("no-mistakes-review", 4),
-  );
+  assert.equal(builtin.versions.length, 6, "one workflow, six versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -370,18 +391,48 @@ test("version 4 repushes and rechecks Inspector, preserving the earlier workflow
   for (const id of ["nmr-intent-conformance", "nmr-code-risk", "nmr-test-evidence", "nmr-documentation"]) {
     assert.ok(version.graph.nodes.some((node) => node.id === id), `${id} was re-identified`);
   }
-  const current = builtin.versions[3]!;
-  assert.equal(current.sourceDraftRevision, 3);
-  assert.deepEqual(current.graph, version.graph, "policy changes append without rewriting v3");
-  assert.deepEqual(current.completionPolicy, {
+  const inspectorOnly = builtin.versions[3]!;
+  assert.equal(inspectorOnly.sourceDraftRevision, 3);
+  assert.deepEqual(inspectorOnly.graph, version.graph, "policy changes append without rewriting v3");
+  assert.deepEqual(inspectorOnly.completionPolicy, {
     kind: "inspector",
     onFindings: "inspector_only",
     missingPrAction: "offer_prepare_pr",
   });
-  // And the draft the library opens is the current Inspector-only version.
+  const current = builtin.versions[4]!;
+  assert.equal(current.sourceDraftRevision, 4);
+  assert.deepEqual(current.graph, inspectorOnly.graph, "v5 changes policy without rewriting v4");
+  assert.deepEqual(current.completionPolicy, {
+    kind: "inspector",
+    onFindings: "inspector_only",
+    missingPrAction: "prepare_pr",
+  });
+  // And the draft the library opens is the current automatic-PR version.
   assert.deepEqual(builtin.definition.draft.edges, current.graph.edges);
   assert.deepEqual(
     compileStages(projectStages(builtin.definition.draft)!, builtin.definition.draft),
     builtin.definition.draft,
   );
+});
+
+test("version 6 defaults submission to Foreman complete without rewriting history", () => {
+  const builtin = noMistakesReview();
+  assert.equal(
+    builtin.definition.currentVersionId,
+    builtinWorkflowVersionId("no-mistakes-review", 6),
+  );
+  for (const historical of builtin.versions.slice(0, 5)) {
+    assert.equal(historical.bindingDefaults.triggerMode, "manual");
+  }
+  const previous = builtin.versions[4]!;
+  const current = builtin.versions[5]!;
+  assert.equal(current.sourceDraftRevision, 5);
+  assert.deepEqual(current.graph, previous.graph, "v6 changes defaults without rewriting v5");
+  assert.deepEqual(current.completionPolicy, previous.completionPolicy);
+  assert.deepEqual(current.bindingDefaults, {
+    triggerMode: "foreman_complete",
+    deliveryMode: "live",
+    maxRepairRounds: 5,
+  });
+  assert.deepEqual(builtin.definition.bindingDefaults, current.bindingDefaults);
 });

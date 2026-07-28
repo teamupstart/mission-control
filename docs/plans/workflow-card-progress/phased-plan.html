@@ -297,6 +297,23 @@
           Phase 2 is concurrent and must compile whether or not Phase 3 has merged, and an older
           daemon serving a newer browser must not fail to parse.
         </li>
+        <li>
+          <strong><code>WorkflowRepeatOffender</code> is declared in
+          <code>src/shared/workflow.ts</code></strong>, not in the server module. It rides on
+          <code>WorkflowRunDetail</code>, which is shared and read by the browser, and
+          <code>src/shared/</code> never imports from <code>src/server/</code>. The server
+          derivation imports the type; it does not own it.
+        </li>
+      </ul>
+
+      <h3>Established by Phase 2</h3>
+      <ul>
+        <li>
+          <strong>An in-flight action is disabled.</strong> A <code>requestId</code> makes a
+          <em>retry</em> safe, not a second click: two clicks mint two ids and can enqueue two
+          rechecks or two delivery resolutions. The guard lives in the shared action descriptors,
+          so the Runs page and the ladder get it together.
+        </li>
       </ul>
 
       <h2>Final verification strategy</h2>

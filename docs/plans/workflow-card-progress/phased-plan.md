@@ -188,6 +188,9 @@ Established by Phase 3, relied on by nobody:
 - **The repeat-offender field is OPTIONAL on `WorkflowRunDetail`.** Phase 2 is concurrent and
   must compile whether or not Phase 3 has merged, and an older daemon serving a newer browser
   must not fail to parse.
+- **`WorkflowRepeatOffender` is declared in `src/shared/workflow.ts`, not in the server module.**
+  It rides on `WorkflowRunDetail`, which is shared and read by the browser, and `src/shared/`
+  never imports from `src/server/`. The server derivation imports the type; it does not own it.
 
 ## Final verification strategy
 

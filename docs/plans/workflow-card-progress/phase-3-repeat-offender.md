@@ -65,7 +65,10 @@ someone opens the Runs page."
 
 ## Implementation steps
 
-### 1. `src/server/workflows/repeat-offender.ts` (new) - the pure derivation
+### 1. `src/shared/workflow.ts` - the wire type
+
+`WorkflowRepeatOffender` is a **wire type and must be declared in the shared layer**, beside the
+other run types:
 
 ```ts
 export interface WorkflowRepeatOffender {
@@ -74,6 +77,33 @@ export interface WorkflowRepeatOffender {
   /** Consecutive most-recent rounds this member failed. Always >= 2. */
   rounds: number;
 }
+```
+
+This is not a stylistic placement. It rides on `WorkflowRunDetail`, which is declared in this
+same file and is read by the browser. `src/shared/` never imports from `src/server/` - it is
+"wire types and zod schemas, imported via `@shared/*`" - so declaring the interface in the
+server module and referencing it from `WorkflowRunDetail` would either leave the type unresolved
+or invert the dependency boundary. The server derivation **imports** this type; it does not own
+it.
+
+Add the field to `WorkflowRunDetail` in the same file:
+
+```ts
+  /**
+   * Members failing the most recent rounds consecutively. Detail-only and OPTIONAL: run
+   * SUMMARIES travel over SSE for every run in the fleet and must stay compact, and an older
+   * daemon serving a newer browser must not fail to parse.
+   */
+  repeatOffenders?: WorkflowRepeatOffender[];
+```
+
+Optionality is a cross-phase requirement, not a style choice: Phase 2 is concurrent and must
+compile whether or not this has merged.
+
+### 2. `src/server/workflows/repeat-offender.ts` (new) - the pure derivation
+
+```ts
+import type { WorkflowRepeatOffender } from "@shared/workflow.ts";
 
 export function repeatOffenders(
   submissions: WorkflowSubmission[],
@@ -105,22 +135,6 @@ Placed in its own module rather than inline in `store.ts` so it is testable with
 `HARNESS_HOME` preamble is a test nobody will keep writing. The source plan's "beside
 `compactGate`" is honoured in the sense that matters - it is a server-side projection computed
 once, not a browser computation.
-
-### 2. `src/shared/workflow.ts`
-
-Add to `WorkflowRunDetail`:
-
-```ts
-  /**
-   * Members failing the most recent rounds consecutively. Detail-only and OPTIONAL: run
-   * SUMMARIES travel over SSE for every run in the fleet and must stay compact, and an older
-   * daemon serving a newer browser must not fail to parse.
-   */
-  repeatOffenders?: WorkflowRepeatOffender[];
-```
-
-Optionality is a cross-phase requirement, not a style choice: Phase 2 is concurrent and must
-compile whether or not this has merged.
 
 ### 3. `src/server/workflows/store.ts`
 
@@ -209,3 +223,10 @@ Nothing depends on this phase. It establishes:
 - Reconciled against the source plan: adopted decision 4 said "run detail only", and the exit
   criteria make that testable by asserting the summary is unchanged rather than merely intending
   it.
+- **Corrected after Inspector review of the planning PR (#308).** The first draft declared
+  `WorkflowRepeatOffender` in `src/server/workflows/repeat-offender.ts` while adding the field to
+  `WorkflowRunDetail` in `src/shared/workflow.ts`. Since `src/shared/` never imports from
+  `src/server/`, that would have left the type unresolved or inverted the dependency boundary,
+  and the phase would not have typechecked. The type is now declared in the shared layer and
+  imported by the server derivation; the module split that makes the derivation testable without
+  a database is unaffected.

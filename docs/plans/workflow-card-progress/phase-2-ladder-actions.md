@@ -137,10 +137,23 @@ export function inspectorGateActions(
 - Own the clipboard write for Copy feedback and the `feedbackCopied` flag it passes down,
   mirroring `WorkflowRuns`' `copyFeedback` (`:1344`) rather than reimplementing which text is
   copied. The packet is the same packet; the two surfaces must not disagree about it.
-- Perform the POSTs through `workflowRequest`, generating a `requestId` the same way
-  `WorkflowRuns` does, then refetch. **The `requestId` is what makes a double-click safe**: the
-  recheck is idempotent per request id, and the delivery resolution is guarded the same way.
+- Perform the POSTs through `workflowRequest`, then refetch.
+- **Hold a per-action in-flight flag and disable the action while its request is pending.** This
+  is what makes a double-click safe - **not** the `requestId`. Idempotency per request id
+  protects a *retry of the same request* (a dropped response, a reconnect); two clicks produce
+  two different ids and therefore two accepted rechecks, or two delivery resolutions. If an
+  explicit retry of the same intent is offered, retain and reuse the one id until that request
+  settles, the way `resubmit` retains `unchangedRequest` (`WorkflowRuns.tsx:1200`, `:1321-1337`)
+  for its unchanged-evidence confirmation.
 - Surface a failed mutation as an inline error on the panel, not a thrown promise.
+
+**This is a real gap in the shipped Runs page, not just a risk in new code.** Its click sites
+call `crypto.randomUUID()` inline (`WorkflowRuns.tsx:1555-1594`) with no in-flight guard - the
+only `disabled` conditions there are `!sessionBound`, `!feedbackAvailable`, `!version` and
+`listLoading`. Since this phase already extracts the shared descriptors and refactors that file
+to consume them, **the in-flight guard belongs in the shared layer so both surfaces get it**.
+Fixing only the ladder would leave the double-submit live on the surface that has shipped
+longest, and copying the existing pattern into the ladder would duplicate the defect.
 
 ### 4. `src/web/styles.css`
 
@@ -165,6 +178,10 @@ uncertain delivery in place, under the same confirmations as the Runs page.
   session is bound, and that its confirm descriptor carries `requirePhrase` exactly equal to
   `DISCARD AND SEND A NEW REPAIR ROUND`. Assert the same descriptors are what `WorkflowRuns`
   renders, so the two surfaces cannot drift.
+- `test/workflow-action-inflight.test.ts` - **the double-submit regression**: an action whose
+  request is in flight renders disabled, and a second activation while pending issues no second
+  request. Assert it against the shared descriptors so it covers the Runs page and the ladder
+  together.
 
 ## Data, API and compatibility
 
@@ -190,6 +207,8 @@ disabled when the bound session is gone.
 - CI green on Node 24 and Node 26.
 - Both delivery resolutions require exactly what the Runs page requires.
 - `WorkflowRuns` and the ladder read their action copy from one module.
+- **No action can be submitted twice by double-clicking it, on either surface.** A pending action
+  renders disabled and issues exactly one request.
 - README updated in this same change.
 
 ## Downstream handoff
@@ -199,6 +218,8 @@ Nothing depends on this phase. It establishes, for anyone extending the ladder l
 - **Action copy and guards live in `run-actions.ts`**, never inline in a surface.
 - **The renderer stays pure**; mutations belong to the panel wrapper.
 - **A disabled action renders with its reason** rather than disappearing.
+- **An in-flight action is disabled.** A `requestId` makes a *retry* safe, not a second click;
+  anything adding an action to either surface inherits the in-flight guard.
 
 ## Cross-phase audit record
 
@@ -219,6 +240,14 @@ Nothing depends on this phase. It establishes, for anyone extending the ladder l
   narrower reading would have forced a second copy of five confirmation bodies. Phase 1's non-goal
   text was left as written because it is accurate about the fetch path; this record is the
   reconciliation.
+- **Corrected after Inspector review of the planning PR (#308).** The first draft claimed the
+  `requestId` was "what makes a double-click safe". It is not: idempotency per request id
+  protects a retry of the *same* request, while two clicks mint two ids and can enqueue two
+  rechecks or two delivery resolutions. Checking the shipped code made the finding stronger than
+  reported - the Runs page mints its ids inline at each click site
+  (`WorkflowRuns.tsx:1555-1594`) with no in-flight guard, so this is a live gap there and not
+  only a risk in new code. The guard now belongs to the shared descriptors so both surfaces get
+  it, with `test/workflow-action-inflight.test.ts` covering them together.
 - Reconciled against Phase 3 (concurrent): the two touch `WorkflowLadder.tsx`, `styles.css` and
   `README.md` in disjoint regions - this phase in the gate and delivery rungs' action rows, Phase
   3 in the failing stage's rung. Ordinary textual conflicts, resolvable at merge; whichever

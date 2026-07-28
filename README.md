@@ -2414,13 +2414,14 @@ loaded only for the selected run. Cards, Console, and Board show the same workfl
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
 ladder above the transcript. Passed stages collapse, the active or failed stage names its
 members, and an objection, Inspector wait, or uncertain delivery opens in place. Preview
-feedback can be copied there. At the Inspector gate, **Recheck Inspector** evaluates the wait
-again and **Open PR** opens the adopted pull request. A waiting run with a missing or unadopted
-PR also offers **Prepare PR in session** when its immutable run policy permits preparation. An
-uncertain delivery can be resolved under the same confirmation and typed-phrase guards as the
-Runs page. Use **Open run** for the full evidence and timeline. A published version whose graph
-cannot be expressed as stages keeps the existing workflow chip here and links to the Runs page,
-where its read-only graph remains available.
+feedback can be copied there. The failing rung also reports a member that has failed consecutive
+repair rounds, the signal of a non-converging repair loop. At the Inspector gate, **Recheck
+Inspector** evaluates the wait again and **Open PR** opens the adopted pull request. A waiting
+run with a missing or unadopted PR also offers **Prepare PR in session** when its immutable run
+policy permits preparation. An uncertain delivery can be resolved under the same confirmation
+and typed-phrase guards as the Runs page. Use **Open run** for the full evidence and timeline.
+A published version whose graph cannot be expressed as stages keeps the existing workflow chip
+here and links to the Runs page, where its read-only graph remains available.
 
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show

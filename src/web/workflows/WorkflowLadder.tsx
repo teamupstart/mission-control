@@ -253,6 +253,10 @@ export function WorkflowLadder({
             || status.tone === "failed"
             || members.some((member) => member.status.degraded);
           const objection = members.find((member) => member.verdict?.verdict === "fail");
+          const repeatOffenders = status.tone === "failed"
+            ? (detail.repeatOffenders ?? []).filter((offender) =>
+                stage.members.some((member) => member.nodeId === offender.nodeId))
+            : [];
 
           return (
             <Rung
@@ -310,6 +314,11 @@ export function WorkflowLadder({
                   <strong>{objection.name}:</strong> {objection.verdict.summary}
                 </p>
               )}
+              {repeatOffenders.map((offender) => (
+                <p className="wf-ladder-repeat" key={offender.nodeId}>
+                  {offender.personaName} has failed {offender.rounds} rounds running.
+                </p>
+              ))}
               {status.tone === "failed" && changesRequested && onCopyFeedback && (
                 <div className="wf-ladder-actrow">
                   <LadderAction

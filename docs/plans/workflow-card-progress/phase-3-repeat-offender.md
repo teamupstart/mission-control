@@ -191,6 +191,12 @@ npm run build
 Manual: drive a run so the same reviewer rejects twice in a row and confirm the line appears on
 its stage; then let that reviewer pass and confirm the line disappears rather than persisting.
 
+Visual evidence: [`phase-3-repeat-offender-evidence.png`](./phase-3-repeat-offender-evidence.png)
+captures the shipped ladder component and stylesheet in both states. Round 3 shows
+“Code Risk Reviewer has failed 3 rounds running.” on the failed stage; round 4 shows that
+reviewer passing while the stage remains expanded for other findings, with the streak line
+absent.
+
 ## Merge and exit criteria
 
 - CI green on Node 24 and Node 26.

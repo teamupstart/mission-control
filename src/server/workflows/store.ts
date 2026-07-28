@@ -71,6 +71,7 @@ import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { priorFindingFingerprintAudit } from "./finding-audit.ts";
 import { workflowLog } from "./log.ts";
+import { repeatOffenders } from "./repeat-offender.ts";
 
 // SQL and row mapping for the whole Phase 1 workflow table family. Managers own policy and
 // ids; this module owns the fact that every durable TEXT enum/JSON value is validated before
@@ -3849,6 +3850,8 @@ export class WorkflowStore {
     const version = this.getWorkflowVersionById(run.workflowVersionId);
     if (!binding) return null;
     const submissions = this.listSubmissions(id);
+    const attempts = submissions.flatMap((submission) => this.listAttempts(submission.id));
+    const offenders = repeatOffenders(submissions, attempts);
     const events = this.listEventPage(id);
     const llmCalls = this.listLlmCallPage(id);
     const eventCountRow = this.db.prepare(
@@ -3866,7 +3869,7 @@ export class WorkflowStore {
       run,
       contextState: runContextState(submissions),
       submissions,
-      attempts: submissions.flatMap((submission) => this.listAttempts(submission.id)),
+      attempts,
       receipts: submissions.flatMap((submission) => this.listReceipts(submission.id)),
       deliveries: this.listDeliveries(id),
       events: events.items,
@@ -3875,6 +3878,7 @@ export class WorkflowStore {
       llmCalls: llmCalls.items,
       llmCallCount,
       nextLlmCallAfter: llmCalls.nextAfter,
+      ...(offenders.length === 0 ? {} : { repeatOffenders: offenders }),
       externalSource: this.externalSourceForRun(run, binding.id),
       inspectorGate: null,
     };

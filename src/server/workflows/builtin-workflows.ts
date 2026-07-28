@@ -12,9 +12,20 @@ import {
   type WorkflowBindingDefaults,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
+import {
+  builtinWorkflowId,
+  builtinWorkflowVersionId,
+  NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
+} from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import { compileStages, type StageMember, type StagePipeline } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
+
+export {
+  BUILTIN_WORKFLOW_ID_PREFIX,
+  builtinWorkflowId,
+  builtinWorkflowVersionId,
+} from "@shared/builtin-workflow.ts";
 
 /**
  * The review workflows that ship with the application.
@@ -51,24 +62,6 @@ import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
  * rule lives in the plan: a change to a `docs/personas/*.md` document a shipped built-in
  * references appends a new built-in workflow version in the same commit.
  */
-export const BUILTIN_WORKFLOW_ID_PREFIX = "builtin-workflow:";
-
-/**
- * Durable and human-readable.
- *
- * The prefix deliberately differs from `BUILTIN_PERSONA_ID_PREFIX`, so a lookup that reached
- * for the wrong catalog finds nothing rather than finding a Persona where a workflow was
- * meant.
- */
-export function builtinWorkflowId(slug: string): string {
-  return `${BUILTIN_WORKFLOW_ID_PREFIX}${slug}`;
-}
-
-/** The synthetic version id a binding or a run stores. Append-only, per version. */
-export function builtinWorkflowVersionId(slug: string, version: number): string {
-  return `${builtinWorkflowId(slug)}@${version}`;
-}
-
 export interface BuiltinWorkflow {
   /** `builtin: true`, and `currentVersionId` names the NEWEST entry in `versions`. */
   definition: WorkflowDefinition;
@@ -221,8 +214,6 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
   };
 }
 
-const NO_MISTAKES_REVIEW_SLUG = "no-mistakes-review";
-
 /**
  * Node identities for No-Mistakes Review, shared by every version that runs the same node.
  *
@@ -374,7 +365,7 @@ const NO_MISTAKES_REVIEW_LIVE_DEFAULTS: WorkflowBindingDefaults = {
 
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
   builtinWorkflow({
-    slug: NO_MISTAKES_REVIEW_SLUG,
+    slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review",
     description:
       "A typecheck and test stage, then four built-in review roles composed as designed: "

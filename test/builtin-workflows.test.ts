@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
+} from "../src/shared/builtin-workflow.ts";
+import {
+  DEFAULT_WORKFLOW_CONFIG,
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   normalizeWorkflowName,
   personaSnapshotIsOutdated,
@@ -169,11 +174,22 @@ test("ids are prefixed, versions ascend, and the definition names the newest", (
 
 const noMistakesReview = () => {
   const builtin = BUILTIN_WORKFLOWS.find(
-    (candidate) => candidate.definition.id === builtinWorkflowId("no-mistakes-review"),
+    (candidate) => candidate.definition.id === NO_MISTAKES_REVIEW_WORKFLOW_ID,
   );
   assert.ok(builtin, "the shipped slug is append-only; Phase 3 must not rename it");
   return builtin;
 };
+
+test("new tasks default to the newest immutable No-Mistakes Review version", () => {
+  const builtin = noMistakesReview();
+  assert.equal(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId, builtin.definition.id);
+  assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
+  assert.equal(
+    builtin.definition.currentVersionId,
+    builtin.versions.at(-1)!.id,
+    "the stable task default must resolve through the definition's newest immutable version",
+  );
+});
 
 /** The members of each stage, named by Persona id or by slot, so a mixed stage reads as one. */
 const shapeOf = (graph: WorkflowDraftGraph) => {

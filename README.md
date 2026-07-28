@@ -1137,9 +1137,13 @@ selection and add the task to the backlog while Foreman is off. When the task is
 Foreman must be enabled and the selected harness must support its completion boundary; the
 Workflow is then bound to the session and starts when Foreman reports **Complete**. Set the
 machine-wide choice under **Settings → Workflows → Dispatch default** to preselect it for
-every new single-agent dispatch. The dispatch form can override that choice for one task,
-including an explicit **None** that finishes without a Workflow. Once the task has a session,
-this selection is frozen so the task row and the already-armed Workflow cannot disagree.
+every new single-agent dispatch. New installations start on the built-in **No-Mistakes
+Review** workflow. That default stores the workflow identity rather than today's version, so
+each new binding takes the newest immutable version shipped at the time (version 4 in this
+build) while older bindings stay pinned. The dispatch form can override that choice for one
+task, including an explicit **None** that finishes without a Workflow. Once the task has a
+session, this selection is frozen so the task row and the already-armed Workflow cannot
+disagree.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the

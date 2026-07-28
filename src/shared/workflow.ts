@@ -4,6 +4,7 @@ import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type { InspectorComment, InspectorInspection, InspectorMode } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
 import { repoAllowlisted } from "./allowlist.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -616,7 +617,10 @@ export interface WorkflowRetentionConfig {
 export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
   liveEnabled: false,
   repoAllowlist: [],
-  defaultWorkflowId: null,
+  // Store the stable workflow identity, not today's version. A task resolves it to the
+  // newest immutable shipped version when its session is armed (v4 in this build), while
+  // an explicit null in Settings or the dispatch form remains an opt-out.
+  defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
   retention: {
     rawEvidenceDays: 30,
     completedRunDays: 180,

@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { repoAllowlisted } from "../src/shared/allowlist.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { DEFAULT_WORKFLOW_CONFIG } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-config-"));
@@ -16,6 +17,7 @@ const { setAppConfig } = await import("../src/server/db.ts");
 const { resolveRepoRoot } = await import("../src/server/repos.ts");
 
 test("workflow live consent defaults off and parsed writes replace the allowlist", () => {
+  assert.equal(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
   assert.deepEqual(getWorkflowConfig(), DEFAULT_WORKFLOW_CONFIG);
   assert.deepEqual(
     setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] }),
@@ -49,13 +51,18 @@ test("workflow config HTTP writes use the shared parser and replace the complete
   const { ReviewManager } = await import("../src/server/reviews.ts");
   const { TaskManager } = await import("../src/server/tasks.ts");
   const { QueueManager } = await import("../src/server/queue.ts");
+  const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
   const { buildApp } = await import("../src/server/routes.ts");
   const registry = new Registry();
+  const workflows = new WorkflowManager(registry);
   const app = buildApp(
     registry,
     new ReviewManager(registry),
     new TaskManager(registry),
     new QueueManager(registry),
+    undefined,
+    undefined,
+    workflows,
   );
   const invalid = await app.request("/api/workflows/config", {
     method: "PUT",

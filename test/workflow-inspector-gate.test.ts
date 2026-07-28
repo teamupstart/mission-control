@@ -379,6 +379,41 @@ test("PR preparation refuses an unavailable skill without advancing or creating 
   await seeded.manager.stop();
 });
 
+test("a persisted PR handoff rechecks the required skill before replay", async () => {
+  const parked = await seed({ withHint: false, adopted: false });
+  const handoff = await parked.manager.preparePr(parked.ids.run, "prepare-before-restart");
+  assert.equal(handoff.ok, true);
+  if (!handoff.ok) {
+    await parked.manager.stop();
+    return;
+  }
+  assert.equal(handoff.value.state, "prepared");
+  await parked.manager.stop();
+
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const injected: string[] = [];
+  const recovered = new WorkflowManager(parked.registry, parked.store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+    requireSkill: () => ({ ok: false, message: "pull-request is no longer ready" }),
+  });
+  try {
+    await (recovered as unknown as {
+      deliverPrepared(deliveryId: string, explicitRetry: boolean): Promise<void>;
+    }).deliverPrepared(handoff.value.id, false);
+    assert.equal(injected.length, 0);
+    assert.equal(parked.store.getDelivery(handoff.value.id)?.state, "refused");
+    assert.equal(parked.store.getDelivery(handoff.value.id)?.error, "required_skill_unavailable");
+    assert.equal(parked.store.getRun(parked.ids.run)?.status, "blocked");
+  } finally {
+    await recovered.stop();
+    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  }
+});
+
 test("the automatic missing-PR policy sends one shipping handoff after a passed review", async () => {
   const automatic = await seed({
     withHint: false,

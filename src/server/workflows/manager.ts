@@ -2803,6 +2803,13 @@ export class WorkflowManager {
     const session = this.registry.getSession(delivery.sessionId);
     if (!session || session.state === "exited") return "session_unavailable";
     if (noteKeyFor(session) !== delivery.noteKey) return "conversation_changed";
+    if (delivery.kind === "pr_handoff") {
+      const required = this.requireSkill(session, PULL_REQUEST_SKILL);
+      if (!required.ok) return "required_skill_unavailable";
+      if (!delivery.payload.startsWith(`${required.command}\n`)) {
+        return "required_skill_invocation_stale";
+      }
+    }
     if (expectedPane !== undefined && paneToken(session) !== expectedPane) return "pane_recreated";
     if (this.registry.sessionResetInProgress(session.id)) return "reset_in_progress";
     const config = getWorkflowConfig();

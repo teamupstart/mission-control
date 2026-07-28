@@ -46,6 +46,51 @@ test("the dispatch Workflow default is durable and explicit none clears it", () 
   assert.equal(cleared.defaultWorkflowId, null);
 });
 
+test("task creation owns Workflow inheritance and preserves explicit opt-outs", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { TaskManager } = await import("../src/server/tasks.ts");
+  const tasks = new TaskManager(new Registry());
+  setWorkflowConfig({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: "workflow-review",
+  });
+  const input = {
+    repoRoot: "/repo",
+    intent: "Review this task",
+    title: "Review task",
+    kind: "ship" as const,
+    agent: "claude" as const,
+    backlog: true,
+  };
+
+  assert.equal(tasks.create(input).workflowId, "workflow-review");
+  assert.equal(tasks.create({ ...input, workflowId: null }).workflowId, null);
+  assert.equal(
+    tasks.create(input, {
+      id: "scheduled-workflow-default",
+      schedule: {
+        scheduleId: "schedule",
+        scheduleOccurrenceId: "occurrence",
+        scheduledFor: 1,
+      },
+    }).workflowId,
+    "workflow-review",
+  );
+  assert.equal(
+    tasks.create(
+      { ...input, workflowId: null },
+      { id: "ensemble-workflow-opt-out" },
+    ).workflowId,
+    null,
+  );
+  setWorkflowConfig({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: null,
+  });
+});
+
 test("workflow config HTTP writes use the shared parser and replace the complete object", async () => {
   const { Registry } = await import("../src/server/registry.ts");
   const { ReviewManager } = await import("../src/server/reviews.ts");

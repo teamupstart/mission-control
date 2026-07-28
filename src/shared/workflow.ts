@@ -618,7 +618,7 @@ export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
   liveEnabled: false,
   repoAllowlist: [],
   // Store the stable workflow identity, not today's version. A task resolves it to the
-  // newest immutable shipped version when its session is armed (v4 in this build), while
+  // newest immutable shipped version when its session is armed (v5 in this build), while
   // an explicit null in Settings or the dispatch form remains an opt-out.
   defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
   retention: {

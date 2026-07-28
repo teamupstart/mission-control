@@ -213,7 +213,11 @@ import type {
   WorkflowValidationMutation,
 } from "./workflows/manager.ts";
 import { WORKFLOW_LIMITS, WORKFLOW_RUN_STATUSES } from "@shared/workflow.ts";
-import { getWorkflowConfig, setWorkflowConfig } from "./workflows/config.ts";
+import {
+  getWorkflowConfig,
+  resolveTaskWorkflowId,
+  setWorkflowConfig,
+} from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
 import type { ScheduleService } from "./schedules/manager.ts";
 import { SCHEDULE_HISTORY_DEFAULT_LIMIT } from "@shared/schedules.ts";
@@ -2855,10 +2859,7 @@ export function buildApp(
   app.post("/api/tasks", async (c) => {
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
-    const workflowId =
-      parsed.data.workflowId === undefined
-        ? getWorkflowConfig().defaultWorkflowId
-        : parsed.data.workflowId;
+    const workflowId = resolveTaskWorkflowId(parsed.data.workflowId);
     const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
     const repoRoot = resolved.repoRoot;

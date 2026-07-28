@@ -6,7 +6,7 @@ import { WorkflowLadder } from "../src/web/workflows/WorkflowLadder.tsx";
 import { inspectorOnlyRoundSentence } from "../src/web/workflows/run-model.ts";
 import { ladderDetail } from "./helpers/workflow-ladder.ts";
 
-test("an Inspector-only round draws no permanently pending Persona stages", () => {
+test("an Inspector-only round keeps every authored stage before the gate", () => {
   const detail = ladderDetail("gate");
   detail.submissions = [{
     ...detail.submissions[0]!,
@@ -20,6 +20,9 @@ test("an Inspector-only round draws no permanently pending Persona stages", () =
     onOpenRun: () => {},
   }));
   assert.ok(html.includes(inspectorOnlyRoundSentence()));
-  assert.doesNotMatch(html, /Stage 1|Stage 3|Intent Conformance Judge/);
-  assert.equal(html.match(/wf-ladder-rung /g)?.length, 3);
+  assert.match(html, /Stage 1/);
+  assert.match(html, /Intent Conformance Judge/);
+  assert.match(html, /Stage 3/);
+  assert.match(html, /Inspector gate/);
+  assert.equal(html.match(/wf-ladder-rung /g)?.length, 6);
 });

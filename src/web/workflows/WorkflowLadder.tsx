@@ -159,7 +159,7 @@ export function WorkflowLadder({
       <ul className="wf-ladder">
         <Rung name="Session" status={session} terminal />
 
-        {!inspectorOnly && pipeline.stages.map((stage, index) => {
+        {pipeline.stages.map((stage, index) => {
           const members = stage.members.map((member) => {
             const nodeId = member.nodeId;
             const node = nodeId ? nodes.get(nodeId) : undefined;

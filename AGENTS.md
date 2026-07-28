@@ -1000,7 +1000,9 @@ are `block-element` with per-feature prefixes (`wq-`, `nm-`, `rt-`, `qc-`, `tf-`
    under Configuration; new `make` target → Commands; new shortcut → the Keyboard table. Stale
    docs are a rejected change, not a follow-up.
 2. **Tests.** `node:test` + `node:assert/strict`, flat in `test/` as `<feature>-<aspect>.test.ts`.
-   React via `renderToStaticMarkup` from `react-dom/server` - no jsdom, no testing-library.
+   React unit coverage uses `renderToStaticMarkup` from `react-dom/server` - no jsdom, no
+   testing-library. Real GUI exceptions need a documented reason and the macOS Electron
+   preflight above.
    Route tests call `buildApp(...)` with stub registries. Open each file with a comment about
    what is at stake, not what the test does. A test that touches the db or state dir must set
    `HARNESS_HOME` to a fresh temp dir **before importing anything that resolves it** (the

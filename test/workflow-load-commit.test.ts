@@ -7,6 +7,20 @@ const settle = async (): Promise<void> => {
   await Promise.resolve();
 };
 
+test("an older ready-state commit cannot settle the next workflow refresh", async () => {
+  const barrier = createWorkflowLoadCommitBarrier();
+  let settled = false;
+  void barrier.waitFor(1).then(() => { settled = true; });
+
+  barrier.commit(0);
+  await settle();
+  assert.equal(settled, false);
+
+  barrier.commit(1);
+  await settle();
+  assert.equal(settled, true);
+});
+
 test("superseded workflow refreshes settle with the replacement commit", async () => {
   const barrier = createWorkflowLoadCommitBarrier();
   let firstSettled = false;

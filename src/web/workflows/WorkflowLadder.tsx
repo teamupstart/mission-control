@@ -50,6 +50,7 @@ import {
   type WorkflowConfirmRequest,
 } from "./WorkflowConfirmModal.tsx";
 import { workflowRequest } from "./workflowApi.ts";
+import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
 import { useWorkflowRunDetail } from "./useWorkflowRunDetail.ts";
 
 interface WorkflowLadderProps {
@@ -421,18 +422,14 @@ export function WorkflowLadderPanel({
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const copyReset = useRef<number | null>(null);
   const mounted = useRef(false);
-  const refreshResolvers = useRef(new Set<() => void>());
-  const releaseRefreshes = useCallback((): void => {
-    const resolvers = [...refreshResolvers.current];
-    refreshResolvers.current.clear();
-    for (const resolve of resolvers) resolve();
-  }, []);
+  const refreshGeneration = useRef(0);
+  const refreshCommit = useRef(createWorkflowLoadCommitBarrier());
   const requestRefresh = useCallback((): Promise<void> => {
     if (!mounted.current) return Promise.resolve();
-    return new Promise((resolve) => {
-      refreshResolvers.current.add(resolve);
-      setRefreshRevision((value) => value + 1);
-    });
+    const generation = ++refreshGeneration.current;
+    const committed = refreshCommit.current.waitFor(generation);
+    setRefreshRevision(generation);
+    return committed;
   }, []);
   const state = useWorkflowRunDetail(run.id, run.updatedAt + refreshRevision);
   const controller = useRunActions(run.id, requestRefresh);
@@ -441,19 +438,21 @@ export function WorkflowLadderPanel({
     mounted.current = true;
     return () => {
       mounted.current = false;
-      releaseRefreshes();
+      refreshCommit.current.release();
       if (copyReset.current !== null) window.clearTimeout(copyReset.current);
     };
-  }, [releaseRefreshes]);
+  }, []);
   useEffect(() => {
-    if (state.state !== "loading") releaseRefreshes();
-  }, [releaseRefreshes, state]);
+    // The generation captured by this render prevents an older ready-state effect from
+    // releasing a waiter registered before React began the next detail request.
+    if (state.state !== "loading") refreshCommit.current.commit(refreshRevision);
+  }, [refreshRevision, state]);
   useEffect(() => {
-    releaseRefreshes();
+    refreshCommit.current.release();
     setFeedbackCopied(false);
     setLocalError(null);
     setConfirm(null);
-  }, [releaseRefreshes, run.id]);
+  }, [run.id]);
 
   if (state.state === "loading") {
     return (

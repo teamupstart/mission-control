@@ -86,6 +86,22 @@ easier to get wrong - every guard the Runs page puts on these actions comes acro
   with its own confirmation requirements (`RetryWorkflowDeliverySchema` carries `requestId`,
   `expectedSessionId`, `expectedNoteKey`). It is **out of scope**: the ladder draws the
   `uncertain` rung, not the `refused` one.
+- **`sessionBound` has exactly one correct source, and it is already live.**
+  `WorkflowRuns` computes `const sessionBound = detail.binding.sessionId !== null`
+  (`WorkflowRuns.tsx:419`) under a doc comment that is itself the rule: "ONE field answers it for
+  every control that needs a session ... a second source for one fact is how a link stays enabled
+  onto a session that is gone" (`:412-418`). That field is **not** a historical id:
+  `orphanBinding` (`store.ts`) runs
+  `UPDATE workflow_bindings SET state = 'orphaned', session_id = NULL` and is driven by
+  `session_remove`, the durable eviction signal. The same transaction sets the active run
+  `blocked` and appends `binding_orphaned`, which moves the run's `updatedAt` and republishes the
+  SSE summary - so a ladder refetching on `updatedAt` (Phase 1's hook) picks up the change
+  without any additional wiring.
+- **The viewed session is NOT that signal.** `ConsoleDetail` has a live `session`, but it is the
+  session whose card is open, not necessarily the session the *delivery* targets: a binding's
+  `sessionId` is re-pointable, and `workflowRunBySession` joins by newest-updated run per session.
+  Deriving `sessionBound` from the viewed session would be the second source that comment warns
+  against, and the two would disagree exactly when it matters.
 - `WorkflowConfirmModal` (`WorkflowConfirmModal.tsx:64`) takes a `WorkflowConfirmRequest` with
   `title`, `body`, `confirmLabel`, `confirmHint`, `danger`, optional `requirePhrase` and
   `onConfirm`. Each consuming surface holds its own `confirm` state and renders its own instance
@@ -105,6 +121,7 @@ export type RunActionId = string;
 
 export function deliveryResolutionActions(
   delivery: WorkflowDelivery,
+  /** MUST be `detail.binding.sessionId !== null`. See below - there is no second source. */
   sessionBound: boolean,
 ): DeliveryAction[];           // id, label, tooltip, disabled, confirm: WorkflowConfirmRequest-minus-onConfirm
 
@@ -118,6 +135,12 @@ export function inspectorGateActions(
   them to each other's mutation code.
 - **Every descriptor carries a stable `id: RunActionId`.** This is what lets the controller in
   step 2 key pending state to an action without either surface inventing its own naming.
+- **`sessionBound` is supplied by the caller as `detail.binding.sessionId !== null`, and by
+  nothing else.** Both surfaces already hold the detail, so both can answer it from the one field
+  the server nulls on orphan. `WorkflowLadderPanel` passes it down; `WorkflowLadder` does **not**
+  derive it, and must not be given the viewed `Session` in order to guess at it. Spelling this
+  out is the difference between a plan an implementer can follow and one where the destructive
+  replacement action is enabled by a guess.
 - **`WorkflowRuns.tsx` is refactored to consume these**, deleting its inline copies. This is a
   narrow, copy-only refactor and is explicitly *not* the `load()` refactor Phase 1 ruled out;
   the fetch path is untouched.
@@ -243,6 +266,11 @@ uncertain delivery in place, under the same confirmations as the Runs page.
   session is bound, and that its confirm descriptor carries `requirePhrase` exactly equal to
   `DISCARD AND SEND A NEW REPAIR ROUND`. Assert the same descriptors are what `WorkflowRuns`
   renders, so the two surfaces cannot drift.
+  **The disappeared-session case gets its own assertion**: a detail whose
+  `binding.sessionId` is `null` while `summary.sessionId` still carries an id must render the
+  discard action **disabled** with the "The bound session is gone" tooltip. That combination is
+  reachable, and it is the one that decides whether the destructive action is offered for a pane
+  that no longer exists.
 - `test/workflow-action-inflight.test.ts` - **the double-submit regression**, asserted against
   the module-level store, which is what makes it cover both surfaces rather than one renderer:
   a second `runAction` for a run+action already in flight issues **no** second request; the
@@ -299,6 +327,10 @@ Nothing depends on this phase. It establishes, for anyone extending the ladder l
 - **The residual is known and bounded**: the store's scope is the tab, so two tabs can still
   submit one intent twice. Closing that needs server-side dedup of the intent, not a client
   change.
+- **`sessionBound` is `detail.binding.sessionId !== null` and has no second source.** The server
+  nulls that column on orphan, so it is a live signal rather than a historical one; anything
+  deriving it from a rendered `Session` has created the divergence the shipped doc comment
+  warns about.
 - **The renderer stays pure**; mutations belong to the panel wrapper via the controller.
 - **A disabled action renders with its reason** rather than disappearing.
 - **An in-flight action is disabled.** A `requestId` makes a *retry* safe, not a second click.
@@ -349,6 +381,21 @@ Nothing depends on this phase. It establishes, for anyone extending the ladder l
   this failure ("the text has to outlive every mount that can end under it"). The residual - two
   tabs - is stated rather than implied, with server-side intent dedup named as what would close
   it and why that is outside this phase.
+- **Inspector round 5 (#308)** was on the source design rather than this phase: the mockups' C3
+  annotation still described `onFindings: "restart_workflow"`. Corrected in `mockups.html`
+  without discarding Option C's argument, which survives the change because the gate still
+  consumes a round under `inspector_only`.
+- **Inspector round 6 (#308): the gap was real, the stated mechanism was not, and the proposed
+  remedy would have introduced a defect.** The plan did not say where `sessionBound` came from,
+  so an implementer could indeed have guessed - that part is fixed, and the disappeared-session
+  case now has its own assertion. But the premise that the id is historical is wrong:
+  `orphanBinding` sets `session_id = NULL` in the same transaction that blocks the run and
+  appends `binding_orphaned`, driven by `session_remove`, so the field is live and the resulting
+  summary change drives Phase 1's refetch. And the suggested fix - threading a bound-session
+  boolean from `ConsoleDetail` or the session registry - is specifically rejected: the viewed
+  session is not necessarily the delivery's target session, so that would be the "second source
+  for one fact" `WorkflowRuns.tsx:412-418` warns against, disagreeing exactly when it matters.
+  The plan now names the one field and forbids the second.
 - Reconciled against Phase 3 (concurrent): the two touch `WorkflowLadder.tsx`, `styles.css` and
   `README.md` in disjoint regions - this phase in the gate and delivery rungs' action rows, Phase
   3 in the failing stage's rung. Ordinary textual conflicts, resolvable at merge; whichever

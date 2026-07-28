@@ -186,7 +186,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 5),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 6),
   );
   assert.equal(
     builtin.definition.currentVersionId,

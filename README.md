@@ -1139,11 +1139,14 @@ Workflow is then bound to the session and starts when Foreman reports **Complete
 machine-wide choice under **Settings → Workflows → Dispatch default** to preselect it for
 every new single-agent dispatch. New installations start on the built-in **No-Mistakes
 Review** workflow. That default stores the workflow identity rather than today's version, so
-each new binding takes the newest immutable version shipped at the time (version 5 in this
-build) while older bindings stay pinned. The dispatch form can override that choice for one
-task, including an explicit **None** that finishes without a Workflow. Once the task has a
-session, this selection is frozen so the task row and the already-armed Workflow cannot
-disagree.
+each new binding takes the newest immutable version shipped at the time (see
+[Built-in workflows](#built-in-workflows)) while older bindings stay pinned. The dispatch
+form can override that choice for one task, including an explicit **None** that finishes
+without a Workflow. Once the task has a session, this selection is frozen so the task row and
+the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
+Recurring Missions inherit the same machine default when they create an ordinary task.
+Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
+Workflow belongs only at its final N-to-one handoff.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
@@ -2549,11 +2552,12 @@ head, records an immutable attempt-free bypass submission, and reviews that head
 refuses the failed head, every prior repair head, PR switching, and the round cap. Run detail
 labels the Persona bypass and offers an explicit confirmed restart of the full workflow.
 
-If no adopted PR exists, the published policy either waits or offers **Prepare PR in session**. That
-human action sends a deterministic commit, push, and PR prompt through Preview or Live delivery;
-the gate itself never pushes or opens a pull request. **Recheck Inspector** only reevaluates the
-current durable observation and remains waiting until Inspector's normal sweep has seen a new
-head.
+If no adopted PR exists, the published policy waits, offers **Prepare PR in session**, or prepares
+it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate
+itself never pushes or opens a pull request. The offered action prepares the packet under Preview
+or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
+**Recheck Inspector** only reevaluates the current durable observation and remains waiting until
+Inspector's normal sweep has seen a new head.
 
 Gate summaries travel on the existing workflow-run SSE upsert. Finding bodies and full audit
 state stay on the selected run's HTTP detail, so the browser adds no polling. Reset removes the

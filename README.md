@@ -2159,7 +2159,7 @@ your copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 3 are preserved for bindings that already pin them, and version 4 is current. There is
+through 5 are preserved for bindings that already pin them, and version 6 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -2172,7 +2172,7 @@ so one failing gate returns the submission to the session with the command's own
 
 The [Check nodes](#check-nodes) section owns the current execution status and the rules for
 configured, unconfigured and unauthorized slots. In this build those rules make versions 3
-and 4 follow the same Persona review path as version 2 while preserving the deterministic
+through 6 follow the same Persona review path as version 2 while preserving the deterministic
 stage in the graph.
 
 Behind it are the four built-in Personas wired the way they were written to compose. Intent
@@ -2182,14 +2182,15 @@ Auditor and Documentation Steward are stage 3, running **in parallel on the same
 and aggregating into one combined repair packet at their All-pass Join. Every fail returns to
 the session for repair. A passed review is gated on the
 [Inspector final gate](#inspector-final-gate) finding nothing on the pull request:
-in current version 4, findings require the session to fix, verify, commit and push, then
+in versions 4 through 6, findings require the session to fix, verify, commit and push, then
 Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
-through 3 retain their original whole-workflow restart behavior. A run with no pull request
-yet offers **Prepare PR in session** rather than waiting silently. Versions 2 through 4
-default to Manual trigger and Live delivery, so a failed review returns its deterministic
-repair packet to the bound session automatically. Live still requires the subsystem switch
-and repository allowlist, and every binding can override the version default. Version 1
-retains its original Manual and Preview defaults for existing pinned bindings.
+through 3 retain their original whole-workflow restart behavior. Versions 5 and 6
+automatically return a passed, PR-less review to the session to prepare the pull request;
+earlier versions offer **Prepare PR in session** instead. Versions 2 through 5 retain their
+Manual trigger and Live delivery defaults, while current version 6 defaults to Foreman
+complete and Live. Live still requires the subsystem switch and repository allowlist, and
+every binding can override the version default. Version 1 retains its original Manual and
+Preview defaults for existing pinned bindings.
 
 Like the built-in Personas it is **app data, not your data**, and the workflow list marks it
 `Built-in`. Opening it shows it read-only: it draws in the Pipeline view with every editing
@@ -2211,13 +2212,14 @@ from you: it always carries the guidance and the graph the build was made from. 
 shipped workflow itself appends a **new version** rather than editing the one you may be bound
 to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
 
-Versions 3 and 4 are that rule in practice. Version 3 added the deterministic check stage;
-version 4 preserves that graph and changes only the immutable Inspector-findings policy.
-Versions 1 and 2 - the same four reviewers with no check stage - and version 3 are still in
-the catalog and still resolve, so an existing binding keeps running its pinned graph and
-whole-workflow restart policy. New bindings take version 4 because it is current. Adopting
-the newer version on an existing binding means creating a new binding, which is the same
-gesture adopting any newly published version already requires.
+Versions 3 through 6 are that rule in practice. Version 3 added the deterministic check
+stage; version 4 preserves that graph and changes only the immutable Inspector-findings
+policy; version 5 automatically prepares a missing pull request; and version 6 makes Foreman
+complete the default trigger. Every earlier version remains in the catalog and still
+resolves, so an existing binding keeps its pinned graph, policies, and binding defaults.
+New bindings take version 6 because it is current. Adopting the newer version on an existing
+binding means creating a new binding, which is the same gesture adopting any newly published
+version already requires.
 
 The graph is not stored in your database at all, which is what makes all of that true without
 a seeding step that could half-run. It is compiled into the build beside the Persona documents.
@@ -2332,9 +2334,9 @@ bounded version metadata; selecting one history entry fetches that immutable gra
 exact Persona Markdown from the version route.
 
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
-or Live delivery, and a repair-round limit. Manual plus Preview remains the default. The
-optional Inspector final gate and its missing-PR and findings policies are immutable parts of
-each published version.
+or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
+new workflows. The optional Inspector final gate and its missing-PR and findings policies are
+immutable parts of each published version.
 
 ### Retiring a workflow
 

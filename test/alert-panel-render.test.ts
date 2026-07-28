@@ -90,6 +90,10 @@ test("reachable: ok tone, card untinted, no away meta", () => {
   assert.match(html, /data-tone="ok"/);
   assert.match(html, /data-on="false"[^>]*data-tone="ok"/);
   assert.match(html, /You&#x27;re reachable/);
+  assert.match(
+    html,
+    /Anything blocked on you reaches you via desktop and sound as it happens\./,
+  );
   assert.doesNotMatch(html, /class="alert-meta"/, "nothing to report when you're at the desk");
 });
 

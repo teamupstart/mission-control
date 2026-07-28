@@ -269,7 +269,7 @@ export function WorkflowLadder({
         {delivery && (
           <Rung
             name="Repair delivery"
-            status={{ tone: "failed", label: delivery.label }}
+            status={{ tone: "waiting", label: delivery.label }}
           >
             <p className="wf-ladder-sentence">{delivery.sentence}</p>
           </Rung>

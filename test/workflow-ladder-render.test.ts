@@ -55,5 +55,12 @@ test("the uncertain delivery rung uses the shared label and sentence verbatim", 
   const view = deliveryStateView("uncertain");
   assert.match(html, new RegExp(view.label));
   assert.ok(html.includes(view.sentence));
+  const labelAt = html.indexOf(">Repair delivery</strong>");
+  assert.notEqual(labelAt, -1);
+  const rungAt = html.lastIndexOf('<li class="wf-ladder-rung', labelAt);
+  assert.notEqual(rungAt, -1);
+  const rung = html.slice(rungAt, html.indexOf("</li>", labelAt));
+  assert.match(rung, /workflow-waiting is-waiting/);
+  assert.doesNotMatch(rung, /workflow-failed|is-failed/);
   assert.doesNotMatch(html, /Mark delivered|Discard, send new round/);
 });

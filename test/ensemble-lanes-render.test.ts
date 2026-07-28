@@ -10,7 +10,10 @@ import type {
   EnsembleMember,
 } from "../src/shared/ensemble.ts";
 import type { ReviewItem, Session } from "../src/shared/types.ts";
-import { EnsembleMembers } from "../src/web/ensembles/EnsembleMembers.tsx";
+import {
+  EnsembleMembers,
+  type EnsembleMemberLiveLane,
+} from "../src/web/ensembles/EnsembleMembers.tsx";
 import type { EnsembleRunDetailResponse } from "../src/web/ensembles/types.ts";
 import {
   mkSession,
@@ -132,12 +135,14 @@ function liveSession(over: Partial<Session> = {}): Session {
 
 function render(
   memberDetail: EnsembleRunDetailResponse,
-  lane: { session: Session; reviews: ReviewItem[] } | null,
+  lane: Omit<EnsembleMemberLiveLane, "gateNeedsYou"> & { gateNeedsYou?: boolean } | null,
 ): string {
   return renderToStaticMarkup(
     createElement(EnsembleMembers, {
       detail: memberDetail,
-      liveByMemberId: lane ? new Map([["member-1", lane]]) : undefined,
+      liveByMemberId: lane
+        ? new Map([["member-1", { ...lane, gateNeedsYou: lane.gateNeedsYou ?? false }]])
+        : undefined,
       pending: null,
       onAction: () => {},
     }),
@@ -152,6 +157,20 @@ test("a joined member lane renders live tone, activity, goal, elapsed, last even
   assert.match(html, /elapsed 8m/);
   assert.match(html, /last event 2m ago/);
   assert.match(html, /≈\$0\.42/);
+});
+
+test("a joined member lane uses the parked-gate attention tone", () => {
+  const html = render(detail(), {
+    session: liveSession({
+      state: "idle",
+      pendingReviews: 0,
+      paneDialog: null,
+    }),
+    reviews: [],
+    gateNeedsYou: true,
+  });
+  assert.match(html, /aria-label="Session needs decision"/);
+  assert.match(html, /ensemble-lane-tone-attention/);
 });
 
 test("a candidate's pending review and pane dialog are both answerable in its lane", () => {

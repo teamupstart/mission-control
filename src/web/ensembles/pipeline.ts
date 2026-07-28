@@ -37,6 +37,8 @@ export interface EnsemblePipelineInput {
   memberCount: number;
 }
 
+const WAITING_ON_YOU = "waiting on you";
+
 function latestAttempts(
   attempts: readonly EnsembleStageAttempt[],
 ): Map<string, EnsembleStageAttempt> {
@@ -63,6 +65,11 @@ function stepState(
   if (run.status === "completed") return "complete";
   if (latest?.status === "succeeded") return "complete";
   if (latest?.status === "failed" || latest?.status === "cancelled") return "failed";
+  if (ensembleIsTerminal(run.status)) {
+    if (run.activeStageId === stage.id) return "failed";
+    if (activeOrdinal !== null && stage.ordinal < activeOrdinal) return "complete";
+    return "upcoming";
+  }
   if (
     run.activeStageId === stage.id ||
     latest?.status === "running" ||
@@ -71,13 +78,6 @@ function stepState(
     return "active";
   }
   if (activeOrdinal !== null && stage.ordinal < activeOrdinal) return "complete";
-  if (
-    run.status !== null &&
-    ensembleIsTerminal(run.status) &&
-    run.activeStageId === stage.id
-  ) {
-    return "failed";
-  }
   return "upcoming";
 }
 
@@ -89,7 +89,7 @@ function activeDetail(
     readyArtifacts: number;
     membersNeedingInput: number;
   },
-  runStatus: EnsembleRun["status"],
+  barrier: string | null,
 ): string | null {
   if (stage.driverKind === "member") {
     const parts = [
@@ -103,9 +103,7 @@ function activeDetail(
   if (stage.driverKind === "review" && latest) {
     return `attempt ${latest.attempt} of ${stage.maxAttempts}`;
   }
-  if (stage.driverKind === "decision" && runStatus === "awaiting_decision") {
-    return "waiting on you";
-  }
+  if (stage.driverKind === "decision") return barrier;
   return null;
 }
 
@@ -117,7 +115,7 @@ function barrierSentence(
 ): string | null {
   if (!stage) return null;
   if (run.status === "awaiting_decision" && stage.driverKind === "decision") {
-    return "waiting on you";
+    return WAITING_ON_YOU;
   }
   if (run.status !== "waiting") return null;
 
@@ -137,7 +135,7 @@ function barrierSentence(
       return `waiting for ${remaining} prior stage${remaining === 1 ? "" : "s"}`;
     }
     case "human_decision":
-      return "waiting on you";
+      return WAITING_ON_YOU;
     case "none":
       return "waiting to continue";
   }
@@ -163,6 +161,7 @@ export function projectEnsemblePipeline(input: EnsemblePipelineInput): EnsembleP
   const launchedMembers = input.summary?.launchedMembers ?? 0;
   const readyArtifacts = input.summary?.readyArtifacts ?? 0;
   const membersNeedingInput = input.summary?.membersNeedingInput ?? 0;
+  const barrier = barrierSentence(input.run, activeStage, readyArtifacts, attempts);
 
   const launchState: EnsemblePipelineStepState =
     input.run.status === "completed" ||
@@ -193,7 +192,7 @@ export function projectEnsemblePipeline(input: EnsemblePipelineInput): EnsembleP
               stage,
               latest,
               { maxMembers, readyArtifacts, membersNeedingInput },
-              input.run.status,
+              barrier,
             )
           : null,
     };
@@ -201,6 +200,6 @@ export function projectEnsemblePipeline(input: EnsemblePipelineInput): EnsembleP
 
   return {
     steps: [launch, ...steps],
-    barrier: barrierSentence(input.run, activeStage, readyArtifacts, attempts),
+    barrier,
   };
 }

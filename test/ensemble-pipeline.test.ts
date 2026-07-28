@@ -104,6 +104,21 @@ test("a human decision stage says it is waiting on you", () => {
   assert.equal(view.steps.find((step) => step.id === decision.id)?.detail, "waiting on you");
 });
 
+test("terminal runs never leave stale active-stage evidence active", () => {
+  const plan = compile(consensusStrategy);
+  const active = plan.stages[1]!;
+  for (const status of ["failed", "cancelled"] as const) {
+    const view = projectEnsemblePipeline({
+      run: { status, activeStageId: active.id, plan },
+      summary: summary(plan),
+      stageAttempts: [attempt(active.id, status === "failed" ? "running" : "waiting")],
+      memberCount: plan.roles.length,
+    });
+    assert.equal(view.steps.find((step) => step.id === active.id)?.state, "failed");
+    assert.ok(view.steps.every((step) => step.state !== "active"));
+  }
+});
+
 test("terminal runs keep the full walked pipeline visible", () => {
   const plan = compile(consensusStrategy);
   const view = projectEnsemblePipeline({

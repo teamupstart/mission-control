@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
 import {
   ENSEMBLE_LIMITS,
@@ -25,6 +25,7 @@ import {
 export interface EnsembleMemberLiveLane {
   session: Session;
   reviews: ReviewItem[];
+  gateNeedsYou: boolean;
 }
 
 const EMPTY_LIVE_LANES: ReadonlyMap<string, EnsembleMemberLiveLane> = new Map();
@@ -184,7 +185,7 @@ function MemberCard({
   const observed = section(artifact?.metadata, "observed");
   const busy = pending !== null;
   const session = live?.session ?? null;
-  const sessionState = session ? stateDisplay(session, false) : null;
+  const sessionState = session ? stateDisplay(session, live?.gateNeedsYou ?? false) : null;
   const dialog = session ? activePaneDialog(session) : null;
 
   const facts = [
@@ -268,14 +269,7 @@ function MemberCard({
         <div className="ensemble-lane-live">
           <div className="ensemble-lane-activity">
             <span>{session.activity ?? sessionState?.label ?? "No activity reported"}</span>
-            <span className="ensemble-muted">
-              elapsed {fmtElapsed(session.startedAt ?? session.firstSeen, null)}
-            </span>
-            <span className="ensemble-muted">
-              {session.lastActivity
-                ? `last event ${relativeTime(session.lastActivity)}`
-                : "no session events reported"}
-            </span>
+            <LiveLaneClock session={session} />
             <CostChip cost={session.cost} />
           </div>
           <GoalLine session={session} />
@@ -356,6 +350,28 @@ function MemberCard({
         </div>
       )}
     </li>
+  );
+}
+
+function LiveLaneClock({ session }: { session: Session }): React.JSX.Element {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <>
+      <span className="ensemble-muted">
+        elapsed {fmtElapsed(session.startedAt ?? session.firstSeen, now)}
+      </span>
+      <span className="ensemble-muted">
+        {session.lastActivity
+          ? `last event ${relativeTime(session.lastActivity, now)}`
+          : "no session events reported"}
+      </span>
+    </>
   );
 }
 

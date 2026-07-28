@@ -5,12 +5,14 @@ import { ConsensusResultView } from "./Consensus.tsx";
 import { PanelVoteResult } from "./PanelVote.tsx";
 
 /**
- * The strategy result-renderer registry. Generic run detail shows stages, members, artifacts
- * and evaluations the same way for every strategy; the strategy-specific PRESENTATION of the
- * result - Best-of-N's scorecards, Panel vote's disagreement view, a future tournament's bracket -
- * lives behind this seam, keyed by the run's strategy id. A new strategy that reuses the
- * existing tables and routes adds a renderer here and nothing else, which is the Phase 8
- * extension contract: no new page, no new session field, no new engine branch.
+ * The strategy result-renderer registry. Generic run detail shows stages, members, comparison,
+ * artifacts and evaluations the same way for every strategy; the strategy-specific PRESENTATION
+ * of the result - Best-of-N's scorecards, Panel vote's disagreement view, a future tournament's
+ * bracket - lives behind this seam, keyed by the run's strategy id. A new strategy that reuses
+ * the existing tables and routes adds a renderer here and nothing else, which is the Phase 8
+ * extension contract: no new page, no new session field, no new engine branch. Generic control
+ * channels (`onRestoreArtifact`, `onOpenCompare`) are optional additive context; they do not put
+ * strategy branches into the workspace that performs the action.
  */
 
 /** Everything a strategy result view needs, supplied by the generic detail. */
@@ -23,6 +25,13 @@ export interface EnsembleResultContext {
   subjectLabel: (artifactId: string) => string;
   /** Open one artifact's on-demand evidence/diff. */
   onOpenArtifact?: (artifactId: string) => void;
+  /**
+   * Open one exact path across an activation-safe 2-3 artifact selection.
+   *
+   * Optional and additive: a renderer with no detail controller stays browser-safe and renders
+   * rationale paths as ordinary text.
+   */
+  onOpenCompare?: (artifactIds: string[], path: string) => void;
   /**
    * Reset a checkout to one artifact's snapshot, through the generic action surface.
    *

@@ -278,6 +278,35 @@ record is not yet drawn - offering Restore there would ask to reset a checkout t
 that moment resetting itself. And a decision stored in a vocabulary this build cannot read says
 that a decision was made and offers no Restore at all, rather than guessing which column lost.
 
+## Comparing snapshots file by file
+
+The **Compare** section sits between Members and Artifacts and is available once at least two
+ready `commit` snapshots exist. Before that it says exactly what it is waiting for. Select two or
+three snapshots; the selection belongs to this visit to the run and is not persisted.
+
+The claims strip keeps each column's reported summary, number of claimed checks, frozen candidate
+cost, and any score/rank/confidence the durable evaluations provide aligned over that candidate's
+evidence. An unreported cost remains *not reported*; a real reported zero remains `$0.00`.
+
+The file-touch matrix is built from the union of the selected snapshots' **complete** file lists,
+ordered by total churn. Each cell carries insertions/deletions, binary and rename provenance;
+files touched by only one candidate are marked **only #N**. Clicking a row opens the same exact
+path in synchronized side-by-side panes. Each pane scrolls horizontally on its own and discloses
+when its byte-bounded patch was truncated.
+
+Scorecard rationale recognizes exact repo-relative, path-shaped tokens without guessing against
+the matrix. Clicking one establishes an eligible pair, scrolls Compare into view and opens that
+path. Validation happens there, after the complete file lists load: if none of the selected
+candidates touched the named path, the matrix keeps an explicit **Not touched by the selected
+candidates** row instead of hiding the claim or inventing a match. A run with no distinct second
+ready snapshot renders the rationale as ordinary text, not a dead control.
+
+Compare uses the [single-path artifact evidence contract](#artifacts-and-private-refs): matrix
+population requests the complete file list without patch bytes, and an open row requests that one
+exact path per selected artifact under the existing byte bound. This keeps request headers bounded
+and makes every pane's truncation receipt about one unambiguous file. The Artifacts section retains
+its separate lazy whole-artifact cache and continues to work independently.
+
 ## Artifacts and private refs
 
 Each submission is captured through a **temporary Git index**, never the member's real index, so its

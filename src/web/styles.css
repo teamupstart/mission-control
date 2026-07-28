@@ -7758,6 +7758,375 @@ select:not([multiple]) option:focus-visible {
   white-space: pre;
 }
 
+/* Compare workspace: the matrix is the instrument panel. Its first column stays pinned while
+   candidate evidence moves under it, so "which file am I judging?" never becomes memory work.
+   Claims and panes share the same column grammar; every patch owns its own horizontal scroller,
+   and neither grid can widen the page body. */
+.ensemble-compare {
+  --ensemble-compare-columns: 2;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ensemble-compare-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ensemble-compare-heading h4 {
+  margin: 0;
+}
+
+.ensemble-compare-heading p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ensemble-compare-count {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--muted);
+  font: 600 10.5px/1.3 var(--mono);
+}
+
+.ensemble-compare-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 12px 0 0;
+  border: 0;
+  padding: 0;
+}
+
+.ensemble-compare-picker legend {
+  width: 100%;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ensemble-compare-picker label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-2);
+  padding: 6px 9px;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.ensemble-compare-picker label:has(input:checked) {
+  border-color: color-mix(in srgb, var(--working) 55%, var(--border));
+  background: color-mix(in srgb, var(--working) 8%, var(--panel));
+}
+
+.ensemble-compare-picker label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ensemble-compare-picker span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ensemble-compare-claims-grid,
+.ensemble-compare-panes {
+  display: grid;
+  grid-template-columns: repeat(var(--ensemble-compare-columns), minmax(280px, 1fr));
+  gap: 10px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.ensemble-compare-claims-grid {
+  margin-top: 12px;
+  padding-bottom: 4px;
+}
+
+.ensemble-compare-claim {
+  min-width: 280px;
+  border: 1px solid var(--border-soft);
+  border-top: 2px solid color-mix(in srgb, var(--working) 55%, var(--border));
+  border-radius: 8px;
+  background: var(--bg-2);
+  padding: 9px 10px;
+}
+
+.ensemble-compare-claim h5 {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.ensemble-compare-claim > p {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+}
+
+.ensemble-compare-claim dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 18px;
+  margin: 8px 0 0;
+}
+
+.ensemble-compare-claim dt {
+  color: var(--muted);
+  font-size: 9.5px;
+  text-transform: uppercase;
+}
+
+.ensemble-compare-claim dd {
+  margin: 1px 0 0;
+  font: 600 11px/1.3 var(--mono);
+}
+
+.ensemble-compare-score {
+  color: var(--working);
+  font-variant-numeric: tabular-nums;
+}
+
+.ensemble-compare-matrix-scroll {
+  max-width: 100%;
+  margin-top: 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+}
+
+.ensemble-compare-matrix {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ensemble-compare-matrix th,
+.ensemble-compare-matrix td {
+  min-width: 135px;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 7px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ensemble-compare-matrix th:first-child {
+  position: sticky;
+  z-index: 1;
+  left: 0;
+  min-width: 240px;
+  max-width: 420px;
+  background: var(--panel);
+}
+
+.ensemble-compare-matrix thead th {
+  color: var(--muted);
+  background: var(--bg-2);
+  font-weight: 600;
+}
+
+.ensemble-compare-matrix thead th:first-child {
+  z-index: 2;
+  background: var(--bg-2);
+}
+
+.ensemble-compare-matrix tbody tr:last-child th,
+.ensemble-compare-matrix tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ensemble-compare-matrix tbody tr:hover th,
+.ensemble-compare-matrix tbody tr:hover td,
+.ensemble-compare-matrix tr.is-open th,
+.ensemble-compare-matrix tr.is-open td {
+  background: color-mix(in srgb, var(--working) 7%, var(--panel));
+}
+
+.ensemble-compare-matrix tr.is-untouched th,
+.ensemble-compare-matrix tr.is-untouched td {
+  background: color-mix(in srgb, var(--attention) 7%, var(--panel));
+  color: var(--attention);
+}
+
+.ensemble-compare-matrix th button {
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ensemble-compare-matrix th button:hover {
+  color: var(--working);
+}
+
+.ensemble-compare-matrix td small {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ensemble-compare-churn {
+  font-family: var(--mono);
+}
+
+.ensemble-compare-only {
+  display: inline-block;
+  margin-left: 7px;
+  border: 1px solid color-mix(in srgb, var(--attention) 45%, var(--border));
+  border-radius: 999px;
+  padding: 1px 5px;
+  color: var(--attention);
+  font-size: 9.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ensemble-compare-absent {
+  color: var(--dim);
+}
+
+.ensemble-compare-file {
+  max-width: 100%;
+  margin-top: 12px;
+  overflow: clip;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+
+.ensemble-compare-file-head {
+  position: sticky;
+  z-index: 3;
+  top: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  padding: 8px 10px;
+}
+
+.ensemble-compare-file-head > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ensemble-compare-file-head > code {
+  overflow-wrap: anywhere;
+  font-weight: 650;
+}
+
+.ensemble-compare-file-head > strong {
+  color: var(--attention);
+  font-size: 11px;
+}
+
+.ensemble-compare-panes {
+  padding: 10px;
+}
+
+.ensemble-compare-load-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ensemble-compare-load-error button {
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 7px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ensemble-compare-load-error button:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.ensemble-compare-pane {
+  min-width: 280px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.ensemble-compare-pane h5 {
+  overflow: hidden;
+  margin: 0;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 7px 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+
+.ensemble-compare-pane > p {
+  margin: 8px 9px;
+  font-size: 11px;
+}
+
+.ensemble-compare-pane > pre {
+  max-height: 460px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  background: var(--bg);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.ensemble-rationale-path {
+  display: inline;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--working) 55%, transparent);
+  background: transparent;
+  padding: 0;
+  color: var(--working);
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--mono);
+}
+
+.ensemble-rationale-path:hover {
+  border-bottom-color: currentColor;
+}
+
 /* Timeline */
 .ensemble-timeline {
   display: grid;

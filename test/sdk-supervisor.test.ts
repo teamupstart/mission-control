@@ -275,6 +275,44 @@ test("a follow-up is durably recoverable before the driver can accept it", async
   }
 });
 
+test("a queued send rechecks its target inside session serialization", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    handle.send = async (turn) => {
+      handle.sent.push(turn);
+      await firstHeld;
+      return "started";
+    };
+
+    const first = supervisor.send(session.id, { text: "first" });
+    await waitFor(() => handle.sent.length === 1);
+    let targetChanged = false;
+    const second = supervisor.send(
+      session.id,
+      { text: "stale workflow feedback" },
+      () => targetChanged ? "conversation_changed" : null,
+    );
+    targetChanged = true;
+    releaseFirst();
+
+    assert.equal(await first, "started");
+    await assert.rejects(second, /conversation_changed/);
+    assert.deepEqual(handle.sent, [{ text: "first" }]);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a rejected follow-up releases only its recovery reservation", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);

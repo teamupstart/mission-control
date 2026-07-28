@@ -283,8 +283,14 @@ export class SdkSupervisor {
    * Rejects when there is no handle rather than resolving: "delivered to nobody" is the
    * shape of failure the acked send exists to remove, so it must not be reintroduced here.
    */
-  send(id: string, turn: SdkTurn): Promise<SdkSendDisposition> {
+  send(
+    id: string,
+    turn: SdkTurn,
+    beforeSend?: () => string | null,
+  ): Promise<SdkSendDisposition> {
     return this.serialize(id, async (handle) => {
+      const blocked = beforeSend?.();
+      if (blocked) throw new Error(blocked);
       const unfinished = this.unfinishedTurns.get(id) ?? 0;
       // Cross the durable boundary BEFORE the driver can accept the turn. If this write
       // fails, delivery must reject without invoking the driver; accepting first leaves a

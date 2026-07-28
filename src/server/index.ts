@@ -23,6 +23,7 @@ import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
+import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPoolReaper } from "./pool.ts";
@@ -102,6 +103,7 @@ const workflows = new WorkflowManager(registry, personas.store, {
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
+  inject: runtimePromptInjector(sdkSessions),
   canBindSessionToWorkflow: (sessionId) => ensembles.canBindSessionToWorkflow(sessionId),
   externalBindingEligibility: ({ sessionId }) => ensembles.canBindSessionToWorkflow(sessionId),
 });

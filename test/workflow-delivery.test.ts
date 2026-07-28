@@ -306,6 +306,82 @@ test("copy-mode refusal stays retryable, an ambiguous retry never repeats, and r
   assert.equal(conflictingReuse.ok, false);
 });
 
+test("workflow Live delivery sends an SDK session through its driver", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+  const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
+  const { runtimePromptInjector } = await import("../src/server/sdk/deliver.ts");
+  type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+
+  const sessionId = "sdk:11111111-1111-4111-8111-111111111111";
+  const noteKey = "agent-sdk-workflow";
+  const store = seededStore("sdk-driver");
+  store.reattachBinding("binding-sdk-driver", {
+    noteKey,
+    sessionId,
+    sessionAgent: "claude",
+    sessionName: "embedded review",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+  }, 3);
+  const delivery = store.prepareDelivery({
+    id: "delivery-sdk-driver",
+    runId: "run-sdk-driver",
+    submissionId: "submission-sdk-driver",
+    kind: "persona_feedback",
+    sessionId,
+    noteKey,
+    payload: "apply the requested review changes",
+    payloadSha256: "b".repeat(64),
+  }).delivery;
+  store.setDeliveryState(delivery.id, "refused", "ready_for_sdk_retry", 4);
+
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const registry = new Registry();
+  registry.registerSdkSession({
+    id: sessionId,
+    agent: "claude",
+    name: "embedded review",
+    cwd: "/repo",
+    gitRoot: "/repo",
+    repoRoot: "/repo",
+  });
+  registry.applyDriverEvent(sessionId, {
+    kind: "bound",
+    agentSessionId: noteKey,
+    transcriptPath: null,
+    modelId: null,
+    pid: null,
+  });
+
+  const sent: { id: string; text: string }[] = [];
+  const supervisor = {
+    async send(id: string, turn: { text: string }) {
+      sent.push({ id, text: turn.text });
+      return "started" as const;
+    },
+  } as unknown as SdkSupervisor;
+  const attributed: string[] = [];
+  const manager = new WorkflowManager(registry, store, {
+    inject: runtimePromptInjector(supervisor),
+    recordInjection: ((id: string, payload: string, origin: string) => {
+      attributed.push(`${id}:${origin}:${payload}`);
+    }) as never,
+  });
+
+  const result = await manager.retryDelivery(delivery.id, {
+    requestId: "send-sdk-feedback",
+    expectedSessionId: sessionId,
+    expectedNoteKey: noteKey,
+  }, 5);
+
+  assert.equal(result.ok && result.value.state, "delivered");
+  assert.deepEqual(sent, [{ id: sessionId, text: "apply the requested review changes" }]);
+  assert.deepEqual(attributed, [
+    `${sessionId}:workflow:apply the requested review changes`,
+  ]);
+});
+
 test("Live sends one exact packet, attributes it once, and re-arms only the drain guard", async () => {
   const { openDb } = await import("../src/server/db.ts");
   const { Registry } = await import("../src/server/registry.ts");

@@ -1,4 +1,10 @@
 import type { SdkSendDisposition, Session } from "@shared/types.ts";
+import {
+  injectPrompt,
+  type InjectDeps,
+  type InjectResult,
+  type PromptWriteGuard,
+} from "../actions.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
 
 /**
@@ -33,6 +39,7 @@ export async function deliverToDriver(
   supervisor: SdkSupervisor | undefined,
   session: Session,
   text: string,
+  beforeSend?: PromptWriteGuard,
 ): Promise<SdkDelivery> {
   const failed = (error: string): SdkDelivery => ({
     ok: false,
@@ -42,9 +49,41 @@ export async function deliverToDriver(
   });
   if (!supervisor) return failed("this build has no session supervisor");
   try {
-    const delivery = await supervisor.send(session.id, { text });
+    const blocked = beforeSend?.();
+    if (blocked) return failed(blocked);
+    // The second guard runs inside the supervisor's per-session serialization. The first
+    // catches an already-invalid target without entering its send queue; the second closes
+    // the window in which a queued reset or handoff could change the conversation.
+    const delivery = await supervisor.send(session.id, { text }, beforeSend);
     return { ok: true, pasted: true, submitVerified: true, delivery };
   } catch (err) {
     return failed(err instanceof Error ? err.message : String(err));
   }
+}
+
+/**
+ * Deliver one complete prompt through the runtime that owns the session.
+ *
+ * `/inject`, workflow repair delivery, and any future deterministic prompt sender must all
+ * make the same runtime decision. Keeping it here prevents a caller from sending an embedded
+ * session to the pane-only `injectPrompt`, where the safety backstop correctly refuses it and
+ * leaves the agent idle.
+ */
+export async function injectPromptForRuntime(
+  supervisor: SdkSupervisor | undefined,
+  session: Session,
+  text: string,
+  deps?: InjectDeps,
+  beforeWrite?: PromptWriteGuard,
+): Promise<InjectResult> {
+  if (session.runtime !== "sdk") {
+    return injectPrompt(session, text, deps, beforeWrite);
+  }
+  return deliverToDriver(supervisor, session, text, beforeWrite);
+}
+
+/** Bind the daemon's one supervisor into a pane-compatible injector dependency. */
+export function runtimePromptInjector(supervisor: SdkSupervisor | undefined): typeof injectPrompt {
+  return (session, text, deps, beforeWrite) =>
+    injectPromptForRuntime(supervisor, session, text, deps, beforeWrite);
 }

@@ -141,10 +141,10 @@ test("ids are prefixed, versions ascend, and the definition names the newest", (
       assert.equal(version.id, builtinWorkflowVersionId(slug, index + 1));
       assert.equal(version.workflowId, definition.id);
       assert.equal(version.publishedAt, 0);
-      assert.deepEqual(version.bindingDefaults, DEFAULT_WORKFLOW_BINDING_DEFAULTS);
       assert.deepEqual(version.completionPolicy, definition.completionPolicy);
     });
     assert.equal(definition.currentVersionId, versions[versions.length - 1]!.id);
+    assert.deepEqual(definition.bindingDefaults, versions[versions.length - 1]!.bindingDefaults);
     // The draft is the newest version's graph with the snapshots taken back off, so opening
     // the built-in shows what a binding to its current version would run.
     assert.deepEqual(
@@ -164,7 +164,13 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
   );
   assert.ok(builtin, "the shipped slug is append-only; Phase 3 must not rename it");
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.deepEqual(builtin.definition.bindingDefaults, DEFAULT_WORKFLOW_BINDING_DEFAULTS);
+  assert.equal(builtin.versions.length, 2);
+  assert.deepEqual(builtin.versions[0]!.bindingDefaults, DEFAULT_WORKFLOW_BINDING_DEFAULTS);
+  assert.deepEqual(builtin.versions[1]!.bindingDefaults, {
+    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+    deliveryMode: "live",
+  });
+  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[1]!.bindingDefaults);
   assert.deepEqual(builtin.definition.completionPolicy, {
     kind: "inspector",
     onFindings: "restart_workflow",

@@ -22,6 +22,7 @@ import {
 } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRunTone } from "../components/session-bits.tsx";
+import { copyText } from "../lib/clipboard.ts";
 import { relativeTime } from "../lib/format.ts";
 import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
@@ -397,6 +398,7 @@ export function WorkflowRunView({
   const uncertainIds = uncertainDeliveries.map((delivery) => delivery.id).sort().join(",");
   const previousUncertainIds = useRef("");
   const [uncertainAnnouncement, setUncertainAnnouncement] = useState("");
+  const [feedbackCopied, setFeedbackCopied] = useState(false);
   useEffect(() => {
     if (uncertainIds && uncertainIds !== previousUncertainIds.current) {
       setUncertainAnnouncement(
@@ -498,9 +500,17 @@ export function WorkflowRunView({
             <button
               className="btn btn-ghost"
               disabled={!feedbackAvailable}
-              onClick={() => void onCopyFeedback()}
+              onClick={() => void (async () => {
+                try {
+                  await onCopyFeedback();
+                  setFeedbackCopied(true);
+                  window.setTimeout(() => setFeedbackCopied(false), 1600);
+                } catch {
+                  setFeedbackCopied(false);
+                }
+              })()}
             >
-              Copy feedback
+              {feedbackCopied ? "Copied" : "Copy feedback"}
             </button>
           </Tooltip>
           {inspectorGate?.state.prUrl ? (
@@ -1343,9 +1353,10 @@ export function WorkflowRuns({
       ].join("\n"))];
     }).join("\n\n");
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not copy workflow feedback");
+      throw caught;
     }
   };
 

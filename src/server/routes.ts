@@ -127,7 +127,7 @@ import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
-import { deliverToDriver } from "./sdk/deliver.ts";
+import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
 import { stopSession } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
@@ -167,7 +167,6 @@ import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
 import {
   cyclePermissionMode,
   focus,
-  injectPrompt,
   rename,
   resetPreview,
   selectPaneOption,
@@ -1936,14 +1935,13 @@ export function buildApp(
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
     // here is positive evidence that nothing landed, which is the only state a caller may
     // safely retry from.
-    const r = session.runtime === "sdk"
-      ? await deliverToDriver(sdkSessions, session, parsed.data.text)
-      : await injectPrompt(
-          session,
-          parsed.data.text,
-          undefined,
-          () => registry.promptResourceBlockerForSession(session.id),
-        );
+    const r = await injectPromptForRuntime(
+      sdkSessions,
+      session,
+      parsed.data.text,
+      undefined,
+      () => registry.promptResourceBlockerForSession(session.id),
+    );
     // Only once it landed: a refused or failed delivery is not a turn anybody will read,
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);

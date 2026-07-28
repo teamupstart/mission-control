@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AwayConfig } from "@shared/protocol.ts";
-import type { AwayDigest } from "@shared/away-buffer.ts";
-import { api, fetchAwayConfig, fetchAwayDigest } from "./api.ts";
+import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
+import { api, fetchAwayBuffer, fetchAwayConfig, fetchAwayDigest } from "./api.ts";
 
 /** How often to re-read away state, so a toggle from another window/tray lands here too. */
 const POLL_MS = 5000;
@@ -23,9 +23,15 @@ export function useAwayMode(): {
   /** The digest for the window you just ended, until dismissed. */
   digest: AwayDigest | null;
   dismissDigest: () => void;
+  /**
+   * What is piling up in the window still open, for the away card. Null when you are
+   * not away, which is also when nothing asks for it.
+   */
+  buffered: AwayBufferSummary | null;
 } {
   const [away, setAwayState] = useState<AwayConfig | null>(null);
   const [digest, setDigest] = useState<AwayDigest | null>(null);
+  const [buffered, setBuffered] = useState<AwayBufferSummary | null>(null);
   /** The last `away` we saw, to spot the transition back. */
   const wasAway = useRef(false);
 
@@ -53,6 +59,16 @@ export function useAwayMode(): {
       if (!alive || !cfg) return;
       setAwayState(cfg);
       claimIfReturned(cfg);
+      // Only asked for while the window is open, which is the only time it says
+      // anything: the buffer is null at the desk, so a read then costs a request to be
+      // told what `cfg.away` already said. Cleared on return rather than left stale, or
+      // the card would keep quoting a count for a window that has since been digested.
+      if (!cfg.away) {
+        setBuffered(null);
+        return;
+      }
+      const buf = await fetchAwayBuffer();
+      if (alive && buf) setBuffered(buf);
     };
     void read();
     const id = setInterval(() => void read(), POLL_MS);
@@ -79,5 +95,5 @@ export function useAwayMode(): {
 
   const dismissDigest = useCallback(() => setDigest(null), []);
 
-  return { away, setAway, digest, dismissDigest };
+  return { away, setAway, digest, dismissDigest, buffered };
 }

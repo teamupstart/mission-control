@@ -79,12 +79,48 @@ export interface AwayDigest {
 }
 
 /**
+ * A LOOK at the away window that is still open - what the topbar's away card shows
+ * while you are still away.
+ *
+ * Deliberately not `AwayDigest`, and deliberately not read from the same route. A
+ * digest is the rendered form of a CLOSED window: it costs a model call, and
+ * `/api/away/digest` hands it over exactly once (see `AwayWatcher.takePending`)
+ * because there is nowhere to recover it from afterwards. It also answers "nothing"
+ * for the entire time you are actually away, since the pending slot only fills when
+ * the window closes. A panel polling that route for a live count would therefore read
+ * nothing right up until the moment it destroyed the digest it was trying to preview.
+ * This shape is the non-destructive half: derived on demand, owning nothing.
+ */
+export interface AwayBufferSummary {
+  /** When the open window started, or null when you are not away. */
+  since: number | null;
+  /**
+   * Distinct things buffered so far - the same unit `rollup` and `lines` count, so
+   * the figure on the card and the sentence beside it can never disagree.
+   */
+  count: number;
+  /** Events lost to the cap, surfaced for the same reason `AwayBuffer.dropped` is. */
+  dropped: number;
+  /** The same deterministic one-liner the digest leads with; "" when nothing is buffered. */
+  rollup: string;
+  /** Preview lines, most urgent first, capped short enough for a popover. */
+  lines: string[];
+}
+
+/**
  * Cap on distinct events held. Coalescing already bounds this by
  * (kinds x subjects), so hitting the cap means a genuinely enormous session count -
  * but a cap that only triggers in the pathological case is still cheaper than an
  * unbounded buffer surviving an overnight away.
  */
 export const AWAY_BUFFER_CAP = 200;
+
+/**
+ * How many preview lines the away card shows. Far below `digestLines`' own limit: this
+ * renders inside a 300px popover, and a panel that grows past the viewport to list
+ * twenty events has stopped being a glance.
+ */
+export const AWAY_PREVIEW_LINES = 5;
 
 export function emptyBuffer(since: number): AwayBuffer {
   return { since, awayMs: 0, events: [], dropped: 0 };
@@ -285,6 +321,31 @@ export function digestLines(buf: AwayBuffer, limit = 12): string[] {
   const overflow = buf.events.length - lines.length;
   if (overflow > 0) lines.push(`+${overflow} more`);
   return lines;
+}
+
+/**
+ * Look at an open window without touching it.
+ *
+ * Pure and total: `null` in means "not away", which is a real state the card renders
+ * (all zeroes) rather than an error. Reuses `rollupLine` / `digestLines` instead of
+ * counting again locally, so the preview on the card is the same sentence the digest
+ * will lead with when the window finally closes - two readings of one buffer that
+ * cannot drift apart.
+ */
+export function summarizeBuffer(
+  buf: AwayBuffer | null,
+  limit = AWAY_PREVIEW_LINES,
+): AwayBufferSummary {
+  if (buf === null) return { since: null, count: 0, dropped: 0, rollup: "", lines: [] };
+  return {
+    since: buf.since,
+    count: buf.events.length,
+    dropped: buf.dropped,
+    // An empty buffer has no rollup to give: `rollupLine` returns "" for one, and the
+    // card branches on `count` rather than on the string being falsy.
+    rollup: rollupLine(buf),
+    lines: digestLines(buf, limit),
+  };
 }
 
 /**

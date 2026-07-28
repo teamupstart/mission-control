@@ -6764,7 +6764,10 @@ select:not([multiple]) option:focus-visible {
   top: calc(100% + 8px);
   right: 0;
   z-index: 20;
-  width: 260px;
+  /* 300 rather than 260: the away card's meta strip carries an elapsed figure, a count
+     and a button on one line, and below this they wrap into a second row that makes the
+     card taller than the hint paragraph it replaced. */
+  width: 300px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -6777,6 +6780,18 @@ select:not([multiple]) option:focus-visible {
 .alert-enable {
   width: 100%;
 }
+/* Section heading over the delivery channels - the label that says the two rows beneath
+   it are a different kind of thing from the card below them. */
+.alert-sec {
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+/* `.alert-row` is NOT this popover's row - it is the app's generic settings checkbox
+   row, used by the Foreman, Skills, LLM, Task sources, Workflows and work-queue panels.
+   The popover's own switch rows are `.alert-channel` below; keep these two apart. */
 .alert-row {
   display: flex;
   align-items: center;
@@ -6793,10 +6808,188 @@ select:not([multiple]) option:focus-visible {
 .alert-row select {
   margin-left: auto;
 }
+
+/* One delivery channel. The whole row is the button; `.pal-switch` inside it is
+   presentational and already sets `pointer-events: none`, so the click lands once.
+   Negative margin lets the hover bleed to the popover's padding edge without widening
+   the panel. */
+.alert-channel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 8px;
+  margin: 0 -8px;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+.alert-channel:hover:not([data-disabled="true"]) {
+  background: var(--panel-2);
+}
+.alert-channel[data-disabled="true"] {
+  cursor: default;
+}
+.alert-channel[data-disabled="true"] .alert-channel-label {
+  color: var(--dim);
+}
+.alert-channel[data-disabled="true"] .pal-switch {
+  opacity: 0.4;
+}
+.alert-channel-text {
+  min-width: 0;
+  flex: 1;
+}
+.alert-channel-label {
+  display: block;
+  line-height: 1.35;
+  color: inherit;
+}
+/* Monochrome marks, not emoji: the colour emoji is spent on the topbar button
+   (bell / muted / moon), and a panel of full-colour glyphs out-shouts the switches. */
+.alert-channel-ico {
+  flex: none;
+  width: 15px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--dim);
+}
 .alert-hint {
   margin: 0;
   font-size: 11px;
   line-height: 1.5;
+  color: var(--dim);
+}
+
+/* Away mode's own card. Boxed because it is the one control here that is SERVER state:
+   it survives this tab closing and keeps the daemon detecting while you are gone, where
+   the two rows above are per-machine browser preferences. Three identical checkboxes
+   said the opposite. */
+.alert-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.alert-card[data-on="true"] {
+  border-color: color-mix(in oklab, var(--purple) 42%, var(--border));
+  background: color-mix(in oklab, var(--purple) 9%, var(--panel-2));
+}
+/* Away with no channel live is not the same state as away: nothing can actually reach
+   you, so the card drops its "this is working" tint rather than tinting a promise it
+   cannot keep. The sentence inside says so too; this is the glance version. */
+.alert-card[data-on="true"][data-tone="muted"] {
+  border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel-2));
+}
+.alert-card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.alert-card-head[data-disabled="true"] {
+  cursor: default;
+}
+.alert-card-head[data-disabled="true"] .pal-switch {
+  opacity: 0.4;
+}
+.alert-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* The away switch wears the card's own accent instead of the shared "on" green: away is
+   a different KIND of state, and the card is already tinted to say so. */
+.alert-card[data-on="true"] .pal-switch[data-on="true"] {
+  background: var(--purple);
+}
+.alert-card[data-on="true"][data-tone="muted"] .pal-switch[data-on="true"] {
+  background: var(--attention);
+}
+.alert-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 9px;
+  border-top: 1px dashed color-mix(in oklab, var(--purple) 28%, var(--border));
+}
+.alert-card[data-tone="muted"] .alert-meta {
+  border-top-color: color-mix(in oklab, var(--attention) 28%, var(--border));
+}
+.alert-fig {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: color-mix(in oklab, var(--purple) 55%, var(--fg));
+}
+.alert-card[data-tone="muted"] .alert-fig {
+  color: color-mix(in oklab, var(--attention) 55%, var(--fg));
+}
+/* The app's generic `.btn`, shrunk to the meta strip's scale and parked at its trailing
+   edge. Disabled styling comes from `.btn:disabled`. */
+.alert-digest-btn {
+  margin-left: auto;
+  font-size: 11.5px;
+  padding: 4px 9px;
+}
+/* `.btn`'s hover tints toward the app's "on" green, which fights the card it sits in -
+   inside the away card it follows the card's own accent instead. */
+.alert-card[data-on="true"] .alert-digest-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--purple) 45%, var(--border));
+  background: color-mix(in oklab, var(--purple) 12%, var(--panel-2));
+}
+.alert-card[data-on="true"][data-tone="muted"] .alert-digest-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 12%, var(--panel-2));
+}
+/* A look at the window still open - the events, not the digest, which is written on
+   return and consumed by being read. */
+.alert-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 8px;
+  border-top: 1px dashed color-mix(in oklab, var(--purple) 28%, var(--border));
+}
+.alert-preview-rollup {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.alert-preview-list {
+  margin: 0;
+  padding-left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.alert-preview-list li {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+.alert-preview-note {
+  margin: 0;
+  font-size: 10.5px;
   color: var(--dim);
 }
 

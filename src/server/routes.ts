@@ -121,6 +121,7 @@ import {
 import { getBacklogPlan, setBacklogPlan } from "./backlog.ts";
 import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
+import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -2548,6 +2549,17 @@ export function buildApp(
 
   /** Currently-stalled sessions. Empty when stall detection is off. */
   app.get("/api/away/stalls", (c) => c.json(away?.stalls() ?? []));
+
+  /**
+   * A LOOK at the window still open, for the topbar's away card. Never consumes.
+   *
+   * Beside `/api/away/digest` rather than folded into it, because that route cannot
+   * answer this question even in principle: it hands the buffer over exactly once, and
+   * it reports nothing at all while you are still away, since the pending slot only
+   * fills when the window CLOSES. Polling it for a live count would read 204 for the
+   * whole away window and then destroy the digest on the one read that worked.
+   */
+  app.get("/api/away/buffer", (c) => c.json(summarizeBuffer(away?.buffer() ?? null)));
 
   /**
    * The return digest, read once. 204 when there is nothing to report - either you

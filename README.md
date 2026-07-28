@@ -2022,9 +2022,23 @@ it breaks through even while you're away.
 ### Away mode
 
 Open the alerts control in the top bar - **🔔** when alerts are on, **🔕** when they're
-muted, **🌙** once you're away - to **Enable desktop alerts** (grants the
-browser Notification permission and unlocks the chime), toggle **Sound**, and flip
-**Away mode**.
+muted, **🌙** once you're away. The panel is split by what owns each setting. Under
+**How you're reached** sit the two delivery channels for this machine, **Desktop
+notifications** (with **Enable desktop alerts** above them when the browser has not
+granted permission yet - that click also unlocks the chime) and **Sound**. **Away
+mode** sits below them in its own card, because it is not a third channel: it is
+daemon state that survives closing the tab.
+
+The card always states what would actually happen. With a channel live it reads
+"Blockers interrupt via desktop and sound; everything else waits in the digest". With
+**both channels off it says "Nothing can reach you"** and changes colour, because away
+mode is not itself a delivery path - with nothing to interrupt you on it can only hand
+you a digest when you get back, and the panel never claims otherwise.
+
+Switch away mode on and the card expands to show how long you have been gone
+(`away 1h 04m`), how much has piled up (`7 buffered`), and a **Digest** button that
+unfolds a preview of what is waiting. That preview is a *look*: the real digest is
+written when you return, and reading it is what consumes it.
 
 While away, anything blocked on you still notifies immediately - everything else
 accumulates. When you come back, you get **one card** summarising the window: a couple
@@ -2038,6 +2052,10 @@ which is the case it exists for. The digest is read once; a refresh won't re-ann
 it. If the provider is missing or logged out, the narrative is simply absent and the
 rollup carries the summary on its own. Which model writes it is
 **Settings → [Models](#models-what-the-apps-own-model-work-runs-on) → Away digest**.
+
+The count on the card comes from `GET /api/away/buffer`, a read-only look at the window
+still open - deliberately a separate route from `GET /api/away/digest`, which hands the
+buffer over exactly once and reports nothing at all until you are back at the desk.
 
 ## Workflows and Personas
 

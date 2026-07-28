@@ -133,7 +133,7 @@ export function App(): React.JSX.Element {
   const { route, navigate, pendingRoute, confirmPending, cancelPending } =
     useWorkflowRoute(workflowDirty);
   const [alertSettings, updateAlerts] = useAlertSettings();
-  const { away, setAway, digest, dismissDigest } = useAwayMode();
+  const { away, setAway, digest, dismissDigest, buffered } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
@@ -1559,7 +1559,13 @@ export function App(): React.JSX.Element {
                   {gearDot && <span className={`gear-dot settings-dot-${gearDot}`} aria-hidden />}
                 </button>
               </Tooltip>
-              <AlertBar settings={alertSettings} update={updateAlerts} away={away} setAway={setAway} />
+              <AlertBar
+                settings={alertSettings}
+                update={updateAlerts}
+                away={away}
+                setAway={setAway}
+                buffered={buffered}
+              />
             </div>
           </div>
           <UsageBar

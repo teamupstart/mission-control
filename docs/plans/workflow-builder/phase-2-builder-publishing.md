@@ -396,8 +396,9 @@ Do not add a CDN, web worker, server-side rendering path, or browser polling.
 - Extend `workflow-sse.test.ts` for summary snapshot/upsert/archive and reconnect equivalence.
 - `workflow-draft.test.ts`: debounce, one in-flight save, conflict freeze, reload, duplicate, and
   Publish guards.
-- `workflow-builder-render.test.ts`: empty library, nodes, policy panel, diagnostics, conflict, and
+- `workflow-builder-render.test.ts`: empty library, policy panel, diagnostics, conflict, and
   version history.
+- `workflow-builder-electron.test.ts`: real-browser graph geometry and editable-canvas mounting.
 - `workflow-node-contract.test.ts`: only shared custom node leaves render each node kind and no
   checkpoint/Inspector node appears.
 - Production `npm run build:web`, `npm run typecheck`, and the full test suite.

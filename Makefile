@@ -99,7 +99,7 @@ install-app: app ## Build, package, and copy Mission Control.app into /Applicati
 icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
 	node scripts/gen-icons.mjs
 
-test: ## Run the unit tests
+test: ## Run the full test suite
 	npm test
 
 check: ## Typecheck + tests

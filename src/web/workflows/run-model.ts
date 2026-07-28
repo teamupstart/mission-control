@@ -182,9 +182,10 @@ export function runRounds(detail: WorkflowRunDetail): RoundView[] {
 
 /** The Session terminus's chip: what this submission is doing right now. */
 export function submissionStatus(
-  submission: WorkflowSubmission,
+  submission: WorkflowSubmission | null,
   changesRequested: boolean,
 ): PipelineStatus {
+  if (!submission) return { tone: "waiting", label: "No submission yet" };
   switch (submission.status) {
     case "capturing":
       return { tone: "running", label: "Capturing evidence" };
@@ -201,6 +202,11 @@ export function submissionStatus(
     case "failed":
       return { tone: "failed", label: "Failed" };
   }
+}
+
+/** The latest round intentionally skipped Personas and exists only to re-audit an Inspector fix. */
+export function inspectorOnlyRoundSentence(): string {
+  return "Persona review bypassed for Inspector repair.";
 }
 
 const REVIEWER_STATUSES: Record<

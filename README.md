@@ -2402,6 +2402,13 @@ loaded only for the selected run. Cards, Console, and Board show the same workfl
 
 ### Watching a run
 
+When a session has a bound run, its Console and Board detail pane shows a vertical stage
+ladder above the transcript. It is a reading surface: passed stages collapse, the active or
+failed stage names its members, and an objection, Inspector wait, or uncertain delivery opens
+in place. Use **Open run** for the full evidence, timeline, and actions. A published version
+whose graph cannot be expressed as stages keeps the existing workflow chip here and links to
+the Runs page, where its read-only graph remains available.
+
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show
 queued, reviewing, passed, or changes requested; Checks show their corresponding command

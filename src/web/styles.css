@@ -14190,6 +14190,317 @@ select.sc-input {
 .detail-pane > .nm-log-open {
   flex: none;
 }
+
+/* ---- workflow stage ladder ---- */
+
+/* The detail pane's cheap axis is height, but the transcript still owns the remaining room.
+   A long workflow scrolls inside its reading surface instead of pushing the composer away. */
+.detail-conv > .wf-ladder-panel {
+  flex: 0 1 auto;
+  max-height: min(52dvh, 560px);
+  overflow-y: auto;
+}
+.wf-ladder-panel,
+.wf-ladder-feedback,
+.wf-ladder-fallback {
+  flex: none;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel-2) 88%, var(--bg));
+}
+.wf-ladder-panel {
+  padding: 12px 14px 11px;
+  scrollbar-color: var(--border) transparent;
+}
+.wf-ladder-feedback,
+.wf-ladder-fallback {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.wf-ladder-fallback {
+  flex-wrap: wrap;
+}
+.wf-ladder-feedback[aria-busy="true"] {
+  color: var(--dim);
+}
+.wf-ladder-error {
+  flex: 1;
+  min-width: 180px;
+  margin: 0;
+  line-height: 1.45;
+}
+.wf-ladder-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.wf-ladder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--working);
+}
+.wf-ladder-version,
+.wf-ladder-round {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.wf-ladder-runstate {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in oklab, currentColor 12%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+}
+.wf-ladder-round {
+  margin-left: auto;
+}
+.wf-ladder-bypass {
+  margin: 9px 0 0;
+  padding: 7px 9px;
+  border-left: 2px solid var(--attention);
+  background: color-mix(in oklab, var(--attention) 8%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.wf-ladder {
+  list-style: none;
+  margin: 0;
+  padding: 12px 0 2px;
+}
+.wf-ladder-rung {
+  --wf-ladder-tone: var(--dim);
+  position: relative;
+  min-width: 0;
+  padding: 0 0 15px 29px;
+  color: var(--fg);
+}
+.wf-ladder-rung:last-child {
+  padding-bottom: 2px;
+}
+.wf-ladder-rung.workflow-running {
+  --wf-ladder-tone: var(--working);
+}
+.wf-ladder-rung.workflow-waiting {
+  --wf-ladder-tone: var(--attention);
+}
+.wf-ladder-rung.workflow-passed {
+  --wf-ladder-tone: var(--idle);
+}
+.wf-ladder-rung.workflow-failed,
+.wf-ladder-rung.workflow-blocked {
+  --wf-ladder-tone: var(--danger);
+}
+/* One connector per gap: the final rung never grows a line below its terminal mark. */
+.wf-ladder-rung:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 15px;
+  bottom: -1px;
+  left: 7px;
+  width: 1px;
+  background: color-mix(in oklab, var(--wf-ladder-tone) 46%, var(--border));
+}
+.wf-ladder-rung::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--wf-ladder-tone);
+  border-radius: 50%;
+  background: var(--panel-2);
+  box-sizing: border-box;
+}
+.wf-ladder-rung.is-passed::after,
+.wf-ladder-rung.is-failed::after {
+  background: var(--wf-ladder-tone);
+}
+.wf-ladder-rung.is-running::after {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--wf-ladder-tone) 22%, transparent);
+}
+.wf-ladder-rung.is-pending::after {
+  border-radius: 1px;
+  transform: rotate(45deg);
+  background: transparent;
+}
+.wf-ladder-rung.is-terminal:not(.is-pending)::after {
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+.wf-ladder-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.wf-ladder-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.wf-ladder-title strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+.wf-ladder-sub {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.wf-ladder-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--wf-ladder-tone);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.wf-ladder-members {
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wf-ladder-member {
+  --wf-ladder-member-tone: var(--dim);
+  min-width: 0;
+  padding-left: 1px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.wf-ladder-member.workflow-running {
+  --wf-ladder-member-tone: var(--working);
+}
+.wf-ladder-member.workflow-waiting {
+  --wf-ladder-member-tone: var(--attention);
+}
+.wf-ladder-member.workflow-passed {
+  --wf-ladder-member-tone: var(--idle);
+}
+.wf-ladder-member.workflow-failed {
+  --wf-ladder-member-tone: var(--danger);
+}
+.wf-ladder-member-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.wf-ladder-member-mark {
+  flex: none;
+  width: 11px;
+  color: var(--wf-ladder-member-tone);
+  text-align: center;
+}
+.wf-ladder-member-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--wf-ladder-member-tone);
+  font-weight: 600;
+}
+.wf-ladder-member-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+}
+.wf-ladder-member-meta,
+.wf-ladder-member-note {
+  display: block;
+  margin: 2px 0 0 17px;
+  color: var(--dim);
+  line-height: 1.4;
+}
+.wf-ladder-member-note {
+  color: var(--muted);
+}
+.wf-ladder-why,
+.wf-ladder-sentence {
+  margin: 7px 0 0;
+  padding: 7px 9px;
+  border-left: 2px solid var(--wf-ladder-tone);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--wf-ladder-tone) 9%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.wf-ladder-why {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.wf-ladder-why strong {
+  color: var(--fg);
+}
+.wf-ladder-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 7px 0 0;
+}
+.wf-ladder-meta > div {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.wf-ladder-meta dt {
+  color: var(--dim);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.wf-ladder-meta dd {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.wf-ladder-actrow {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+}
+.wf-ladder-open {
+  flex: none;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--panel);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wf-ladder-open:hover {
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+  color: var(--fg);
+}
+.wf-ladder-open:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
 /* The other tabs are short - let the whole pane scroll. */
 .detail-pane {
   flex: 1;

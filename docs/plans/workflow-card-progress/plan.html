@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The workflow stage ladder - plan</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fbfbfa;
+        --panel: #ffffff;
+        --fg: #1a1a19;
+        --muted: #45464a;
+        --dim: #6b6d74;
+        --border: #e2e2df;
+        --accent: #b0562f;
+        --accent-soft: #fdf1ea;
+        --code-bg: #f4f4f1;
+        --ok: #2e7d5b;
+        --warn: #9a6b1f;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16161a;
+          --panel: #1d1d22;
+          --fg: #ececef;
+          --muted: #b8b9c0;
+          --dim: #8a8c95;
+          --border: #2e2f36;
+          --accent: #e08a5f;
+          --accent-soft: #2a1f19;
+          --code-bg: #232329;
+          --ok: #6bbd97;
+          --warn: #d4a54e;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 48px 24px 96px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      .page { max-width: 860px; margin: 0 auto; }
+      .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: var(--accent);
+        margin: 0 0 10px;
+      }
+      h1 { font-size: 34px; line-height: 1.15; margin: 0 0 14px; letter-spacing: -0.02em; }
+      h2 {
+        font-size: 22px;
+        margin: 44px 0 12px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border);
+        letter-spacing: -0.01em;
+      }
+      h3 { font-size: 16.5px; margin: 26px 0 8px; }
+      p, li { color: var(--muted); }
+      li { margin: 5px 0; }
+      strong { color: var(--fg); font-weight: 620; }
+      code {
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 1px 5px;
+      }
+      .lede { font-size: 17.5px; color: var(--muted); }
+      .scroll { overflow-x: auto; margin: 16px 0; }
+      table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+      th, td {
+        border: 1px solid var(--border);
+        padding: 8px 11px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th { background: var(--code-bg); font-weight: 640; color: var(--fg); }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin: 18px 0;
+      }
+      .card.accent { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+      .card h3 { margin-top: 0; }
+      figure { margin: 22px 0; }
+      figcaption { font-size: 13px; color: var(--dim); margin-top: 8px; }
+      svg { max-width: 100%; height: auto; display: block; }
+      .meta { font-size: 13.5px; color: var(--dim); }
+      ol.decisions > li { margin: 12px 0; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <p class="eyebrow">Mission Control &middot; plan</p>
+      <h1>Showing a bound workflow run on the session detail pane: the stage ladder</h1>
+      <p class="lede">
+        Source design: <code>mockups.html</code>, <strong>Option D - stage ladder</strong>,
+        selected by the operator. Options A, B and C are not in scope; the collapsed grid card
+        keeps today's chip, which is what Option D's own parity row says shipping D alone means.
+      </p>
+      <p class="meta">
+        Phased into three implementation units in <code>phased-plan.md</code> (rendered as
+        <code>phased-plan.html</code> beside it).
+      </p>
+
+      <h2>The problem</h2>
+      <p>
+        A no-mistakes run gets a whole embedded strip on the card: a named stage, a segmented
+        rail, a ticking clock, findings, and the buttons to answer a gate. A bound
+        <strong>workflow</strong> run gets one pill that says <code>Preview &middot; R2</code>,
+        and everything else - which stage is executing, who objected, what they said, whether a
+        check actually ran - lives two clicks away on the Runs page.
+      </p>
+      <p>
+        The asymmetry is not cosmetic. Three of the run states an operator most needs to act on
+        are invisible from the session surface: a reviewer's actual objection, a run parked at
+        the Inspector gate, and a repair delivery whose write may or may not have landed.
+      </p>
+
+      <h2>What ships</h2>
+      <p>
+        A vertical <strong>stage ladder</strong> in the Console and Board detail pane: a spine
+        with one rung per stage, reviewers nested under their stage, and the failing stage's
+        verdict opened inline where the operator is already looking.
+      </p>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr><th>State</th><th>Rung behaviour</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Reviewing</td><td>Passed stages collapsed to a line; the running stage lists its members with live status</td></tr>
+            <tr><td>Changes requested</td><td>The failed stage expands the objection in the reviewer's own words</td></tr>
+            <tr><td>Inspector gate</td><td>The gate is its own rung carrying PR number, target head and posture</td></tr>
+            <tr><td>Delivery uncertain</td><td>Its own rung with the shipped sentence and the two resolution actions</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Height is the axis a detail pane has, which is the whole argument for a ladder rather
+        than a rail. It is explicitly <strong>not</strong> put on the collapsed 330px grid card
+        or the board tile.
+      </p>
+
+      <h2>Where the data comes from</h2>
+      <figure>
+        <svg viewBox="0 0 820 300" role="img" aria-label="The SSE summary reaches every session drawing; the ladder additionally fetches run detail over HTTP.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+            </marker>
+          </defs>
+          <g fill="none" stroke="currentColor" stroke-width="1.4" color="#8a8c95">
+            <rect x="16" y="112" width="150" height="66" rx="9" />
+            <rect x="330" y="26" width="180" height="60" rx="9" />
+            <rect x="330" y="200" width="180" height="60" rx="9" />
+            <rect x="620" y="112" width="184" height="66" rx="9" />
+          </g>
+          <g font-family="ui-sans-serif, -apple-system, sans-serif" fill="currentColor">
+            <text x="91" y="140" text-anchor="middle" font-size="13.5" font-weight="700">Daemon</text>
+            <text x="91" y="159" text-anchor="middle" font-size="11.5" opacity="0.75">workflow manager + store</text>
+
+            <text x="420" y="50" text-anchor="middle" font-size="13" font-weight="700">SSE: WorkflowRunSummary</text>
+            <text x="420" y="69" text-anchor="middle" font-size="11.5" opacity="0.75">compact, no stages - unchanged</text>
+
+            <text x="420" y="224" text-anchor="middle" font-size="13" font-weight="700">HTTP: WorkflowRunDetail</text>
+            <text x="420" y="243" text-anchor="middle" font-size="11.5" opacity="0.75">GET /api/workflow-runs/:id</text>
+
+            <text x="712" y="133" text-anchor="middle" font-size="13.5" font-weight="700">Detail pane</text>
+            <text x="712" y="151" text-anchor="middle" font-size="11.5" opacity="0.75">chip (today)</text>
+            <text x="712" y="168" text-anchor="middle" font-size="11.5" opacity="0.75">+ stage ladder (new)</text>
+          </g>
+          <g stroke="currentColor" stroke-width="1.5" fill="none" marker-end="url(#ah)" color="#8a8c95">
+            <path d="M 166 132 C 250 132 250 56 330 56" />
+            <path d="M 166 158 C 250 158 250 230 330 230" />
+            <path d="M 510 56 C 580 56 570 132 620 132" />
+            <path d="M 510 230 C 580 230 570 158 620 158" />
+          </g>
+          <g font-family="ui-sans-serif, sans-serif" fill="currentColor" font-size="11" opacity="0.7">
+            <text x="420" y="106" text-anchor="middle">every session drawing</text>
+            <text x="420" y="284" text-anchor="middle">fetched on open, refetched when the summary moves</text>
+          </g>
+        </svg>
+        <figcaption>
+          Option D's defining property: the SSE summary is not widened at all. The ladder adds one
+          HTTP fetch against the endpoint the Runs page already uses.
+        </figcaption>
+      </figure>
+
+      <h2>Investigated findings</h2>
+      <p class="meta">Verified against <code>HEAD</code> at <code>46d30b41</code>.</p>
+
+      <h3>The derivation already exists and must not be duplicated</h3>
+      <p>
+        <code>RunPipeline</code> already draws a run over its published graph, and every piece of
+        derivation it uses is reusable as-is: <code>projectStages</code>,
+        <code>stageName</code>/<code>stageSummary</code>/<code>nodeLabel</code>, and
+        <code>run-model.ts</code>'s <code>reviewerStatus</code>, <code>checkStatus</code>,
+        <code>stageStatus</code>, <code>endStatus</code>, <code>latestAttemptsFor</code>,
+        <code>verdictOf</code>, <code>verdictMeta</code>, <code>gateWaitSentence</code>,
+        <code>deliveryStateView</code>, <code>checkStatusView</code>. Stages are a pure projection
+        of the graph and are persisted nowhere.
+      </p>
+      <p>
+        The ladder is therefore <strong>a new leaf rendering over an existing derivation</strong>,
+        not a new derivation. This materially lowers the cost the mockups estimated ("the most
+        expensive client one"). A second copy of any of the above is the specific failure this
+        plan exists to prevent.
+      </p>
+
+      <h3>The data is detail-only, and that is deliberate</h3>
+      <p>
+        <code>WorkflowRunSummary</code> is what SSE carries, and it holds <strong>no stage or
+        member structure at all</strong>. Graphs, attempts, verdicts and events never travel over
+        SSE by design. Everything the ladder draws lives on <code>WorkflowRunDetail</code>. So
+        Option D's stated cost is confirmed exactly: <strong>no SSE widening, one HTTP fetch on
+        open.</strong> One consequence the mockups did not note:
+        <code>WorkflowRunDetail.inspectorGate</code> is filled only in
+        <code>WorkflowManager.decorateRun</code>; the store sets it <code>null</code>.
+      </p>
+
+      <h3>Three corrections to the mockups</h3>
+      <ol>
+        <li>
+          <strong><code>maxRepairRounds</code> defaults to 5, not 6.</strong> The mockups'
+          "round 2 / 6" is illustrative. The ladder reads the run's own value and hardcodes no
+          bound.
+        </li>
+        <li>
+          <strong>The uncertain-delivery actions are not plain buttons.</strong> "Discard and send
+          new round" requires the typed phrase
+          <code>DISCARD AND SEND A NEW REPAIR ROUND</code> and is disabled when no session is
+          bound. A card-side button that fired it directly would be a destructive action behind
+          one click that the Runs page deliberately gates.
+        </li>
+        <li>
+          <strong>The shipped sentences already exist and must be reused, not retyped.</strong>
+          <code>deliveryStateView</code> and <code>checkStatusView</code> are the verbatim
+          sources.
+        </li>
+      </ol>
+
+      <h3>The degraded-check rule already has a mechanism</h3>
+      <p>
+        The mockups' "do not tint a degraded stage green" is enforceable today rather than newly
+        invented. An unconfigured slot is recorded <code>"skipped"</code> with a note, and
+        <code>RunPipeline</code> threads this through <code>checkOutcomeFor</code>, whose doc
+        comment states the exact trap: "a skipped or unavailable check still finishes as a passing
+        attempt, so without this the chip would report 'Passed' for a command that was never
+        spawned." The ladder must pass <code>checkOutcomeFor</code> for the same reason.
+      </p>
+
+      <h3>A case the mockups never drew</h3>
+      <p>
+        <code>projectStages</code> returns <code>null</code> for a graph that is not
+        stage-expressible, and the Runs page falls back to a read-only canvas. Hand-built graphs
+        predate stages and a run of one must stay watchable. A ladder has no canvas, hence
+        decision 3 below.
+      </p>
+
+      <h2>Adopted decisions</h2>
+      <p class="meta">Submitted by the operator on 2026-07-27. Requirements, not open questions.</p>
+      <ol class="decisions">
+        <li>
+          <strong>The Runs page keeps <code>RunPipeline</code>.</strong> The ladder is detail-pane
+          only. Both surfaces draw from the same derivation, so they cannot disagree about a run's
+          status even though they differ in shape. This preserves what <code>RunPipeline</code>'s
+          own doc comment calls "the point of the whole migration": the runs monitor shares its
+          leaves with the Pipeline <strong>editor</strong>, so an operator watches the shape they
+          authored. <strong>Two drawings, one derivation</strong> - and what is forbidden is
+          duplicating the derivation, never the leaves.
+        </li>
+        <li>
+          <strong>The seam is an inline strip in the conversation tab</strong>, beside
+          <code>ForemanStrip</code> and <code>NomistakesStrip</code>, which is how the mockups
+          draw it. This keeps Option D's pitch intact: the objection is where the operator is
+          already looking. Height is controlled by collapsing passed stages to a single line.
+        </li>
+        <li>
+          <strong>A freehand-graph run shows today's chip plus an "Open run" link.</strong> No
+          ladder is claimed for a graph that has no stages.
+        </li>
+        <li>
+          <strong>Option C's repeat-offender derivation is taken, on the run detail only.</strong>
+          "The same member has failed N rounds running" is derived server-side and exposed on
+          <code>WorkflowRunDetail</code>. SSE and the chip are untouched, so Option D keeps its
+          cleanest property: it widens the SSE summary not at all.
+        </li>
+      </ol>
+
+      <h2>Non-goals</h2>
+      <ul>
+        <li>No change to <code>WorkflowRunSummary</code> or the SSE event pair.</li>
+        <li>
+          No ladder on the collapsed grid card, the board tile, or the console rail. Those keep
+          their chip, tile flag and rail mark unchanged.
+        </li>
+        <li>
+          No new workflow execution behaviour. This is a reading surface; every action it offers
+          routes to an existing endpoint with its existing confirmation.
+        </li>
+        <li>No second copy of any stage projection or status derivation.</li>
+      </ul>
+
+      <h2>Verification</h2>
+      <ul>
+        <li>
+          <code>npm run typecheck</code>, <code>npm test</code>, <code>npm run build</code> and the
+          bundle smoke check green, on Node 24 and Node 26 as CI runs them.
+        </li>
+        <li>A bound run in each of the four drawn states renders in Console and Board detail.</li>
+        <li>A run whose version is not stage-expressible still renders the chip-plus-link fallback.</li>
+        <li>A check that never ran never reads as "Passed".</li>
+        <li><code>session-leaf-parity.test.ts</code> still passes: the other three session drawings are unchanged.</li>
+      </ul>
+    </div>
+  </body>
+</html>

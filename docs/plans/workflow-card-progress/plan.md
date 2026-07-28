@@ -1,0 +1,184 @@
+# Showing a bound workflow run on the session detail pane: the stage ladder
+
+Source design: `docs/plans/workflow-card-progress/mockups.html`, **Option D - stage ladder**,
+selected by the operator. Options A (gate rail), B (reviewer roster) and C (repair loop) are
+not in scope; the collapsed grid card keeps today's chip, which is what Option D's own parity
+row says shipping D alone means.
+
+## The problem
+
+A no-mistakes run gets a whole embedded strip on the card: a named stage, a segmented rail, a
+ticking clock, findings, and the buttons to answer a gate (`NomistakesStrip.tsx:38`). A bound
+**workflow** run gets one pill that says `Preview · R2` (`session-bits.tsx:167`), and everything
+else - which stage is executing, who objected, what they said, whether a check actually ran -
+lives two clicks away on the Runs page.
+
+The asymmetry is not cosmetic. Three of the run states an operator most needs to act on are
+invisible from the session surface: a reviewer's actual objection, a run parked at the Inspector
+gate, and a repair delivery whose write may or may not have landed.
+
+## What ships
+
+A vertical **stage ladder** in the Console and Board detail pane (`ConsoleDetail.tsx`): a spine
+with one rung per stage, reviewers nested under their stage, and the failing stage's verdict
+opened inline where the operator is already looking.
+
+Four run states, drawn in the mockups as D1-D4:
+
+| State | Rung behaviour |
+|---|---|
+| Reviewing | Passed stages collapsed to a line; the running stage lists its members with live status |
+| Changes requested | The failed stage expands the objection in the reviewer's own words |
+| Inspector gate | The gate is its own rung carrying PR number, target head and posture |
+| Delivery uncertain | Its own rung with the shipped sentence and the two resolution actions |
+
+Height is the axis a detail pane has, which is the whole argument for a ladder rather than a
+rail. It is explicitly **not** put on the collapsed 330px grid card or the board tile.
+
+## Investigated findings
+
+Verified against `HEAD` at `46d30b41`.
+
+### The derivation already exists and must not be duplicated
+
+`RunPipeline` (`RunPipeline.tsx:35`) already draws a run over its published graph, and every
+piece of derivation it uses is reusable as-is:
+
+- `projectStages(graph)` → `StagePipeline { sessionId, endId, endOutcome, stages }`, with
+  `Stage { joinId, members }` and `StageMember` a discriminated union of
+  `{kind:"persona", personaId}` / `{kind:"check", slot}` (`workflow-stages.ts:44-77`).
+  **Stages are a pure projection of the graph and are persisted nowhere**
+  (`workflow-stages.ts:11-19`).
+- `stageName` / `stageSummary` / `nodeLabel` (`workflow-stages.ts:139/171/183`).
+- `run-model.ts`'s `reviewerStatus:240`, `checkStatus:276`, `stageStatus:297`, `endStatus:323`,
+  `submissionStatus:184`, `latestAttemptsFor:112`, `verdictOf:126`, `verdictMeta:531`,
+  `gateWaitSentence:370`, `gateSummaryStatus:386`, `deliveryStateView:408`,
+  `checkStatusView:455`, `checkOutcomeOf:466`, `runRounds:168`.
+
+The ladder is therefore **a new leaf rendering over an existing derivation**, not a new
+derivation. This materially lowers the cost the mockups estimated ("the most expensive client
+one"). A second copy of any of the above is the specific failure this plan exists to prevent.
+
+### The data is detail-only, and that is deliberate
+
+`WorkflowRunSummary` (`workflow.ts:1277-1299`) is what SSE carries, and it holds **no stage or
+member structure at all** - only `activePersonaNames`, `failedPersonaCount`, `round`,
+`maxRepairRounds`, `gate`, and the two delivery counters. Graphs, attempts, verdicts and events
+never travel over SSE by design (`workflow.ts:1328-1332`).
+
+Everything the ladder draws lives on `WorkflowRunDetail` (`workflow.ts:1312-1334`), served by
+`GET /api/workflow-runs/:id` (`routes.ts:965-979`). So Option D's stated cost is confirmed
+exactly: **no SSE widening, one HTTP fetch on open.**
+
+One consequence the mockups did not note: `WorkflowRunDetail.inspectorGate` is filled **only**
+in `WorkflowManager.decorateRun` (`manager.ts:578-600`); `store.runDetail` sets it to `null`
+(`store.ts:3879`). The gate rung's PR number, findings and posture are reachable through that
+route and nowhere else.
+
+### The no-mistakes strip is not a usable precedent for fetching
+
+`NomistakesStrip` is fetch-free because `NmRunSummary` rides the session snapshot
+(`types.ts:397`). A workflow ladder has no equivalent and cannot get one without widening SSE,
+which is the thing Option D was chosen to avoid. There is no shared detail-fetching hook today:
+`WorkflowRuns.tsx` fetches inline via `workflowRequest` (`workflowApi.ts:12`) with a generation
+guard. A reusable hook is new work this plan owns.
+
+### Three corrections to the mockups
+
+1. **`maxRepairRounds` defaults to 5, not 6.** `DEFAULT_WORKFLOW_BINDING_DEFAULTS`
+   (`workflow.ts:387-390`); bounds are 1-20 (`workflow.ts:32-33`). The mockups' "round 2 / 6"
+   is illustrative. The ladder reads `summary.maxRepairRounds` and never hardcodes a bound.
+2. **The uncertain-delivery actions are not plain buttons.** "Discard and send new round"
+   requires a typed confirmation phrase, `DISCARD AND SEND A NEW REPAIR ROUND`, and is disabled
+   when no session is bound (`WorkflowRuns.tsx:930`). "Mark delivered" has its own confirm body.
+   Both POST `/api/workflow-deliveries/:id/resolve` (`routes.ts:1050`). A card-side button that
+   fired either directly would be a destructive action behind one click that the Runs page
+   deliberately puts behind a phrase.
+3. **The shipped sentences already exist and must be reused, not retyped.**
+   `deliveryStateView` (`run-model.ts:401-405`) is the verbatim source for
+   "The write was lost or may have landed. It is never sent again automatically - inspect the
+   pane, then resolve it below." `checkStatusView` (`run-model.ts:455`) supplies
+   "No command is configured for this slot here, so the gate passed without running."
+
+### The degraded-check rule already has a mechanism
+
+The mockups' "do not tint a degraded stage green" is enforceable today rather than newly
+invented. `WORKFLOW_CHECK_STATUSES` is `passed | failed | skipped | unavailable`
+(`workflow.ts:791-792`), only `failed` blocks (`checkOutcomePasses:808`), and an unconfigured
+slot is recorded `"skipped"` with a note (`checks.ts:250-256`). `RunPipeline` threads this
+through `checkOutcomeFor`, whose doc comment states the exact trap: "a skipped or unavailable
+check still finishes as a passing attempt, so without this the chip would report 'Passed' for a
+command that was never spawned." The ladder must pass `checkOutcomeFor` for the same reason.
+
+### The built-in the mockups draw is real
+
+`BUILTIN_WORKFLOWS` holds one entry, `no-mistakes-review`, currently at **version 3**
+(`builtin-workflows.ts:357-394`). Its v3 stages match the mockups exactly: stage 1 is two checks
+(`typecheck`, `test`), stage 2 is the single-member Intent Conformance Judge, stage 3 is Code
+Risk Reviewer + Test Evidence Auditor + Documentation Steward, bookended by `nmr-session` and
+`nmr-end` with `endOutcome: "Complete"` and an `inspector` completion policy.
+
+### The session-to-run join is by session id, but the binding's identity is not
+
+`App.tsx:587-595` builds `workflowRunBySession` by taking the most recently updated run per
+`run.sessionId`. The durable binding, however, is keyed on `noteKey = agentSessionId ?? id`
+(`registry.ts:5382-5384`), which a `/clear` rotates. The ladder inherits this join and must not
+invent a second one.
+
+### Where it can go in the detail pane
+
+`ConsoleDetail.tsx` offers three seams, all real:
+
+1. **Inline in `detail-conv`** (`:377-427`), beside `ForemanStrip` (`:382`) and
+   `NomistakesStrip` (`:393`). Matches the mockups, which draw the ladder as an embedded strip.
+2. **A sixth tab** - extend `type Tab` (`:39`), the `tabs` memo (`:189-207`) and add a body
+   branch. `registerReaderTab` (`:215`) picks it up automatically.
+3. **A drawer**, mirroring `ForemanDrawer` (`:317`) + the `foreman-rail` button (`:355-366`).
+
+### Non-stage-expressible graphs are a case the mockups never drew
+
+`projectStages` returns `null` for a graph that is not stage-expressible, and `RunPipeline`
+falls back to a read-only `WorkflowCanvas` (`RunPipeline.tsx:76-92`). Hand-built graphs predate
+stages and a run of one must stay watchable. A ladder has no canvas, so this plan must say what
+the detail pane does for such a run.
+
+## Adopted decisions
+
+Submitted by the operator on 2026-07-27. These are requirements, not open questions.
+
+1. **The Runs page keeps `RunPipeline`.** The ladder is detail-pane only. Both surfaces draw
+   from the same `projectStages` + `run-model.ts` derivation, so they cannot disagree about a
+   run's status even though they differ in shape. This preserves what `RunPipeline`'s own doc
+   comment calls "the point of the whole migration": the runs monitor shares `pipeline-bits.tsx`
+   leaves with the Pipeline **editor**, so an operator watches the shape they authored. Moving
+   the monitor to a vertical ladder would have broken that pairing or dragged the authoring
+   editor vertical with it. **Two drawings, one derivation** - and the duplication that is
+   forbidden is of the derivation, never of the leaves.
+2. **The seam is an inline strip in the conversation tab**, beside `ForemanStrip` and
+   `NomistakesStrip` in `detail-conv`, which is how the mockups draw it. This keeps Option D's
+   pitch intact: the objection is where the operator is already looking. Height is controlled by
+   collapsing passed stages to a single line, as D2 and D3 already draw them.
+3. **A freehand-graph run shows today's chip plus an "Open run" link.** No ladder is claimed for
+   a graph that has no stages. The Runs page still draws it on its read-only canvas.
+4. **Option C's repeat-offender derivation is taken, on the run detail only.** "The same member
+   has failed N rounds running" is derived server-side beside `compactGate` and exposed on
+   `WorkflowRunDetail`. SSE and the chip are untouched, so Option D keeps its cleanest property:
+   it widens the SSE summary not at all.
+
+## Non-goals
+
+- No change to `WorkflowRunSummary` or the SSE event pair. The ladder fetches detail.
+- No ladder on the collapsed grid card, the board tile, or the console rail. Those keep
+  `WorkflowChip` / `WorkflowTileFlag` / `WorkflowRailMark` unchanged.
+- No new workflow execution behaviour. This is a reading surface; every action it offers routes
+  to an existing endpoint with its existing confirmation.
+- No second copy of any stage projection or status derivation.
+
+## Verification
+
+- `npm run typecheck`, `npm test`, `npm run build` and the bundle smoke check green, on Node 24
+  and Node 26 as CI runs them.
+- A bound run in each of the four drawn states renders correctly in Console and Board detail.
+- A run whose version is not stage-expressible still renders whatever decision 3 selects.
+- A check that never ran never reads as "Passed".
+- `session-leaf-parity.test.ts` still passes: the other three session drawings are unchanged.

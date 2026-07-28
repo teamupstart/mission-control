@@ -168,6 +168,9 @@ export function openDb(): DatabaseSync {
       enabled       INTEGER NOT NULL DEFAULT 1,
       model         TEXT,
       effort        TEXT,
+      -- Published Workflow identity armed for this task's completion. The immutable
+      -- version is selected only when the launched session can be bound.
+      workflow_id   TEXT,
       -- Where a task source swept this task from. The LINK BACK only: identity for
       -- de-duplication lives in task_source_seen below, whose rows outlive the task.
       -- NULL on every task a human typed, which is nearly all of them.
@@ -1277,6 +1280,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
   addColumn(d, "tasks", "dependencies", "TEXT");
+  addColumn(d, "tasks", "workflow_id", "TEXT");
   // `enabled`: the backlog's autopilot toggle. NOT NULL DEFAULT 1, which is the whole
   // migration - every task already in an operator's backlog was schedulable before this
   // column existed, so backfilling anything else would park their backlog on upgrade
@@ -2268,6 +2272,7 @@ interface TaskRow {
   enabled: number;
   model: string | null;
   effort: string | null;
+  workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
   source_url: string | null;
@@ -2389,6 +2394,7 @@ function rowToTask(r: TaskRow): Task {
     enabled: r.enabled !== 0,
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
+    workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
     source:
@@ -2445,16 +2451,17 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, enabled, model, effort,
-         source_id, external_id, source_url, repo_root, worktree_path, branch,
+         workflow_id, source_id, external_id, source_url, repo_root, worktree_path, branch,
          provider, home_name, terminal_resource_id, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          enabled=excluded.enabled, model=excluded.model, effort=excluded.effort,
+         workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
@@ -2476,6 +2483,7 @@ export function upsertTask(t: Task): string[] {
       t.enabled ? 1 : 0,
       t.model,
       t.effort,
+      t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.worktreePath, t.branch, t.provider,
       t.homeName, t.terminalResourceId, t.sessionId,

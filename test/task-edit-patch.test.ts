@@ -175,6 +175,7 @@ test("every field on the form reaches the patch", () => {
     labels: "moved",
     model: "gpt-5.6-sol",
     effort: "xhigh",
+    workflowId: "workflow-review",
     dependencies: [{ type: "task", taskId: "prerequisite" }],
   };
   // Attachments are excluded on purpose: they are not a task field, they are how the

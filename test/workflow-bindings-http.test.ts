@@ -1,11 +1,13 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { PublishedWorkflowGraph } from "../src/shared/workflow.ts";
+import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-bindings-http-"));
 process.env.MISSION_HOME = home;
@@ -20,6 +22,8 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { setForemanConfig } = await import("../src/server/foreman/config.ts");
+const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
 
 function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
@@ -91,6 +95,192 @@ function request(app: ReturnType<typeof buildApp>, path: string, body?: unknown,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
+
+test("a dispatched task arms its selected published workflow at Foreman Complete", async () => {
+  const graph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+    ],
+    edges: [
+      {
+        id: "end",
+        source: "session",
+        sourcePort: "submitted",
+        target: "end",
+        targetPort: "terminal",
+      },
+    ],
+  };
+  seedRuntimeVersion("dispatch-auto", graph);
+  setForemanConfig({ enabled: true });
+  const registry = new Registry();
+  registry.applyDiscovery([
+    discovered({
+      syntheticId: "session-dispatch-auto",
+      tty: "ttys-auto",
+      terminals: [mkMuxHandle({ paneId: "%auto" })],
+    }),
+  ]);
+  registry.applyHook({
+    agent: "claude",
+    event: "PostToolUse",
+    sessionId: "agent-dispatch-auto",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: { tmuxPane: "%auto" },
+  });
+  const workflows = new WorkflowManager(registry, new PersonaManager(registry).store);
+  workflows.start();
+
+  assert.equal(workflows.dispatchWorkflowBlock("w-dispatch-auto", "claude"), null);
+  registry.upsertTask(mkTask({
+    id: "task-dispatch-auto",
+    status: "running",
+    sessionId: "session-dispatch-auto",
+    workflowId: "w-dispatch-auto",
+  }));
+
+  const binding = workflows.store.activeBindingForNote("agent-dispatch-auto");
+  assert.ok(binding);
+  assert.equal(binding.workflowVersionId, "v-dispatch-auto");
+  assert.equal(binding.triggerMode, "foreman_complete");
+  assert.equal(binding.deliveryMode, "preview");
+
+  seedRuntimeVersion("dispatch-replacement", graph);
+  const app = buildApp(
+    registry,
+    new ReviewManager(registry),
+    new TaskManager(registry),
+    new QueueManager(registry),
+    undefined,
+    undefined,
+    workflows,
+  );
+  for (const workflowId of ["w-dispatch-replacement", null]) {
+    const changed = await request(
+      app,
+      "/api/tasks/task-dispatch-auto/update",
+      { workflowId },
+    );
+    assert.equal(changed.status, 409);
+    assert.match(
+      (await changed.json() as { error: string }).error,
+      /cannot change once the task has a session/,
+    );
+    assert.equal(registry.getTask("task-dispatch-auto")?.workflowId, "w-dispatch-auto");
+    assert.equal(
+      workflows.store.activeBindingForNote("agent-dispatch-auto")?.workflowVersionId,
+      "v-dispatch-auto",
+    );
+  }
+
+  registry.upsertTask(mkTask({
+    id: "task-conflicting-assignment",
+    status: "backlog",
+    workflowId: "w-dispatch-replacement",
+  }));
+  const conflictingAssignment = await request(
+    app,
+    "/api/tasks/task-conflicting-assignment/assign",
+    { sessionId: "session-dispatch-auto", overrideDisabled: true },
+  );
+  assert.equal(conflictingAssignment.status, 409);
+  assert.match(
+    (await conflictingAssignment.json() as { error: string }).error,
+    /different active Workflow binding/,
+  );
+  assert.equal(registry.getTask("task-conflicting-assignment")?.status, "backlog");
+  assert.equal(registry.getTask("task-conflicting-assignment")?.sessionId, null);
+  assert.equal(
+    workflows.store.activeBindingForNote("agent-dispatch-auto")?.workflowVersionId,
+    "v-dispatch-auto",
+  );
+
+  assert.equal(workflows.archiveBinding(binding.id).ok, true);
+  await workflows.stop();
+  setForemanConfig({ enabled: false });
+});
+
+test("task creation inherits the dispatch default while explicit None opts out", async () => {
+  const graph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+    ],
+    edges: [
+      {
+        id: "end",
+        source: "session",
+        sourcePort: "submitted",
+        target: "end",
+        targetPort: "terminal",
+      },
+    ],
+  };
+  seedRuntimeVersion("dispatch-default", graph);
+  const repo = join(home, "dispatch-default-repo");
+  execFileSync("git", ["init", "-q", repo]);
+  setForemanConfig({ enabled: false });
+  setWorkflowConfig({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: "w-dispatch-default",
+  });
+  const registry = new Registry();
+  const workflows = new WorkflowManager(registry, new PersonaManager(registry).store);
+  const app = buildApp(
+    registry,
+    new ReviewManager(registry),
+    new TaskManager(registry),
+    new QueueManager(registry),
+    undefined,
+    undefined,
+    workflows,
+  );
+
+  const inherited = await request(app, "/api/tasks", {
+    repoRoot: repo,
+    intent: "Use the default review",
+    title: "Inherited Workflow",
+    agent: "claude",
+    backlog: true,
+  });
+  assert.equal(inherited.status, 200);
+  const inheritedTask = await inherited.json() as {
+    id: string;
+    status: string;
+    workflowId: string | null;
+  };
+  assert.equal(inheritedTask.status, "backlog");
+  assert.equal(inheritedTask.workflowId, "w-dispatch-default");
+
+  const optedOut = await request(app, "/api/tasks", {
+    repoRoot: repo,
+    intent: "Finish without review",
+    title: "No Workflow",
+    agent: "claude",
+    workflowId: null,
+    backlog: true,
+  });
+  assert.equal(optedOut.status, 200);
+  assert.equal((await optedOut.json() as { workflowId: string | null }).workflowId, null);
+
+  const launchBlocked = await request(
+    app,
+    `/api/tasks/${inheritedTask.id}/dispatch`,
+    { overrideDisabled: true },
+  );
+  assert.equal(launchBlocked.status, 409);
+  assert.match(
+    (await launchBlocked.json() as { error: string }).error,
+    /Turn on Foreman before dispatching/,
+  );
+  assert.equal(registry.getTask(inheritedTask.id)?.status, "backlog");
+
+  setWorkflowConfig({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
+  setForemanConfig({ enabled: false });
+});
 
 test("binding routes pin immutable versions, enforce one active owner, and refuse future modes", async () => {
   seedVersion();

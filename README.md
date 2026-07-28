@@ -1132,6 +1132,15 @@ the same selection through the SDK and can change it live. Codex receives the co
 named **Default - …** choice selected keeps the task tied to the effort default in force
 when it launches.
 
+**After work** can arm any active published Workflow for the task. You can make that
+selection and add the task to the backlog while Foreman is off. When the task is dispatched,
+Foreman must be enabled and the selected harness must support its completion boundary; the
+Workflow is then bound to the session and starts when Foreman reports **Complete**. Set the
+machine-wide choice under **Settings → Workflows → Dispatch default** to preselect it for
+every new single-agent dispatch. The dispatch form can override that choice for one task,
+including an explicit **None** that finishes without a Workflow. Once the task has a session,
+this selection is frozen so the task row and the already-armed Workflow cannot disagree.
+
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
 repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.

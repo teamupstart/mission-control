@@ -44,6 +44,11 @@ export type DispatchDraft = {
   model: string;
   /** Effort override, or "" to follow the configured default for `agent`. */
   effort: ThinkingLevel | "";
+  /**
+   * After-work Workflow choice. Undefined follows the machine dispatch default on a fresh
+   * task, null explicitly opts out, and an id selects that published Workflow.
+   */
+  workflowId: string | null | undefined;
   /** Selected prerequisite ids; the daemon resolves them to durable dependency edges. */
   dependencies: TaskDependencyInput[];
   /** Images dropped on the task box; sent as paths appended to the intent. */
@@ -60,6 +65,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   labels: "",
   model: "",
   effort: "",
+  workflowId: undefined,
   dependencies: [],
   attachments: [],
 };
@@ -100,6 +106,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     // picked from - so reopening a shelved task shows "Default", not overrides it never chose.
     model: t.model ?? "",
     effort: t.effort ?? "",
+    workflowId: t.workflowId,
     dependencies: t.dependencies.map((dependency) =>
       dependency.type === "task"
         ? { type: "task" as const, taskId: dependency.taskId }
@@ -133,6 +140,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.labels === b.labels &&
     a.model === b.model &&
     a.effort === b.effort &&
+    a.workflowId === b.workflowId &&
     dependencyInputsEqual(a.dependencies, b.dependencies) &&
     a.attachments.length === b.attachments.length &&
     a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
@@ -192,6 +200,9 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (model !== task.model) patch.model = model;
   const effort = draft.effort || null;
   if (effort !== task.effort) patch.effort = effort;
+  if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
+    patch.workflowId = draft.workflowId;
+  }
   const storedDependencies: TaskDependencyInput[] = task.dependencies.map((dependency) =>
     dependency.type === "task"
       ? { type: "task", taskId: dependency.taskId }

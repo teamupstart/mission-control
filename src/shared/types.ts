@@ -1328,6 +1328,14 @@ export interface Task {
    */
   effort: ThinkingLevel | null;
   /**
+   * Published Workflow identity armed for this task's completion, or null for none.
+   *
+   * This is durable dispatch intent rather than a binding id: the binding cannot exist until
+   * the launched session has a stable conversation identity. WorkflowManager resolves this to
+   * the workflow's current immutable version when that session appears.
+   */
+  workflowId: WorkflowId | null;
+  /**
    * Where this task was swept from, when a task source filed it, else null.
    *
    * The LINK BACK, and nothing more. De-duplication is decided against the

@@ -1689,6 +1689,7 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              workflowSummaries={workflowSummaries}
               searchOpen={searchOpen}
               onSearchOpenChange={setSearchOpen}
             />
@@ -1860,6 +1861,7 @@ export function App(): React.JSX.Element {
                 sessions={sessions}
                 personas={personas}
                 workflowSummaries={workflowSummaries}
+                foremanEnabled={foreman.config?.enabled ?? false}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onEnsembleLaunched={(runId) =>

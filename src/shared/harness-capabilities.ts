@@ -463,10 +463,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // human. It is the EMBEDDED runtime that needed a mode named here: it sets its
       // posture through the app-server's own turn parameters rather than through argv,
       // which is the case `dispatchPermissionModeArgs` documents itself as not holding
-      // back. `askForApproval` is `workspace-write` + `on-request` - the same posture the
-      // auto flags produce - with approvals routed to the human, because an approval a card
-      // can answer is the whole reason that runtime exists.
-      onDispatch: "askForApproval",
+      // back. `approveForMe` keeps the same `workspace-write` + `on-request` boundary as
+      // the auto flags while routing eligible approvals through Codex's native auto
+      // reviewer. That is the autonomous posture this setting promises; a request the
+      // reviewer declines to approve still reaches the card.
+      onDispatch: "approveForMe",
       launchArgs: null,
     },
     // A skills directory of its own (`~/.agents/skills`), and no reload command: Codex

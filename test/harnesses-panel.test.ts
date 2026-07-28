@@ -140,8 +140,8 @@ test("the switch is disabled until the first config read lands", () => {
   const html = render(null);
   assert.match(html, /Auto mode on dispatch/);
   assert.match(html, /<input[^>]*disabled/);
-  // Off is the shipped default, so the pre-poll switch reads off, not checked.
-  assert.doesNotMatch(html, /checked/);
+  // On is the shipped default, so the pre-poll switch reads checked.
+  assert.match(html, /checked/);
 });
 
 test("a rejected edit says so", () => {

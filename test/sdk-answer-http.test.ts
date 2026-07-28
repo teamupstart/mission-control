@@ -511,7 +511,7 @@ test("kill and mode controls use the embedded driver", async () => {
   assert.deepEqual(supervisor.stopped, ["sdk:controls"]);
 });
 
-test("scheduled Codex controls wait for rollout observation before changing the card", async () => {
+test("a Codex SDK mode change updates the card after the driver accepts it", async () => {
   const rolloutPath = join(home, "codex-controls-rollout.jsonl");
   writeFileSync(
     rolloutPath,
@@ -571,7 +571,7 @@ test("scheduled Codex controls wait for rollout observation before changing the 
   });
   assert.equal(mode.status, 200);
   assert.deepEqual(supervisor.modes, ["sdk:codex-controls:approveForMe"]);
-  assert.equal(registry.getSession("sdk:codex-controls")?.permissionMode, "askForApproval");
+  assert.equal(registry.getSession("sdk:codex-controls")?.permissionMode, "approveForMe");
 
   const effort = await app.request("/api/sessions/sdk:codex-controls/effort", {
     method: "POST",

@@ -415,10 +415,11 @@ runtime's.
   a running thread between `read-only`, `workspace-write` and `danger-full-access`, so
   picking a profile that would need a different one is refused with a sentence saying to
   continue in a terminal and use `/permissions`. The card's profile chip is read back from
-  the rollout either way, so it always shows what the agent is really running under.
+  the rollout either way. After the embedded driver accepts a same-sandbox change, the chip
+  shows the selected next-turn posture immediately; the next rollout then confirms it.
 - **Auto mode on dispatch** gives an embedded Codex the same posture it gives a terminal one
-  (`workspace-write` with approvals on request), with approvals routed to you rather than to
-  Codex's own auto-reviewer - the point of the runtime being that you can answer them.
+  (`workspace-write` with approvals on request), using Codex's native **Approve for me**
+  reviewer. Requests that reviewer does not approve still arrive on the card.
 - Codex's launch-scoped hooks are not injected: the event stream reports everything they
   did, so an embedded session needs neither them nor the
   `--dangerously-bypass-hook-trust` that rides with them. A Codex session dispatched in a
@@ -1460,7 +1461,7 @@ The cards derive from the harness list, so a new harness lights up here as one m
 with no layout change and no stylesheet edit. The master toggle sits above them and selects
 each supported harness's declared auto-mode posture. Claude's terminal launch carries
 `--permission-mode auto`, while its embedded driver applies the same mode directly. Codex's
-embedded driver applies **Ask for approval** through app-server; a terminal launch uses
+embedded driver applies **Approve for me** through app-server; a terminal launch uses
 Codex's own widened-sandbox launch treatment instead. Claude's terminal mode is on the
 launch argv, not typed in afterwards, so it holds even when a fresh worktree's folder-trust
 dialog is still covering the session's mode-line footer.

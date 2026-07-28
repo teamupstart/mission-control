@@ -1327,8 +1327,8 @@ const SessionRuntimeSchema = z.enum(SESSION_RUNTIMES);
  * path. Claude starts in `auto` through `dispatchPermissionModeArgs`. Terminal Codex
  * keeps the posture from `prepareCodexLaunch`; embedded Codex receives that same posture
  * through its driver. A session the operator started themselves keeps its existing
- * posture. Ships off because changing a dispatched session's posture must be an operator
- * choice.
+ * posture. Ships on so dispatched agents use their harness's declared autonomous posture
+ * unless the operator turns it off.
  */
 export const HarnessesConfigSchema = z.object({
   /**
@@ -1336,10 +1336,10 @@ export const HarnessesConfigSchema = z.object({
    * in `auto` permission mode (`--permission-mode auto`) - so it works through its task
    * without pausing on permission prompts. Codex dispatches use the existing
    * workspace-write/on-request posture; terminal launches receive it from
-   * `prepareCodexLaunch`, while embedded launches receive it through app-server turn
-   * parameters. Codex's native Approve for me profile is deliberately not selected.
+   * `prepareCodexLaunch`, while embedded launches receive the native Approve for me
+   * profile through app-server turn parameters.
    */
-  autoModeOnDispatch: z.boolean().default(false),
+  autoModeOnDispatch: z.boolean().default(true),
   /**
    * The model each harness is launched on when a task doesn't name one, keyed by
    * agent because "the default model" is meaningless across harnesses - a Claude id

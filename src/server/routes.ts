@@ -2053,13 +2053,16 @@ export function buildApp(
         })()
       : await setPermissionMode(session, parsed.data.mode);
     // A cycle walk can stop early in a mode it read off the footer, so retain that
-    // observation even on failure. A menu failure observed no new mode: recording its
-    // old snapshot would incorrectly start Codex's stale-rollout freshness guard.
+    // observation even on failure. A successful SDK change is authoritative too: the
+    // driver accepted and persisted the posture it will put on the next turn, so leaving
+    // the card on the old rollout value makes the control look like a no-op. Codex's
+    // freshness guard keeps that accepted value from being overwritten by the current
+    // turn's older context before the next turn records the new reviewer.
+    //
+    // A menu failure observed no new mode: recording its old snapshot would incorrectly
+    // start that same freshness guard.
     const liveControl = harnessFor(session.agent).permissionModes?.liveControl;
-    if (
-      (session.runtime === "terminal" || session.agent !== "codex") &&
-      (r.ok || liveControl?.kind === "cycle")
-    ) {
+    if (r.ok || liveControl?.kind === "cycle") {
       registry.recordObservedPermissionMode(session.id, r.mode ?? null);
     }
     return c.json(r, r.ok ? 200 : 409);

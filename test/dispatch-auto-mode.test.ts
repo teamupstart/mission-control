@@ -47,7 +47,7 @@ test("setting ON + codex: a mode is resolved, and no flag is rendered for it", a
   // `onDispatch` mode for the embedded runtime quietly starts changing the terminal argv.
   // It cannot: `launchArgs` is null for Codex and `dispatchPermissionModeArgs` gates on it.
   const { dispatchPermissionMode } = await import("../src/server/dispatcher.ts");
-  assert.equal(dispatchPermissionMode("codex"), "askForApproval");
+  assert.equal(dispatchPermissionMode("codex"), "approveForMe");
   assert.deepEqual(dispatchPermissionModeArgs("codex"), []);
 });
 
@@ -61,7 +61,7 @@ test("setting OFF: claude is launched with no mode flag, in its default mode", (
   assert.deepEqual(dispatchPermissionModeArgs("claude"), []);
 });
 
-test("default config (nothing stored): claude gets no flag - the setting is off until opted in", () => {
-  // No setHarnessesConfig call: the KV is empty, so the schema default (off) governs.
-  assert.deepEqual(dispatchPermissionModeArgs("claude"), []);
+test("default config (nothing stored): claude launches in auto mode", () => {
+  // No setHarnessesConfig call: the KV is empty, so the shipped default governs.
+  assert.deepEqual(dispatchPermissionModeArgs("claude"), ["--permission-mode", "auto"]);
 });

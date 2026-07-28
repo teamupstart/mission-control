@@ -214,15 +214,39 @@ shipped longest, and copying the existing pattern into the ladder would duplicat
 
 ### 3. `src/web/workflows/WorkflowLadder.tsx`
 
-- Add optional callback props: `onCopyFeedback`, `onRecheckInspector`, `onPreparePr`, `onOpenPr`,
-  `onResolveDelivery(deliveryId, action)`, plus a `feedbackCopied: boolean` flag. Absent
-  callbacks render no action row, so the component stays drawable from a test with a literal
-  detail.
+The renderer builds the descriptors itself, so its props must carry **everything a descriptor and
+its disabled state depend on**. There are three inputs beyond the callbacks, and all three are
+props rather than anything the component derives:
+
+```ts
+{
+  // …Phase 1's props…
+  onCopyFeedback?: () => void;
+  onRecheckInspector?: () => void;
+  onPreparePr?: () => void;
+  onOpenPr?: () => void;
+  onResolveDelivery?: (deliveryId: string, action: WorkflowDeliveryResolution) => void;
+  feedbackCopied?: boolean;
+  /** `detail.binding.sessionId !== null`, supplied by the panel. Never derived here. */
+  sessionBound: boolean;
+  /** Backed by the module-level store. Defaults to `() => false` so a static test can omit it. */
+  isPending?: (id: RunActionId) => boolean;
+}
+```
+
+- Absent callbacks render no action row, so the component stays drawable from a test with a
+  literal detail.
+- **`isPending` is a required part of the contract, not an implementation detail of the panel.**
+  Without it on these props, step 4's instruction to disable a pending action has nowhere to
+  land, and an implementer would invent a second pending path - which is exactly the duplicate
+  state the store exists to prevent.
 - Render `wf-ladder-actrow` on three rungs: the **changes-requested** rung (Copy feedback, whose
   label reads "Copied" while `feedbackCopied` is true), the **gate** rung and the
-  **uncertain-delivery** rung, from `inspectorGateActions` / `deliveryResolutionActions`. A
-  disabled action still renders, with its disabled tooltip - the operator has to be able to see
-  *why* discarding is unavailable.
+  **uncertain-delivery** rung, from `inspectorGateActions(detail)` /
+  `deliveryResolutionActions(delivery, sessionBound)`. Each action renders disabled when
+  `descriptor.disabled || isPending(descriptor.id)`, and **a disabled action still renders, with
+  its disabled tooltip** - the operator has to be able to see *why* discarding is unavailable,
+  and "already running" is one of those reasons.
 - The component still **never fetches, never posts and never touches the clipboard**. The
   `feedbackCopied` flag arrives as a prop precisely so the renderer stays pure and the "Copied"
   state is assertable from a static render.
@@ -239,8 +263,9 @@ shipped longest, and copying the existing pattern into the ladder would duplicat
   holds no pending state and mints no request id of its own; doing either would be a second
   implementation of the guard, and since the two surfaces never mount together it would not even
   fail loudly.
-- Pass `controller.isPending(id)` into the renderer so a pending action renders disabled, and
-  render `controller.error` inline rather than throwing out of a click handler.
+- Pass `isPending={controller.isPending}` and `sessionBound={detail.binding.sessionId !== null}`
+  into the renderer, and render `controller.error` inline rather than throwing out of a click
+  handler. Both are declared props on the renderer (step 3); neither is derived there.
 - `onSettled` is the panel's refetch.
 
 ### 5. `src/web/styles.css`
@@ -260,7 +285,11 @@ uncertain delivery in place, under the same confirmations as the Runs page.
   when `waitReason` is non-null and absent when it is null; assert Prepare PR appears only for
   `missing_pr` / `unadopted_pr` with `missingPrAction: "offer_prepare_pr"`; assert the
   changes-requested rung offers Copy feedback and that its label reads "Copied" when
-  `feedbackCopied` is true.
+  `feedbackCopied` is true. **Also assert the pending contract from the renderer's side**: with
+  `isPending={(id) => id === "recheck-inspector"}` the recheck button renders disabled while
+  every other action stays enabled, and with `isPending` omitted nothing is disabled by it. That
+  is a static render, so it pins the prop contract itself rather than the store's behaviour,
+  which `workflow-action-inflight.test.ts` covers separately.
 - `test/workflow-delivery-actions.test.ts` - **the guard regression**: assert
   `deliveryResolutionActions` returns "Discard and send new round" as **disabled** when no
   session is bound, and that its confirm descriptor carries `requirePhrase` exactly equal to
@@ -396,6 +425,14 @@ Nothing depends on this phase. It establishes, for anyone extending the ladder l
   session is not necessarily the delivery's target session, so that would be the "second source
   for one fact" `WorkflowRuns.tsx:412-418` warns against, disagreeing exactly when it matters.
   The plan now names the one field and forbids the second.
+- **Inspector round 7 (#308), valid.** Step 3's prop list carried the callbacks and
+  `feedbackCopied` but no pending input, while step 4 required the panel to pass
+  `controller.isPending(id)` into the renderer - a contradiction inside this document, and one an
+  implementer would have resolved by inventing a second pending path, defeating the store. The
+  renderer's props now declare `isPending` explicitly, and the static action test pins it. The
+  same pass caught a second instance of the identical mistake: the renderer builds the
+  descriptors, so it needs `sessionBound` as a declared prop too, which round 6 had established
+  as a value but had left arriving from nowhere.
 - Reconciled against Phase 3 (concurrent): the two touch `WorkflowLadder.tsx`, `styles.css` and
   `README.md` in disjoint regions - this phase in the gate and delivery rungs' action rows, Phase
   3 in the failing stage's rung. Ordinary textual conflicts, resolvable at merge; whichever

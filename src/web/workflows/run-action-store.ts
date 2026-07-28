@@ -14,9 +14,23 @@ interface ActionEntry {
 
 type RunActionRefresh = () => void | Promise<unknown>;
 
+interface RunActionRefreshRegistration {
+  refresh: RunActionRefresh;
+}
+
+interface RunActionRefreshCycle {
+  pending: Set<RunActionRefreshRegistration>;
+  completed: Set<RunActionRefreshRegistration>;
+  settled: boolean;
+  resolve: () => void;
+  reject: (reason: unknown) => void;
+}
+
 const actions = new Map<string, ActionEntry>();
 const listeners = new Map<WorkflowRunId, Set<() => void>>();
-const refreshers = new Map<WorkflowRunId, Set<RunActionRefresh>>();
+const refreshers = new Map<WorkflowRunId, Set<RunActionRefreshRegistration>>();
+const refreshCycles = new Map<WorkflowRunId, Set<RunActionRefreshCycle>>();
+const runsWithRegisteredRefresh = new Set<WorkflowRunId>();
 const revisions = new Map<WorkflowRunId, number>();
 
 const keyOf = (runId: WorkflowRunId, action: RunActionId): string =>
@@ -42,12 +56,114 @@ function clearRunActionErrors(runId: WorkflowRunId): void {
   }
 }
 
+function removeRefreshCycle(
+  runId: WorkflowRunId,
+  cycle: RunActionRefreshCycle,
+): void {
+  const cycles = refreshCycles.get(runId);
+  cycles?.delete(cycle);
+  if (cycles?.size === 0) refreshCycles.delete(runId);
+}
+
+function settleRefreshCycle(
+  runId: WorkflowRunId,
+  cycle: RunActionRefreshCycle,
+): void {
+  if (cycle.settled) return;
+  cycle.settled = true;
+  removeRefreshCycle(runId, cycle);
+  cycle.resolve();
+}
+
+function failRefreshCycle(
+  runId: WorkflowRunId,
+  cycle: RunActionRefreshCycle,
+  reason: unknown,
+): void {
+  if (cycle.settled) return;
+  cycle.settled = true;
+  removeRefreshCycle(runId, cycle);
+  cycle.reject(reason);
+}
+
+function advanceRefreshCycle(
+  runId: WorkflowRunId,
+  cycle: RunActionRefreshCycle,
+): void {
+  if (cycle.settled) return;
+  const mounted = refreshers.get(runId) ?? new Set();
+  for (const registration of mounted) {
+    if (cycle.pending.has(registration) || cycle.completed.has(registration)) continue;
+    cycle.pending.add(registration);
+    let refreshing: Promise<unknown>;
+    try {
+      refreshing = Promise.resolve(registration.refresh());
+    } catch (caught) {
+      refreshing = Promise.reject(caught);
+    }
+    void refreshing.then(
+      () => {
+        cycle.pending.delete(registration);
+        if (!(refreshers.get(runId)?.has(registration) ?? false)) {
+          advanceRefreshCycle(runId, cycle);
+          return;
+        }
+        cycle.completed.add(registration);
+        advanceRefreshCycle(runId, cycle);
+      },
+      (caught) => {
+        cycle.pending.delete(registration);
+        if (!(refreshers.get(runId)?.has(registration) ?? false)) {
+          advanceRefreshCycle(runId, cycle);
+          return;
+        }
+        failRefreshCycle(runId, cycle, caught);
+      },
+    );
+  }
+  if (
+    mounted.size > 0
+    && [...mounted].every((registration) => cycle.completed.has(registration))
+  ) {
+    settleRefreshCycle(runId, cycle);
+  }
+}
+
 function refreshMountedSurfaces(
   runId: WorkflowRunId,
   fallback: RunActionRefresh,
 ): Promise<void> {
+  const mounted = refreshers.get(runId);
+  if ((mounted?.size ?? 0) === 0 && !runsWithRegisteredRefresh.has(runId)) {
+    try {
+      return Promise.resolve(fallback()).then(() => {});
+    } catch (caught) {
+      return Promise.reject(caught);
+    }
+  }
+  return new Promise<void>((resolve, reject) => {
+    const cycle: RunActionRefreshCycle = {
+      pending: new Set(),
+      completed: new Set(),
+      settled: false,
+      resolve,
+      reject,
+    };
+    const cycles = refreshCycles.get(runId) ?? new Set();
+    cycles.add(cycle);
+    refreshCycles.set(runId, cycles);
+    advanceRefreshCycle(runId, cycle);
+  });
+}
+
+function refreshAvailableSurfaces(
+  runId: WorkflowRunId,
+  fallback: RunActionRefresh,
+): Promise<void> {
   const mounted = [...(refreshers.get(runId) ?? [])];
-  const callbacks = mounted.length > 0 ? mounted : [fallback];
+  const callbacks = mounted.length > 0
+    ? mounted.map((registration) => registration.refresh)
+    : [fallback];
   return Promise.all(callbacks.map((refresh) => {
     try {
       return Promise.resolve(refresh());
@@ -114,7 +230,7 @@ export function runAction(
       emit(runId);
       // The mutation error is the actionable failure. A refresh failure must not replace it
       // or turn the rejected action back into a permanently pending one.
-      void refreshMountedSurfaces(runId, onSettled).catch(() => {});
+      void refreshAvailableSurfaces(runId, onSettled).catch(() => {});
     },
   );
 }
@@ -139,18 +255,35 @@ export function registerRunActionRefresh(
   runId: WorkflowRunId,
   refresh: RunActionRefresh,
 ): () => void {
+  const registration = { refresh };
   const runRefreshers = refreshers.get(runId) ?? new Set();
-  runRefreshers.add(refresh);
+  runRefreshers.add(registration);
   refreshers.set(runId, runRefreshers);
+  runsWithRegisteredRefresh.add(runId);
+  for (const cycle of refreshCycles.get(runId) ?? []) {
+    advanceRefreshCycle(runId, cycle);
+  }
   return () => {
-    runRefreshers.delete(refresh);
+    // A component releases its private commit barrier as it unmounts, which resolves the
+    // Promise returned by this registration. Remove the registration first so that resolution
+    // cannot acknowledge the shared action cycle; a replacement mount takes over below.
+    runRefreshers.delete(registration);
     if (runRefreshers.size === 0) refreshers.delete(runId);
+    for (const cycle of refreshCycles.get(runId) ?? []) {
+      cycle.pending.delete(registration);
+      cycle.completed.delete(registration);
+      advanceRefreshCycle(runId, cycle);
+    }
   };
 }
 
 export function dropRunActions(runId: WorkflowRunId): void {
   const prefix = `${runId}:`;
   let changed = revisions.delete(runId);
+  runsWithRegisteredRefresh.delete(runId);
+  for (const cycle of [...(refreshCycles.get(runId) ?? [])]) {
+    settleRefreshCycle(runId, cycle);
+  }
   for (const key of actions.keys()) {
     if (!key.startsWith(prefix)) continue;
     actions.delete(key);

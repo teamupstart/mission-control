@@ -214,3 +214,52 @@ test("a cross-page action refreshes the surface mounted when its request settles
   unregisterTarget();
   dropRunActions(runId);
 });
+
+test("an unmounted source transfers its successful action refresh to the destination", async () => {
+  const runId = "run-refresh-transfer";
+  const sent = deferred();
+  const sourceRefresh = deferred();
+  const targetRefresh = deferred();
+  let targetRefreshes = 0;
+
+  const unregisterSource = registerRunActionRefresh(runId, () => sourceRefresh.promise);
+  runAction(runId, "delivery:delivery:discard_and_new_round", () => sent.promise, () => {});
+  sent.resolve();
+  await settle();
+  assert.equal(isRunActionPending(
+    runId,
+    "delivery:delivery:discard_and_new_round",
+  ), true);
+
+  // React may release the source component's private barrier before useSyncExternalStore
+  // unregisters it. Promise callbacks run after both synchronous cleanups.
+  sourceRefresh.resolve();
+  unregisterSource();
+  await settle();
+  assert.equal(
+    isRunActionPending(runId, "delivery:delivery:discard_and_new_round"),
+    true,
+    "releasing the source surface cannot acknowledge its abandoned detail refresh",
+  );
+
+  const unregisterTarget = registerRunActionRefresh(runId, () => {
+    targetRefreshes++;
+    return targetRefresh.promise;
+  });
+  await settle();
+  assert.equal(targetRefreshes, 1);
+  assert.equal(isRunActionPending(
+    runId,
+    "delivery:delivery:discard_and_new_round",
+  ), true);
+
+  targetRefresh.resolve();
+  await settle();
+  assert.equal(isRunActionPending(
+    runId,
+    "delivery:delivery:discard_and_new_round",
+  ), false);
+
+  unregisterTarget();
+  dropRunActions(runId);
+});

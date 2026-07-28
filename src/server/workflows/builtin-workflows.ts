@@ -366,8 +366,10 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       + "unconfigured slots are skipped and pass. Every fail returns to the session for repair, "
       + "and a passed review is gated on the Inspector finding nothing on the pull request.",
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
-    // binding posture; version 3 appends the deterministic gate and retains Live delivery;
-    // version 4 automatically hands a passed, PR-less review back to the session for shipping.
+    // binding posture; version 3 appends the deterministic gate and retains Live delivery.
+    // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
+    // Inspector again instead of rerunning the already-passed review workflow. Version 5
+    // automatically hands a passed, PR-less review back to the session for shipping.
     versions: [
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
@@ -403,11 +405,21 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         pipeline: NO_MISTAKES_REVIEW_V3,
         completionPolicy: {
           kind: "inspector",
-          onFindings: "restart_workflow",
-          missingPrAction: "prepare_pr",
+          onFindings: "inspector_only",
+          missingPrAction: "offer_prepare_pr",
         },
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 3,
+      },
+      {
+        pipeline: NO_MISTAKES_REVIEW_V3,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "inspector_only",
+          missingPrAction: "prepare_pr",
+        },
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 4,
       },
     ],
   }),

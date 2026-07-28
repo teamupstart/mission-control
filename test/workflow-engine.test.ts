@@ -814,6 +814,7 @@ const passingExecution = (snapshot: { runner: LlmRunnerId | null; model: string 
 const checkConfig = (over: Record<string, unknown> = {}) => ({
   liveEnabled: false,
   repoAllowlist: ["/repo"],
+  defaultWorkflowId: null,
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
   checkCommands: [{ repoRoot: "/repo", slot: "test" as const, command: ["npm", "test"] }],

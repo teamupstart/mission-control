@@ -54,6 +54,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 test("task round-trips dependencies and upsert updates in place (no duplicate row)", () => {
   openDb();
   upsertTask(mkTask({
+    workflowId: "workflow-review",
     dependencies: [
       {
         type: "task",
@@ -70,6 +71,7 @@ test("task round-trips dependencies and upsert updates in place (no duplicate ro
     ],
   }));
   assert.equal(getTask("t1")?.status, "backlog");
+  assert.equal(getTask("t1")?.workflowId, "workflow-review");
   assert.deepEqual(getTask("t1")?.dependencies, [
     {
       type: "task",

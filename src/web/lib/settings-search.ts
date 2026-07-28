@@ -191,6 +191,15 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     kind: "jump",
   },
   {
+    id: "workflow-dispatch-default",
+    label: "Default dispatch workflow",
+    description: "The published Workflow preselected to run after each new agent dispatch.",
+    category: "workflows",
+    anchor: "workflows/dispatch-default",
+    keywords: ["default", "dispatch", "after work", "workflow", "agent", "task"],
+    kind: "jump",
+  },
+  {
     id: "workflow-live-delivery",
     label: "Enable Live workflow delivery",
     description: "Whether Persona repairs may be typed into agent sessions, or only previewed.",

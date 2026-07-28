@@ -580,6 +580,15 @@ export interface WorkflowCheckCommand {
 export interface WorkflowConfig {
   liveEnabled: boolean;
   repoAllowlist: string[];
+  /**
+   * Workflow identity preselected for new single-agent dispatches, or null for none.
+   *
+   * The identity is resolved to its then-current immutable published version when the
+   * dispatched session is bound. Keeping the workflow id here means publishing a new version
+   * updates the default without rewriting machine settings, while each resulting binding still
+   * pins one immutable version.
+   */
+  defaultWorkflowId: WorkflowId | null;
   retention: WorkflowRetentionConfig;
   /**
    * Machine-wide consent for running a configured command from a workflow. Off by default,
@@ -607,6 +616,7 @@ export interface WorkflowRetentionConfig {
 export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
   liveEnabled: false,
   repoAllowlist: [],
+  defaultWorkflowId: null,
   retention: {
     rawEvidenceDays: 30,
     completedRunDays: 180,

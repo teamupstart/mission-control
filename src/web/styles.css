@@ -5578,6 +5578,90 @@ kbd {
   font-size: 11.5px;
 }
 
+/* The post-work handoff rail. Its one visual flourish is structural: task, arrow and
+   completion boundary read left-to-right like the control-plane transition it configures.
+   Armed state picks up the Workflow/working violet already used by the page; no new palette
+   is introduced for a single control. */
+.dispatch-workflow {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 8px 11px 8px 8px;
+  background: color-mix(in srgb, var(--bg-2) 58%, transparent);
+}
+.dispatch-workflow::before {
+  content: "";
+  position: absolute;
+  left: 35px;
+  right: 12px;
+  top: 50%;
+  height: 1px;
+  background: var(--border-soft);
+  pointer-events: none;
+}
+.dispatch-workflow.armed {
+  border-color: color-mix(in oklab, var(--working) 38%, var(--border));
+  background: color-mix(in oklab, var(--working) 7%, var(--bg-2));
+}
+.dispatch-workflow-mark {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--dim);
+  background: var(--panel);
+  font: 11px var(--mono);
+}
+.dispatch-workflow.armed .dispatch-workflow-mark {
+  color: var(--working);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.dispatch-workflow-control {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 6px;
+  background: var(--bg-2);
+}
+.dispatch-workflow-control .field-label {
+  white-space: nowrap;
+}
+.dispatch-workflow-control select {
+  min-width: 0;
+  width: 100%;
+}
+.dispatch-workflow-state {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+  background: var(--bg-2);
+  font: 10px var(--mono);
+  white-space: nowrap;
+}
+.dispatch-workflow.armed .dispatch-workflow-state {
+  color: color-mix(in oklab, var(--working) 76%, var(--fg));
+}
+.dispatch-workflow-warning {
+  margin-top: -6px;
+  font-size: 11.5px;
+  color: var(--attention);
+}
+
 /* A select wearing its harness's accent: the same inline --agent-accent every card and
    rail row uses, painted as a dot inside the control. */
 .agent-accent-select {
@@ -5737,6 +5821,14 @@ kbd {
 @media (max-width: 720px) {
   .dispatch-crew {
     grid-template-columns: 1fr 1fr;
+  }
+  .dispatch-workflow {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+  .dispatch-workflow-state {
+    grid-column: 2;
+    justify-self: start;
+    margin-left: 6px;
   }
 }
 .modal-head h2 {
@@ -11321,6 +11413,23 @@ select.foreman-model-input {
    keeps ONE column while its neighbours split. */
 .wf-settings-empty {
   color: var(--dim);
+}
+.wf-default-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.wf-default-flow {
+  flex: none;
+  color: color-mix(in oklab, var(--working) 72%, var(--muted));
+  font: 10px var(--mono);
+  letter-spacing: 0.02em;
+}
+.wf-default-select {
+  width: min(100%, 390px);
+}
+.wf-default-warning {
+  color: var(--attention);
 }
 /* Capped to about the width of the add row below it, so the two read as one control and
    Remove sits beside its path rather than a pane's width away from it. A path longer than

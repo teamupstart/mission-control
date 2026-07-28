@@ -98,6 +98,23 @@ test("a mixed patch on a dispatched task is refused whole, not half-applied", as
   assert.equal(r.getTask("t1")?.priority, "low", "nothing may land from a refused patch");
 });
 
+test("an after-work workflow is frozen once the task has a session", async () => {
+  const { r, tasks } = setup();
+  r.upsertTask(mkTask({
+    id: "t1",
+    status: "running",
+    sessionId: "session-1",
+    workflowId: "workflow-a",
+  }));
+
+  for (const workflowId of ["workflow-b", null]) {
+    const out = await tasks.update("t1", { workflowId });
+    assert.equal(out.ok, false);
+    assert.match(out.error ?? "", /cannot change once the task has a session/);
+    assert.equal(r.getTask("t1")?.workflowId, "workflow-a");
+  }
+});
+
 test("retriage touches nothing but the triage fields and updatedAt", async () => {
   const { r, tasks } = setup();
   const before = mkTask({

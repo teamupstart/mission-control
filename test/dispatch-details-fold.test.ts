@@ -30,6 +30,71 @@ test("a fresh dispatch leads with the task and folds the backlog details", () =>
   assert.doesNotMatch(html, /placeholder="e\.g\. bug, infra"/);
 });
 
+test("a fresh dispatch quick-selects published after-work Workflows outside backlog details", () => {
+  const html = renderToStaticMarkup(
+    withOverlayHost(createElement(DispatchLayer, {
+      open: true,
+      editTask: null,
+      onClose: () => {},
+      foremanEnabled: true,
+      workflowSummaries: [{
+        id: "workflow-review",
+        name: "Release review",
+        description: "",
+        draftRevision: 1,
+        currentVersionId: "version-1",
+        publishedVersion: 1,
+        archivedAt: null,
+        updatedAt: 1,
+        errorCount: 0,
+        warningCount: 0,
+        nodeCount: 2,
+        personaCount: 1,
+        builtin: false,
+      }],
+    })),
+  );
+  assert.match(html, /After work/);
+  assert.match(html, /Release review · v1/);
+  assert.match(html, /No handoff/);
+});
+
+test("an after-work Workflow can be saved while Foreman is off but not dispatched", () => {
+  const html = renderToStaticMarkup(
+    withOverlayHost(createElement(DispatchLayer, {
+      open: true,
+      editTask: mkTask({
+        status: "backlog",
+        workflowId: "workflow-review",
+      }),
+      onClose: () => {},
+      foremanEnabled: false,
+      workflowSummaries: [{
+        id: "workflow-review",
+        name: "Release review",
+        description: "",
+        draftRevision: 1,
+        currentVersionId: "version-1",
+        publishedVersion: 1,
+        archivedAt: null,
+        updatedAt: 1,
+        errorCount: 0,
+        warningCount: 0,
+        nodeCount: 2,
+        personaCount: 1,
+        builtin: false,
+      }],
+    })),
+  );
+  const save = html.match(/<button class="btn btn-ghost"[^>]*>Save<\/button>/)?.[0];
+  const dispatch = html.match(/<button class="btn btn-primary"[^>]*>Dispatch now<\/button>/)?.[0];
+  assert.ok(save);
+  assert.doesNotMatch(save, /disabled/);
+  assert.ok(dispatch);
+  assert.match(dispatch, /disabled/);
+  assert.match(html, /You can add this task to the backlog, but turn on Foreman before dispatching it/);
+});
+
 test("the launch-mode toggle lives in the modal header", () => {
   const html = fresh();
   const header = html.slice(html.indexOf('class="modal-head"'), html.indexOf("dispatch-body"));

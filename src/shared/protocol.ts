@@ -539,6 +539,11 @@ export const DispatchSchema = z
     model: ModelIdSchema.optional(),
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
+    /**
+     * Published Workflow to arm for Foreman Complete. Omitted follows the machine default;
+     * explicit null opts this task out of that default.
+     */
+    workflowId: z.string().min(1).max(500).nullable().optional(),
     backlog: z.boolean().optional().default(false),
     dependencies: TaskDependenciesSchema.optional().default([]),
     ...TASK_TRIAGE_FIELDS,
@@ -627,7 +632,7 @@ export const RescheduleTaskSchema = z.object({}).strict();
  * again from the intent as it now reads, the same bargain the create form offers.
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
- * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `dependencies` and
+ * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `workflowId`, `dependencies` and
  * `enabled` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and terminal home at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
@@ -662,6 +667,7 @@ export const UpdateTaskSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
+    workflowId: z.string().min(1).max(500).nullable().optional(),
     dependencies: TaskDependenciesSchema.optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
@@ -2520,6 +2526,8 @@ export const WorkflowCheckCommandSchema = z.object({
 export const WorkflowConfigSchema = z.object({
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_CONFIG.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
+  defaultWorkflowId: z.string().min(1).max(500).nullable()
+    .default(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId),
   retention: z.object({
     rawEvidenceDays: z.number().int().min(1).max(365)
       .default(DEFAULT_WORKFLOW_CONFIG.retention.rawEvidenceDays),

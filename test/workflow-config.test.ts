@@ -28,6 +28,22 @@ test("workflow live consent defaults off and parsed writes replace the allowlist
   assert.throws(() => setWorkflowConfig({ liveEnabled: true, repoAllowlist: [""] }));
 });
 
+test("the dispatch Workflow default is durable and explicit none clears it", () => {
+  const selected = setWorkflowConfig({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: "workflow-review",
+  });
+  assert.equal(selected.defaultWorkflowId, "workflow-review");
+  assert.equal(getWorkflowConfig().defaultWorkflowId, "workflow-review");
+  const cleared = setWorkflowConfig({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: null,
+  });
+  assert.equal(cleared.defaultWorkflowId, null);
+});
+
 test("workflow config HTTP writes use the shared parser and replace the complete object", async () => {
   const { Registry } = await import("../src/server/registry.ts");
   const { ReviewManager } = await import("../src/server/reviews.ts");

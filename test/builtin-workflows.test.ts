@@ -186,7 +186,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and final gate", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 4);
+  assert.equal(builtin.versions.length, 5);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, DEFAULT_WORKFLOW_BINDING_DEFAULTS);
   assert.deepEqual(builtin.versions[1]!.bindingDefaults, {
     ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
@@ -200,10 +200,14 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
     ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
     deliveryMode: "live",
   });
-  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[3]!.bindingDefaults);
+  assert.deepEqual(builtin.versions[4]!.bindingDefaults, {
+    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+    deliveryMode: "live",
+  });
+  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[4]!.bindingDefaults);
   assert.deepEqual(builtin.definition.completionPolicy, {
     kind: "inspector",
-    onFindings: "restart_workflow",
+    onFindings: "inspector_only",
     missingPrAction: "prepare_pr",
   });
 
@@ -309,12 +313,12 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
   ]);
 });
 
-test("version 4 automatically prepares a PR without rewriting earlier versions", () => {
+test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 4, "one workflow, four versions");
+  assert.equal(builtin.versions.length, 5, "one workflow, five versions");
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId("no-mistakes-review", 4),
+    builtinWorkflowVersionId("no-mistakes-review", 5),
   );
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
@@ -372,12 +376,20 @@ test("version 4 automatically prepares a PR without rewriting earlier versions",
   for (const id of ["nmr-intent-conformance", "nmr-code-risk", "nmr-test-evidence", "nmr-documentation"]) {
     assert.ok(version.graph.nodes.some((node) => node.id === id), `${id} was re-identified`);
   }
-  const current = builtin.versions[3]!;
-  assert.equal(current.sourceDraftRevision, 3);
-  assert.deepEqual(current.graph, version.graph, "policy changes append without rewriting v3");
+  const inspectorOnly = builtin.versions[3]!;
+  assert.equal(inspectorOnly.sourceDraftRevision, 3);
+  assert.deepEqual(inspectorOnly.graph, version.graph, "policy changes append without rewriting v3");
+  assert.deepEqual(inspectorOnly.completionPolicy, {
+    kind: "inspector",
+    onFindings: "inspector_only",
+    missingPrAction: "offer_prepare_pr",
+  });
+  const current = builtin.versions[4]!;
+  assert.equal(current.sourceDraftRevision, 4);
+  assert.deepEqual(current.graph, inspectorOnly.graph, "v5 changes policy without rewriting v4");
   assert.deepEqual(current.completionPolicy, {
     kind: "inspector",
-    onFindings: "restart_workflow",
+    onFindings: "inspector_only",
     missingPrAction: "prepare_pr",
   });
   // And the draft the library opens is the current automatic-PR version.

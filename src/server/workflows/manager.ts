@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
-import type { Session } from "@shared/types.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
+import type { AgentType, Session, Task } from "@shared/types.ts";
 import type {
   CreateWorkflow,
   CreateWorkflowBinding,
@@ -353,6 +354,10 @@ export class WorkflowManager {
     }
     if (!this.unsubscribe) {
       this.unsubscribe = this.registry.subscribe((event) => {
+        if (event.type === "task_upsert") {
+          this.bindDispatchedTaskWorkflow(event.task);
+          return;
+        }
         if (event.type === "session_remove") {
           for (const delivery of this.store.markSendingUncertainForSession(event.id, "session_disappeared")) {
             this.publishRun(delivery.runId);
@@ -384,6 +389,12 @@ export class WorkflowManager {
           }
         }
         this.scheduleGatesForSession(event.session.id);
+        const task = this.registry
+          .listTasks()
+          .find((candidate) =>
+            candidate.sessionId === event.session.id
+            && (candidate.status === "dispatching" || candidate.status === "running"));
+        if (task) this.bindDispatchedTaskWorkflow(task);
       });
     }
     if (this.registry.sessionsObserved()) {
@@ -420,6 +431,129 @@ export class WorkflowManager {
   get(id: string): WorkflowDetail | null {
     const workflow = this.store.getWorkflow(id);
     return workflow ? { workflow, versions: this.store.listWorkflowVersionMetadata(id) } : null;
+  }
+
+  /**
+   * Whether a workflow remains a valid durable selection for a task.
+   *
+   * Backlog tasks intentionally keep this intent before there is a session to bind, so
+   * Foreman and harness capability are launch concerns rather than save concerns.
+   */
+  workflowSelectionBlock(workflowId: string): string | null {
+    const detail = this.get(workflowId);
+    if (!detail || !detail.workflow.currentVersionId) {
+      return "Choose a workflow with a published version";
+    }
+    if (detail.workflow.archivedAt !== null) {
+      return "The selected workflow is archived";
+    }
+    return null;
+  }
+
+  /**
+   * Whether a workflow can be armed on a newly dispatched session of this harness.
+   *
+   * Asked at every launch boundary so a selected/default workflow never degrades into a
+   * running task with no completion review. Saving a backlog task uses the narrower
+   * `workflowSelectionBlock` instead.
+   */
+  dispatchWorkflowBlock(
+    workflowId: string,
+    agent: AgentType,
+    repoRoot?: string,
+  ): string | null {
+    const selectionBlocked = this.workflowSelectionBlock(workflowId);
+    if (selectionBlocked) return selectionBlocked;
+    const detail = this.get(workflowId);
+    // `workflowSelectionBlock` proved both facts; retain the guard so this method stays
+    // total if persistence changes between the two reads.
+    if (!detail || !detail.workflow.currentVersionId) return "Choose a published workflow";
+    const harness = harnessFor(agent);
+    if (!getForemanConfig().enabled) {
+      return "Turn on Foreman before dispatching a task with an after-work workflow";
+    }
+    if (!harness.hooks || !harness.workQueue) {
+      return `${AGENT_IDENTITY[agent].label} cannot detect the Foreman Complete boundary required by after-work workflows`;
+    }
+    const current = detail.versions.find(
+      (version) => version.id === detail.workflow.currentVersionId,
+    );
+    if (current?.bindingDefaults.deliveryMode === "live" && repoRoot) {
+      const config = getWorkflowConfig();
+      if (
+        !config.liveEnabled
+        || !repoAllowlisted(repoRoot, repoRoot, config.repoAllowlist)
+      ) {
+        return "This workflow uses Live delivery, which requires Workflows Live mode and an allowlisted repository";
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether an existing conversation binding matches the after-work binding this task
+   * would arm. Assignment reuses a conversation, unlike a fresh dispatch, so it must
+   * reconcile this ownership before TaskManager makes the task/session relationship real.
+   */
+  assignmentWorkflowBlock(workflowId: string | null, session: Session): string | null {
+    const current = this.store.activeBindingForNote(noteKeyFor(session));
+    if (!current) return null;
+    const selectedVersionId = workflowId
+      ? this.get(workflowId)?.workflow.currentVersionId ?? null
+      : null;
+    if (
+      selectedVersionId
+      && current.workflowVersionId === selectedVersionId
+      && current.triggerMode === "foreman_complete"
+    ) return null;
+    return "This conversation already has a different active Workflow binding";
+  }
+
+  /** Retry pending task-owned bindings after a prerequisite such as Foreman is enabled. */
+  reconcileDispatchedTaskWorkflows(): void {
+    for (const task of this.registry.listTasks()) this.bindDispatchedTaskWorkflow(task);
+  }
+
+  /**
+   * Turn durable task intent into the ordinary immutable Workflow binding once the task's
+   * session has a stable conversation identity.
+   *
+   * Idempotence comes from the active note-key binding: repeated task/session SSE-worthy
+   * updates find the exact after-work binding already there. Assignment rejects a conflicting
+   * binding before it moves the task onto the session. The task stores a Workflow identity,
+   * while this moment pins its current immutable version.
+   */
+  private bindDispatchedTaskWorkflow(task: Task): void {
+    if (
+      !task.workflowId
+      || !task.sessionId
+      || (task.status !== "dispatching" && task.status !== "running")
+    ) return;
+    const session = this.registry.getSession(task.sessionId);
+    if (!session || session.state === "exited" || !session.agentSessionId) return;
+    const detail = this.get(task.workflowId);
+    const versionId = detail?.workflow.currentVersionId ?? null;
+    if (!detail || detail.workflow.archivedAt !== null || !versionId) return;
+    const current = this.store.activeBindingForNote(noteKeyFor(session));
+    if (current) {
+      const conflict = this.assignmentWorkflowBlock(task.workflowId, session);
+      if (conflict) {
+        console.error(`[workflow] could not arm ${detail.workflow.name} for task ${task.id}: ${conflict}`);
+      }
+      return;
+    }
+    const result = this.createBinding({
+      workflowVersionId: versionId,
+      sessionId: session.id,
+      // The dispatch surface promises "after work", not the published version's optional
+      // manual trigger default. Delivery mode and repair rounds still come from that version.
+      triggerMode: "foreman_complete",
+    });
+    if (!result.ok) {
+      console.error(
+        `[workflow] could not arm ${detail.workflow.name} for task ${task.id}: ${result.message}`,
+      );
+    }
   }
 
   create(input: CreateWorkflow, now = Date.now()): WorkflowMutation {

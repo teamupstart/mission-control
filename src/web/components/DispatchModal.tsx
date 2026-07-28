@@ -36,7 +36,8 @@ import {
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { LabelChips } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import type { PersonaView, WorkflowSummary } from "@shared/workflow.ts";
+import type { PersonaView, WorkflowConfig, WorkflowSummary } from "@shared/workflow.ts";
+import { workflowRequest } from "../workflows/workflowApi.ts";
 import {
   EnsembleDispatch,
   EnsembleLaunchControls,
@@ -76,6 +77,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.priority === EMPTY_DISPATCH_DRAFT.priority &&
     d.model === EMPTY_DISPATCH_DRAFT.model &&
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
+    d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
     d.dependencies.length === 0
   );
 }
@@ -165,6 +167,7 @@ export function DispatchLayer({
   sessions = [],
   personas = [],
   workflowSummaries = [],
+  foremanEnabled = false,
   onClose,
   onOpenSchedule,
   onEnsembleLaunched,
@@ -178,6 +181,8 @@ export function DispatchLayer({
   personas?: PersonaView[];
   /** Live Workflow summaries, for the optional post-selection handoff placement. */
   workflowSummaries?: WorkflowSummary[];
+  /** Whether the completion detector needed by an after-work Workflow is running. */
+  foremanEnabled?: boolean;
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -359,6 +364,8 @@ export function DispatchLayer({
         onClose={onClose}
         onSubmitted={onEditSubmitted}
         onOpenSchedule={onOpenSchedule}
+        workflowSummaries={workflowSummaries}
+        foremanEnabled={foremanEnabled}
       />
     );
   }
@@ -381,6 +388,7 @@ export function DispatchLayer({
       onEnsembleLaunched={onEnsembleLaunchedInternal}
       personas={personas}
       workflowSummaries={workflowSummaries}
+      foremanEnabled={foremanEnabled}
     />
   );
 }
@@ -419,6 +427,7 @@ function DispatchModal({
   onEnsembleLaunched,
   personas = [],
   workflowSummaries = [],
+  foremanEnabled = false,
 }: {
   mode: DispatchMode;
   tasks: Task[];
@@ -445,6 +454,7 @@ function DispatchModal({
   ) => void;
   personas?: PersonaView[];
   workflowSummaries?: WorkflowSummary[];
+  foremanEnabled?: boolean;
 }): React.JSX.Element {
   const editing = mode.kind === "edit" ? mode.task : null;
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
@@ -454,6 +464,7 @@ function DispatchModal({
   // The configured per-harness defaults, so both pickers can name what "Default"
   // means. Null until the fetch lands (and if it fails).
   const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
+  const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
   // Which action is in flight, not merely whether one is: both footer buttons submit,
   // and only the one that was pressed should say so.
   const [pending, setPending] = useState<null | "shelve" | "dispatch">(null);
@@ -559,6 +570,19 @@ function DispatchModal({
     return sessions.find((session) => session.task?.id === dependency.taskId)?.prState !== "merged";
   }).length;
   const selectedDependenciesUnmet = unmetDependencyCount > 0;
+  const publishedWorkflows = useMemo(
+    () =>
+      workflowSummaries.filter(
+        (workflow) => workflow.archivedAt === null && workflow.currentVersionId !== null,
+      ),
+    [workflowSummaries],
+  );
+  const selectedWorkflowId =
+    draft.workflowId === undefined ? workflowConfig?.defaultWorkflowId ?? null : draft.workflowId;
+  const selectedWorkflowBlocked = Boolean(
+    selectedWorkflowId
+    && (!foremanEnabled || !capabilitiesFor(draft.agent).workQueue),
+  );
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -583,6 +607,11 @@ function DispatchModal({
     void fetchHarnessesConfig().then((cfg) => {
       if (alive && cfg) setDefaults(cfg);
     });
+    void workflowRequest<WorkflowConfig>("/api/workflows/config")
+      .then((config) => {
+        if (alive) setWorkflowConfig(config);
+      })
+      .catch(() => {});
     return () => {
       alive = false;
     };
@@ -601,6 +630,10 @@ function DispatchModal({
   }
 
   async function submit(dispatchNow: boolean): Promise<void> {
+    // A new task with unmet dependencies is filed into the backlog even from the primary
+    // action. It is not launching yet, so an unavailable Foreman must not erase the user's
+    // after-work choice or prevent the task from being saved for later.
+    const launchesNow = dispatchNow && !selectedDependenciesUnmet;
     // An image still uploading has no path yet, so dispatching now would launch the
     // agent on a task missing the screenshot it was written around. The buttons say
     // so; this also guards ⌘Enter, which doesn't.
@@ -609,6 +642,7 @@ function DispatchModal({
       !draft.intent.trim() ||
       busy ||
       drop.uploading ||
+      (launchesNow && selectedWorkflowBlocked) ||
       Boolean(editing && dispatchNow && selectedDependenciesUnmet)
     ) return;
     setPending(dispatchNow ? "dispatch" : "shelve");
@@ -658,8 +692,9 @@ function DispatchModal({
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
+          workflowId: submitted.workflowId,
           dependencies: submitted.dependencies,
-          backlog: !dispatchNow,
+          backlog: !launchesNow,
         });
     // An edit is a save first and a launch second, so the two are two calls: the save
     // has landed by the time the dispatch is asked for, and a refused dispatch leaves
@@ -981,6 +1016,78 @@ function DispatchModal({
             Defaults from Settings → Harnesses. Switching agent resets the model and effort overrides.
           </span>
         </div>
+
+        {/* The completion handoff is a first-class dispatch choice, not backlog metadata:
+            it changes what happens after the agent finishes rather than how the task is
+            ranked. The rail shape makes that sequence legible without turning one select
+            into another full-width card. */}
+        <div className={`dispatch-workflow${selectedWorkflowId ? " armed" : ""}`}>
+          <span className="dispatch-workflow-mark" aria-hidden>⌘</span>
+          <label className="dispatch-workflow-control">
+            <span className="field-label">After work</span>
+            <Tooltip label="Run a published Workflow when Foreman confirms this agent's work is complete">
+              <select
+                className="field-input"
+                value={
+                  draft.workflowId === undefined
+                    ? "__default"
+                    : draft.workflowId ?? "__none"
+                }
+                onChange={(event) => {
+                  const value = event.target.value;
+                  update({
+                    workflowId:
+                      value === "__default"
+                        ? editing
+                          ? workflowConfig?.defaultWorkflowId ?? null
+                          : undefined
+                        : value === "__none"
+                          ? null
+                          : value,
+                  });
+                }}
+              >
+                {!editing && (
+                  <option value="__default">
+                    {workflowConfig === null
+                      ? "Dispatch default — loading…"
+                      : workflowConfig.defaultWorkflowId
+                      ? `Dispatch default — ${
+                          workflowSummaries.find(
+                            (workflow) => workflow.id === workflowConfig.defaultWorkflowId,
+                          )?.name ?? "unavailable workflow"
+                        }`
+                      : "Dispatch default — none"}
+                  </option>
+                )}
+                <option value="__none">None — finish without a Workflow</option>
+                {publishedWorkflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name} · v{workflow.publishedVersion}
+                  </option>
+                ))}
+                {draft.workflowId
+                  && !publishedWorkflows.some((workflow) => workflow.id === draft.workflowId)
+                  && (
+                    <option value={draft.workflowId}>
+                      Unavailable Workflow
+                    </option>
+                  )}
+              </select>
+            </Tooltip>
+          </label>
+          <span className="dispatch-workflow-state">
+            <span aria-hidden>→</span>
+            {selectedWorkflowId ? "Foreman complete" : "No handoff"}
+          </span>
+        </div>
+        {selectedWorkflowBlocked && (
+          <span className="dispatch-workflow-warning">
+            {!foremanEnabled
+              ? "You can add this task to the backlog, but turn on Foreman before dispatching it—or choose None."
+              : `You can add this task to the backlog, but ${AGENT_IDENTITY[draft.agent].label} cannot detect the completion boundary; choose another agent or None before dispatching.`}
+          </span>
+        )}
         </>
         )}
 
@@ -1161,7 +1268,12 @@ function DispatchModal({
             <button
               className="btn btn-ghost"
               onClick={() => void submit(false)}
-              disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
+              disabled={
+                busy
+                || drop.uploading
+                || !draft.repoRoot.trim()
+                || !draft.intent.trim()
+              }
             >
             {editing
               ? pending === "shelve"
@@ -1204,6 +1316,8 @@ function DispatchModal({
             label={
               selectedDependenciesUnmet
                 ? "Dependencies must complete first; schedule this in the backlog"
+                : selectedWorkflowBlocked
+                  ? "Resolve the after-work Workflow requirement before dispatching"
                 : "Provision a worktree and launch the agent now (⌘/Ctrl+Enter)"
             }
           >
@@ -1215,6 +1329,7 @@ function DispatchModal({
                 drop.uploading ||
                 !draft.repoRoot.trim() ||
                 !draft.intent.trim() ||
+                (selectedWorkflowBlocked && !selectedDependenciesUnmet) ||
                 Boolean(editing && selectedDependenciesUnmet)
               }
             >

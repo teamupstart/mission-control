@@ -30,13 +30,29 @@ function rules(source: string): Rule[] {
   const re = /([^{}]+)\{([^{}]*)\}/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(withoutComments))) {
-    const selectors = (match[1] ?? "")
-      .split(",")
+    const selectors = splitSelectorList(match[1] ?? "")
       .map((selector) => selector.trim().replace(/\s+/g, " "))
       .filter(Boolean);
     if (selectors.length > 0) out.push({ selectors, body: match[2] ?? "" });
   }
   return out;
+}
+
+function splitSelectorList(selectorList: string): string[] {
+  const selectors: string[] = [];
+  let start = 0;
+  let depth = 0;
+  for (let i = 0; i < selectorList.length; i += 1) {
+    const character = selectorList[i];
+    if (character === "(" || character === "[") depth += 1;
+    if (character === ")" || character === "]") depth -= 1;
+    if (character === "," && depth === 0) {
+      selectors.push(selectorList.slice(start, i));
+      start = i + 1;
+    }
+  }
+  selectors.push(selectorList.slice(start));
+  return selectors;
 }
 
 function declaration(body: string, property: string): string | null {
@@ -45,6 +61,91 @@ function declaration(body: string, property: string): string | null {
   let match: RegExpExecArray | null;
   while ((match = re.exec(body))) value = (match[1] ?? "").trim();
   return value;
+}
+
+function subjectStart(selector: string): number {
+  let start = 0;
+  let depth = 0;
+  for (let i = 0; i < selector.length; i += 1) {
+    const character = selector[i];
+    if (character === "(" || character === "[") depth += 1;
+    if (character === ")" || character === "]") depth -= 1;
+    if (depth === 0 && (/\s/.test(character ?? "") || character === ">" || character === "+" || character === "~")) {
+      start = i + 1;
+    }
+  }
+  return start;
+}
+
+function targetsPaneDialog(selector: string): boolean {
+  return /\.pane-dialog(?![\w-])/.test(selector.slice(subjectStart(selector)));
+}
+
+function isDetailPaneDialog(selector: string): boolean {
+  const prefix = selector.slice(0, subjectStart(selector));
+  let lineageStart = 0;
+  let depth = 0;
+  for (let i = 0; i < prefix.length; i += 1) {
+    const character = prefix[i];
+    if (character === "(" || character === "[") depth += 1;
+    if (character === ")" || character === "]") depth -= 1;
+    if (depth === 0 && (character === "+" || character === "~")) lineageStart = i + 1;
+  }
+  const lineage = prefix.slice(lineageStart);
+  depth = 0;
+  for (let i = 0; i < lineage.length; i += 1) {
+    const character = lineage[i];
+    if (character === "(" || character === "[") depth += 1;
+    if (character === ")" || character === "]") depth -= 1;
+    if (
+      depth === 0 &&
+      lineage.startsWith(".detail-conv", i) &&
+      !/[\w-]/.test(lineage[i + ".detail-conv".length] ?? "")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasCap(property: string, value: string): boolean {
+  const naturalValues =
+    property.startsWith("max-")
+      ? /^(?:none|initial|unset|revert(?:-layer)?)$/i
+      : property === "height" || property === "block-size"
+        ? /^(?:auto|initial|unset|revert(?:-layer)?)$/i
+        : /^(?:visible|initial|unset|revert(?:-layer)?)(?:\s+(?:visible|initial|unset|revert(?:-layer)?))?$/i;
+  return !naturalValues.test(value);
+}
+
+function assertNoGlobalPaneDialogCaps(source: string): void {
+  const capProperties = [
+    "height",
+    "max-height",
+    "block-size",
+    "max-block-size",
+    "overflow",
+    "overflow-x",
+    "overflow-y",
+    "overflow-block",
+    "overflow-inline",
+  ];
+  const caps = rules(source).flatMap((rule) =>
+    rule.selectors.flatMap((selector) => {
+      if (!targetsPaneDialog(selector) || isDetailPaneDialog(selector)) return [];
+      return capProperties.flatMap((property) => {
+        const value = declaration(rule.body, property);
+        return value !== null && hasCap(property, value)
+          ? [`${selector} declares ${property}: ${value}`]
+          : [];
+      });
+    }),
+  );
+  assert.deepEqual(
+    caps,
+    [],
+    "pane dialogs outside .detail-conv must retain their natural height and visible overflow",
+  );
 }
 
 test("a long pane dialog scrolls inside the fixed-height detail conversation", () => {
@@ -84,11 +185,19 @@ test("a long pane dialog scrolls inside the fixed-height detail conversation", (
 });
 
 test("the scroll rule is detail-only, not a global pane-dialog cap", () => {
-  const global = rules(css).filter((rule) => rule.selectors.includes(".pane-dialog"));
-  assert.ok(global.length > 0, "expected the shared pane-dialog rule");
-  assert.equal(
-    global.some((rule) => declaration(rule.body, "overflow-y") === "auto"),
-    false,
-    "grid cards should keep their natural dialog height; only fixed-height detail panes need a cap",
-  );
+  assertNoGlobalPaneDialogCaps(css);
+});
+
+test("the global cap guard rejects height and overflow regressions", () => {
+  const counterexamples = [
+    ".pane-dialog { height: 20rem; }",
+    ".pane-dialog { max-height: 20rem; }",
+    ".card .pane-dialog { overflow: auto; }",
+    ".detail-conv > .pane-dialog, .card .pane-dialog { overflow-y: scroll; }",
+    ":is(.detail-conv, .card) > .pane-dialog { max-height: 20rem; overflow: auto; }",
+  ];
+
+  for (const source of counterexamples) {
+    assert.throws(() => assertNoGlobalPaneDialogCaps(source), /must retain their natural height/);
+  }
 });

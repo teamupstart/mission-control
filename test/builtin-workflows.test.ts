@@ -146,7 +146,9 @@ test("ids are prefixed, versions ascend, and the definition names the newest", (
       assert.equal(version.id, builtinWorkflowVersionId(slug, index + 1));
       assert.equal(version.workflowId, definition.id);
       assert.equal(version.publishedAt, 0);
-      assert.deepEqual(version.completionPolicy, definition.completionPolicy);
+      if (version === versions[versions.length - 1]) {
+        assert.deepEqual(version.completionPolicy, definition.completionPolicy);
+      }
     });
     assert.equal(definition.currentVersionId, versions[versions.length - 1]!.id);
     assert.deepEqual(definition.bindingDefaults, versions[versions.length - 1]!.bindingDefaults);
@@ -182,7 +184,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and final gate", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 3);
+  assert.equal(builtin.versions.length, 4);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, DEFAULT_WORKFLOW_BINDING_DEFAULTS);
   assert.deepEqual(builtin.versions[1]!.bindingDefaults, {
     ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
@@ -192,10 +194,14 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
     ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
     deliveryMode: "live",
   });
-  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[2]!.bindingDefaults);
+  assert.deepEqual(builtin.versions[3]!.bindingDefaults, {
+    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+    deliveryMode: "live",
+  });
+  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[3]!.bindingDefaults);
   assert.deepEqual(builtin.definition.completionPolicy, {
     kind: "inspector",
-    onFindings: "restart_workflow",
+    onFindings: "inspector_only",
     missingPrAction: "offer_prepare_pr",
   });
 
@@ -301,13 +307,20 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
   ]);
 });
 
-test("version 3 gates the review behind typecheck and test, and appends rather than edits", () => {
+test("version 4 repushes and rechecks Inspector, preserving the earlier workflow versions", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 3, "one workflow, three versions");
+  assert.equal(builtin.versions.length, 4, "one workflow, four versions");
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId("no-mistakes-review", 3),
+    builtinWorkflowVersionId("no-mistakes-review", 4),
   );
+  for (const priorVersion of builtin.versions.slice(0, 3)) {
+    assert.deepEqual(priorVersion.completionPolicy, {
+      kind: "inspector",
+      onFindings: "restart_workflow",
+      missingPrAction: "offer_prepare_pr",
+    });
+  }
   const prior = builtin.versions[1]!;
   assert.equal(prior.sourceDraftRevision, 1);
   assert.equal(prior.graph.nodes.filter((node) => node.kind === "check").length, 0);
@@ -357,8 +370,16 @@ test("version 3 gates the review behind typecheck and test, and appends rather t
   for (const id of ["nmr-intent-conformance", "nmr-code-risk", "nmr-test-evidence", "nmr-documentation"]) {
     assert.ok(version.graph.nodes.some((node) => node.id === id), `${id} was re-identified`);
   }
-  // And the draft the library opens IS version 3.
-  assert.deepEqual(builtin.definition.draft.edges, version.graph.edges);
+  const current = builtin.versions[3]!;
+  assert.equal(current.sourceDraftRevision, 3);
+  assert.deepEqual(current.graph, version.graph, "policy changes append without rewriting v3");
+  assert.deepEqual(current.completionPolicy, {
+    kind: "inspector",
+    onFindings: "inspector_only",
+    missingPrAction: "offer_prepare_pr",
+  });
+  // And the draft the library opens is the current Inspector-only version.
+  assert.deepEqual(builtin.definition.draft.edges, current.graph.edges);
   assert.deepEqual(
     compileStages(projectStages(builtin.definition.draft)!, builtin.definition.draft),
     builtin.definition.draft,

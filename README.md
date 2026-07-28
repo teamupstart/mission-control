@@ -2411,7 +2411,8 @@ clear pauses it. Reattachment is explicit and validates the harness and reposito
 then requires a fresh resubmit. Reset removes bindings, runs, submissions, attempts, receipts,
 captured context, and model-call metadata through the same session reset owner. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
-loaded only for the selected run. Cards, Console, and Board show the same workflow status.
+loaded on demand for a selected run or a bound Board tile. Cards, Console, and Board show the
+same workflow status.
 
 ### Watching a run
 
@@ -2426,6 +2427,14 @@ policy permits preparation. An uncertain delivery can be resolved under the same
 and typed-phrase guards as the Runs page. Use **Open run** for the full evidence and timeline.
 A published version whose graph cannot be expressed as stages keeps the existing workflow chip
 here and links to the Runs page, where its read-only graph remains available.
+
+The Board overview also keeps a compact **active-rung preview** inside each bound session tile.
+It names the consequential stage and its members, and keeps the first objection, Inspector wait,
+or uncertain-delivery warning in view. **Show full workflow** expands that tile in place into the
+same actionable ladder; **Collapse workflow** returns to the preview. These controls do not open
+the session or leave the Board. **Open run** inside the expanded ladder remains the explicit route
+to the complete evidence and timeline. The preview fetches run detail when its tile mounts and
+refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload itself is unchanged.
 
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show

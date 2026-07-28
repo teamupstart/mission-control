@@ -1,5 +1,10 @@
 # Showing a bound workflow run on the session detail pane: the stage ladder
 
+> Follow-up, 2026-07-28: the operator selected the D′ Board-tile disclosure from
+> `board-tile-expandable-mockups.html`. A bound Board tile now fetches the same run detail,
+> shows the consequential rung while collapsed, and expands in place to the existing ladder.
+> The original phase boundary below is retained as the design record it supersedes.
+
 Source design: `docs/plans/workflow-card-progress/mockups.html`, **Option D - stage ladder**,
 selected by the operator. Options A (gate rail), B (reviewer roster) and C (repair loop) are
 not in scope; the collapsed grid card keeps today's chip, which is what Option D's own parity
@@ -181,8 +186,8 @@ Submitted by the operator on 2026-07-27. These are requirements, not open questi
 ## Non-goals
 
 - No change to `WorkflowRunSummary` or the SSE event pair. The ladder fetches detail.
-- No ladder on the collapsed grid card, the board tile, or the console rail. Those keep
-  `WorkflowChip` / `WorkflowTileFlag` / `WorkflowRailMark` unchanged.
+- No ladder on the collapsed grid card or console rail. The later D′ follow-up replaced the
+  Board tile's `WorkflowTileFlag` with a compact rung that expands to this same ladder.
 - No new workflow execution behaviour. This is a reading surface; every action it offers routes
   to an existing endpoint with its existing confirmation.
 - No second copy of any stage projection or status derivation.

@@ -1,0 +1,1677 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Expandable workflow progress in a Board tile · mockups</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a0c0f;
+        --bg-2: #0e1116;
+        --panel: #14181e;
+        --panel-2: #171c23;
+        --panel-3: #11161c;
+        --border: #232a33;
+        --border-soft: #1b2129;
+        --fg: #e7ebf1;
+        --muted: #939eae;
+        --dim: #7c8798;
+        --working: #4a9eff;
+        --idle: #35c08a;
+        --attention: #f6a733;
+        --danger: #f85149;
+        --danger-soft: #ff7b72;
+        --neutral: #8b94a3;
+        --agent: #d97757;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --shadow: 0 16px 42px rgba(0, 0, 0, 0.32);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--fg);
+        background:
+          linear-gradient(var(--border-soft) 1px, transparent 1px) 0 0 / 100% 48px,
+          var(--bg);
+        font: 14px/1.5 var(--sans);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      button:focus-visible,
+      a:focus-visible {
+        outline: 2px solid var(--working);
+        outline-offset: 3px;
+      }
+
+      .page {
+        width: min(1480px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 46px 0 120px;
+      }
+
+      .masthead {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 36px;
+        align-items: end;
+        padding: 0 0 28px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .eyebrow,
+      .concept-kicker,
+      .board-heading,
+      .stress-label {
+        font: 700 10px/1.2 var(--mono);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+
+      h1 {
+        max-width: 860px;
+        margin: 8px 0 12px;
+        font-size: clamp(28px, 4vw, 48px);
+        font-weight: 680;
+        line-height: 1.04;
+        letter-spacing: -0.035em;
+      }
+
+      .lede {
+        max-width: 80ch;
+        margin: 0;
+        color: var(--muted);
+        font-size: 14.5px;
+      }
+
+      .mast-note {
+        width: 290px;
+        margin: 0;
+        padding: 14px 15px;
+        color: var(--muted);
+        border: 1px solid color-mix(in oklab, var(--working) 34%, var(--border));
+        border-radius: 10px;
+        background: color-mix(in oklab, var(--working) 7%, var(--panel));
+        font-size: 12px;
+      }
+
+      .mast-note strong {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--working);
+      }
+
+      .toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin: 0 -20px;
+        padding: 13px 20px;
+        border-bottom: 1px solid var(--border-soft);
+        background: color-mix(in oklab, var(--bg) 88%, transparent);
+        backdrop-filter: blur(16px);
+      }
+
+      .toolbar-label {
+        margin-right: 4px;
+        color: var(--dim);
+        font: 700 10px/1 var(--mono);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .tool-btn {
+        padding: 6px 11px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel);
+        cursor: pointer;
+      }
+
+      .tool-btn:hover {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--working) 42%, var(--border));
+      }
+
+      .tool-btn.primary {
+        color: var(--working);
+        border-color: color-mix(in oklab, var(--working) 48%, var(--border));
+        background: color-mix(in oklab, var(--working) 8%, var(--panel));
+      }
+
+      .toolbar a {
+        margin-left: auto;
+        color: var(--dim);
+        text-decoration: none;
+        font-size: 11.5px;
+      }
+
+      .toolbar a:hover {
+        color: var(--fg);
+      }
+
+      .concepts {
+        display: grid;
+        gap: 64px;
+        padding-top: 42px;
+      }
+
+      .concept {
+        scroll-margin-top: 74px;
+      }
+
+      .concept-head {
+        display: grid;
+        grid-template-columns: 56px minmax(0, 1fr) minmax(280px, 420px);
+        gap: 18px;
+        align-items: start;
+        margin-bottom: 20px;
+      }
+
+      .concept-id {
+        display: grid;
+        place-items: center;
+        width: 48px;
+        height: 48px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        color: var(--working);
+        background: var(--panel);
+        font: 700 14px/1 var(--mono);
+      }
+
+      .concept.recommended .concept-id {
+        color: var(--bg);
+        border-color: var(--idle);
+        background: var(--idle);
+        box-shadow: 0 0 0 5px color-mix(in oklab, var(--idle) 12%, transparent);
+      }
+
+      .concept-title {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .concept-title h2 {
+        margin: 2px 0 5px;
+        font-size: 22px;
+        font-weight: 670;
+        letter-spacing: -0.015em;
+      }
+
+      .recommended-tag {
+        padding: 3px 7px;
+        color: var(--idle);
+        border: 1px solid color-mix(in oklab, var(--idle) 40%, var(--border));
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--idle) 8%, transparent);
+        font: 700 9px/1.2 var(--mono);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .concept-sub {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .concept-note {
+        margin: 0;
+        padding: 11px 13px;
+        color: var(--muted);
+        border-left: 2px solid var(--border);
+        background: color-mix(in oklab, var(--panel) 70%, transparent);
+        font-size: 12px;
+      }
+
+      .concept.recommended .concept-note {
+        border-left-color: var(--idle);
+      }
+
+      .concept-stage {
+        display: grid;
+        grid-template-columns: minmax(0, 760px) minmax(250px, 1fr);
+        gap: 22px;
+        align-items: start;
+      }
+
+      .board {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--bg-2);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      .board-head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 42px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel-3);
+      }
+
+      .board-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--working);
+      }
+
+      .board-heading {
+        color: var(--working);
+      }
+
+      .board-count {
+        display: grid;
+        place-items: center;
+        min-width: 22px;
+        height: 18px;
+        margin-left: auto;
+        padding: 0 6px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--muted);
+        background: var(--panel);
+        font: 700 10px/1 var(--mono);
+      }
+
+      .board-body {
+        padding: 10px;
+      }
+
+      .tile {
+        --tile-tone: var(--working);
+        position: relative;
+        overflow: hidden;
+        border: 1px solid color-mix(in oklab, var(--idle) 58%, var(--border));
+        border-radius: 10px;
+        background: var(--panel);
+        box-shadow:
+          inset 3px 0 0 var(--working),
+          0 0 0 1px color-mix(in oklab, var(--idle) 8%, transparent);
+        transition:
+          border-color 180ms ease,
+          box-shadow 180ms ease;
+      }
+
+      .tile[data-expanded="true"] {
+        border-color: color-mix(in oklab, var(--working) 64%, var(--border));
+        box-shadow:
+          inset 3px 0 0 var(--working),
+          0 14px 34px rgba(0, 0, 0, 0.28);
+      }
+
+      .tile-main {
+        padding: 10px 12px 9px 15px;
+      }
+
+      .tile-top {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto auto;
+        gap: 9px;
+        align-items: center;
+      }
+
+      .agent-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--agent);
+        box-shadow: 0 0 10px color-mix(in oklab, var(--agent) 60%, transparent);
+      }
+
+      .tile-title {
+        min-width: 0;
+      }
+
+      .tile-title strong,
+      .tile-title span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tile-title strong {
+        font-size: 13px;
+        font-weight: 680;
+      }
+
+      .tile-title span {
+        margin-top: 1px;
+        color: var(--dim);
+        font-size: 10.5px;
+      }
+
+      .status-chip,
+      .state-badge {
+        white-space: nowrap;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 680;
+      }
+
+      .status-chip {
+        padding: 3px 8px;
+        color: var(--attention);
+        border: 1px solid color-mix(in oklab, var(--attention) 55%, var(--border));
+        background: transparent;
+      }
+
+      .state-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 8px;
+        color: var(--working);
+        background: color-mix(in oklab, var(--working) 15%, var(--panel));
+      }
+
+      .state-badge::before {
+        content: "";
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .tile-goal {
+        margin: 8px 0 0 18px;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 10.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .workflow-summary,
+      .ladder-panel {
+        margin: 9px 0 0 18px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--panel-2) 88%, var(--bg));
+      }
+
+      .workflow-summary {
+        padding: 9px 10px;
+        transition:
+          opacity 150ms ease,
+          transform 180ms ease,
+          margin 180ms ease,
+          padding 180ms ease;
+      }
+
+      .tile[data-expanded="true"] .workflow-summary.hide-on-expand {
+        height: 0;
+        margin-top: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        overflow: hidden;
+        opacity: 0;
+        transform: translateY(-4px);
+        border-color: transparent;
+      }
+
+      .workflow-head {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .workflow-name {
+        overflow: hidden;
+        color: var(--working);
+        font-size: 10.5px;
+        font-weight: 720;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .workflow-version,
+      .workflow-round {
+        color: var(--dim);
+        font: 10px/1.2 var(--mono);
+      }
+
+      .workflow-round {
+        margin-left: auto;
+      }
+
+      .compact-state {
+        margin-left: 2px;
+        color: var(--danger-soft);
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .expand-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin: 8px 0 0 18px;
+      }
+
+      .expand-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel-3);
+        cursor: pointer;
+        font-size: 10.5px;
+      }
+
+      .expand-btn:hover {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--working) 46%, var(--border));
+      }
+
+      .expand-btn .chevron {
+        display: inline-block;
+        color: var(--working);
+        transition: transform 180ms ease;
+      }
+
+      .tile[data-expanded="true"] .expand-btn .chevron {
+        transform: rotate(180deg);
+      }
+
+      .expand-hint {
+        color: var(--dim);
+        font-size: 9.5px;
+      }
+
+      .tile-foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 9px 0 0 18px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border-soft);
+        color: var(--dim);
+        font: 9.5px/1.2 var(--mono);
+      }
+
+      .tile-foot .branch {
+        overflow: hidden;
+        color: var(--idle);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tile-foot .ago {
+        margin-left: auto;
+      }
+
+      .details-grid {
+        display: grid;
+        gap: 9px;
+      }
+
+      .detail-note {
+        padding: 13px 14px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: color-mix(in oklab, var(--panel) 75%, var(--bg));
+      }
+
+      .detail-note h3 {
+        margin: 0 0 5px;
+        color: var(--fg);
+        font-size: 11px;
+      }
+
+      .detail-note p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11.5px;
+      }
+
+      .detail-note strong {
+        color: var(--fg);
+        font-weight: 620;
+      }
+
+      /* Concept 1: horizontal stage rail. */
+      .rail-stage {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        margin-top: 8px;
+      }
+
+      .rail-stage strong {
+        font-size: 11.5px;
+      }
+
+      .rail-stage span {
+        color: var(--dim);
+        font-size: 10px;
+      }
+
+      .stage-rail {
+        display: grid;
+        grid-template-columns: 0.75fr 0.75fr 1.5fr 0.55fr;
+        gap: 3px;
+        margin-top: 6px;
+      }
+
+      .stage-rail span {
+        height: 5px;
+        border-radius: 3px;
+      }
+
+      .stage-rail .degraded {
+        background: repeating-linear-gradient(
+          115deg,
+          color-mix(in oklab, var(--idle) 60%, transparent) 0 3px,
+          transparent 3px 6px
+        );
+        border: 1px solid color-mix(in oklab, var(--idle) 48%, var(--border));
+      }
+
+      .stage-rail .passed {
+        background: var(--idle);
+      }
+
+      .stage-rail .failed {
+        background: var(--danger);
+        box-shadow: 0 0 8px color-mix(in oklab, var(--danger) 28%, transparent);
+      }
+
+      .stage-rail .gate {
+        border: 1px solid color-mix(in oklab, var(--attention) 72%, var(--border));
+        background: transparent;
+      }
+
+      .rail-line {
+        margin-top: 6px;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .rail-line strong {
+        color: var(--danger-soft);
+      }
+
+      /* Concept 2: reviewer roster. */
+      .roster {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 5px;
+        margin-top: 8px;
+      }
+
+      .reviewer {
+        display: grid;
+        grid-template-columns: 20px minmax(0, 1fr);
+        gap: 6px;
+        align-items: center;
+        min-width: 0;
+        padding: 5px 6px;
+        border: 1px solid var(--border-soft);
+        border-radius: 7px;
+        background: var(--panel-3);
+      }
+
+      .reviewer-mark {
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        color: var(--idle);
+        border: 1px solid color-mix(in oklab, var(--idle) 58%, var(--border));
+        font: 700 8px/1 var(--mono);
+      }
+
+      .reviewer.failed .reviewer-mark {
+        color: var(--danger-soft);
+        border-color: color-mix(in oklab, var(--danger) 66%, var(--border));
+        background: color-mix(in oklab, var(--danger) 9%, transparent);
+      }
+
+      .reviewer-copy {
+        min-width: 0;
+      }
+
+      .reviewer-copy strong,
+      .reviewer-copy span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .reviewer-copy strong {
+        font-size: 9.5px;
+      }
+
+      .reviewer-copy span {
+        color: var(--dim);
+        font-size: 8.5px;
+      }
+
+      .reviewer.failed .reviewer-copy strong {
+        color: var(--danger-soft);
+      }
+
+      .roster-result {
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .roster-result strong {
+        color: var(--danger-soft);
+      }
+
+      /* Concept 3: a cropped window into the final ladder. */
+      .peek {
+        position: relative;
+        padding: 9px 10px 8px 36px;
+        overflow: hidden;
+      }
+
+      .peek::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 16px;
+        width: 1px;
+        background: color-mix(in oklab, var(--danger) 42%, var(--border));
+      }
+
+      .peek::after {
+        content: "";
+        position: absolute;
+        top: 14px;
+        left: 11px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--danger);
+        box-shadow: 0 0 0 4px color-mix(in oklab, var(--danger) 12%, transparent);
+      }
+
+      .peek-kicker {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+
+      .peek-kicker strong {
+        font-size: 11.5px;
+      }
+
+      .peek-kicker span {
+        color: var(--dim);
+        font-size: 9.5px;
+      }
+
+      .peek-status {
+        margin-left: auto;
+        color: var(--danger-soft) !important;
+        font-weight: 700;
+      }
+
+      .peek-members {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .peek-members .pass {
+        color: var(--idle);
+      }
+
+      .peek-members .fail {
+        color: var(--danger-soft);
+      }
+
+      .peek-objection,
+      .ladder-objection {
+        margin: 7px 0 0;
+        padding: 6px 8px;
+        color: var(--muted);
+        border-left: 2px solid var(--danger);
+        border-radius: 0 6px 6px 0;
+        background: color-mix(in oklab, var(--danger) 9%, var(--panel));
+        font-size: 10px;
+        line-height: 1.4;
+      }
+
+      .peek-objection strong,
+      .ladder-objection strong {
+        color: var(--fg);
+      }
+
+      /* Expanded D ladder shared by every concept. */
+      .expand-region {
+        display: grid;
+        grid-template-rows: 0fr;
+        opacity: 0;
+        transition:
+          grid-template-rows 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+          opacity 160ms ease;
+      }
+
+      .tile[data-expanded="true"] .expand-region {
+        grid-template-rows: 1fr;
+        opacity: 1;
+      }
+
+      .expand-inner {
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .ladder-panel {
+        margin-top: 9px;
+        padding: 10px 11px 9px;
+      }
+
+      .ladder-head {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .ladder-head strong {
+        color: var(--working);
+        font-size: 10.5px;
+      }
+
+      .ladder-state {
+        padding: 2px 6px;
+        color: var(--danger-soft);
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--danger) 12%, transparent);
+        font-size: 9px;
+        font-weight: 700;
+      }
+
+      .ladder-head .round {
+        margin-left: auto;
+        color: var(--dim);
+        font: 9px/1.2 var(--mono);
+      }
+
+      .ladder {
+        margin: 0;
+        padding: 10px 0 0;
+        list-style: none;
+      }
+
+      .rung {
+        --rung-tone: var(--dim);
+        position: relative;
+        min-width: 0;
+        padding: 0 0 11px 26px;
+      }
+
+      .rung:last-child {
+        padding-bottom: 1px;
+      }
+
+      .rung::after {
+        content: "";
+        position: absolute;
+        z-index: 1;
+        top: 3px;
+        left: 1px;
+        width: 10px;
+        height: 10px;
+        border: 2px solid var(--rung-tone);
+        border-radius: 50%;
+        background: var(--panel-2);
+      }
+
+      .rung:not(:last-child)::before {
+        content: "";
+        position: absolute;
+        top: 14px;
+        bottom: -1px;
+        left: 5px;
+        width: 1px;
+        background: color-mix(in oklab, var(--rung-tone) 44%, var(--border));
+      }
+
+      .rung.passed {
+        --rung-tone: var(--idle);
+      }
+
+      .rung.failed {
+        --rung-tone: var(--danger);
+      }
+
+      .rung.pending {
+        --rung-tone: var(--attention);
+      }
+
+      .rung.passed::after,
+      .rung.failed::after {
+        background: var(--rung-tone);
+      }
+
+      .rung.terminal::after {
+        border-radius: 1px;
+        transform: rotate(45deg);
+      }
+
+      .rung-top {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .rung-top strong {
+        font-size: 10.5px;
+      }
+
+      .rung-sub {
+        overflow: hidden;
+        color: var(--dim);
+        font-size: 9px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .rung-status {
+        margin-left: auto;
+        color: var(--rung-tone);
+        font-size: 9.5px;
+        font-weight: 700;
+      }
+
+      .members {
+        display: grid;
+        gap: 2px;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 9.5px;
+      }
+
+      .member {
+        display: flex;
+        gap: 5px;
+      }
+
+      .member .pass {
+        color: var(--idle);
+      }
+
+      .member .fail {
+        color: var(--danger-soft);
+      }
+
+      .ladder-actions {
+        display: flex;
+        gap: 6px;
+        margin: 8px 0 0 26px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .ladder-actions button {
+        padding: 4px 8px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel-3);
+        font-size: 9.5px;
+      }
+
+      .ladder-actions .primary-action {
+        color: var(--working);
+        border-color: color-mix(in oklab, var(--working) 52%, var(--border));
+      }
+
+      .stress {
+        margin-top: 76px;
+        padding-top: 34px;
+        border-top: 1px solid var(--border);
+      }
+
+      .stress h2 {
+        margin: 7px 0 7px;
+        font-size: 22px;
+      }
+
+      .stress > p {
+        max-width: 76ch;
+        margin: 0 0 20px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .stress-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .stress-card {
+        min-width: 0;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--panel);
+      }
+
+      .stress-card .workflow-head {
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .stress-peek {
+        position: relative;
+        margin-top: 9px;
+        padding-left: 21px;
+      }
+
+      .stress-peek::before {
+        content: "";
+        position: absolute;
+        top: 1px;
+        bottom: 1px;
+        left: 5px;
+        width: 1px;
+        background: var(--stress-tone);
+        opacity: 0.5;
+      }
+
+      .stress-peek::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 1px;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        border: 2px solid var(--stress-tone);
+        background: color-mix(in oklab, var(--stress-tone) 24%, var(--panel));
+      }
+
+      .stress-card.running {
+        --stress-tone: var(--working);
+      }
+
+      .stress-card.gate {
+        --stress-tone: var(--attention);
+      }
+
+      .stress-card.uncertain {
+        --stress-tone: var(--danger);
+      }
+
+      .stress-top {
+        display: flex;
+        gap: 7px;
+        align-items: baseline;
+      }
+
+      .stress-top strong {
+        font-size: 10.5px;
+      }
+
+      .stress-top span {
+        margin-left: auto;
+        color: var(--stress-tone);
+        font-size: 9.5px;
+        font-weight: 700;
+      }
+
+      .stress-copy {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 9.5px;
+        line-height: 1.4;
+      }
+
+      .decision {
+        margin-top: 32px;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 14px;
+        align-items: start;
+        padding: 17px 18px;
+        border: 1px solid color-mix(in oklab, var(--idle) 44%, var(--border));
+        border-radius: 11px;
+        background: color-mix(in oklab, var(--idle) 6%, var(--panel));
+      }
+
+      .decision-mark {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        color: var(--bg);
+        background: var(--idle);
+        font-weight: 800;
+      }
+
+      .decision h3 {
+        margin: 0 0 3px;
+        font-size: 13px;
+      }
+
+      .decision p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 980px) {
+        .masthead,
+        .concept-stage {
+          grid-template-columns: 1fr;
+        }
+
+        .mast-note {
+          width: auto;
+        }
+
+        .concept-head {
+          grid-template-columns: 48px minmax(0, 1fr);
+        }
+
+        .concept-note {
+          grid-column: 2;
+        }
+
+        .stress-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .page {
+          width: min(100% - 20px, 1480px);
+          padding-top: 28px;
+        }
+
+        .toolbar {
+          margin-inline: -10px;
+          padding-inline: 10px;
+        }
+
+        .toolbar a,
+        .expand-hint,
+        .state-badge {
+          display: none;
+        }
+
+        .tile-top {
+          grid-template-columns: auto minmax(0, 1fr) auto;
+        }
+
+        .roster {
+          grid-template-columns: 1fr;
+        }
+
+        .concept-head {
+          grid-template-columns: 40px minmax(0, 1fr);
+          gap: 12px;
+        }
+
+        .concept-id {
+          width: 38px;
+          height: 38px;
+        }
+
+        .concept-note {
+          grid-column: 1 / -1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">Mission Control · Board workflow progress</div>
+          <h1>The tile should preview the ladder, not send you away from it.</h1>
+          <p class="lede">
+            Three ways to put workflow progress directly into the Board tile. Each stays compact
+            enough for fleet triage, then expands in place to reveal the full Stage Ladder and its
+            actions. The examples use the exact “Review changes” state from the current UI.
+          </p>
+        </div>
+        <p class="mast-note">
+          <strong>Interaction thesis</strong>
+          “Review changes” becomes a disclosure state. The full Runs page remains available as
+          “Open run” inside the expanded ladder.
+        </p>
+      </header>
+
+      <nav class="toolbar" aria-label="Mockup controls">
+        <span class="toolbar-label">All tiles</span>
+        <button class="tool-btn" type="button" data-action="collapse-all">Collapse</button>
+        <button class="tool-btn primary" type="button" data-action="expand-all">Expand</button>
+        <a href="#stress">Jump to state stress test ↓</a>
+      </nav>
+
+      <main class="concepts">
+        <section class="concept" id="rail">
+          <header class="concept-head">
+            <span class="concept-id">A→D</span>
+            <div>
+              <div class="concept-kicker">Hybrid 1</div>
+              <div class="concept-title">
+                <h2>Stage rail → full ladder</h2>
+              </div>
+              <p class="concept-sub">
+                The collapsed tile borrows A’s fast horizontal read; expansion replaces it with D.
+              </p>
+            </div>
+            <p class="concept-note">
+              Best when the first question is <strong>“how far did it get?”</strong> The rail is
+              familiar from no-mistakes, but the objection remains a secondary line.
+            </p>
+          </header>
+
+          <div class="concept-stage">
+            <div class="board">
+              <header class="board-head">
+                <span class="board-dot"></span>
+                <span class="board-heading">Working</span>
+                <span class="board-count">1</span>
+              </header>
+              <div class="board-body">
+                <article class="tile" data-expanded="false">
+                  <div class="tile-main">
+                    <header class="tile-top">
+                      <span class="agent-dot"></span>
+                      <span class="tile-title">
+                        <strong>Use Pull-Request Skill for Workflow PRs</strong>
+                        <span>Agent SDK · harness-14</span>
+                      </span>
+                      <span class="status-chip">⌁ Review changes</span>
+                      <span class="state-badge">working</span>
+                    </header>
+                    <p class="tile-goal">Update the workflow PR path and preserve existing review evidence</p>
+
+                    <div class="workflow-summary hide-on-expand">
+                      <div class="workflow-head">
+                        <span class="workflow-name">⌁ No-Mistakes Review</span>
+                        <span class="workflow-version">v6</span>
+                        <span class="compact-state">changes requested</span>
+                        <span class="workflow-round">R2 / 5</span>
+                      </div>
+                      <div class="rail-stage">
+                        <strong>Stage 3</strong>
+                        <span>1 of 3 reviewers passed</span>
+                      </div>
+                      <div class="stage-rail" aria-label="Checks degraded, intent passed, reviewers failed, gate pending">
+                        <span class="degraded"></span>
+                        <span class="passed"></span>
+                        <span class="failed"></span>
+                        <span class="gate"></span>
+                      </div>
+                      <div class="rail-line">
+                        ↳ <strong>Test Evidence Auditor</strong> · 2 changes
+                      </div>
+                    </div>
+
+                    <div class="expand-region">
+                      <div class="expand-inner">
+                        <div class="ladder-panel"></div>
+                      </div>
+                    </div>
+
+                    <div class="expand-row">
+                      <button class="expand-btn" type="button" aria-expanded="false">
+                        <span class="chevron">⌄</span>
+                        <span class="expand-label">Show stages</span>
+                      </button>
+                      <span class="expand-hint">Keeps this tile open in the Board</span>
+                    </div>
+                    <footer class="tile-foot">
+                      <span class="branch">harness/use-pull-request-skill-for-workf-990538</span>
+                      <span class="ago">8m ago</span>
+                    </footer>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <div class="details-grid">
+              <div class="detail-note">
+                <h3>Collapsed tells you</h3>
+                <p>Current stage, stage completion shape, failed reviewer count, and who objected.</p>
+              </div>
+              <div class="detail-note">
+                <h3>Expansion adds</h3>
+                <p>The exact objection, every stage and member, Copy feedback, and Open run.</p>
+              </div>
+              <div class="detail-note">
+                <h3>Tradeoff</h3>
+                <p>The rail is excellent at progress but weaker at explaining <strong>why</strong> the tile needs attention.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="concept" id="roster">
+          <header class="concept-head">
+            <span class="concept-id">B→D</span>
+            <div>
+              <div class="concept-kicker">Hybrid 2</div>
+              <div class="concept-title">
+                <h2>Reviewer roster → full ladder</h2>
+              </div>
+              <p class="concept-sub">
+                The collapsed tile borrows B’s people-first read; expansion restores authored stage order.
+              </p>
+            </div>
+            <p class="concept-note">
+              Best when the first question is <strong>“who is still unhappy?”</strong> It makes
+              parallel review legible, but checks and the Inspector are quiet until expansion.
+            </p>
+          </header>
+
+          <div class="concept-stage">
+            <div class="board">
+              <header class="board-head">
+                <span class="board-dot"></span>
+                <span class="board-heading">Working</span>
+                <span class="board-count">1</span>
+              </header>
+              <div class="board-body">
+                <article class="tile" data-expanded="false">
+                  <div class="tile-main">
+                    <header class="tile-top">
+                      <span class="agent-dot"></span>
+                      <span class="tile-title">
+                        <strong>Use Pull-Request Skill for Workflow PRs</strong>
+                        <span>Agent SDK · harness-14</span>
+                      </span>
+                      <span class="status-chip">⌁ Review changes</span>
+                      <span class="state-badge">working</span>
+                    </header>
+                    <p class="tile-goal">Update the workflow PR path and preserve existing review evidence</p>
+
+                    <div class="workflow-summary hide-on-expand">
+                      <div class="workflow-head">
+                        <span class="workflow-name">⌁ No-Mistakes Review</span>
+                        <span class="workflow-version">v6</span>
+                        <span class="compact-state">changes requested</span>
+                        <span class="workflow-round">R2 / 5</span>
+                      </div>
+                      <div class="roster">
+                        <div class="reviewer">
+                          <span class="reviewer-mark">CR</span>
+                          <span class="reviewer-copy">
+                            <strong>Code Risk</strong>
+                            <span>passed</span>
+                          </span>
+                        </div>
+                        <div class="reviewer failed">
+                          <span class="reviewer-mark">TE</span>
+                          <span class="reviewer-copy">
+                            <strong>Test Evidence</strong>
+                            <span>2 changes</span>
+                          </span>
+                        </div>
+                        <div class="reviewer failed">
+                          <span class="reviewer-mark">DS</span>
+                          <span class="reviewer-copy">
+                            <strong>Docs</strong>
+                            <span>1 change</span>
+                          </span>
+                        </div>
+                      </div>
+                      <div class="roster-result">
+                        <strong>2 reviewers objected</strong> · repair round 3 is ready
+                      </div>
+                    </div>
+
+                    <div class="expand-region">
+                      <div class="expand-inner">
+                        <div class="ladder-panel"></div>
+                      </div>
+                    </div>
+
+                    <div class="expand-row">
+                      <button class="expand-btn" type="button" aria-expanded="false">
+                        <span class="chevron">⌄</span>
+                        <span class="expand-label">Show stages</span>
+                      </button>
+                      <span class="expand-hint">Keeps this tile open in the Board</span>
+                    </div>
+                    <footer class="tile-foot">
+                      <span class="branch">harness/use-pull-request-skill-for-workf-990538</span>
+                      <span class="ago">8m ago</span>
+                    </footer>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <div class="details-grid">
+              <div class="detail-note">
+                <h3>Collapsed tells you</h3>
+                <p>Who passed, who objected, each reviewer’s change count, and what happens next.</p>
+              </div>
+              <div class="detail-note">
+                <h3>Expansion adds</h3>
+                <p>The stage/check context that explains where those reviewers sit in the workflow.</p>
+              </div>
+              <div class="detail-note">
+                <h3>Tradeoff</h3>
+                <p>Very readable for Personas, but it gives command checks and the Inspector no natural place.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="concept recommended" id="peek">
+          <header class="concept-head">
+            <span class="concept-id">D′</span>
+            <div>
+              <div class="concept-kicker">Hybrid 3 · new</div>
+              <div class="concept-title">
+                <h2>Active-rung peek → full ladder</h2>
+                <span class="recommended-tag">Recommended</span>
+              </div>
+              <p class="concept-sub">
+                The collapsed tile is already a cropped piece of D; expansion simply reveals the missing rungs.
+              </p>
+            </div>
+            <p class="concept-note">
+              Best when the Board’s job is <strong>“show me the next consequential fact.”</strong>
+              The same visual grammar works for running, failed, gate, and uncertain-delivery states.
+            </p>
+          </header>
+
+          <div class="concept-stage">
+            <div class="board">
+              <header class="board-head">
+                <span class="board-dot"></span>
+                <span class="board-heading">Working</span>
+                <span class="board-count">1</span>
+              </header>
+              <div class="board-body">
+                <article class="tile" data-expanded="false">
+                  <div class="tile-main">
+                    <header class="tile-top">
+                      <span class="agent-dot"></span>
+                      <span class="tile-title">
+                        <strong>Use Pull-Request Skill for Workflow PRs</strong>
+                        <span>Agent SDK · harness-14</span>
+                      </span>
+                      <span class="status-chip">⌁ Review changes</span>
+                      <span class="state-badge">working</span>
+                    </header>
+                    <p class="tile-goal">Update the workflow PR path and preserve existing review evidence</p>
+
+                    <div class="workflow-summary hide-on-expand peek">
+                      <div class="workflow-head">
+                        <span class="workflow-name">⌁ No-Mistakes Review</span>
+                        <span class="workflow-version">v6</span>
+                        <span class="workflow-round">R2 / 5</span>
+                      </div>
+                      <div class="peek-kicker">
+                        <strong>Stage 3</strong>
+                        <span>3 reviewers</span>
+                        <span class="peek-status">Failed</span>
+                      </div>
+                      <div class="peek-members">
+                        <span class="pass">✓ Code Risk</span>
+                        &nbsp; <span class="fail">× Test Evidence</span>
+                        &nbsp; <span class="fail">× Docs</span>
+                      </div>
+                      <p class="peek-objection">
+                        <strong>Test Evidence:</strong> No rendered-card evidence for the away-session state.
+                      </p>
+                    </div>
+
+                    <div class="expand-region">
+                      <div class="expand-inner">
+                        <div class="ladder-panel"></div>
+                      </div>
+                    </div>
+
+                    <div class="expand-row">
+                      <button class="expand-btn" type="button" aria-expanded="false">
+                        <span class="chevron">⌄</span>
+                        <span class="expand-label">Show full workflow</span>
+                      </button>
+                      <span class="expand-hint">The active rung stays the visual anchor</span>
+                    </div>
+                    <footer class="tile-foot">
+                      <span class="branch">harness/use-pull-request-skill-for-workf-990538</span>
+                      <span class="ago">8m ago</span>
+                    </footer>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <div class="details-grid">
+              <div class="detail-note">
+                <h3>Collapsed tells you</h3>
+                <p>The consequential rung, its members, and the first concrete objection—not merely “Review changes.”</p>
+              </div>
+              <div class="detail-note">
+                <h3>Expansion adds</h3>
+                <p>Context above and below that rung. The tile changes scale without changing visual vocabulary.</p>
+              </div>
+              <div class="detail-note">
+                <h3>Tradeoff</h3>
+                <p>It optimizes for the <strong>current exception</strong>, not a stable whole-run progress silhouette.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <section class="stress" id="stress">
+        <div class="stress-label">Recommended concept · collapsed-state coverage</div>
+        <h2>One cropped rung works across the workflow lifecycle.</h2>
+        <p>
+          These are the other compact states for D′. Expansion uses the same full ladder as above;
+          only the rung selected for the Board preview changes.
+        </p>
+        <div class="stress-grid">
+          <article class="stress-card running">
+            <div class="workflow-head">
+              <span class="workflow-name">⌁ No-Mistakes Review</span>
+              <span class="workflow-version">v6</span>
+              <span class="workflow-round">R1 / 5</span>
+            </div>
+            <div class="stress-peek">
+              <div class="stress-top">
+                <strong>Stage 3 · 3 reviewers</strong>
+                <span>Running</span>
+              </div>
+              <p class="stress-copy">Code Risk passed · Test Evidence and Docs are reviewing</p>
+            </div>
+          </article>
+
+          <article class="stress-card gate">
+            <div class="workflow-head">
+              <span class="workflow-name">⌁ No-Mistakes Review</span>
+              <span class="workflow-version">v6</span>
+              <span class="workflow-round">R3 / 5</span>
+            </div>
+            <div class="stress-peek">
+              <div class="stress-top">
+                <strong>Inspector gate</strong>
+                <span>Waiting</span>
+              </div>
+              <p class="stress-copy">PR #317 · head a9c2bd64 · live review has not finished</p>
+            </div>
+          </article>
+
+          <article class="stress-card uncertain">
+            <div class="workflow-head">
+              <span class="workflow-name">⌁ No-Mistakes Review</span>
+              <span class="workflow-version">v6</span>
+              <span class="workflow-round">R4 / 5</span>
+            </div>
+            <div class="stress-peek">
+              <div class="stress-top">
+                <strong>Repair delivery</strong>
+                <span>Uncertain</span>
+              </div>
+              <p class="stress-copy">The write may have landed. Inspect the pane before resolving it.</p>
+            </div>
+          </article>
+        </div>
+
+        <div class="decision">
+          <span class="decision-mark">✓</span>
+          <div>
+            <h3>Recommended path: D′ with an explicit disclosure button</h3>
+            <p>
+              It puts useful detail on the Board without inventing a second workflow visualization.
+              Keep the status chip non-navigational, let the disclosure expand the tile, and retain
+              “Open run” as the deeper navigation action inside the expanded ladder.
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <template id="ladder-template">
+      <div class="ladder-head">
+        <strong>⌁ No-Mistakes Review</strong>
+        <span class="workflow-version">v6</span>
+        <span class="ladder-state">changes requested</span>
+        <span class="round">round 2 / 5</span>
+      </div>
+      <ul class="ladder">
+        <li class="rung failed terminal">
+          <div class="rung-top">
+            <strong>Session</strong>
+            <span class="rung-status">Changes requested</span>
+          </div>
+        </li>
+        <li class="rung passed">
+          <div class="rung-top">
+            <strong>Stage 1</strong>
+            <span class="rung-sub">2 checks</span>
+            <span class="rung-status">None ran</span>
+          </div>
+        </li>
+        <li class="rung passed">
+          <div class="rung-top">
+            <strong>Intent Conformance Judge</strong>
+            <span class="rung-sub">1 reviewer</span>
+            <span class="rung-status">Passed</span>
+          </div>
+        </li>
+        <li class="rung failed">
+          <div class="rung-top">
+            <strong>Stage 3</strong>
+            <span class="rung-sub">3 reviewers</span>
+            <span class="rung-status">Failed</span>
+          </div>
+          <div class="members">
+            <span class="member"><span class="pass">✓</span> Code Risk Reviewer · passed</span>
+            <span class="member"><span class="fail">×</span> Test Evidence Auditor · 2 changes</span>
+            <span class="member"><span class="fail">×</span> Documentation Steward · 1 change</span>
+          </div>
+          <p class="ladder-objection">
+            <strong>Test Evidence Auditor:</strong> No end-to-end evidence shows that the alert
+            panel renders for an away session.
+          </p>
+        </li>
+        <li class="rung pending terminal">
+          <div class="rung-top">
+            <strong>Complete</strong>
+            <span class="rung-status">Not reached</span>
+          </div>
+        </li>
+      </ul>
+      <div class="ladder-actions">
+        <button class="primary-action" type="button">Copy feedback</button>
+        <button type="button">Open run</button>
+      </div>
+    </template>
+
+    <script>
+      const template = document.querySelector("#ladder-template");
+      document.querySelectorAll(".ladder-panel").forEach((panel) => {
+        panel.append(template.content.cloneNode(true));
+      });
+
+      function setExpanded(tile, expanded) {
+        tile.dataset.expanded = String(expanded);
+        const button = tile.querySelector(".expand-btn");
+        const label = tile.querySelector(".expand-label");
+        button.setAttribute("aria-expanded", String(expanded));
+        label.textContent = expanded
+          ? "Collapse workflow"
+          : tile.closest("#peek")
+            ? "Show full workflow"
+            : "Show stages";
+      }
+
+      document.querySelectorAll(".expand-btn").forEach((button) => {
+        button.addEventListener("click", () => {
+          const tile = button.closest(".tile");
+          setExpanded(tile, tile.dataset.expanded !== "true");
+        });
+      });
+
+      document.querySelector("[data-action='expand-all']").addEventListener("click", () => {
+        document.querySelectorAll(".tile").forEach((tile) => setExpanded(tile, true));
+      });
+
+      document.querySelector("[data-action='collapse-all']").addEventListener("click", () => {
+        document.querySelectorAll(".tile").forEach((tile) => setExpanded(tile, false));
+      });
+    </script>
+  </body>
+</html>

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
@@ -11,13 +11,13 @@ import {
   RuntimeMetaRow,
   RuntimeTileFlag,
   ScheduleOriginTileFlag,
-  WorkflowTileFlag,
   EnsembleTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
 
 /**
  * Whether a click only marks the end of a drag-select rather than a click on the thing
@@ -89,10 +89,12 @@ export function SessionTile({
   const gate = nm ? { ...gateStepView(nm), steps: nm.steps } : null;
   const isRunning = session.state === "working" || session.state === "starting";
   const [over, setOver] = useState(false);
+  const [workflowExpanded, setWorkflowExpanded] = useState(false);
   const setTileRef = useCallback(
     (el: HTMLDivElement | null) => registerEl?.(session.id, el),
     [registerEl, session.id],
   );
+  useEffect(() => setWorkflowExpanded(false), [workflowRun?.id]);
 
   const droppable = canAcceptTask(session, draggingRepo, gateNeedsYou);
 
@@ -103,7 +105,7 @@ export function SessionTile({
         selected ? " selected" : ""
       }${
         droppable ? " can-drop" : ""
-      }${over ? " drop-over" : ""}`}
+      }${over ? " drop-over" : ""}${workflowExpanded ? " workflow-expanded" : ""}`}
       onDragOver={(e) => {
         if (!droppable) return;
         e.preventDefault();
@@ -215,6 +217,21 @@ export function SessionTile({
         </span>
       )}
 
+      {/* D′ is a cropped rung of the same Stage Ladder the Console detail draws. The summary
+          arrives over SSE; this panel loads the existing run detail, shows the consequential rung
+          while collapsed, and reuses the real actionable ladder when disclosed. Its wrapper owns
+          click propagation so using it never drills into the Console or leaves for Runs. */}
+      {workflowRun && (
+        <WorkflowLadderPanel
+          run={workflowRun}
+          onOpenRun={() => onOpenWorkflowRun?.(workflowRun.id)}
+          tileDisclosure={{
+            expanded: workflowExpanded,
+            onExpandedChange: setWorkflowExpanded,
+          }}
+        />
+      )}
+
       <span className="tile-marks">
         {/* Where this session lives, in the tile's flag vocabulary. Nothing renders for a
             pane-backed one, which is every session until an operator turns the runtime on.
@@ -239,10 +256,6 @@ export function SessionTile({
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
-        <WorkflowTileFlag
-          run={workflowRun}
-          onOpen={workflowRun ? () => onOpenWorkflowRun?.(workflowRun.id) : undefined}
-        />
         {/* A generated task's recurring-mission origin, in the tile's flag vocabulary.
             The DECISION and the tooltip are shared (`ScheduleOriginTileFlag`) with the
             card chip and rail glyph, so the four surfaces can't drift. */}

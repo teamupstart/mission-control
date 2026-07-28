@@ -19,9 +19,13 @@ const revisions = new Map<WorkflowRunId, number>();
 const keyOf = (runId: WorkflowRunId, action: RunActionId): string =>
   `${runId}:${action}`;
 
+function notify(runId: WorkflowRunId): void {
+  for (const listener of listeners.get(runId) ?? []) listener();
+}
+
 function emit(runId: WorkflowRunId): void {
   revisions.set(runId, (revisions.get(runId) ?? 0) + 1);
-  for (const listener of listeners.get(runId) ?? []) listener();
+  notify(runId);
 }
 
 function errorMessage(caught: unknown): string {
@@ -94,13 +98,15 @@ function runActionError(runId: WorkflowRunId): string | null {
 
 export function dropRunActions(runId: WorkflowRunId): void {
   const prefix = `${runId}:`;
-  let changed = false;
+  let changed = revisions.delete(runId);
   for (const key of actions.keys()) {
     if (!key.startsWith(prefix)) continue;
     actions.delete(key);
     changed = true;
   }
-  if (changed) emit(runId);
+  // Run removal is the terminal lifecycle event: notify mounted readers of the reset without
+  // calling `emit`, which would immediately recreate the revision entry we just released.
+  if (changed) notify(runId);
 }
 
 function subscribe(runId: WorkflowRunId, listener: () => void): () => void {

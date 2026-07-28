@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phased implementation: the workflow stage ladder</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fbfbfa;
+        --panel: #ffffff;
+        --fg: #1a1a19;
+        --muted: #45464a;
+        --dim: #6b6d74;
+        --border: #e2e2df;
+        --accent: #b0562f;
+        --accent-soft: #fdf1ea;
+        --code-bg: #f4f4f1;
+        --ok: #2e7d5b;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16161a;
+          --panel: #1d1d22;
+          --fg: #ececef;
+          --muted: #b8b9c0;
+          --dim: #8a8c95;
+          --border: #2e2f36;
+          --accent: #e08a5f;
+          --accent-soft: #2a1f19;
+          --code-bg: #232329;
+          --ok: #6bbd97;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 48px 24px 96px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      .page { max-width: 900px; margin: 0 auto; }
+      .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: var(--accent);
+        margin: 0 0 10px;
+      }
+      h1 { font-size: 33px; line-height: 1.15; margin: 0 0 14px; letter-spacing: -0.02em; }
+      h2 {
+        font-size: 22px;
+        margin: 44px 0 12px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border);
+        letter-spacing: -0.01em;
+      }
+      h3 { font-size: 16.5px; margin: 24px 0 8px; }
+      p, li { color: var(--muted); }
+      li { margin: 5px 0; }
+      strong { color: var(--fg); font-weight: 620; }
+      code {
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 1px 5px;
+      }
+      .lede { font-size: 17.5px; color: var(--muted); }
+      .scroll { overflow-x: auto; margin: 16px 0; }
+      table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 560px; }
+      th, td {
+        border: 1px solid var(--border);
+        padding: 8px 11px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th { background: var(--code-bg); font-weight: 640; color: var(--fg); }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin: 18px 0;
+      }
+      .card.accent { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+      .card h3 { margin-top: 0; }
+      figure { margin: 22px 0; }
+      figcaption { font-size: 13px; color: var(--dim); margin-top: 8px; }
+      svg { max-width: 100%; height: auto; display: block; }
+      .meta { font-size: 13.5px; color: var(--dim); }
+      .pill {
+        display: inline-block;
+        font-size: 11.5px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        border: 1px solid var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <p class="eyebrow">Mission Control &middot; phased implementation</p>
+      <h1>Phased implementation: the workflow stage ladder</h1>
+      <p class="lede">
+        Source plan: <code>plan.md</code> (decisions adopted 2026-07-27; rendered page
+        <code>plan.html</code> beside it). Source design: <code>mockups.html</code>, Option D.
+      </p>
+      <p class="meta">
+        The detailed sources are the three phase files:
+        <code>phase-1-stage-ladder.md</code>, <code>phase-2-ladder-actions.md</code>,
+        <code>phase-3-repeat-offender.md</code>.
+      </p>
+
+      <h2>Incorporated human decisions</h2>
+      <ol>
+        <li>
+          <strong>The Runs page keeps <code>RunPipeline</code>.</strong> The ladder is detail-pane
+          only. Two drawings, one derivation; what must never be duplicated is the derivation, not
+          the leaves.
+        </li>
+        <li>
+          <strong>The seam is an inline strip in the conversation tab</strong>, beside
+          <code>ForemanStrip</code> and <code>NomistakesStrip</code>. Passed stages collapse to one
+          line to control height.
+        </li>
+        <li>
+          <strong>A freehand-graph run shows today's chip plus an "Open run" link.</strong>
+        </li>
+        <li>
+          <strong>Option C's repeat-offender derivation is taken, on the run detail only</strong> -
+          server-side, exposed on <code>WorkflowRunDetail</code>, never on the SSE summary.
+        </li>
+      </ol>
+
+      <h2>Phase table</h2>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Phase</th><th>Name</th><th>Direct prerequisites</th><th>Deliverable</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>The stage ladder, read-only</td>
+              <td>planning session</td>
+              <td><code>useWorkflowRunDetail</code> hook, <code>WorkflowLadder</code> renderer, inline wiring in <code>ConsoleDetail</code>, freehand fallback, <code>wf-ladder-*</code> CSS, README, tests</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Ladder actions</td>
+              <td>1</td>
+              <td>Copy feedback, the Inspector-gate rung's Recheck / Open PR / Prepare PR, and the uncertain-delivery rung's two phrase-gated resolutions, routed to existing endpoints through the shared confirm modal</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>The repeat-offender derivation</td>
+              <td>1</td>
+              <td>Server-side "same member failed N rounds running", on <code>WorkflowRunDetail</code> only, surfaced as one line in the ladder</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card accent">
+        <h3>Phase 1 ships a reading surface on purpose</h3>
+        <p>
+          Every state the mockups draw renders, and the buttons D2, D3 and D4 draw are a single
+          "Open run" link until Phase 2. That is an operable intermediate state, not a broken one -
+          strictly better than today's single chip, and it is what keeps Phase 1 reviewable.
+        </p>
+        <p>
+          A phase separating "the fetch hook" from "the renderer" was considered and rejected: the
+          hook has no consumer other than the ladder, so shipping it alone would add a dead
+          surface. That is a chapter split, not a merge unit.
+        </p>
+      </div>
+
+      <h2>Dependency graph and concurrency</h2>
+      <figure>
+        <svg viewBox="0 0 780 210" role="img" aria-label="Planning session unblocks Phase 1; Phase 1 unblocks Phases 2 and 3, which are concurrent.">
+          <defs>
+            <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+            </marker>
+          </defs>
+          <g fill="none" stroke="currentColor" stroke-width="1.4" color="#8a8c95">
+            <rect x="12" y="76" width="158" height="58" rx="9" stroke-dasharray="5 4" />
+            <rect x="248" y="76" width="180" height="58" rx="9" />
+            <rect x="530" y="14" width="230" height="58" rx="9" />
+            <rect x="530" y="138" width="230" height="58" rx="9" />
+          </g>
+          <g font-family="ui-sans-serif, -apple-system, sans-serif" fill="currentColor">
+            <text x="91" y="99" text-anchor="middle" font-size="12.5" font-weight="700">Planning session</text>
+            <text x="91" y="117" text-anchor="middle" font-size="11" opacity="0.75">this PR merges</text>
+
+            <text x="338" y="99" text-anchor="middle" font-size="12.5" font-weight="700">Phase 1</text>
+            <text x="338" y="117" text-anchor="middle" font-size="11" opacity="0.75">Stage ladder, read-only</text>
+
+            <text x="645" y="37" text-anchor="middle" font-size="12.5" font-weight="700">Phase 2</text>
+            <text x="645" y="55" text-anchor="middle" font-size="11" opacity="0.75">Ladder actions</text>
+
+            <text x="645" y="161" text-anchor="middle" font-size="12.5" font-weight="700">Phase 3</text>
+            <text x="645" y="179" text-anchor="middle" font-size="11" opacity="0.75">Repeat-offender derivation</text>
+          </g>
+          <g stroke="currentColor" stroke-width="1.5" fill="none" marker-end="url(#a2)" color="#8a8c95">
+            <path d="M 170 105 L 248 105" />
+            <path d="M 428 96 C 480 96 480 43 530 43" />
+            <path d="M 428 114 C 480 114 480 167 530 167" />
+          </g>
+        </svg>
+        <figcaption>
+          Concurrency group: <strong>{Phase 2, Phase 3}</strong>. Neither consumes a contract,
+          route, migration or generated asset the other owns.
+        </figcaption>
+      </figure>
+
+      <h3>Where the concurrent phases overlap textually</h3>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr><th>File</th><th>Phase 2 region</th><th>Phase 3 region</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>src/web/workflows/WorkflowLadder.tsx</code></td>
+              <td>action rows on the changes-requested, gate and delivery rungs</td>
+              <td>one derived sentence on the failing stage's rung</td>
+            </tr>
+            <tr>
+              <td><code>src/web/styles.css</code></td>
+              <td><code>wf-ladder-actrow</code> and button states</td>
+              <td><code>wf-ladder-repeat</code></td>
+            </tr>
+            <tr>
+              <td><code>README.md</code></td>
+              <td>the actions the ladder offers</td>
+              <td>the repeat-offender line</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Ordinary textual conflicts resolvable at merge, not contract dependencies. Whichever merges
+        second rebases.
+      </p>
+
+      <h2>Merge order</h2>
+      <p>Phase 1 first. Phase 2 and Phase 3 may merge in either order afterwards.</p>
+
+      <h2>Cross-phase contracts</h2>
+      <h3>Established by Phase 1, relied on by Phases 2 and 3</h3>
+      <ul>
+        <li>
+          <strong><code>useWorkflowRunDetail(runId, updatedAt)</code></strong> is the single client
+          path to <code>GET /api/workflow-runs/:id</code>, with a generation guard, a refetch when
+          <code>updatedAt</code> moves, and a discriminated
+          <code>loading | error | ready</code> return so a caller cannot read a half-loaded detail.
+        </li>
+        <li>
+          <strong>All status and sentence derivation comes from <code>run-model.ts</code> and
+          <code>@shared/workflow-stages.ts</code>.</strong> A missing derivation is added there,
+          where both drawings can reach it - never inline in the ladder.
+        </li>
+        <li>
+          <strong><code>WorkflowLadder</code> is a pure renderer.</strong> Phase 2 adds callbacks;
+          it does not make the component fetch.
+        </li>
+        <li>
+          <strong>CSS prefix is <code>wf-ladder-</code></strong>, in its own section, and it does
+          not reuse <code>wf-pipeline-*</code> - those rules are shared by the Runs monitor and the
+          authoring editor, and a shared rule is how a detail-pane tweak silently restyles both.
+        </li>
+        <li>
+          <strong>Tone classes are the shared <code>workflow-${tone}</code> vocabulary</strong>
+          already used by the chip, tile flag, rail mark and <code>PipelineStatusChip</code>.
+        </li>
+        <li>
+          <strong>A check never reads as passed unless it ran.</strong>
+          <code>checkOutcomeFor</code> is threaded and <code>checkStatusView</code>'s sentence is
+          used verbatim.
+        </li>
+      </ul>
+      <h3>Established by Phase 3</h3>
+      <ul>
+        <li>
+          <strong>The repeat-offender field is OPTIONAL on <code>WorkflowRunDetail</code>.</strong>
+          Phase 2 is concurrent and must compile whether or not Phase 3 has merged, and an older
+          daemon serving a newer browser must not fail to parse.
+        </li>
+        <li>
+          <strong><code>WorkflowRepeatOffender</code> is declared in
+          <code>src/shared/workflow.ts</code></strong>, not in the server module. It rides on
+          <code>WorkflowRunDetail</code>, which is shared and read by the browser, and
+          <code>src/shared/</code> never imports from <code>src/server/</code>. The server
+          derivation imports the type; it does not own it.
+        </li>
+      </ul>
+
+      <h3>Established by Phase 2</h3>
+      <ul>
+        <li>
+          <strong>An in-flight action is disabled.</strong> A <code>requestId</code> makes a
+          <em>retry</em> safe, not a second click: two clicks mint two ids and can enqueue two
+          rechecks or two delivery resolutions.
+        </li>
+        <li>
+          <strong>Descriptors describe; a store runs.</strong>
+          <code>run-actions.ts</code> holds pure descriptors with stable ids, and
+          <code>run-action-store.ts</code> is the one <em>executable</em> seam holding pending
+          state and request ids, keyed by run and action. It is module-level, outside the React
+          tree, because the Runs monitor and the session detail are on different pages and never
+          mount together - React state would be destroyed by exactly the navigation that lets an
+          operator submit the same intent twice. Same reason <code>lib/drafts.ts</code> is a
+          module-level map. Residual, stated rather than implied: the scope is the tab, so two
+          tabs still need server-side dedup of the intent.
+        </li>
+      </ul>
+
+      <h2>Final verification strategy</h2>
+      <ul>
+        <li>
+          <code>npm run typecheck</code>, <code>npm test</code>, <code>npm run build</code> and the
+          bundle smoke check green on each phase's PR, on Node 24 and Node 26.
+        </li>
+        <li>
+          After Phase 1: a bound run in each of the four drawn states renders in the Console and
+          Board detail panes; a run on a non-stage-expressible version shows the chip and an "Open
+          run" link and never an empty ladder.
+        </li>
+        <li>
+          After Phase 2: both delivery resolutions still require exactly what the Runs page
+          requires - the typed phrase and a bound session - and the Inspector recheck remains
+          idempotent per <code>requestId</code>.
+        </li>
+        <li>
+          After Phase 3: a run whose same member failed in consecutive rounds reports it; one that
+          failed in non-consecutive rounds does not.
+        </li>
+        <li>
+          Throughout: <code>session-leaf-parity.test.ts</code> stays green and the collapsed grid
+          card, board tile and console rail are visually unchanged.
+        </li>
+      </ul>
+    </div>
+  </body>
+</html>

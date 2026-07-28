@@ -18,6 +18,7 @@ function render(withRepeatOffender: boolean): string {
     summary: detail.summary,
     detail,
     onOpenRun: () => {},
+    sessionBound: detail.binding.sessionId !== null,
   }));
 }
 

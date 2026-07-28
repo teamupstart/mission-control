@@ -12,6 +12,7 @@ import {
   type WorkflowBindingDefaults,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
+import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import { compileStages, type StageMember, type StagePipeline } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
 
@@ -187,6 +188,19 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     publishedAt: 0,
   }));
   const current = versions[versions.length - 1]!;
+  const duplicateSeed = {
+    name: source.name,
+    description: source.description,
+    draft: graphs[graphs.length - 1]!,
+    completionPolicy: source.completionPolicy,
+    bindingDefaults: current.bindingDefaults,
+  };
+  const duplicable = CreateWorkflowSchema.safeParse(duplicateSeed);
+  if (!duplicable.success) {
+    throw new Error(
+      `built-in workflow ${source.slug} cannot pass the Duplicate create boundary: ${duplicable.error.message}`,
+    );
+  }
   return {
     definition: {
       id: builtinWorkflowId(source.slug),
@@ -345,8 +359,8 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_SLUG,
     name: "No-Mistakes Review",
     description:
-      "A typecheck and test stage, then the four built-in review roles composed the way they "
-      + "were written to compose: Intent Conformance as the cheap first judge, then Code Risk, "
+      "A typecheck and test stage, then four built-in review roles composed as designed: "
+      + "Intent Conformance as the cheap first judge, then Code Risk, "
       + "Test Evidence and Documentation in parallel behind it. This build does not yet spawn "
       + "configured commands, so configured checks are recorded as not run and passed; "
       + "unconfigured slots are skipped and pass. Every fail returns to the session for repair, "

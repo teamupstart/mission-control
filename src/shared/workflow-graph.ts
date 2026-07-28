@@ -9,7 +9,7 @@ import type {
   WorkflowTargetPort,
   WorkflowValidationResult,
 } from "./workflow.ts";
-import { WORKFLOW_LIMITS } from "./workflow.ts";
+import { WORKFLOW_LIMITS, WORKFLOW_MISSING_PR_ACTIONS } from "./workflow.ts";
 
 export interface WorkflowGraphValidationInput {
   graph: WorkflowDraftGraph;
@@ -82,7 +82,7 @@ function policyValid(policy: WorkflowCompletionPolicy | undefined): boolean {
   if (policy === undefined || policy.kind === "none") return true;
   return policy.kind === "inspector" &&
     (policy.onFindings === "restart_workflow" || policy.onFindings === "inspector_only") &&
-    (policy.missingPrAction === "wait" || policy.missingPrAction === "offer_prepare_pr");
+    WORKFLOW_MISSING_PR_ACTIONS.includes(policy.missingPrAction);
 }
 
 /** Tarjan SCC over the already-filtered adjacency map. */

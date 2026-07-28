@@ -3,9 +3,9 @@ import type { AgentType, NmRunSummary, PermissionMode, Session, SessionState } f
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canWriteTo, type PaneHandles } from "@shared/pane.ts";
 
-export function relativeTime(ms: number | null): string {
+export function relativeTime(ms: number | null, now = Date.now()): string {
   if (!ms) return "";
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  const s = Math.max(0, Math.round((now - ms) / 1000));
   if (s < 5) return "just now";
   if (s < 60) return `${s}s ago`;
   const m = Math.floor(s / 60);

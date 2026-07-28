@@ -134,6 +134,37 @@ at `finalizing` if a destructive step needs retrying. Terminal states are `compl
 and `failed`. A run written by a **newer build** loads but reports itself *unreadable* and refuses
 to run rather than being executed as something adjacent.
 
+## Monitoring a live run
+
+The selected run begins with an ordered **Launch -> Work -> Review -> Decide -> Promote**
+pipeline. Those are operator words for the compiled stage kinds, so a strategy remains free to
+name its durable stages and drivers without making the header read like `stage-2-review`. The
+active step carries the count that matters there: members launched, snapshots submitted and
+members blocked during Work, or the current attempt during Review. A completed run keeps the
+whole walked pipeline visible as part of its record.
+
+`waiting` is always paired with its barrier. A member barrier says exactly how many more
+submissions its `minEligible` still needs; once the artifact minimum is met, it says that the
+remaining members still need to settle. A decision barrier says **waiting on you**. These words
+come from one pipeline projection, so later comparison views must consume them rather than invent
+a second explanation.
+
+The **Members** section is live while its ordinary sessions are live. A joined member becomes a
+lane showing the session tone and status, current activity, goal, elapsed time, honest
+**last event** age, and the session's live cost estimate. “Last event” is deliberate: the
+registry has one timestamp shared by hook, passive and driver events, not a dedicated activity
+timestamp, and no stall deadline is inferred from it. The immutable artifact's candidate cost
+remains the separate, frozen at-submission figure used by the dossier and aggregate.
+
+Each lane keeps Withdraw, Retry, Submit, Open session and Open task exactly where the durable
+member card offered them. Attempt and artifact histories fold behind **Attempt & artifact
+history** for a live member, opening automatically on failure; a member with no joined session
+stays the full record card, so terminal histories and restored snapshots do not pretend to be
+live. If a member asks through `request_input`, the same review form used by the session modal
+appears under **Candidate N asks**. If its pane or embedded driver is showing a dialog, that
+dialog's verified buttons or form appears beside the review. They remain two protocols and use
+their existing routes; the lane only composes them in the run context.
+
 ## Layout signals: where a run shows up in the fleet
 
 A member is an ordinary session, so it appears in Cards, Console and Board like any other. What
@@ -144,9 +175,8 @@ already decided.
 **One vocabulary for where a run is.** `planning` reads as *launching*, `running` as *working*,
 `evaluating` as *reviewing*, `awaiting_decision` as **waiting on you**, `finalizing` as
 *promoting*, then *done* / *cancelled* / *failed*. A run written by a newer build is *unreadable*,
-never a nearest match. The same words appear on a cluster header, in a chip's hover copy, and as
-the run detail's **Active stage** fact - where the compiled stage id (`stage-2-review`) is now the
-small `<code>` beside the word rather than the whole answer.
+never a nearest match. The same words appear on a cluster header and in a chip's hover copy; the
+run detail expands that vocabulary into the ordered pipeline above.
 
 **One progress rendering.** A row of squares, one per lane of the roster: waiting on you (amber),
 submitted (green), working (blue), lost (red), and an outlined box for a lane the run has not
@@ -200,12 +230,14 @@ operator answering a question could not tell they were steering **one competitor
 comparison** - which matters both for fairness (a nudge tilts the result) and for effort (is this
 question worth answering, or should the member be withdrawn?).
 
-**A pane dialog is listed but NOT answered there, deliberately.** A review is a durable row with
+**A pane dialog is listed but NOT answered in the inbox, deliberately.** A review is a durable row with
 an id and a resolve route; a pane dialog is a menu re-read off a terminal screen every poll,
 answered by keystrokes aimed at that exact pane, and a stale one is answered by a cursor that has
 since moved. They are two wire protocols, and unifying them behind one inbox button would mean
 deciding what a stale menu does to it. So the inbox says which member is parked and on what, and
-deep-links to the card that can answer it.
+deep-links to the session card. The run's live member lane is also a valid answer surface: it
+renders the existing `PaneDialogPrompt` against that exact session and lets its existing
+screen-recheck refusal protect the click.
 
 ## Deciding: the dossier
 
@@ -245,6 +277,35 @@ Two states are deliberately excluded. While a run is `finalizing` the answer is 
 record is not yet drawn - offering Restore there would ask to reset a checkout the finalizer is at
 that moment resetting itself. And a decision stored in a vocabulary this build cannot read says
 that a decision was made and offers no Restore at all, rather than guessing which column lost.
+
+## Comparing snapshots file by file
+
+The **Compare** section sits between Members and Artifacts and is available once at least two
+ready `commit` snapshots exist. Before that it says exactly what it is waiting for. Select two or
+three snapshots; the selection belongs to this visit to the run and is not persisted.
+
+The claims strip keeps each column's reported summary, number of claimed checks, frozen candidate
+cost, and any score/rank/confidence the durable evaluations provide aligned over that candidate's
+evidence. An unreported cost remains *not reported*; a real reported zero remains `$0.00`.
+
+The file-touch matrix is built from the union of the selected snapshots' **complete** file lists,
+ordered by total churn. Each cell carries insertions/deletions, binary and rename provenance;
+files touched by only one candidate are marked **only #N**. Clicking a row opens the same exact
+path in synchronized side-by-side panes. Each pane scrolls horizontally on its own and discloses
+when its byte-bounded patch was truncated.
+
+Scorecard rationale recognizes exact repo-relative, path-shaped tokens without guessing against
+the matrix. Clicking one establishes an eligible pair, scrolls Compare into view and opens that
+path. Validation happens there, after the complete file lists load: if none of the selected
+candidates touched the named path, the matrix keeps an explicit **Not touched by the selected
+candidates** row instead of hiding the claim or inventing a match. A run with no distinct second
+ready snapshot renders the rationale as ordinary text, not a dead control.
+
+Compare uses the [single-path artifact evidence contract](#artifacts-and-private-refs): matrix
+population requests the complete file list without patch bytes, and an open row requests that one
+exact path per selected artifact under the existing byte bound. This keeps request headers bounded
+and makes every pane's truncation receipt about one unambiguous file. The Artifacts section retains
+its separate lazy whole-artifact cache and continues to work independently.
 
 ## Artifacts and private refs
 

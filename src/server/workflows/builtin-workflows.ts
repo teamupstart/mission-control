@@ -12,9 +12,20 @@ import {
   type WorkflowBindingDefaults,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
+import {
+  builtinWorkflowId,
+  builtinWorkflowVersionId,
+  NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
+} from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import { compileStages, type StageMember, type StagePipeline } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
+
+export {
+  BUILTIN_WORKFLOW_ID_PREFIX,
+  builtinWorkflowId,
+  builtinWorkflowVersionId,
+} from "@shared/builtin-workflow.ts";
 
 /**
  * The review workflows that ship with the application.
@@ -51,24 +62,6 @@ import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
  * rule lives in the plan: a change to a `docs/personas/*.md` document a shipped built-in
  * references appends a new built-in workflow version in the same commit.
  */
-export const BUILTIN_WORKFLOW_ID_PREFIX = "builtin-workflow:";
-
-/**
- * Durable and human-readable.
- *
- * The prefix deliberately differs from `BUILTIN_PERSONA_ID_PREFIX`, so a lookup that reached
- * for the wrong catalog finds nothing rather than finding a Persona where a workflow was
- * meant.
- */
-export function builtinWorkflowId(slug: string): string {
-  return `${BUILTIN_WORKFLOW_ID_PREFIX}${slug}`;
-}
-
-/** The synthetic version id a binding or a run stores. Append-only, per version. */
-export function builtinWorkflowVersionId(slug: string, version: number): string {
-  return `${builtinWorkflowId(slug)}@${version}`;
-}
-
 export interface BuiltinWorkflow {
   /** `builtin: true`, and `currentVersionId` names the NEWEST entry in `versions`. */
   definition: WorkflowDefinition;
@@ -221,8 +214,6 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
   };
 }
 
-const NO_MISTAKES_REVIEW_SLUG = "no-mistakes-review";
-
 /**
  * Node identities for No-Mistakes Review, shared by every version that runs the same node.
  *
@@ -349,6 +340,24 @@ const NO_MISTAKES_REVIEW_V3: StagePipeline = {
   ],
 };
 
+/**
+ * The binding posture shipped before Foreman Complete became the application default.
+ *
+ * Built-in versions are immutable app data: deriving versions 1-5 from today's default would
+ * silently change existing bindings when that default changes. Keep their historical values
+ * explicit, and use the shared default only for the newly appended current version.
+ */
+const LEGACY_WORKFLOW_BINDING_DEFAULTS: WorkflowBindingDefaults = {
+  triggerMode: "manual",
+  deliveryMode: "preview",
+  maxRepairRounds: 5,
+};
+
+const NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS: WorkflowBindingDefaults = {
+  ...LEGACY_WORKFLOW_BINDING_DEFAULTS,
+  deliveryMode: "live",
+};
+
 const NO_MISTAKES_REVIEW_LIVE_DEFAULTS: WorkflowBindingDefaults = {
   ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   deliveryMode: "live",
@@ -356,7 +365,7 @@ const NO_MISTAKES_REVIEW_LIVE_DEFAULTS: WorkflowBindingDefaults = {
 
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
   builtinWorkflow({
-    slug: NO_MISTAKES_REVIEW_SLUG,
+    slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review",
     description:
       "A typecheck and test stage, then four built-in review roles composed as designed: "
@@ -368,7 +377,9 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
-    // Inspector again instead of rerunning the already-passed review workflow.
+    // Inspector again instead of rerunning the already-passed review workflow. Version 5
+    // automatically hands a passed, PR-less review back to the session for shipping. Version
+    // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
     versions: [
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
@@ -377,7 +388,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
-        bindingDefaults: DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+        bindingDefaults: LEGACY_WORKFLOW_BINDING_DEFAULTS,
         sourceDraftRevision: 1,
       },
       {
@@ -387,7 +398,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
-        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 1,
       },
       {
@@ -397,7 +408,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
-        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 2,
       },
       {
@@ -407,8 +418,28 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "inspector_only",
           missingPrAction: "offer_prepare_pr",
         },
-        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 3,
+      },
+      {
+        pipeline: NO_MISTAKES_REVIEW_V3,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "inspector_only",
+          missingPrAction: "prepare_pr",
+        },
+        bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
+        sourceDraftRevision: 4,
+      },
+      {
+        pipeline: NO_MISTAKES_REVIEW_V3,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "inspector_only",
+          missingPrAction: "prepare_pr",
+        },
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 5,
       },
     ],
   }),

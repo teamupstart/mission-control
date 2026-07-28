@@ -579,6 +579,11 @@ function DispatchModal({
   );
   const selectedWorkflowId =
     draft.workflowId === undefined ? workflowConfig?.defaultWorkflowId ?? null : draft.workflowId;
+  const defaultWorkflow = workflowConfig?.defaultWorkflowId
+    ? workflowSummaries.find(
+        (workflow) => workflow.id === workflowConfig.defaultWorkflowId,
+      ) ?? null
+    : null;
   const selectedWorkflowBlocked = Boolean(
     selectedWorkflowId
     && (!foremanEnabled || !capabilitiesFor(draft.agent).workQueue),
@@ -1052,11 +1057,9 @@ function DispatchModal({
                     {workflowConfig === null
                       ? "Dispatch default — loading…"
                       : workflowConfig.defaultWorkflowId
-                      ? `Dispatch default — ${
-                          workflowSummaries.find(
-                            (workflow) => workflow.id === workflowConfig.defaultWorkflowId,
-                          )?.name ?? "unavailable workflow"
-                        }`
+                      ? defaultWorkflow
+                        ? `Dispatch default — ${defaultWorkflow.name} · v${defaultWorkflow.publishedVersion}`
+                        : "Dispatch default — unavailable workflow"
                       : "Dispatch default — none"}
                   </option>
                 )}

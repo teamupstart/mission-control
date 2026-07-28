@@ -202,6 +202,14 @@ test("Inspector is a closed workflow-level completion policy", () => {
     }),
     { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" },
   );
+  assert.deepEqual(
+    WorkflowCompletionPolicySchema.parse({
+      kind: "inspector",
+      onFindings: "restart_workflow",
+      missingPrAction: "prepare_pr",
+    }),
+    { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "prepare_pr" },
+  );
   assert.throws(() =>
     WorkflowCompletionPolicySchema.parse({
       kind: "inspector",
@@ -253,13 +261,13 @@ test("future engine states are closed before any route can write them", () => {
   }
 });
 
-test("new workflow drafts carry honest Phase 1 defaults", () => {
+test("new workflow drafts default submission to Foreman complete", () => {
   const draft = CreateWorkflowSchema.parse({ name: "Review" });
   assert.equal(draft.draft.nodes.filter((node) => node.kind === "session").length, 1);
   assert.equal(draft.draft.edges.length, 0);
   assert.deepEqual(draft.completionPolicy, { kind: "none" });
   assert.deepEqual(draft.bindingDefaults, {
-    triggerMode: "manual",
+    triggerMode: "foreman_complete",
     deliveryMode: "preview",
     maxRepairRounds: 5,
   });

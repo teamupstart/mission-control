@@ -98,11 +98,14 @@ function inspectorPr(key: string, url: string, sessionId: string, now: number): 
 
 interface SeedOptions {
   policy?: "none" | "restart_workflow" | "inspector_only";
+  missingPrAction?: "offer_prepare_pr" | "prepare_pr";
+  deliveryMode?: "preview" | "live";
   adopted?: boolean;
   withHint?: boolean;
   dirty?: boolean;
   enabled?: boolean;
   head?: string;
+  startBeforeGate?: boolean;
 }
 
 async function seed(over: SeedOptions = {}) {
@@ -126,9 +129,13 @@ async function seed(over: SeedOptions = {}) {
     : {
         kind: "inspector" as const,
         onFindings: policy,
-        missingPrAction: "offer_prepare_pr" as const,
+        missingPrAction: over.missingPrAction ?? "offer_prepare_pr",
       };
-  const defaults = { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 3 };
+  const defaults = {
+    triggerMode: "manual" as const,
+    deliveryMode: over.deliveryMode ?? "preview",
+    maxRepairRounds: 3,
+  };
   const graph = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -210,7 +217,7 @@ async function seed(over: SeedOptions = {}) {
     sessionCwd: "/repo",
     sessionRepoRoot: "/repo",
     triggerMode: "manual",
-    deliveryMode: "preview",
+    deliveryMode: over.deliveryMode ?? "preview",
     maxRepairRounds: 3,
     now,
   });
@@ -239,12 +246,23 @@ async function seed(over: SeedOptions = {}) {
     status: "running",
   }, now);
   store.setRunState(ids.run, "running", "persona_review", null, now);
-  const manager = new WorkflowManager(registry, store);
+  const injected: string[] = [];
+  if (over.deliveryMode === "live") {
+    setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  }
+  const manager = new WorkflowManager(registry, store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+  });
+  if (over.startBeforeGate) manager.start();
   const claimed = (manager as unknown as {
     enterInspectorGate(id: string, at: number): boolean;
   }).enterInspectorGate(ids.submission, now);
-  manager.start();
-  return { ids, head, key, url, manager, registry, store, claimed, now };
+  if (!over.startBeforeGate) manager.start();
+  return { ids, head, key, url, manager, registry, store, claimed, now, injected };
 }
 
 async function waitFor(check: () => boolean, message: string): Promise<void> {
@@ -295,6 +313,76 @@ test("missing and unadopted PR hints wait without creating Inspector provenance"
     "session.prUrl is a lookup hint and cannot adopt",
   );
   await unadopted.manager.stop();
+});
+
+test("the automatic missing-PR policy sends one shipping handoff after a passed review", async () => {
+  const automatic = await seed({
+    withHint: false,
+    adopted: false,
+    missingPrAction: "prepare_pr",
+    deliveryMode: "live",
+    startBeforeGate: true,
+  });
+  try {
+    await waitFor(
+      () => automatic.store.listDeliveries(automatic.ids.run)
+        .some((delivery) =>
+          delivery.kind === "pr_handoff"
+          && ["delivered", "refused", "uncertain"].includes(delivery.state)),
+      "the passed review did not automatically attempt its PR handoff",
+    );
+    const handoff = automatic.store.listDeliveries(automatic.ids.run)
+      .find((delivery) => delivery.kind === "pr_handoff");
+    assert.equal(handoff?.state, "delivered", handoff?.error ?? "PR handoff was not delivered");
+    assert.equal(automatic.store.getRun(automatic.ids.run)?.status, "waiting_for_session");
+    assert.equal(automatic.store.getRun(automatic.ids.run)?.currentPhase, "pr_handoff");
+    assert.equal(
+      automatic.store.listDeliveries(automatic.ids.run)
+        .filter((delivery) => delivery.kind === "pr_handoff").length,
+      1,
+    );
+    assert.equal(automatic.injected.length, 1);
+    assert.match(automatic.injected[0]!, /Commit all reviewed work, push it, open the pull request/);
+  } finally {
+    await automatic.manager.stop();
+    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  }
+});
+
+test("restart recovers an automatic PR handoff that was still parked at its gate", async () => {
+  const parked = await seed({
+    withHint: false,
+    adopted: false,
+    missingPrAction: "prepare_pr",
+  });
+  await parked.manager.stop();
+  parked.store.updateBinding(parked.ids.binding, { deliveryMode: "live" }, parked.now + 1);
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] });
+  const injected: string[] = [];
+  const recovered = new WorkflowManager(parked.registry, parked.store, {
+    inject: async (_session, payload) => {
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+    recordInjection: () => {},
+  });
+  recovered.start();
+  try {
+    await waitFor(
+      () => parked.store.listDeliveries(parked.ids.run)
+        .some((delivery) => delivery.kind === "pr_handoff" && delivery.state === "delivered"),
+      "restart did not recover the automatic PR handoff",
+    );
+    assert.equal(injected.length, 1);
+    assert.equal(
+      parked.store.listDeliveries(parked.ids.run)
+        .filter((delivery) => delivery.kind === "pr_handoff").length,
+      1,
+    );
+  } finally {
+    await recovered.stop();
+    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  }
 });
 
 test("disabled Inspector blocks honestly and a post-entry observation is required", async () => {

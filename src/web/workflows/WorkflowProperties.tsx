@@ -4,6 +4,7 @@ import type {
   WorkflowDefinition,
   WorkflowDiagnostic,
   WorkflowDraftGraph,
+  WorkflowMissingPrAction,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_CHECK_SLOTS,
@@ -77,8 +78,8 @@ export function WorkflowSettingsFields({
           </label>
           <label>Missing PR
             <Tooltip label="What to do when the gate needs a pull request and none exists yet">
-              <select disabled={readOnly} value={workflow.completionPolicy.missingPrAction} onChange={(event) => workflow.completionPolicy.kind === "inspector" && onUpdate({ completionPolicy: { ...workflow.completionPolicy, missingPrAction: event.target.value as "wait" | "offer_prepare_pr" } })}>
-                <option value="wait">Wait</option><option value="offer_prepare_pr">Offer Prepare PR</option>
+              <select disabled={readOnly} value={workflow.completionPolicy.missingPrAction} onChange={(event) => workflow.completionPolicy.kind === "inspector" && onUpdate({ completionPolicy: { ...workflow.completionPolicy, missingPrAction: event.target.value as WorkflowMissingPrAction } })}>
+                <option value="wait">Wait</option><option value="offer_prepare_pr">Offer Prepare PR</option><option value="prepare_pr">Prepare PR automatically</option>
               </select>
             </Tooltip>
           </label>

@@ -33,6 +33,7 @@ export class TaskManagerGateway implements EnsembleTaskGateway {
       agent: request.agent,
       model: request.model ?? undefined,
       effort: request.effort ?? undefined,
+      workflowId: null,
       backlog: true,
     }, { id: request.taskId });
   }

@@ -4,6 +4,7 @@ import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type { InspectorComment, InspectorInspection, InspectorMode } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
 import { repoAllowlisted } from "./allowlist.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 
 // Browser-safe workflow contracts. This module is intentionally data and pure helpers only:
 // the daemon persists and executes these records, while the dashboard renders the same wire
@@ -363,12 +364,19 @@ export interface WorkflowValidationResult {
 export const INSPECTOR_FINDINGS_POLICIES = ["restart_workflow", "inspector_only"] as const;
 export type InspectorFindingsPolicy = (typeof INSPECTOR_FINDINGS_POLICIES)[number];
 
+export const WORKFLOW_MISSING_PR_ACTIONS = [
+  "wait",
+  "offer_prepare_pr",
+  "prepare_pr",
+] as const;
+export type WorkflowMissingPrAction = (typeof WORKFLOW_MISSING_PR_ACTIONS)[number];
+
 export type WorkflowCompletionPolicy =
   | { kind: "none" }
   | {
       kind: "inspector";
       onFindings: InspectorFindingsPolicy;
-      missingPrAction: "wait" | "offer_prepare_pr";
+      missingPrAction: WorkflowMissingPrAction;
     };
 
 export const WORKFLOW_TRIGGER_MODES = ["manual", "foreman_complete"] as const;
@@ -384,7 +392,7 @@ export interface WorkflowBindingDefaults {
 }
 
 export const DEFAULT_WORKFLOW_BINDING_DEFAULTS: WorkflowBindingDefaults = {
-  triggerMode: "manual",
+  triggerMode: "foreman_complete",
   deliveryMode: "preview",
   maxRepairRounds: 5,
 };
@@ -609,7 +617,10 @@ export interface WorkflowRetentionConfig {
 export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
   liveEnabled: false,
   repoAllowlist: [],
-  defaultWorkflowId: null,
+  // Store the stable workflow identity, not today's version. A task resolves it to the
+  // newest immutable shipped version when its session is armed (v5 in this build), while
+  // an explicit null in Settings or the dispatch form remains an opt-out.
+  defaultWorkflowId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
   retention: {
     rawEvidenceDays: 30,
     completedRunDays: 180,
@@ -1284,6 +1295,13 @@ export type PersonaVerdict =
       confidence: number;
     };
 
+export interface WorkflowRepeatOffender {
+  nodeId: string;
+  personaName: string;
+  /** Consecutive most-recent rounds this member failed. Always >= 2. */
+  rounds: number;
+}
+
 export interface WorkflowRunSummary {
   id: WorkflowRunId;
   bindingId: WorkflowBindingId;
@@ -1335,6 +1353,12 @@ export interface WorkflowRunDetail {
   llmCalls?: WorkflowLlmCall[];
   llmCallCount?: number;
   nextLlmCallAfter?: string | null;
+  /**
+   * Members failing the most recent rounds consecutively. Detail-only and OPTIONAL: run
+   * SUMMARIES travel over SSE for every run in the fleet and must stay compact, and an older
+   * daemon serving a newer browser must not fail to parse.
+   */
+  repeatOffenders?: WorkflowRepeatOffender[];
   /**
    * Provenance for a run an external orchestrator started. Optional and detail-only: run
    * SUMMARIES travel over SSE for every run in the fleet and must stay compact.

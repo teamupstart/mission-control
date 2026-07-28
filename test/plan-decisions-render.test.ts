@@ -11,7 +11,7 @@ import { hasTooltip } from "./helpers/markup.ts";
 // form renders each question with the right control type, the recommended/detail hints,
 // an "Other" field only where asked, and a Submit that starts disabled so the agent can't
 // unblock on an empty form. (The form is rendered directly rather than through ReviewModal
-// because that pulls in DiffView's CSS import, which node --test cannot load.)
+// because this unit only needs the decision form, not the surrounding review protocols.)
 
 const decisions: PlanDecision[] = [
   {

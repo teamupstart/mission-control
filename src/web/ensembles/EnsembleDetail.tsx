@@ -39,9 +39,10 @@ import { ENSEMBLE_RESULT_RENDERERS } from "./results/index.ts";
 
 /**
  * One run's generic detail: a header of strategy/status/base/budget facts, the strategy's own
- * result view (behind the renderer registry), members, artifacts, the orchestration timeline,
- * the outcome and Workflow handoff, and the state-aware action surface. Nothing here branches on
- * `best_of_n`; the only strategy-specific surface is the registry renderer.
+ * result view (behind the renderer registry), members, the comparison workspace, artifacts, the
+ * orchestration timeline, the outcome and Workflow handoff, and the state-aware action surface.
+ * Nothing here branches on `best_of_n`; the only strategy-specific surface is the registry
+ * renderer.
  */
 export function EnsembleDetail({
   detail,

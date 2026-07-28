@@ -1842,10 +1842,9 @@ Below the live Members lanes, **Compare** opens when two ready snapshots exist. 
 candidates to get a churn-sorted file-touch matrix with rename/binary/“only #N” marks, an aligned
 claims strip (summary, checks, frozen cost and any score/rank/confidence), and synchronized
 side-by-side panes for one exact file. Scorecard rationale paths open the matching matrix row; if
-the selected candidates did not touch that path, Compare says so explicitly. The matrix fetches
-complete stats with `?filesOnly=1`, then each pane makes its own single `?path=` byte-bounded
-request and discloses truncation. The existing Artifacts rows keep their independent lazy
-whole-diff cache.
+the selected candidates did not touch that path, Compare says so explicitly. See
+[Comparing snapshots file by file](docs/ensembles.md#comparing-snapshots-file-by-file) for the
+selection, evidence and truncation behavior.
 
 **Finalization begins from a durable human decision and nothing else.** You confirm one eligible
 submission (or an explicit *no consensus*) through `POST /api/ensembles/:id/actions`; the decision

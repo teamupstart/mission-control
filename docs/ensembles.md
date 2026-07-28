@@ -301,11 +301,11 @@ candidates touched the named path, the matrix keeps an explicit **Not touched by
 candidates** row instead of hiding the claim or inventing a match. A run with no distinct second
 ready snapshot renders the rationale as ordinary text, not a dead control.
 
-Compare never fetches several paths in one request. Matrix population uses `?filesOnly=1`; an open
-row fans out one `?path=<exact path>` request per selected artifact under the existing byte bound.
-This single-path rule is deliberate: it keeps request headers bounded and makes every pane's
-truncation receipt about one unambiguous file. The Artifacts section retains its separate lazy
-whole-artifact cache and continues to work independently.
+Compare uses the [single-path artifact evidence contract](#artifacts-and-private-refs): matrix
+population requests the complete file list without patch bytes, and an open row requests that one
+exact path per selected artifact under the existing byte bound. This keeps request headers bounded
+and makes every pane's truncation receipt about one unambiguous file. The Artifacts section retains
+its separate lazy whole-artifact cache and continues to work independently.
 
 ## Artifacts and private refs
 

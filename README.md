@@ -2115,9 +2115,10 @@ what that role judges, not how it replies.
 
 ### Built-in workflows
 
-One ready-made review workflow ships with the application: **No-Mistakes Review**, at version
-1. There is nothing to author and nothing to import - it is in the Workflows tab of a fresh
-install, already published, and can be bound to a session immediately.
+One ready-made review workflow ships with the application: **No-Mistakes Review**. Version 1
+is preserved for bindings that already pin it, and version 2 is current. There is nothing to
+author and nothing to import - it is in the Workflows tab of a fresh install, already
+published, and can be bound to a session immediately.
 
 It is the four built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 1, the cheap gate: there is no point spending three deeper reviews
@@ -2127,9 +2128,11 @@ and aggregating into one combined repair packet at their All-pass Join. Every fa
 the session for repair. A passed review is gated on the
 [Inspector final gate](#inspector-final-gate) finding nothing on the pull request:
 findings restart the whole review, and a run with no pull request yet offers **Prepare PR in
-session** rather than waiting silently. It binds with the ordinary defaults, Manual trigger
-and Preview delivery, because Live delivery and Foreman-complete are consent-gated and are
-yours to turn on per binding.
+session** rather than waiting silently. Version 2 defaults to Manual trigger and Live
+delivery, so a failed review returns its deterministic repair packet to the bound session
+automatically. Live still requires the subsystem switch and repository allowlist, and every
+binding can override the version default. Version 1 retains its original Manual and Preview
+defaults for existing pinned bindings.
 
 Like the built-in Personas it is **app data, not your data**, and the workflow list marks it
 `Built-in`. Opening it shows it read-only: it draws in the Pipeline view with every editing

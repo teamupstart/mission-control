@@ -8,6 +8,7 @@ import {
   type WorkflowDefinition,
   type WorkflowDraftGraph,
   type WorkflowEdge,
+  type WorkflowBindingDefaults,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
 import { compileStages, type StagePipeline } from "@shared/workflow-stages.ts";
@@ -160,14 +161,17 @@ interface BuiltinWorkflowSource {
   description: string;
   completionPolicy: WorkflowCompletionPolicy;
   /** Ascending. Index 0 is version 1, and the last entry is what the draft shows. */
-  pipelines: readonly StagePipeline[];
+  versions: readonly {
+    pipeline: StagePipeline;
+    bindingDefaults: WorkflowBindingDefaults;
+  }[];
 }
 
 function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
-  if (source.pipelines.length === 0) {
+  if (source.versions.length === 0) {
     throw new Error(`built-in workflow ${source.slug} ships no published version`);
   }
-  const graphs = source.pipelines.map(compileBuiltinGraph);
+  const graphs = source.versions.map((version) => compileBuiltinGraph(version.pipeline));
   const versions = graphs.map((graph, index) => ({
     id: builtinWorkflowVersionId(source.slug, index + 1),
     workflowId: builtinWorkflowId(source.slug),
@@ -176,7 +180,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     sourceDraftRevision: 1,
     graph: publishBuiltinGraph(graph),
     completionPolicy: source.completionPolicy,
-    bindingDefaults: DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+    bindingDefaults: source.versions[index]!.bindingDefaults,
     // Not published on this machine and carrying no edit history, so there is no instant to
     // report. Surfaces print "Built-in" where they print a row's dates.
     publishedAt: 0,
@@ -190,7 +194,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
       description: source.description,
       draft: graphs[graphs.length - 1]!,
       completionPolicy: source.completionPolicy,
-      bindingDefaults: DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+      bindingDefaults: current.bindingDefaults,
       draftRevision: 1,
       currentVersionId: current.id,
       archivedAt: null,
@@ -205,7 +209,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
 const NO_MISTAKES_REVIEW_SLUG = "no-mistakes-review";
 
 /**
- * Node identities for No-Mistakes Review version 1.
+ * Node identities for every No-Mistakes Review version.
  *
  * Named after the role rather than the position, because a later version may reorder the
  * stages and the id has to keep meaning the same reviewer to every attempt row already
@@ -261,6 +265,11 @@ const NO_MISTAKES_REVIEW_V1: StagePipeline = {
   ],
 };
 
+const NO_MISTAKES_REVIEW_LIVE_DEFAULTS: WorkflowBindingDefaults = {
+  ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+  deliveryMode: "live",
+};
+
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
   builtinWorkflow({
     slug: NO_MISTAKES_REVIEW_SLUG,
@@ -278,6 +287,19 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       onFindings: "restart_workflow",
       missingPrAction: "offer_prepare_pr",
     },
-    pipelines: [NO_MISTAKES_REVIEW_V1],
+    // Version 1 remains byte-for-byte addressable for existing bindings. Version 2 changes
+    // only the binding posture: newly bound No-Mistakes reviews return deterministic repair
+    // packets automatically once the operator has enabled Live delivery and allowlisted the
+    // repository. The graph and every durable node/edge identity stay unchanged.
+    versions: [
+      {
+        pipeline: NO_MISTAKES_REVIEW_V1,
+        bindingDefaults: DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+      },
+      {
+        pipeline: NO_MISTAKES_REVIEW_V1,
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+      },
+    ],
   }),
 ];

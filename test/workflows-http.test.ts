@@ -273,7 +273,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
   const shipped = summaries.find((item) => item.id === BUILTIN_ID);
   assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
   assert.equal(shipped.builtin, true);
-  assert.equal(shipped.publishedVersion, 1);
+  assert.equal(shipped.publishedVersion, 2);
 
   const detail = await request(`/api/workflows/${BUILTIN_ID}`);
   assert.equal(detail.status, 200);
@@ -282,8 +282,8 @@ test("the shipped workflow is readable through the existing workflow routes", as
     versions: Array<{ version: number }>;
   };
   assert.equal(detailBody.workflow.builtin, true);
-  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@1`);
-  assert.deepEqual(detailBody.versions.map((version) => version.version), [1]);
+  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@2`);
+  assert.deepEqual(detailBody.versions.map((version) => version.version), [2, 1]);
 
   const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
   assert.equal(versions.status, 200);
@@ -292,7 +292,13 @@ test("the shipped workflow is readable through the existing workflow routes", as
   const versionBody = await version.json() as { id: string; graph: { nodes: unknown[] } };
   assert.equal(versionBody.id, `${BUILTIN_ID}@1`);
   assert.ok(versionBody.graph.nodes.length > 0);
-  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/2`)).status, 404);
+  const currentVersion = await request(`/api/workflows/${BUILTIN_ID}/versions/2`);
+  assert.equal(currentVersion.status, 200);
+  assert.equal(
+    ((await currentVersion.json()) as { bindingDefaults: { deliveryMode: string } })
+      .bindingDefaults.deliveryMode,
+    "live",
+  );
 });
 
 test("every mutating workflow route 409s on the shipped workflow and names Duplicate", async () => {

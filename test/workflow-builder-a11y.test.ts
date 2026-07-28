@@ -47,18 +47,26 @@ test("the pipeline editor roves by name and announces in names", () => {
     endId: "end",
     endOutcome: "Complete",
     stages: [
-      { joinId: "join", members: [{ nodeId: "a", personaId: "pa" }, { nodeId: "b", personaId: "pb" }] },
-      { joinId: null, members: [{ nodeId: "c", personaId: "pc" }] },
+      {
+        joinId: "join",
+        members: [
+          { nodeId: "a", kind: "persona", personaId: "pa" },
+          { nodeId: "b", kind: "check", slot: "typecheck" },
+        ],
+      },
+      { joinId: null, members: [{ nodeId: "c", kind: "persona", personaId: "pc" }] },
     ],
   };
-  // Reading order: the two termini bracket every stage header and its reviewers.
+  // Reading order: the two termini bracket every stage header and its members. A check is a
+  // roving stop exactly like a reviewer - it is reordered and deleted by the same keys, so it
+  // has to be reachable by the same ones.
   assert.deepEqual(pipelineFocusOrder(pipeline), [
     "session",
     "stage:0",
-    "reviewer:0:0",
-    "reviewer:0:1",
+    "member:0:0",
+    "member:0:1",
     "stage:1",
-    "reviewer:1:0",
+    "member:1:0",
     "end",
   ]);
   // Exactly one roving tab stop, and the arrow keys are what move it.
@@ -67,10 +75,12 @@ test("the pipeline editor roves by name and announces in names", () => {
   assert.match(editor, /event\.key === "ArrowRight" \|\| event\.key === "ArrowDown"/);
   assert.match(editor, /event\.altKey && \(event\.key === "ArrowLeft" \|\| event\.key === "ArrowRight"\)/);
   assert.match(editor, /event\.altKey && \(event\.key === "ArrowUp" \|\| event\.key === "ArrowDown"\)/);
-  // Every announcement and every aria label is composed from `nameOf` / `refOfStage` /
-  // `labelOfStage`, never from a member's `nodeId`.
-  assert.match(editor, /`Added \$\{nameOf\(personaId\)\} to \$\{refOfStage\(stageIndex\)\}`/);
-  assert.match(editor, /ariaLabel: `\$\{reviewer\}, reviewer \$\{memberIndex \+ 1\}/);
+  // Every announcement and every aria label is composed from `labelOfMember` / `refOfStage` /
+  // `labelOfStage`, never from a member's `nodeId` - and `labelOfMember` is what makes a check
+  // say its own slot instead of falling through the Persona lookup as "Missing persona".
+  assert.match(editor, /`Added \$\{labelOfMember\(seeded\(seed\)\)\} to \$\{refOfStage\(stageIndex\)\}`/);
+  assert.match(editor, /ariaLabel: `\$\{label\}, \$\{noun\} \$\{memberIndex \+ 1\}/);
+  assert.match(editor, /member\.kind === "check" \? checkLabel\(member\.slot\) : nameOf\(member\.personaId\)/);
   assert.match(editor, /ariaLabel: `\$\{stageLabel\}, \$\{stageRef\} of \$\{pipeline\.stages\.length\}/);
   // A stage is REFERRED to positionally in every sentence about it or its members. The
   // derived name of a one-reviewer stage is that reviewer, so naming it any other way

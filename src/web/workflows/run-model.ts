@@ -22,7 +22,7 @@ import { WorkflowApiError } from "./workflowApi.ts";
  * Everything the runs monitor has to DECIDE, as pure functions over one run detail.
  *
  * It lives beside the reader rather than inside it for the reason the round scrubber
- * exists at all: which round is being viewed changes which reviewer chips, verdicts and
+ * exists at all: which round is being viewed changes which member chips, verdicts and
  * timeline entries are true, and a rule spelled inline in JSX can only be checked by
  * rendering markup and reading it back. These are checked directly.
  *
@@ -131,10 +131,10 @@ export function verdictOf(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
  * Node id -> runtime status for ONE submission.
  *
  * The verdict wins over the attempt state when there is one, because "completed" says the
- * provider replied and says nothing about whether the reviewer approved. Taking a
+ * reviewer or command finished and says nothing about whether the member passed. Taking a
  * submission id rather than digging out the newest one is the round scrubber's whole
  * premise: an attempt from round 1 says nothing about a node in round 3, and a map merged
- * across rounds shows a reviewer as passed while it is being re-run.
+ * across rounds shows a member as passed while it is being re-run.
  */
 export function nodeStatusesForSubmission(
   detail: WorkflowRunDetail,
@@ -159,10 +159,11 @@ export interface RoundView {
 /**
  * The scrubber's segments, in execution order.
  *
- * A round is "failed" when its reviewers asked for changes, which is NOT the same as the
- * submission failing: a round that returned to Session is a healthy repair loop and its
- * submission status is `waiting_for_session`. Marking it from the submission status alone
- * would leave every repair round unmarked, which is the one thing the mark is for.
+ * A round is "failed" when a member failed - a reviewer asked for changes or a Check rejected
+ * the submission - which is NOT the same as the submission failing: a round that returned to
+ * Session is a healthy repair loop and its submission status is `waiting_for_session`.
+ * Marking it from the submission status alone would leave every repair round unmarked, which
+ * is the one thing the mark is for.
  */
 export function runRounds(detail: WorkflowRunDetail): RoundView[] {
   return orderedSubmissions(detail).map((submission) => {
@@ -218,6 +219,20 @@ const REVIEWER_STATUSES: Record<
   cancelled: { tone: "waiting", label: "Cancelled" },
 };
 
+const CHECK_STATUSES: Record<
+  WorkflowNodeAttemptState | PersonaVerdict["verdict"],
+  PipelineStatus
+> = {
+  pass: { tone: "passed", label: "Passed" },
+  fail: { tone: "failed", label: "Failed" },
+  queued: { tone: "waiting", label: "Queued" },
+  running: { tone: "running", label: "Running" },
+  retry_wait: { tone: "waiting", label: "Retrying" },
+  completed: { tone: "waiting", label: "No result" },
+  error: { tone: "failed", label: "Check failed to run" },
+  cancelled: { tone: "waiting", label: "Cancelled" },
+};
+
 /**
  * One reviewer's chip. An absent status is a reviewer this round has not reached, which is
  * a different thing from one that finished with nothing to say.
@@ -229,20 +244,72 @@ export function reviewerStatus(raw: string | undefined): PipelineStatus {
 }
 
 /**
- * A stage's own chip, folded from its reviewers: the worst thing that happened wins, then
+ * The chip for a check whose gate did NOT actually run, which is a different claim from
+ * "passed" and must never be collapsed into it.
+ *
+ * Three of the four check outcomes advance the graph (`checkOutcomePasses`), and only ONE of
+ * them means the command ran and succeeded. A slot with no command configured is `skipped`,
+ * and a build with no execution runtime records `unavailable` - both pass so a workflow is
+ * not broken on an unconfigured machine, and both would otherwise render as a green "Passed"
+ * telling an operator that typecheck and test succeeded when neither was ever spawned. That
+ * is precisely the assurance the shipped No-Mistakes Review v2 must not fake, so the outcome
+ * travels to the chip rather than being reduced to the attempt's synthetic verdict.
+ *
+ * `degraded` marks "this advanced the pipeline without being earned", which is what lets the
+ * stage fold below say so without matching on label text.
+ */
+const CHECK_OUTCOME_STATUSES: Record<WorkflowCheckStatus, PipelineStatus | null> = {
+  // Ran and succeeded: the ordinary verdict mapping already says it correctly.
+  passed: null,
+  failed: null,
+  skipped: { tone: "waiting", label: "Skipped", degraded: true },
+  unavailable: { tone: "waiting", label: "Not run", degraded: true },
+};
+
+/**
+ * One check's chip.
+ *
+ * `outcome` is the status the runner recorded, when this attempt carries one. It WINS over
+ * the attempt state, because a check that never ran still finishes as a passing attempt and
+ * the attempt state alone cannot tell that apart from a command that ran green.
+ */
+export function checkStatus(
+  raw: string | undefined,
+  outcome: WorkflowCheckStatus | null = null,
+): PipelineStatus {
+  const degraded = outcome ? CHECK_OUTCOME_STATUSES[outcome] : null;
+  if (degraded) return degraded;
+  if (!raw) return { tone: "waiting", label: "Not started" };
+  return CHECK_STATUSES[raw as keyof typeof CHECK_STATUSES]
+    ?? { tone: "waiting", label: raw.replaceAll("_", " ") };
+}
+
+/**
+ * A stage's own chip, folded from its members: the worst thing that happened wins, then
  * whatever is still moving, and "passed" only once every member of the stage passed - which
  * is exactly the all-pass rule the stage is compiled from.
+ *
+ * A member that advanced without running is neither: the stage is finished, so calling it
+ * "Waiting" would read as still in flight, and calling it "All passed" would launder the very
+ * claim the member chip refuses to make. It gets its own sentence, and the count is what an
+ * operator needs to know how much of the gate was real.
  */
 export function stageStatus(members: readonly PipelineStatus[]): PipelineStatus {
-  if (members.length === 0) return { tone: "waiting", label: "No reviewers" };
+  if (members.length === 0) return { tone: "waiting", label: "No members" };
   if (members.some((status) => status.tone === "failed")) {
-    return { tone: "failed", label: "Changes requested" };
+    return { tone: "failed", label: "Failed" };
   }
   if (members.some((status) => status.tone === "running")) {
-    return { tone: "running", label: "Reviewing" };
+    return { tone: "running", label: "Running" };
   }
-  if (members.every((status) => status.tone === "passed")) {
-    return { tone: "passed", label: members.length > 1 ? "All passed" : "Passed" };
+  const notRun = members.filter((status) => status.degraded).length;
+  if (members.every((status) => status.tone === "passed" || status.degraded)) {
+    if (notRun === 0) {
+      return { tone: "passed", label: members.length > 1 ? "All passed" : "Passed" };
+    }
+    return notRun === members.length
+      ? { tone: "waiting", label: notRun > 1 ? "None ran" : "Did not run", degraded: true }
+      : { tone: "waiting", label: `Passed, ${notRun} not run`, degraded: true };
   }
   return { tone: "waiting", label: "Waiting" };
 }

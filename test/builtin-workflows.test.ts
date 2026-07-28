@@ -8,6 +8,7 @@ import {
 import type { PublishedWorkflowGraph, WorkflowDraftGraph } from "../src/shared/workflow.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
 import { compileStages, projectStages, stageBlockers } from "../src/shared/workflow-stages.ts";
+import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
 import { BUILTIN_PERSONAS } from "../src/server/workflows/builtin-personas.ts";
 import {
   BUILTIN_WORKFLOWS,
@@ -124,7 +125,11 @@ test("ids are prefixed, versions ascend, and the definition names the newest", (
     const { definition, versions } = builtin;
     assert.equal(definition.builtin, true);
     assert.equal(definition.archivedAt, null);
-    assert.equal(definition.draftRevision, 1);
+    assert.equal(
+      definition.draftRevision,
+      versions[versions.length - 1]!.sourceDraftRevision,
+      "the draft revision matches the newest version's source draft",
+    );
     assert.equal(definition.createdAt, 0);
     assert.equal(definition.updatedAt, 0);
     assert.equal(definition.normalizedName, normalizeWorkflowName(definition.name));
@@ -158,33 +163,51 @@ test("ids are prefixed, versions ascend, and the definition names the newest", (
   assert.equal(new Set(names).size, names.length);
 });
 
-test("No-Mistakes Review ships the adopted graph, defaults and final gate", () => {
+const noMistakesReview = () => {
   const builtin = BUILTIN_WORKFLOWS.find(
     (candidate) => candidate.definition.id === builtinWorkflowId("no-mistakes-review"),
   );
   assert.ok(builtin, "the shipped slug is append-only; Phase 3 must not rename it");
+  return builtin;
+};
+
+/** The members of each stage, named by Persona id or by slot, so a mixed stage reads as one. */
+const shapeOf = (graph: WorkflowDraftGraph) => {
+  const pipeline = projectStages(graph);
+  assert.ok(pipeline, "a shipped version must render in the Pipeline editor");
+  return pipeline.stages.map((stage) => stage.members.map((member) =>
+    member.kind === "persona" ? member.personaId : `check:${member.slot}`));
+};
+
+test("No-Mistakes Review ships the adopted graph, defaults and final gate", () => {
+  const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 2);
+  assert.equal(builtin.versions.length, 3);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, DEFAULT_WORKFLOW_BINDING_DEFAULTS);
   assert.deepEqual(builtin.versions[1]!.bindingDefaults, {
     ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
     deliveryMode: "live",
   });
-  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[1]!.bindingDefaults);
+  assert.deepEqual(builtin.versions[2]!.bindingDefaults, {
+    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+    deliveryMode: "live",
+  });
+  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[2]!.bindingDefaults);
   assert.deepEqual(builtin.definition.completionPolicy, {
     kind: "inspector",
     onFindings: "restart_workflow",
     missingPrAction: "offer_prepare_pr",
   });
 
-  // Intent first as the cheap gate, then the other three in parallel behind it. Asserted as
-  // the stage projection rather than as coordinates, because the shape is the adopted
-  // decision and the coordinates are `compileStages`' business.
-  const pipeline = projectStages(builtin.definition.draft);
+  // Version 1's shape, read from version 1 rather than from the draft: the draft is now
+  // version 3, and a test that kept reading it would silently stop checking v1 the moment a
+  // new version appended - which is exactly the regression this phase can produce.
+  const v1 = asDraft(builtin.versions[0]!.graph);
+  const pipeline = projectStages(v1);
   assert.ok(pipeline);
   assert.equal(pipeline.endOutcome, "Complete");
   assert.deepEqual(
-    pipeline.stages.map((stage) => stage.members.map((member) => member.personaId)),
+    shapeOf(v1),
     [
       ["builtin:intent-conformance-judge"],
       [
@@ -199,7 +222,7 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
 
   // The adopted edge table, spelled out: every fail returns to Session, both outcomes of each
   // parallel reviewer reach the join, and only the join's pass reaches End.
-  const draft = builtin.definition.draft;
+  const draft = v1;
   const session = pipeline.sessionId;
   const join = pipeline.stages[1]!.joinId!;
   const route = (source: string, port: string) =>
@@ -218,4 +241,126 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
   }
   assert.deepEqual(route(join, "fail"), [`${session}:return_for_changes`]);
   assert.deepEqual(route(join, "pass"), [`${pipeline.endId}:terminal`]);
+});
+
+// ---- Version 1 is history, and history does not get rewritten ----
+//
+// This is the single most important compatibility fact in the phase that added the check gate.
+// Bindings and runs store `builtin-workflow:no-mistakes-review@1` durably, and the graph they
+// resolve has to be the graph they were bound to. Asserting it against a LITERAL rather than
+// against the builder is the point: a future edit to the current pipeline, or to
+// `compileStages`' layout, would otherwise rewrite version 1 underneath every existing
+// binding and every test here would still pass.
+
+const NO_MISTAKES_V1_NODES = [
+  ["nmr-session", "session", 60, 60],
+  ["nmr-intent-conformance", "persona", 340, 60],
+  ["nmr-code-risk", "persona", 620, 60],
+  ["nmr-test-evidence", "persona", 620, 230],
+  ["nmr-documentation", "persona", 620, 400],
+  ["nmr-depth-join", "all_pass", 900, 230],
+  ["nmr-end", "end", 1180, 60],
+];
+
+const NO_MISTAKES_V1_EDGES = [
+  "nmr-session~submitted~nmr-intent-conformance~activate",
+  "nmr-intent-conformance~fail~nmr-session~return_for_changes",
+  "nmr-intent-conformance~pass~nmr-code-risk~activate",
+  "nmr-intent-conformance~pass~nmr-test-evidence~activate",
+  "nmr-intent-conformance~pass~nmr-documentation~activate",
+  "nmr-code-risk~pass~nmr-depth-join~result",
+  "nmr-code-risk~fail~nmr-depth-join~result",
+  "nmr-test-evidence~pass~nmr-depth-join~result",
+  "nmr-test-evidence~fail~nmr-depth-join~result",
+  "nmr-documentation~pass~nmr-depth-join~result",
+  "nmr-documentation~fail~nmr-depth-join~result",
+  "nmr-depth-join~fail~nmr-session~return_for_changes",
+  "nmr-depth-join~pass~nmr-end~terminal",
+];
+
+test("version 1 of No-Mistakes Review is frozen, asserted against a literal", () => {
+  const version = noMistakesReview().versions[0]!;
+  assert.equal(version.id, builtinWorkflowVersionId("no-mistakes-review", 1));
+  assert.equal(version.version, 1);
+  assert.equal(version.sourceDraftRevision, 1);
+  assert.deepEqual(
+    version.graph.nodes.map((node) => [node.id, node.kind, node.position.x, node.position.y]),
+    NO_MISTAKES_V1_NODES,
+  );
+  assert.deepEqual(version.graph.edges.map((edge) => edge.id), NO_MISTAKES_V1_EDGES);
+  // No check node reached version 1. Adding the gates was an APPEND, and a version 1 that
+  // grew them would be a graph an existing binding never agreed to run commands under.
+  assert.equal(version.graph.nodes.filter((node) => node.kind === "check").length, 0);
+  assert.deepEqual(shapeOf(asDraft(version.graph)), [
+    ["builtin:intent-conformance-judge"],
+    [
+      "builtin:code-risk-reviewer",
+      "builtin:test-evidence-auditor",
+      "builtin:documentation-steward",
+    ],
+  ]);
+});
+
+test("version 3 gates the review behind typecheck and test, and appends rather than edits", () => {
+  const builtin = noMistakesReview();
+  assert.equal(builtin.versions.length, 3, "one workflow, three versions");
+  assert.equal(
+    builtin.definition.currentVersionId,
+    builtinWorkflowVersionId("no-mistakes-review", 3),
+  );
+  const prior = builtin.versions[1]!;
+  assert.equal(prior.sourceDraftRevision, 1);
+  assert.equal(prior.graph.nodes.filter((node) => node.kind === "check").length, 0);
+  assert.deepEqual(prior.graph, builtin.versions[0]!.graph);
+
+  const version = builtin.versions[2]!;
+  assert.equal(version.sourceDraftRevision, 2);
+
+  // The adopted stage order: the cheap deterministic gate, the cheap intent gate, the fan-out.
+  // Both checks sit in ONE stage, so `compileStages` mints a join and both must pass before a
+  // single model call is spent - which is the whole reason this version exists.
+  const draft = asDraft(version.graph);
+  assert.deepEqual(shapeOf(draft), [
+    ["check:typecheck", "check:test"],
+    ["builtin:intent-conformance-judge"],
+    [
+      "builtin:code-risk-reviewer",
+      "builtin:test-evidence-auditor",
+      "builtin:documentation-steward",
+    ],
+  ]);
+  const pipeline = projectStages(draft)!;
+  assert.notEqual(pipeline.stages[0]!.joinId, null, "two checks aggregate at an all-pass join");
+  assert.equal(pipeline.endOutcome, "Complete");
+
+  // Every slot named is one this build ships. A version naming a slot the vocabulary does not
+  // carry is a gate that can never be configured and silently always skips.
+  const slots = version.graph.nodes.flatMap((node) => node.kind === "check" ? [node.slot] : []);
+  assert.deepEqual(slots, ["typecheck", "test"]);
+  for (const slot of slots) assert.ok(WORKFLOW_CHECK_SLOTS.includes(slot), `${slot} is not a shipped slot`);
+
+  // A check node carries its slot and NOTHING else. An argv baked into a shipped version
+  // would be executable content reaching every install through the version export route, and
+  // it would be wrong on every repository that is not the one it was written in - the
+  // operator describes the machine, the version describes the gate.
+  for (const node of version.graph.nodes) {
+    if (node.kind !== "check") continue;
+    assert.deepEqual(
+      Object.keys(node).sort(),
+      ["id", "kind", "position", "slot"],
+      "a check node carries no command",
+    );
+  }
+
+  // The reviewers kept their identities across the version bump, so an attempt row written
+  // against a prior version's Intent Conformance still names the same node in version 3.
+  for (const id of ["nmr-intent-conformance", "nmr-code-risk", "nmr-test-evidence", "nmr-documentation"]) {
+    assert.ok(version.graph.nodes.some((node) => node.id === id), `${id} was re-identified`);
+  }
+  // And the draft the library opens IS version 3.
+  assert.deepEqual(builtin.definition.draft.edges, version.graph.edges);
+  assert.deepEqual(
+    compileStages(projectStages(builtin.definition.draft)!, builtin.definition.draft),
+    builtin.definition.draft,
+  );
 });

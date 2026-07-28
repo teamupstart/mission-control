@@ -22,6 +22,15 @@ export type PipelineStatusTone = (typeof PIPELINE_STATUS_TONES)[number];
 export interface PipelineStatus {
   tone: PipelineStatusTone;
   label: string;
+  /**
+   * This advanced the pipeline without being earned - a check that was skipped or could not
+   * run, rather than one that ran and succeeded.
+   *
+   * A flag rather than a fifth tone because the colour vocabulary is shared with the fleet's
+   * `workflow-chip`, and because the thing a reader needs is the SENTENCE. It exists so the
+   * stage fold can say "Passed, 2 not run" without pattern-matching on label text.
+   */
+  degraded?: boolean;
 }
 
 /** Visual state of one card or row. Drag feedback and nothing semantic. */
@@ -74,11 +83,17 @@ export function PipelineStatusChip({ status }: { status: PipelineStatus }): Reac
 }
 
 /**
- * One reviewer inside a stage. `meta` is the `runner · model` line; `actions` is the trailing
+ * One member inside a stage. `meta` is the `runner · model` line; `actions` is the trailing
  * control slot (Remove here, "open verdict" for the monitor).
+ *
+ * `kind` is what separates a reviewer from a deterministic check, and it is a CHIP rather than
+ * a different row: the two are peers in a stage - same routes, same join, same reorder - and
+ * drawing them as two shapes would say they behave differently. A check's `name` is its bare
+ * slot, so the chip supplies the noun that "test" alone next to a Persona's name does not.
  */
 export function ReviewerRow({
   name,
+  kind = "persona",
   meta = null,
   status = null,
   state = "idle",
@@ -86,6 +101,7 @@ export function ReviewerRow({
   item = {},
 }: {
   name: string;
+  kind?: "persona" | "check";
   meta?: string | null;
   status?: PipelineStatus | null;
   state?: PipelineItemState;
@@ -93,9 +109,12 @@ export function ReviewerRow({
   item?: PipelineItemProps;
 }): React.JSX.Element {
   return (
-    <li className={`wf-pipeline-reviewer${stateClass(state)}`} {...itemAttributes(item)}>
+    <li className={`wf-pipeline-reviewer is-${kind}${stateClass(state)}`} {...itemAttributes(item)}>
       <span className="wf-pipeline-reviewer-body">
-        <span className="wf-pipeline-reviewer-name">{name}</span>
+        <span className="wf-pipeline-reviewer-name">
+          {kind === "check" && <span className="wf-pipeline-check-mark">Check</span>}
+          {name}
+        </span>
         {meta && <span className="wf-pipeline-reviewer-meta">{meta}</span>}
       </span>
       {status && <PipelineStatusChip status={status} />}
@@ -105,10 +124,10 @@ export function ReviewerRow({
 }
 
 /**
- * One stage: its derived name, what it is waiting on, and its reviewers.
+ * One stage: its derived name, what it is waiting on, and its members.
  *
  * `header` wires the stage's own roving stop and drag handle; `frame` takes drops for the
- * card as a whole, so a reviewer can be moved onto a stage without aiming at a row.
+ * card as a whole, so a member can be moved onto a stage without aiming at a row.
  */
 export function StageCard({
   name,
@@ -205,7 +224,7 @@ export function TerminusCard({
  *
  * The repair rail is a sentence rather than a drawn edge on purpose - every fail in a
  * pipeline returns to Session, so drawing N identical return edges was what made the canvas
- * unreadable at two reviewers.
+ * unreadable at two members.
  */
 export function PipelineFrame({
   ariaLabel,

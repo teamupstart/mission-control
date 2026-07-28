@@ -315,3 +315,119 @@ test("a run bound to a built-in version resolves its workflow rather than readin
   const page = store.listRunSummaryPage({ limit: 10, cursor: null, workflowId: SHIPPED_ID });
   assert.deepEqual(page.items.map((item) => item.id), ["r1"]);
 });
+
+test("every shipped version id resolves, and the newest is the current one", () => {
+  const store = fixtureStore();
+  for (const version of [1, 2]) {
+    const id = builtinWorkflowVersionId("fixture-review", version);
+    const resolved = store.getWorkflowVersionById(id);
+    assert.ok(resolved, `${id} does not resolve`);
+    assert.equal(resolved.version, version);
+    assert.equal(resolved.workflowId, SHIPPED_ID);
+    // The by-(workflow, number) door has to agree with the by-id door, since bindings use one
+    // and the version list uses the other.
+    assert.deepEqual(store.getWorkflowVersion(SHIPPED_ID, version)?.id, id);
+  }
+  // Newest first, the same order a row-backed workflow's versions list in - the catalog is
+  // stored ascending, so this is a place the built-in arm has to actively agree rather than
+  // inherit.
+  assert.deepEqual(
+    store.listWorkflowVersions(SHIPPED_ID).map((version) => version.version),
+    [2, 1],
+  );
+  assert.deepEqual(
+    store.listWorkflowVersionMetadata(SHIPPED_ID).map((version) => version.version),
+    [2, 1],
+  );
+  assert.equal(store.getWorkflowVersionById(builtinWorkflowVersionId("fixture-review", 3)), null);
+});
+
+test("a binding pinned to version 1 still resolves after the catalog gains version 2", () => {
+  // THE regression this phase's split can produce, checked directly rather than inferred.
+  // An operator bound the shipped workflow, then upgraded. The binding row is durable and
+  // names `...@1`; the catalog it resolves against is compiled into the new build and now
+  // carries two versions with `currentVersionId` naming the newer one. If version 1 stopped
+  // resolving, that binding would report as a missing workflow version and the run it is
+  // holding would be unrecoverable - and nothing would say why.
+  const versionId = builtinWorkflowVersionId("fixture-review", 1);
+  const beforeUpgrade = new WorkflowStore(db, BUILTIN_PERSONAS, [{
+    definition: { ...shippedDefinition, currentVersionId: versionId },
+    versions: [shippedVersion(1)],
+  }]);
+  beforeUpgrade.insertPersona({
+    id: "p1",
+    name: "Judge",
+    normalizedName: normalizePersonaName("Judge"),
+    description: "",
+    guidanceMarkdown: "# Judge",
+    runner: null,
+    model: null,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  const binding = beforeUpgrade.insertBinding({
+    id: "b-pinned",
+    workflowVersionId: versionId,
+    noteKey: "note",
+    sessionId: "s1",
+    sessionAgent: "claude",
+    sessionName: "session",
+    sessionCwd: null,
+    sessionRepoRoot: null,
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  beforeUpgrade.createInitialSubmission(
+    { id: "r-pinned", binding, triggerSource: "manual", triggerKey: "k1", now: 2 },
+    { id: "sub-pinned", triggerSource: "manual", triggerKey: "k1", context: {}, evidence: {}, now: 2 },
+  );
+
+  // The upgrade: same database, same durable rows, a build whose catalog gained version 2.
+  const afterUpgrade = fixtureStore();
+
+  const resolved = afterUpgrade.getWorkflowVersionById(versionId);
+  assert.ok(resolved, "the pinned version id stopped resolving after the catalog grew");
+  assert.equal(resolved.version, 1);
+  // Not merely resolvable - it resolves to the SAME graph, so the run continues to execute
+  // the pipeline it was bound to rather than silently adopting the new gates.
+  assert.deepEqual(resolved.graph, shippedVersion(1).graph);
+
+  // The binding itself still reads back, and its run still names its workflow.
+  assert.equal(afterUpgrade.getBinding("b-pinned")?.workflowVersionId, versionId);
+  const summary = afterUpgrade.runSummary("r-pinned");
+  assert.equal(summary?.workflowId, SHIPPED_ID);
+  assert.equal(summary?.workflowVersion, 1);
+
+  // Meanwhile the definition advertises version 2, which is how an upgraded install offers
+  // the improvement without moving anybody onto it: adopting it means a NEW binding.
+  assert.equal(
+    afterUpgrade.getWorkflow(SHIPPED_ID)?.currentVersionId,
+    builtinWorkflowVersionId("fixture-review", 2),
+  );
+});
+
+test("the real shipped catalog resolves all of No-Mistakes Review's durable version ids", () => {
+  // The fixture catalog above proves the RULES. This proves the shipped strings, which are
+  // what actually sit in `workflow_bindings.workflow_version_id` on operators' machines and
+  // are append-only for that reason.
+  const store = new WorkflowStore(db, BUILTIN_PERSONAS);
+  for (const version of [1, 2, 3]) {
+    const id = `builtin-workflow:no-mistakes-review@${version}`;
+    assert.equal(builtinWorkflowVersionId("no-mistakes-review", version), id);
+    const resolved = store.getWorkflowVersionById(id);
+    assert.ok(resolved, `${id} does not resolve; a binding naming it would read as missing`);
+    assert.equal(resolved.version, version);
+  }
+  // Versions 1 and 2 have no check node: an operator bound to either never agreed to run
+  // commands, and an upgrade must not retrofit them.
+  for (const version of [1, 2]) {
+    const prior = store.getWorkflowVersionById(`builtin-workflow:no-mistakes-review@${version}`)!;
+    assert.equal(prior.graph.nodes.filter((node) => node.kind === "check").length, 0);
+  }
+  const v2 = store.getWorkflowVersionById("builtin-workflow:no-mistakes-review@2")!;
+  assert.equal(v2.bindingDefaults.deliveryMode, "live");
+  const v3 = store.getWorkflowVersionById("builtin-workflow:no-mistakes-review@3")!;
+  assert.equal(v3.graph.nodes.filter((node) => node.kind === "check").length, 2);
+});

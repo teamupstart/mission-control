@@ -66,13 +66,13 @@ const TWO_STAGE: StagePipeline = {
     {
       joinId: "bbbbbbbb-0000-4000-8000-000000000001",
       members: [
-        { nodeId: "cccccccc-0000-4000-8000-000000000001", personaId: personas[0]!.id },
-        { nodeId: "cccccccc-0000-4000-8000-000000000002", personaId: personas[1]!.id },
+        { nodeId: "cccccccc-0000-4000-8000-000000000001", kind: "persona", personaId: personas[0]!.id },
+        { nodeId: "cccccccc-0000-4000-8000-000000000002", kind: "persona", personaId: personas[1]!.id },
       ],
     },
     {
       joinId: null,
-      members: [{ nodeId: "cccccccc-0000-4000-8000-000000000003", personaId: personas[2]!.id }],
+      members: [{ nodeId: "cccccccc-0000-4000-8000-000000000003", kind: "persona", personaId: personas[2]!.id }],
     },
   ],
 };
@@ -124,7 +124,7 @@ test("a brand-new workflow opens on an empty stage affordance, not an error wall
   const html = editor(EMPTY);
   assert.match(html, /No reviewers yet/);
   assert.match(html, /Add a reviewer to route the submission|Add one, and the submission routes through it/);
-  assert.match(html, /Add reviewer…/);
+  assert.match(html, /Add reviewer or check…/);
   // Every active Persona is offered inline; the sidebar palette is a graph-mode affordance.
   for (const item of personas) assert.match(html, new RegExp(item.name));
   assert.doesNotMatch(html, /Stage 1/);
@@ -181,4 +181,59 @@ test("the pipeline rail states validation as a sentence, with no diagnostic code
   assert.match(ready, /Ready to publish\./);
   // A pipeline author never selects a node or an edge, so the rail carries neither list.
   assert.doesNotMatch(ready, /Connections ·/);
+});
+
+/** The v2 shape: a deterministic gate of two checks, then a reviewer. */
+const GATED: StagePipeline = {
+  sessionId: EMPTY.nodes[0]!.id,
+  endId: EMPTY.nodes[1]!.id,
+  endOutcome: "Complete",
+  stages: [
+    {
+      joinId: "bbbbbbbb-0000-4000-8000-000000000002",
+      members: [
+        { nodeId: "dddddddd-0000-4000-8000-000000000001", kind: "check", slot: "typecheck" },
+        { nodeId: "dddddddd-0000-4000-8000-000000000002", kind: "check", slot: "test" },
+      ],
+    },
+    {
+      joinId: null,
+      members: [{ nodeId: "cccccccc-0000-4000-8000-000000000003", kind: "persona", personaId: personas[2]!.id }],
+    },
+  ],
+};
+
+test("a check renders as its slot with a Check mark, counted apart from reviewers", () => {
+  const html = editor(compileStages(GATED, EMPTY));
+  // The slot is the name an operator reads; the chip is what says it is not a Persona. A
+  // check whose row said only "test" would read as a reviewer called test.
+  assert.match(html, /wf-pipeline-check-mark/);
+  assert.match(html, /typecheck/);
+  assert.match(html, />test</);
+  // Counted by kind: "2 reviewers" was the old sentence and is wrong about two checks.
+  assert.match(html, /2 checks · all must pass/);
+  assert.doesNotMatch(html, /2 reviewers/);
+  // The command is deliberately NOT part of the workflow, so the row says what an
+  // unconfigured slot does rather than implying one is pinned here.
+  assert.match(html, /passes when no command is configured/);
+  // A single-check stage takes the slot as its derived stage name.
+  assert.match(html, /Check · /);
+});
+
+test("checks are offered even with no Personas authored, since slots are not operator data", () => {
+  // The add picker used to disable on an empty Persona list. With checks in the vocabulary
+  // that would leave a fresh install unable to author the deterministic half of a pipeline.
+  const html = renderToStaticMarkup(createElement(PipelineEditor, {
+    graph: EMPTY,
+    personas: [],
+    onChange: () => {},
+    onConfirm: () => {},
+    onAnnounce: () => {},
+  }));
+  assert.doesNotMatch(html, /<select disabled/);
+  assert.match(html, /Checks/);
+  assert.match(html, /No Personas authored yet, so only checks are available/);
+  for (const slot of ["typecheck", "test", "lint", "build"]) {
+    assert.match(html, new RegExp(`check:${slot}`));
+  }
 });

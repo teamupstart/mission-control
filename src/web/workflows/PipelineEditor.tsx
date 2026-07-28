@@ -1,11 +1,20 @@
 import { useMemo, useRef, useState } from "react";
-import { personasForDisplay } from "@shared/workflow.ts";
-import type { PersonaView, WorkflowDraftGraph } from "@shared/workflow.ts";
+import { personasForDisplay, WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
+import type {
+  PersonaId,
+  PersonaView,
+  WorkflowCheckSlot,
+  WorkflowDraftGraph,
+} from "@shared/workflow.ts";
 import {
+  checkLabel,
   compileStages,
   projectStages,
+  stageContents,
   stageName,
+  stageSummary,
   type Stage,
+  type StageMember,
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
 import {
@@ -20,11 +29,11 @@ import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 
 /**
- * Authoring a workflow as stages of reviewers.
+ * Authoring a workflow as stages of Persona reviewers and deterministic Checks.
  *
  * The editor holds NO pipeline state of its own. After every edit its state is
  * `projectStages(draft)` again, which is what keeps id minting where phase 1 put it: a
- * reviewer being added is constructed with `nodeId: null`, `compileStages` mints the real id,
+ * member being added is constructed with `nodeId: null`, `compileStages` mints the real id,
  * and the next projection hands it back. An editor that kept its own pipeline between edits
  * would have to mint ids to fill those nulls, and two minters is how undo and the CAS
  * autosave start disagreeing about which node is which.
@@ -38,10 +47,23 @@ import { Tooltip } from "../components/Tooltip.tsx";
  * is being dragged.
  */
 
-export interface ReviewerRef {
+export interface MemberRef {
   stage: number;
   member: number;
 }
+
+/**
+ * A member an edit is about to ADD, before any graph has given it an identity.
+ *
+ * `StageMember` minus `nodeId`, written out rather than `Omit`ed: `Omit` over a union keeps
+ * only the keys both arms share, which here is `nodeId` alone - exactly the field being
+ * dropped - so the result would be an empty object type that accepts anything.
+ */
+export type StageMemberSeed =
+  | { kind: "persona"; personaId: PersonaId }
+  | { kind: "check"; slot: WorkflowCheckSlot };
+
+const seeded = (seed: StageMemberSeed): StageMember => ({ ...seed, nodeId: null });
 
 const withStages = (pipeline: StagePipeline, stages: Stage[]): StagePipeline =>
   ({ ...pipeline, stages });
@@ -53,30 +75,34 @@ const withStages = (pipeline: StagePipeline, stages: Stage[]): StagePipeline =>
  * new members carry `nodeId: null`. A stage that loses its last member stops being a stage
  * rather than being emitted as an empty one - the compiler drops empty stages anyway, and
  * leaving one behind would make the editor's shape disagree with the next projection.
+ *
+ * They are "member" operations rather than "reviewer" ones because a stage now holds two
+ * kinds of thing, and every one of them treats both identically: a check reorders, moves
+ * between stages and is removed by exactly the code path a Persona is.
  */
-export function addReviewer(
+export function addMember(
   pipeline: StagePipeline,
   stageIndex: number,
-  personaId: string,
+  seed: StageMemberSeed,
 ): StagePipeline {
   if (!pipeline.stages[stageIndex]) return pipeline;
   return withStages(pipeline, pipeline.stages.map((stage, index) => index === stageIndex
-    ? { ...stage, members: [...stage.members, { nodeId: null, personaId }] }
+    ? { ...stage, members: [...stage.members, seeded(seed)] }
     : stage));
 }
 
 export function insertStage(
   pipeline: StagePipeline,
   at: number,
-  personaId: string,
+  seed: StageMemberSeed,
 ): StagePipeline {
   const stages = [...pipeline.stages];
   const index = Math.max(0, Math.min(stages.length, at));
-  stages.splice(index, 0, { joinId: null, members: [{ nodeId: null, personaId }] });
+  stages.splice(index, 0, { joinId: null, members: [seeded(seed)] });
   return withStages(pipeline, stages);
 }
 
-export function removeReviewer(pipeline: StagePipeline, ref: ReviewerRef): StagePipeline {
+export function removeMember(pipeline: StagePipeline, ref: MemberRef): StagePipeline {
   if (!pipeline.stages[ref.stage]?.members[ref.member]) return pipeline;
   return withStages(pipeline, pipeline.stages.flatMap((stage, index) => {
     if (index !== ref.stage) return [stage];
@@ -99,11 +125,11 @@ export function moveStage(pipeline: StagePipeline, from: number, to: number): St
   return withStages(pipeline, stages);
 }
 
-/** Moves one reviewer, within its stage or into another one. */
-export function moveReviewer(
+/** Moves one member, within its stage or into another one. */
+export function moveMember(
   pipeline: StagePipeline,
-  from: ReviewerRef,
-  to: ReviewerRef,
+  from: MemberRef,
+  to: MemberRef,
 ): StagePipeline {
   const source = pipeline.stages[from.stage];
   const moved = source?.members[from.member];
@@ -144,7 +170,7 @@ export function pipelineFocusOrder(pipeline: StagePipeline): string[] {
     "session",
     ...pipeline.stages.flatMap((stage, index) => [
       `stage:${index}`,
-      ...stage.members.map((_, member) => `reviewer:${index}:${member}`),
+      ...stage.members.map((_, member) => `member:${index}:${member}`),
     ]),
     "end",
   ];
@@ -157,19 +183,18 @@ export function seamGate(stage: Stage | undefined): string | null {
 }
 
 /**
- * Where a moved reviewer's destination stage ENDS UP, which is not always where the drop
- * aimed.
+ * Where a moved member's destination stage ENDS UP, which is not always where the drop aimed.
  *
- * Taking the last member out of a stage removes that stage (`moveReviewer`), and every
- * later stage shifts down one - so dragging the only reviewer of Stage 1 into Stage 2 lands
+ * Taking the last member out of a stage removes that stage (`moveMember`), and every
+ * later stage shifts down one - so dragging the only member of Stage 1 into Stage 2 lands
  * it in what is now Stage 1. The move was always right; naming the destination by its
  * pre-move index is what made the announcement say "Stage 2" about a stage that no longer
  * exists. Only a CROSS-stage move can empty a stage, so a reorder within one is unaffected.
  */
 export function landedStageIndex(
   pipeline: StagePipeline,
-  from: ReviewerRef,
-  to: ReviewerRef,
+  from: MemberRef,
+  to: MemberRef,
 ): number {
   const emptiesSource = from.stage !== to.stage
     && pipeline.stages[from.stage]?.members.length === 1;
@@ -178,6 +203,27 @@ export function landedStageIndex(
 
 const plural = (count: number, word: string): string =>
   `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/**
+ * How a member reaches the add pickers and comes back, since a `<select>` carries one string.
+ *
+ * Prefixed rather than bare so a Persona whose id happened to spell a slot cannot be read as a
+ * check, and so an unparseable value (a stale option from an older build) is `null` and adds
+ * nothing rather than adding the wrong kind of thing.
+ */
+export function memberOptionValue(seed: StageMemberSeed): string {
+  return seed.kind === "check" ? `check:${seed.slot}` : `persona:${seed.personaId}`;
+}
+
+export function parseMemberOption(value: string): StageMemberSeed | null {
+  if (value.startsWith("persona:")) {
+    const personaId = value.slice("persona:".length);
+    return personaId ? { kind: "persona", personaId } : null;
+  }
+  if (!value.startsWith("check:")) return null;
+  const slot = WORKFLOW_CHECK_SLOTS.find((candidate) => candidate === value.slice("check:".length));
+  return slot ? { kind: "check", slot } : null;
+}
 
 export function PipelineEditor({
   graph,
@@ -202,7 +248,7 @@ export function PipelineEditor({
   const [focusKey, setFocusKey] = useState("session");
   const [insertAt, setInsertAt] = useState<number | null>(null);
   const [dragging, setDragging] = useState<
-    { kind: "reviewer"; ref: ReviewerRef } | { kind: "stage"; index: number } | null
+    { kind: "member"; ref: MemberRef } | { kind: "stage"; index: number } | null
   >(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const root = useRef<HTMLDivElement | null>(null);
@@ -215,6 +261,16 @@ export function PipelineEditor({
   const current = order.includes(focusKey) ? focusKey : order[0]!;
   const personaById = new Map(personas.map((persona) => [persona.id, persona]));
   const nameOf = (personaId: string): string => personaById.get(personaId)?.name ?? "Missing persona";
+  /**
+   * The one human name for a member, whichever kind it is. Every sentence, announcement and
+   * aria label composes from this rather than reaching for `personaId`, which is how a check
+   * gets described as itself instead of as a missing Persona.
+   */
+  const labelOfMember = (member: StageMember): string =>
+    member.kind === "check" ? checkLabel(member.slot) : nameOf(member.personaId);
+  /** What a member IS, for the sentences that need the noun rather than the name. */
+  const nounOfMember = (member: StageMember): string =>
+    member.kind === "check" ? "check" : "reviewer";
   /** The stage's derived NAME, which is what its card is titled. */
   const labelOfStage = (index: number): string =>
     stageName(pipeline.stages[index]!, index, personas);
@@ -258,22 +314,23 @@ export function PipelineEditor({
     return true;
   };
 
-  const confirmRemoveReviewer = (ref: ReviewerRef): void => {
+  const confirmRemoveMember = (ref: MemberRef): void => {
     const stage = pipeline.stages[ref.stage];
     const member = stage?.members[ref.member];
     if (!stage || !member) return;
-    const reviewer = nameOf(member.personaId);
+    const label = labelOfMember(member);
+    const noun = nounOfMember(member);
     const stageRef = refOfStage(ref.stage);
     onConfirm({
-      title: "Remove reviewer",
+      title: `Remove ${noun}`,
       body: stage.members.length === 1
-        ? `Remove ${reviewer}? It is the only reviewer in ${stageRef}, so the stage goes with it.`
-        : `Remove ${reviewer} from ${stageRef}? The remaining reviewers keep their routes.`,
-      confirmLabel: "Remove reviewer",
-      confirmHint: "Removes the reviewer and regenerates the routes around it",
+        ? `Remove ${label}? It is the only ${noun} in ${stageRef}, so the stage goes with it.`
+        : `Remove ${label} from ${stageRef}? The rest of the stage keeps its routes.`,
+      confirmLabel: `Remove ${noun}`,
+      confirmHint: `Removes the ${noun} and regenerates the routes around it`,
       danger: true,
       onConfirm: () => {
-        apply(removeReviewer(pipeline, ref), `Removed ${reviewer} from ${stageRef}`);
+        apply(removeMember(pipeline, ref), `Removed ${label} from ${stageRef}`);
         moveFocus("session");
       },
     });
@@ -283,12 +340,12 @@ export function PipelineEditor({
     const stage = pipeline.stages[index];
     if (!stage) return;
     const stageRef = refOfStage(index);
-    const names = stage.members.map((member) => nameOf(member.personaId)).join(", ");
+    const names = stage.members.map(labelOfMember).join(", ");
     onConfirm({
       title: "Remove stage",
-      body: `Remove ${stageRef} and its ${plural(stage.members.length, "reviewer")}: ${names}?`,
+      body: `Remove ${stageRef} and its ${stageContents(stage)}: ${names}?`,
       confirmLabel: "Remove stage",
-      confirmHint: "Removes the stage and rejoins the reviewers on either side of it",
+      confirmHint: "Removes the stage and rejoins whatever sits on either side of it",
       danger: true,
       onConfirm: () => {
         apply(removeStage(pipeline, index), `Removed ${stageRef}`);
@@ -297,34 +354,36 @@ export function PipelineEditor({
     });
   };
 
-  const add = (stageIndex: number, personaId: string): void => {
-    if (!personaId) return;
+  const add = (stageIndex: number, value: string): void => {
+    const seed = parseMemberOption(value);
+    if (!seed) return;
     apply(
-      addReviewer(pipeline, stageIndex, personaId),
-      `Added ${nameOf(personaId)} to ${refOfStage(stageIndex)}`,
+      addMember(pipeline, stageIndex, seed),
+      `Added ${labelOfMember(seeded(seed))} to ${refOfStage(stageIndex)}`,
     );
   };
 
-  const insert = (at: number, personaId: string): void => {
-    if (!personaId) return;
+  const insert = (at: number, value: string): void => {
+    const seed = parseMemberOption(value);
+    if (!seed) return;
     setInsertAt(null);
     apply(
-      insertStage(pipeline, at, personaId),
-      `Inserted a stage at position ${at + 1} with ${nameOf(personaId)}`,
+      insertStage(pipeline, at, seed),
+      `Inserted a stage at position ${at + 1} with ${labelOfMember(seeded(seed))}`,
     );
   };
 
-  const reorderReviewer = (ref: ReviewerRef, delta: number): void => {
+  const reorderMember = (ref: MemberRef, delta: number): void => {
     const stage = pipeline.stages[ref.stage];
     const member = stage?.members[ref.member];
     if (!stage || !member) return;
     const to = ref.member + delta;
     if (to < 0 || to >= stage.members.length) return;
     apply(
-      moveReviewer(pipeline, ref, { stage: ref.stage, member: to }),
-      `Moved ${nameOf(member.personaId)} to position ${to + 1} of ${stage.members.length} in ${refOfStage(ref.stage)}`,
+      moveMember(pipeline, ref, { stage: ref.stage, member: to }),
+      `Moved ${labelOfMember(member)} to position ${to + 1} of ${stage.members.length} in ${refOfStage(ref.stage)}`,
     );
-    moveFocus(`reviewer:${ref.stage}:${to}`);
+    moveFocus(`member:${ref.stage}:${to}`);
   };
 
   const reorderStage = (index: number, delta: number): void => {
@@ -338,7 +397,7 @@ export function PipelineEditor({
   };
 
   /** Drag payloads never leave this component, so the ref travels in local state. */
-  const beginDrag = (event: React.DragEvent<HTMLElement>, kind: "reviewer" | "stage"): void => {
+  const beginDrag = (event: React.DragEvent<HTMLElement>, kind: "member" | "stage"): void => {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", kind);
     event.stopPropagation();
@@ -356,15 +415,15 @@ export function PipelineEditor({
     setDropTarget(null);
   };
 
-  const dropOnReviewer = (to: ReviewerRef) => (event: React.DragEvent<HTMLElement>): void => {
+  const dropOnMember = (to: MemberRef) => (event: React.DragEvent<HTMLElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    if (!dragging || dragging.kind !== "reviewer") return endDrag();
+    if (!dragging || dragging.kind !== "member") return endDrag();
     const moved = pipeline.stages[dragging.ref.stage]?.members[dragging.ref.member];
     if (moved) {
       apply(
-        moveReviewer(pipeline, dragging.ref, to),
-        `Moved ${nameOf(moved.personaId)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
+        moveMember(pipeline, dragging.ref, to),
+        `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
       );
     }
     endDrag();
@@ -373,13 +432,13 @@ export function PipelineEditor({
   const dropOnStage = (stageIndex: number) => (event: React.DragEvent<HTMLElement>): void => {
     event.preventDefault();
     if (!dragging) return endDrag();
-    if (dragging.kind === "reviewer") {
+    if (dragging.kind === "member") {
       const moved = pipeline.stages[dragging.ref.stage]?.members[dragging.ref.member];
       const to = { stage: stageIndex, member: pipeline.stages[stageIndex]?.members.length ?? 0 };
       if (moved && dragging.ref.stage !== stageIndex) {
         apply(
-          moveReviewer(pipeline, dragging.ref, to),
-          `Moved ${nameOf(moved.personaId)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
+          moveMember(pipeline, dragging.ref, to),
+          `Moved ${labelOfMember(moved)} into ${refOfStage(landedStageIndex(pipeline, dragging.ref, to))}`,
         );
       }
     }
@@ -395,23 +454,52 @@ export function PipelineEditor({
     endDrag();
   };
 
-  const personaOptions = activePersonas.map((persona) => (
-    <option key={persona.id} value={persona.id}>{persona.name}</option>
-  ));
+  /**
+   * Both kinds in one control, grouped, because they are alternatives for the same slot in a
+   * stage rather than two different gestures.
+   *
+   * Checks are ALWAYS offered: the slots are a fixed vocabulary, not operator data, so an
+   * install with no Personas authored yet can still build a deterministic pipeline. That is
+   * why the pickers below no longer disable on an empty Persona list - only `readOnly` closes
+   * them now.
+   */
+  const memberOptions = (
+    <>
+      {activePersonas.length > 0 && (
+        <optgroup label="Reviewers">
+          {activePersonas.map((persona) => (
+            <option key={persona.id} value={memberOptionValue({ kind: "persona", personaId: persona.id })}>
+              {persona.name}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      <optgroup label="Checks">
+        {WORKFLOW_CHECK_SLOTS.map((slot) => (
+          <option key={slot} value={memberOptionValue({ kind: "check", slot })}>
+            {checkLabel(slot)}
+          </option>
+        ))}
+      </optgroup>
+    </>
+  );
+
+  /** Said once, wherever an empty Persona list needs explaining without blocking the control. */
+  const personaHint = activePersonas.length === 0
+    ? " No Personas authored yet, so only checks are available."
+    : "";
 
   const addPicker = (stageIndex: number, stageRef: string): React.JSX.Element => (
-    <Tooltip label={activePersonas.length === 0
-      ? "Author a Persona first - reviewers run Personas"
-      : `Add a reviewer to ${stageRef}`}>
+    <Tooltip label={`Add a reviewer or check to ${stageRef}.${personaHint}`}>
       <label className="wf-pipeline-add">
-        <span className="sr-only">{`Add a reviewer to ${stageRef}`}</span>
+        <span className="sr-only">{`Add a reviewer or check to ${stageRef}`}</span>
         <select
-          disabled={readOnly || activePersonas.length === 0}
+          disabled={readOnly}
           value=""
           onChange={(event) => add(stageIndex, event.target.value)}
         >
-          <option value="">＋ Add reviewer…</option>
-          {personaOptions}
+          <option value="">＋ Add reviewer or check…</option>
+          {memberOptions}
         </select>
       </label>
     </Tooltip>
@@ -432,17 +520,17 @@ export function PipelineEditor({
             }}
             onChange={(event) => insert(at, event.target.value)}
           >
-            <option value="">Choose a reviewer…</option>
-            {personaOptions}
+            <option value="">Choose a reviewer or check…</option>
+            {memberOptions}
           </select>
         </label>
       </Tooltip>
     ) : (
-      <Tooltip label={activePersonas.length === 0 ? "Author a Persona first" : label}>
+      <Tooltip label={`${label}.${personaHint}`}>
         <button
           type="button"
           className="btn btn-ghost wf-pipeline-insert"
-          disabled={readOnly || activePersonas.length === 0}
+          disabled={readOnly}
           aria-label={label}
           onClick={() => setInsertAt(at)}
         >
@@ -452,8 +540,8 @@ export function PipelineEditor({
     )
   );
 
-  const reviewerState = (key: string, ref: ReviewerRef): PipelineItemState =>
-    dragging?.kind === "reviewer"
+  const memberState = (key: string, ref: MemberRef): PipelineItemState =>
+    dragging?.kind === "member"
       && dragging.ref.stage === ref.stage
       && dragging.ref.member === ref.member
       ? "dragging"
@@ -492,22 +580,21 @@ export function PipelineEditor({
           >
             <ul className="wf-pipeline-members">
               <li className="wf-pipeline-empty">
-                Session completes on submission until a reviewer stands between it and the End.
+                Session completes on submission until a reviewer or a check stands between it
+                and the End.
               </li>
             </ul>
             <div className="wf-pipeline-stage-foot">
-              <Tooltip label={activePersonas.length === 0
-                ? "Author a Persona first - reviewers run Personas"
-                : "Add the first reviewer"}>
+              <Tooltip label={`Add the first reviewer or check.${personaHint}`}>
                 <label className="wf-pipeline-add">
-                  <span className="sr-only">Add the first reviewer</span>
+                  <span className="sr-only">Add the first reviewer or check</span>
                   <select
-                    disabled={readOnly || activePersonas.length === 0}
+                    disabled={readOnly}
                     value=""
                     onChange={(event) => insert(0, event.target.value)}
                   >
-                    <option value="">＋ Add reviewer…</option>
-                    {personaOptions}
+                    <option value="">＋ Add reviewer or check…</option>
+                    {memberOptions}
                   </select>
                 </label>
               </Tooltip>
@@ -519,9 +606,7 @@ export function PipelineEditor({
           const stageKey = `stage:${index}`;
           const stageLabel = labelOfStage(index);
           const stageRef = refOfStage(index);
-          const subtitle = stage.members.length > 1
-            ? `${plural(stage.members.length, "reviewer")} · all must pass`
-            : "1 reviewer";
+          const subtitle = stageSummary(stage);
           return (
             <div className="wf-pipeline-slot" key={stageKey}>
               <StageCard
@@ -571,53 +656,62 @@ export function PipelineEditor({
               >
                 <ul className="wf-pipeline-members">
                   {stage.members.map((member, memberIndex) => {
-                    const key = `reviewer:${index}:${memberIndex}`;
+                    const key = `member:${index}:${memberIndex}`;
                     const ref = { stage: index, member: memberIndex };
-                    const persona = personaById.get(member.personaId);
-                    const reviewer = nameOf(member.personaId);
-                    const meta = persona
-                      ? `${persona.execution.runner.id} · ${persona.execution.model.id}${persona.archivedAt === null ? "" : " · archived"}`
-                      : "This Persona no longer exists";
+                    const label = labelOfMember(member);
+                    const noun = nounOfMember(member);
+                    // A check's row names the SLOT and says what an unconfigured one does,
+                    // because that is the only thing about it an author can get wrong: the
+                    // command itself is deliberately not part of the workflow.
+                    const persona = member.kind === "persona"
+                      ? personaById.get(member.personaId)
+                      : undefined;
+                    const meta = member.kind === "check"
+                      ? "Deterministic gate · passes when no command is configured"
+                      : persona
+                        ? `${persona.execution.runner.id} · ${persona.execution.model.id}${persona.archivedAt === null ? "" : " · archived"}`
+                        : "This Persona no longer exists";
                     return (
                       <ReviewerRow
                         key={key}
-                        name={reviewer}
+                        kind={member.kind}
+                        name={member.kind === "check" ? member.slot : label}
                         meta={meta}
-                        state={reviewerState(key, ref)}
+                        state={memberState(key, ref)}
                         item={{
                           tabIndex: current === key ? 0 : -1,
                           focusKey: key,
-                          ariaLabel: `${reviewer}, reviewer ${memberIndex + 1} of ${stage.members.length} in ${stageRef}`,
+                          ariaLabel: `${label}, ${noun} ${memberIndex + 1} of ${stage.members.length} in ${stageRef}`,
                           draggable: !readOnly,
                           onFocus: () => setFocusKey(key),
                           onDragStart: (event) => {
-                            beginDrag(event, "reviewer");
-                            setDragging({ kind: "reviewer", ref });
+                            beginDrag(event, "member");
+                            setDragging({ kind: "member", ref });
                           },
                           onDragEnd: endDrag,
                           onDragOver: acceptDrop(key),
-                          onDrop: dropOnReviewer(ref),
+                          onDrop: dropOnMember(ref),
                           onKeyDown: (event) => {
                             if (navigate(event)) return;
                             if (readOnly) return;
                             if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
                               event.preventDefault();
-                              reorderReviewer(ref, event.key === "ArrowUp" ? -1 : 1);
+                              reorderMember(ref, event.key === "ArrowUp" ? -1 : 1);
                               return;
                             }
                             if (event.key === "Delete" || event.key === "Backspace") {
                               event.preventDefault();
-                              confirmRemoveReviewer(ref);
+                              confirmRemoveMember(ref);
                             }
                           },
                         }}
                         actions={!readOnly && (
-                          <Tooltip label={`Remove ${reviewer} from ${stageRef}`}>
+                          <Tooltip label={`Remove ${label} from ${stageRef}`}>
                             <button
                               type="button"
                               className="btn btn-ghost"
-                              aria-label={`Remove ${reviewer} from ${stageRef}`}
-                              onClick={() => confirmRemoveReviewer(ref)}
+                              aria-label={`Remove ${label} from ${stageRef}`}
+                              onClick={() => confirmRemoveMember(ref)}
                             >
                               ✕
                             </button>
@@ -665,7 +759,7 @@ export function PipelineEditor({
       </PipelineFrame>
       <p className="wf-pipeline-keys">
         Arrow keys move between cards. Alt+Left / Alt+Right reorders a stage, Alt+Up / Alt+Down
-        reorders a reviewer, Delete removes the focused card after a confirmation.
+        reorders a reviewer or check, Delete removes the focused card after a confirmation.
       </p>
     </div>
   );

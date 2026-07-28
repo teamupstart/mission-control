@@ -1,4 +1,4 @@
-# Phase 3: Pipeline checks and No-Mistakes Review v2
+# Phase 3: Pipeline checks and No-Mistakes Review v3
 
 Source plan: `docs/plans/builtin-workflows/plan.md`
 Index: `docs/plans/builtin-workflows/phased-plan.md`
@@ -6,12 +6,16 @@ Index: `docs/plans/builtin-workflows/phased-plan.md`
 ## Outcome and value
 
 Check nodes become first-class in the Pipeline editor, and the shipped **No-Mistakes Review**
-gains a cheap deterministic first stage: version 2 runs the configured `typecheck` and `test`
-commands before it spends a single model call on a change that does not build.
+gains a deterministic first stage: version 3 records the `typecheck` and `test` checks before
+it reaches any Persona. The production command-execution runtime remains a separate unit, so
+this build records configured checks as not run and passed.
 
-This is the phase where the two independent halves meet and the plan's headline claim becomes
-true. It is also the phase that proves the built-in version list was worth building: version 1
-keeps resolving for every binding already pinned to it.
+This is the phase where the two independent graph and catalog halves meet. It is also the
+phase that proves the built-in version list was worth building: versions 1 and 2 keep
+resolving for every binding already pinned to them. The original phase reserved version 2 for
+this gate, but the merged base shipped version 2 first with Live delivery defaults. The
+append-only version contract therefore places the gate at version 3. The command-execution
+headline remains contingent on the separate runtime unit.
 
 ## Entry criteria and dependencies
 
@@ -28,7 +32,7 @@ In scope:
 - `StageMember` becomes a discriminated union so a stage can hold checks as well as Personas.
 - `projectStages` / `compileStages` / `stageBlockers` / `stageExpressible` handle checks.
 - `PipelineEditor.tsx` and `pipeline-bits.tsx` render and edit check members.
-- No-Mistakes Review version 2, appended to the built-in catalog.
+- No-Mistakes Review version 3, appended to the built-in catalog.
 - README, tests.
 
 Explicit non-goals:
@@ -36,14 +40,16 @@ Explicit non-goals:
 - **Version 1 is not modified.** It stays in the catalog, byte-identical.
 - **No new node kind, no new slot.** Both vocabularies are inherited and append-only.
 - **No change to command resolution or consent.** Phase 2 owns them.
-- **No second built-in workflow.** One workflow, two versions.
+- **No production command-execution runtime.** This phase consumes the Check execution seam;
+  a separate unit must supply its crash-safe process and worktree lifecycle.
+- **No second built-in workflow.** One workflow, three versions.
 - **No migration.** Still nothing stored.
 
 ## Repository findings this phase depends on
 
-- `StageMember` is `{ nodeId: string | null; personaId: PersonaId }`
-  (`workflow-stages.ts:31-39`). `nodeId: null` marks a member the editor added that no graph
-  has yet, and `compileStages` is the only minter of real ids.
+- Before this phase, `StageMember` was
+  `{ nodeId: string | null; personaId: PersonaId }`. `nodeId: null` marks a member the editor
+  added that no graph has yet, and `compileStages` is the only minter of real ids.
 - The invariant at the top of `workflow-stages.ts` is
   `projectStages(compileStages(p, g)) === p`. Widening the member type must preserve it, and
   the existing round-trip test is the place that proves it.
@@ -91,15 +97,15 @@ because the compiler treats members uniformly and the projection must too.
 - `pipeline-bits.tsx`: `ReviewerRow` gains a check variant. Put it there, not inline in the
   editor, per the shared-leaf rule.
 - Keyboard parity is not optional: the existing ⌥↑/⌥↓ member reorder and Delete must work on a
-  check member exactly as on a Persona. `workflow-builder-keyboard.test.ts` is the pin.
+  check member exactly as on a Persona. `workflow-builder-a11y.test.ts` is the pin.
 - `styles.css`: any new class goes in the matching feature section. Grep the file when
   renaming one.
 
-### 3. No-Mistakes Review version 2
+### 3. No-Mistakes Review version 3
 
-Append to the built-in catalog. Version 1 stays untouched.
+Append to the built-in catalog. Versions 1 and 2 stay untouched.
 
-The v2 pipeline, in stage order:
+The v3 pipeline, in stage order:
 
 | Stage | Members |
 |---|---|
@@ -111,40 +117,40 @@ Stage 1 is the cheap deterministic gate, for the reason this plan reversed the e
 decision: a change that does not compile should not consume four model calls. Stage 2 remains
 the cheap intent gate. Stage 3 is the fan-out.
 
-Two checks in one stage means `compileStages` mints a join for them, and both must pass before
+Two checks in one stage means `compileStages` emits their named join, and both must pass before
 Intent Conformance runs. On an unconfigured machine both are `skipped` and pass, so the graph
-behaves exactly as version 1 did.
+follows the same Persona review path as version 2.
 
-`definition.currentVersionId` moves to version 2. `draftRevision` increments so the definition
+`definition.currentVersionId` moves to version 3. `draftRevision` increments so the definition
 reads as changed.
 
-Build the graph with `compileStages` **at authoring time** and paste the result in as a literal
-with frozen ids, exactly as Phase 1 does. Do not call `compileStages` at module load:
-`workflow-stages.ts:369, 386, 396` mint `crypto.randomUUID()`, and node and edge ids reach
-`workflow_node_attempts.node_id` and `workflow_edge_receipts.edge_id` durably. Version 2's ids
-must be as stable as version 1's.
+Write each version as its own complete frozen `StagePipeline` literal. Shared stage arrays
+would let a future version edit rewrite an older version silently. Node ids are named in the
+literal and edge ids are derived deterministically from their endpoints, so nothing durable
+is minted at module load.
 
-Version 2 mints entirely fresh node ids rather than reusing version 1's. The two graphs are
-independent immutable artifacts, and a run pinned to one never consults the other, so shared
-ids would buy nothing and would invite exactly the cross-version confusion the pin exists to
-prevent.
+Reuse a node id across versions when it is the same logical node, such as Intent Conformance,
+so attempt rows keep naming the same reviewer. Version 3 adds fresh ids only for its new
+checks and their Join.
 
 ### 4. README
 
-Update the Built-in workflows section: No-Mistakes Review now ships at version 2 with a
-deterministic first stage, what it runs, and that an unconfigured slot passes with a note so it
-is safe with no configuration. Note that a binding pinned to version 1 keeps running version 1,
-which is how every published version already behaves.
+Update the Built-in workflows section: No-Mistakes Review now ships at version 3 with a
+deterministic first stage, which slots it names, the current execution-runtime limitation, and
+that an unconfigured slot passes with a note so it is safe with no configuration. Note that a
+binding pinned to version 1 or 2 keeps running that version, which is how every published
+version already behaves.
 
 ## Data, API and compatibility
 
-- **Version 1 keeps resolving.** `getWorkflowVersionById("builtin-workflow:no-mistakes-review@1")`
-  must still answer after this phase. This is the single most important compatibility fact here
-  and it has its own test.
+- **Versions 1 and 2 keep resolving.**
+  `getWorkflowVersionById("builtin-workflow:no-mistakes-review@1")` and its `@2` counterpart
+  must still answer after this phase. This is the single most important compatibility fact
+  here and it has its own test.
 - **No migration, no new durable field.**
-- **A binding pinned to v1 keeps its behavior.** Adopting v2 means creating a new binding, which
-  is the same gesture adopting any new published version already requires.
-- **An upgraded install sees v2 as current** with no operator gesture, because the catalog is
+- **A binding pinned to v1 or v2 keeps its behavior.** Adopting v3 means creating a new
+  binding, which is the same gesture adopting any new published version already requires.
+- **An upgraded install sees v3 as current** with no operator gesture, because the catalog is
   compiled in and `currentVersionId` names the newest.
 
 ## Tests and verification
@@ -158,67 +164,71 @@ Extend `test/workflow-stages.test.ts`:
 
 Extend `test/builtin-workflows.test.ts`:
 
-- The catalog holds versions 1 and 2, ascending, with `currentVersionId` naming 2.
+- The catalog holds versions 1, 2 and 3, ascending, with `currentVersionId` naming 3.
 - **Version 1's complete version artifact is unchanged**, including its Persona snapshots,
   asserted against a literal so a future edit cannot silently rewrite history.
-- Version 2's Persona snapshots equal the current built-in Persona catalog. Any later
-  referenced guidance change must append another version rather than rewriting version 2.
-- v2 validates clean, projects to the three-stage pipeline above, and round-trips.
-- v2's check nodes name slots present in `WORKFLOW_CHECK_SLOTS`.
+- Version 3's Persona snapshots equal the current built-in Persona catalog. Any later
+  referenced guidance change must append another version rather than rewriting version 3.
+- v3 validates clean, projects to the three-stage pipeline above, and round-trips.
+- v3's check nodes name slots present in `WORKFLOW_CHECK_SLOTS`.
 
 Extend `test/builtin-workflows-store.test.ts`:
 
-- `getWorkflowVersionById` resolves both version ids.
-- A binding row naming v1 still resolves after the catalog gains v2. This is the regression the
-  phase split can produce and it is checked directly.
+- `getWorkflowVersionById` resolves all three version ids.
+- Binding rows naming v1 or v2 still resolve after the catalog gains v3. This is the
+  regression the phase split can produce and it is checked directly.
 
 Extend `test/workflow-pipeline-editor.test.ts`, `test/workflow-pipeline-render.test.ts` and
-`test/workflow-builder-keyboard.test.ts` for the check member: render, add, delete, reorder.
+`test/workflow-builder-a11y.test.ts` for the check member: render, add, delete, reorder.
 
 Commands: `npm run typecheck`, `npm test`, `npm run build`.
 
-Manual, on a fresh `HARNESS_HOME`: No-Mistakes Review shows v2, renders in the Pipeline editor
-with the deterministic stage first, and binds. With no commands configured, a submission passes
-stage 1 with skip notes. With a `typecheck` command configured and deliberately broken code, it
-fails at stage 1 without running a Persona, which is the whole point and worth watching happen.
+Manual, on a fresh `HARNESS_HOME`: No-Mistakes Review shows v3, renders in the Pipeline editor
+with the deterministic stage first, and binds. With no commands configured, a submission
+passes stage 1 with skip notes. With a command configured, this build records the check as not
+run and passed because no production caller supplies the execution dependency. Exercise the
+real v3 graph through the engine's execution seam to prove that a failing typecheck stops the
+run before any Persona attempt.
 
 ## Merge and exit criteria
 
 - CI green on Node 24 and Node 26.
-- A binding created against v1 before this change still resolves and still runs after it.
+- A binding created against v1 or v2 before this change still resolves and still runs after it.
 - The shipped workflow renders in the Pipeline editor, not Graph view.
-- A broken build fails at stage 1 with zero Persona calls spent.
-- An unconfigured machine runs the workflow exactly as v1 behaved.
+- Through the engine execution seam, a failing stage-1 check spends zero Persona calls.
+- Without a production execution dependency, configured checks are visibly not run and pass.
+- An unconfigured machine follows the same Persona review path as v2.
 - README updated in this change.
 
 ## Downstream handoff
 
-Nothing is scheduled after this phase. If the follow-up named in the source plan is taken up
-later, it may rely on:
+No numbered phase is scheduled after this one. The production check-execution runtime remains
+a separate dependency-linked unit. If the configuration follow-up named in the source plan is
+taken up later, it may rely on:
 
 - `checkCommandFor` as the single resolution point, so a default-branch file becomes a second
   source behind one helper rather than a second matcher.
-- The built-in version list, so a v3 is an append.
+- The built-in version list, so a v4 is an append.
 
 It must not rename a slot, a built-in slug, or a version id.
 
 ## Cross-phase audit record
 
-- **Inherited from Phase 1's corrected defect**: the built-in graph is a committed literal with
-  frozen ids, never a module-load `compileStages` call. Phase 1's audit record has the full
-  reasoning. Version 2 is bound by the same rule and this phase states it inline so an
-  implementer reading only this file cannot reintroduce it.
+- **Inherited from Phase 1's corrected defect**: every built-in version declares frozen node
+  ids and derives stable edge ids. The shared compiler may calculate routes and positions at
+  module load, but no minted UUID reaches the published graph. Phase 1's audit record has the
+  full reasoning.
 - **Against Phase 1**: consumes the versions-list catalog exactly as Phase 1 promised. No
   change to `builtinWorkflowId` / `builtinWorkflowVersionId`, the store merge, or the refusals.
   Version 1 immutability is asserted in this phase's tests rather than assumed.
 - **Against Phase 2**: consumes the `check` kind, `WORKFLOW_CHECK_SLOTS`, and the
   unconfigured-slot-passes rule. This phase changes `stageExpressible`, which Phase 2
   explicitly handed over. No other Phase 2 contract is touched.
-- **Reconciliation performed while writing this phase**: the v2 pipeline puts two checks in one
+- **Reconciliation performed while writing this phase**: the v3 pipeline puts two checks in one
   stage, which makes them Join predecessors. Phase 2's validator change (a Join predecessor may
   be a Check) is what allows it. That requirement was already in Phase 2 before this phase was
   written, so no edit back was needed; recorded here because a reader of Phase 2 alone would
   not see why that rule matters.
-- **Reconsidered and rejected**: splitting this into "pipeline support" and "v2" as separate
-  phases. The pipeline work has no consumer other than v2, and v2 must not ship without it or
+- **Reconsidered and rejected**: splitting this into "pipeline support" and "v3" as separate
+  phases. The pipeline work has no consumer other than v3, and v3 must not ship without it or
   the flagship built-in forces every operator into Graph view. Recorded in `phased-plan.md`.

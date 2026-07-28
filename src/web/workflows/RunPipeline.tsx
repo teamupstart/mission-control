@@ -1,9 +1,10 @@
 import { useCallback, useMemo } from "react";
-import type { WorkflowVersion } from "@shared/workflow.ts";
+import type { WorkflowCheckStatus, WorkflowVersion } from "@shared/workflow.ts";
 import {
   nodeLabel,
   projectStages,
   stageName,
+  stageSummary,
   type StageNode,
 } from "@shared/workflow-stages.ts";
 import {
@@ -15,7 +16,7 @@ import {
   type PipelineStatus,
 } from "./pipeline-bits.tsx";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
-import { reviewerStatus, stageStatus } from "./run-model.ts";
+import { checkStatus, reviewerStatus, stageStatus } from "./run-model.ts";
 
 /**
  * The run, drawn on the pipeline its author drew.
@@ -37,6 +38,7 @@ export function RunPipeline({
   session,
   end,
   metaFor,
+  checkOutcomeFor,
   repair,
 }: {
   version: WorkflowVersion;
@@ -46,6 +48,15 @@ export function RunPipeline({
   end: PipelineStatus;
   /** The `runner · model` line for one reviewer, or null when nothing ran yet. */
   metaFor: (nodeId: string) => string | null;
+  /**
+   * The outcome a check RECORDED, which the attempt state cannot supply.
+   *
+   * A skipped or unavailable check still finishes as a passing attempt, so without this the
+   * chip would report "Passed" for a command that was never spawned. Optional so the canvas
+   * fallback and older callers keep compiling; a caller that omits it simply loses the
+   * distinction rather than asserting the wrong half of it.
+   */
+  checkOutcomeFor?: (nodeId: string) => WorkflowCheckStatus | null;
   repair: string | null;
 }): React.JSX.Element {
   const graph = version.graph;
@@ -98,10 +109,22 @@ export function RunPipeline({
         const members = stage.members.map((member) => {
           const node = member.nodeId ? nodes.get(member.nodeId) : undefined;
           return {
-            key: member.nodeId ?? `${index}:${member.personaId}`,
-            name: node ? nodeLabel(graph, node, personaNames) : "Missing persona",
+            key: member.nodeId
+              ?? `${index}:${member.kind === "check" ? member.slot : member.personaId}`,
+            kind: member.kind,
+            // A check's row carries the bare slot and its own chip, the way the editor draws
+            // it - `nodeLabel` would supply "Check · test", which the chip would then say
+            // again. A Persona keeps the snapshot name the version was published with.
+            name: member.kind === "check"
+              ? member.slot
+              : node ? nodeLabel(graph, node, personaNames) : "Missing persona",
             meta: member.nodeId ? metaFor(member.nodeId) : null,
-            status: reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined),
+            status: member.kind === "check"
+              ? checkStatus(
+                  member.nodeId ? statuses[member.nodeId] : undefined,
+                  member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
+                )
+              : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined),
           };
         });
         const parallel = stage.members.length > 1;
@@ -109,15 +132,14 @@ export function RunPipeline({
           <div className="wf-pipeline-slot" key={`stage:${index}`}>
             <StageCard
               name={stageName(stage, index, personaNames)}
-              subtitle={parallel
-                ? `${stage.members.length} reviewers · all must pass`
-                : "1 reviewer"}
+              subtitle={stageSummary(stage)}
               status={stageStatus(members.map((member) => member.status))}
             >
               <ul className="wf-pipeline-members">
                 {members.map((member) => (
                   <ReviewerRow
                     key={member.key}
+                    kind={member.kind}
                     name={member.name}
                     meta={member.meta}
                     status={member.status}

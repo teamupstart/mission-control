@@ -18,6 +18,7 @@ const render = (state: Parameters<typeof ladderDetail>[0]): string => {
     summary: detail.summary,
     detail,
     onOpenRun: () => {},
+    sessionBound: true,
   }));
 };
 

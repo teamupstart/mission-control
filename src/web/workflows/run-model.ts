@@ -14,6 +14,7 @@ import type {
   WorkflowRunStatus,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
+import { isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
 import { WorkflowCheckOutcomeSchema } from "@shared/protocol.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import { WorkflowApiError } from "./workflowApi.ts";
@@ -45,6 +46,31 @@ export function workflowRunLoadError(caught: unknown): string {
     return "This workflow run is no longer retained. Select another run from history.";
   }
   return caught instanceof Error ? caught.message : "Could not load workflow run";
+}
+
+/**
+ * The exact repair packet Copy feedback carries on every workflow surface.
+ *
+ * Prefer the newest retained delivery payload because it is the packet the workflow prepared.
+ * Older runs without one fall back to their retained Persona verdicts.
+ */
+export function workflowFeedbackText(detail: WorkflowRunDetail): string {
+  const deliveryPayload = [...detail.deliveries].reverse()
+    .find((delivery) => delivery.payload.length > 0)?.payload;
+  return deliveryPayload ?? detail.attempts.flatMap((attempt) => {
+    const verdict = verdictOf(attempt);
+    const node = detail.version?.graph.nodes.find((candidate) => candidate.id === attempt.nodeId);
+    if (!verdict || !node || !isVerdictNode(node)) return [];
+    const author = verdictAuthor(node);
+    if (verdict.verdict === "pass") {
+      return [`${author}: PASS\n${verdict.summary}\n${verdict.approvalDetails.reason}`];
+    }
+    return [([
+      `${author}: FAIL`,
+      verdict.summary,
+      ...verdict.requestedChanges.map((change) => `- ${change.title}: ${change.rationale}`),
+    ].join("\n"))];
+  }).join("\n\n");
 }
 
 /**

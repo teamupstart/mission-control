@@ -37,6 +37,7 @@ test("a skipped check never reads as passed", () => {
     summary: detail.summary,
     detail,
     onOpenRun: () => {},
+    sessionBound: true,
   }));
   const row = html.match(
     /<li class="wf-ladder-member[^"]*"[^>]*>[\s\S]*?Check · typecheck[\s\S]*?<\/li>/,

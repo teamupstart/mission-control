@@ -38,6 +38,7 @@ test("a freehand graph renders the workflow chip and link, not an empty ladder",
     summary: detail.summary,
     detail,
     onOpenRun: () => {},
+    sessionBound: true,
   }));
   assert.match(html, /workflow-chip/);
   assert.match(html, /Open run/);

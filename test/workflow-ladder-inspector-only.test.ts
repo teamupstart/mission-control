@@ -18,6 +18,7 @@ test("an Inspector-only round keeps every authored stage before the gate", () =>
     summary: detail.summary,
     detail,
     onOpenRun: () => {},
+    sessionBound: true,
   }));
   assert.ok(html.includes(inspectorOnlyRoundSentence()));
   assert.match(html, /Stage 1/);

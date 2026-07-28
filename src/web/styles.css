@@ -14476,9 +14476,30 @@ select.sc-input {
 }
 .wf-ladder-actrow {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
   padding-top: 9px;
   border-top: 1px solid var(--border-soft);
+}
+.wf-ladder-rung > .wf-ladder-actrow {
+  justify-content: flex-start;
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+}
+.wf-ladder-action.btn {
+  min-height: 27px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.wf-ladder-action.btn:disabled {
+  opacity: 0.58;
+  color: var(--dim);
+  border-color: var(--border-soft);
+  background: transparent;
 }
 .wf-ladder-open {
   flex: none;
@@ -14499,6 +14520,17 @@ select.sc-input {
 .wf-ladder-open:focus-visible {
   outline: 2px solid var(--working);
   outline-offset: 2px;
+}
+.wf-ladder-action-error {
+  flex: none;
+  margin: -5px 0 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in oklab, var(--danger) 38%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--danger) 8%, var(--panel-2));
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* The other tabs are short - let the whole pane scroll. */

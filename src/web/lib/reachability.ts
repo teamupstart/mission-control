@@ -91,6 +91,6 @@ export function reachability({
   return {
     tone: "ok",
     title: "You're reachable",
-    sentence: `Everything reaches you via ${channels} as it happens.`,
+    sentence: `Anything blocked on you reaches you via ${channels} as it happens.`,
   };
 }

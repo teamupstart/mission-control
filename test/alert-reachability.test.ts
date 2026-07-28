@@ -20,16 +20,25 @@ import { elapsed, reachability } from "../src/web/lib/reachability.ts";
 
 const base = { desktop: true, sound: true, away: false, awayMs: null, buffered: 0 };
 
-test("both channels live and at the desk: everything reaches you", () => {
+test("both channels live and at the desk: anything blocked on you reaches you", () => {
   const r = reachability(base);
   assert.equal(r.tone, "ok");
   assert.equal(r.title, "You're reachable");
-  assert.match(r.sentence, /desktop and sound/);
+  assert.equal(
+    r.sentence,
+    "Anything blocked on you reaches you via desktop and sound as it happens.",
+  );
 });
 
 test("the sentence names only the channels that are actually live", () => {
-  assert.match(reachability({ ...base, sound: false }).sentence, /via desktop as it happens/);
-  assert.match(reachability({ ...base, desktop: false }).sentence, /via sound as it happens/);
+  assert.equal(
+    reachability({ ...base, sound: false }).sentence,
+    "Anything blocked on you reaches you via desktop as it happens.",
+  );
+  assert.equal(
+    reachability({ ...base, desktop: false }).sentence,
+    "Anything blocked on you reaches you via sound as it happens.",
+  );
 });
 
 test("both channels off at the desk: nothing can reach you, and it says so", () => {

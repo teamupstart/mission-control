@@ -66,16 +66,24 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
 
   assert.equal(tasks.create(input).workflowId, "workflow-review");
   assert.equal(tasks.create({ ...input, workflowId: null }).workflowId, null);
+  const scheduledOptions = {
+    id: "scheduled-workflow-default",
+    schedule: {
+      scheduleId: "schedule",
+      scheduleOccurrenceId: "occurrence",
+      scheduledFor: 1,
+    },
+  };
+  assert.equal(tasks.create(input, scheduledOptions).workflowId, "workflow-review");
+  setWorkflowConfig({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: null,
+  });
   assert.equal(
-    tasks.create(input, {
-      id: "scheduled-workflow-default",
-      schedule: {
-        scheduleId: "schedule",
-        scheduleOccurrenceId: "occurrence",
-        scheduledFor: 1,
-      },
-    }).workflowId,
+    tasks.create(input, scheduledOptions).workflowId,
     "workflow-review",
+    "an occurrence retry keeps the Workflow inherited when its task was first filed",
   );
   assert.equal(
     tasks.create(
@@ -84,11 +92,6 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
     ).workflowId,
     null,
   );
-  setWorkflowConfig({
-    liveEnabled: false,
-    repoAllowlist: [],
-    defaultWorkflowId: null,
-  });
 });
 
 test("workflow config HTTP writes use the shared parser and replace the complete object", async () => {

@@ -101,6 +101,55 @@ test("Publish is idempotent and immutable versions are readable", async () => {
   assert.equal("graph" in versionBody, true);
 });
 
+test("a configured dispatch default cannot be archived or deleted", async () => {
+  const { request } = fixture();
+  const valid = await seedValid(request);
+  assert.equal(
+    (await request(`/api/workflows/${valid.workflow.id}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ expectedDraftRevision: 1 }),
+    })).status,
+    200,
+  );
+  assert.equal(
+    (await request("/api/workflows/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        liveEnabled: false,
+        repoAllowlist: [],
+        defaultWorkflowId: valid.workflow.id,
+      }),
+    })).status,
+    200,
+  );
+
+  const archived = await request(`/api/workflows/${valid.workflow.id}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  assert.equal(archived.status, 409);
+  assert.match((await archived.json() as { error: string }).error, /another dispatch default/);
+
+  const deleted = await request(`/api/workflows/${valid.workflow.id}/delete`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  assert.equal(deleted.status, 409);
+  assert.match((await deleted.json() as { error: string }).error, /another dispatch default/);
+
+  assert.equal(
+    (await request("/api/workflows/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        liveEnabled: false,
+        repoAllowlist: [],
+        defaultWorkflowId: null,
+      }),
+    })).status,
+    200,
+  );
+});
+
 test("workflow summaries are bounded SSE projections, not graph blobs", async () => {
   const { request, registry } = fixture();
   const valid = await seedValid(request);

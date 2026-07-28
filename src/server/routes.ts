@@ -792,7 +792,14 @@ export function buildApp(
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, ArchiveWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.archive(c.req.param("id"), parsed.data.expectedDraftRevision);
+    const id = c.req.param("id");
+    const selected = manager.get(id)?.workflow ?? null;
+    if (selected && !selected.builtin && getWorkflowConfig().defaultWorkflowId === id) {
+      return c.json({
+        error: "Choose another dispatch default before archiving this workflow",
+      }, 409);
+    }
+    const result = manager.archive(id, parsed.data.expectedDraftRevision);
     return result.ok ? c.json({ workflow: result.workflow, summary: result.summary }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
   app.post("/api/workflows/:id/unarchive", async (c) => {
@@ -812,7 +819,14 @@ export function buildApp(
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, DeleteWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.remove(c.req.param("id"), parsed.data.expectedDraftRevision);
+    const id = c.req.param("id");
+    const selected = manager.get(id)?.workflow ?? null;
+    if (selected && !selected.builtin && getWorkflowConfig().defaultWorkflowId === id) {
+      return c.json({
+        error: "Choose another dispatch default before deleting this workflow",
+      }, 409);
+    }
+    const result = manager.remove(id, parsed.data.expectedDraftRevision);
     return result.ok ? c.json({ ok: true, id: result.id }) : workflowFailure(c, result, parsed.data.expectedDraftRevision);
   });
   app.post("/api/workflows/:id/validate", async (c) => {

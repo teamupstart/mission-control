@@ -1006,7 +1006,6 @@ export class TaskManager {
     const now = Date.now();
     const explicitTitle = input.title?.trim();
     const id = internal?.id ?? randomUUID();
-    const workflowId = resolveTaskWorkflowId(input.workflowId);
     if (internal) {
       // Two producer-specific identity checks, with the same recovery rule. A scheduled id
       // must carry THIS occurrence's provenance; an ensemble id must still carry the exact
@@ -1026,18 +1025,21 @@ export class TaskManager {
               `task ${id} already exists and was not filed by occurrence ${p.scheduleOccurrenceId}`,
             );
           }
-        } else if (
-          existing.repoRoot !== input.repoRoot ||
-          existing.intent !== input.intent ||
-          existing.title !== explicitTitle ||
-          existing.kind !== input.kind ||
-          existing.agent !== input.agent ||
-          existing.model !== (input.model ?? null) ||
-          existing.effort !== (input.effort ?? null) ||
-          existing.workflowId !== workflowId ||
-          existing.scheduleId !== null
-        ) {
-          throw new TaskIdCollisionError(`task ${id} already exists with different ensemble input`);
+        } else {
+          const workflowId = resolveTaskWorkflowId(input.workflowId);
+          if (
+            existing.repoRoot !== input.repoRoot ||
+            existing.intent !== input.intent ||
+            existing.title !== explicitTitle ||
+            existing.kind !== input.kind ||
+            existing.agent !== input.agent ||
+            existing.model !== (input.model ?? null) ||
+            existing.effort !== (input.effort ?? null) ||
+            existing.workflowId !== workflowId ||
+            existing.scheduleId !== null
+          ) {
+            throw new TaskIdCollisionError(`task ${id} already exists with different ensemble input`);
+          }
         }
         return existing;
       }
@@ -1048,6 +1050,7 @@ export class TaskManager {
       if (!input.backlog) throw new Error(`internally created task ${id} must be backlog`);
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
+    const workflowId = resolveTaskWorkflowId(input.workflowId);
     const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const task: Task = {

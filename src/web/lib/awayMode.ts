@@ -83,6 +83,7 @@ export function useAwayMode(): {
       // Optimistic, then reconciled: the server owns `awaySince`, so the response is
       // authoritative over whatever we guessed locally.
       setAwayState((cur) => (cur ? { ...cur, ...patch } : cur));
+      if (patch.away !== undefined) setBuffered(null);
       const res = await api.setAwayConfig(patch);
       if (!res.ok) return;
       const cfg = await fetchAwayConfig();

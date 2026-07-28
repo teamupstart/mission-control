@@ -110,6 +110,20 @@ test("away with an empty buffer says so and disables the Digest button", () => {
   assert.match(html, /disabled=""/, "nothing to look at yet");
 });
 
+test("away ignores a buffer summary from a different window", () => {
+  const html = render({
+    away: awayOn,
+    buffered: { ...buffered, since: awayOn.awaySince! - 60_000 },
+    preview: true,
+  });
+  assert.match(html, /nothing buffered yet/);
+  assert.match(html, /Digest<\/button>/);
+  assert.match(html, /disabled=""/, "a stale window has nothing current to preview");
+  assert.doesNotMatch(html, /7 buffered/);
+  assert.doesNotMatch(html, /1 stuck · 6 finished/);
+  assert.doesNotMatch(html, /Session wedged - silent for 40m/);
+});
+
 test("the preview lists what is waiting, only when unfolded", () => {
   const folded = render({ away: awayOn, buffered });
   assert.doesNotMatch(folded, /class="alert-preview"/);

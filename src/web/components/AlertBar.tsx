@@ -105,7 +105,9 @@ export function AlertPanel({
 }): React.JSX.Element {
   const isAway = Boolean(away?.away);
   const awayMs = isAway && away?.awaySince != null ? Math.max(0, now - away.awaySince) : null;
-  const count = buffered?.count ?? 0;
+  const activeBuffer =
+    isAway && buffered?.since === away?.awaySince ? buffered : null;
+  const count = activeBuffer?.count ?? 0;
   const reach = reachability({
     desktop: desktopOn,
     sound: soundOn,
@@ -210,14 +212,14 @@ export function AlertPanel({
             is written on return, and reading it is what consumes it. */}
         {isAway && preview && count > 0 && (
           <div className="alert-preview">
-            <p className="alert-preview-rollup">{buffered?.rollup}</p>
+            <p className="alert-preview-rollup">{activeBuffer?.rollup}</p>
             <ul className="alert-preview-list">
-              {(buffered?.lines ?? []).map((line) => (
-                <li key={line}>{line}</li>
+              {(activeBuffer?.lines ?? []).map((line, index) => (
+                <li key={index}>{line}</li>
               ))}
             </ul>
-            {(buffered?.dropped ?? 0) > 0 && (
-              <p className="alert-preview-note">+{buffered?.dropped} beyond the buffer's cap</p>
+            {(activeBuffer?.dropped ?? 0) > 0 && (
+              <p className="alert-preview-note">+{activeBuffer?.dropped} beyond the buffer's cap</p>
             )}
           </div>
         )}

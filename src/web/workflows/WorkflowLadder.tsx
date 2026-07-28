@@ -53,6 +53,7 @@ import { workflowRequest } from "./workflowApi.ts";
 import {
   createWorkflowLoadAcknowledgement,
   createWorkflowLoadCommitBarrier,
+  createWorkflowRefreshQueue,
 } from "./workflow-load-commit.ts";
 import { useWorkflowRunDetail } from "./useWorkflowRunDetail.ts";
 
@@ -428,13 +429,18 @@ export function WorkflowLadderPanel({
   const refreshGeneration = useRef(0);
   const refreshCommit = useRef(createWorkflowLoadCommitBarrier());
   const refreshAcknowledgement = useRef(createWorkflowLoadAcknowledgement());
-  const requestRefresh = useCallback((): Promise<void> => {
+  const refreshQueue = useRef(createWorkflowRefreshQueue());
+  const performRefresh = useCallback((): Promise<void> => {
     if (!mounted.current) return Promise.resolve();
     const generation = ++refreshGeneration.current;
     const committed = refreshCommit.current.waitFor(generation);
     setRefreshRevision(generation);
     return committed;
   }, []);
+  const requestRefresh = useCallback(
+    (): Promise<void> => refreshQueue.current.enqueue(performRefresh),
+    [performRefresh],
+  );
   const state = useWorkflowRunDetail(run.id, run.updatedAt + refreshRevision);
   const controller = useRunActions(run.id, requestRefresh);
 

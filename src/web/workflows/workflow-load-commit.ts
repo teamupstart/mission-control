@@ -19,6 +19,22 @@ export interface WorkflowLoadAcknowledgement {
   observe(generation: number, loading: boolean): boolean;
 }
 
+export interface WorkflowRefreshQueue {
+  enqueue(refresh: () => Promise<void>): Promise<void>;
+}
+
+/** Serializes detail refetches so one generation cannot inherit another's loading state. */
+export function createWorkflowRefreshQueue(): WorkflowRefreshQueue {
+  let tail = Promise.resolve();
+  return {
+    enqueue(refresh) {
+      const next = tail.then(refresh, refresh);
+      tail = next.catch(() => {});
+      return next;
+    },
+  };
+}
+
 export function createWorkflowLoadAcknowledgement(): WorkflowLoadAcknowledgement {
   let loadingSeenThrough = -1;
   return {

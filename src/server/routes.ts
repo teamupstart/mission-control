@@ -715,6 +715,16 @@ export function buildApp(
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.defaultWorkflowId) {
+      const detail = workflowManager()?.get(parsed.data.defaultWorkflowId) ?? null;
+      if (
+        !detail
+        || detail.workflow.archivedAt !== null
+        || detail.workflow.currentVersionId === null
+      ) {
+        return c.json({ error: "The dispatch default must be an active published workflow" }, 409);
+      }
+    }
     return c.json(setWorkflowConfig(parsed.data));
   });
   app.post("/api/workflows", bodyLimit({
@@ -2512,7 +2522,9 @@ export function buildApp(
   app.put("/api/foreman/config", async (c) => {
     const parsed = await parseBody(c, ForemanConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    return c.json(setForemanConfig(parsed.data));
+    const config = setForemanConfig(parsed.data);
+    if (config.enabled) workflowManager()?.reconcileDispatchedTaskWorkflows();
+    return c.json(config);
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
   // The fleet-wide episode ledger, newest first - the cross-session counterpart to
@@ -2843,12 +2855,24 @@ export function buildApp(
   app.post("/api/tasks", async (c) => {
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
+    const workflowId =
+      parsed.data.workflowId === undefined
+        ? getWorkflowConfig().defaultWorkflowId
+        : parsed.data.workflowId;
     const resolved = await resolveTaskRepoRoot(parsed.data.repoRoot);
     if (!resolved.ok) return c.json({ error: resolved.error }, 400);
     const repoRoot = resolved.repoRoot;
+    if (workflowId) {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const blocked = parsed.data.backlog
+        ? manager.workflowSelectionBlock(workflowId)
+        : manager.dispatchWorkflowBlock(workflowId, parsed.data.agent, repoRoot);
+      if (blocked) return c.json({ error: blocked }, 409);
+    }
     let task;
     try {
-      task = tasks.create({ ...parsed.data, repoRoot });
+      task = tasks.create({ ...parsed.data, repoRoot, workflowId });
     } catch (error) {
       if (error instanceof TaskDependencyError) return c.json({ error: error.message }, 409);
       throw error;
@@ -2866,6 +2890,7 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const patch = parsed.data;
     const id = c.req.param("id");
+    const existing = tasks.get(id);
     // Resolved only when the repo actually MOVES. A caller restating the root it was
     // handed is not asking for anything, and re-checking it makes a task uneditable the
     // moment its repo goes away - a reclaimed worktree, a directory since renamed - so a
@@ -2880,6 +2905,16 @@ export function buildApp(
       // task that had already been dispatched.
       patch.repoRoot = resolved.repoRoot;
     }
+    if (existing) {
+      const workflowId =
+        patch.workflowId === undefined ? existing.workflowId : patch.workflowId;
+      if (workflowId) {
+        const manager = workflowManager();
+        if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+        const blocked = manager.workflowSelectionBlock(workflowId);
+        if (blocked) return c.json({ error: blocked }, 409);
+      }
+    }
     const r = await tasks.update(id, patch);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
@@ -2887,7 +2922,19 @@ export function buildApp(
   app.post("/api/tasks/:id/dispatch", async (c) => {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await tasks.dispatch(c.req.param("id"), parsed.data);
+    const id = c.req.param("id");
+    const task = tasks.get(id);
+    if (task?.workflowId) {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const blocked = manager.dispatchWorkflowBlock(
+        task.workflowId,
+        task.agent,
+        task.repoRoot,
+      );
+      if (blocked) return c.json({ error: blocked }, 409);
+    }
+    const r = await tasks.dispatch(id, parsed.data);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
@@ -2906,7 +2953,26 @@ export function buildApp(
   app.post("/api/tasks/:id/assign", async (c) => {
     const parsed = await parseBody(c, AssignTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await tasks.assign(c.req.param("id"), parsed.data.sessionId, {
+    const id = c.req.param("id");
+    const task = tasks.get(id);
+    const session = registry.getSession(parsed.data.sessionId);
+    if (task && session) {
+      const manager = workflowManager();
+      if (task.workflowId) {
+        if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+        const blocked = manager.dispatchWorkflowBlock(
+          task.workflowId,
+          session.agent,
+          task.repoRoot,
+        );
+        if (blocked) return c.json({ error: blocked }, 409);
+      }
+      // Explicit None is intent too: it must not be assigned onto a conversation whose
+      // existing binding would still run a Workflow after this task completes.
+      const conflict = manager?.assignmentWorkflowBlock(task.workflowId, session) ?? null;
+      if (conflict) return c.json({ error: conflict }, 409);
+    }
+    const r = await tasks.assign(id, parsed.data.sessionId, {
       overrideDisabled: parsed.data.overrideDisabled,
       confirmReset: parsed.data.confirmReset,
     });

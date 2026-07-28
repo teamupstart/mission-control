@@ -62,6 +62,11 @@ export interface CreateTaskInput {
   model?: string;
   /** Launch with a specific reasoning effort; omitted follows the harness default. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /**
+   * Published Workflow identity to arm when the launched session appears. Null means none;
+   * callers resolve any machine default before entering TaskManager.
+   */
+  workflowId?: string | null;
   /** Prerequisites selected from current backlog tasks or live sessions. */
   dependencies?: TaskDependencyInput[];
   /**
@@ -1027,6 +1032,7 @@ export class TaskManager {
           existing.agent !== input.agent ||
           existing.model !== (input.model ?? null) ||
           existing.effort !== (input.effort ?? null) ||
+          existing.workflowId !== (input.workflowId ?? null) ||
           existing.scheduleId !== null
         ) {
           throw new TaskIdCollisionError(`task ${id} already exists with different ensemble input`);
@@ -1062,6 +1068,10 @@ export class TaskManager {
       // `resolveDispatchEffort`).
       model: input.model ?? null,
       effort: input.effort ?? null,
+      // The binding is intentionally deferred: a fresh task has no session or durable
+      // conversation key yet. WorkflowManager watches the task/session join and pins the
+      // selected workflow's current immutable version there.
+      workflowId: internal ? null : input.workflowId ?? null,
       source: input.source ?? null,
       repoRoot: input.repoRoot,
       worktreePath: null,
@@ -1228,6 +1238,16 @@ export class TaskManager {
     if (this.assigningTasks.has(id) && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: "task is being assigned" };
     }
+    if (
+      t.sessionId
+      && patch.workflowId !== undefined
+      && patch.workflowId !== t.workflowId
+    ) {
+      return {
+        ok: false,
+        error: "the after-work workflow cannot change once the task has a session",
+      };
+    }
     if (t.status !== "backlog" && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
@@ -1274,6 +1294,9 @@ export class TaskManager {
       // the caller clearing it, which is a value the row can hold and cannot use `??`.
       model,
       effort,
+      // Like model and effort, this is provisioning intent: it can change while shelved
+      // and is frozen once the session that will carry the binding has launched.
+      workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
       updatedAt: Date.now(),
     };
     this.registry.upsertTask(next);

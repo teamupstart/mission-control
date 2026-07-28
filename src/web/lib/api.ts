@@ -703,6 +703,8 @@ export interface DispatchInput {
   model?: string;
   /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
+  workflowId?: string | null;
   /** Backlog-task or live-session prerequisites. */
   dependencies?: TaskDependencyInput[];
   backlog?: boolean;

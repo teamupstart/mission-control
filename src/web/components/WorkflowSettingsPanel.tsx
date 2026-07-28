@@ -3,6 +3,7 @@ import type {
   WorkflowCheckSlot,
   WorkflowConfig,
   WorkflowStatus,
+  WorkflowSummary,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_CHECK_SLOTS,
@@ -246,9 +247,15 @@ export function workflowStripLinks(status: WorkflowStatus): ConsoleLink[] {
 
 export function WorkflowSettingsPanel({
   state,
+  workflows = [],
+  foremanEnabled = false,
   onOpenRuns,
 }: {
   state: WorkflowSettingsState;
+  /** Live catalog; only active published workflows are valid dispatch defaults. */
+  workflows?: WorkflowSummary[];
+  /** The completion detector that turns the default into an automatic run. */
+  foremanEnabled?: boolean;
   /**
    * Follow a health tile to the nearest corresponding Workflows run-list view.
    *
@@ -287,6 +294,9 @@ export function WorkflowSettingsPanel({
   const allowlist = config?.repoAllowlist ?? [];
   const checksEnabled = config?.checksEnabled ?? false;
   const parsedCheckCommand = parseCheckCommand(checkCommand);
+  const publishedWorkflows = workflows.filter(
+    (workflow) => workflow.archivedAt === null && workflow.currentVersionId !== null,
+  );
 
   const save = async (next: WorkflowConfig): Promise<void> => {
     setBusy(true);
@@ -456,6 +466,58 @@ export function WorkflowSettingsPanel({
       )}
 
       <div className="sc-controls">
+        <ConsoleCard title="Dispatch default" anchor="workflows/dispatch-default">
+          <p className="settings-hint">
+            Arm every new single-agent dispatch with a published Workflow. The dispatch form
+            shows this choice inline and can override it per task.
+          </p>
+          <div className="wf-default-row">
+            <span className="wf-default-flow" aria-hidden>task → workflow</span>
+            <Tooltip label="Workflow preselected for every new single-agent dispatch">
+              <select
+                className="field-input wf-default-select"
+                value={config?.defaultWorkflowId ?? ""}
+                disabled={!config || busy}
+                aria-label="Default after-work Workflow for dispatched tasks"
+                onChange={(event) => {
+                  if (!config) return;
+                  void save({
+                    ...config,
+                    defaultWorkflowId: event.target.value || null,
+                  });
+                }}
+              >
+                <option value="">None</option>
+                {publishedWorkflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name} · v{workflow.publishedVersion}
+                  </option>
+                ))}
+                {config?.defaultWorkflowId
+                  && !publishedWorkflows.some(
+                    (workflow) => workflow.id === config.defaultWorkflowId,
+                  )
+                  && (
+                    <option value={config.defaultWorkflowId}>
+                      Unavailable Workflow
+                    </option>
+                  )}
+              </select>
+            </Tooltip>
+          </div>
+          {config?.defaultWorkflowId && !foremanEnabled && (
+            <p className="settings-warn wf-default-warning">
+              Foreman is off. Turn it on before dispatching with this default, or choose None
+              in the dispatch form.
+            </p>
+          )}
+          {publishedWorkflows.length === 0 && (
+            <p className="settings-hint wf-settings-empty">
+              Publish a Workflow before choosing a dispatch default.
+            </p>
+          )}
+        </ConsoleCard>
+
         <ConsoleCard
           title="Live delivery"
           anchor="workflows/live-delivery"

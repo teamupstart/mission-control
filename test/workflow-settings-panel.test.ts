@@ -98,6 +98,33 @@ test("every control the search index points at is on the panel", () => {
   }
 });
 
+test("the settings panel offers active published Workflows as the dispatch default", () => {
+  const html = renderToStaticMarkup(
+    withOverlayHost(createElement(WorkflowSettingsPanel, {
+      state: state(ANSWERED),
+      foremanEnabled: true,
+      workflows: [{
+        id: "workflow-review",
+        name: "Release review",
+        description: "",
+        draftRevision: 2,
+        currentVersionId: "version-2",
+        publishedVersion: 2,
+        archivedAt: null,
+        updatedAt: 1,
+        errorCount: 0,
+        warningCount: 0,
+        nodeCount: 3,
+        personaCount: 1,
+        builtin: false,
+      }],
+    })),
+  );
+  assert.match(html, /Dispatch default/);
+  assert.match(html, /Default after-work Workflow for dispatched tasks/);
+  assert.match(html, /Release review · v2/);
+});
+
 // The anchors have to survive the pre-poll render too: `settings-sidebar-render.test.ts`
 // walks a statically rendered page, and a control that only appears once a fetch lands is
 // one a deep link from search cannot scroll to on arrival.

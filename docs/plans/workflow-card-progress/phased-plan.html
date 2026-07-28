@@ -311,8 +311,15 @@
         <li>
           <strong>An in-flight action is disabled.</strong> A <code>requestId</code> makes a
           <em>retry</em> safe, not a second click: two clicks mint two ids and can enqueue two
-          rechecks or two delivery resolutions. The guard lives in the shared action descriptors,
-          so the Runs page and the ladder get it together.
+          rechecks or two delivery resolutions.
+        </li>
+        <li>
+          <strong>Descriptors describe; a controller runs.</strong>
+          <code>run-actions.ts</code> holds pure descriptors with stable ids, and
+          <code>useRunActions</code> is the one <em>executable</em> seam holding pending state and
+          request ids. Both the Runs page and the ladder call it, which is what makes "neither
+          surface can double-submit" implementable - a pure descriptor could not have held that
+          state.
         </li>
       </ul>
 

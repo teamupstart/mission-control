@@ -38,8 +38,10 @@ easier to get wrong - every guard the Runs page puts on these actions comes acro
 - **No new endpoint and no new server behaviour.** Every action posts to a route that exists.
 - **No weakening of any guard.** The typed phrase, the disabled-without-a-session rule and the
   idempotency key all come across exactly.
-- **No fetching in `WorkflowLadder`.** It stays a pure renderer; the wrapper owns the hook and
-  now also owns the mutation-and-refetch.
+- **No fetching in `WorkflowLadder`.** It stays a pure renderer; the wrapper owns the detail hook
+  and drives the shared action controller.
+- **No second implementation of the in-flight guard.** Neither surface keeps its own pending set
+  or mints its own request id once the controller exists.
 - **No change to `useWorkflowRunDetail`'s signature.**
 
 ## Repository findings
@@ -98,24 +100,69 @@ Phase 1's handoff forbids retyping a shipped sentence. Two surfaces now offer th
 actions, so the copy and the guards move to one module returning plain data:
 
 ```ts
+/** Stable per-action key: "recheck-inspector", "prepare-pr", `delivery:${id}:mark_delivered`, … */
+export type RunActionId = string;
+
 export function deliveryResolutionActions(
   delivery: WorkflowDelivery,
   sessionBound: boolean,
-): DeliveryAction[];           // label, tooltip, disabled, confirm: WorkflowConfirmRequest-minus-onConfirm
+): DeliveryAction[];           // id, label, tooltip, disabled, confirm: WorkflowConfirmRequest-minus-onConfirm
 
 export function inspectorGateActions(
   detail: WorkflowRunDetail,
-): GateAction[];               // recheck / open-pr / prepare-pr, already filtered by waitReason and policy
+): GateAction[];               // id, recheck / open-pr / prepare-pr, already filtered by waitReason and policy
 ```
 
 - The descriptors carry **no `onConfirm`**: the caller supplies the effect, the module supplies
   the words and the guards. That is what makes both surfaces provably identical without coupling
   them to each other's mutation code.
+- **Every descriptor carries a stable `id: RunActionId`.** This is what lets the controller in
+  step 2 key pending state to an action without either surface inventing its own naming.
 - **`WorkflowRuns.tsx` is refactored to consume these**, deleting its inline copies. This is a
   narrow, copy-only refactor and is explicitly *not* the `load()` refactor Phase 1 ruled out;
   the fetch path is untouched.
 
-### 2. `src/web/workflows/WorkflowLadder.tsx`
+### 2. `src/web/workflows/useRunActions.ts` (new) - the shared executable guard
+
+Descriptors are pure data and therefore **cannot** hold an in-flight flag or retain a request id.
+A guard that lived only in the ladder's panel would leave `WorkflowRuns` minting a fresh id per
+click, so "neither surface can double-submit" would not be implementable from the shared layer.
+The state has to be shared and executable, not described:
+
+```ts
+export interface RunActionsController {
+  isPending(id: RunActionId): boolean;
+  /**
+   * Runs the action once. A call while that id is already in flight is a no-op that issues no
+   * request. `send` receives the request id to use.
+   */
+  run(id: RunActionId, send: (requestId: string) => Promise<unknown>): void;
+  error: string | null;
+  clearError(): void;
+}
+
+export function useRunActions(onSettled: () => void): RunActionsController;
+```
+
+- **One request id per action id, minted on first run and retained until that request settles.**
+  A retry of the same intent after a failure reuses it, which is what the idempotency key is
+  actually for - and follows the existing `unchangedRequest` precedent
+  (`WorkflowRuns.tsx:1200`, `:1321-1337`). It is cleared on success.
+- **A second activation while pending issues nothing.** This, not the request id, is what makes a
+  double-click safe.
+- `onSettled` is the caller's refetch, so the controller owns no fetching of its own.
+- Errors surface through `error`, so neither surface throws out of a click handler.
+
+**Both surfaces consume this controller**, and each renders an action as disabled when
+`descriptor.disabled || controller.isPending(descriptor.id)`.
+
+**This closes a real gap in the shipped Runs page, not just a risk in new code.** Its click sites
+call `crypto.randomUUID()` inline (`WorkflowRuns.tsx:1555-1594`) with no in-flight guard - the
+only `disabled` conditions there are `!sessionBound`, `!feedbackAvailable`, `!version` and
+`listLoading`. Fixing only the ladder would leave the double-submit live on the surface that has
+shipped longest, and copying the existing pattern into the ladder would duplicate the defect.
+
+### 3. `src/web/workflows/WorkflowLadder.tsx`
 
 - Add optional callback props: `onCopyFeedback`, `onRecheckInspector`, `onPreparePr`, `onOpenPr`,
   `onResolveDelivery(deliveryId, action)`, plus a `feedbackCopied: boolean` flag. Absent
@@ -130,43 +177,33 @@ export function inspectorGateActions(
   `feedbackCopied` flag arrives as a prop precisely so the renderer stays pure and the "Copied"
   state is assertable from a static render.
 
-### 3. `WorkflowLadderPanel` (same file)
+### 4. `WorkflowLadderPanel` (same file)
 
 - Hold `confirm: WorkflowConfirmRequest | null` and render `<WorkflowConfirmModal>`, the pattern
   every other surface uses.
 - Own the clipboard write for Copy feedback and the `feedbackCopied` flag it passes down,
   mirroring `WorkflowRuns`' `copyFeedback` (`:1344`) rather than reimplementing which text is
   copied. The packet is the same packet; the two surfaces must not disagree about it.
-- Perform the POSTs through `workflowRequest`, then refetch.
-- **Hold a per-action in-flight flag and disable the action while its request is pending.** This
-  is what makes a double-click safe - **not** the `requestId`. Idempotency per request id
-  protects a *retry of the same request* (a dropped response, a reconnect); two clicks produce
-  two different ids and therefore two accepted rechecks, or two delivery resolutions. If an
-  explicit retry of the same intent is offered, retain and reuse the one id until that request
-  settles, the way `resubmit` retains `unchangedRequest` (`WorkflowRuns.tsx:1200`, `:1321-1337`)
-  for its unchanged-evidence confirmation.
-- Surface a failed mutation as an inline error on the panel, not a thrown promise.
+- **Drive every POST through `useRunActions` from step 2**, passing the descriptor's `id` and a
+  `send` that builds the request with the supplied request id. The panel holds no pending state
+  and mints no request id of its own; doing either would be a second implementation of the guard
+  and the two surfaces could then disagree.
+- Pass `controller.isPending(id)` into the renderer so a pending action renders disabled, and
+  render `controller.error` inline rather than throwing out of a click handler.
+- `onSettled` is the panel's refetch.
 
-**This is a real gap in the shipped Runs page, not just a risk in new code.** Its click sites
-call `crypto.randomUUID()` inline (`WorkflowRuns.tsx:1555-1594`) with no in-flight guard - the
-only `disabled` conditions there are `!sessionBound`, `!feedbackAvailable`, `!version` and
-`listLoading`. Since this phase already extracts the shared descriptors and refactors that file
-to consume them, **the in-flight guard belongs in the shared layer so both surfaces get it**.
-Fixing only the ladder would leave the double-submit live on the surface that has shipped
-longest, and copying the existing pattern into the ladder would duplicate the defect.
-
-### 4. `src/web/styles.css`
+### 5. `src/web/styles.css`
 
 Extend the `/* ---- workflow stage ladder ---- */` section with `wf-ladder-actrow` and its
 button states, including a visibly disabled state. Reuse the existing button tokens; add no
 vendor-named token.
 
-### 5. `README.md`
+### 6. `README.md`
 
 Note in "Workflows and Personas" that the ladder can answer the Inspector gate and resolve an
 uncertain delivery in place, under the same confirmations as the Runs page.
 
-### 6. Tests
+### 7. Tests
 
 - `test/workflow-ladder-actions.test.ts` - render the gate rung and assert Recheck is offered
   when `waitReason` is non-null and absent when it is null; assert Prepare PR appears only for
@@ -178,10 +215,11 @@ uncertain delivery in place, under the same confirmations as the Runs page.
   session is bound, and that its confirm descriptor carries `requirePhrase` exactly equal to
   `DISCARD AND SEND A NEW REPAIR ROUND`. Assert the same descriptors are what `WorkflowRuns`
   renders, so the two surfaces cannot drift.
-- `test/workflow-action-inflight.test.ts` - **the double-submit regression**: an action whose
-  request is in flight renders disabled, and a second activation while pending issues no second
-  request. Assert it against the shared descriptors so it covers the Runs page and the ladder
-  together.
+- `test/workflow-action-inflight.test.ts` - **the double-submit regression**, asserted against
+  `useRunActions` itself, which is what makes it cover both surfaces rather than one renderer:
+  a second `run` for an id already in flight issues **no** second request; the request id is
+  minted once and reused for an explicit retry after failure, then cleared on success; and
+  `isPending` is true for exactly the action in flight, so an unrelated action stays enabled.
 
 ## Data, API and compatibility
 
@@ -208,18 +246,24 @@ disabled when the bound session is gone.
 - Both delivery resolutions require exactly what the Runs page requires.
 - `WorkflowRuns` and the ladder read their action copy from one module.
 - **No action can be submitted twice by double-clicking it, on either surface.** A pending action
-  renders disabled and issues exactly one request.
+  renders disabled and issues exactly one request. This is implementable because the guard lives
+  in `useRunActions`, an executable shared seam both surfaces call - a pure descriptor could not
+  have held it.
 - README updated in this same change.
 
 ## Downstream handoff
 
 Nothing depends on this phase. It establishes, for anyone extending the ladder later:
 
-- **Action copy and guards live in `run-actions.ts`**, never inline in a surface.
-- **The renderer stays pure**; mutations belong to the panel wrapper.
+- **Action copy and guards live in `run-actions.ts`** as pure descriptors with stable ids, never
+  inline in a surface.
+- **In-flight state and request ids live in `useRunActions`**, the one executable seam. A
+  descriptor describes; the controller runs. Anything adding an action to either surface
+  inherits the guard by using the controller, and a surface that keeps its own pending set has
+  reintroduced the defect.
+- **The renderer stays pure**; mutations belong to the panel wrapper via the controller.
 - **A disabled action renders with its reason** rather than disappearing.
-- **An in-flight action is disabled.** A `requestId` makes a *retry* safe, not a second click;
-  anything adding an action to either surface inherits the in-flight guard.
+- **An in-flight action is disabled.** A `requestId` makes a *retry* safe, not a second click.
 
 ## Cross-phase audit record
 
@@ -248,6 +292,15 @@ Nothing depends on this phase. It establishes, for anyone extending the ladder l
   (`WorkflowRuns.tsx:1555-1594`) with no in-flight guard, so this is a live gap there and not
   only a risk in new code. The guard now belongs to the shared descriptors so both surfaces get
   it, with `test/workflow-action-inflight.test.ts` covering them together.
+- **Corrected again after Inspector round 3 on the planning PR (#308).** The previous revision
+  said the in-flight guard "belongs in the shared layer", but the shared layer it specified was
+  pure descriptors, which by design carry no effects and therefore cannot hold a pending flag or
+  retain a request id. The ladder's panel could have guarded itself while `WorkflowRuns` kept
+  minting an id per click, so the exit criterion "neither surface can double-submit" was not
+  implementable from what the plan described. The guard now has an executable home,
+  `useRunActions`, that both surfaces call; descriptors gain a stable `id` so the controller can
+  key pending state to them; and the regression test asserts the controller rather than a
+  renderer, which is what makes it cover both surfaces.
 - Reconciled against Phase 3 (concurrent): the two touch `WorkflowLadder.tsx`, `styles.css` and
   `README.md` in disjoint regions - this phase in the gate and delivery rungs' action rows, Phase
   3 in the failing stage's rung. Ordinary textual conflicts, resolvable at merge; whichever

@@ -148,6 +148,7 @@ generated asset the other owns. They overlap textually in three files and nowher
 | File | Phase 2 region | Phase 3 region |
 |---|---|---|
 | `src/web/workflows/WorkflowLadder.tsx` | action rows on the changes-requested, gate and delivery rungs | one derived sentence on the failing stage's rung |
+| (Phase 2 also adds `run-actions.ts` and `useRunActions.ts`, which Phase 3 does not touch) | | |
 | `src/web/styles.css` | `wf-ladder-actrow` and button states | `wf-ladder-repeat` |
 | `README.md` | the actions the ladder offers | the repeat-offender line |
 

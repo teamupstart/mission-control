@@ -243,7 +243,42 @@ export function reviewerStatus(raw: string | undefined): PipelineStatus {
     ?? { tone: "waiting", label: raw.replaceAll("_", " ") };
 }
 
-export function checkStatus(raw: string | undefined): PipelineStatus {
+/**
+ * The chip for a check whose gate did NOT actually run, which is a different claim from
+ * "passed" and must never be collapsed into it.
+ *
+ * Three of the four check outcomes advance the graph (`checkOutcomePasses`), and only ONE of
+ * them means the command ran and succeeded. A slot with no command configured is `skipped`,
+ * and a build with no execution runtime records `unavailable` - both pass so a workflow is
+ * not broken on an unconfigured machine, and both would otherwise render as a green "Passed"
+ * telling an operator that typecheck and test succeeded when neither was ever spawned. That
+ * is precisely the assurance the shipped No-Mistakes Review v2 must not fake, so the outcome
+ * travels to the chip rather than being reduced to the attempt's synthetic verdict.
+ *
+ * `degraded` marks "this advanced the pipeline without being earned", which is what lets the
+ * stage fold below say so without matching on label text.
+ */
+const CHECK_OUTCOME_STATUSES: Record<WorkflowCheckStatus, PipelineStatus | null> = {
+  // Ran and succeeded: the ordinary verdict mapping already says it correctly.
+  passed: null,
+  failed: null,
+  skipped: { tone: "waiting", label: "Skipped", degraded: true },
+  unavailable: { tone: "waiting", label: "Not run", degraded: true },
+};
+
+/**
+ * One check's chip.
+ *
+ * `outcome` is the status the runner recorded, when this attempt carries one. It WINS over
+ * the attempt state, because a check that never ran still finishes as a passing attempt and
+ * the attempt state alone cannot tell that apart from a command that ran green.
+ */
+export function checkStatus(
+  raw: string | undefined,
+  outcome: WorkflowCheckStatus | null = null,
+): PipelineStatus {
+  const degraded = outcome ? CHECK_OUTCOME_STATUSES[outcome] : null;
+  if (degraded) return degraded;
   if (!raw) return { tone: "waiting", label: "Not started" };
   return CHECK_STATUSES[raw as keyof typeof CHECK_STATUSES]
     ?? { tone: "waiting", label: raw.replaceAll("_", " ") };
@@ -253,6 +288,11 @@ export function checkStatus(raw: string | undefined): PipelineStatus {
  * A stage's own chip, folded from its members: the worst thing that happened wins, then
  * whatever is still moving, and "passed" only once every member of the stage passed - which
  * is exactly the all-pass rule the stage is compiled from.
+ *
+ * A member that advanced without running is neither: the stage is finished, so calling it
+ * "Waiting" would read as still in flight, and calling it "All passed" would launder the very
+ * claim the member chip refuses to make. It gets its own sentence, and the count is what an
+ * operator needs to know how much of the gate was real.
  */
 export function stageStatus(members: readonly PipelineStatus[]): PipelineStatus {
   if (members.length === 0) return { tone: "waiting", label: "No members" };
@@ -262,8 +302,14 @@ export function stageStatus(members: readonly PipelineStatus[]): PipelineStatus 
   if (members.some((status) => status.tone === "running")) {
     return { tone: "running", label: "Running" };
   }
-  if (members.every((status) => status.tone === "passed")) {
-    return { tone: "passed", label: members.length > 1 ? "All passed" : "Passed" };
+  const notRun = members.filter((status) => status.degraded).length;
+  if (members.every((status) => status.tone === "passed" || status.degraded)) {
+    if (notRun === 0) {
+      return { tone: "passed", label: members.length > 1 ? "All passed" : "Passed" };
+    }
+    return notRun === members.length
+      ? { tone: "waiting", label: notRun > 1 ? "None ran" : "Did not run", degraded: true }
+      : { tone: "waiting", label: `Passed, ${notRun} not run`, degraded: true };
   }
   return { tone: "waiting", label: "Waiting" };
 }

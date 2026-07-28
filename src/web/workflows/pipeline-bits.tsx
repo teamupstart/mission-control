@@ -22,6 +22,15 @@ export type PipelineStatusTone = (typeof PIPELINE_STATUS_TONES)[number];
 export interface PipelineStatus {
   tone: PipelineStatusTone;
   label: string;
+  /**
+   * This advanced the pipeline without being earned - a check that was skipped or could not
+   * run, rather than one that ran and succeeded.
+   *
+   * A flag rather than a fifth tone because the colour vocabulary is shared with the fleet's
+   * `workflow-chip`, and because the thing a reader needs is the SENTENCE. It exists so the
+   * stage fold can say "Passed, 2 not run" without pattern-matching on label text.
+   */
+  degraded?: boolean;
 }
 
 /** Visual state of one card or row. Drag feedback and nothing semantic. */

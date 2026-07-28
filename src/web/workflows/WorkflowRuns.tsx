@@ -667,6 +667,13 @@ export function WorkflowRunView({
             const attempt = latestAttemptByNode.get(nodeId);
             return attempt?.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null;
           }}
+          checkOutcomeFor={(nodeId) => {
+            // Read from the attempt's recorded outcome, never inferred from its verdict: a
+            // check that was skipped or could not run passes the gate, so the verdict says
+            // "pass" for a command that never executed.
+            const attempt = latestAttemptByNode.get(nodeId);
+            return attempt ? checkOutcomeOf(attempt)?.status ?? null : null;
+          }}
           repair={detail.summary.maxRepairRounds > 0
             ? "Any fail returns the submission to Session for repair, then the whole pipeline runs again."
             : null}

@@ -195,6 +195,69 @@ test("a check uses deterministic status vocabulary", () => {
   assert.deepEqual(checkStatus("fail"), { tone: "failed", label: "Failed" });
 });
 
+test("a check that never ran says so, and is never laundered into Passed", () => {
+  // The defect this pins: three of the four check outcomes ADVANCE the graph, and only one
+  // of them means the command ran and succeeded. A slot with no command configured is
+  // `skipped`; a build with no execution runtime records `unavailable`. Both finish as a
+  // passing attempt, so reading the attempt state alone reports a green "Passed" for a
+  // command that was never spawned - which tells an operator their typecheck and tests
+  // succeeded when nothing ran. That is the exact assurance the shipped No-Mistakes Review
+  // v2 must not fake, so the recorded OUTCOME wins over the attempt state.
+  assert.deepEqual(checkStatus("pass", "unavailable"), {
+    tone: "waiting",
+    label: "Not run",
+    degraded: true,
+  });
+  assert.deepEqual(checkStatus("pass", "skipped"), {
+    tone: "waiting",
+    label: "Skipped",
+    degraded: true,
+  });
+  // A check that genuinely ran keeps the ordinary vocabulary, and a real failure still wins.
+  assert.deepEqual(checkStatus("pass", "passed"), { tone: "passed", label: "Passed" });
+  assert.deepEqual(checkStatus("fail", "failed"), { tone: "failed", label: "Failed" });
+  // No outcome recorded yet (queued, running, or an attempt that carries none) is unchanged.
+  assert.deepEqual(checkStatus("running", null), { tone: "running", label: "Running" });
+  assert.deepEqual(checkStatus(undefined, null), { tone: "waiting", label: "Not started" });
+  // Every outcome that ADVANCES the gate without running says so. `passed` and `failed` are
+  // excluded because they legitimately defer to the attempt state - they are the two where
+  // the attempt and the outcome cannot disagree. A newly added status cannot slip through
+  // here silently either way: `CHECK_OUTCOME_STATUSES` is an exhaustive
+  // `Record<WorkflowCheckStatus, …>`, so it fails to compile until it declares what it means.
+  for (const status of WORKFLOW_CHECK_STATUSES) {
+    if (status === "passed" || status === "failed") continue;
+    assert.notEqual(
+      checkStatus("pass", status).label,
+      "Passed",
+      `${status} renders as a plain pass`,
+    );
+  }
+});
+
+test("a stage says how much of its gate was real", () => {
+  // A stage of checks that never ran is finished, so "Waiting" would read as still in
+  // flight - and "All passed" would launder the very claim the member chips refuse to make.
+  const ran = checkStatus("pass", "passed");
+  const notRun = checkStatus("pass", "unavailable");
+  const skipped = checkStatus("pass", "skipped");
+  assert.deepEqual(stageStatus([notRun, skipped]), {
+    tone: "waiting",
+    label: "None ran",
+    degraded: true,
+  });
+  assert.deepEqual(stageStatus([notRun]), {
+    tone: "waiting",
+    label: "Did not run",
+    degraded: true,
+  });
+  assert.equal(stageStatus([ran, notRun]).label, "Passed, 1 not run");
+  assert.equal(stageStatus([ran, notRun]).degraded, true);
+  // A stage whose checks all genuinely ran is an ordinary pass, with no caveat attached.
+  assert.deepEqual(stageStatus([ran, ran]), { tone: "passed", label: "All passed" });
+  // A real failure still outranks a gate that did not run.
+  assert.equal(stageStatus([notRun, checkStatus("fail", "failed")]).tone, "failed");
+});
+
 test("a stage passes only when all of it passed, and any failure wins", () => {
   const pass = reviewerStatus("pass");
   const fail = reviewerStatus("fail");

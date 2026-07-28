@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import type { WorkflowVersion } from "@shared/workflow.ts";
+import type { WorkflowCheckStatus, WorkflowVersion } from "@shared/workflow.ts";
 import {
   nodeLabel,
   projectStages,
@@ -38,6 +38,7 @@ export function RunPipeline({
   session,
   end,
   metaFor,
+  checkOutcomeFor,
   repair,
 }: {
   version: WorkflowVersion;
@@ -47,6 +48,15 @@ export function RunPipeline({
   end: PipelineStatus;
   /** The `runner · model` line for one reviewer, or null when nothing ran yet. */
   metaFor: (nodeId: string) => string | null;
+  /**
+   * The outcome a check RECORDED, which the attempt state cannot supply.
+   *
+   * A skipped or unavailable check still finishes as a passing attempt, so without this the
+   * chip would report "Passed" for a command that was never spawned. Optional so the canvas
+   * fallback and older callers keep compiling; a caller that omits it simply loses the
+   * distinction rather than asserting the wrong half of it.
+   */
+  checkOutcomeFor?: (nodeId: string) => WorkflowCheckStatus | null;
   repair: string | null;
 }): React.JSX.Element {
   const graph = version.graph;
@@ -110,7 +120,10 @@ export function RunPipeline({
               : node ? nodeLabel(graph, node, personaNames) : "Missing persona",
             meta: member.nodeId ? metaFor(member.nodeId) : null,
             status: member.kind === "check"
-              ? checkStatus(member.nodeId ? statuses[member.nodeId] : undefined)
+              ? checkStatus(
+                  member.nodeId ? statuses[member.nodeId] : undefined,
+                  member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
+                )
               : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined),
           };
         });

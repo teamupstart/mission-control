@@ -119,6 +119,22 @@ test("terminal runs never leave stale active-stage evidence active", () => {
   }
 });
 
+test("an unreadable run never projects stale evidence as active work", () => {
+  const plan = compile(consensusStrategy);
+  const active = plan.stages[1]!;
+  const view = projectEnsemblePipeline({
+    run: { status: null, activeStageId: active.id, plan },
+    summary: summary(plan, {
+      launchedMembers: 1,
+      readyArtifacts: 1,
+      membersNeedingInput: 1,
+    }),
+    stageAttempts: [attempt(active.id, "running")],
+    memberCount: plan.roles.length,
+  });
+  assert.deepEqual(view, { steps: [], barrier: null });
+});
+
 test("terminal runs keep the full walked pipeline visible", () => {
   const plan = compile(consensusStrategy);
   const view = projectEnsemblePipeline({

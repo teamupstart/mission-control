@@ -150,6 +150,11 @@ function barrierSentence(
  * answer rather than a browser re-derivation.
  */
 export function projectEnsemblePipeline(input: EnsemblePipelineInput): EnsemblePipelineView {
+  // A null status is a future-build value this client cannot interpret. The detail page already
+  // explains that state explicitly; projecting any live step from the remaining persisted fields
+  // would turn stale evidence into a claim that work is active.
+  if (input.run.status === null) return { steps: [], barrier: null };
+
   const plan: CompiledEnsemblePlan | null = input.run.plan;
   if (!plan) return { steps: [], barrier: null };
 

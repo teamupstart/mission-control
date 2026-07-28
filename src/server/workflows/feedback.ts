@@ -52,6 +52,7 @@ export interface PrHandoffInput {
   workflowVersion: number;
   runId: string;
   originalGoal: string;
+  skillCommand: string;
 }
 
 /** Remove bytes that a terminal could interpret as controls while retaining plain line breaks. */
@@ -261,6 +262,8 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     return result.value;
   };
   const body = [
+    bounded(input.skillCommand),
+    "",
     "Prepare the reviewed work for the workflow's Inspector final gate.",
     "",
     "Original user goal:",
@@ -270,7 +273,7 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     `Run: ${input.runId}`,
   ].join("\n");
   const instruction =
-    "Commit all reviewed work, push it, open the pull request through the normal harness or no-mistakes path, then signal completion so the full Persona workflow is submitted again.";
+    "Use the invoked pull-request skill to commit all reviewed work, push it, open the pull request with a reviewer-ready description and concrete proof, then signal completion so the full Persona workflow is submitted again.";
   return {
     ...finalizePacket(body, truncated, instruction),
     failedPersonaCount: 0,

@@ -47,6 +47,9 @@ export const SKILL_DIR_PREFIXES = ["mission-", "fleet-"] as const;
 /** The prefix new directories are created under - the head of `SKILL_DIR_PREFIXES`. */
 export const SKILL_DIR_PREFIX = SKILL_DIR_PREFIXES[0];
 
+/** The shipping skill an Inspector-gated workflow requires for its PR handoff. */
+export const PULL_REQUEST_SKILL = "pull-request";
+
 /** The directory name a catalog id gets when we install it fresh. */
 export function missionSkillDirName(id: string): string {
   return `${SKILL_DIR_PREFIX}${id}`;

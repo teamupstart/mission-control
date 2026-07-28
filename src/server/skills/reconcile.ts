@@ -338,6 +338,30 @@ function skillPath(dir: string, id: string): string {
   return join(dir, missionSkillDirName(id));
 }
 
+/**
+ * Why one skill is not installed in one harness directory, or null when its live link
+ * points at this build's catalog entry.
+ *
+ * Shared by the Settings drift view and workflow skill prerequisites. A second link
+ * check would eventually disagree about legacy prefixes, dangling links, or a moved app.
+ */
+export function skillInstallProblem(id: string, dir: string): string | null {
+  const path = skillPath(dir, id);
+  let target: string | null = null;
+  try {
+    target = lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null;
+  } catch {
+    return `${id} is switched on but isn't installed - restart the daemon to repair it`;
+  }
+  if (target === null) {
+    return `${path} exists and isn't ours to replace - remove it by hand to enable ${id}`;
+  }
+  if (target !== skillSourceDir(id)) {
+    return `${id} is switched on but its link points somewhere else - restart the daemon to repair it`;
+  }
+  return null;
+}
+
 function link(id: string, dir: string, out: ReconcileResult): boolean {
   const path = join(dir, missionSkillDirName(id));
   try {
@@ -450,26 +474,9 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dirs: string[] =
     let said = false;
     for (const dir of dirs) {
       if (said) break;
-      const path = skillPath(dir, id);
-      // Its own lstat rather than `classify`, which folds "missing" into "foreign" - a
-      // conflation that is right where it's used (both mean "do not touch this") and
-      // wrong here, where the two need opposite sentences. A missing link is ours to
-      // repair; a foreign one is the operator's to move.
-      let link: string | null = null;
-      try {
-        link = lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null;
-      } catch {
-        out.push(`${id} is switched on but isn't installed - restart the daemon to repair it`);
-        said = true;
-        continue;
-      }
-      if (link === null) {
-        out.push(`${path} exists and isn't ours to replace - remove it by hand to enable ${id}`);
-        said = true;
-      } else if (link !== skillSourceDir(id)) {
-        out.push(`${id} is switched on but its link points somewhere else - restart the daemon to repair it`);
-        said = true;
-      }
+      const problem = skillInstallProblem(id, dir);
+      if (problem) out.push(problem);
+      said = problem !== null;
     }
   }
   // An id the config wants that the catalog no longer has. Its row won't render at all

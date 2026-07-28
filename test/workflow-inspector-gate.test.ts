@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type {
+  AgentType,
   InspectorComment,
   InspectorPr,
 } from "../src/shared/types.ts";
+import { skillCommand } from "../src/shared/harness-capabilities.ts";
 import type {
   WorkflowContextSnapshot,
   WorkflowInspectorGateState,
@@ -40,14 +42,18 @@ const {
 const db = openDb();
 let serial = 0;
 
-function context(headSha: string, workingTreeDirty = false): WorkflowContextSnapshot {
+function context(
+  headSha: string,
+  workingTreeDirty = false,
+  agent: AgentType = "claude",
+): WorkflowContextSnapshot {
   return {
     primaryGoal: { rawPrompt: "Ship the reviewed change", refined: null, sourceNoteKey: "note" },
     humanDecisions: [],
     constraints: [],
     acceptanceCriteria: [],
     priorPersonaFeedback: [],
-    session: { agent: "claude", name: "work", cwd: "/repo", branch: "feature" },
+    session: { agent, name: "work", cwd: "/repo", branch: "feature" },
     evidence: {
       headSha,
       diffFingerprint: `diff-${headSha}`,
@@ -103,6 +109,8 @@ interface SeedOptions {
   dirty?: boolean;
   enabled?: boolean;
   head?: string;
+  skillAvailable?: boolean;
+  agent?: AgentType;
 }
 
 async function seed(over: SeedOptions = {}) {
@@ -118,6 +126,7 @@ async function seed(over: SeedOptions = {}) {
     session: `session-${suffix}`,
   };
   const head = over.head ?? `head-${suffix}`;
+  const agent = over.agent ?? "claude";
   const key = `owner/repo#${100 + serial}`;
   const url = `https://github.com/owner/repo/pull/${100 + serial}`;
   const policy = over.policy ?? "restart_workflow";
@@ -171,7 +180,7 @@ async function seed(over: SeedOptions = {}) {
   const registry = new Registry();
   registry.applyDiscovery([{
     syntheticId: ids.session,
-    agent: "claude",
+    agent,
     name: "work",
     nameSource: "process",
     cwd: "/repo",
@@ -205,7 +214,7 @@ async function seed(over: SeedOptions = {}) {
     workflowVersionId: ids.version,
     noteKey: (over.withHint ?? true) ? `agent-${suffix}` : ids.session,
     sessionId: ids.session,
-    sessionAgent: "claude",
+    sessionAgent: agent,
     sessionName: "work",
     sessionCwd: "/repo",
     sessionRepoRoot: "/repo",
@@ -231,7 +240,7 @@ async function seed(over: SeedOptions = {}) {
       now,
     },
   );
-  const captured = context(head, over.dirty ?? false);
+  const captured = context(head, over.dirty ?? false, agent);
   store.updateSubmissionCapture(ids.submission, {
     context: workflowJson(captured),
     evidence: workflowJson(captured.evidence),
@@ -239,7 +248,11 @@ async function seed(over: SeedOptions = {}) {
     status: "running",
   }, now);
   store.setRunState(ids.run, "running", "persona_review", null, now);
-  const manager = new WorkflowManager(registry, store);
+  const manager = new WorkflowManager(registry, store, {
+    requireSkill: (session, id) => over.skillAvailable === false
+      ? { ok: false, message: `${id} is not ready` }
+      : { ok: true, command: skillCommand(session.agent, id)! },
+  });
   const claimed = (manager as unknown as {
     enterInspectorGate(id: string, at: number): boolean;
   }).enterInspectorGate(ids.submission, now);
@@ -279,7 +292,8 @@ test("missing and unadopted PR hints wait without creating Inspector provenance"
   assert.equal(handoff.ok, true);
   if (handoff.ok) {
     assert.equal(handoff.value.kind, "pr_handoff");
-    assert.match(handoff.value.payload, /Commit all reviewed work, push it, open the pull request/);
+    assert.match(handoff.value.payload, /^\/pull-request\n/);
+    assert.match(handoff.value.payload, /Use the invoked pull-request skill/);
   }
   const repeatedHandoff = await missing.manager.preparePr(missing.ids.run, "prepare-request");
   assert.equal(repeatedHandoff.ok && repeatedHandoff.idempotent, true);
@@ -295,6 +309,57 @@ test("missing and unadopted PR hints wait without creating Inspector provenance"
     "session.prUrl is a lookup hint and cannot adopt",
   );
   await unadopted.manager.stop();
+});
+
+test("preparePr emits each harness's native pull-request invocation in the real handoff", async () => {
+  const expected: Record<AgentType, string> = {
+    claude: "/pull-request",
+    codex: "$pull-request - run this skill now.",
+    pi: "/skill:pull-request",
+  };
+
+  for (const agent of Object.keys(expected) as AgentType[]) {
+    const seeded = await seed({
+      agent,
+      withHint: false,
+      adopted: false,
+    });
+    const handoff = await seeded.manager.preparePr(
+      seeded.ids.run,
+      `prepare-${agent}`,
+    );
+    assert.equal(handoff.ok, true, agent);
+    if (handoff.ok) {
+      assert.equal(handoff.value.kind, "pr_handoff", agent);
+      assert.match(
+        handoff.value.payload,
+        new RegExp(`^${expected[agent].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n`),
+        agent,
+      );
+      assert.equal(
+        seeded.store.getDelivery(handoff.value.id)?.payload,
+        handoff.value.payload,
+        `${agent} persisted a different handoff`,
+      );
+    }
+    await seeded.manager.stop();
+  }
+});
+
+test("PR preparation refuses an unavailable skill without advancing or creating a delivery", async () => {
+  const seeded = await seed({ withHint: false, adopted: false, skillAvailable: false });
+  const before = seeded.store.getRun(seeded.ids.run);
+  const handoff = await seeded.manager.preparePr(seeded.ids.run, "skill-not-ready");
+
+  assert.equal(handoff.ok, false);
+  if (!handoff.ok) {
+    assert.equal(handoff.reason, "unsupported_mode");
+    assert.match(handoff.message, /pull-request is not ready/);
+  }
+  assert.equal(seeded.store.listDeliveries(seeded.ids.run).length, 0);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.status, before?.status);
+  assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, before?.currentPhase);
+  await seeded.manager.stop();
 });
 
 test("disabled Inspector blocks honestly and a post-entry observation is required", async () => {

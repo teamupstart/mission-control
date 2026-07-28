@@ -2171,7 +2171,11 @@ the session for repair. A passed review is gated on the
 in current version 4, findings require the session to fix, verify, commit and push, then
 Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
 through 3 retain their original whole-workflow restart behavior. A run with no pull request
-yet offers **Prepare PR in session** rather than waiting silently. Versions 2 through 4
+yet offers **Prepare PR in session** rather than waiting silently. That handoff explicitly
+invokes the bound harness's **Pull Request** skill; if the skill is disabled, its link has
+drifted, or the live session has not loaded the current skill generation yet, the action
+refuses without advancing the run or falling back to an ordinary prose instruction.
+Versions 2 through 4
 default to Manual trigger and Live delivery, so a failed review returns its deterministic
 repair packet to the bound session automatically. Live still requires the subsystem switch
 and repository allowlist, and every binding can override the version default. Version 1
@@ -3284,7 +3288,9 @@ Claude, `~/.agents/skills` for Codex, and `~/.pi/agent/skills` for Pi - which is
 agent's own loading path; the harness never reimplements it.
 
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
-PR. Its reviewer-ready description contract lives in
+PR. Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
+through the bound harness's native skill syntax, so that final handoff is enforced rather
+than left to model selection. Its reviewer-ready description contract lives in
 [`skills/pull-request/SKILL.md`](skills/pull-request/SKILL.md).
 
 The opt-in **Phased Plan** row investigates an approved plan against the repository, writes

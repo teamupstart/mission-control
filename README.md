@@ -1790,8 +1790,13 @@ Runs is the monitoring, evidence, decision, recovery and history surface: it wea
 counting the runs the daemon marks as needing attention, and lists runs attention-first from the
 one live SSE stream with their shared progress dots and `submitted/roster` counts (plus the
 launched count while a wave is still opening),
-and fetches a selected run's bounded detail - members, immutable artifacts and their on-demand
-diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's candidate columns,
+and fetches a selected run's bounded detail. A **Launch -> Work -> Review -> Decide -> Promote**
+pipeline names the active stage in operator words and explains a waiting barrier (“waiting for 1
+more submission” or “waiting on you”). Live members render as lanes with session tone, activity,
+goal, elapsed time, last-event age and live cost; a blocked member's review form and verified
+pane/driver dialog are answerable there without leaving the run, while attempt and artifact
+histories fold behind a disclosure. The rest of the bounded detail carries immutable artifacts and
+their on-demand diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's candidate columns,
 Consensus's agreements and divergence cards, Panel vote's rank matrix and ballots), and the decision
 that strategy asks for - over HTTP, refetching when that run's summary revises rather than polling.
 The strategy-neutral runtime pins one base commit, launches
@@ -1978,8 +1983,9 @@ obligation:
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
 3. **Members parked on a menu** - an ensemble member sitting on a terminal
-   [option menu](#answer-a-sessions-menu-from-the-dashboard). Listed, not answered: a pane
-   dialog is a transient TUI fact answered by keystrokes on the card, and it deep-links there.
+   [option menu](#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
+   inbox: it deep-links to the session card, while the member's live lane in the run detail
+   also renders the verified pane dialog in place.
 4. **Stuck finalizations and shipping gates** - a promotion that stopped on an error, and
    parked no-mistakes gates no agent is driving.
 

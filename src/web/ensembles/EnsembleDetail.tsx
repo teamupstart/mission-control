@@ -5,8 +5,11 @@ import type {
   EnsembleAttempt,
   EnsembleJson,
   EnsembleMember,
+  EnsembleSummary,
 } from "@shared/ensemble.ts";
-import { aggregateEnsembleAgentCost, ensembleStageWord } from "@shared/ensemble.ts";
+import { aggregateEnsembleAgentCost } from "@shared/ensemble.ts";
+import { gateParked } from "@shared/session.ts";
+import type { ReviewItem, Session } from "@shared/types.ts";
 import { fmtUsd } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { EnsembleArtifactPatch, EnsembleRunDetailResponse } from "./types.ts";
@@ -18,7 +21,11 @@ import {
   shortSha,
   titleCaseEnum,
 } from "./format.ts";
-import { EnsembleMembers } from "./EnsembleMembers.tsx";
+import {
+  EnsembleMembers,
+  type EnsembleMemberLiveLane,
+} from "./EnsembleMembers.tsx";
+import { EnsemblePipeline } from "./EnsemblePipeline.tsx";
 import { EnsembleTimeline } from "./EnsembleTimeline.tsx";
 import { EnsembleArtifacts } from "./EnsembleArtifacts.tsx";
 import { EnsembleActions } from "./EnsembleActions.tsx";
@@ -32,6 +39,9 @@ import { ENSEMBLE_RESULT_RENDERERS } from "./results/index.ts";
  */
 export function EnsembleDetail({
   detail,
+  summary = null,
+  sessions = [],
+  reviews = [],
   actionPending,
   actionError,
   actionErrorKind,
@@ -44,6 +54,9 @@ export function EnsembleDetail({
   onOpenWorkflowRun,
 }: {
   detail: EnsembleRunDetailResponse;
+  summary?: EnsembleSummary | null;
+  sessions?: Session[];
+  reviews?: ReviewItem[];
   actionPending: string | null;
   actionError: string | null;
   actionErrorKind: string | null;
@@ -61,6 +74,36 @@ export function EnsembleDetail({
   const { run } = detail;
   const [restorePendingId, setRestorePendingId] = useState<string | null>(null);
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
+
+  // The detail wire is intentionally durable-only. Live lanes join through the Task pointer
+  // already present on each session, and reviews join through that session id. Kept here (rather
+  // than inside each card) so the member half of this page owns one correlation rule and Phase 6
+  // can remain a sibling consumer of the same threaded inputs.
+  const liveByMemberId = useMemo(() => {
+    const sessionByTaskId = new Map<string, Session>();
+    for (const session of sessions) {
+      if (session.task?.id) sessionByTaskId.set(session.task.id, session);
+    }
+    const pendingBySessionId = new Map<string, ReviewItem[]>();
+    for (const review of reviews) {
+      if (review.status !== "pending") continue;
+      const list = pendingBySessionId.get(review.sessionId);
+      if (list) list.push(review);
+      else pendingBySessionId.set(review.sessionId, [review]);
+    }
+    const joined = new Map<string, EnsembleMemberLiveLane>();
+    for (const member of detail.members) {
+      if (!member.taskId) continue;
+      const session = sessionByTaskId.get(member.taskId);
+      if (!session) continue;
+      joined.set(member.id, {
+        session,
+        reviews: pendingBySessionId.get(session.id) ?? [],
+        gateNeedsYou: gateParked(session, sessions),
+      });
+    }
+    return joined;
+  }, [detail.members, sessions, reviews]);
 
   // A restore rides the generic action surface, so its "Restoring…" clears when the action the
   // controller was tracking finishes (pending returns to null), not on a per-artifact timer.
@@ -166,6 +209,13 @@ export function EnsembleDetail({
         </p>
       )}
 
+      <EnsemblePipeline
+        run={run}
+        summary={summary}
+        members={detail.members}
+        stageAttempts={detail.stageAttempts}
+      />
+
       <dl className="ensemble-facts">
         <div>
           <dt>Members</dt>
@@ -174,20 +224,6 @@ export function EnsembleDetail({
             {budget ? ` / ${budget.maxMembers} max` : ""}
           </dd>
         </div>
-        {run.activeStageId && (
-          <div>
-            <dt>Active stage</dt>
-            {/* The operator word leads and the compiled stage id is demoted beside it. This
-                fact used to be the raw `stage-2-review` alone, which is the run describing
-                its own schema; `ensembleStageWord` is the ONE vocabulary the cluster headers,
-                chips and list rows also read, so they cannot each invent a word for
-                `evaluating`. The id stays because the timeline below names stages by it. */}
-            <dd>
-              {ensembleStageWord({ status: run.status, outcomeKind: run.outcome?.kind ?? null })}{" "}
-              <code className="ensemble-stage-id">{run.activeStageId}</code>
-            </dd>
-          </div>
-        )}
         <div>
           <dt>Pinned base</dt>
           <dd>
@@ -264,6 +300,7 @@ export function EnsembleDetail({
         <h4>Members</h4>
         <EnsembleMembers
           detail={detail}
+          liveByMemberId={liveByMemberId}
           pending={actionPending}
           onAction={onAction}
           onOpenSession={onOpenSession}

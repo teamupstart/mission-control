@@ -1,5 +1,4 @@
 import { parseDiff, Diff, Hunk, type FileData } from "react-diff-view";
-import "react-diff-view/style/index.css";
 
 /**
  * Render a unified/git diff. Falls back to raw text if the diff can't be parsed

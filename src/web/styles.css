@@ -7313,6 +7313,118 @@ select:not([multiple]) option:focus-visible {
 .ensemble-tone-done { color: var(--idle); }
 .ensemble-tone-failed { color: var(--danger); }
 
+/* The run's glance path is a connected rail because these are real ordered execution
+   stages, not a decorative set of status cards. State colours reuse the fleet vocabulary:
+   blue in flight, green walked, red stopped, grey ahead. */
+.ensemble-pipeline {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--working) 5%, transparent), transparent 45%),
+    var(--panel);
+  padding: 14px;
+}
+
+.ensemble-pipeline ol {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ensemble-pipeline-step {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  color: var(--dim);
+}
+
+.ensemble-pipeline-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 11px;
+  right: -4px;
+  width: calc(100% - 30px);
+  border-top: 1px solid var(--border);
+}
+
+.ensemble-pipeline-marker {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  flex: 0 0 23px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--dim);
+  font: 700 10px/1 var(--mono);
+}
+
+.ensemble-pipeline-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  min-width: 0;
+  padding-right: 6px;
+  background: var(--panel);
+}
+
+.ensemble-pipeline-copy strong {
+  color: currentColor;
+  font-size: 12px;
+}
+
+.ensemble-pipeline-copy span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+
+.ensemble-pipeline-step.is-active {
+  color: var(--working);
+}
+
+.ensemble-pipeline-step.is-active .ensemble-pipeline-marker {
+  border-color: var(--working);
+  background: color-mix(in srgb, var(--working) 16%, var(--panel));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--working) 10%, transparent);
+}
+
+.ensemble-pipeline-step.is-complete {
+  color: var(--idle);
+}
+
+.ensemble-pipeline-step.is-complete .ensemble-pipeline-marker {
+  border-color: color-mix(in srgb, var(--idle) 55%, var(--border));
+}
+
+.ensemble-pipeline-step.is-failed {
+  color: var(--danger);
+}
+
+.ensemble-pipeline-step.is-failed .ensemble-pipeline-marker {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--panel));
+}
+
+.ensemble-pipeline-barrier {
+  margin: 12px 0 0;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 9px;
+  color: var(--attention);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .ensemble-facts {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -7428,6 +7540,109 @@ select:not([multiple]) option:focus-visible {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 12px;
+}
+
+.ensemble-member-lane {
+  background:
+    linear-gradient(110deg, color-mix(in srgb, var(--working) 4%, transparent), transparent 42%),
+    var(--panel);
+}
+
+.ensemble-lane-tone {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--neutral);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--neutral) 14%, transparent);
+}
+
+.ensemble-lane-tone-working { background: var(--working); }
+.ensemble-lane-tone-idle { background: var(--idle); }
+.ensemble-lane-tone-attention { background: var(--attention); }
+.ensemble-lane-tone-exited { background: var(--exited); }
+.ensemble-lane-tone-neutral { background: var(--neutral); }
+
+.ensemble-lane-state {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ensemble-lane-live {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  padding: 9px 10px;
+}
+
+.ensemble-lane-activity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  font-size: 12px;
+}
+
+.ensemble-lane-activity > :first-child {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.ensemble-lane-live .goal {
+  margin: 0;
+}
+
+.ensemble-lane-history {
+  margin-top: 9px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+
+.ensemble-lane-history > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ensemble-lane-history[open] > summary {
+  color: var(--fg);
+}
+
+.ensemble-lane-asks {
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--attention) 6%, var(--panel));
+  padding: 10px;
+}
+
+.ensemble-lane-asks > h6 {
+  margin: 0 0 9px;
+  color: var(--attention);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ensemble-lane-protocols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: 10px;
+}
+
+.ensemble-lane-protocols > .review,
+.ensemble-lane-protocols > .pane-dialog {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
 }
 
 .ensemble-member-durable-state {
@@ -8315,6 +8530,20 @@ select:not([multiple]) option:focus-visible {
 }
 
 @media (max-width: 760px) {
+  .ensemble-pipeline ol {
+    grid-template-columns: 1fr;
+  }
+
+  .ensemble-pipeline-step:not(:last-child)::after {
+    top: 23px;
+    bottom: -9px;
+    left: 11px;
+    right: auto;
+    width: 0;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+
   .ensemble-member-durable-state,
   .ensemble-stage-payload-grid {
     grid-template-columns: 1fr;

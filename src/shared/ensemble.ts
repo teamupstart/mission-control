@@ -1460,6 +1460,24 @@ export function ensembleStageWord(summary: Pick<EnsembleSummary, "status" | "out
   return summary.status === null ? "unreadable" : ENSEMBLE_STAGE_WORDS[summary.status];
 }
 
+/**
+ * The compact operator label for a compiled stage kind.
+ *
+ * This extends `ensembleStageWord`'s vocabulary down into the run pipeline: the former says
+ * where the WHOLE run is ("reviewing"), while this names one durable step ("Review"). Kept
+ * beside it so the pipeline, timeline-adjacent surfaces, and later compare workspace cannot
+ * grow independent spellings for the same four execution primitives.
+ */
+export function ensembleStageDriverWord(kind: EnsembleStageDriverKind): string {
+  const words: Record<EnsembleStageDriverKind, string> = {
+    member: "Work",
+    review: "Review",
+    decision: "Decide",
+    finalize: "Promote",
+  };
+  return words[kind];
+}
+
 // ---- agent cost ----
 
 /**

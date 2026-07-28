@@ -391,7 +391,7 @@ export interface WorkflowBindingDefaults {
 }
 
 export const DEFAULT_WORKFLOW_BINDING_DEFAULTS: WorkflowBindingDefaults = {
-  triggerMode: "manual",
+  triggerMode: "foreman_complete",
   deliveryMode: "preview",
   maxRepairRounds: 5,
 };

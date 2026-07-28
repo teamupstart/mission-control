@@ -447,4 +447,12 @@ test("the real shipped catalog resolves all of No-Mistakes Review's durable vers
     onFindings: "inspector_only",
     missingPrAction: "prepare_pr",
   });
+  assert.equal(v5.bindingDefaults.triggerMode, "manual");
+  const v6 = store.getWorkflowVersionById("builtin-workflow:no-mistakes-review@6")!;
+  assert.deepEqual(v6.completionPolicy, v5.completionPolicy);
+  assert.deepEqual(v6.bindingDefaults, {
+    triggerMode: "foreman_complete",
+    deliveryMode: "live",
+    maxRepairRounds: 5,
+  });
 });

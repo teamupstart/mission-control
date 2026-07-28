@@ -349,6 +349,24 @@ const NO_MISTAKES_REVIEW_V3: StagePipeline = {
   ],
 };
 
+/**
+ * The binding posture shipped before Foreman Complete became the application default.
+ *
+ * Built-in versions are immutable app data: deriving versions 1-5 from today's default would
+ * silently change existing bindings when that default changes. Keep their historical values
+ * explicit, and use the shared default only for the newly appended current version.
+ */
+const LEGACY_WORKFLOW_BINDING_DEFAULTS: WorkflowBindingDefaults = {
+  triggerMode: "manual",
+  deliveryMode: "preview",
+  maxRepairRounds: 5,
+};
+
+const NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS: WorkflowBindingDefaults = {
+  ...LEGACY_WORKFLOW_BINDING_DEFAULTS,
+  deliveryMode: "live",
+};
+
 const NO_MISTAKES_REVIEW_LIVE_DEFAULTS: WorkflowBindingDefaults = {
   ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   deliveryMode: "live",
@@ -369,7 +387,8 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
     // Inspector again instead of rerunning the already-passed review workflow. Version 5
-    // automatically hands a passed, PR-less review back to the session for shipping.
+    // automatically hands a passed, PR-less review back to the session for shipping. Version
+    // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
     versions: [
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
@@ -378,7 +397,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
-        bindingDefaults: DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+        bindingDefaults: LEGACY_WORKFLOW_BINDING_DEFAULTS,
         sourceDraftRevision: 1,
       },
       {
@@ -388,7 +407,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
-        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 1,
       },
       {
@@ -398,7 +417,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
-        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 2,
       },
       {
@@ -408,7 +427,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "inspector_only",
           missingPrAction: "offer_prepare_pr",
         },
-        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 3,
       },
       {
@@ -418,8 +437,18 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "inspector_only",
           missingPrAction: "prepare_pr",
         },
-        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 4,
+      },
+      {
+        pipeline: NO_MISTAKES_REVIEW_V3,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "inspector_only",
+          missingPrAction: "prepare_pr",
+        },
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 5,
       },
     ],
   }),

@@ -13441,6 +13441,22 @@ select.sc-input {
   gap: 13px;
   padding: 16px 22px;
 }
+/* A driver request can carry four questions at once, and unlike the transcript it has
+   no bounded child of its own. With visible overflow its automatic flex minimum is the
+   height of every question, so the form refuses the detail pane's squeeze and is clipped
+   by `.detail-body`; the later questions and Submit button then have no scroll path.
+
+   Bound only the fixed-height Console/Board detail instance. Grid cards keep the shared
+   dialog's natural height, while the detail form gives ground to the transcript and
+   scrolls internally. The floor keeps the form a useful reading surface on short windows;
+   `min()` lets that floor scale down with the viewport instead of recreating the clip. */
+.detail-conv > .pane-dialog {
+  flex: 0 1 auto;
+  min-height: min(200px, 30dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .detail-conv > .transcript {
   flex: 1 1 auto;
   min-height: 120px;

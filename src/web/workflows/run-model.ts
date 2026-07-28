@@ -22,7 +22,7 @@ import { WorkflowApiError } from "./workflowApi.ts";
  * Everything the runs monitor has to DECIDE, as pure functions over one run detail.
  *
  * It lives beside the reader rather than inside it for the reason the round scrubber
- * exists at all: which round is being viewed changes which reviewer chips, verdicts and
+ * exists at all: which round is being viewed changes which member chips, verdicts and
  * timeline entries are true, and a rule spelled inline in JSX can only be checked by
  * rendering markup and reading it back. These are checked directly.
  *
@@ -131,10 +131,10 @@ export function verdictOf(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
  * Node id -> runtime status for ONE submission.
  *
  * The verdict wins over the attempt state when there is one, because "completed" says the
- * provider replied and says nothing about whether the reviewer approved. Taking a
+ * reviewer or command finished and says nothing about whether the member passed. Taking a
  * submission id rather than digging out the newest one is the round scrubber's whole
  * premise: an attempt from round 1 says nothing about a node in round 3, and a map merged
- * across rounds shows a reviewer as passed while it is being re-run.
+ * across rounds shows a member as passed while it is being re-run.
  */
 export function nodeStatusesForSubmission(
   detail: WorkflowRunDetail,
@@ -159,10 +159,11 @@ export interface RoundView {
 /**
  * The scrubber's segments, in execution order.
  *
- * A round is "failed" when its reviewers asked for changes, which is NOT the same as the
- * submission failing: a round that returned to Session is a healthy repair loop and its
- * submission status is `waiting_for_session`. Marking it from the submission status alone
- * would leave every repair round unmarked, which is the one thing the mark is for.
+ * A round is "failed" when a member failed - a reviewer asked for changes or a Check rejected
+ * the submission - which is NOT the same as the submission failing: a round that returned to
+ * Session is a healthy repair loop and its submission status is `waiting_for_session`.
+ * Marking it from the submission status alone would leave every repair round unmarked, which
+ * is the one thing the mark is for.
  */
 export function runRounds(detail: WorkflowRunDetail): RoundView[] {
   return orderedSubmissions(detail).map((submission) => {

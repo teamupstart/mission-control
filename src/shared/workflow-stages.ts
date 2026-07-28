@@ -61,7 +61,7 @@ function memberOf(node: StageMemberNode): StageMember {
 export interface Stage {
   /**
    * The stage's `all_pass` node. `null` means no join node is bound: the stage has one member
-   * (a single reviewer needs no join), or the stage is new and `compileStages` will mint one.
+   * (a single member needs no join), or the stage is new and `compileStages` will mint one.
    * The compiler emits a join exactly when `members.length > 1`.
    */
   joinId: string | null;
@@ -72,7 +72,7 @@ export interface StagePipeline {
   sessionId: string;
   endId: string;
   endOutcome: string;
-  /** Zero or more stages, in execution order. `[]` is the valid 0-reviewer pipeline. */
+  /** Zero or more stages, in execution order. `[]` is the valid empty pipeline. */
   stages: Stage[];
 }
 
@@ -130,7 +130,7 @@ function withSnapshotNames(graph: StageGraph, personas: StagePersonaNames): Stag
 }
 
 /**
- * Derived stage naming (plan decision 3: no persisted stage label). A single reviewer names its
+ * Derived stage naming (plan decision 3: no persisted stage label). A single member names its
  * own stage; a parallel stage is "Stage N", 1-based as an operator counts.
  *
  * A pipeline projected from a PUBLISHED graph carries the snapshot's `sourcePersonaId`, so a

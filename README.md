@@ -2108,10 +2108,10 @@ paragraph under it is the description. **Import .md** shares only the heading-to
 an imported Persona's description stays empty.
 
 The four are written to compose, and they ship already composed: **No-Mistakes Review** is the
-built-in workflow below. Intent Conformance Judge runs first as a cheap gate, then the other
-three fan out behind an All-pass Join. None of them restates the engine's own review contract
-or output format, which every Persona prompt already carries, so editing your copy changes
-what that role judges, not how it replies.
+built-in workflow below. Among its Personas, Intent Conformance Judge runs first as a cheap
+gate, then the other three fan out behind an All-pass Join. None of them restates the engine's
+own review contract or output format, which every Persona prompt already carries, so editing
+your copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
@@ -2121,22 +2121,16 @@ There is nothing to author and nothing to import - it is in the Workflows tab of
 install, already published, and can be bound to a session immediately.
 
 Stage 1 is a deterministic gate: the [`typecheck` and `test` checks](#check-nodes), placed
-ahead of every reviewer so that a change which does not compile costs no model calls at all.
-Both are evaluated on the same submission and both must pass at their All-pass Join before
-anything behind them starts, so one failing gate returns the submission to the session with
-the command's own output and **no Persona runs**.
+ahead of every reviewer so that, once command execution is supplied, a change which does not
+compile costs no model calls at all. Under that execution contract both are evaluated on the
+same submission and both must pass at their All-pass Join before anything behind them starts,
+so one failing gate returns the submission to the session with the command's own output and
+**no Persona runs**.
 
-Note the build you are on: as the [Check nodes](#check-nodes) section explains, this build
-ships the node, the configuration and the run contract but **not yet the runtime that spawns
-check commands**, so today both slots are recorded and pass regardless of what you configure.
-The stage is wired and the graph is correct ahead of that runtime landing.
-
-**A slot with no command configured for the repository is skipped, and a skipped check
-passes.** That is what makes it safe to ship check gates in a workflow that gets bound on
-machines this build has never seen: with nothing configured, version 3 behaves exactly as
-version 2 did, and the run records a skip note saying so. Configure the commands under
-Settings → Workflows to prepare the gate for the execution runtime when it ships. In this
-build, a configured slot is still recorded as not run and passed rather than activated.
+The [Check nodes](#check-nodes) section owns the current execution status and the rules for
+configured, unconfigured and unauthorized slots. In this build those rules make version 3
+follow the same Persona review path as version 2 while preserving the deterministic stage in
+the graph.
 
 Behind it are the four built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending three deeper reviews
@@ -2184,11 +2178,12 @@ a seeding step that could half-run. It is compiled into the build beside the Per
 
 ### Workflow drafts and published versions
 
-A workflow is **stages of reviewers**, and the **Pipeline** view is where you author one.
-It draws Session, the stages between it, and the End outcome; you add, remove and reorder
-reviewers and stages, and everything structural is generated for you. A stage holding two or
-more reviewers gets its all-pass Join, every fail returns to Session for repair, and the last
-stage's pass reaches End. Nothing is hand-drawn, so none of it can be got wrong.
+A workflow is **stages of members** - Persona reviewers and deterministic Checks - and the
+**Pipeline** view is where you author one. It draws Session, the stages between it, and the End
+outcome; you add, remove and reorder members and stages, and everything structural is generated
+for you. A stage holding two or more members gets its all-pass Join, every fail returns to
+Session for repair, and the last stage's pass reaches End. Nothing is hand-drawn, so none of it
+can be got wrong.
 
 A brand-new workflow opens on Session, one empty stage affordance, and End - opening it never
 edits it. Picking a Persona from the stage's inline list makes it stage 1; picking a second
@@ -2197,12 +2192,12 @@ anything moves on. That is the whole gesture: two picks, no validation error. A 
 published with that shape runs correctly on any build, but an older build refuses to
 re-publish it.
 
-Reorder by dragging a reviewer onto another slot or another stage, or from the keyboard:
+Reorder by dragging a member onto another slot or another stage, or from the keyboard:
 arrow keys move between cards, <kbd>⌥</kbd> plus <kbd>←</kbd> / <kbd>→</kbd> moves the focused
-stage along the chain, <kbd>⌥</kbd> plus <kbd>↑</kbd> / <kbd>↓</kbd> moves the focused reviewer
+stage along the chain, <kbd>⌥</kbd> plus <kbd>↑</kbd> / <kbd>↓</kbd> moves the focused member
 within its stage, and <kbd>Delete</kbd> removes the focused card after a confirmation.
-Announcements and labels name Personas and stages; no surface prints a node id. A stage's name
-is derived, not stored: one reviewer names its own stage, and a parallel stage reads "Stage N".
+Announcements and labels name members and stages; no surface prints a node id. A stage's name
+is derived, not stored: one member names its own stage, and a parallel stage reads "Stage N".
 
 **Graph** is the other half of the toolbar toggle, and it still edits anything. Add Persona,
 **All-pass Join**, **Check** and End nodes from the left palette, then connect the directional
@@ -2220,15 +2215,12 @@ fail routed somewhere other than Session, a Join fed from two different stages -
 Graph with a banner naming each reason in a sentence. Both views write ordinary draft graphs,
 so a draft moves between them freely and existing workflows need no migration.
 
-A stage holds **reviewers and checks alike**. The add control on every stage offers your
-Personas and the four check slots in one list, a check appears as a row marked `Check` named
-by its slot, and it reorders, moves between stages and deletes with the same drag and the
-same keys a reviewer does (Alt+Up / Alt+Down to reorder, Delete to remove). A stage of two
-checks gets its All-pass Join like any other parallel stage. Checks are offered even before
+The add control on every stage offers your Personas and the four check slots in one list. A
+check appears as a row marked `Check` and named by its slot. Checks are offered even before
 you have authored a Persona, because the slots are a fixed vocabulary rather than something
 you configure here.
 
-### Check nodes (gating on a command)
+### Check nodes
 
 A **Check** represents a deterministic command gate instead of a model review. This build
 ships the graph node, configuration, validation, and run-detail contract, but not the
@@ -2365,10 +2357,11 @@ loaded only for the selected run. Cards, Console, and Board show the same workfl
 ### Watching a run
 
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
-stages and End the Pipeline view draws, with a live status on every reviewer: queued,
-reviewing, passed, or changes requested. A stage of two reviewers shows both and passes only
-when both do. A version drawn freehand in the Graph view is not a pipeline, so its run falls
-back to that graph, read-only, carrying the same statuses. No surface prints a node id.
+stages and End the Pipeline view draws, with a live status on every member. Reviewers show
+queued, reviewing, passed, or changes requested; Checks show their corresponding command
+state. A stage of two or more members shows each one and passes only when all do. A version
+drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
+read-only, carrying the same statuses. No surface prints a node id.
 
 The rail lists history newest first with a state chip, the bound conversation and a relative
 time. Four chips - **All**, **Running**, **Needs you**, **Done** - are shortcuts onto the

@@ -29,11 +29,11 @@ import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 
 /**
- * Authoring a workflow as stages of reviewers.
+ * Authoring a workflow as stages of Persona reviewers and deterministic Checks.
  *
  * The editor holds NO pipeline state of its own. After every edit its state is
  * `projectStages(draft)` again, which is what keeps id minting where phase 1 put it: a
- * reviewer being added is constructed with `nodeId: null`, `compileStages` mints the real id,
+ * member being added is constructed with `nodeId: null`, `compileStages` mints the real id,
  * and the next projection hands it back. An editor that kept its own pipeline between edits
  * would have to mint ids to fill those nulls, and two minters is how undo and the CAS
  * autosave start disagreeing about which node is which.

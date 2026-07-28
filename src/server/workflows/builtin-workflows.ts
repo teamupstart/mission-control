@@ -291,7 +291,7 @@ const NO_MISTAKES_REVIEW_V2: StagePipeline = {
 };
 
 /**
- * Version 3: the same review stages, behind a deterministic gate.
+ * Version 3: the same two reviewer stages, behind a deterministic gate.
  *
  * Written out in full rather than composed from version 1's stages, and the duplication is
  * the POINT. A shipped version is frozen for its lifetime, so these literals are a changelog,
@@ -300,7 +300,7 @@ const NO_MISTAKES_REVIEW_V2: StagePipeline = {
  * pins version 1 against a literal would be the only thing between that and an operator.
  *
  * The gate is first because a change that does not compile should not cost four model calls.
- * The two checks sit in ONE stage, so `compileStages` mints a join for them and both must pass
+ * The two checks sit in ONE stage, so `compileStages` emits their named join and both must pass
  * before Intent Conformance is activated - which is why Phase 2's validator had to accept a
  * Check as a Join predecessor.
  *

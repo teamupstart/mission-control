@@ -115,10 +115,10 @@ export function ReviewerRow({
 }
 
 /**
- * One stage: its derived name, what it is waiting on, and its reviewers.
+ * One stage: its derived name, what it is waiting on, and its members.
  *
  * `header` wires the stage's own roving stop and drag handle; `frame` takes drops for the
- * card as a whole, so a reviewer can be moved onto a stage without aiming at a row.
+ * card as a whole, so a member can be moved onto a stage without aiming at a row.
  */
 export function StageCard({
   name,
@@ -215,7 +215,7 @@ export function TerminusCard({
  *
  * The repair rail is a sentence rather than a drawn edge on purpose - every fail in a
  * pipeline returns to Session, so drawing N identical return edges was what made the canvas
- * unreadable at two reviewers.
+ * unreadable at two members.
  */
 export function PipelineFrame({
   ariaLabel,

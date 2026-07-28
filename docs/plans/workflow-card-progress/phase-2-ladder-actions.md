@@ -122,39 +122,66 @@ export function inspectorGateActions(
   narrow, copy-only refactor and is explicitly *not* the `load()` refactor Phase 1 ruled out;
   the fetch path is untouched.
 
-### 2. `src/web/workflows/useRunActions.ts` (new) - the shared executable guard
+### 2. `src/web/workflows/run-action-store.ts` (new) - the shared executable guard
 
 Descriptors are pure data and therefore **cannot** hold an in-flight flag or retain a request id.
-A guard that lived only in the ladder's panel would leave `WorkflowRuns` minting a fresh id per
-click, so "neither surface can double-submit" would not be implementable from the shared layer.
-The state has to be shared and executable, not described:
+But React state cannot hold it either, and that is the sharper constraint: the two surfaces live
+on **different pages** (`route.page === "workflows"` for the Runs monitor,
+`"fleet"` for the session detail, `App.tsx:1448-1471`), so they are never mounted together.
+Navigating from one to the other **unmounts** the surface holding the pending state while its
+POST is still in flight. Per-hook state is therefore guaranteed to be destroyed by exactly the
+transition an operator makes, and the second surface would mint a fresh id for the same intent.
+
+So the state lives **outside the React tree**, in a module-level store keyed by run and action:
 
 ```ts
-export interface RunActionsController {
-  isPending(id: RunActionId): boolean;
-  /**
-   * Runs the action once. A call while that id is already in flight is a no-op that issues no
-   * request. `send` receives the request id to use.
-   */
-  run(id: RunActionId, send: (requestId: string) => Promise<unknown>): void;
-  error: string | null;
-  clearError(): void;
-}
+const keyOf = (runId: WorkflowRunId, action: RunActionId): string => `${runId}:${action}`;
 
-export function useRunActions(onSettled: () => void): RunActionsController;
+export function runAction(
+  runId: WorkflowRunId,
+  action: RunActionId,
+  send: (requestId: string) => Promise<unknown>,
+  onSettled: () => void,
+): void;
+export function isRunActionPending(runId: WorkflowRunId, action: RunActionId): boolean;
+export function dropRunActions(runId: WorkflowRunId): void;
+
+/** Subscribes a surface to the entries for one run. */
+export function useRunActions(runId: WorkflowRunId, onSettled: () => void): RunActionsController;
 ```
 
-- **One request id per action id, minted on first run and retained until that request settles.**
+This is the **`lib/drafts.ts` pattern**, and for the same stated reason: that map exists because
+"the text has to outlive every mount that can end under it, and each of those mounts is exactly
+what the old state was tied to" (`drafts.ts:12-15`). Pending action state has precisely that
+shape.
+
+One deliberate difference from drafts: drafts are explicitly "NOT a store with subscribers -
+nothing renders from it" (`drafts.ts:17`). This one **does** need subscribers, because a button's
+disabled state renders from it. It is a small store with a subscription hook rather than a bare
+map; do not copy the no-subscriber decision along with the map.
+
+- **One request id per run+action, minted on first run and retained until that request settles.**
   A retry of the same intent after a failure reuses it, which is what the idempotency key is
   actually for - and follows the existing `unchangedRequest` precedent
   (`WorkflowRuns.tsx:1200`, `:1321-1337`). It is cleared on success.
-- **A second activation while pending issues nothing.** This, not the request id, is what makes a
-  double-click safe.
-- `onSettled` is the caller's refetch, so the controller owns no fetching of its own.
-- Errors surface through `error`, so neither surface throws out of a click handler.
+- **A second activation while that key is pending issues nothing**, whichever surface it comes
+  from. This, not the request id, is what makes a double-click safe.
+- `onSettled` is the caller's refetch, so the store owns no fetching of its own.
+- **`dropRunActions` is driven by `workflow_run_remove`**, the same shape as `dropSessionDrafts`
+  being driven by `session_remove`. Without it a run deleted by the retention sweep leaves an
+  entry nothing will ever clear.
 
-**Both surfaces consume this controller**, and each renders an action as disabled when
+**Both surfaces consume this store**, and each renders an action as disabled when
 `descriptor.disabled || controller.isPending(descriptor.id)`.
+
+**What this closes, and what it honestly does not.** It closes the in-app case, including the
+cross-surface navigation above, which is the one an operator actually hits. It does **not** close
+two browser tabs or two machines: those are separate module instances, so the same intent can
+still be submitted twice with different ids. Closing that requires the server to deduplicate the
+*intent* rather than the client-supplied id, which is a change to
+`WorkflowManager.recheckInspector` / `resolveDelivery` semantics and is outside this phase's
+"no new server behaviour" boundary. It is recorded here as the known residual rather than left
+implied, and the scope is the tab - the same bargain `drafts.ts` states about itself.
 
 **This closes a real gap in the shipped Runs page, not just a risk in new code.** Its click sites
 call `crypto.randomUUID()` inline (`WorkflowRuns.tsx:1555-1594`) with no in-flight guard - the
@@ -184,10 +211,11 @@ shipped longest, and copying the existing pattern into the ladder would duplicat
 - Own the clipboard write for Copy feedback and the `feedbackCopied` flag it passes down,
   mirroring `WorkflowRuns`' `copyFeedback` (`:1344`) rather than reimplementing which text is
   copied. The packet is the same packet; the two surfaces must not disagree about it.
-- **Drive every POST through `useRunActions` from step 2**, passing the descriptor's `id` and a
-  `send` that builds the request with the supplied request id. The panel holds no pending state
-  and mints no request id of its own; doing either would be a second implementation of the guard
-  and the two surfaces could then disagree.
+- **Drive every POST through `useRunActions(run.id, refetch)` from step 2**, passing the
+  descriptor's `id` and a `send` that builds the request with the supplied request id. The panel
+  holds no pending state and mints no request id of its own; doing either would be a second
+  implementation of the guard, and since the two surfaces never mount together it would not even
+  fail loudly.
 - Pass `controller.isPending(id)` into the renderer so a pending action renders disabled, and
   render `controller.error` inline rather than throwing out of a click handler.
 - `onSettled` is the panel's refetch.
@@ -216,10 +244,15 @@ uncertain delivery in place, under the same confirmations as the Runs page.
   `DISCARD AND SEND A NEW REPAIR ROUND`. Assert the same descriptors are what `WorkflowRuns`
   renders, so the two surfaces cannot drift.
 - `test/workflow-action-inflight.test.ts` - **the double-submit regression**, asserted against
-  `useRunActions` itself, which is what makes it cover both surfaces rather than one renderer:
-  a second `run` for an id already in flight issues **no** second request; the request id is
-  minted once and reused for an explicit retry after failure, then cleared on success; and
-  `isPending` is true for exactly the action in flight, so an unrelated action stays enabled.
+  the module-level store, which is what makes it cover both surfaces rather than one renderer:
+  a second `runAction` for a run+action already in flight issues **no** second request; the
+  request id is minted once and reused for an explicit retry after failure, then cleared on
+  success; `isRunActionPending` is true for exactly the key in flight, so an unrelated action and
+  an unrelated run stay enabled; and `dropRunActions` clears a run's entries.
+  **The case that motivated the store gets its own test**: start an action, simulate the first
+  surface unmounting (the page switch), and assert a second subscriber for the same run still
+  reports it pending and still refuses to issue a second request. React state would pass every
+  other case here and fail this one.
 
 ## Data, API and compatibility
 
@@ -245,10 +278,11 @@ disabled when the bound session is gone.
 - CI green on Node 24 and Node 26.
 - Both delivery resolutions require exactly what the Runs page requires.
 - `WorkflowRuns` and the ladder read their action copy from one module.
-- **No action can be submitted twice by double-clicking it, on either surface.** A pending action
-  renders disabled and issues exactly one request. This is implementable because the guard lives
-  in `useRunActions`, an executable shared seam both surfaces call - a pure descriptor could not
-  have held it.
+- **No action can be submitted twice by double-clicking it, on either surface, and starting one
+  on the Runs page then opening the session detail before it settles does not allow a second
+  submission.** A pending action renders disabled and issues exactly one request. This is
+  implementable because the guard lives in a module-level store both surfaces read - a pure
+  descriptor could not have held it, and React state would have died with the page switch.
 - README updated in this same change.
 
 ## Downstream handoff
@@ -257,10 +291,14 @@ Nothing depends on this phase. It establishes, for anyone extending the ladder l
 
 - **Action copy and guards live in `run-actions.ts`** as pure descriptors with stable ids, never
   inline in a surface.
-- **In-flight state and request ids live in `useRunActions`**, the one executable seam. A
-  descriptor describes; the controller runs. Anything adding an action to either surface
-  inherits the guard by using the controller, and a surface that keeps its own pending set has
-  reintroduced the defect.
+- **In-flight state and request ids live in `run-action-store.ts`**, a module-level store keyed
+  by run and action - deliberately outside the React tree, because the two surfaces are on
+  different pages and never mount together. A descriptor describes; the store runs. Anything
+  adding an action to either surface inherits the guard by using it, and a surface that keeps its
+  own pending set has reintroduced the defect in a way no test of that surface can catch.
+- **The residual is known and bounded**: the store's scope is the tab, so two tabs can still
+  submit one intent twice. Closing that needs server-side dedup of the intent, not a client
+  change.
 - **The renderer stays pure**; mutations belong to the panel wrapper via the controller.
 - **A disabled action renders with its reason** rather than disappearing.
 - **An in-flight action is disabled.** A `requestId` makes a *retry* safe, not a second click.
@@ -301,6 +339,16 @@ Nothing depends on this phase. It establishes, for anyone extending the ladder l
   `useRunActions`, that both surfaces call; descriptors gain a stable `id` so the controller can
   key pending state to them; and the regression test asserts the controller rather than a
   renderer, which is what makes it cover both surfaces.
+- **Corrected a third time after Inspector round 4 (#308), and the finding was right again.**
+  Round 3's fix put the guard in a hook, which two surfaces calling it would instantiate twice.
+  Verifying it made the problem worse than reported rather than better: the Inspector described
+  concurrent mounts, but the Runs monitor and the session detail are on **different pages**
+  (`App.tsx:1448-1471`), so they are never mounted together and the pending state is
+  *guaranteed* to be destroyed by the very navigation in the scenario. The guard now lives in a
+  module-level store keyed by run and action, following `lib/drafts.ts`, which exists for exactly
+  this failure ("the text has to outlive every mount that can end under it"). The residual - two
+  tabs - is stated rather than implied, with server-side intent dedup named as what would close
+  it and why that is outside this phase.
 - Reconciled against Phase 3 (concurrent): the two touch `WorkflowLadder.tsx`, `styles.css` and
   `README.md` in disjoint regions - this phase in the gate and delivery rungs' action rows, Phase
   3 in the failing stage's rung. Ordinary textual conflicts, resolvable at merge; whichever

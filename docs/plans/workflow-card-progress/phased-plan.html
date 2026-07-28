@@ -314,12 +314,15 @@
           rechecks or two delivery resolutions.
         </li>
         <li>
-          <strong>Descriptors describe; a controller runs.</strong>
+          <strong>Descriptors describe; a store runs.</strong>
           <code>run-actions.ts</code> holds pure descriptors with stable ids, and
-          <code>useRunActions</code> is the one <em>executable</em> seam holding pending state and
-          request ids. Both the Runs page and the ladder call it, which is what makes "neither
-          surface can double-submit" implementable - a pure descriptor could not have held that
-          state.
+          <code>run-action-store.ts</code> is the one <em>executable</em> seam holding pending
+          state and request ids, keyed by run and action. It is module-level, outside the React
+          tree, because the Runs monitor and the session detail are on different pages and never
+          mount together - React state would be destroyed by exactly the navigation that lets an
+          operator submit the same intent twice. Same reason <code>lib/drafts.ts</code> is a
+          module-level map. Residual, stated rather than implied: the scope is the tab, so two
+          tabs still need server-side dedup of the intent.
         </li>
       </ul>
 

@@ -65,7 +65,7 @@ function stepState(
   if (run.status === "completed") return "complete";
   if (latest?.status === "succeeded") return "complete";
   if (latest?.status === "failed" || latest?.status === "cancelled") return "failed";
-  if (ensembleIsTerminal(run.status)) {
+  if (run.status !== null && ensembleIsTerminal(run.status)) {
     if (run.activeStageId === stage.id) return "failed";
     if (activeOrdinal !== null && stage.ordinal < activeOrdinal) return "complete";
     return "upcoming";

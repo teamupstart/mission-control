@@ -1983,8 +1983,9 @@ obligation:
    its run context on the header line - *Best of N "Fix the parser" - candidate 3 of 5* - so
    whoever answers can tell they are steering one competitor of a comparison.
 3. **Members parked on a menu** - an ensemble member sitting on a terminal
-   [option menu](#answer-a-sessions-menu-from-the-dashboard). Listed, not answered: a pane
-   dialog is a transient TUI fact answered by keystrokes on the card, and it deep-links there.
+   [option menu](#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
+   inbox: it deep-links to the session card, while the member's live lane in the run detail
+   also renders the verified pane dialog in place.
 4. **Stuck finalizations and shipping gates** - a promotion that stopped on an error, and
    parked no-mistakes gates no agent is driving.
 

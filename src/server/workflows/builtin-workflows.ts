@@ -192,7 +192,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     name: source.name,
     description: source.description,
     draft: graphs[graphs.length - 1]!,
-    completionPolicy: source.completionPolicy,
+    completionPolicy: current.completionPolicy,
     bindingDefaults: current.bindingDefaults,
   };
   const duplicable = CreateWorkflowSchema.safeParse(duplicateSeed);

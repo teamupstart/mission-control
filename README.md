@@ -2029,11 +2029,12 @@ granted permission yet - that click also unlocks the chime) and **Sound**. **Awa
 mode** sits below them in its own card, because it is not a third channel: it is
 daemon state that survives closing the tab.
 
-The card always states what would actually happen. With a channel live it reads
-"Blockers interrupt via desktop and sound; everything else waits in the digest". With
-**both channels off it says "Nothing can reach you"** and changes colour, because away
-mode is not itself a delivery path - with nothing to interrupt you on it can only hand
-you a digest when you get back, and the panel never claims otherwise.
+The card always states what would actually happen and names only the channels that are
+live. With desktop and sound on, for example, it reads "Blockers interrupt via desktop
+and sound; everything else waits in the digest". With **both channels off it says
+"Nothing can reach you"** and changes colour, because away mode is not itself a delivery
+path - with nothing to interrupt you on it can only hand you a digest when you get back,
+and the panel never claims otherwise.
 
 Switch away mode on and the card expands to show how long you have been gone
 (`away 1h 04m`), how much has piled up (`7 buffered`), and a **Digest** button that

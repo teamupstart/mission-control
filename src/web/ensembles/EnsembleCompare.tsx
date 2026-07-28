@@ -53,6 +53,8 @@ export function EnsembleCompare({
   const requestedFiles = useRef(new Set<string>());
   const requestedPatches = useRef(new Set<string>());
   const activeRunId = useRef(detail.run.id);
+  const [filesRetryVersion, setFilesRetryVersion] = useState(0);
+  const [patchRetryVersion, setPatchRetryVersion] = useState(0);
 
   useEffect(() => {
     activeRunId.current = detail.run.id;
@@ -90,7 +92,7 @@ export function EnsembleCompare({
         );
       });
     }
-  }, [detail.run.id, selectedIds]);
+  }, [detail.run.id, filesRetryVersion, selectedIds]);
 
   useEffect(() => {
     if (!compare?.path || selectedIds.length < 2) return;
@@ -113,7 +115,17 @@ export function EnsembleCompare({
         );
       });
     }
-  }, [compare?.path, detail.run.id, selectedIds]);
+  }, [compare?.path, detail.run.id, patchRetryVersion, selectedIds]);
+
+  const retryFiles = (artifactIds: readonly string[]): void => {
+    for (const artifactId of artifactIds) requestedFiles.current.delete(artifactId);
+    setFilesRetryVersion((version) => version + 1);
+  };
+
+  const retryPatch = (artifactId: string, path: string): void => {
+    requestedPatches.current.delete(comparePatchKey(artifactId, path));
+    setPatchRetryVersion((version) => version + 1);
+  };
 
   return (
     <EnsembleCompareView
@@ -123,6 +135,8 @@ export function EnsembleCompare({
       onCompareChange={onCompareChange}
       filesCache={filesCache}
       patchCache={patchCache}
+      onRetryFiles={retryFiles}
+      onRetryPatch={retryPatch}
       sectionRef={sectionRef}
     />
   );
@@ -136,6 +150,8 @@ export function EnsembleCompareView({
   onCompareChange,
   filesCache,
   patchCache,
+  onRetryFiles,
+  onRetryPatch,
   sectionRef,
 }: {
   detail: EnsembleRunDetailResponse;
@@ -144,6 +160,8 @@ export function EnsembleCompareView({
   onCompareChange: (compare: CompareControl | null) => void;
   filesCache: CompareFilesCache;
   patchCache: ComparePatchCache;
+  onRetryFiles?: (artifactIds: readonly string[]) => void;
+  onRetryPatch?: (artifactId: string, path: string) => void;
   sectionRef?: React.Ref<HTMLElement>;
 }): React.JSX.Element {
   const eligible = eligibleCompareArtifacts(detail);
@@ -163,14 +181,26 @@ export function EnsembleCompareView({
   // A partial union would briefly invent "only #N" marks before the slower columns arrive.
   // Keep the matrix empty until every selected artifact's complete stats are present.
   const matrix = filesComplete ? buildFileMatrix(filesByArtifact) : [];
-  const pathTouchedByArtifact = new Map(
-    path === null
-      ? []
-      : selectedIds.map((artifactId) => [
+  const pathTouchedByArtifact = new Map<string, boolean>();
+  if (path !== null) {
+    for (const artifactId of selectedIds) {
+      const filesEntry = filesCache.get(artifactId);
+      const patchEntry = patchCache.get(comparePatchKey(artifactId, path));
+      if (filesEntry?.status === "ready") {
+        pathTouchedByArtifact.set(
           artifactId,
-          artifactTouchesPath(filesByArtifact.get(artifactId) ?? [], path),
-        ]),
-  );
+          artifactTouchesPath(filesEntry.value.files, path),
+        );
+      } else if (patchEntry?.status === "ready") {
+        // A per-path response still carries complete file stats. It can establish touch evidence
+        // when the independent files-only request failed, including binary and renamed files.
+        pathTouchedByArtifact.set(
+          artifactId,
+          artifactTouchesPath(patchEntry.value.files, path),
+        );
+      }
+    }
+  }
   const untouchedPath =
     path !== null &&
     filesComplete &&
@@ -343,7 +373,11 @@ export function EnsembleCompareView({
               </div>
 
               {!filesComplete && (
-                <CompareLoadStatus artifactIds={selectedIds} cache={filesCache} />
+                <CompareLoadStatus
+                  artifactIds={selectedIds}
+                  cache={filesCache}
+                  onRetry={onRetryFiles}
+                />
               )}
 
               {path && (
@@ -354,6 +388,7 @@ export function EnsembleCompareView({
                   patchCache={patchCache}
                   pathTouchedByArtifact={pathTouchedByArtifact}
                   untouchedPath={untouchedPath}
+                  onRetry={onRetryPatch}
                   style={columnsStyle}
                 />
               )}
@@ -418,20 +453,39 @@ function CompareClaims({
 function CompareLoadStatus({
   artifactIds,
   cache,
+  onRetry,
 }: {
   artifactIds: string[];
   cache: CompareFilesCache;
+  onRetry?: (artifactIds: readonly string[]) => void;
 }): React.JSX.Element {
   const errors = artifactIds
-    .map((artifactId) => cache.get(artifactId))
-    .filter((entry): entry is Extract<CacheEntry<EnsembleArtifactPatch>, { status: "error" }> =>
-      entry?.status === "error",
+    .map((artifactId) => ({ artifactId, entry: cache.get(artifactId) }))
+    .filter(
+      (
+        item,
+      ): item is {
+        artifactId: string;
+        entry: Extract<CacheEntry<EnsembleArtifactPatch>, { status: "error" }>;
+      } => item.entry?.status === "error",
     );
   return errors.length > 0 ? (
-    <p className="ensemble-error" role="alert">
-      Could not load {errors.length === 1 ? "one file list" : `${errors.length} file lists`}:{" "}
-      {errors.map((entry) => entry.error).join("; ")}
-    </p>
+    <div className="ensemble-error ensemble-compare-load-error" role="alert">
+      <span>
+        Could not load {errors.length === 1 ? "one file list" : `${errors.length} file lists`}:{" "}
+        {errors.map(({ entry }) => entry.error).join("; ")}
+      </span>
+      {onRetry && (
+        <Tooltip label="Retry the failed Compare file-list requests">
+          <button
+            type="button"
+            onClick={() => onRetry(errors.map(({ artifactId }) => artifactId))}
+          >
+            Retry {errors.length === 1 ? "file list" : "file lists"}
+          </button>
+        </Tooltip>
+      )}
+    </div>
   ) : (
     <p className="ensemble-muted">Loading complete file lists…</p>
   );
@@ -444,6 +498,7 @@ function ComparePanes({
   patchCache,
   pathTouchedByArtifact,
   untouchedPath,
+  onRetry,
   style,
 }: {
   artifactIds: string[];
@@ -452,6 +507,7 @@ function ComparePanes({
   patchCache: ComparePatchCache;
   pathTouchedByArtifact: ReadonlyMap<string, boolean>;
   untouchedPath: boolean;
+  onRetry?: (artifactId: string, path: string) => void;
   style: CSSProperties;
 }): React.JSX.Element {
   return (
@@ -471,9 +527,16 @@ function ComparePanes({
               {!entry || entry.status === "loading" ? (
                 <p className="ensemble-muted">Loading this file…</p>
               ) : entry.status === "error" ? (
-                <p className="ensemble-error" role="alert">
-                  {entry.error}
-                </p>
+                <div className="ensemble-error ensemble-compare-load-error" role="alert">
+                  <span>{entry.error}</span>
+                  {onRetry && (
+                    <Tooltip label={`Retry ${path} for ${subjectLabel(artifactId)}`}>
+                      <button type="button" onClick={() => onRetry(artifactId, path)}>
+                        Retry file
+                      </button>
+                    </Tooltip>
+                  )}
+                </div>
               ) : (
                 <>
                   {entry.value.truncated && (

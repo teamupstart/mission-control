@@ -428,6 +428,47 @@ test("three loaded candidates render a matrix, aligned panes, and truncation dis
   assert.match(html, /not reported/);
 });
 
+test("a failed file list stays unknown until the per-path response supplies touch evidence", () => {
+  const files: CompareFilesCache = new Map([
+    ["art-1", { status: "error", error: "file list unavailable" }],
+    ["art-2", { status: "ready", value: patch([file("assets/logo.png", 0, 0)]) }],
+  ]);
+  const patches: ComparePatchCache = new Map([
+    [
+      comparePatchKey("art-1", "assets/logo.png"),
+      {
+        status: "ready",
+        value: patch([file("assets/logo.png", 0, 0, { binary: true })], {
+          patchPaths: ["assets/logo.png"],
+        }),
+      },
+    ],
+    [
+      comparePatchKey("art-2", "assets/logo.png"),
+      { status: "error", error: "patch unavailable" },
+    ],
+  ]);
+  const html = renderToStaticMarkup(
+    createElement(EnsembleCompareView, {
+      detail: detail(),
+      subjectLabel,
+      compare: { artifactIds: ["art-1", "art-2"], path: "assets/logo.png" },
+      onCompareChange: () => {},
+      filesCache: files,
+      patchCache: patches,
+      onRetryFiles: () => {},
+      onRetryPatch: () => {},
+    }),
+  );
+
+  assert.match(html, /file list unavailable/);
+  assert.match(html, /No text patch for this file/);
+  assert.doesNotMatch(html, /Not touched by this candidate/);
+  assert.match(html, /Retry file list/);
+  assert.match(html, /patch unavailable/);
+  assert.match(html, /Retry file/);
+});
+
 test("the section explains its two-snapshot gate", () => {
   const html = renderToStaticMarkup(
     createElement(EnsembleCompareView, {

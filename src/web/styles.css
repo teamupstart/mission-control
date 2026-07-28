@@ -8056,6 +8056,27 @@ select:not([multiple]) option:focus-visible {
   padding: 10px;
 }
 
+.ensemble-compare-load-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ensemble-compare-load-error button {
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 7px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ensemble-compare-load-error button:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
 .ensemble-compare-pane {
   min-width: 280px;
   overflow: hidden;

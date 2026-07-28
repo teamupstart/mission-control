@@ -186,25 +186,24 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and final gate", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 5);
-  assert.deepEqual(builtin.versions[0]!.bindingDefaults, DEFAULT_WORKFLOW_BINDING_DEFAULTS);
-  assert.deepEqual(builtin.versions[1]!.bindingDefaults, {
+  assert.equal(builtin.versions.length, 6);
+  assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+  });
+  for (const historical of builtin.versions.slice(1, 5)) {
+    assert.deepEqual(historical.bindingDefaults, {
+      triggerMode: "manual",
+      deliveryMode: "live",
+      maxRepairRounds: 5,
+    });
+  }
+  assert.deepEqual(builtin.versions[5]!.bindingDefaults, {
     ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
     deliveryMode: "live",
   });
-  assert.deepEqual(builtin.versions[2]!.bindingDefaults, {
-    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
-    deliveryMode: "live",
-  });
-  assert.deepEqual(builtin.versions[3]!.bindingDefaults, {
-    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
-    deliveryMode: "live",
-  });
-  assert.deepEqual(builtin.versions[4]!.bindingDefaults, {
-    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
-    deliveryMode: "live",
-  });
-  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[4]!.bindingDefaults);
+  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[5]!.bindingDefaults);
   assert.deepEqual(builtin.definition.completionPolicy, {
     kind: "inspector",
     onFindings: "inspector_only",
@@ -315,11 +314,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 5, "one workflow, five versions");
-  assert.equal(
-    builtin.definition.currentVersionId,
-    builtinWorkflowVersionId("no-mistakes-review", 5),
-  );
+  assert.equal(builtin.versions.length, 6, "one workflow, six versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -398,4 +393,26 @@ test("version 5 adds automatic PR preparation after the Inspector-only repair po
     compileStages(projectStages(builtin.definition.draft)!, builtin.definition.draft),
     builtin.definition.draft,
   );
+});
+
+test("version 6 defaults submission to Foreman complete without rewriting history", () => {
+  const builtin = noMistakesReview();
+  assert.equal(
+    builtin.definition.currentVersionId,
+    builtinWorkflowVersionId("no-mistakes-review", 6),
+  );
+  for (const historical of builtin.versions.slice(0, 5)) {
+    assert.equal(historical.bindingDefaults.triggerMode, "manual");
+  }
+  const previous = builtin.versions[4]!;
+  const current = builtin.versions[5]!;
+  assert.equal(current.sourceDraftRevision, 5);
+  assert.deepEqual(current.graph, previous.graph, "v6 changes defaults without rewriting v5");
+  assert.deepEqual(current.completionPolicy, previous.completionPolicy);
+  assert.deepEqual(current.bindingDefaults, {
+    triggerMode: "foreman_complete",
+    deliveryMode: "live",
+    maxRepairRounds: 5,
+  });
+  assert.deepEqual(builtin.definition.bindingDefaults, current.bindingDefaults);
 });

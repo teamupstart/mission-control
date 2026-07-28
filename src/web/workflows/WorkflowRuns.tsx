@@ -12,7 +12,7 @@ import type {
   WorkflowEventPage,
   WorkflowLlmCallPage,
 } from "@shared/workflow.ts";
-import { formatCheckCommand, isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
+import { formatCheckCommand } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
@@ -48,8 +48,17 @@ import {
   verdictMeta,
   verdictOf,
   workflowCallCost,
+  workflowFeedbackText,
   workflowRunLoadError,
 } from "./run-model.ts";
+import {
+  copyFeedbackAction,
+  deliveryResolutionActions,
+  inspectorGateActions,
+  runActionTooltip,
+  type RunActionId,
+} from "./run-actions.ts";
+import { useRunActions } from "./run-action-store.ts";
 
 /**
  * Watching a run.
@@ -296,6 +305,7 @@ export function WorkflowRunView({
   onResolveDelivery = async () => {},
   onLoadEvents = async () => {},
   onLoadCalls = async () => {},
+  isActionPending = () => false,
 }: {
   detail: WorkflowRunDetail;
   /** The submission being read. `null` means the newest one. */
@@ -320,6 +330,7 @@ export function WorkflowRunView({
   ) => Promise<void>;
   onLoadEvents?: () => Promise<void>;
   onLoadCalls?: () => Promise<void>;
+  isActionPending?: (id: RunActionId) => boolean;
 }): React.JSX.Element {
   const version = detail.version;
   const rounds = runRounds(detail);
@@ -379,8 +390,12 @@ export function WorkflowRunView({
     ) return [];
     return [{ id: event.id, completionKind, marker, summary, state }];
   });
-  const feedbackAvailable = detail.deliveries.some((delivery) => delivery.payload.length > 0)
-    || detail.attempts.some((attempt) => attempt.verdict);
+  const [feedbackCopied, setFeedbackCopied] = useState(false);
+  const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
+  const gateActions = inspectorGateActions(detail);
+  const preparePrAction = gateActions.find((action) => action.kind === "prepare-pr");
+  const recheckAction = gateActions.find((action) => action.kind === "recheck-inspector");
+  const openPrAction = gateActions.find((action) => action.kind === "open-pr")!;
   const totalCost = workflowCallCost(
     calls,
     detail.llmCallCount ?? calls.length,
@@ -398,7 +413,6 @@ export function WorkflowRunView({
   const uncertainIds = uncertainDeliveries.map((delivery) => delivery.id).sort().join(",");
   const previousUncertainIds = useRef("");
   const [uncertainAnnouncement, setUncertainAnnouncement] = useState("");
-  const [feedbackCopied, setFeedbackCopied] = useState(false);
   useEffect(() => {
     if (uncertainIds && uncertainIds !== previousUncertainIds.current) {
       setUncertainAnnouncement(
@@ -472,12 +486,18 @@ export function WorkflowRunView({
               </Tooltip>
             </>
           )}
-          {inspectorGate && detail.run.status === "waiting_for_pr"
-            && ["missing_pr", "unadopted_pr"].includes(inspectorGate.state.waitReason ?? "")
-            && version?.completionPolicy.kind === "inspector"
-            && version.completionPolicy.missingPrAction === "offer_prepare_pr" && (
-            <Tooltip label="Send the session an explicit commit, push, and PR handoff packet">
-              <button className="btn" onClick={() => void onPreparePr()}>Prepare PR in session</button>
+          {preparePrAction && (
+            <Tooltip label={runActionTooltip(
+              preparePrAction,
+              isActionPending(preparePrAction.id),
+            )}>
+              <button
+                className="btn"
+                disabled={preparePrAction.disabled || isActionPending(preparePrAction.id)}
+                onClick={() => void onPreparePr()}
+              >
+                {preparePrAction.label}
+              </button>
             </Tooltip>
           )}
           {detail.run.status === "blocked" && detail.run.currentPhase === "infrastructure_error" && (
@@ -485,21 +505,24 @@ export function WorkflowRunView({
               <button className="btn" onClick={() => void onRetry(failedAttempt?.id)}>Retry provider call</button>
             </Tooltip>
           )}
-          {inspectorGate && inspectorGate.state.waitReason !== null && (
-            <Tooltip label="Evaluate the gate again from Inspector's current durable ledger">
-              <button className="btn btn-ghost" onClick={() => void onRecheckInspector()}>
-                Recheck Inspector
+          {recheckAction && (
+            <Tooltip label={runActionTooltip(
+              recheckAction,
+              isActionPending(recheckAction.id),
+            )}>
+              <button
+                className="btn btn-ghost"
+                disabled={recheckAction.disabled || isActionPending(recheckAction.id)}
+                onClick={() => void onRecheckInspector()}
+              >
+                {recheckAction.label}
               </button>
             </Tooltip>
           )}
-          <Tooltip label={feedbackAvailable
-            ? "Copy every reviewer verdict to the clipboard"
-            : detail.deliveries.some((delivery) => delivery.payloadPrunedAt != null)
-              ? "Raw delivery feedback was pruned and no Persona verdict remains"
-              : "No workflow feedback has been recorded yet"}>
+          <Tooltip label={feedbackAction.tooltip}>
             <button
               className="btn btn-ghost"
-              disabled={!feedbackAvailable}
+              disabled={feedbackAction.disabled}
               onClick={() => void (async () => {
                 try {
                   await onCopyFeedback();
@@ -510,23 +533,23 @@ export function WorkflowRunView({
                 }
               })()}
             >
-              {feedbackCopied ? "Copied" : "Copy feedback"}
+              {feedbackAction.label}
             </button>
           </Tooltip>
-          {inspectorGate?.state.prUrl ? (
-            <Tooltip label="Open this run's adopted pull request in a new tab">
+          {openPrAction.href ? (
+            <Tooltip label={openPrAction.tooltip}>
               <a
                 className="btn btn-ghost"
-                href={inspectorGate.state.prUrl}
+                href={openPrAction.href}
                 target="_blank"
                 rel="noreferrer noopener"
               >
-                Open PR
+                {openPrAction.label}
               </a>
             </Tooltip>
           ) : (
-            <Tooltip label="This run has no adopted pull request">
-              <button className="btn btn-ghost" disabled>Open PR</button>
+            <Tooltip label={openPrAction.tooltip}>
+              <button className="btn btn-ghost" disabled>{openPrAction.label}</button>
             </Tooltip>
           )}
           <Tooltip label={version
@@ -890,52 +913,32 @@ export function WorkflowRunView({
                   )}
                   {delivery.state === "uncertain" && (
                     <div className="wf-run-recovery">
-                      <Tooltip label="Confirm the exact packet already reached the inspected pane">
-                        <button
-                          className="btn"
-                          onClick={() => onConfirm({
-                            title: "Mark this packet delivered",
-                            body: "Confirm you inspected the session's pane and this exact repair"
-                              + " prompt is in it. Marking it delivered ends the recovery.",
-                            confirmLabel: "Mark delivered",
-                            confirmHint: "Records the packet as delivered without sending it again",
-                            onConfirm: () => void onResolveDelivery(delivery.id, "mark_delivered"),
-                          })}
-                        >
-                          Mark delivered
-                        </button>
-                      </Tooltip>
-                      {/* Both session-bound recoveries state the SAME condition the daemon
-                          enforces: a discard prepares a replacement round for a live
-                          conversation, and it needs that conversation's identity to prove
-                          it is still the one that was reviewed. Sent without it the route
-                          refuses every time, which is what this used to do - silently for
-                          the retry, and with a raw schema dump for the discard. Marking a
-                          packet delivered needs no session and stays available. */}
-                      <Tooltip label={sessionBound
-                        ? "Discard this ambiguous packet and create a replacement repair round"
-                        : "The bound session is gone, so no replacement round can be prepared"}>
-                        <button
-                          className="btn btn-danger-ghost"
-                          disabled={!sessionBound}
-                          onClick={() => onConfirm({
-                            title: "Discard and send a new repair round",
-                            body: "The pane may already hold this packet. Discarding it prepares a"
-                              + " fresh repair round, which the session could receive twice.",
-                            confirmLabel: "Discard and send new round",
-                            confirmHint: "Discards the ambiguous packet and prepares a new repair round",
-                            danger: true,
-                            requirePhrase: "DISCARD AND SEND A NEW REPAIR ROUND",
-                            onConfirm: () => void onResolveDelivery(
-                              delivery.id,
-                              "discard_and_new_round",
-                              "DISCARD AND SEND A NEW REPAIR ROUND",
-                            ),
-                          })}
-                        >
-                          Discard and send new round
-                        </button>
-                      </Tooltip>
+                      {deliveryResolutionActions(delivery, sessionBound).map((action) => {
+                        const pending = isActionPending(action.id);
+                        return (
+                          <Tooltip
+                            key={action.id}
+                            label={runActionTooltip(action, pending)}
+                          >
+                            <button
+                              className={action.confirm.danger
+                                ? "btn btn-danger-ghost"
+                                : "btn"}
+                              disabled={action.disabled || pending}
+                              onClick={() => onConfirm({
+                                ...action.confirm,
+                                onConfirm: () => void onResolveDelivery(
+                                  action.deliveryId,
+                                  action.resolution,
+                                  action.confirm.requirePhrase,
+                                ),
+                              })}
+                            >
+                              {action.label}
+                            </button>
+                          </Tooltip>
+                        );
+                      })}
                     </div>
                   )}
                 </article>
@@ -1301,6 +1304,7 @@ export function WorkflowRuns({
     load(true);
     return () => { loadGeneration.current++; };
   }, [selected, selectedSummary]);
+  const actionController = useRunActions(selected ?? "", () => load());
 
   const mutate = async (path: string, body: object): Promise<boolean> => {
     setError(null);
@@ -1343,24 +1347,8 @@ export function WorkflowRuns({
 
   const copyFeedback = async (): Promise<void> => {
     if (!detail) return;
-    const deliveryPayload = [...detail.deliveries].reverse()
-      .find((delivery) => delivery.payload.length > 0)?.payload;
-    const text = deliveryPayload ?? detail.attempts.flatMap((attempt) => {
-      const verdict = attempt.verdict as unknown as PersonaVerdict | null;
-      const node = detail.version?.graph.nodes.find((candidate) => candidate.id === attempt.nodeId);
-      if (!verdict || !node || !isVerdictNode(node)) return [];
-      const author = verdictAuthor(node);
-      if (verdict.verdict === "pass") {
-        return [`${author}: PASS\n${verdict.summary}\n${verdict.approvalDetails.reason}`];
-      }
-      return [([
-        `${author}: FAIL`,
-        verdict.summary,
-        ...verdict.requestedChanges.map((change) => `- ${change.title}: ${change.rationale}`),
-      ].join("\n"))];
-    }).join("\n\n");
     try {
-      await copyText(text);
+      await copyText(workflowFeedbackText(detail));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not copy workflow feedback");
       throw caught;
@@ -1537,10 +1525,12 @@ export function WorkflowRuns({
         )}
       </aside>
       <div className="wf-run-reader">
-        {error && <p className="wf-run-error" role="alert">{error}</p>}
-        {!detail && !error && selected
+        {(error || actionController.error) && (
+          <p className="wf-run-error" role="alert">{error ?? actionController.error}</p>
+        )}
+        {!detail && !error && !actionController.error && selected
           ? <p>Loading run…</p>
-          : !detail && !error
+          : !detail && !error && !actionController.error
             ? <p>Select a workflow run to inspect its audit history.</p>
             : null}
         {detail && (
@@ -1565,14 +1555,24 @@ export function WorkflowRuns({
             onLoadEvents={loadMoreEvents}
             onLoadCalls={loadMoreCalls}
             onPreparePr={async () => {
-              await mutate(`/api/workflow-runs/${detail.run.id}/prepare-pr`, {
-                requestId: crypto.randomUUID(),
-              });
+              const action = inspectorGateActions(detail)
+                .find((candidate) => candidate.kind === "prepare-pr");
+              if (!action) return;
+              actionController.run(action.id, (requestId) =>
+                workflowRequest(`/api/workflow-runs/${detail.run.id}/prepare-pr`, {
+                  method: "POST",
+                  body: JSON.stringify({ requestId }),
+                }));
             }}
             onRecheckInspector={async () => {
-              await mutate(`/api/workflow-runs/${detail.run.id}/recheck-inspector`, {
-                requestId: crypto.randomUUID(),
-              });
+              const action = inspectorGateActions(detail)
+                .find((candidate) => candidate.kind === "recheck-inspector");
+              if (!action) return;
+              actionController.run(action.id, (requestId) =>
+                workflowRequest(`/api/workflow-runs/${detail.run.id}/recheck-inspector`, {
+                  method: "POST",
+                  body: JSON.stringify({ requestId }),
+                }));
             }}
             onRestartFull={async (confirmation) => {
               await mutate(`/api/workflow-runs/${detail.run.id}/restart-full`, {
@@ -1590,18 +1590,31 @@ export function WorkflowRuns({
               });
             }}
             onResolveDelivery={async (deliveryId, resolution, confirmation) => {
-              await mutate(`/api/workflow-deliveries/${deliveryId}/resolve`, {
-                requestId: crypto.randomUUID(),
-                resolution,
-                ...(confirmation ? { confirmation } : {}),
-                ...(resolution === "discard_and_new_round" && detail.binding.sessionId
-                  ? {
-                      expectedSessionId: detail.binding.sessionId,
-                      expectedNoteKey: detail.binding.noteKey,
-                    }
-                  : {}),
-              });
+              const delivery = detail.deliveries.find((item) => item.id === deliveryId);
+              const action = delivery
+                ? deliveryResolutionActions(
+                    delivery,
+                    detail.binding.sessionId !== null,
+                  ).find((candidate) => candidate.resolution === resolution)
+                : null;
+              if (!action || action.disabled) return;
+              actionController.run(action.id, (requestId) =>
+                workflowRequest(`/api/workflow-deliveries/${deliveryId}/resolve`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    requestId,
+                    resolution,
+                    ...(confirmation ? { confirmation } : {}),
+                    ...(resolution === "discard_and_new_round" && detail.binding.sessionId
+                      ? {
+                          expectedSessionId: detail.binding.sessionId,
+                          expectedNoteKey: detail.binding.noteKey,
+                        }
+                      : {}),
+                  }),
+                }));
             }}
+            isActionPending={actionController.isPending}
             onOpenSession={() => {
               // The BINDING's session, which is the one that goes null when a session
               // disappears. The summary carries the same column today, but it is also the

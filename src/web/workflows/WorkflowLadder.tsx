@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { WorkflowRunDetail, WorkflowRunSummary } from "@shared/workflow.ts";
 import {
   nodeLabel,
@@ -6,6 +7,7 @@ import {
   stageSummary,
 } from "@shared/workflow-stages.ts";
 import { duration } from "../lib/format.ts";
+import { copyText } from "../lib/clipboard.ts";
 import {
   WorkflowChip,
   workflowRunTone,
@@ -31,13 +33,42 @@ import {
   submissionStatus,
   verdictMeta,
   verdictOf,
+  workflowFeedbackText,
 } from "./run-model.ts";
+import {
+  copyFeedbackAction,
+  deliveryResolutionActions,
+  inspectorGateActions,
+  runActionTooltip,
+  type RunActionDescriptor,
+  type RunActionId,
+  type WorkflowDeliveryResolution,
+} from "./run-actions.ts";
+import { useRunActions } from "./run-action-store.ts";
+import {
+  WorkflowConfirmModal,
+  type WorkflowConfirmRequest,
+} from "./WorkflowConfirmModal.tsx";
+import { workflowRequest } from "./workflowApi.ts";
 import { useWorkflowRunDetail } from "./useWorkflowRunDetail.ts";
 
 interface WorkflowLadderProps {
   summary: WorkflowRunSummary;
   detail: WorkflowRunDetail;
   onOpenRun: () => void;
+  onCopyFeedback?: () => void;
+  onRecheckInspector?: () => void;
+  onPreparePr?: () => void;
+  onOpenPr?: () => void;
+  onResolveDelivery?: (
+    deliveryId: string,
+    action: WorkflowDeliveryResolution,
+  ) => void;
+  feedbackCopied?: boolean;
+  actionError?: string | null;
+  /** `detail.binding.sessionId !== null`; never inferred from the viewed Session. */
+  sessionBound: boolean;
+  isPending?: (id: RunActionId) => boolean;
 }
 
 function rungState(status: PipelineStatus, pending = false): string {
@@ -53,6 +84,32 @@ function statusGlyph(status: PipelineStatus): string {
   if (status.tone === "failed") return "×";
   if (status.tone === "running") return "●";
   return "○";
+}
+
+function LadderAction({
+  descriptor,
+  pending,
+  danger = false,
+  onClick,
+}: {
+  descriptor: RunActionDescriptor;
+  pending: boolean;
+  danger?: boolean;
+  onClick: () => void;
+}): React.JSX.Element {
+  const disabled = descriptor.disabled || pending;
+  return (
+    <Tooltip label={runActionTooltip(descriptor, pending)}>
+      <button
+        className={`btn wf-ladder-action${danger ? " btn-danger-ghost" : ""}`}
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+      >
+        {descriptor.label}
+      </button>
+    </Tooltip>
+  );
 }
 
 function Rung({
@@ -101,6 +158,15 @@ export function WorkflowLadder({
   summary,
   detail,
   onOpenRun,
+  onCopyFeedback,
+  onRecheckInspector,
+  onPreparePr,
+  onOpenPr,
+  onResolveDelivery,
+  feedbackCopied = false,
+  actionError = null,
+  sessionBound,
+  isPending = () => false,
 }: WorkflowLadderProps): React.JSX.Element {
   const submission = selectedSubmission(detail, null);
   const attempts = latestAttemptsFor(detail, submission?.id ?? null);
@@ -138,6 +204,8 @@ export function WorkflowLadder({
     : null;
   const uncertain = detail.deliveries.find((delivery) => delivery.state === "uncertain");
   const delivery = uncertain ? deliveryStateView(uncertain.state) : null;
+  const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
+  const gateActions = inspectorGateActions(detail);
 
   return (
     <section className="wf-ladder-panel" aria-label={`${summary.workflowName} workflow stages`}>
@@ -237,6 +305,15 @@ export function WorkflowLadder({
                   <strong>{objection.name}:</strong> {objection.verdict.summary}
                 </p>
               )}
+              {status.tone === "failed" && changesRequested && onCopyFeedback && (
+                <div className="wf-ladder-actrow">
+                  <LadderAction
+                    descriptor={feedbackAction}
+                    pending={false}
+                    onClick={onCopyFeedback}
+                  />
+                </div>
+              )}
             </Rung>
           );
         })}
@@ -263,15 +340,48 @@ export function WorkflowLadder({
                 <dd>{summary.reviewPosture ?? "unknown"}</dd>
               </div>
             </dl>
+            {(onPreparePr || onRecheckInspector || onOpenPr) && (
+              <div className="wf-ladder-actrow">
+                {gateActions.map((action) => {
+                  const callback = action.kind === "prepare-pr"
+                    ? onPreparePr
+                    : action.kind === "recheck-inspector"
+                      ? onRecheckInspector
+                      : onOpenPr;
+                  if (!callback) return null;
+                  return (
+                    <LadderAction
+                      key={action.id}
+                      descriptor={action}
+                      pending={isPending(action.id)}
+                      onClick={callback}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </Rung>
         )}
 
-        {delivery && (
+        {delivery && uncertain && (
           <Rung
             name="Repair delivery"
             status={{ tone: "waiting", label: delivery.label }}
           >
             <p className="wf-ladder-sentence">{delivery.sentence}</p>
+            {onResolveDelivery && (
+              <div className="wf-ladder-actrow">
+                {deliveryResolutionActions(uncertain, sessionBound).map((action) => (
+                  <LadderAction
+                    key={action.id}
+                    descriptor={action}
+                    pending={isPending(action.id)}
+                    danger={action.confirm.danger}
+                    onClick={() => onResolveDelivery(action.deliveryId, action.resolution)}
+                  />
+                ))}
+              </div>
+            )}
           </Rung>
         )}
 
@@ -282,6 +392,10 @@ export function WorkflowLadder({
           pending={end.tone === "waiting"}
         />
       </ul>
+
+      {actionError && (
+        <p className="wf-ladder-action-error" role="alert">{actionError}</p>
+      )}
 
       <div className="wf-ladder-actrow">
         <Tooltip label="Open this workflow in Runs">
@@ -301,7 +415,30 @@ export function WorkflowLadderPanel({
   run: WorkflowRunSummary;
   onOpenRun: () => void;
 }): React.JSX.Element {
-  const state = useWorkflowRunDetail(run.id, run.updatedAt);
+  const [refreshRevision, setRefreshRevision] = useState(0);
+  const [feedbackCopied, setFeedbackCopied] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
+  const copyReset = useRef<number | null>(null);
+  const mounted = useRef(false);
+  const state = useWorkflowRunDetail(run.id, run.updatedAt + refreshRevision);
+  const controller = useRunActions(run.id, () => {
+    if (mounted.current) setRefreshRevision((value) => value + 1);
+  });
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (copyReset.current !== null) window.clearTimeout(copyReset.current);
+    };
+  }, []);
+  useEffect(() => {
+    setFeedbackCopied(false);
+    setLocalError(null);
+    setConfirm(null);
+  }, [run.id]);
+
   if (state.state === "loading") {
     return (
       <section className="wf-ladder-feedback" aria-busy="true">
@@ -321,5 +458,97 @@ export function WorkflowLadderPanel({
       </section>
     );
   }
-  return <WorkflowLadder summary={run} detail={state.detail} onOpenRun={onOpenRun} />;
+  const detail = state.detail;
+  const sessionBound = detail.binding.sessionId !== null;
+  const copyFeedback = (): void => {
+    setLocalError(null);
+    void copyText(workflowFeedbackText(detail))
+      .then(() => {
+        setFeedbackCopied(true);
+        if (copyReset.current !== null) window.clearTimeout(copyReset.current);
+        copyReset.current = window.setTimeout(() => {
+          setFeedbackCopied(false);
+          copyReset.current = null;
+        }, 1600);
+      })
+      .catch((caught) => {
+        setFeedbackCopied(false);
+        setLocalError(caught instanceof Error
+          ? caught.message
+          : "Could not copy workflow feedback");
+      });
+  };
+  const runPost = (
+    id: RunActionId,
+    path: string,
+    body: (requestId: string) => object,
+  ): void => {
+    setLocalError(null);
+    controller.run(id, (requestId) => workflowRequest(path, {
+      method: "POST",
+      body: JSON.stringify(body(requestId)),
+    }));
+  };
+  const resolveDelivery = (
+    deliveryId: string,
+    resolution: WorkflowDeliveryResolution,
+  ): void => {
+    const target = detail.deliveries.find((item) => item.id === deliveryId);
+    if (!target) return;
+    const action = deliveryResolutionActions(target, sessionBound)
+      .find((candidate) => candidate.resolution === resolution);
+    if (!action || action.disabled) return;
+    setConfirm({
+      ...action.confirm,
+      onConfirm: () => runPost(
+        action.id,
+        `/api/workflow-deliveries/${encodeURIComponent(deliveryId)}/resolve`,
+        (requestId) => ({
+          requestId,
+          resolution,
+          ...(action.confirm.requirePhrase
+            ? { confirmation: action.confirm.requirePhrase }
+            : {}),
+          ...(resolution === "discard_and_new_round" && detail.binding.sessionId
+            ? {
+                expectedSessionId: detail.binding.sessionId,
+                expectedNoteKey: detail.binding.noteKey,
+              }
+            : {}),
+        }),
+      ),
+    });
+  };
+  const prUrl = detail.inspectorGate?.state.prUrl ?? null;
+  return (
+    <>
+      <WorkflowLadder
+        summary={run}
+        detail={detail}
+        onOpenRun={onOpenRun}
+        onCopyFeedback={copyFeedback}
+        onPreparePr={() => runPost(
+          "prepare-pr",
+          `/api/workflow-runs/${encodeURIComponent(run.id)}/prepare-pr`,
+          (requestId) => ({ requestId }),
+        )}
+        onRecheckInspector={() => runPost(
+          "recheck-inspector",
+          `/api/workflow-runs/${encodeURIComponent(run.id)}/recheck-inspector`,
+          (requestId) => ({ requestId }),
+        )}
+        onOpenPr={() => {
+          if (prUrl) window.open(prUrl, "_blank", "noopener,noreferrer");
+        }}
+        onResolveDelivery={resolveDelivery}
+        feedbackCopied={feedbackCopied}
+        actionError={localError ?? controller.error}
+        sessionBound={sessionBound}
+        isPending={controller.isPending}
+      />
+      {confirm && (
+        <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />
+      )}
+    </>
+  );
 }

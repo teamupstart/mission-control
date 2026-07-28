@@ -1,0 +1,105 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  dropRunActions,
+  isRunActionPending,
+  runAction,
+} from "../src/web/workflows/run-action-store.ts";
+
+function deferred(): {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: () => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<void>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+const settle = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
+test("one run action survives a page switch and refuses a second submission", async () => {
+  const runId = "run-page-switch";
+  const first = deferred();
+  let sends = 0;
+  let secondSurfaceSends = 0;
+  let requestId = "";
+  runAction(
+    runId,
+    "recheck-inspector",
+    (id) => {
+      sends++;
+      requestId = id;
+      return first.promise;
+    },
+    () => {},
+  );
+
+  assert.equal(isRunActionPending(runId, "recheck-inspector"), true);
+  assert.equal(isRunActionPending(runId, "prepare-pr"), false);
+  assert.equal(isRunActionPending("another-run", "recheck-inspector"), false);
+
+  // The first surface unmounted. A second surface reads the same module-level entry.
+  runAction(
+    runId,
+    "recheck-inspector",
+    async () => {
+      secondSurfaceSends++;
+    },
+    () => {},
+  );
+  assert.equal(sends, 1);
+  assert.equal(secondSurfaceSends, 0);
+
+  first.reject(new Error("connection dropped"));
+  await settle();
+  assert.equal(isRunActionPending(runId, "recheck-inspector"), false);
+
+  const retry = deferred();
+  let retryId = "";
+  runAction(
+    runId,
+    "recheck-inspector",
+    (id) => {
+      retryId = id;
+      return retry.promise;
+    },
+    () => {},
+  );
+  assert.equal(retryId, requestId, "a failed request keeps its idempotency key");
+  retry.resolve();
+  await settle();
+  assert.equal(isRunActionPending(runId, "recheck-inspector"), false);
+
+  let afterSuccessId = "";
+  runAction(
+    runId,
+    "recheck-inspector",
+    async (id) => {
+      afterSuccessId = id;
+    },
+    () => {},
+  );
+  await settle();
+  assert.notEqual(afterSuccessId, requestId, "success clears the retained request id");
+  dropRunActions(runId);
+});
+
+test("dropping a removed run clears pending entries permanently", async () => {
+  const runId = "run-removed";
+  const active = deferred();
+  runAction(runId, "prepare-pr", () => active.promise, () => {});
+  assert.equal(isRunActionPending(runId, "prepare-pr"), true);
+  dropRunActions(runId);
+  assert.equal(isRunActionPending(runId, "prepare-pr"), false);
+  active.reject(new Error("late response"));
+  await settle();
+  assert.equal(isRunActionPending(runId, "prepare-pr"), false);
+});

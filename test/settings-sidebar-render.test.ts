@@ -213,6 +213,11 @@ test("Display renders the layout picker and the formatting toggle together", () 
 
 test("the layout picker offers every layout, with the live one checked", () => {
   const html = render("display");
+  assert.deepEqual(
+    LAYOUTS.map((layout) => layout.label),
+    ["Board", "Cards", "Console"],
+    "layouts are ordered alphabetically",
+  );
   // Every shipped layout is on offer...
   for (const l of LAYOUTS) assert.ok(html.includes(l.label), `picker missing ${l.label}`);
   // ...and the one App handed us is the checked radio, not a local guess. Rendering the

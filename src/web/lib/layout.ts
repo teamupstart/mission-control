@@ -20,6 +20,12 @@ export type { LayoutMode };
 
 export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] = [
   {
+    id: "board",
+    label: "Board",
+    description:
+      "A column per state, so the fleet's shape reads at a glance. Opening a session drills into the console - that column becomes the rail, the full detail fills the rest, and Esc returns you to the board.",
+  },
+  {
     id: "grid",
     label: "Cards",
     description: "Every session a card in a responsive grid. One expands in place to fill the screen.",
@@ -29,12 +35,6 @@ export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] =
     label: "Console",
     description:
       "A dense rail of every session with one always-open detail pane beside it. The conversation is permanent, not a click away.",
-  },
-  {
-    id: "board",
-    label: "Board",
-    description:
-      "A column per state, so the fleet's shape reads at a glance. Opening a session drills into the console - that column becomes the rail, the full detail fills the rest, and Esc returns you to the board.",
   },
 ];
 

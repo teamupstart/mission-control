@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
 import type {
   CreateWorkflow,
@@ -112,6 +113,10 @@ import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
+import {
+  requiredSkillCommand,
+  type RequiredSkillCommand,
+} from "../skills/invoke.ts";
 
 export type WorkflowMutation =
   | { ok: true; workflow: WorkflowDefinition; summary: WorkflowSummary }
@@ -210,6 +215,8 @@ export interface WorkflowManagerOptions {
   canBindSessionToWorkflow?: (sessionId: string) => string | null;
   retentionIntervalMs?: number;
   runRetention?: typeof runWorkflowRetention;
+  /** Required-skill resolver; injectable so workflow tests never touch global skill dirs. */
+  requireSkill?: (session: Session, id: string) => RequiredSkillCommand;
 }
 
 function runIsTerminal(run: WorkflowRun): boolean {
@@ -286,6 +293,7 @@ export class WorkflowManager {
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
   private readonly rememberInjection: typeof recordInjection;
+  private readonly requireSkill: NonNullable<WorkflowManagerOptions["requireSkill"]>;
   private readonly schedule: ReviewScheduler;
   private retentionTimer: ReturnType<typeof setInterval> | null = null;
   private retentionRunning = false;
@@ -303,6 +311,7 @@ export class WorkflowManager {
     this.queues = options.queueManager ?? new QueueManager(registry);
     this.inject = options.inject ?? injectPrompt;
     this.rememberInjection = options.recordInjection ?? recordInjection;
+    this.requireSkill = options.requireSkill ?? requiredSkillCommand;
     // ONE scheduler, resolved once from whichever option named it, then handed to both
     // halves. Compaction used to run outside the engine's limiter entirely, so two
     // submissions capturing at once could exceed the ceiling the engine was enforcing.
@@ -1273,11 +1282,28 @@ export class WorkflowManager {
         message: "This published workflow does not currently offer PR preparation",
       };
     }
+    const session = this.registry.getSession(binding.sessionId);
+    if (!session || session.state === "exited") {
+      return {
+        ok: false,
+        reason: "session_unavailable",
+        message: "The bound session is not available to prepare this pull request",
+      };
+    }
+    const skill = this.requireSkill(session, PULL_REQUEST_SKILL);
+    if (!skill.ok) {
+      return {
+        ok: false,
+        reason: "unsupported_mode",
+        message: skill.message,
+      };
+    }
     const rendered = renderPrHandoff({
       workflowName: this.store.runSummary(run.id)?.workflowName ?? "Workflow",
       workflowVersion: version.version,
       runId: run.id,
       originalGoal: this.originalGoal(run.id),
+      skillCommand: skill.command,
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -2777,6 +2803,13 @@ export class WorkflowManager {
     const session = this.registry.getSession(delivery.sessionId);
     if (!session || session.state === "exited") return "session_unavailable";
     if (noteKeyFor(session) !== delivery.noteKey) return "conversation_changed";
+    if (delivery.kind === "pr_handoff") {
+      const required = this.requireSkill(session, PULL_REQUEST_SKILL);
+      if (!required.ok) return "required_skill_unavailable";
+      if (!delivery.payload.startsWith(`${required.command}\n`)) {
+        return "required_skill_invocation_stale";
+      }
+    }
     if (expectedPane !== undefined && paneToken(session) !== expectedPane) return "pane_recreated";
     if (this.registry.sessionResetInProgress(session.id)) return "reset_in_progress";
     const config = getWorkflowConfig();

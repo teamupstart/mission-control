@@ -2135,10 +2135,10 @@ your copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
-One ready-made review workflow ships with the application: **No-Mistakes Review**. Version 1
-and version 2 are preserved for bindings that already pin them, and version 3 is current.
-There is nothing to author and nothing to import - it is in the Workflows tab of a fresh
-install, already published, and can be bound to a session immediately.
+One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
+through 3 are preserved for bindings that already pin them, and version 4 is current. There is
+nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
+already published, and can be bound to a session immediately.
 
 Stage 1 is a deterministic gate: the [`typecheck` and `test` checks](#check-nodes), placed
 ahead of every reviewer so that, once command execution is supplied, a change which does not
@@ -2148,9 +2148,9 @@ so one failing gate returns the submission to the session with the command's own
 **no Persona runs**.
 
 The [Check nodes](#check-nodes) section owns the current execution status and the rules for
-configured, unconfigured and unauthorized slots. In this build those rules make version 3
-follow the same Persona review path as version 2 while preserving the deterministic stage in
-the graph.
+configured, unconfigured and unauthorized slots. In this build those rules make versions 3
+and 4 follow the same Persona review path as version 2 while preserving the deterministic
+stage in the graph.
 
 Behind it are the four built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending three deeper reviews
@@ -2159,12 +2159,14 @@ Auditor and Documentation Steward are stage 3, running **in parallel on the same
 and aggregating into one combined repair packet at their All-pass Join. Every fail returns to
 the session for repair. A passed review is gated on the
 [Inspector final gate](#inspector-final-gate) finding nothing on the pull request:
-findings restart the whole review, and a run with no pull request yet offers **Prepare PR in
-session** rather than waiting silently. Versions 2 and 3 default to Manual trigger and Live
-delivery, so a failed review returns its deterministic repair packet to the bound session
-automatically. Live still requires the subsystem switch and repository allowlist, and every
-binding can override the version default. Version 1 retains its original Manual and Preview
-defaults for existing pinned bindings.
+in current version 4, findings require the session to fix, verify, commit and push, then
+Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
+through 3 retain their original whole-workflow restart behavior. A run with no pull request
+yet offers **Prepare PR in session** rather than waiting silently. Versions 2 through 4
+default to Manual trigger and Live delivery, so a failed review returns its deterministic
+repair packet to the bound session automatically. Live still requires the subsystem switch
+and repository allowlist, and every binding can override the version default. Version 1
+retains its original Manual and Preview defaults for existing pinned bindings.
 
 Like the built-in Personas it is **app data, not your data**, and the workflow list marks it
 `Built-in`. Opening it shows it read-only: it draws in the Pipeline view with every editing
@@ -2186,12 +2188,13 @@ from you: it always carries the guidance and the graph the build was made from. 
 shipped workflow itself appends a **new version** rather than editing the one you may be bound
 to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
 
-Version 3 is that rule in practice. Versions 1 and 2 - the same four reviewers with no check
-stage - are still in the catalog and still resolve, so a binding created against either before
-the upgrade keeps running its pinned graph, without check nodes and without touching your
-machine. New bindings take version 3 because it is the current version. Adopting the newer
-version on an existing binding means creating a new binding, which is the same gesture
-adopting any newly published version already requires.
+Versions 3 and 4 are that rule in practice. Version 3 added the deterministic check stage;
+version 4 preserves that graph and changes only the immutable Inspector-findings policy.
+Versions 1 and 2 - the same four reviewers with no check stage - and version 3 are still in
+the catalog and still resolve, so an existing binding keeps running its pinned graph and
+whole-workflow restart policy. New bindings take version 4 because it is current. Adopting
+the newer version on an existing binding means creating a new binding, which is the same
+gesture adopting any newly published version already requires.
 
 The graph is not stored in your database at all, which is what makes all of that true without
 a seeding step that could half-run. It is compiled into the build beside the Persona documents.

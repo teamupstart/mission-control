@@ -1295,6 +1295,13 @@ export type PersonaVerdict =
       confidence: number;
     };
 
+export interface WorkflowRepeatOffender {
+  nodeId: string;
+  personaName: string;
+  /** Consecutive most-recent rounds this member failed. Always >= 2. */
+  rounds: number;
+}
+
 export interface WorkflowRunSummary {
   id: WorkflowRunId;
   bindingId: WorkflowBindingId;
@@ -1346,6 +1353,12 @@ export interface WorkflowRunDetail {
   llmCalls?: WorkflowLlmCall[];
   llmCallCount?: number;
   nextLlmCallAfter?: string | null;
+  /**
+   * Members failing the most recent rounds consecutively. Detail-only and OPTIONAL: run
+   * SUMMARIES travel over SSE for every run in the fleet and must stay compact, and an older
+   * daemon serving a newer browser must not fail to parse.
+   */
+  repeatOffenders?: WorkflowRepeatOffender[];
   /**
    * Provenance for a run an external orchestrator started. Optional and detail-only: run
    * SUMMARIES travel over SSE for every run in the fleet and must stay compact.

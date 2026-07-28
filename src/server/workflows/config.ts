@@ -19,6 +19,10 @@ export function getWorkflowConfig(): WorkflowConfig {
   return StoredWorkflowConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
 }
 
+export function resolveTaskWorkflowId(workflowId: string | null | undefined): string | null {
+  return workflowId === undefined ? getWorkflowConfig().defaultWorkflowId : workflowId;
+}
+
 /** Replace the complete small config object so allowlist removals cannot be lost in a merge. */
 export function setWorkflowConfig(input: WorkflowConfigInput): WorkflowConfig {
   const next = WorkflowConfigSchema.parse(input);

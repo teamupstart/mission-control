@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { repoAllowlisted } from "../src/shared/allowlist.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { DEFAULT_WORKFLOW_CONFIG } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-config-"));
@@ -16,6 +17,7 @@ const { setAppConfig } = await import("../src/server/db.ts");
 const { resolveRepoRoot } = await import("../src/server/repos.ts");
 
 test("workflow live consent defaults off and parsed writes replace the allowlist", () => {
+  assert.equal(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
   assert.deepEqual(getWorkflowConfig(), DEFAULT_WORKFLOW_CONFIG);
   assert.deepEqual(
     setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] }),
@@ -44,18 +46,71 @@ test("the dispatch Workflow default is durable and explicit none clears it", () 
   assert.equal(cleared.defaultWorkflowId, null);
 });
 
+test("task creation owns Workflow inheritance and preserves explicit opt-outs", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { TaskManager } = await import("../src/server/tasks.ts");
+  const tasks = new TaskManager(new Registry());
+  setWorkflowConfig({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: "workflow-review",
+  });
+  const input = {
+    repoRoot: "/repo",
+    intent: "Review this task",
+    title: "Review task",
+    kind: "ship" as const,
+    agent: "claude" as const,
+    backlog: true,
+  };
+
+  assert.equal(tasks.create(input).workflowId, "workflow-review");
+  assert.equal(tasks.create({ ...input, workflowId: null }).workflowId, null);
+  const scheduledOptions = {
+    id: "scheduled-workflow-default",
+    schedule: {
+      scheduleId: "schedule",
+      scheduleOccurrenceId: "occurrence",
+      scheduledFor: 1,
+    },
+  };
+  assert.equal(tasks.create(input, scheduledOptions).workflowId, "workflow-review");
+  setWorkflowConfig({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: null,
+  });
+  assert.equal(
+    tasks.create(input, scheduledOptions).workflowId,
+    "workflow-review",
+    "an occurrence retry keeps the Workflow inherited when its task was first filed",
+  );
+  assert.equal(
+    tasks.create(
+      { ...input, workflowId: null },
+      { id: "ensemble-workflow-opt-out" },
+    ).workflowId,
+    null,
+  );
+});
+
 test("workflow config HTTP writes use the shared parser and replace the complete object", async () => {
   const { Registry } = await import("../src/server/registry.ts");
   const { ReviewManager } = await import("../src/server/reviews.ts");
   const { TaskManager } = await import("../src/server/tasks.ts");
   const { QueueManager } = await import("../src/server/queue.ts");
+  const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
   const { buildApp } = await import("../src/server/routes.ts");
   const registry = new Registry();
+  const workflows = new WorkflowManager(registry);
   const app = buildApp(
     registry,
     new ReviewManager(registry),
     new TaskManager(registry),
     new QueueManager(registry),
+    undefined,
+    undefined,
+    workflows,
   );
   const invalid = await app.request("/api/workflows/config", {
     method: "PUT",

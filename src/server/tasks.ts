@@ -47,6 +47,7 @@ import { homeAlive } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
 import { summariseTaskTitle } from "./task-title.ts";
+import { resolveTaskWorkflowId } from "./workflows/config.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -63,8 +64,8 @@ export interface CreateTaskInput {
   /** Launch with a specific reasoning effort; omitted follows the harness default. */
   effort?: import("@shared/types.ts").ThinkingLevel;
   /**
-   * Published Workflow identity to arm when the launched session appears. Null means none;
-   * callers resolve any machine default before entering TaskManager.
+   * Published Workflow identity to arm when the launched session appears. Omitted follows
+   * the machine default; null explicitly means none.
    */
   workflowId?: string | null;
   /** Prerequisites selected from current backlog tasks or live sessions. */
@@ -1024,18 +1025,21 @@ export class TaskManager {
               `task ${id} already exists and was not filed by occurrence ${p.scheduleOccurrenceId}`,
             );
           }
-        } else if (
-          existing.repoRoot !== input.repoRoot ||
-          existing.intent !== input.intent ||
-          existing.title !== explicitTitle ||
-          existing.kind !== input.kind ||
-          existing.agent !== input.agent ||
-          existing.model !== (input.model ?? null) ||
-          existing.effort !== (input.effort ?? null) ||
-          existing.workflowId !== (input.workflowId ?? null) ||
-          existing.scheduleId !== null
-        ) {
-          throw new TaskIdCollisionError(`task ${id} already exists with different ensemble input`);
+        } else {
+          const workflowId = resolveTaskWorkflowId(input.workflowId);
+          if (
+            existing.repoRoot !== input.repoRoot ||
+            existing.intent !== input.intent ||
+            existing.title !== explicitTitle ||
+            existing.kind !== input.kind ||
+            existing.agent !== input.agent ||
+            existing.model !== (input.model ?? null) ||
+            existing.effort !== (input.effort ?? null) ||
+            existing.workflowId !== workflowId ||
+            existing.scheduleId !== null
+          ) {
+            throw new TaskIdCollisionError(`task ${id} already exists with different ensemble input`);
+          }
         }
         return existing;
       }
@@ -1046,6 +1050,7 @@ export class TaskManager {
       if (!input.backlog) throw new Error(`internally created task ${id} must be backlog`);
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
+    const workflowId = resolveTaskWorkflowId(input.workflowId);
     const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const task: Task = {
@@ -1071,7 +1076,7 @@ export class TaskManager {
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
-      workflowId: internal ? null : input.workflowId ?? null,
+      workflowId,
       source: input.source ?? null,
       repoRoot: input.repoRoot,
       worktreePath: null,

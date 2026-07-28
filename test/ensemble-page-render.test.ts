@@ -45,7 +45,79 @@ const run: EnsembleRun = {
     budget: { maxMembers: 3, maxConcurrentMembers: 3, maxWaves: 1, maxStageAttempts: 5, deadlineMs: null },
     information: { kind: "isolated" },
     roles: [],
-    stages: [],
+    stages: [
+      {
+        id: "work",
+        ordinal: 1,
+        label: "Candidates",
+        driverKey: "member_wave@1",
+        dependsOn: [],
+        barrier: { kind: "none" },
+        maxAttempts: 1,
+        driverKind: "member",
+        wave: 1,
+        roleKeys: ["candidate-1", "candidate-2"],
+      },
+      {
+        id: "compare",
+        ordinal: 2,
+        label: "Comparison",
+        driverKey: "comparative_review@1",
+        dependsOn: ["work"],
+        barrier: {
+          kind: "members_settled",
+          roleKeys: ["candidate-1", "candidate-2"],
+          minEligible: 2,
+          requiredArtifacts: ["commit"],
+        },
+        maxAttempts: 2,
+        driverKind: "review",
+        evaluator: {
+          kind: "comparative_llm",
+          guidance: { kind: "builtin", rubricId: "best_of_n_v1" },
+          runner: null,
+          model: null,
+          anonymizeSubjects: true,
+          materialBudgetBytes: 409_600,
+        },
+        subjects: {
+          kind: "ready_artifacts",
+          artifactKind: "commit",
+          minSubjects: 2,
+          maxSubjects: 3,
+        },
+      },
+      {
+        id: "decide",
+        ordinal: 3,
+        label: "Your decision",
+        driverKey: "human_decision@1",
+        dependsOn: ["compare"],
+        barrier: { kind: "stages_succeeded", stageIds: ["compare"] },
+        maxAttempts: 1,
+        driverKind: "decision",
+        decision: {
+          kind: "select_one",
+          eligibleArtifactKind: "commit",
+          minEligibleSubjects: 2,
+        },
+      },
+      {
+        id: "finalize",
+        ordinal: 4,
+        label: "Promotion",
+        driverKey: "select_one_finalize@1",
+        dependsOn: ["decide"],
+        barrier: { kind: "human_decision" },
+        maxAttempts: 2,
+        driverKind: "finalize",
+        finalization: {
+          kind: "select_one",
+          requiresHumanDecision: true,
+          loserPolicy: "reap_worktrees",
+        },
+      },
+    ],
   },
   strategyConfig: {},
   status: "awaiting_decision",
@@ -209,6 +281,12 @@ test("the generic detail renders the header, members with reported-vs-observed, 
   assert.match(html, /Awaiting decision/);
   assert.match(html, /Pinned base/);
   assert.match(html, /abcdef0123/); // short base sha
+  assert.match(html, /aria-label="Run pipeline"/);
+  assert.match(html, />Launch</);
+  assert.match(html, />Work</);
+  assert.match(html, />Review</);
+  assert.match(html, />Decide</);
+  assert.match(html, />Promote</);
   // Members: both, with the two distinct evidence columns.
   assert.match(html, /Candidate 1/);
   assert.match(html, /Candidate 2/);
@@ -220,19 +298,12 @@ test("the generic detail renders the header, members with reported-vs-observed, 
   assert.match(html, /comparative_review/);
 });
 
-test("the Active stage fact leads with the operator word and demotes the stage id", () => {
-  // It used to be the raw `decide` in a `<code>` and nothing else - the run describing its own
-  // schema. `ensembleStageWord` is the ONE vocabulary the cluster headers, chips and list rows
-  // read, so an `awaiting_decision` run says the same thing here as it does on a board tile. The
-  // id stays beside it because the timeline below names stages by it.
+test("the pipeline owns stage progress and the facts row no longer duplicates it", () => {
   const html = renderDetail();
-  assert.match(
-    html,
-    /<dt>Active stage<\/dt><dd>waiting on you <code class="ensemble-stage-id">decide<\/code><\/dd>/,
-  );
-  // And a build that cannot name the persisted status says so rather than picking a near match.
-  const unknown = renderDetail({ run: { ...run, status: null } });
-  assert.match(unknown, /<dd>unreadable <code class="ensemble-stage-id">decide<\/code><\/dd>/);
+  assert.match(html, /<strong>Decide<\/strong><span>waiting on you<\/span>/);
+  assert.match(html, /class="ensemble-pipeline-barrier" role="status">waiting on you/);
+  assert.doesNotMatch(html, /<dt>Active stage<\/dt>/);
+  assert.match(html, /<dt>Members<\/dt>/);
 });
 
 test("an active member without a session offers Task focus and manual submission", () => {

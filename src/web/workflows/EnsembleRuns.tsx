@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EnsembleActionBody } from "@shared/protocol.ts";
 import { ENSEMBLE_STATUSES, type EnsembleSummary } from "@shared/ensemble.ts";
+import type { ReviewItem, Session } from "@shared/types.ts";
 import { relativeTime } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { EnsembleProgressDots } from "../components/session-bits.tsx";
@@ -25,6 +26,8 @@ import { ensembleStatusLabel, ensembleStatusTone, titleCaseEnum } from "../ensem
  */
 export function EnsembleRuns({
   summaries,
+  sessions = [],
+  reviews = [],
   selectedId,
   hasSnapshot = false,
   onSelect,
@@ -33,6 +36,8 @@ export function EnsembleRuns({
   onOpenWorkflowRun,
 }: {
   summaries: EnsembleSummary[];
+  sessions?: Session[];
+  reviews?: ReviewItem[];
   selectedId: string | null;
   hasSnapshot?: boolean;
   onSelect: (id: string | null) => void;
@@ -337,6 +342,9 @@ export function EnsembleRuns({
         {detail && (
           <EnsembleDetail
             detail={detail}
+            summary={selectedSummary}
+            sessions={sessions}
+            reviews={reviews}
             actionPending={actionPending}
             actionError={actionError}
             actionErrorKind={actionErrorKind}

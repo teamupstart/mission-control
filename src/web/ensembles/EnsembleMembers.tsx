@@ -6,14 +6,28 @@ import {
   type EnsembleAttempt,
   type EnsembleMember,
 } from "@shared/ensemble.ts";
+import { activePaneDialog } from "@shared/session.ts";
+import type { ReviewItem, Session } from "@shared/types.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { PaneDialogPrompt } from "../components/PaneDialogPrompt.tsx";
+import { ReviewCard } from "../components/ReviewModal.tsx";
+import { CostChip, GoalLine } from "../components/session-bits.tsx";
+import { relativeTime, stateDisplay } from "../lib/format.ts";
 import type { EnsembleRunDetailResponse } from "./types.ts";
 import {
   artifactStatusLabel,
+  fmtElapsed,
   memberStatusLabel,
   memberStatusTone,
   titleCaseEnum,
 } from "./format.ts";
+
+export interface EnsembleMemberLiveLane {
+  session: Session;
+  reviews: ReviewItem[];
+}
+
+const EMPTY_LIVE_LANES: ReadonlyMap<string, EnsembleMemberLiveLane> = new Map();
 
 /**
  * Members, grouped by wave and shown in ordinal order. Each card states the member's identity,
@@ -23,6 +37,7 @@ import {
  */
 export function EnsembleMembers({
   detail,
+  liveByMemberId = EMPTY_LIVE_LANES,
   pending,
   onAction,
   onOpenSession,
@@ -30,6 +45,7 @@ export function EnsembleMembers({
   onManualSubmit,
 }: {
   detail: EnsembleRunDetailResponse;
+  liveByMemberId?: ReadonlyMap<string, EnsembleMemberLiveLane>;
   pending: string | null;
   onAction: (body: EnsembleActionBody) => void;
   onOpenSession?: (sessionId: string) => void;
@@ -62,6 +78,7 @@ export function EnsembleMembers({
                   key={member.id}
                   member={member}
                   detail={detail}
+                  live={liveByMemberId.get(member.id) ?? null}
                   attemptsPartial={attemptsPartial}
                   pending={pending}
                   onAction={onAction}
@@ -127,6 +144,7 @@ function section(metadata: unknown, key: string): Record<string, unknown> | null
 function MemberCard({
   member,
   detail,
+  live,
   attemptsPartial,
   pending,
   onAction,
@@ -136,6 +154,7 @@ function MemberCard({
 }: {
   member: EnsembleMember;
   detail: EnsembleRunDetailResponse;
+  live: EnsembleMemberLiveLane | null;
   attemptsPartial: boolean;
   pending: string | null;
   onAction: (body: EnsembleActionBody) => void;
@@ -164,6 +183,9 @@ function MemberCard({
   const reported = section(artifact?.metadata, "reported");
   const observed = section(artifact?.metadata, "observed");
   const busy = pending !== null;
+  const session = live?.session ?? null;
+  const sessionState = session ? stateDisplay(session, false) : null;
+  const dialog = session ? activePaneDialog(session) : null;
 
   const facts = [
     attempt?.agent,
@@ -179,18 +201,31 @@ function MemberCard({
   const reportedChecks = Array.isArray(reported?.checks)
     ? (reported!.checks as unknown[]).filter((c): c is string => typeof c === "string")
     : [];
+  const openSessionId = session?.id ?? attempt?.sessionId ?? null;
 
   return (
-    <li className={`ensemble-member ensemble-tone-${memberStatusTone(member.status)}`}>
+    <li
+      className={`ensemble-member${session ? " ensemble-member-lane" : ""} ensemble-tone-${memberStatusTone(member.status)}`}
+    >
       <div className="ensemble-member-head">
+        {sessionState && (
+          <Tooltip label={`Session ${sessionState.label}`}>
+            <span
+              className={`ensemble-lane-tone ensemble-lane-tone-${sessionState.tone}`}
+              aria-label={`Session ${sessionState.label}`}
+              tabIndex={0}
+            />
+          </Tooltip>
+        )}
         <span className="ensemble-member-ordinal">#{member.ordinal}</span>
         <span className="ensemble-member-role">{member.roleLabel}</span>
         <span className="ensemble-pill">{memberStatusLabel(member.status)}</span>
+        {sessionState && <span className="ensemble-lane-state">{sessionState.label}</span>}
         {member.resultLabel && <span className="ensemble-result-label">{member.resultLabel}</span>}
         <span className="ensemble-artifact-spacer" />
-        {attempt?.sessionId && onOpenSession && (
+        {openSessionId && onOpenSession && (
           <Tooltip label="Jump to this member's session on the fleet">
-            <button className="btn btn-ghost" onClick={() => onOpenSession(attempt.sessionId!)}>
+            <button className="btn btn-ghost" onClick={() => onOpenSession(openSessionId)}>
               Open session
             </button>
           </Tooltip>
@@ -229,6 +264,23 @@ function MemberCard({
         )}
       </div>
       {facts.length > 0 && <p className="ensemble-member-facts">{facts.join(" · ")}</p>}
+      {session && (
+        <div className="ensemble-lane-live">
+          <div className="ensemble-lane-activity">
+            <span>{session.activity ?? sessionState?.label ?? "No activity reported"}</span>
+            <span className="ensemble-muted">
+              elapsed {fmtElapsed(session.startedAt ?? session.firstSeen, null)}
+            </span>
+            <span className="ensemble-muted">
+              {session.lastActivity
+                ? `last event ${relativeTime(session.lastActivity)}`
+                : "no session events reported"}
+            </span>
+            <CostChip cost={session.cost} />
+          </div>
+          <GoalLine session={session} />
+        </div>
+      )}
       {current.unavailable && (
         <p className="ensemble-warn" role="note">
           {attemptsPartial
@@ -236,55 +288,26 @@ function MemberCard({
             : "The current attempt is unavailable."}
         </p>
       )}
-      <div className="ensemble-member-durable-state">
-        <div>
-          <h6>Attempt state</h6>
-          {attempts.length > 0 ? (
-            <ul className="ensemble-member-history">
-              {attempts.map((candidate) => (
-                <li key={candidate.id}>
-                  <span>
-                    Attempt #{candidate.attempt}
-                    {candidate.id === member.selectedAttemptId ? " · selected" : ""}
-                  </span>
-                  <span className={`ensemble-pill ensemble-pill-${candidate.status ?? "unknown"}`}>
-                    {candidate.status ? titleCaseEnum(candidate.status) : "Unknown"}
-                  </span>
-                  {candidate.error && <span className="ensemble-stage-error">{candidate.error}</span>}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="ensemble-muted">No attempts yet.</p>
-          )}
-        </div>
-        <div>
-          <h6>Artifact state</h6>
-          {artifacts.length > 0 ? (
-            <ul className="ensemble-member-history">
-              {artifacts.map((candidate) => {
-                const owner = candidate.attemptId
-                  ? attemptById.get(candidate.attemptId)
-                  : undefined;
-                return (
-                  <li key={candidate.id}>
-                    <span>
-                      Attempt #{owner?.attempt ?? "?"} · {candidate.kind ?? "unknown"} capture #
-                      {candidate.attempt}
-                    </span>
-                    <span className={`ensemble-pill ensemble-pill-${candidate.status ?? "unknown"}`}>
-                      {artifactStatusLabel(candidate.status)}
-                    </span>
-                    {candidate.error && <span className="ensemble-stage-error">{candidate.error}</span>}
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <p className="ensemble-muted">No artifact captures yet.</p>
-          )}
-        </div>
-      </div>
+      {session ? (
+        <details className="ensemble-lane-history" open={member.status === "failed"}>
+          <Tooltip label="Show or hide this member's recorded attempts and artifacts">
+            <summary>Attempt &amp; artifact history</summary>
+          </Tooltip>
+          <DurableState
+            attempts={attempts}
+            artifacts={artifacts}
+            attemptById={attemptById}
+            selectedAttemptId={member.selectedAttemptId}
+          />
+        </details>
+      ) : (
+        <DurableState
+          attempts={attempts}
+          artifacts={artifacts}
+          attemptById={attemptById}
+          selectedAttemptId={member.selectedAttemptId}
+        />
+      )}
       {member.error && (
         <p className="ensemble-error" role="alert">
           {member.error}
@@ -321,7 +344,82 @@ function MemberCard({
           </div>
         </div>
       )}
+      {session && ((live?.reviews.length ?? 0) > 0 || dialog) && (
+        <div className="ensemble-lane-asks">
+          <h6>Candidate {member.ordinal} asks</h6>
+          <div className="ensemble-lane-protocols">
+            {live?.reviews.map((review) => (
+              <ReviewCard key={review.id} review={review} />
+            ))}
+            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
+          </div>
+        </div>
+      )}
     </li>
+  );
+}
+
+function DurableState({
+  attempts,
+  artifacts,
+  attemptById,
+  selectedAttemptId,
+}: {
+  attempts: EnsembleAttempt[];
+  artifacts: EnsembleArtifact[];
+  attemptById: Map<string, EnsembleAttempt>;
+  selectedAttemptId: string | null;
+}): React.JSX.Element {
+  return (
+    <div className="ensemble-member-durable-state">
+      <div>
+        <h6>Attempt state</h6>
+        {attempts.length > 0 ? (
+          <ul className="ensemble-member-history">
+            {attempts.map((candidate) => (
+              <li key={candidate.id}>
+                <span>
+                  Attempt #{candidate.attempt}
+                  {candidate.id === selectedAttemptId ? " · selected" : ""}
+                </span>
+                <span className={`ensemble-pill ensemble-pill-${candidate.status ?? "unknown"}`}>
+                  {candidate.status ? titleCaseEnum(candidate.status) : "Unknown"}
+                </span>
+                {candidate.error && <span className="ensemble-stage-error">{candidate.error}</span>}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="ensemble-muted">No attempts yet.</p>
+        )}
+      </div>
+      <div>
+        <h6>Artifact state</h6>
+        {artifacts.length > 0 ? (
+          <ul className="ensemble-member-history">
+            {artifacts.map((candidate) => {
+              const owner = candidate.attemptId
+                ? attemptById.get(candidate.attemptId)
+                : undefined;
+              return (
+                <li key={candidate.id}>
+                  <span>
+                    Attempt #{owner?.attempt ?? "?"} · {candidate.kind ?? "unknown"} capture #
+                    {candidate.attempt}
+                  </span>
+                  <span className={`ensemble-pill ensemble-pill-${candidate.status ?? "unknown"}`}>
+                    {artifactStatusLabel(candidate.status)}
+                  </span>
+                  {candidate.error && <span className="ensemble-stage-error">{candidate.error}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="ensemble-muted">No artifact captures yet.</p>
+        )}
+      </div>
+    </div>
   );
 }
 

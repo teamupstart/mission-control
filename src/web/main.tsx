@@ -3,6 +3,10 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { hydrateUiConfig } from "./lib/uiConfig.ts";
 import "@xyflow/react/dist/style.css";
+// Global vendor CSS belongs at the browser entry rather than inside `DiffView`: the latter is
+// reached by reusable review cards, including server-rendered component tests, while this file
+// is the one surface that actually boots the stylesheet-aware Vite application.
+import "react-diff-view/style/index.css";
 import "./styles.css";
 
 // In the Electron shell the window has no native title bar (titleBarStyle:

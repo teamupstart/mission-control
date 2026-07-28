@@ -5,6 +5,7 @@ import type {
   WorkflowVersion,
 } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import type { ReviewItem, Session } from "@shared/types.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { WorkflowRunFilters, WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
@@ -29,6 +30,8 @@ export function WorkflowPage({
   runFilters,
   ensembleSummaries = [],
   ensembleAttentionCount = 0,
+  sessions = [],
+  reviews = [],
   selectedEnsembleId = null,
   hasSnapshot = false,
   llm,
@@ -60,6 +63,10 @@ export function WorkflowPage({
    * from `summaries` would be a second answer that agrees with the list row's dot by luck.
    */
   ensembleAttentionCount?: number;
+  /** Live fleet facts threaded into the selected ensemble's member lanes. */
+  sessions?: Session[];
+  /** Pending answer surfaces threaded beside those sessions; no new detail wire is needed. */
+  reviews?: ReviewItem[];
   selectedEnsembleId?: string | null;
   hasSnapshot?: boolean;
   llm: LlmState;
@@ -202,6 +209,8 @@ export function WorkflowPage({
         >
           <EnsembleRuns
             summaries={ensembleSummaries}
+            sessions={sessions}
+            reviews={reviews}
             selectedId={selectedEnsembleId}
             hasSnapshot={hasSnapshot}
             onSelect={onEnsemble}

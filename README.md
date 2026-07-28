@@ -1790,8 +1790,13 @@ Runs is the monitoring, evidence, decision, recovery and history surface: it wea
 counting the runs the daemon marks as needing attention, and lists runs attention-first from the
 one live SSE stream with their shared progress dots and `submitted/roster` counts (plus the
 launched count while a wave is still opening),
-and fetches a selected run's bounded detail - members, immutable artifacts and their on-demand
-diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's candidate columns,
+and fetches a selected run's bounded detail. A **Launch -> Work -> Review -> Decide -> Promote**
+pipeline names the active stage in operator words and explains a waiting barrier (“waiting for 1
+more submission” or “waiting on you”). Live members render as lanes with session tone, activity,
+goal, elapsed time, last-event age and live cost; a blocked member's review form and verified
+pane/driver dialog are answerable there without leaving the run, while attempt and artifact
+histories fold behind a disclosure. The rest of the bounded detail carries immutable artifacts and
+their on-demand diffs, the stage/evaluation timeline, the strategy's own result view (Best of N's candidate columns,
 Consensus's agreements and divergence cards, Panel vote's rank matrix and ballots), and the decision
 that strategy asks for - over HTTP, refetching when that run's summary revises rather than polling.
 The strategy-neutral runtime pins one base commit, launches

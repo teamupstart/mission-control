@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { createHash } = require("node:crypto");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");
 const { buildSync } = require("esbuild");
@@ -124,6 +125,7 @@ async function evidenceState(window) {
   return window.webContents.executeJavaScript(`({
     requests: window.__ladderEvidence.requests,
     clipboard: window.__ladderEvidence.clipboard,
+    expectedFeedback: window.__ladderEvidence.expectedFeedback,
     snapshot: window.__ladderEvidence.snapshot(),
   })`);
 }
@@ -140,6 +142,19 @@ async function screenshotEvidence(window) {
   await loadScenario(window, "d3");
   await capture(window, "phase-2-d3-inspector-actions.png");
 
+  await loadScenario(window, "prepare-pr-e2e");
+  await clickButton(window, "Prepare PR in session");
+  await waitFor(
+    window,
+    "window.__ladderEvidence.requests.filter((request) => request.method === 'GET').length >= 2",
+  );
+  await waitFor(window, "!document.querySelector('[aria-busy=\"true\"]')");
+  await waitFor(
+    window,
+    "![...document.querySelectorAll('button')].some((button) => button.innerText.trim() === 'Prepare PR in session')",
+  );
+  await capture(window, "phase-2-d3-pr-prepared.png");
+
   await loadScenario(window, "d4-disabled");
   await scrollLadderToBottom(window);
   await showDisabledReason(window);
@@ -151,19 +166,60 @@ async function screenshotEvidence(window) {
   await waitFor(window, "document.querySelector('.workflow-confirm')");
   await fillConfirmation(window);
   await capture(window, "phase-2-d4-typed-confirmation.png");
+
+  await loadScenario(window, "mark-delivered-e2e");
+  await scrollLadderToBottom(window);
+  await clickButton(window, "Mark delivered");
+  await waitFor(window, "document.querySelector('.workflow-confirm')");
+  await capture(window, "phase-2-d4-mark-delivered-confirmation.png");
 }
 
 async function actionTranscript(window) {
+  await loadScenario(window, "d2");
+  await clickButton(window, "Copy feedback");
+  await waitFor(
+    window,
+    "[...document.querySelectorAll('button')].some((button) => button.innerText.trim() === 'Copied')",
+  );
+  const copySuccess = await evidenceState(window);
+
+  await loadScenario(window, "prepare-pr-e2e");
+  await clickButton(window, "Prepare PR in session");
+  await waitFor(
+    window,
+    "window.__ladderEvidence.requests.filter((request) => request.method === 'GET').length >= 2",
+  );
+  await waitFor(window, "!document.querySelector('[aria-busy=\"true\"]')");
+  await waitFor(
+    window,
+    "![...document.querySelectorAll('button')].some((button) => button.innerText.trim() === 'Prepare PR in session')",
+  );
+  const preparePrSuccess = await evidenceState(window);
+
   await loadScenario(window, "gate-e2e");
   await clickButton(window, "Recheck Inspector");
   await waitFor(
     window,
     "document.querySelector('[role=\"alert\"]')?.innerText.includes('Inspector ledger unavailable')",
   );
+  await waitFor(
+    window,
+    "window.__ladderEvidence.requests.filter((request) => request.method === 'GET').length >= 2",
+  );
+  await waitFor(window, "!document.querySelector('[aria-busy=\"true\"]')");
+  await waitFor(
+    window,
+    "[...document.querySelectorAll('button')].some((button) => button.innerText.trim() === 'Recheck Inspector')",
+  );
   const gateFailure = await evidenceState(window);
 
   await clickButton(window, "Recheck Inspector");
-  await waitFor(window, "!document.body.innerText.includes('Inspector gate')");
+  await waitFor(
+    window,
+    "window.__ladderEvidence.requests.filter((request) => request.method === 'GET').length >= 3",
+  );
+  await waitFor(window, "!document.querySelector('[aria-busy=\"true\"]')");
+  await waitFor(window, "!document.body.innerText.includes('Recheck Inspector')");
   const gateSuccess = await evidenceState(window);
 
   await loadScenario(window, "delivery-e2e");
@@ -172,10 +228,37 @@ async function actionTranscript(window) {
   await waitFor(window, "document.querySelector('.workflow-confirm')");
   await fillConfirmation(window);
   await clickButton(window, "Discard and send new round", "document.querySelector('.workflow-confirm')");
+  await waitFor(
+    window,
+    "window.__ladderEvidence.requests.filter((request) => request.method === 'GET').length >= 2",
+  );
+  await waitFor(window, "!document.querySelector('[aria-busy=\"true\"]')");
   await waitFor(window, "!document.body.innerText.includes('Repair delivery')");
   const deliverySuccess = await evidenceState(window);
 
-  return { gateFailure, gateSuccess, deliverySuccess };
+  await loadScenario(window, "mark-delivered-e2e");
+  await scrollLadderToBottom(window);
+  await clickButton(window, "Mark delivered");
+  await waitFor(window, "document.querySelector('.workflow-confirm')");
+  const markConfirmation = await evidenceState(window);
+  await clickButton(window, "Mark delivered", "document.querySelector('.workflow-confirm')");
+  await waitFor(
+    window,
+    "window.__ladderEvidence.requests.filter((request) => request.method === 'GET').length >= 2",
+  );
+  await waitFor(window, "!document.querySelector('[aria-busy=\"true\"]')");
+  await waitFor(window, "!document.body.innerText.includes('Repair delivery')");
+  const markDeliveredSuccess = await evidenceState(window);
+
+  return {
+    copySuccess,
+    preparePrSuccess,
+    gateFailure,
+    gateSuccess,
+    deliverySuccess,
+    markConfirmation,
+    markDeliveredSuccess,
+  };
 }
 
 function actionRows(requests) {
@@ -189,12 +272,19 @@ function actionRows(requests) {
 }
 
 function writeTranscript(transcript) {
+  const copiedPacket = transcript.copySuccess.clipboard.at(-1);
+  const copiedPacketMatches = copiedPacket === transcript.copySuccess.expectedFeedback;
+  const copiedPacketSha = createHash("sha256").update(copiedPacket).digest("hex");
+  const preparePrPost = transcript.preparePrSuccess.requests
+    .find((request) => request.method === "POST");
   const failedGatePost = transcript.gateFailure.requests
     .find((request) => request.method === "POST");
   const successfulGatePosts = transcript.gateSuccess.requests
     .filter((request) => request.method === "POST");
   const retriedGatePost = successfulGatePosts.at(-1);
   const deliveryPost = transcript.deliverySuccess.requests
+    .find((request) => request.method === "POST");
+  const markDeliveredPost = transcript.markDeliveredSuccess.requests
     .find((request) => request.method === "POST");
   const sameRequestId =
     failedGatePost.body.requestId === retriedGatePost.body.requestId;
@@ -230,6 +320,11 @@ The gate is parked on \`missing_pr\`, so **Prepare PR in session**, **Recheck In
 
 ![D3 Inspector actions](./phase-2-d3-inspector-actions.png)
 
+After activating **Prepare PR in session**, the panel refetches the run in
+\`waiting_for_session\` / \`pr_handoff\`; the one-shot preparation action is gone.
+
+![D3 PR handoff prepared](./phase-2-d3-pr-prepared.png)
+
 ### D4 · Bound session disappeared
 
 The durable binding has \`sessionId: null\` while the summary still carries its stale session
@@ -245,7 +340,35 @@ confirmation. The exact phrase is typed and the destructive confirm is enabled.
 
 ![D4 typed phrase confirmation](./phase-2-d4-typed-confirmation.png)
 
+The other resolution uses the real shared confirmation too. **Mark delivered** displays its
+inspection warning before the guarded POST can run.
+
+![D4 Mark delivered confirmation](./phase-2-d4-mark-delivered-confirmation.png)
+
 ## End-to-end action transcript
+
+### Copy feedback: prepared packet written to the clipboard
+
+Observed:
+
+- Clipboard writes after activating **Copy feedback**: **${transcript.copySuccess.clipboard.length}**.
+- Copied bytes exactly equal \`workflowFeedbackText(detail)\`: **${copiedPacketMatches ? "yes" : "no"}**.
+- Copied packet size: **${Buffer.byteLength(copiedPacket, "utf8")} bytes**.
+- Copied packet SHA-256: \`${copiedPacketSha}\`.
+- Final rendered button label: **${transcript.copySuccess.snapshot.buttons.some((button) => button.label === "Copied") ? "Copied" : "not copied"}**.
+
+### Prepare PR in session: POST and committed refresh
+
+| # | Method | Path | Status | Request JSON | Response JSON |
+|---:|---|---|---:|---|---|
+${actionRows(transcript.preparePrSuccess.requests)}
+
+Observed:
+
+- Request id: \`${preparePrPost.body.requestId}\`.
+- Refetch after PR handoff preparation: **${transcript.preparePrSuccess.requests.filter((request) => request.method === "GET").length > 1 ? "yes" : "no"}**.
+- Final run status from the refreshed detail: \`${transcript.preparePrSuccess.snapshot.runStatus}\`.
+- Final rendered state: Prepare PR offered = **${transcript.preparePrSuccess.snapshot.hasPreparePr}**.
 
 ### Inspector recheck: error, stable retry key, success, refresh
 
@@ -262,7 +385,7 @@ Observed:
 - Retry request id: \`${retriedGatePost.body.requestId}\`.
 - Retry reused the idempotency key: **${sameRequestId ? "yes" : "no"}**.
 - GETs after each settled POST: **${transcript.gateSuccess.requests.filter((request) => request.method === "GET").length - 1}**.
-- Final rendered state: Inspector gate present = **${transcript.gateSuccess.snapshot.hasInspectorGate}**.
+- Final rendered state: Recheck Inspector offered = **${transcript.gateSuccess.snapshot.hasRecheckInspector}**.
 
 ### Uncertain delivery: typed confirmation, guarded POST, refresh
 
@@ -278,6 +401,23 @@ Observed:
   \`${deliveryPost.body.expectedNoteKey}\`.
 - Refetch after the resolution: **${transcript.deliverySuccess.requests.filter((request) => request.method === "GET").length > 1 ? "yes" : "no"}**.
 - Final rendered state: Repair delivery present = **${transcript.deliverySuccess.snapshot.hasRepairDelivery}**.
+
+### Mark delivered: confirmation, guarded POST, refresh
+
+| # | Method | Path | Status | Request JSON | Response JSON |
+|---:|---|---|---:|---|---|
+${actionRows(transcript.markDeliveredSuccess.requests)}
+
+Observed:
+
+- Confirmation shown before the POST: \`${transcript.markConfirmation.snapshot.confirmTitle}\`.
+- POSTs before confirmation: **${transcript.markConfirmation.requests.filter((request) => request.method === "POST").length}**.
+- Request id: \`${markDeliveredPost.body.requestId}\`.
+- Resolution: \`${markDeliveredPost.body.resolution}\`.
+- Confirmation is the Mark-delivered guard; this resolution deliberately requires no bound
+  session.
+- Refetch after the resolution: **${transcript.markDeliveredSuccess.requests.filter((request) => request.method === "GET").length > 1 ? "yes" : "no"}**.
+- Final rendered state: Repair delivery present = **${transcript.markDeliveredSuccess.snapshot.hasRepairDelivery}**.
 `;
   writeFileSync(join(outDir, "phase-2-evidence.md"), markdown);
 }

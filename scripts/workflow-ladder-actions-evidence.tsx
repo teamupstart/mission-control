@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import type { WorkflowRunDetail } from "../src/shared/workflow.ts";
 import { OverlayHost, useOverlayHost } from "../src/web/components/Overlay.tsx";
 import { WorkflowLadderPanel } from "../src/web/workflows/WorkflowLadder.tsx";
+import { workflowFeedbackText } from "../src/web/workflows/run-model.ts";
 import { ladderDetail } from "../test/helpers/workflow-ladder.ts";
 import "../src/web/styles.css";
 
@@ -11,7 +12,9 @@ type EvidenceScenario =
   | "d4-disabled"
   | "d4-confirm"
   | "gate-e2e"
-  | "delivery-e2e";
+  | "delivery-e2e"
+  | "prepare-pr-e2e"
+  | "mark-delivered-e2e";
 
 interface EvidenceRequest {
   sequence: number;
@@ -26,7 +29,11 @@ interface EvidenceSnapshot {
   alert: string | null;
   buttons: Array<{ label: string; disabled: boolean }>;
   hasInspectorGate: boolean;
+  hasRecheckInspector: boolean;
   hasRepairDelivery: boolean;
+  hasPreparePr: boolean;
+  confirmTitle: string | null;
+  runStatus: WorkflowRunDetail["run"]["status"];
 }
 
 declare global {
@@ -35,6 +42,7 @@ declare global {
       scenario: EvidenceScenario;
       requests: EvidenceRequest[];
       clipboard: string[];
+      expectedFeedback: string;
       snapshot: () => EvidenceSnapshot;
     };
   }
@@ -49,7 +57,12 @@ let gateFailuresRemaining = scenario === "gate-e2e" ? 1 : 0;
 
 function detailFor(selected: EvidenceScenario): WorkflowRunDetail {
   if (selected === "d2") return ladderDetail("changes");
-  if (selected === "d4-disabled" || selected === "d4-confirm" || selected === "delivery-e2e") {
+  if (
+    selected === "d4-disabled"
+    || selected === "d4-confirm"
+    || selected === "delivery-e2e"
+    || selected === "mark-delivered-e2e"
+  ) {
     const detail = ladderDetail("uncertain");
     if (selected === "d4-disabled") {
       detail.binding = { ...detail.binding, sessionId: null, state: "orphaned" };
@@ -126,6 +139,18 @@ globalThis.fetch = async (input, init = {}): Promise<Response> => {
     return json(response);
   }
 
+  if (method === "POST" && path === "/api/workflow-runs/run/prepare-pr") {
+    detail.run = { ...detail.run, status: "waiting_for_session" };
+    detail.summary = {
+      ...detail.summary,
+      status: "waiting_for_session",
+      phase: "pr_handoff",
+    };
+    const response = { deliveryId: "pr-handoff", state: "delivered" };
+    record(method, path, 200, body, response);
+    return json(response);
+  }
+
   if (method === "POST" && path === "/api/workflow-deliveries/delivery/resolve") {
     const delivery = detail.deliveries[0];
     if (delivery) {
@@ -164,11 +189,22 @@ function snapshot(): EvidenceSnapshot {
       disabled: button.disabled,
     })),
     hasInspectorGate: text.includes("Inspector gate"),
+    hasRecheckInspector: text.includes("Recheck Inspector"),
     hasRepairDelivery: text.includes("Repair delivery"),
+    hasPreparePr: text.includes("Prepare PR in session"),
+    confirmTitle:
+      document.querySelector<HTMLElement>(".workflow-confirm h2")?.innerText ?? null,
+    runStatus: detail.run.status,
   };
 }
 
-window.__ladderEvidence = { scenario, requests, clipboard, snapshot };
+window.__ladderEvidence = {
+  scenario,
+  requests,
+  clipboard,
+  expectedFeedback: workflowFeedbackText(detailFor("d2")),
+  snapshot,
+};
 
 function EvidenceApp(): React.JSX.Element {
   const overlays = useOverlayHost();

@@ -263,3 +263,25 @@ test("an unmounted source transfers its successful action refresh to the destina
   unregisterTarget();
   dropRunActions(runId);
 });
+
+test("an inactive historical surface leaves no refresh marker behind", async () => {
+  const runId = "run-historical-surface";
+  const unregister = registerRunActionRefresh(runId, () => {
+    assert.fail("an unmounted historical surface cannot be refreshed");
+  });
+  unregister();
+
+  let fallbackRefreshes = 0;
+  runAction(runId, "recheck-inspector", async () => {}, () => {
+    fallbackRefreshes++;
+  });
+  await settle();
+
+  assert.equal(fallbackRefreshes, 1);
+  assert.equal(
+    isRunActionPending(runId, "recheck-inspector"),
+    false,
+    "a direct action after unmount must not wait for the run to be viewed again",
+  );
+  dropRunActions(runId);
+});

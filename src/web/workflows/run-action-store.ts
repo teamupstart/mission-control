@@ -10,6 +10,7 @@ interface ActionEntry {
   requestId: string;
   pending: boolean;
   error: string | null;
+  refreshViaMountedSurface: boolean;
 }
 
 type RunActionRefresh = () => void | Promise<unknown>;
@@ -30,7 +31,6 @@ const actions = new Map<string, ActionEntry>();
 const listeners = new Map<WorkflowRunId, Set<() => void>>();
 const refreshers = new Map<WorkflowRunId, Set<RunActionRefreshRegistration>>();
 const refreshCycles = new Map<WorkflowRunId, Set<RunActionRefreshCycle>>();
-const runsWithRegisteredRefresh = new Set<WorkflowRunId>();
 const revisions = new Map<WorkflowRunId, number>();
 
 const keyOf = (runId: WorkflowRunId, action: RunActionId): string =>
@@ -132,9 +132,10 @@ function advanceRefreshCycle(
 function refreshMountedSurfaces(
   runId: WorkflowRunId,
   fallback: RunActionRefresh,
+  refreshViaMountedSurface: boolean,
 ): Promise<void> {
   const mounted = refreshers.get(runId);
-  if ((mounted?.size ?? 0) === 0 && !runsWithRegisteredRefresh.has(runId)) {
+  if ((mounted?.size ?? 0) === 0 && !refreshViaMountedSurface) {
     try {
       return Promise.resolve(fallback()).then(() => {});
     } catch (caught) {
@@ -194,9 +195,14 @@ export function runAction(
     requestId: crypto.randomUUID(),
     pending: false,
     error: null,
+    refreshViaMountedSurface: false,
   };
   entry.pending = true;
   entry.error = null;
+  // Remember this action's initiating context, not every run surface ever mounted. If that
+  // surface leaves before the POST settles, its refresh cycle waits for the destination. A
+  // direct caller with no registered surface still uses its supplied fallback immediately.
+  entry.refreshViaMountedSurface = (refreshers.get(runId)?.size ?? 0) > 0;
   actions.set(key, entry);
   emit(runId);
 
@@ -209,7 +215,11 @@ export function runAction(
   void sent.then(
     () => {
       if (actions.get(key) !== entry) return;
-      void refreshMountedSurfaces(runId, onSettled).then(
+      void refreshMountedSurfaces(
+        runId,
+        onSettled,
+        entry.refreshViaMountedSurface,
+      ).then(
         () => {
           if (actions.get(key) !== entry) return;
           actions.delete(key);
@@ -259,7 +269,6 @@ export function registerRunActionRefresh(
   const runRefreshers = refreshers.get(runId) ?? new Set();
   runRefreshers.add(registration);
   refreshers.set(runId, runRefreshers);
-  runsWithRegisteredRefresh.add(runId);
   for (const cycle of refreshCycles.get(runId) ?? []) {
     advanceRefreshCycle(runId, cycle);
   }
@@ -280,7 +289,6 @@ export function registerRunActionRefresh(
 export function dropRunActions(runId: WorkflowRunId): void {
   const prefix = `${runId}:`;
   let changed = revisions.delete(runId);
-  runsWithRegisteredRefresh.delete(runId);
   for (const cycle of [...(refreshCycles.get(runId) ?? [])]) {
     settleRefreshCycle(runId, cycle);
   }

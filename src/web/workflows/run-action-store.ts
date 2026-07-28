@@ -12,8 +12,11 @@ interface ActionEntry {
   error: string | null;
 }
 
+type RunActionRefresh = () => void | Promise<unknown>;
+
 const actions = new Map<string, ActionEntry>();
 const listeners = new Map<WorkflowRunId, Set<() => void>>();
+const refreshers = new Map<WorkflowRunId, Set<RunActionRefresh>>();
 const revisions = new Map<WorkflowRunId, number>();
 
 const keyOf = (runId: WorkflowRunId, action: RunActionId): string =>
@@ -37,6 +40,21 @@ function clearRunActionErrors(runId: WorkflowRunId): void {
   for (const [key, entry] of actions) {
     if (key.startsWith(prefix)) entry.error = null;
   }
+}
+
+function refreshMountedSurfaces(
+  runId: WorkflowRunId,
+  fallback: RunActionRefresh,
+): Promise<void> {
+  const mounted = [...(refreshers.get(runId) ?? [])];
+  const callbacks = mounted.length > 0 ? mounted : [fallback];
+  return Promise.all(callbacks.map((refresh) => {
+    try {
+      return Promise.resolve(refresh());
+    } catch (caught) {
+      return Promise.reject(caught);
+    }
+  })).then(() => {});
 }
 
 /**
@@ -75,13 +93,7 @@ export function runAction(
   void sent.then(
     () => {
       if (actions.get(key) !== entry) return;
-      let refreshed: void | Promise<unknown>;
-      try {
-        refreshed = onSettled();
-      } catch (caught) {
-        refreshed = Promise.reject(caught);
-      }
-      void Promise.resolve(refreshed).then(
+      void refreshMountedSurfaces(runId, onSettled).then(
         () => {
           if (actions.get(key) !== entry) return;
           actions.delete(key);
@@ -101,12 +113,9 @@ export function runAction(
       entry.pending = false;
       entry.error = errorMessage(caught);
       emit(runId);
-      try {
-        void Promise.resolve(onSettled()).catch(() => {});
-      } catch {
-        // The mutation error is the actionable failure. A synchronous refresh failure must not
-        // replace it or turn the rejected action back into a permanently pending one.
-      }
+      // The mutation error is the actionable failure. A refresh failure must not replace it
+      // or turn the rejected action back into a permanently pending one.
+      void refreshMountedSurfaces(runId, onSettled).catch(() => {});
     },
   );
 }
@@ -126,6 +135,20 @@ function runActionError(runId: WorkflowRunId): string | null {
   return null;
 }
 
+/** Registers the refetch owned by one currently mounted run surface. */
+export function registerRunActionRefresh(
+  runId: WorkflowRunId,
+  refresh: RunActionRefresh,
+): () => void {
+  const runRefreshers = refreshers.get(runId) ?? new Set();
+  runRefreshers.add(refresh);
+  refreshers.set(runId, runRefreshers);
+  return () => {
+    runRefreshers.delete(refresh);
+    if (runRefreshers.size === 0) refreshers.delete(runId);
+  };
+}
+
 export function dropRunActions(runId: WorkflowRunId): void {
   const prefix = `${runId}:`;
   let changed = revisions.delete(runId);
@@ -139,13 +162,19 @@ export function dropRunActions(runId: WorkflowRunId): void {
   if (changed) notify(runId);
 }
 
-function subscribe(runId: WorkflowRunId, listener: () => void): () => void {
+function subscribe(
+  runId: WorkflowRunId,
+  listener: () => void,
+  refresh: RunActionRefresh,
+): () => void {
   const runListeners = listeners.get(runId) ?? new Set();
   runListeners.add(listener);
   listeners.set(runId, runListeners);
+  const unregisterRefresh = registerRunActionRefresh(runId, refresh);
   return () => {
     runListeners.delete(listener);
     if (runListeners.size === 0) listeners.delete(runId);
+    unregisterRefresh();
   };
 }
 
@@ -165,9 +194,13 @@ export function useRunActions(
 ): RunActionsController {
   const onSettledRef = useRef(onSettled);
   onSettledRef.current = onSettled;
+  const refresh = useCallback(
+    () => onSettledRef.current(),
+    [],
+  );
   const subscribeToRun = useCallback(
-    (listener: () => void) => subscribe(runId, listener),
-    [runId],
+    (listener: () => void) => subscribe(runId, listener, refresh),
+    [refresh, runId],
   );
   const getSnapshot = useCallback(
     () => revisions.get(runId) ?? 0,
@@ -181,9 +214,9 @@ export function useRunActions(
         runId,
         action,
         send,
-        () => onSettledRef.current(),
+        refresh,
       ),
-      [runId],
+      [refresh, runId],
     ),
     isPending: useCallback(
       (action) => isRunActionPending(runId, action),

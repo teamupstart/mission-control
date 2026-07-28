@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   dropRunActions,
   isRunActionPending,
+  registerRunActionRefresh,
   runAction,
   useRunActions,
 } from "../src/web/workflows/run-action-store.ts";
@@ -24,8 +25,7 @@ function deferred(): {
 }
 
 const settle = async (): Promise<void> => {
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
 };
 
 function ActionError({ runId }: { runId: string }): React.JSX.Element {
@@ -176,5 +176,37 @@ test("a successful action stays pending until its refreshed detail is committed"
   refresh.resolve();
   await settle();
   assert.equal(isRunActionPending(runId, "prepare-pr"), false);
+  dropRunActions(runId);
+});
+
+test("a cross-page action refreshes the surface mounted when its request settles", async () => {
+  const runId = "run-cross-page";
+  const sent = deferred();
+  const refreshed = deferred();
+  let sourceRefreshes = 0;
+  let targetRefreshes = 0;
+
+  const unregisterSource = registerRunActionRefresh(runId, () => {
+    sourceRefreshes++;
+  });
+  runAction(runId, "recheck-inspector", () => sent.promise, () => {
+    sourceRefreshes++;
+  });
+  unregisterSource();
+  const unregisterTarget = registerRunActionRefresh(runId, () => {
+    targetRefreshes++;
+    return refreshed.promise;
+  });
+
+  sent.resolve();
+  await settle();
+  assert.equal(sourceRefreshes, 0);
+  assert.equal(targetRefreshes, 1);
+  assert.equal(isRunActionPending(runId, "recheck-inspector"), true);
+
+  refreshed.resolve();
+  await settle();
+  assert.equal(isRunActionPending(runId, "recheck-inspector"), false);
+  unregisterTarget();
   dropRunActions(runId);
 });

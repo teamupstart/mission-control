@@ -2688,9 +2688,14 @@
               </footer>
             </article>
             <p class="mk-slot-note">
-              Findings from the Inspector restart the workflow under
-              <code>onFindings: "restart_workflow"</code>, so the gate consuming a round is a fact
-              this axis can show and the others cannot.
+              Findings from the Inspector open an <strong>inspector-only submission</strong> under
+              <code>onFindings: "inspector_only"</code>, which is what the shipped built-in has
+              done since version 4; version 3 and earlier restarted the whole review
+              (<code>"restart_workflow"</code>), and both spellings are still addressable because
+              the policy is pinned per published version. Either way the gate consumes a round, so
+              that remains a fact this axis can show and the others cannot - but what the next
+              round actually RUNS differs, so read the policy off the run's own version rather
+              than assuming the current default.
             </p>
           </div>
 

@@ -49,7 +49,7 @@ export function runAction(
   runId: WorkflowRunId,
   action: RunActionId,
   send: (requestId: string) => Promise<unknown>,
-  onSettled: () => void,
+  onSettled: () => void | Promise<unknown>,
 ): void {
   const key = keyOf(runId, action);
   const existing = actions.get(key);
@@ -75,17 +75,38 @@ export function runAction(
   void sent.then(
     () => {
       if (actions.get(key) !== entry) return;
-      actions.delete(key);
-      clearRunActionErrors(runId);
-      emit(runId);
-      onSettled();
+      let refreshed: void | Promise<unknown>;
+      try {
+        refreshed = onSettled();
+      } catch (caught) {
+        refreshed = Promise.reject(caught);
+      }
+      void Promise.resolve(refreshed).then(
+        () => {
+          if (actions.get(key) !== entry) return;
+          actions.delete(key);
+          clearRunActionErrors(runId);
+          emit(runId);
+        },
+        (caught) => {
+          if (actions.get(key) !== entry) return;
+          entry.pending = false;
+          entry.error = errorMessage(caught);
+          emit(runId);
+        },
+      );
     },
     (caught) => {
       if (actions.get(key) !== entry) return;
       entry.pending = false;
       entry.error = errorMessage(caught);
       emit(runId);
-      onSettled();
+      try {
+        void Promise.resolve(onSettled()).catch(() => {});
+      } catch {
+        // The mutation error is the actionable failure. A synchronous refresh failure must not
+        // replace it or turn the rejected action back into a permanently pending one.
+      }
     },
   );
 }
@@ -140,7 +161,7 @@ export interface RunActionsController {
 /** Subscribes one mounted surface to the module-level entries for a run. */
 export function useRunActions(
   runId: WorkflowRunId,
-  onSettled: () => void,
+  onSettled: () => void | Promise<unknown>,
 ): RunActionsController {
   const onSettledRef = useRef(onSettled);
   onSettledRef.current = onSettled;

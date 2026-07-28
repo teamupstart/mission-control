@@ -149,3 +149,32 @@ test("starting or succeeding another action clears a stale run error", async () 
   assert.doesNotMatch(actionError(runId), /later delivery failure/);
   dropRunActions(runId);
 });
+
+test("a successful action stays pending until its refreshed detail is committed", async () => {
+  const runId = "run-refresh-pending";
+  const refresh = deferred();
+  let duplicateSends = 0;
+  runAction(
+    runId,
+    "prepare-pr",
+    async () => {},
+    () => refresh.promise,
+  );
+  await settle();
+
+  assert.equal(isRunActionPending(runId, "prepare-pr"), true);
+  runAction(
+    runId,
+    "prepare-pr",
+    async () => {
+      duplicateSends++;
+    },
+    () => {},
+  );
+  assert.equal(duplicateSends, 0);
+
+  refresh.resolve();
+  await settle();
+  assert.equal(isRunActionPending(runId, "prepare-pr"), false);
+  dropRunActions(runId);
+});

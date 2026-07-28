@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkflowRunDetail, WorkflowRunSummary } from "@shared/workflow.ts";
 import {
   nodeLabel,
@@ -421,23 +421,39 @@ export function WorkflowLadderPanel({
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const copyReset = useRef<number | null>(null);
   const mounted = useRef(false);
+  const refreshResolvers = useRef(new Set<() => void>());
+  const releaseRefreshes = useCallback((): void => {
+    const resolvers = [...refreshResolvers.current];
+    refreshResolvers.current.clear();
+    for (const resolve of resolvers) resolve();
+  }, []);
+  const requestRefresh = useCallback((): Promise<void> => {
+    if (!mounted.current) return Promise.resolve();
+    return new Promise((resolve) => {
+      refreshResolvers.current.add(resolve);
+      setRefreshRevision((value) => value + 1);
+    });
+  }, []);
   const state = useWorkflowRunDetail(run.id, run.updatedAt + refreshRevision);
-  const controller = useRunActions(run.id, () => {
-    if (mounted.current) setRefreshRevision((value) => value + 1);
-  });
+  const controller = useRunActions(run.id, requestRefresh);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      releaseRefreshes();
       if (copyReset.current !== null) window.clearTimeout(copyReset.current);
     };
-  }, []);
+  }, [releaseRefreshes]);
   useEffect(() => {
+    if (state.state !== "loading") releaseRefreshes();
+  }, [releaseRefreshes, state]);
+  useEffect(() => {
+    releaseRefreshes();
     setFeedbackCopied(false);
     setLocalError(null);
     setConfirm(null);
-  }, [run.id]);
+  }, [releaseRefreshes, run.id]);
 
   if (state.state === "loading") {
     return (

@@ -1192,12 +1192,14 @@ export function WorkflowRuns({
   // selecting another run resets it in the same commit the detail is cleared - a submission
   // id from the previous run would otherwise survive one render into the next one.
   const [roundId, setRoundId] = useState<string | null>(null);
+  const [committedLoadGeneration, setCommittedLoadGeneration] = useState(0);
   const filterKey = JSON.stringify(filters ?? {});
   const ordered = useMemo(
     () => [...history].sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id)),
     [history],
   );
   const loadGeneration = useRef(0);
+  const loadResolvers = useRef(new Map<number, () => void>());
   const listGeneration = useRef(0);
   const selectedIndex = useRef(0);
   const unchangedRequest = useRef<{ runId: string; requestId: string } | null>(null);
@@ -1269,6 +1271,17 @@ export function WorkflowRuns({
     ) return;
     onSelectRun(ordered[Math.min(selectedIndex.current, ordered.length - 1)]!.id);
   }, [detail?.run.id, onSelectRun, ordered, runs, selectedRunId]);
+  useEffect(() => {
+    for (const [generation, resolve] of loadResolvers.current) {
+      if (generation > committedLoadGeneration) continue;
+      loadResolvers.current.delete(generation);
+      resolve();
+    }
+  }, [committedLoadGeneration]);
+  useEffect(() => () => {
+    for (const resolve of loadResolvers.current.values()) resolve();
+    loadResolvers.current.clear();
+  }, []);
   /**
    * `keepError` is what makes a refused action VISIBLE.
    *
@@ -1278,30 +1291,38 @@ export function WorkflowRuns({
    * error, no state change, no clue that the daemon said no. The failing path keeps its
    * sentence until the next successful action clears it.
    */
-  const load = (clear = false, keepError = false): void => {
+  const load = (clear = false, keepError = false): Promise<void> => {
     const generation = ++loadGeneration.current;
+    const committed = new Promise<void>((resolve) => {
+      loadResolvers.current.set(generation, resolve);
+    });
     if (clear) setDetail(null);
     if (!selected) {
       setDetail(null);
-      return;
+      setCommittedLoadGeneration(generation);
+      return committed;
     }
     if (!keepError) setError(null);
     void workflowRequest<WorkflowRunDetail>(
       `/api/workflow-runs/${encodeURIComponent(selected)}`,
     )
       .then((next) => {
-        if (loadGeneration.current === generation) setDetail(next);
+        if (loadGeneration.current !== generation) return;
+        setDetail(next);
+        setCommittedLoadGeneration(generation);
       })
       .catch((caught) => {
         if (loadGeneration.current !== generation) return;
         setDetail(null);
         setError(workflowRunLoadError(caught));
+        setCommittedLoadGeneration(generation);
       });
+    return committed;
   };
   useEffect(() => {
     setRoundId(null);
     setConfirm(null);
-    load(true);
+    void load(true);
     return () => { loadGeneration.current++; };
   }, [selected, selectedSummary]);
   const actionController = useRunActions(selected ?? "", () => load());
@@ -1310,11 +1331,11 @@ export function WorkflowRuns({
     setError(null);
     try {
       await workflowRequest(path, { method: "POST", body: JSON.stringify(body) });
-      load();
+      void load();
       return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Workflow action failed");
-      load(false, true);
+      void load(false, true);
       return false;
     }
   };
@@ -1332,7 +1353,7 @@ export function WorkflowRuns({
         body: JSON.stringify({ requestId, resubmitUnchanged: unchanged }),
       });
       unchangedRequest.current = null;
-      load();
+      void load();
     } catch (caught) {
       if (
         caught instanceof WorkflowApiError
@@ -1341,7 +1362,7 @@ export function WorkflowRuns({
         unchangedRequest.current = { runId: detail.run.id, requestId };
       }
       setError(caught instanceof Error ? caught.message : "Workflow resubmission failed");
-      load(false, true);
+      void load(false, true);
     }
   };
 

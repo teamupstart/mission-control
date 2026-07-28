@@ -59,6 +59,7 @@ import {
   type RunActionId,
 } from "./run-actions.ts";
 import { useRunActions } from "./run-action-store.ts";
+import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
 
 /**
  * Watching a run.
@@ -1199,7 +1200,8 @@ export function WorkflowRuns({
     [history],
   );
   const loadGeneration = useRef(0);
-  const loadResolvers = useRef(new Map<number, () => void>());
+  const loadCommit = useRef(createWorkflowLoadCommitBarrier());
+  const mounted = useRef(false);
   const listGeneration = useRef(0);
   const selectedIndex = useRef(0);
   const unchangedRequest = useRef<{ runId: string; requestId: string } | null>(null);
@@ -1272,15 +1274,15 @@ export function WorkflowRuns({
     onSelectRun(ordered[Math.min(selectedIndex.current, ordered.length - 1)]!.id);
   }, [detail?.run.id, onSelectRun, ordered, runs, selectedRunId]);
   useEffect(() => {
-    for (const [generation, resolve] of loadResolvers.current) {
-      if (generation > committedLoadGeneration) continue;
-      loadResolvers.current.delete(generation);
-      resolve();
-    }
+    loadCommit.current.commit(committedLoadGeneration);
   }, [committedLoadGeneration]);
-  useEffect(() => () => {
-    for (const resolve of loadResolvers.current.values()) resolve();
-    loadResolvers.current.clear();
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      loadGeneration.current++;
+      loadCommit.current.release();
+    };
   }, []);
   /**
    * `keepError` is what makes a refused action VISIBLE.
@@ -1292,10 +1294,14 @@ export function WorkflowRuns({
    * sentence until the next successful action clears it.
    */
   const load = (clear = false, keepError = false): Promise<void> => {
+    // A shared action can finish after this page has unmounted. It still succeeded, but there
+    // is no Runs detail left to refresh and no future commit that could settle a new waiter.
+    if (!mounted.current) return Promise.resolve();
     const generation = ++loadGeneration.current;
-    const committed = new Promise<void>((resolve) => {
-      loadResolvers.current.set(generation, resolve);
-    });
+    // `waitFor` transfers every older waiter to this generation. Selection changes and SSE
+    // summary updates can supersede a request, but the action remains guarded until their
+    // replacement detail has actually committed.
+    const committed = loadCommit.current.waitFor(generation);
     if (clear) setDetail(null);
     if (!selected) {
       setDetail(null);

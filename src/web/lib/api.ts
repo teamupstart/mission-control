@@ -73,7 +73,7 @@ import type {
 } from "@shared/schedules.ts";
 import type { SweepReport, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
-import type { AwayDigest } from "@shared/away-buffer.ts";
+import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
 import type { PersonaDefaultsView } from "@shared/workflow.ts";
 
@@ -171,6 +171,14 @@ export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
  * which is the common case: you were never away, or nothing happened.
  */
 export const fetchAwayDigest = () => fetchJson<AwayDigest>("/api/away/digest");
+/**
+ * What has piled up in the window still open, for the away card's count and preview.
+ *
+ * Separate from the digest read above and NOT interchangeable with it: this one only
+ * looks. `fetchAwayDigest` claims the digest for good, and answers nothing at all until
+ * you are back at the desk, so it can never source a figure shown while you are away.
+ */
+export const fetchAwayBuffer = () => fetchJson<AwayBufferSummary>("/api/away/buffer");
 /**
  * The sessions the daemon currently reads as stuck. Fetched rather than derived:
  * a stall is elapsed silence, and `sessionEqual` keeps `lastActivity` out of the

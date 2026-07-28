@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
   dropRunActions,
   isRunActionPending,
   runAction,
+  useRunActions,
 } from "../src/web/workflows/run-action-store.ts";
 
 function deferred(): {
@@ -24,6 +27,15 @@ const settle = async (): Promise<void> => {
   await Promise.resolve();
   await Promise.resolve();
 };
+
+function ActionError({ runId }: { runId: string }): React.JSX.Element {
+  const controller = useRunActions(runId, () => {});
+  return createElement("span", null, controller.error);
+}
+
+function actionError(runId: string): string {
+  return renderToStaticMarkup(createElement(ActionError, { runId }));
+}
 
 test("one run action survives a page switch and refuses a second submission", async () => {
   const runId = "run-page-switch";
@@ -102,4 +114,38 @@ test("dropping a removed run clears pending entries permanently", async () => {
   active.reject(new Error("late response"));
   await settle();
   assert.equal(isRunActionPending(runId, "prepare-pr"), false);
+});
+
+test("starting or succeeding another action clears a stale run error", async () => {
+  const runId = "run-stale-error";
+  runAction(
+    runId,
+    "recheck-inspector",
+    async () => {
+      throw new Error("old Inspector failure");
+    },
+    () => {},
+  );
+  await settle();
+  assert.match(actionError(runId), /old Inspector failure/);
+
+  const successful = deferred();
+  runAction(runId, "prepare-pr", () => successful.promise, () => {});
+  assert.doesNotMatch(actionError(runId), /old Inspector failure/);
+
+  runAction(
+    runId,
+    "delivery:delivery:mark_delivered",
+    async () => {
+      throw new Error("later delivery failure");
+    },
+    () => {},
+  );
+  await settle();
+  assert.match(actionError(runId), /later delivery failure/);
+
+  successful.resolve();
+  await settle();
+  assert.doesNotMatch(actionError(runId), /later delivery failure/);
+  dropRunActions(runId);
 });

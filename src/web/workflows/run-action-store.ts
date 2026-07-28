@@ -32,6 +32,13 @@ function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "Workflow action failed";
 }
 
+function clearRunActionErrors(runId: WorkflowRunId): void {
+  const prefix = `${runId}:`;
+  for (const [key, entry] of actions) {
+    if (key.startsWith(prefix)) entry.error = null;
+  }
+}
+
 /**
  * Starts one run action, retaining its request id across a failed response.
  *
@@ -48,6 +55,7 @@ export function runAction(
   const existing = actions.get(key);
   if (existing?.pending) return;
 
+  clearRunActionErrors(runId);
   const entry: ActionEntry = existing ?? {
     requestId: crypto.randomUUID(),
     pending: false,
@@ -68,6 +76,7 @@ export function runAction(
     () => {
       if (actions.get(key) !== entry) return;
       actions.delete(key);
+      clearRunActionErrors(runId);
       emit(runId);
       onSettled();
     },

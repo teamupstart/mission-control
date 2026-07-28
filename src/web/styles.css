@@ -108,11 +108,6 @@
 .workflow-failed { color: var(--danger); }
 .workflow-passed { color: var(--idle); }
 
-.tf-workflow {
-  cursor: pointer;
-  font: inherit;
-}
-
 .rail-workflow {
   cursor: pointer;
   font-weight: 800;
@@ -15729,6 +15724,14 @@ select.sc-input {
 .tile.selected .tile-open:focus-visible {
   outline: none;
 }
+.tile.workflow-expanded,
+.tile.workflow-expanded:hover {
+  transform: none;
+  border-color: color-mix(in oklab, var(--working) 65%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 1px color-mix(in oklab, var(--working) 18%, transparent);
+}
 .tile.tone-exited {
   opacity: 0.62;
 }
@@ -15786,6 +15789,278 @@ select.sc-input {
 }
 .tile-rail .tr-skipped {
   background: var(--dim);
+}
+
+/* ---- board tile: workflow disclosure (D′) ----
+   The compact state is a cropped rung of the full ladder, not a second progress diagram.
+   It owns pointer interaction inside the otherwise-clickable tile; disclosure stays on the
+   Board, while the full ladder's explicit Open run action remains the route to Runs. */
+.tile-workflow-disclosure {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  cursor: default;
+}
+.tile-workflow-content {
+  min-width: 0;
+}
+.tile-workflow-content > .wf-ladder-panel,
+.tile-workflow-content > .wf-ladder-feedback,
+.tile-workflow-content > .wf-ladder-fallback {
+  width: 100%;
+}
+.tile-workflow-disclosure.is-expanded .wf-ladder-panel {
+  max-height: min(62dvh, 620px);
+  overflow-y: auto;
+  animation: tile-workflow-reveal 180ms ease-out both;
+}
+@keyframes tile-workflow-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.wf-tile-peek {
+  --wf-tile-peek-tone: var(--dim);
+  min-width: 0;
+  padding: 8px 9px 8px 31px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--panel-2) 88%, var(--bg));
+}
+.wf-tile-peek.workflow-running {
+  --wf-tile-peek-tone: var(--working);
+}
+.wf-tile-peek.workflow-waiting {
+  --wf-tile-peek-tone: var(--attention);
+}
+.wf-tile-peek.workflow-passed {
+  --wf-tile-peek-tone: var(--idle);
+}
+.wf-tile-peek.workflow-failed,
+.wf-tile-peek.workflow-blocked {
+  --wf-tile-peek-tone: var(--danger);
+}
+.wf-tile-peek-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.wf-tile-peek-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--working);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-tile-peek-version,
+.wf-tile-peek-round {
+  flex: none;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+.wf-tile-peek-runstate {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--wf-tile-peek-tone);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-tile-peek-runstate.workflow-running {
+  color: var(--working);
+}
+.wf-tile-peek-runstate.workflow-waiting {
+  color: var(--attention);
+}
+.wf-tile-peek-runstate.workflow-blocked,
+.wf-tile-peek-runstate.workflow-failed {
+  color: var(--danger);
+}
+.wf-tile-peek-runstate.workflow-passed {
+  color: var(--idle);
+}
+.wf-tile-peek-round {
+  margin-left: auto;
+}
+.wf-tile-peek-rung {
+  position: relative;
+  min-width: 0;
+  margin-top: 6px;
+}
+.wf-tile-peek-rung::before {
+  content: "";
+  position: absolute;
+  top: -31px;
+  bottom: -8px;
+  left: -16px;
+  width: 1px;
+  background: color-mix(in oklab, var(--wf-tile-peek-tone) 50%, var(--border));
+}
+.wf-tile-peek-rung::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: -21px;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 2px solid var(--wf-tile-peek-tone);
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--wf-tile-peek-tone) 36%, var(--panel-2));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--wf-tile-peek-tone) 12%, transparent);
+}
+.wf-tile-peek-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.wf-tile-peek-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.wf-tile-peek-title strong {
+  flex: none;
+  font-size: 11px;
+  font-weight: 650;
+}
+.wf-tile-peek-title > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-tile-peek-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--wf-tile-peek-tone);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+.wf-tile-peek-members {
+  display: flex;
+  gap: 4px 9px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 9.5px;
+}
+.wf-tile-peek-members > span {
+  display: inline-flex;
+  gap: 3px;
+  min-width: 0;
+}
+.wf-tile-peek-members > .workflow-passed {
+  color: var(--idle);
+}
+.wf-tile-peek-members > .workflow-running {
+  color: var(--working);
+}
+.wf-tile-peek-members > .workflow-waiting {
+  color: var(--attention);
+}
+.wf-tile-peek-members > .workflow-failed,
+.wf-tile-peek-members > .workflow-blocked {
+  color: #ff7b72;
+}
+.wf-tile-peek-sentence {
+  display: -webkit-box;
+  margin: 6px 0 0;
+  padding: 5px 7px;
+  overflow: hidden;
+  color: var(--muted);
+  border-left: 2px solid var(--wf-tile-peek-tone);
+  border-radius: 0 5px 5px 0;
+  background: color-mix(in oklab, var(--wf-tile-peek-tone) 8%, transparent);
+  font-size: 9.5px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.wf-tile-peek-sentence strong {
+  color: var(--fg);
+  font-weight: 650;
+}
+.wf-tile-peek-unavailable {
+  margin: 6px 0 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-tile-peek.is-placeholder .wf-tile-peek-unavailable {
+  color: color-mix(in oklab, var(--dim) 72%, transparent);
+}
+.tile-workflow-disclosure-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.tile-workflow-disclosure-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 3px 7px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  cursor: pointer;
+  font-size: 10px;
+}
+.tile-workflow-disclosure-btn:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 44%, var(--border));
+  background: color-mix(in oklab, var(--working) 7%, var(--bg-2));
+}
+.tile-workflow-disclosure-btn:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.tile-workflow-chevron {
+  display: inline-block;
+  color: var(--working);
+  transition: transform 0.16s ease;
+}
+.tile-workflow-disclosure.is-expanded .tile-workflow-chevron {
+  transform: rotate(180deg);
+}
+.tile-workflow-disclosure-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tile-workflow-disclosure.is-expanded .wf-ladder-panel {
+    animation: none;
+  }
+  .tile-workflow-chevron {
+    transition: none;
+  }
 }
 .tile-marks {
   display: flex;

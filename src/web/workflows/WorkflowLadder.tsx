@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { WorkflowRunDetail, WorkflowRunSummary } from "@shared/workflow.ts";
 import {
   nodeLabel,
@@ -56,6 +56,10 @@ import {
   createWorkflowRefreshQueue,
 } from "./workflow-load-commit.ts";
 import { useWorkflowRunDetail } from "./useWorkflowRunDetail.ts";
+import {
+  WorkflowLadderPeek,
+  WorkflowLadderPeekPlaceholder,
+} from "./WorkflowLadderPeek.tsx";
 
 interface WorkflowLadderProps {
   summary: WorkflowRunSummary;
@@ -422,13 +426,74 @@ export function WorkflowLadder({
   );
 }
 
+export interface WorkflowTileDisclosureState {
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+}
+
+function WorkflowTileDisclosure({
+  run,
+  detail,
+  expanded,
+  onExpandedChange,
+  regionId,
+  loadError = false,
+  children,
+}: {
+  run: WorkflowRunSummary;
+  detail: WorkflowRunDetail | null;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  regionId: string;
+  loadError?: boolean;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <section
+      className={`tile-workflow-disclosure${expanded ? " is-expanded" : ""}`}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      <div className="tile-workflow-content" id={regionId}>
+        {expanded
+          ? children
+          : detail
+            ? <WorkflowLadderPeek summary={run} detail={detail} />
+            : <WorkflowLadderPeekPlaceholder summary={run} error={loadError} />}
+      </div>
+      <div className="tile-workflow-disclosure-row">
+        <Tooltip label={expanded
+          ? "Return to the consequential workflow rung"
+          : "Show every workflow stage and action inside this Board tile"}>
+          <button
+            className="tile-workflow-disclosure-btn"
+            type="button"
+            aria-controls={regionId}
+            aria-expanded={expanded}
+            onClick={() => onExpandedChange(!expanded)}
+          >
+            <span className="tile-workflow-chevron" aria-hidden>⌄</span>
+            {expanded ? "Collapse workflow" : "Show full workflow"}
+          </button>
+        </Tooltip>
+        <span className="tile-workflow-disclosure-hint">
+          {expanded ? "The active rung stays in context" : "Expand this tile in place"}
+        </span>
+      </div>
+    </section>
+  );
+}
+
 export function WorkflowLadderPanel({
   run,
   onOpenRun,
+  tileDisclosure = null,
 }: {
   run: WorkflowRunSummary;
   onOpenRun: () => void;
+  tileDisclosure?: WorkflowTileDisclosureState | null;
 }): React.JSX.Element {
+  const disclosureRegionId = useId();
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [feedbackCopied, setFeedbackCopied] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -478,14 +543,27 @@ export function WorkflowLadderPanel({
   }, [run.id]);
 
   if (state.state === "loading") {
-    return (
+    const feedback = (
       <section className="wf-ladder-feedback" aria-busy="true">
         Loading workflow stages…
       </section>
     );
+    return tileDisclosure
+      ? (
+          <WorkflowTileDisclosure
+            run={run}
+            detail={null}
+            expanded={tileDisclosure.expanded}
+            onExpandedChange={tileDisclosure.onExpandedChange}
+            regionId={disclosureRegionId}
+          >
+            {feedback}
+          </WorkflowTileDisclosure>
+        )
+      : feedback;
   }
   if (state.state === "error") {
-    return (
+    const feedback = (
       <section className="wf-ladder-feedback" role="alert">
         <p className="wf-ladder-error">{state.message}</p>
         <Tooltip label="Open this workflow in Runs">
@@ -495,6 +573,20 @@ export function WorkflowLadderPanel({
         </Tooltip>
       </section>
     );
+    return tileDisclosure
+      ? (
+          <WorkflowTileDisclosure
+            run={run}
+            detail={null}
+            expanded={tileDisclosure.expanded}
+            onExpandedChange={tileDisclosure.onExpandedChange}
+            regionId={disclosureRegionId}
+            loadError
+          >
+            {feedback}
+          </WorkflowTileDisclosure>
+        )
+      : feedback;
   }
   const detail = state.detail;
   const sessionBound = detail.binding.sessionId !== null;
@@ -558,32 +650,47 @@ export function WorkflowLadderPanel({
     });
   };
   const prUrl = detail.inspectorGate?.state.prUrl ?? null;
+  const ladder = (
+    <WorkflowLadder
+      summary={run}
+      detail={detail}
+      onOpenRun={onOpenRun}
+      onCopyFeedback={copyFeedback}
+      onPreparePr={() => runPost(
+        "prepare-pr",
+        `/api/workflow-runs/${encodeURIComponent(run.id)}/prepare-pr`,
+        (requestId) => ({ requestId }),
+      )}
+      onRecheckInspector={() => runPost(
+        "recheck-inspector",
+        `/api/workflow-runs/${encodeURIComponent(run.id)}/recheck-inspector`,
+        (requestId) => ({ requestId }),
+      )}
+      onOpenPr={() => {
+        if (prUrl) window.open(prUrl, "_blank", "noopener,noreferrer");
+      }}
+      onResolveDelivery={resolveDelivery}
+      feedbackCopied={feedbackCopied}
+      actionError={localError ?? controller.error}
+      sessionBound={sessionBound}
+      isPending={controller.isPending}
+    />
+  );
   return (
     <>
-      <WorkflowLadder
-        summary={run}
-        detail={detail}
-        onOpenRun={onOpenRun}
-        onCopyFeedback={copyFeedback}
-        onPreparePr={() => runPost(
-          "prepare-pr",
-          `/api/workflow-runs/${encodeURIComponent(run.id)}/prepare-pr`,
-          (requestId) => ({ requestId }),
-        )}
-        onRecheckInspector={() => runPost(
-          "recheck-inspector",
-          `/api/workflow-runs/${encodeURIComponent(run.id)}/recheck-inspector`,
-          (requestId) => ({ requestId }),
-        )}
-        onOpenPr={() => {
-          if (prUrl) window.open(prUrl, "_blank", "noopener,noreferrer");
-        }}
-        onResolveDelivery={resolveDelivery}
-        feedbackCopied={feedbackCopied}
-        actionError={localError ?? controller.error}
-        sessionBound={sessionBound}
-        isPending={controller.isPending}
-      />
+      {tileDisclosure
+        ? (
+            <WorkflowTileDisclosure
+              run={run}
+              detail={detail}
+              expanded={tileDisclosure.expanded}
+              onExpandedChange={tileDisclosure.onExpandedChange}
+              regionId={disclosureRegionId}
+            >
+              {ladder}
+            </WorkflowTileDisclosure>
+          )
+        : ladder}
       {confirm && (
         <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />
       )}

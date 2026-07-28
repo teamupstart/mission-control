@@ -20,7 +20,7 @@ interface StoredDetailState {
 }
 
 /**
- * The one detail-pane path to a workflow run.
+ * The one client path to a workflow run's detail, shared by the detail pane and Board preview.
  *
  * `updatedAt` is the compact SSE summary's refresh signal. The generation guard is equally
  * important on a session switch: a slower response for the session just left must not redraw

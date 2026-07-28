@@ -152,7 +152,7 @@ export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
   return "running";
 }
 
-function workflowRunLabel(run: WorkflowRunSummary): string {
+export function workflowRunLabel(run: WorkflowRunSummary): string {
   const tone = workflowRunTone(run);
   if (tone === "passed") return "Approved";
   if (run.gate === "waiting_pr") return "Waiting for PR";
@@ -183,29 +183,6 @@ export function WorkflowChip({
       >
         <span aria-hidden>⌁</span>
         {workflowRunLabel(run)}
-      </button>
-    </Tooltip>
-  );
-}
-
-export function WorkflowTileFlag({
-  run,
-  onOpen,
-}: {
-  run: WorkflowRunSummary | null;
-  onOpen?: () => void;
-}): React.JSX.Element | null {
-  if (!run) return null;
-  return (
-    <Tooltip label={`${run.workflowName} v${run.workflowVersion}: ${workflowRunLabel(run)}`}>
-      <button
-        className={`tile-flag tf-workflow workflow-${workflowRunTone(run)}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpen?.();
-        }}
-      >
-        ⌁ {workflowRunLabel(run)}
       </button>
     </Tooltip>
   );

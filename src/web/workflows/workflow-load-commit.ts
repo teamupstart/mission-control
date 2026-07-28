@@ -11,6 +11,27 @@ export interface WorkflowLoadCommitBarrier {
   release(): void;
 }
 
+export interface WorkflowLoadAcknowledgement {
+  /**
+   * Returns true only for a settled render whose generation has already rendered loading.
+   * This prevents a passive effect from acknowledging stale ready data after a refresh starts.
+   */
+  observe(generation: number, loading: boolean): boolean;
+}
+
+export function createWorkflowLoadAcknowledgement(): WorkflowLoadAcknowledgement {
+  let loadingSeenThrough = -1;
+  return {
+    observe(generation, loading) {
+      if (loading) {
+        loadingSeenThrough = Math.max(loadingSeenThrough, generation);
+        return false;
+      }
+      return loadingSeenThrough >= generation;
+    },
+  };
+}
+
 export function createWorkflowLoadCommitBarrier(): WorkflowLoadCommitBarrier {
   const waiters = new Map<number, Set<() => void>>();
   let newestGeneration = 0;

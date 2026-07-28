@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createWorkflowLoadCommitBarrier } from "../src/web/workflows/workflow-load-commit.ts";
+import {
+  createWorkflowLoadAcknowledgement,
+  createWorkflowLoadCommitBarrier,
+} from "../src/web/workflows/workflow-load-commit.ts";
 
 const settle = async (): Promise<void> => {
   await Promise.resolve();
@@ -19,6 +22,24 @@ test("an older ready-state commit cannot settle the next workflow refresh", asyn
   barrier.commit(1);
   await settle();
   assert.equal(settled, true);
+});
+
+test("a ladder refresh acknowledges only after its generation renders loading", () => {
+  const acknowledgement = createWorkflowLoadAcknowledgement();
+
+  assert.equal(
+    acknowledgement.observe(1, false),
+    false,
+    "stale ready data cannot acknowledge the newly requested generation",
+  );
+  assert.equal(acknowledgement.observe(1, true), false);
+  assert.equal(acknowledgement.observe(1, false), true);
+
+  assert.equal(
+    acknowledgement.observe(2, false),
+    false,
+    "the prior generation's loading transition cannot acknowledge the next one",
+  );
 });
 
 test("superseded workflow refreshes settle with the replacement commit", async () => {

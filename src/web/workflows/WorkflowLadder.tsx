@@ -50,7 +50,10 @@ import {
   type WorkflowConfirmRequest,
 } from "./WorkflowConfirmModal.tsx";
 import { workflowRequest } from "./workflowApi.ts";
-import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
+import {
+  createWorkflowLoadAcknowledgement,
+  createWorkflowLoadCommitBarrier,
+} from "./workflow-load-commit.ts";
 import { useWorkflowRunDetail } from "./useWorkflowRunDetail.ts";
 
 interface WorkflowLadderProps {
@@ -424,6 +427,7 @@ export function WorkflowLadderPanel({
   const mounted = useRef(false);
   const refreshGeneration = useRef(0);
   const refreshCommit = useRef(createWorkflowLoadCommitBarrier());
+  const refreshAcknowledgement = useRef(createWorkflowLoadAcknowledgement());
   const requestRefresh = useCallback((): Promise<void> => {
     if (!mounted.current) return Promise.resolve();
     const generation = ++refreshGeneration.current;
@@ -443,9 +447,13 @@ export function WorkflowLadderPanel({
     };
   }, []);
   useEffect(() => {
-    // The generation captured by this render prevents an older ready-state effect from
-    // releasing a waiter registered before React began the next detail request.
-    if (state.state !== "loading") refreshCommit.current.commit(refreshRevision);
+    // React can run the prior ready-state effect after requestRefresh registers a waiter but
+    // before useWorkflowRunDetail publishes loading. Require this generation's loading render
+    // before its later ready/error render may release the shared action guard.
+    if (refreshAcknowledgement.current.observe(
+      refreshRevision,
+      state.state === "loading",
+    )) refreshCommit.current.commit(refreshRevision);
   }, [refreshRevision, state]);
   useEffect(() => {
     refreshCommit.current.release();

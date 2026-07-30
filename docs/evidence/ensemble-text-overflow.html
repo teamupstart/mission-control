@@ -201,8 +201,13 @@
 
       /**
        * The claim this page exists to settle, measured rather than asserted: does the first
-       * column's claims block stay inside the column, and do the two columns' text boxes stay
-       * disjoint? A grid column neither clips nor scrolls, so an overhang IS the overlap.
+       * column's claims block stay inside the column, and does it stay off the next candidate's
+       * box? A grid column neither clips nor scrolls, so an overhang IS the overlap.
+       *
+       * The neighbour is compared in BOTH axes. Subtracting x edges alone describes a real
+       * clearance only while the candidates sit side by side; once the row collapses to one
+       * column they share a left edge, and the same subtraction turns into a confident sentence
+       * about a card that is simply further down the page.
        */
       function verdict(hostId, verdictId) {
         const host = document.getElementById(hostId);
@@ -210,17 +215,35 @@
         const col = cols[0].getBoundingClientRect();
         const claims = cols[0].querySelector(".ensemble-reported").getBoundingClientRect();
         const neighbour = cols[1].getBoundingClientRect();
+
         const overhang = Math.round(claims.right - col.right);
-        const intrudes = Math.round(claims.right - neighbour.left);
+        // Positive means the two boxes share that many px on the axis; negative is the gap.
+        const sharedX = Math.round(
+          Math.min(claims.right, neighbour.right) - Math.max(claims.left, neighbour.left),
+        );
+        const sharedY = Math.round(
+          Math.min(claims.bottom, neighbour.bottom) - Math.max(claims.top, neighbour.top),
+        );
+        const besideEachOther = sharedY > 0;
+        const covers = besideEachOther && sharedX > 0;
+
+        let line;
+        if (covers) {
+          line = `OVERLAPS: the claims block runs ${overhang}px past its own column and covers ${sharedX}px of the next candidate's box.`;
+        } else if (overhang > 0) {
+          line = `OVERLAPS ITS COLUMN: the claims block runs ${overhang}px past its own column. The next candidate is stacked below at this width, so nothing is covered - widen the window to see the collision.`;
+        } else if (besideEachOther) {
+          line = `CLEAN: the claims block ends ${-overhang}px inside its column, ${-sharedX}px clear of the next candidate's box beside it.`;
+        } else {
+          line = `CLEAN: the claims block ends ${-overhang}px inside its column. The candidates are stacked in one column at this width, so there is no neighbour beside it to clear.`;
+        }
+
         const el = document.getElementById(verdictId);
-        const lines = [
+        el.textContent = [
           `column: ${Math.round(col.width)}px   claims block inside it: ${Math.round(claims.width)}px`,
-          overhang > 0
-            ? `OVERLAPS: the claims block runs ${overhang}px past its own column, and ${intrudes}px into the next candidate's box.`
-            : `CLEAN: the claims block ends ${Math.abs(overhang)}px inside its column, ${Math.abs(intrudes)}px clear of the next candidate's box.`,
-        ];
-        el.textContent = lines.join("\n");
-        el.classList.add(overhang > 0 ? "is-bad" : "is-good");
+          line,
+        ].join("\n");
+        el.classList.add(covers || overhang > 0 ? "is-bad" : "is-good");
       }
 
       // After fonts settle, so the measurement is of the rendered text and not a fallback metric.

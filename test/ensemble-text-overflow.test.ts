@@ -27,10 +27,8 @@
  *    that content cannot exceed). A bare `1fr` means `minmax(auto, 1fr)`, which is the request to
  *    be as wide as the widest thing inside - and the widest thing inside is a model's prose.
  *
- * These assertions read declarations; they cannot see a rendered column. What a layout LOOKS like
- * belongs in a browser, so `docs/evidence/ensemble-text-overflow.html` renders the same region from
- * the same stylesheet, with and without the declarations this change replaced, and measures the
- * overlap on open rather than restating a figure. Open it after touching any rule named here.
+ * The limit of what this can prove: these assertions read DECLARATIONS. A rule that parses as
+ * floored and still renders wrong is outside their reach, because nothing here lays out a column.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

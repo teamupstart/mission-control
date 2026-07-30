@@ -27,10 +27,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   WorkflowSettingsPanel,
+  checkRepoOptions,
   readRetention,
   retentionShortens,
   workflowStripLinks,
@@ -605,6 +608,76 @@ test("a configured command is listed by root, slot and the argv that will run", 
 test("with no commands the panel says every Check will skip, rather than showing nothing", () => {
   const html = render(ANSWERED);
   assert.match(html, /No commands yet - every Check node will skip and pass\./);
+});
+
+// The repository box is the shared `RepoCombobox`, and these three claims are the ones that
+// are silent when they break. It has to BE the shared picker - a bare box here was the one
+// surface in the app that asked "which repository?" without offering an answer. It must stay
+// EMPTY on arrival, because "Add command" sits beside it and a path nobody typed is a
+// configuration entry nobody chose. And the sr-only label has to keep reaching the input,
+// which now needs an explicit `id`: the widget wraps the input in a div, so a `htmlFor` label
+// outside it cannot find its control by containment.
+test("the check row's repository box is the shared picker, empty, and still labelled", () => {
+  const html = render(ANSWERED);
+  assert.match(html, /<label class="sr-only" for="workflow-check-path">/);
+  assert.match(html, /<div class="combobox">/, "the repo box is the shared RepoCombobox");
+  // Asserted against the input tag itself rather than a slice of the row: the id is unique,
+  // and the row's own markup now nests a div, so a lazy `</div>` scan stops inside it.
+  const input = /<input [^>]*id="workflow-check-path"[^>]*>/.exec(html);
+  assert.ok(input, "the sr-only label needs an input carrying the id it names");
+  assert.match(input[0], /role="combobox"/, "that input is the picker's, not a bare box");
+  // The placeholder keeps saying a subdirectory is allowed - the picker offers repository
+  // roots, and the override that makes a monorepo work is a path below one of them.
+  assert.match(input[0], /placeholder="\/path\/to\/repository \(or a subdirectory\)"/);
+  assert.match(input[0], /value=""/, "nothing is pre-filled");
+  // Pre-poll it is disabled, exactly as the box it replaced was: this panel's rule is that
+  // a control is dead until the daemon has said what is stored. The widget takes that as a
+  // prop, so a dropped `disabled` reads as an editable field over an unknown config.
+  const pre = /<input [^>]*id="workflow-check-path"[^>]*>/.exec(render());
+  assert.ok(pre, "the picker is drawn before the daemon answers, for the anchors' sake");
+  assert.match(pre[0], /disabled/, "an unanswered daemon leaves the picker inert");
+});
+
+// Scope, pinned: the adjacent Allowed repositories box is a DIFFERENT flow and was left as
+// it was. Its "Add repository" button grants Live delivery, so a picker there is a decision
+// about consent, not about convenience, and it is not this change's to make.
+test("the allowlist add box is left as a plain text input", () => {
+  const card = /<section class="sc-card" data-anchor="workflows\/allowlist">(.*?)<\/section>/s
+    .exec(render(ANSWERED));
+  assert.ok(card, "the allowlist card should render");
+  assert.match(card[1]!, /id="workflow-allowlist-path"/);
+  assert.doesNotMatch(card[1]!, /combobox/, "this row is not part of the picker change");
+});
+
+// The one thing about this picker that no render can see, and the thing it is useless
+// without. The dropdown is sized from its input, and repo paths differ at the END - so
+// sharing a line with the slot select, the command box and a button left the box near its
+// 180px floor and ellipsized all 202 options at the same character. Measured in a real
+// browser at 1460px: 202 of 202 truncated on a shared line, 1 of 202 on its own. Nothing
+// else here would fail if a CSS tidy-up folded it back onto one line.
+test("the check row's repository box is given a line of its own", () => {
+  const css = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
+  const rule = /\.wf-settings-check-add > \.combobox \{([^}]*)\}/.exec(css);
+  assert.ok(rule, "the check row must size the combobox wrapper, not the input inside it");
+  assert.match(rule[1]!, /flex:\s*1 1 100%/, "a shared line re-truncates every repo path");
+  // And the row's generic 440px cap must not reach the input inside that wrapper, or the
+  // box is half-width inside a full-width wrapper and the menu hangs off the wrong rect.
+  assert.match(css, /\.wf-settings-check-add > \.combobox > \.field-input \{[^}]*max-width:\s*none/);
+});
+
+test("the picker offers allowlisted repositories first, then the workspace scan", () => {
+  // `/outside` is allowlisted from outside the workspace roots, so the scan never names it.
+  // Dropping it would leave the one repository a check can actually run in unofferable.
+  assert.deepEqual(
+    checkRepoOptions(["/ws/a", "/ws/b"], ["/outside", "/ws/b"]),
+    ["/outside", "/ws/b", "/ws/a"],
+  );
+  // Listed once. A repository in both lists appears in its allowlisted position, and a
+  // duplicate would be two rows in the dropdown that select the same path.
+  assert.deepEqual(checkRepoOptions(["/ws/a"], ["/ws/a"]), ["/ws/a"]);
+  // Either side alone still answers, which is what the daemon being unreachable looks like.
+  assert.deepEqual(checkRepoOptions([], ["/ws/a"]), ["/ws/a"]);
+  assert.deepEqual(checkRepoOptions(["/ws/a"], []), ["/ws/a"]);
 });
 
 test("the argv preview shows the split, and refuses an unfinished line", () => {

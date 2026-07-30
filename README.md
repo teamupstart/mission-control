@@ -2298,6 +2298,12 @@ honouring `\"` and `\\`, a backslash escaping the next character outside quotes,
 runs joining into one token) and **shows the parsed argv back**, so you see what the
 execution runtime will receive.
 
+The repository box beside it is the same picker the dispatch form uses. It offers the
+allowlisted repositories first - a check only runs in one of those - then every git
+repository under the workspace roots, filtered as you type. It starts empty and still takes
+a typed path, which is how a subdirectory override is entered: the list holds roots, and the
+override is a path below one.
+
 Each repository may configure a slot **once**; a second entry for the same pair is refused
 rather than silently ignored. A **subdirectory** entry beats the repository-wide one, which
 is how a monorepo gives one package its own command - and the command then runs *in that

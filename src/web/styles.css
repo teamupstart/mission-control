@@ -6003,7 +6003,10 @@ select:not([multiple]) option:focus-visible {
 }
 /* Rendered in a body-level portal with fixed positioning, so the list floats
    above the modal and never clips against a scrollable ancestor's overflow.
-   `top`/`left`/`width`/`max-height` are set inline from the input's rect. */
+   `top`/`left`/`width`/`max-height` are set inline from the input's rect. The width
+   tracks the INPUT, so a field too narrow for a repo path ellipsizes every option at
+   the same character - fix that by giving the field room, not by letting the menu grow
+   past the surface holding it (see `RepoCombobox`). */
 .combobox-list {
   position: fixed;
   z-index: 60;
@@ -12213,6 +12216,15 @@ select.foreman-model-input {
    unreadable at the panel's width, and the path box is the one that needs room. */
 .wf-settings-check-add { flex-wrap: wrap; }
 .wf-settings-check-add > .field-input { min-width: 180px; flex: 1 1 180px; }
+/* The repository box takes a LINE of its own, which the comment above already argues for:
+   the path is the field that needs room. Sharing the line left it near its 180px floor, and
+   its picker's dropdown is measured from the input - so at that width every repo path
+   ellipsized at the same character, since paths under one workspace root share their first
+   28. The wrapper carries the sizing because the input inside it is `width: 100%`; left to
+   `.wf-settings-add input`'s 440px cap, a full-width wrapper would hold a half-width input
+   and hang a half-width menu under it. */
+.wf-settings-check-add > .combobox { flex: 1 1 100%; }
+.wf-settings-check-add > .combobox > .field-input { max-width: none; }
 .wf-settings-check-add select { flex: 0 0 auto; }
 /* The parsed argv, echoed back. Monospace and tabular so the operator counts arguments
    rather than trusting a split they cannot see. */

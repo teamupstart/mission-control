@@ -98,6 +98,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     discovered("concurrent"),
     discovered("prompted"),
     discovered("auto-bound"),
+    discovered("unverified-auto"),
   ]);
   const queues = new QueueManager(registry);
   const personas = new PersonaManager(registry);
@@ -312,6 +313,27 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     reason: "manual_trigger",
   });
   assert.equal(workflows.store.activeBindingForNote("manual")?.id, "manual-binding");
+
+  const bindingCountBeforeRejectedFallback = workflows.store.listBindings().length;
+  const rejectedFallback = await request(
+    app,
+    "unverified-auto",
+    "9".repeat(64),
+    "drain",
+    null,
+    "no-mistakes",
+  );
+  assert.equal(rejectedFallback.status, 409);
+  assert.match(
+    (await rejectedFallback.json() as { error: string }).error,
+    /completion guard is no longer armed/,
+  );
+  assert.equal(
+    workflows.store.activeBindingForNote("unverified-auto"),
+    null,
+    "a rejected completion claim must not leave its fallback workflow bound",
+  );
+  assert.equal(workflows.store.listBindings().length, bindingCountBeforeRejectedFallback);
 
   const autoBound = await Promise.all([
     request(app, "auto-bound", "a".repeat(64), "drain", null, "no-mistakes"),

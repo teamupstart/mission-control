@@ -139,7 +139,7 @@ function unflooredFrTracks(value: string): string[] {
       else if (ch === "," && depth === 1 && comma === -1) comma = j;
     }
     const min = comma === -1 ? "" : value.slice(open, comma).trim();
-    if (comma === -1 || /^(?:auto|min-content|max-content)$/i.test(min)) {
+    if (comma === -1 || !isBoundedMinimum(min)) {
       remaining += value.slice(i, j);
     }
     i = j;
@@ -147,21 +147,90 @@ function unflooredFrTracks(value: string): string[] {
   return [...remaining.matchAll(/[\d.]*fr/g)].map((m) => m[0]!);
 }
 
+/**
+ * A minimum THIS STYLESHEET chose: a length, a percentage, or a math function over them.
+ *
+ * An allow-list, not a list of spellings to refuse, because the failure here is a track form nobody
+ * anticipated passing by omission. `fit-content(320px)` did exactly that against a deny-list: it
+ * names no intrinsic keyword and holds no `fr`, and it still keeps the automatic minimum, so a
+ * child that cannot break widens the track anyway. A form this does not recognise is refused, and
+ * refusing a sound one is a visible test failure with the value in the message - the direction the
+ * mistake should fall.
+ */
+function isBoundedMinimum(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (!v) return false;
+  // A math function over lengths. The keyword check guards THIS branch and only this one:
+  // everything unrecognised is already refused below by not matching, but `min(…)` and friends
+  // would otherwise swallow whatever is nested in them.
+  if (/^(?:calc|min|max|clamp)\(.*\)$/.test(v)) {
+    return !/(?:^|[\s,(])(?:auto|min-content|max-content|fit-content)(?=$|[\s,()])/.test(v);
+  }
+  return /^(?:0|-?\d*\.?\d+(?:px|rem|em|ex|ch|vw|vh|vmin|vmax|cm|mm|in|pt|pc|q|%))$/.test(v);
+}
+
+/** The first comma at paren depth 0 - `minmax(min(320px, 100%), 1fr)` splits at the second one. */
+function topLevelComma(value: string): number {
+  let depth = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+    else if (ch === "," && depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Top-level tracks of a track list, each parenthesised function kept whole. */
+function topLevelTracks(value: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of value) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+    if (/\s/.test(ch) && depth === 0) {
+      if (current) out.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+function trackIsBounded(track: string): boolean {
+  const t = track.trim();
+  if (!t || !t.endsWith(")")) return isBoundedMinimum(t);
+  if (/^repeat\(/i.test(t)) {
+    // The count is not a track: `auto-fit` there is a repetition rule, not a size.
+    const inner = t.slice("repeat(".length, -1);
+    const comma = topLevelComma(inner);
+    return comma !== -1 && hasExplicitlyBoundedTracks(inner.slice(comma + 1));
+  }
+  if (/^minmax\(/i.test(t)) {
+    // Only the MINIMUM has to be bounded; a `1fr` maximum is what the track is for.
+    const inner = t.slice("minmax(".length, -1);
+    const comma = topLevelComma(inner);
+    return comma !== -1 && isBoundedMinimum(inner.slice(0, comma));
+  }
+  return isBoundedMinimum(t);
+}
+
 function hasExplicitlyBoundedTracks(value: string): boolean {
   const normalized = value.trim();
-  const intrinsicTrack = /(?:^|[\s,(])(?:auto|min-content|max-content)(?=$|[\s,)])/i;
-  const implicitTrack =
-    /^(?:none|subgrid|masonry|inherit|initial|unset|revert|revert-layer)$/i;
-  return (
-    normalized.length > 0 &&
-    !intrinsicTrack.test(normalized) &&
-    !implicitTrack.test(normalized) &&
-    unflooredFrTracks(normalized).length === 0
-  );
+  if (/^(?:none|subgrid|masonry|inherit|initial|unset|revert|revert-layer)$/i.test(normalized)) {
+    return false;
+  }
+  const tracks = topLevelTracks(normalized);
+  return tracks.length > 0 && tracks.every(trackIsBounded);
 }
 
 test("the floor detector rejects every content-sized spelling", () => {
-  for (const minimum of ["auto", "min-content", "max-content"]) {
+  // `fit-content(x)` is the one that does not announce itself: it clamps a max-content size but
+  // keeps the automatic minimum, so it reads like a chosen width and behaves like `auto`.
+  for (const minimum of ["auto", "min-content", "max-content", "fit-content(320px)"]) {
     assert.deepEqual(
       unflooredFrTracks(`minmax(${minimum}, 1fr)`),
       ["1fr"],
@@ -180,8 +249,28 @@ test("the floor detector rejects every content-sized spelling", () => {
   }
   assert.equal(hasExplicitlyBoundedTracks("1fr"), false);
   assert.equal(hasExplicitlyBoundedTracks("none"), false);
-  assert.equal(hasExplicitlyBoundedTracks("minmax(0, 1fr)"), true);
-  assert.equal(hasExplicitlyBoundedTracks("minmax(min(320px, 100%), 1fr)"), true);
+  assert.equal(hasExplicitlyBoundedTracks(""), false);
+  // A form the allow-list does not know is refused rather than assumed sound.
+  assert.equal(hasExplicitlyBoundedTracks("somefuture-sizing(2)"), false);
+  // A math function is allowed through as a minimum, so it is the one place a content-sized
+  // keyword could still ride in nested.
+  assert.equal(hasExplicitlyBoundedTracks("minmax(min(fit-content(200px), 50%), 1fr)"), false);
+  assert.equal(hasExplicitlyBoundedTracks("minmax(max(auto, 20rem), 1fr)"), false);
+
+  // Every shape the stylesheet actually uses has to survive the allow-list, or the guard would be
+  // refusing sound rules instead of unsound ones.
+  for (const sound of [
+    "minmax(0, 1fr)",
+    "minmax(min(320px, 100%), 1fr)",
+    "repeat(2, minmax(0, 1fr))",
+    "repeat(auto-fit, minmax(min(320px, 100%), 1fr))",
+    "repeat(auto-fill, minmax(150px, 1fr))",
+    "minmax(220px, 300px) minmax(0, 1fr)",
+    "160px minmax(0, 1fr)",
+  ]) {
+    assert.equal(hasExplicitlyBoundedTracks(sound), true, `${sound} is explicitly bounded`);
+    assert.deepEqual(unflooredFrTracks(sound), [], `${sound} floors every fr track`);
+  }
 });
 
 test("no ensemble grid sizes a track to the text in it", () => {

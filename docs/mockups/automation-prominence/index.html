@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Automation prominence - Mission Control UI exploration</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root {
+    --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+    --border:#232a33; --border-soft:#1b2129;
+    --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+    --neutral:#8b94a3; --purple:#a371f7;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  body { background:#07090b; color:var(--fg); font-family:var(--sans); font-size:14px; line-height:1.5; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--working); outline-offset:2px; border-radius:4px; }
+  kbd { font-family:var(--mono); font-size:10px; padding:1px 5px; border:1px solid var(--border);
+    border-bottom-width:2px; border-radius:4px; background:var(--panel-2); color:var(--muted); }
+
+  .wrap { max-width:1100px; margin:0 auto; padding:48px 24px 80px; }
+  .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; }
+  h1 { font-size:30px; font-weight:650; letter-spacing:-.015em; margin:12px 0 10px; }
+  .stand { color:var(--muted); max-width:76ch; font-size:15px; }
+
+  h2 { font-size:15px; font-weight:650; margin:40px 0 12px; letter-spacing:.01em; }
+  h2 .g { color:var(--working); font-family:var(--mono); margin-right:8px; }
+
+  .facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:11px; }
+  .fact { background:var(--bg-2); border:1px solid var(--border-soft); border-radius:11px; padding:13px 15px;
+    font-size:13px; color:var(--muted); }
+  .fact b { color:var(--fg); display:block; margin-bottom:3px; font-size:13.5px; }
+  .fact .src { display:block; margin-top:7px; font-family:var(--mono); font-size:10px; color:var(--dim); }
+
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; }
+  .apr { display:block; text-decoration:none; background:var(--panel); border:1px solid var(--border);
+    border-radius:13px; padding:15px 16px; }
+  .apr:hover { border-color:var(--dim); }
+  .apr .num { font-family:var(--mono); font-size:11px; color:var(--working); }
+  .apr h3 { font-size:15.5px; font-weight:650; margin:4px 0 6px; }
+  .apr p { font-size:12.5px; color:var(--muted); min-height:56px; }
+  .apr .chips { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+  .chip { font-family:var(--mono); font-size:9.5px; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--dim); }
+  .chip.low { color:var(--idle); border-color:rgba(53,192,138,.4); }
+  .chip.med { color:var(--attention); border-color:rgba(246,167,51,.4); }
+  .chip.high { color:var(--danger); border-color:rgba(248,81,73,.4); }
+  .chip.teach { color:var(--purple); border-color:rgba(163,113,247,.4); }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-soft); vertical-align:top; }
+  th { font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); font-weight:500; }
+  td:first-child { white-space:nowrap; font-weight:600; }
+  td { color:var(--muted); }
+  td .y { color:var(--idle); } td .n { color:var(--danger); } td .p { color:var(--attention); }
+
+  .combo { background:var(--bg-2); border:1px solid var(--border-soft); border-radius:11px; padding:14px 16px;
+    font-size:13px; color:var(--muted); max-width:80ch; }
+  .combo b { color:var(--fg); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Mission Control - UI exploration - 2026-07-30</div>
+  <h1>Making workflows, Personas &amp; ensembles visible</h1>
+  <p class="stand">
+    Four approaches to the same complaint: the automation systems are buried, and nothing in the UI says what
+    they are for. Each mockup is a full page in the app's own visual language - open them in order, they
+    escalate from zero-chrome to full reframe.
+  </p>
+
+  <h2><span class="g">01</span>The problem, in facts from the codebase</h2>
+  <div class="facts">
+    <div class="fact"><b>One door, three systems.</b> A single <kbd>w</kbd> chord + one topbar button + a 4-tab
+      strip is the entire front door for Workflows, Personas, Ensembles and Runs.
+      <span class="src">WorkflowPage.tsx · keybindings.ts</span></div>
+    <div class="fact"><b>Discoverability inverts importance.</b> Personas (now shared by two engines) and
+      Ensembles (the expensive multi-agent feature) have zero dedicated entry points; both land on the builder tab.
+      <span class="src">docs/plans/persona-versioning-and-foreman · ensemble-ux-gaps G5</span></div>
+    <div class="fact"><b>Launch here, watch there.</b> Ensembles launch from a radiogroup in the Dispatch modal
+      header and are watched under #/workflows/ensembles - the empty state is the only pointer between them.
+      <span class="src">DispatchModal.tsx · EnsembleRuns.tsx</span></div>
+    <div class="fact"><b>Purpose lives in tooltips.</b> No surface explains what a workflow, Persona or ensemble
+      is for; ⌘K indexes only Settings; the Sitrep, backlog and command bar are blind to all three.
+      <span class="src">settings-search.ts · ReportPanel.tsx</span></div>
+  </div>
+
+  <h2><span class="g">02</span>The four approaches</h2>
+  <div class="cards">
+    <a class="apr" href="1-rail.html">
+      <span class="num">1/4</span>
+      <h3>The rail</h3>
+      <p>A slim left rail gives every system its own row, chord, live stat, and an always-visible purpose
+        sentence. The rail teaches while it navigates.</p>
+      <div class="chips"><span class="chip med">medium change</span><span class="chip teach">teaches purpose</span><span class="chip low">incremental</span></div>
+    </a>
+    <a class="apr" href="2-library.html">
+      <span class="num">2/4</span>
+      <h3>The Library</h3>
+      <p>One destination for everything you author and reuse, shelved under the operator's questions -
+        "What counts as done?" - with a live "Happening now" rail beside it.</p>
+      <div class="chips"><span class="chip high">big IA change</span><span class="chip teach">teaches purpose</span></div>
+    </a>
+    <a class="apr" href="3-line.html">
+      <span class="num">3/4</span>
+      <h3>The line</h3>
+      <p>The fleet gets a live pipeline strip - intake, backlog, working, review, decide, shipped. Workflows
+        ARE the review stage; ensembles ARE decide. Position explains purpose.</p>
+      <div class="chips"><span class="chip med">medium change</span><span class="chip teach">structural clarity</span><span class="chip low">incremental</span></div>
+    </a>
+    <a class="apr" href="4-palette.html">
+      <span class="num">4/4</span>
+      <h3>Palette &amp; pulse</h3>
+      <p>Zero new chrome: ⌘K becomes the app-wide palette over every asset and run, and the FleetPulse gains
+        a purple automation segment with a summary popover.</p>
+      <div class="chips"><span class="chip low">smallest</span><span class="chip low">two PRs</span></div>
+    </a>
+  </div>
+
+  <h2><span class="g">03</span>Comparison</h2>
+  <table>
+    <thead>
+      <tr><th>Approach</th><th>New chrome</th><th>What it fixes</th><th>What it costs</th><th>Ships incrementally</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1 · Rail</td>
+        <td>56px left rail (248px pinned)</td>
+        <td>Every system gets a door + chord; purpose sentences at the point of navigation; ambient badges during triage</td>
+        <td>A second nav axis beside the topbar; permanent width</td>
+        <td><span class="y">Yes</span> - start with 3 rows, topbar buttons migrate in later</td>
+      </tr>
+      <tr>
+        <td>2 · Library</td>
+        <td>One new page + topbar segment</td>
+        <td>The "what is this for" problem head-on; unifies the scattered catalogs (incl. Skills/Sources now in Settings); reunites launch and watch</td>
+        <td>The largest IA change - the Workflows tabs dissolve, Settings shrinks to consent switches</td>
+        <td><span class="p">Partly</span> - shelf by shelf, but the payoff needs most of it</td>
+      </tr>
+      <tr>
+        <td>3 · Line</td>
+        <td>~90px strip on the fleet</td>
+        <td>Purpose through position; automation enters the every-glance triage path; each stage opens a drawer in place</td>
+        <td>Asserts a left-to-right flow; needs server-side per-stage folds; height on every layout</td>
+        <td><span class="y">Yes</span> - strip first, drawers later</td>
+      </tr>
+      <tr>
+        <td>4 · Palette</td>
+        <td>None</td>
+        <td>Findability and reach; live state in search results; automation summary one click from the pulse</td>
+        <td>Prominence stays opt-in - fixes discovery, not visibility</td>
+        <td><span class="y">Yes</span> - two small PRs</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2><span class="g">04</span>What combines</h2>
+  <p class="combo">
+    <b>4 composes with everything</b> and is worth doing regardless - the palette index and the pulse segment are
+    small and keyboard-native. <b>1 + 4</b> is the low-risk pairing: doors and findability without moving a page.
+    <b>3</b> is the boldest single move and pairs naturally with 4 (the strip for visibility, the palette for reach).
+    <b>2</b> subsumes 1's grouping logic, so choose one of them, not both. If the appetite is a full IA pass,
+    2 + 3 + 4 together is the coherent end state: Library for what you author, the line for what is happening,
+    the palette to jump between them.
+  </p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approach 2 - The Library - Mission Control UI exploration</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root {
+    --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+    --border:#232a33; --border-soft:#1b2129;
+    --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+    --exited:#707a88; --neutral:#8b94a3; --purple:#a371f7;
+    --radius:13px;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  body { background:#07090b; color:var(--fg); font-family:var(--sans); font-size:14px; line-height:1.45; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--working); outline-offset:2px; border-radius:4px; }
+  kbd {
+    font-family:var(--mono); font-size:10px; padding:1px 5px;
+    border:1px solid var(--border); border-bottom-width:2px; border-radius:4px;
+    background:var(--panel-2); color:var(--muted); vertical-align:1px;
+  }
+
+  /* ---- proposal chrome ---- */
+  .doc { max-width:1280px; margin:0 auto; padding:42px 24px 4px; }
+  .doc .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; }
+  .doc h1 { font-size:27px; font-weight:650; letter-spacing:-.01em; margin:10px 0 8px; }
+  .doc h1 .num { font-family:var(--mono); font-weight:500; color:var(--working); margin-right:12px; }
+  .doc .stand { color:var(--muted); max-width:74ch; }
+  .doc nav { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+  .doc nav a { font-family:var(--mono); font-size:11px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--border); border-radius:999px; padding:4px 11px; }
+  .doc nav a:hover { color:var(--fg); border-color:var(--dim); }
+  .doc nav a[aria-current] { color:var(--working); border-color:var(--working); }
+
+  .frame { max-width:1280px; margin:26px auto 12px; border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; background:var(--bg); box-shadow:0 30px 80px rgba(0,0,0,.55); }
+
+  /* ---- topbar with Fleet | Library segment ---- */
+  .topbar { display:flex; align-items:center; gap:14px; height:46px; padding:0 14px;
+    background:var(--bg-2); border-bottom:1px solid var(--border); }
+  .brand { display:flex; align-items:center; gap:8px; }
+  .brand-mark { width:15px; height:15px; border-radius:4px; flex:none;
+    background:linear-gradient(135deg,var(--working),var(--idle)); }
+  .brand b { font-size:13px; font-weight:600; }
+  .seg { display:flex; border:1px solid var(--border); border-radius:9px; overflow:hidden; }
+  .seg a { font-size:12.5px; padding:5px 13px; text-decoration:none; color:var(--muted); display:flex; gap:7px; align-items:center; }
+  .seg a[aria-current] { background:var(--panel-2); color:var(--fg); font-weight:600; }
+  .tb-spacer { flex:1; }
+  .pulse { font-family:var(--mono); font-size:11px; color:var(--muted); display:flex; gap:9px; align-items:center; }
+  .pulse i { font-style:normal; color:var(--border); }
+  .p-att { color:var(--attention); }
+  .btn { font:inherit; font-size:12.5px; color:var(--fg); background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:5px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .btn:hover { border-color:var(--dim); }
+  .btn.primary { background:var(--working); border-color:var(--working); color:#04121f; font-weight:600; }
+  .ghost { background:none; border-color:transparent; color:var(--muted); }
+  .ghost:hover { color:var(--fg); border-color:var(--border); }
+
+  /* ---- the Library page ---- */
+  .lib { display:flex; min-height:660px; }
+  .shelves { flex:1; min-width:0; padding:22px 26px 30px; }
+  .lib-head { display:flex; align-items:baseline; gap:16px; margin-bottom:6px; }
+  .lib-head h2 { font-size:19px; font-weight:650; letter-spacing:-.01em; }
+  .lib-sub { color:var(--dim); font-size:12.5px; }
+  .lib-search { display:flex; align-items:center; gap:8px; margin:14px 0 8px; background:var(--panel);
+    border:1px solid var(--border); border-radius:10px; padding:8px 12px; color:var(--dim); max-width:520px; }
+  .lib-search input { flex:1; background:none; border:0; outline:0; color:var(--fg); font:inherit; }
+
+  .shelf { margin-top:26px; }
+  .shelf-eyebrow { font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); }
+  .shelf h3 { font-size:16px; font-weight:650; margin:3px 0 2px; }
+  .shelf .why { font-size:12.5px; color:var(--muted); max-width:80ch; }
+  .shelf-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:11px; margin-top:12px; }
+
+  .asset { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    padding:12px 14px; display:flex; flex-direction:column; gap:6px; min-height:104px; cursor:pointer; }
+  .asset:hover { border-color:var(--dim); }
+  .asset-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .a-glyph { color:var(--muted); font-size:13px; }
+  .a-name { font-weight:600; font-size:13.5px; flex:1; white-space:nowrap; }
+  .tag { font-family:var(--mono); font-size:9.5px; padding:2px 7px; border-radius:999px; border:1px solid var(--border); color:var(--dim); flex:none; }
+  .tag.builtin { color:var(--purple); border-color:rgba(163,113,247,.4); }
+  .tag.draft { color:var(--attention); border-color:rgba(246,167,51,.4); }
+  .tag.def { color:var(--working); border-color:rgba(74,158,255,.35); }
+  .a-desc { font-size:12px; color:var(--muted); flex:1; }
+  .a-live { font-family:var(--mono); font-size:10.5px; color:var(--dim); border-top:1px solid var(--border-soft); padding-top:7px; }
+  .a-live .ok { color:var(--idle); }
+  .a-live .warn { color:var(--attention); }
+  .a-live .run { color:var(--working); }
+  .asset.new { border-style:dashed; align-items:center; justify-content:center; color:var(--dim);
+    font-size:12.5px; gap:4px; text-align:center; }
+  .asset.new:hover { color:var(--fg); }
+  .asset.launch .a-cta { font-family:var(--mono); font-size:11px; color:var(--working); }
+
+  /* ---- "Happening now" side rail ---- */
+  .now { width:280px; flex:none; border-left:1px solid var(--border); background:var(--bg-2); padding:20px 16px; }
+  .now h4 { font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); margin-bottom:12px; }
+  .now-row { display:flex; gap:9px; padding:9px 10px; border-radius:9px; border:1px solid transparent; cursor:pointer; }
+  .now-row:hover { background:var(--panel); border-color:var(--border-soft); }
+  .ndot { width:7px; height:7px; border-radius:50%; margin-top:5px; flex:none; }
+  .nd-att { background:var(--attention); animation:pulse 1.6s ease-in-out infinite; }
+  .nd-run { background:var(--working); }
+  .nd-ok { background:var(--idle); }
+  @keyframes pulse { 50% { opacity:.35; } }
+  @media (prefers-reduced-motion: reduce) { .nd-att { animation:none; } }
+  .now-main { min-width:0; }
+  .now-title { font-size:12.5px; font-weight:600; }
+  .now-sub { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:2px; }
+  .now-sub .att { color:var(--attention); }
+  .now-sep { border-top:1px solid var(--border-soft); margin:12px 0; }
+
+  /* ---- notes ---- */
+  .notes { max-width:1280px; margin:10px auto 64px; padding:0 24px;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; }
+  .note { border:1px solid var(--border-soft); border-radius:10px; padding:11px 13px;
+    background:var(--bg-2); font-size:12.5px; color:var(--muted); }
+  .note b { color:var(--fg); font-weight:600; }
+  .note .n { font-family:var(--mono); color:var(--working); margin-right:7px; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="eyebrow">Mission Control - UI exploration - automation prominence</div>
+  <h1><span class="num">2/4</span>The Library: one home, framed by the operator's questions</h1>
+  <p class="stand">
+    A single new destination (topbar segment, <kbd>L</kbd>) gathers everything you author or configure once and
+    reuse - workflows, Personas, ensemble strategies, missions, sources - into shelves. The signature: every shelf
+    is headed by the question it answers ("What counts as done?"), with the system's noun demoted to an eyebrow.
+    Purpose is the information architecture. A "Happening now" rail keeps live runs one click away, healing the
+    launch-here-watch-there split.
+  </p>
+  <nav aria-label="Approaches">
+    <a href="index.html">Index</a>
+    <a href="1-rail.html">1 Rail</a>
+    <a href="2-library.html" aria-current="page">2 Library</a>
+    <a href="3-line.html">3 The line</a>
+    <a href="4-palette.html">4 Palette</a>
+  </nav>
+</header>
+
+<div class="frame">
+  <div class="topbar">
+    <div class="brand"><span class="brand-mark"></span><b>Mission Control</b></div>
+    <div class="seg" role="navigation" aria-label="Pages">
+      <a href="#">▦ Fleet <kbd>1</kbd></a>
+      <a href="#" aria-current="page">⌗ Library <kbd>L</kbd></a>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="pulse">12 sessions <i>·</i> <b class="p-att">2 need you</b> <i>·</i> 5 working</div>
+    <button class="btn ghost">📡 <kbd>r</kbd></button>
+    <button class="btn ghost">⚙</button>
+    <button class="btn primary">＋ Dispatch <kbd>+</kbd></button>
+  </div>
+
+  <div class="lib">
+    <div class="shelves">
+      <div class="lib-head">
+        <h2>Library</h2>
+        <span class="lib-sub">Author once, reuse everywhere. Each shelf answers one question.</span>
+      </div>
+      <label class="lib-search">⌕ <input placeholder="Search workflows, Personas, missions, settings…" aria-label="Search the library"> <kbd>⌘K</kbd></label>
+
+      <section class="shelf">
+        <div class="shelf-eyebrow">Workflows</div>
+        <h3>What counts as done?</h3>
+        <p class="why">A workflow reviews one session's work and loops it back for repair until every reviewer passes it.</p>
+        <div class="shelf-row">
+          <div class="asset">
+            <div class="asset-head"><span class="a-glyph">⌁</span><span class="a-name">No-Mistakes Review</span>
+              <span class="tag builtin">built-in</span><span class="tag def">dispatch default</span></div>
+            <div class="a-desc">Risk review, test evidence, docs - the full gate before a PR ships.</div>
+            <div class="a-live">v3 · bound to 2 sessions · <span class="ok">last round passed</span></div>
+          </div>
+          <div class="asset">
+            <div class="asset-head"><span class="a-glyph">⌁</span><span class="a-name">Docs-only gate</span>
+              <span class="tag draft">draft</span></div>
+            <div class="a-desc">Documentation Steward alone, for README and plan changes.</div>
+            <div class="a-live"><span class="warn">1 validation error</span> · never published</div>
+          </div>
+          <div class="asset new" role="button" tabindex="0">＋ New workflow<br><small>start from the pipeline editor</small></div>
+        </div>
+      </section>
+
+      <section class="shelf">
+        <div class="shelf-eyebrow">Personas</div>
+        <h3>Who does the reviewing?</h3>
+        <p class="why">A Persona is one reviewer's standards in Markdown. Workflows gate on their verdicts; ensembles judge with them.</p>
+        <div class="shelf-row">
+          <div class="asset">
+            <div class="asset-head"><span class="a-glyph">❝</span><span class="a-name">Code Risk Reviewer</span>
+              <span class="tag builtin">built-in</span></div>
+            <div class="a-desc">Hunts regressions, unsafe fallbacks, and contract drift in the diff.</div>
+            <div class="a-live">used by 2 workflows</div>
+          </div>
+          <div class="asset">
+            <div class="asset-head"><span class="a-glyph">❝</span><span class="a-name">Test Evidence Auditor</span>
+              <span class="tag builtin">built-in</span></div>
+            <div class="a-desc">Refuses claims of coverage without a run to show for it.</div>
+            <div class="a-live">used by 1 workflow · 1 judge lens</div>
+          </div>
+          <div class="asset">
+            <div class="asset-head"><span class="a-glyph">❝</span><span class="a-name">Intent Conformance Judge</span>
+              <span class="tag builtin">built-in</span></div>
+            <div class="a-desc">Did the work do what the task asked - nothing more, nothing less?</div>
+            <div class="a-live">ensemble evaluator · 1 run live</div>
+          </div>
+          <div class="asset new" role="button" tabindex="0">＋ New Persona<br><small>or import .md</small></div>
+        </div>
+      </section>
+
+      <section class="shelf">
+        <div class="shelf-eyebrow">Ensembles</div>
+        <h3>Not sure of the best approach?</h3>
+        <p class="why">Run 2-5 agents on the same task from the same commit, then keep the best. Every strategy ends with your confirmed decision.</p>
+        <div class="shelf-row">
+          <div class="asset launch">
+            <div class="asset-head"><span class="a-glyph">⧉</span><span class="a-name">Best of N</span></div>
+            <div class="a-desc">One anonymous comparison ranks the candidates; you confirm the winner.</div>
+            <div class="a-live"><span class="a-cta">Launch one →</span></div>
+          </div>
+          <div class="asset launch">
+            <div class="asset-head"><span class="a-glyph">⧉</span><span class="a-name">Panel vote</span></div>
+            <div class="a-desc">Single-lens judges score every submission; disagreement is shown, not averaged.</div>
+            <div class="a-live"><span class="a-cta">Launch one →</span></div>
+          </div>
+          <div class="asset launch">
+            <div class="asset-head"><span class="a-glyph">⧉</span><span class="a-name">Consensus</span></div>
+            <div class="a-desc">Mines agreements and open questions across attempts; promotes nothing.</div>
+            <div class="a-live"><span class="a-cta">Launch one →</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="shelf">
+        <div class="shelf-eyebrow">Missions · Sources</div>
+        <h3>Where does work come from?</h3>
+        <p class="why">Both stop at the backlog. A mission files a task on a cadence; a source pulls your real backlog in. Neither ever launches an agent.</p>
+        <div class="shelf-row">
+          <div class="asset">
+            <div class="asset-head"><span class="a-glyph">◷</span><span class="a-name">Dependency audit</span></div>
+            <div class="a-desc">Audit and bump dependencies; open a PR if anything is stale.</div>
+            <div class="a-live">Mondays 08:00 · <span class="ok">healthy</span> · next in 3d</div>
+          </div>
+          <div class="asset">
+            <div class="asset-head"><span class="a-glyph">⇊</span><span class="a-name">github-issues</span></div>
+            <div class="a-desc">mancej/ai-harness - open issues become backlog tasks.</div>
+            <div class="a-live">swept 4m ago · filed 2 tasks</div>
+          </div>
+          <div class="asset new" role="button" tabindex="0">＋ Add a mission or source</div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="now" aria-label="Happening now">
+      <h4>Happening now</h4>
+      <div class="now-row">
+        <span class="ndot nd-att"></span>
+        <div class="now-main">
+          <div class="now-title">⧉ Best of 3 · refactor-discovery</div>
+          <div class="now-sub"><span class="att">waiting on you</span> · 2/3 in · A recommended</div>
+        </div>
+      </div>
+      <div class="now-row">
+        <span class="ndot nd-run"></span>
+        <div class="now-main">
+          <div class="now-title">⌁ No-Mistakes v3 · pane-fix</div>
+          <div class="now-sub">round 2 · waiting for session</div>
+        </div>
+      </div>
+      <div class="now-row">
+        <span class="ndot nd-run"></span>
+        <div class="now-main">
+          <div class="now-title">⌁ No-Mistakes v3 · issue-412</div>
+          <div class="now-sub">round 1 · Code Risk Reviewer running</div>
+        </div>
+      </div>
+      <div class="now-sep"></div>
+      <div class="now-row">
+        <span class="ndot nd-ok"></span>
+        <div class="now-main">
+          <div class="now-title">◷ Dependency audit</div>
+          <div class="now-sub">filed a task Mon 08:00 · merged</div>
+        </div>
+      </div>
+      <div class="now-row">
+        <span class="ndot nd-ok"></span>
+        <div class="now-main">
+          <div class="now-title">⇊ github-issues</div>
+          <div class="now-sub">swept 4m ago · filed 2</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<section class="notes" aria-label="Design notes">
+  <div class="note"><span class="n">01</span><b>Questions, not nouns.</b> "What counts as done?" explains workflows
+    better than any tooltip. The jargon survives only as a mono eyebrow, so the operator still learns the system's vocabulary.</div>
+  <div class="note"><span class="n">02</span><b>One search, everything.</b> The shelf search is the app-wide ⌘K:
+    it indexes workflows, Personas, missions, sources, AND the existing settings controls - the current palette only knows Settings.</div>
+  <div class="note"><span class="n">03</span><b>Launch and watch reunited.</b> Strategy cards launch straight into
+    the ensemble dispatch flow; the "Happening now" rail is where those launches land - no more launching in one
+    feature's modal and watching in another feature's fourth tab.</div>
+  <div class="note"><span class="n">04</span><b>Cost:</b> the biggest IA change of the four. The Workflows page's
+    tabs dissolve into shelves + detail pages, and Skills / Harnesses / Task sources migrate out of Settings over time
+    (Settings keeps only their consent and blast-radius switches).</div>
+</section>
+
+</body>
+</html>

@@ -70,6 +70,45 @@ subdirectory such as `avl-hoops/packages/web` - closes the dropdown and keeps th
 submitting it stored the subdirectory rather than the repository root, so the documented
 monorepo override still works through the picker.
 
+## The dropdown must not come back by itself after a save
+
+Found in review, reproduced end to end, then fixed. `disabled` suppressed the dropdown's
+*rendering* while the row was busy, but never cleared the widget's `open` state - so the list
+returned on its own once the row was enabled again.
+
+The click-away closer does not cover it, and this row is the case that proves why: **Add
+command** can be activated from the keyboard, and a keyboard activation dispatches `click`
+with no `mousedown`, so nothing ever told the widget the pointer had left. A successful add
+then clears the path field, and an empty field matches every repository - so what came back
+was the full list, not the two or three matches that had been on screen.
+
+Reproduced by typing a repository, activating **Add command** without a pointer, and touching
+nothing afterwards. Measured at the moment the write settled: `listPresent: true`,
+**202 options**, `fieldValue: ""`, with no focus or click in between. The save itself had
+already succeeded - the new `TEST` row is visible above the dropdown:
+
+![The bug: after a successful save, a 202-option dropdown hangs open over the Run retention
+card, attached to an empty field nobody focused](04-reopen-bug.png)
+
+Fixed by closing the list when the row goes busy rather than only hiding it
+(`useEffect(() => { if (disabled) setOpen(false) }, [disabled])`). The render-time `!disabled`
+guard stays, but only to cover the single render before that effect lands. Same sequence
+after the fix - `listPresent: false`, same successful write:
+
+![Fixed: the same sequence leaves the row clean, with the saved check listed and no
+dropdown](05-reopen-fixed.png)
+
+Seven regression checks were re-run in the browser against the fix, because the effect fires
+on every render where `disabled` is true and the obvious way to get this wrong is a dropdown
+that will no longer open at all: focus opens the list (202), typing filters (3), picking lands
+the value and closes, Escape closes only the list, a later edit reopens it, a subdirectory
+still submits as typed, and the dispatch modal's picker still opens with unchanged geometry
+(602 px list = 602 px input).
+
+This behaviour is not reachable from a `renderToStaticMarkup` test - it is a state
+transition across an effect, and this repo has no DOM test environment by design - so it is
+pinned by the browser evidence above rather than by a unit test.
+
 ## The row at rest
 
 ![The Check commands row unfocused: the repository field full-width on its own line, with

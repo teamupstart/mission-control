@@ -72,8 +72,9 @@ export function RepoCombobox({
   const q = value.trim().toLowerCase();
   const matches = q ? repos.filter((r) => r.toLowerCase().includes(q)) : repos;
   // Nothing to offer once the text already equals the only remaining match. `disabled` is
-  // read here as well as on the input, because a row that goes busy WHILE the list is open
-  // would otherwise leave a live dropdown floating over a field that no longer takes input.
+  // read here too, but only to cover the single render before the effect below lands: it
+  // stops a live dropdown being painted over a field that has just stopped taking input.
+  // Suppressing the render is NOT what keeps it shut - see that effect.
   const showList =
     open && !disabled && matches.length > 0 && !(matches.length === 1 && matches[0] === value);
 
@@ -111,6 +112,21 @@ export function RepoCombobox({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
+
+  // A row that goes busy CLOSES the list, rather than merely stopping it being drawn.
+  // Hiding it on `disabled` alone leaves `open` true underneath, so the dropdown comes
+  // back by itself the moment the row is enabled again - over a field nobody touched.
+  //
+  // The click-away closer above does not cover this, and the settings row is the case
+  // that proves it: its submit button can be reached by the KEYBOARD, and an activation
+  // that way dispatches click with no mousedown, so nothing tells this widget the pointer
+  // ever left. Measured before this effect existed: type a repo, activate Add command
+  // without a pointer, and when the write lands the list reappears with all 202 options -
+  // full width, because a successful add clears the field and an empty field matches
+  // every repo.
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
 
   // Keep the highlighted row in range as the match list shrinks.
   useEffect(() => {

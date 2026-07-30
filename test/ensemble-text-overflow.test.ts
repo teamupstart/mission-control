@@ -139,13 +139,50 @@ function unflooredFrTracks(value: string): string[] {
       else if (ch === "," && depth === 1 && comma === -1) comma = j;
     }
     const min = comma === -1 ? "" : value.slice(open, comma).trim();
-    // An `auto` minimum is the request this test exists to refuse; anything else is a real floor,
-    // so the whole `minmax()` is dropped from what remains to be checked.
-    if (comma === -1 || /^auto$/i.test(min)) remaining += value.slice(i, j);
+    if (comma === -1 || /^(?:auto|min-content|max-content)$/i.test(min)) {
+      remaining += value.slice(i, j);
+    }
     i = j;
   }
   return [...remaining.matchAll(/[\d.]*fr/g)].map((m) => m[0]!);
 }
+
+function hasExplicitlyBoundedTracks(value: string): boolean {
+  const normalized = value.trim();
+  const intrinsicTrack = /(?:^|[\s,(])(?:auto|min-content|max-content)(?=$|[\s,)])/i;
+  const implicitTrack =
+    /^(?:none|subgrid|masonry|inherit|initial|unset|revert|revert-layer)$/i;
+  return (
+    normalized.length > 0 &&
+    !intrinsicTrack.test(normalized) &&
+    !implicitTrack.test(normalized) &&
+    unflooredFrTracks(normalized).length === 0
+  );
+}
+
+test("the floor detector rejects every content-sized spelling", () => {
+  for (const minimum of ["auto", "min-content", "max-content"]) {
+    assert.deepEqual(
+      unflooredFrTracks(`minmax(${minimum}, 1fr)`),
+      ["1fr"],
+      `${minimum} is content-sized and cannot floor an fr track`,
+    );
+    assert.equal(
+      hasExplicitlyBoundedTracks(minimum),
+      false,
+      `${minimum} is not an explicitly bounded stack track`,
+    );
+    assert.equal(
+      hasExplicitlyBoundedTracks(`repeat(1, ${minimum})`),
+      false,
+      `${minimum} stays content-sized when nested in repeat()`,
+    );
+  }
+  assert.equal(hasExplicitlyBoundedTracks("1fr"), false);
+  assert.equal(hasExplicitlyBoundedTracks("none"), false);
+  assert.equal(hasExplicitlyBoundedTracks("minmax(0, 1fr)"), true);
+  assert.equal(hasExplicitlyBoundedTracks("minmax(min(320px, 100%), 1fr)"), true);
+});
 
 test("no ensemble grid sizes a track to the text in it", () => {
   const offenders: string[] = [];
@@ -194,7 +231,7 @@ test("the stacks that hold a run's own strings declare the floor rather than inh
     )
       .map((rule) => declaration(rule, "grid-template-columns"))
       .filter((v): v is string => v !== null);
-    return declared.length === 0 || declared.some((v) => unflooredFrTracks(v).length > 0);
+    return declared.length === 0 || declared.some((v) => !hasExplicitlyBoundedTracks(v));
   });
   assert.deepEqual(
     missing,

@@ -32,6 +32,7 @@
     "start": "tsx src/server/index.ts",
     "foreman": "tsx src/server/foreman/worker.ts",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint src hooks test scripts",
     "test": "node --test --test-concurrency=2 --import tsx 'test/**/*.test.ts'",
     "test:electron": "node --test --import tsx test/workflow-builder-electron.test.ts",
     "init": "node scripts/init.mjs",
@@ -73,6 +74,7 @@
     "electron": "^43.1.0",
     "electron-builder": "^26.15.3",
     "electronmon": "^2.0.4",
+    "oxlint": "^1.76.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.5"

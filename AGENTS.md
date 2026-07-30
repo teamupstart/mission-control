@@ -1030,7 +1030,7 @@ Do not report a UI change as working on the strength of the diff.
 
 CI runs `npm run typecheck`, `npm test`, `npm run build`, and the bundle smoke check on Node 24
 (the supported floor) and Node 26 (the current release). The test runner uses two concurrent,
-isolated test-file workers; there is no linter.
+isolated test-file workers; lint (`make lint`, oxlint) is local-only, not a CI gate.
 
 That matrix runs on **Blacksmith** (`blacksmith-4vcpu-ubuntu-2404`), and the two things to know
 before editing `.github/workflows/ci.yml` are the size and the actions. The size is 4 vCPU by

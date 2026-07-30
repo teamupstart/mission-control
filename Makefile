@@ -18,7 +18,7 @@ MATCH := src/server/index.ts
 FOREMAN_MATCH := src/server/foreman/worker.ts
 
 .DEFAULT_GOAL := help
-.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs build app install-app icons test check hooks setup
+.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs build app install-app icons test lint check smoke hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -102,8 +102,11 @@ icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-con
 test: ## Run the full test suite
 	npm test
 
-check: ## Typecheck + tests
-	npm run typecheck && npm test
+lint: ## Lint src, hooks, test, scripts (oxlint)
+	npm run lint
+
+check: ## Typecheck
+	npm run typecheck
 
 smoke: ## Boot the built bundles to prove they run (needs `make build` first)
 	npm run smoke

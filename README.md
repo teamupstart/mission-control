@@ -4432,6 +4432,7 @@ npm test               # full test suite, including real Electron GUI geometry c
 npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
 npm run smoke          # boot the built bundles and check they actually run (after build)
 npm run typecheck      # tsc --noEmit
+npm run lint           # oxlint over src, hooks, test, scripts (also: make lint)
 npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (terminal model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)

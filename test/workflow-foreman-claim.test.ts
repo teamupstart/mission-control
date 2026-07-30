@@ -7,6 +7,7 @@ import {
   drainCompletionClaim,
   promptedCompletionClaim,
   tryWorkflowCompletionClaim,
+  withNoMistakesFallback,
 } from "../src/server/foreman/workflow-claim.ts";
 
 const queue: SessionQueue = {
@@ -59,7 +60,14 @@ test("drain and prompted markers are stable proof hashes and change with a re-ar
   assert.equal(prompted.completionKind, "prompted");
   assert.equal(prompted.marker.length, 64);
   assert.equal(prompted.expectedGoal, "repair");
+  assert.equal(prompted.fallbackWorkflow, null);
   assert.equal(drain.expectedGoal, null);
+  assert.equal(drain.fallbackWorkflow, null);
+  assert.equal(withNoMistakesFallback(drain, false), drain);
+  assert.equal(
+    withNoMistakesFallback(drain, true).fallbackWorkflow,
+    "no-mistakes",
+  );
 });
 
 test("claimed suppresses, explicit false falls through, and HTTP failure is fail closed", async () => {

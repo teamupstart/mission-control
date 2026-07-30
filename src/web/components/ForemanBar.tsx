@@ -28,10 +28,8 @@ const MODE_HINT: Record<"dry-run" | "semi-auto" | "live", string> = {
 
 const WRAPUP_HINT: Record<"ask" | "no-mistakes" | "pr", string> = {
   ask: "Show the Ship it? card and let you choose what happens next",
-  // Named without a sigil: this setting is Foreman-wide, and the gate's invocation is
-  // spelled per harness (`wrapupNoMistakes`), so `/no-mistakes` here promised every
-  // session Claude's command.
-  "no-mistakes": "Run the no-mistakes gate automatically, in whichever way that session's agent runs a skill",
+  "no-mistakes":
+    "After Foreman verifies the original work, hand off to its Foreman Complete workflow or bind No-Mistakes Review when none exists",
   pr: "Skip the gate: commit, push, open a PR, then wait for green CI",
 };
 

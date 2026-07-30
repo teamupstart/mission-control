@@ -3088,20 +3088,26 @@ The action is the same whichever trigger fired:
 | Then | What it does |
 |---|---|
 | **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
-| **Run no-mistakes** | types the gate instruction into the session itself, spelled for that session's agent |
+| **Run no-mistakes** | after Foreman verifies the original work, hands completion to an existing **Foreman Complete** binding; if there is no active binding, it binds the current built-in **No-Mistakes Review** workflow and runs that |
 | **Straight to PR** | explicitly skip no-mistakes; use git and `gh` directly to commit, push, and open a PR - then merge the default branch in, resolve conflicts, and follow CI until every check passes |
 
-The two automated actions type something that *pushes*, so they only fire in **live** mode
-on an **allowlisted** repo - until then Foreman asks, and the popover says so rather than
-letting a selected radio quietly do nothing.
+The two automated actions can ultimately *push*, so they only fire in **live** mode on an
+**allowlisted** repo - until then Foreman asks, and the popover says so rather than letting
+a selected radio quietly do nothing. An existing Workflow binding is never replaced: a
+**Foreman Complete** binding owns the completion, while a **Manual** binding stays manual
+and Foreman raises the **Ship it?** card. The No-Mistakes Review fallback is created only
+for an unbound conversation. Binding and completion claiming are durable and idempotent,
+so retries converge on one binding and one run instead of launching the review twice.
+The review starts either way; its repair delivery is **Live** only when Workflows Live
+separately authorizes that repository, and otherwise stays in **Preview** for approval.
 
-**The gate instruction is spelled per harness**: `/no-mistakes` for Claude and a
+The manual **Run no-mistakes** button on the **Ship it?** card still invokes the skill in
+the session itself. **The gate instruction is spelled per harness**: `/no-mistakes` for Claude and a
 `$no-mistakes` instruction with a trailing clause for Codex. The clause is load-bearing
 rather than decorative - a bare `$name` at the end of Codex's composer leaves its
 skill-mention popup open, and that popup swallows the Enter that would have sent the
 message. Pi's invocation is `/skill:no-mistakes`, though Pi work queues are not currently
-supported. The same rule reaches the **Ship it?** card, so the button and the automation
-send identical bytes.
+supported.
 
 **Verification is evidence-only by design.** It reads the diff and the transcript - it does
 not run tests. no-mistakes remains the gate that actually executes things; Foreman's job

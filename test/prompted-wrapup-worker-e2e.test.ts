@@ -552,7 +552,7 @@ test("a daemon blip on the queue read never double-fires a wrap-up, and never st
   );
 });
 
-test("a verified prompt fires exactly once, retiring the episode BEFORE it types", async () => {
+test("a verified prompt binds the no-mistakes workflow exactly once instead of typing the skill", async () => {
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
   const session = mkSession(repo);
@@ -598,7 +598,14 @@ test("a verified prompt fires exactly once, retiring the episode BEFORE it types
       };
     }
     if (p === "/api/sessions/s1/workflow-completion") {
-      return { status: 200, json: { claimed: false, reason: "no_binding" } };
+      // The real daemon retires the prompted guard in the same transaction that claims
+      // the completion. Mirror that durable effect so later worker ticks see the episode
+      // as spent and prove this path does not request a second run.
+      queue = { ...queue, promptedGoal: GOAL };
+      return {
+        status: 200,
+        json: { claimed: true, runId: "run-no-mistakes", submissionId: "sub-1", state: "started" },
+      };
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
@@ -617,21 +624,24 @@ test("a verified prompt fires exactly once, retiring the episode BEFORE it types
   const retires = stub.calls.filter((c) => c.path.endsWith("/wrapup/prompted"));
   const claims = stub.calls.filter((c) => c.path.endsWith("/workflow-completion"));
   assert.equal(claims.length, 1, `expected exactly one workflow claim\n${out}`);
-  assert.equal(injects.length, 1, `expected exactly one fire\n${out}`);
-  assert.equal(retires.length, 1, `expected exactly one retire\n${out}`);
-  assert.deepEqual(injects[0]?.body, { text: "/no-mistakes", origin: "foreman" }, out);
-  assert.deepEqual(retires[0]?.body, { goal: GOAL }, out);
-
-  // THE ORDERING IS THE SAFETY ARGUMENT: `/no-mistakes` pushes and opens a PR, so a
-  // crash between typing and recording must leave the trigger DISARMED. That only
-  // holds if the retire lands first.
-  assert.ok(
-    stub.calls.indexOf(retires[0]!) < stub.calls.indexOf(injects[0]!),
-    `typed before retiring the episode\n${out}`,
+  assert.equal(injects.length, 0, `typed the skill after the workflow claimed completion\n${out}`);
+  assert.equal(retires.length, 0, `retired outside the daemon's claim transaction\n${out}`);
+  assert.equal(
+    (claims[0]?.body as { fallbackWorkflow?: string } | undefined)?.fallbackWorkflow,
+    "no-mistakes",
+    out,
   );
 
-  // The auto-send path deliberately does NOT stamp `wrapupAskedAt` - a Ship it? card
-  // must never offer to send an instruction the agent already has.
+  // The binding request is downstream of Foreman's proof reads and verifier. It is not
+  // an eager setting-side effect on every idle unbound conversation.
+  const transcript = stub.calls.find((c) => c.path === "/api/sessions/s1/transcript");
+  assert.ok(transcript);
+  assert.ok(
+    stub.calls.indexOf(transcript) < stub.calls.indexOf(claims[0]!),
+    `claimed before gathering completion evidence\n${out}`,
+  );
+
+  // The claimed path raises no Ship it? recovery card: the workflow owns this completion.
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
 });

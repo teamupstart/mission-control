@@ -61,6 +61,7 @@ import {
   drainCompletionClaim,
   promptedCompletionClaim,
   tryWorkflowCompletionClaim,
+  withNoMistakesFallback,
 } from "./workflow-claim.ts";
 
 /**
@@ -962,6 +963,9 @@ async function processTarget(
   }
 
   if (action.kind === "ask-wrapup" || action.kind === "auto-wrapup") {
+    const useNoMistakesFallback = action.kind === "auto-wrapup"
+      && cfg.wrapup === "no-mistakes"
+      && foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot);
     const [diff, transcriptAnchor] = await Promise.all([
       client.diff(fresh.id).catch(() => null),
       client.transcriptSize(fresh.id).catch(() => null),
@@ -969,7 +973,10 @@ async function processTarget(
     const claim = await tryWorkflowCompletionClaim(
       client,
       fresh.id,
-      drainCompletionClaim(action.queue, diff?.ok ? diff.headSha : null, transcriptAnchor),
+      withNoMistakesFallback(
+        drainCompletionClaim(action.queue, diff?.ok ? diff.headSha : null, transcriptAnchor),
+        useNoMistakesFallback,
+      ),
     );
     if (claim.kind === "failed") {
       log(`${fresh.name}: workflow completion claim failed closed (${claim.error})`);
@@ -978,6 +985,27 @@ async function processTarget(
     if (claim.kind === "claimed") {
       log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
       return true;
+    }
+    if (useNoMistakesFallback) {
+      if (claim.result.reason === "no_binding") {
+        // A current daemon creates the built-in binding before it can answer this way.
+        // Treat an older or inconsistent daemon as unavailable rather than falling back
+        // to the legacy skill invocation and launching a second shipping system.
+        log(`${fresh.name}: no-mistakes workflow fallback was not bound; held for retry`);
+        return false;
+      }
+      // A Manual binding is an existing operator choice and must neither be replaced nor
+      // auto-submitted. Degrade to the same Ship it? card dry-run uses; do not also type
+      // the no-mistakes skill beside a workflow the operator deliberately left Manual.
+      const outcome = await applyQueueAction(
+        queueActions(client, cfg),
+        fresh,
+        { kind: "ask-wrapup", queue: action.queue },
+        qcfg,
+        Date.now(),
+      );
+      log(`${fresh.name}: existing workflow is Manual - asked about wrapping up`);
+      return outcome.kind !== "noop";
     }
   }
 
@@ -1169,17 +1197,22 @@ async function processPromptedWrapup(
     result.verdict.complete
     && !result.verdict.gaps.some((gap) => gap.severity === "blocking")
   ) {
+    const useNoMistakesFallback = cfg.wrapup === "no-mistakes"
+      && foremanMayActLive(cfg, session.cwd, session.repoRoot);
     const transcriptAnchor = await client.transcriptSize(session.id).catch(() => null);
     const claim = await tryWorkflowCompletionClaim(
       client,
       session.id,
-      promptedCompletionClaim({
-        noteKey: noteKeyOf(session),
-        goal: candidate.goal,
-        headSha: diff.headSha,
-        transcriptAnchor,
-        summary: result.verdict.summary,
-      }),
+      withNoMistakesFallback(
+        promptedCompletionClaim({
+          noteKey: noteKeyOf(session),
+          goal: candidate.goal,
+          headSha: diff.headSha,
+          transcriptAnchor,
+          summary: result.verdict.summary,
+        }),
+        useNoMistakesFallback,
+      ),
     );
     if (claim.kind === "failed") {
       log(`${session.name}: workflow completion claim failed closed (${claim.error})`);
@@ -1187,6 +1220,30 @@ async function processPromptedWrapup(
     }
     if (claim.kind === "claimed") {
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
+      return true;
+    }
+    if (useNoMistakesFallback && claim.result.reason === "no_binding") {
+      log(`${session.name}: no-mistakes workflow fallback was not bound; held for retry`);
+      return false;
+    }
+    if (useNoMistakesFallback && claim.result.reason === "manual_trigger") {
+      // Preserve the active Manual binding and surface the boundary to the human. Passing
+      // `false` below selects `ask-wrapup`, which retires this verified episode without
+      // typing the no-mistakes skill alongside that binding.
+      const plan = planPromptedWrapup(
+        candidate.goal,
+        result.verdict,
+        pcfg,
+        false,
+        session.agent,
+      );
+      if (!(await retirePromptedEpisode(client, session, plan.goal))) return false;
+      try {
+        await client.markWrapupAsked(session.id, { clearAnswer: true });
+        log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
+      } catch (err) {
+        log(`${session.name}: prompted work looks complete but the ask could not be raised (${String(err)})`);
+      }
       return true;
     }
   }

@@ -3,6 +3,7 @@ import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
 import type {
   CreateWorkflow,
@@ -1638,7 +1639,40 @@ export class WorkflowManager {
     if (!session || session.state === "exited") {
       throw new Error("The completion target session is not live");
     }
-    const binding = this.store.activeBindingForNote(noteKeyFor(session));
+    let binding = this.store.activeBindingForNote(noteKeyFor(session));
+    if (!binding && claim.fallbackWorkflow === "no-mistakes") {
+      const workflow = this.get(NO_MISTAKES_REVIEW_WORKFLOW_ID);
+      const versionId = workflow?.workflow.currentVersionId ?? null;
+      if (!workflow || workflow.workflow.archivedAt !== null || !versionId) {
+        throw new Error("The built-in No-Mistakes Review workflow is unavailable");
+      }
+      const workflowConfig = getWorkflowConfig();
+      const liveDeliveryAuthorized = workflowConfig.liveEnabled
+        && repoAllowlisted(session.cwd, session.repoRoot, workflowConfig.repoAllowlist);
+      const created = this.createBinding({
+        workflowVersionId: versionId,
+        sessionId: session.id,
+        // The completion claim is already the verified Foreman boundary. Pin this explicitly
+        // even if a later built-in version changes its ordinary binding default.
+        triggerMode: "foreman_complete",
+        // Foreman's setting authorizes reaching this review boundary, not Workflow repair
+        // prompts. Preserve the built-in's Live default only when Workflows Live separately
+        // authorizes this repository; otherwise the review still runs and any repair is
+        // presented as Preview instead of failing to bind at all.
+        deliveryMode: liveDeliveryAuthorized ? "live" : "preview",
+      }, now);
+      if (created.ok) {
+        binding = created.value;
+      } else {
+        // A concurrent claim or operator bind may have won the unique active-note-key slot.
+        // Re-read the winner instead of retrying the insert. The completion marker below is
+        // independently idempotent, so both requests converge on one binding and one run.
+        binding = this.store.activeBindingForNote(noteKeyFor(session));
+        if (!binding) {
+          throw new Error(`No-Mistakes Review could not be bound: ${created.message}`);
+        }
+      }
+    }
     if (!binding) return { claimed: false, reason: "no_binding" };
     if (binding.triggerMode !== "foreman_complete") {
       return { claimed: false, reason: "manual_trigger" };

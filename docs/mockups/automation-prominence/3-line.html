@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approach 3 - The line - Mission Control UI exploration</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root {
+    --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+    --border:#232a33; --border-soft:#1b2129;
+    --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+    --exited:#707a88; --neutral:#8b94a3; --purple:#a371f7;
+    --radius:13px;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  body { background:#07090b; color:var(--fg); font-family:var(--sans); font-size:14px; line-height:1.45; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--working); outline-offset:2px; border-radius:4px; }
+  kbd {
+    font-family:var(--mono); font-size:10px; padding:1px 5px;
+    border:1px solid var(--border); border-bottom-width:2px; border-radius:4px;
+    background:var(--panel-2); color:var(--muted); vertical-align:1px;
+  }
+
+  /* ---- proposal chrome ---- */
+  .doc { max-width:1280px; margin:0 auto; padding:42px 24px 4px; }
+  .doc .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; }
+  .doc h1 { font-size:27px; font-weight:650; letter-spacing:-.01em; margin:10px 0 8px; }
+  .doc h1 .num { font-family:var(--mono); font-weight:500; color:var(--working); margin-right:12px; }
+  .doc .stand { color:var(--muted); max-width:74ch; }
+  .doc nav { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+  .doc nav a { font-family:var(--mono); font-size:11px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--border); border-radius:999px; padding:4px 11px; }
+  .doc nav a:hover { color:var(--fg); border-color:var(--dim); }
+  .doc nav a[aria-current] { color:var(--working); border-color:var(--working); }
+
+  .frame { max-width:1280px; margin:26px auto 12px; border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; background:var(--bg); box-shadow:0 30px 80px rgba(0,0,0,.55); }
+
+  /* ---- topbar ---- */
+  .topbar { display:flex; align-items:center; gap:14px; height:46px; padding:0 14px;
+    background:var(--bg-2); border-bottom:1px solid var(--border); }
+  .brand { display:flex; align-items:center; gap:8px; }
+  .brand-mark { width:15px; height:15px; border-radius:4px; flex:none;
+    background:linear-gradient(135deg,var(--working),var(--idle)); }
+  .brand b { font-size:13px; font-weight:600; }
+  .filter { display:flex; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:4px 9px; color:var(--dim); font-size:12px; }
+  .filter input { background:none; border:0; outline:0; color:var(--fg); font:inherit; width:110px; }
+  .tb-spacer { flex:1; }
+  .btn { font:inherit; font-size:12.5px; color:var(--fg); background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:5px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .btn:hover { border-color:var(--dim); }
+  .btn.primary { background:var(--working); border-color:var(--working); color:#04121f; font-weight:600; }
+  .ghost { background:none; border-color:transparent; color:var(--muted); }
+  .ghost:hover { color:var(--fg); border-color:var(--border); }
+
+  /* ---- the line (the proposal) ---- */
+  .line-wrap { padding:16px 16px 4px; }
+  .line { display:flex; align-items:stretch; gap:0; }
+  .stage { flex:1; min-width:0; background:var(--panel); border:1px solid var(--border); border-radius:12px;
+    padding:10px 13px; cursor:pointer; position:relative; }
+  .stage:hover { border-color:var(--dim); }
+  .stage .top { display:flex; align-items:baseline; gap:8px; }
+  .stage .g { color:var(--muted); font-size:13px; }
+  .stage .nm { font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+  .stage .ct { font-family:var(--mono); font-size:17px; font-weight:600; margin-left:auto; }
+  .stage .sub { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stage.sel { border-color:var(--attention); box-shadow:0 0 0 1px rgba(246,167,51,.25); }
+  .stage.sel .nm, .stage.sel .ct { color:var(--attention); }
+  .stage.sel::after { content:""; position:absolute; left:50%; bottom:-13px; transform:translateX(-50%);
+    border:7px solid transparent; border-top-color:var(--attention); }
+  .stage .att { color:var(--attention); }
+  .stage .ok { color:var(--idle); }
+  .stage .run { color:var(--working); }
+
+  .wire { flex:none; width:34px; position:relative; align-self:center; height:2px; background:var(--border); }
+  .wire::after { content:""; position:absolute; top:-2px; left:0; width:6px; height:6px; border-radius:50%;
+    background:var(--working); animation:flow 2.6s linear infinite; }
+  .wire.w2::after { animation-delay:.9s; }
+  .wire.w3::after { animation-delay:1.6s; }
+  .wire.hot::after { background:var(--attention); }
+  @keyframes flow { from { left:0; opacity:0; } 15% { opacity:1; } 85% { opacity:1; } to { left:calc(100% - 6px); opacity:0; } }
+  @media (prefers-reduced-motion: reduce) { .wire::after { animation:none; display:none; } }
+
+  /* ---- the open drawer (Decide stage) ---- */
+  .drawer { margin:16px 16px 0; border:1px solid var(--border); border-radius:12px; background:var(--bg-2); overflow:hidden; }
+  .drawer-head { display:flex; align-items:center; gap:10px; padding:11px 16px; border-bottom:1px solid var(--border-soft); }
+  .drawer-head .t { font-weight:650; font-size:14px; }
+  .drawer-head .s { font-family:var(--mono); font-size:11px; color:var(--attention); }
+  .drawer-head .sp { flex:1; }
+  .cand-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; padding:14px 16px; }
+  .cand { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:11px 13px; }
+  .cand.reco { border-color:rgba(53,192,138,.55); }
+  .cand-head { display:flex; align-items:center; gap:8px; }
+  .cand-head b { font-size:13px; }
+  .score { font-family:var(--mono); font-size:14px; margin-left:auto; }
+  .cand.reco .score { color:var(--idle); }
+  .cand .who { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:3px; }
+  .cand .note { font-size:12px; color:var(--muted); margin-top:7px; }
+  .cand.out { opacity:.55; }
+  .tagline { font-family:var(--mono); font-size:9.5px; padding:2px 7px; border-radius:999px; }
+  .tag-reco { color:var(--idle); border:1px solid rgba(53,192,138,.4); }
+  .tag-out { color:var(--exited); border:1px solid var(--border); }
+  .drawer-foot { display:flex; gap:9px; padding:0 16px 14px; }
+
+  /* ---- abbreviated board beneath ---- */
+  .board { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; padding:16px; }
+  .col-head { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin-bottom:8px; }
+  .sw { width:9px; height:9px; border-radius:3px; }
+  .col-head .ct { font-family:var(--mono); font-size:11px; margin-left:auto; color:var(--dim); }
+  .tile { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:9px 11px; margin-bottom:8px;
+    border-left:2px solid var(--agent-accent,var(--neutral)); }
+  .tile b { font-size:12.5px; }
+  .tile .tf { font-family:var(--mono); font-size:9.5px; color:var(--dim); margin-top:3px; display:flex; gap:8px; flex-wrap:wrap; }
+  .tf .f-ens { color:var(--purple); }
+  .tf .f-wf { color:var(--working); }
+  .tf .f-att { color:var(--attention); }
+
+  /* ---- notes ---- */
+  .notes { max-width:1280px; margin:10px auto 64px; padding:0 24px;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; }
+  .note { border:1px solid var(--border-soft); border-radius:10px; padding:11px 13px;
+    background:var(--bg-2); font-size:12.5px; color:var(--muted); }
+  .note b { color:var(--fg); font-weight:600; }
+  .note .n { font-family:var(--mono); color:var(--working); margin-right:7px; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="eyebrow">Mission Control - UI exploration - automation prominence</div>
+  <h1><span class="num">3/4</span>The line: purpose through position</h1>
+  <p class="stand">
+    The boldest reframe: the fleet gets a permanent strip that draws the life of a task as a literal line -
+    intake, backlog, working, review, decide, shipped. Workflows stop being a page you visit; they ARE the
+    review stage. Ensembles ARE the decide stage. Missions and sources ARE intake. Each stage is live
+    (counts, the one sentence that matters) and clicking it opens a drawer - shown here on Decide, where an
+    ensemble is waiting on you. The board continues underneath, untouched.
+  </p>
+  <nav aria-label="Approaches">
+    <a href="index.html">Index</a>
+    <a href="1-rail.html">1 Rail</a>
+    <a href="2-library.html">2 Library</a>
+    <a href="3-line.html" aria-current="page">3 The line</a>
+    <a href="4-palette.html">4 Palette</a>
+  </nav>
+</header>
+
+<div class="frame">
+  <div class="topbar">
+    <div class="brand"><span class="brand-mark"></span><b>Mission Control</b></div>
+    <label class="filter">⌕ <input placeholder="Filter (/)" aria-label="Filter sessions"></label>
+    <div class="tb-spacer"></div>
+    <button class="btn ghost">📡 <kbd>r</kbd></button>
+    <button class="btn ghost">⚙</button>
+    <button class="btn primary">＋ Dispatch <kbd>+</kbd></button>
+  </div>
+
+  <div class="line-wrap" aria-label="The line">
+    <div class="line">
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">⇊◷</span><span class="nm">Intake</span><span class="ct">2</span></div>
+        <div class="sub">github-issues swept 4m · next mission Mon 08:00</div>
+      </div>
+      <span class="wire"></span>
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">☰</span><span class="nm">Backlog</span><span class="ct">4</span></div>
+        <div class="sub">next up: Fix pane focus stealing</div>
+      </div>
+      <span class="wire w2"></span>
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">▶</span><span class="nm">Working</span><span class="ct">5</span></div>
+        <div class="sub"><span class="att">1 needs you</span> · 4 running clean</div>
+      </div>
+      <span class="wire w3"></span>
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">⌁</span><span class="nm">Review</span><span class="ct run">2</span></div>
+        <div class="sub">No-Mistakes v3 ×2 · round 2 on pane-fix</div>
+      </div>
+      <span class="wire hot"></span>
+      <div class="stage sel" role="button" tabindex="0" aria-expanded="true">
+        <div class="top"><span class="g">⧉</span><span class="nm">Decide</span><span class="ct">1</span></div>
+        <div class="sub"><span class="att">Best of 3 · waiting on you</span></div>
+      </div>
+      <span class="wire"></span>
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">⚑</span><span class="nm">Shipped</span><span class="ct ok">2</span></div>
+        <div class="sub">this week · last: pane-focus #241 merged</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer" aria-label="Decide drawer">
+    <div class="drawer-head">
+      <span class="t">⧉ Best of 3 · Refactor session discovery</span>
+      <span class="s">waiting on you · 22m</span>
+      <span class="sp"></span>
+      <button class="btn">Compare diffs</button>
+      <button class="btn">Open full dossier</button>
+      <button class="btn primary">Decide…</button>
+    </div>
+    <div class="cand-row">
+      <div class="cand reco">
+        <div class="cand-head"><b>Candidate A</b><span class="tagline tag-reco">recommended</span><span class="score">8.2</span></div>
+        <div class="who">codex · gpt-5.3 · +412 −208 · 14 files</div>
+        <div class="note">Clean sweep behind one registry call; adds the missing eviction test.</div>
+      </div>
+      <div class="cand">
+        <div class="cand-head"><b>Candidate B</b><span class="score">7.1</span></div>
+        <div class="who">claude · sonnet · +689 −455 · 22 files</div>
+        <div class="note">Broader refactor; one adapter test now flaky under the 2-core runner.</div>
+      </div>
+      <div class="cand out">
+        <div class="cand-head"><b>Candidate C</b><span class="tagline tag-out">withdrawn</span></div>
+        <div class="who">claude · opus · withdrew at wave 1</div>
+        <div class="note">Hit the same rollout-scan cap and asked to stand down.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="board">
+    <div>
+      <div class="col-head"><span class="sw" style="background:var(--attention)"></span> needs you <span class="ct">1</span></div>
+      <div class="tile" style="--agent-accent:#c678dd"><b>docs-sweep</b>
+        <div class="tf"><span class="f-wf">⌁ waiting for session</span><span>◷ Dependency audit</span></div></div>
+    </div>
+    <div>
+      <div class="col-head"><span class="sw" style="background:var(--working)"></span> working <span class="ct">5</span></div>
+      <div class="tile" style="--agent-accent:#d97757"><b>pane-fix</b>
+        <div class="tf"><span class="f-wf">⌁ round 2</span><span>≈$4.10</span></div></div>
+      <div class="tile" style="--agent-accent:#3dc9b0"><b>refactor-a</b>
+        <div class="tf"><span class="f-ens">E 1/3 · submitted</span></div></div>
+      <div class="tile" style="--agent-accent:#d97757"><b>refactor-b</b>
+        <div class="tf"><span class="f-ens">E 2/3 · working</span></div></div>
+    </div>
+    <div>
+      <div class="col-head"><span class="sw" style="background:var(--idle)"></span> idle <span class="ct">3</span></div>
+      <div class="tile" style="--agent-accent:#d97757"><b>flaky-tests</b>
+        <div class="tf"><span>idle 18m</span></div></div>
+      <div class="tile" style="--agent-accent:#3dc9b0"><b>issue-412</b>
+        <div class="tf"><span class="f-wf">⌁ passed</span><span>PR open</span></div></div>
+    </div>
+  </div>
+</div>
+
+<section class="notes" aria-label="Design notes">
+  <div class="note"><span class="n">01</span><b>The diagram is the navigation.</b> Nobody has to learn what an
+    ensemble is for - it sits between Working and Shipped, labeled Decide, wearing an amber count when it needs you.
+    Position explains purpose better than copy can.</div>
+  <div class="note"><span class="n">02</span><b>Triage finally sees automation.</b> Today the Sitrep, backlog and
+    command bar are blind to workflows and ensembles. The line puts both into the operator's every-glance path
+    without touching the board below it.</div>
+  <div class="note"><span class="n">03</span><b>Drawers, not pages.</b> Each stage opens in place: Intake shows
+    missions + sources, Review shows run ladders, Decide shows the dossier condensed to one decision. Full pages
+    remain one click deeper for authoring.</div>
+  <div class="note"><span class="n">04</span><b>Cost:</b> the most opinionated of the four - it asserts that work
+    flows left to right, spends ~90px of height on every layout, and needs server-side folds (a per-stage summary
+    event) so the strip never recomputes fleet state in the browser.</div>
+</section>
+
+</body>
+</html>

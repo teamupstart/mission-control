@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approach 4 - Palette and pulse - Mission Control UI exploration</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root {
+    --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+    --border:#232a33; --border-soft:#1b2129;
+    --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+    --exited:#707a88; --neutral:#8b94a3; --purple:#a371f7;
+    --radius:13px;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  body { background:#07090b; color:var(--fg); font-family:var(--sans); font-size:14px; line-height:1.45; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--working); outline-offset:2px; border-radius:4px; }
+  kbd {
+    font-family:var(--mono); font-size:10px; padding:1px 5px;
+    border:1px solid var(--border); border-bottom-width:2px; border-radius:4px;
+    background:var(--panel-2); color:var(--muted); vertical-align:1px;
+  }
+
+  /* ---- proposal chrome ---- */
+  .doc { max-width:1280px; margin:0 auto; padding:42px 24px 4px; }
+  .doc .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; }
+  .doc h1 { font-size:27px; font-weight:650; letter-spacing:-.01em; margin:10px 0 8px; }
+  .doc h1 .num { font-family:var(--mono); font-weight:500; color:var(--working); margin-right:12px; }
+  .doc .stand { color:var(--muted); max-width:74ch; }
+  .doc nav { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+  .doc nav a { font-family:var(--mono); font-size:11px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--border); border-radius:999px; padding:4px 11px; }
+  .doc nav a:hover { color:var(--fg); border-color:var(--dim); }
+  .doc nav a[aria-current] { color:var(--working); border-color:var(--working); }
+
+  .frame { max-width:1280px; margin:26px auto 12px; border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; background:var(--bg); box-shadow:0 30px 80px rgba(0,0,0,.55); position:relative; min-height:860px; }
+
+  /* ---- topbar with the automation segment ---- */
+  .topbar { display:flex; align-items:center; gap:14px; height:46px; padding:0 14px;
+    background:var(--bg-2); border-bottom:1px solid var(--border); position:relative; z-index:3; }
+  .brand { display:flex; align-items:center; gap:8px; }
+  .brand-mark { width:15px; height:15px; border-radius:4px; flex:none;
+    background:linear-gradient(135deg,var(--working),var(--idle)); }
+  .brand b { font-size:13px; font-weight:600; }
+  .filter { display:flex; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:4px 9px; color:var(--dim); font-size:12px; }
+  .filter input { background:none; border:0; outline:0; color:var(--fg); font:inherit; width:100px; }
+  .pulse { display:flex; align-items:center; gap:9px; font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .pulse i { font-style:normal; color:var(--border); }
+  .pdot { width:7px; height:7px; border-radius:50%; background:var(--idle); }
+  .p-att { color:var(--attention); }
+  .p-auto { color:var(--purple); cursor:pointer; border-bottom:1px dotted rgba(163,113,247,.6); }
+  .tb-spacer { flex:1; }
+  .btn { font:inherit; font-size:12.5px; color:var(--fg); background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:5px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .btn.primary { background:var(--working); border-color:var(--working); color:#04121f; font-weight:600; }
+  .ghost { background:none; border-color:transparent; color:var(--muted); }
+
+  /* ---- automation popover ---- */
+  .pop { position:absolute; top:52px; left:330px; width:400px; z-index:4;
+    background:var(--panel); border:1px solid var(--border); border-radius:12px;
+    box-shadow:0 18px 50px rgba(0,0,0,.6); overflow:hidden; }
+  .pop-head { font-family:var(--mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--dim); padding:10px 14px 6px; }
+  .pop-row { display:flex; align-items:center; gap:10px; padding:9px 14px; cursor:pointer; }
+  .pop-row:hover { background:var(--panel-2); }
+  .pop-row .g { width:18px; text-align:center; color:var(--muted); flex:none; }
+  .pop-main { flex:1; min-width:0; }
+  .pop-t { font-size:12.5px; font-weight:600; }
+  .pop-s { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:1px; }
+  .pop-s .att { color:var(--attention); }
+  .pop-s .ok { color:var(--idle); }
+  .pop-s .run { color:var(--working); }
+  .pop-open { font-family:var(--mono); font-size:10.5px; color:var(--working); flex:none; }
+  .pop-foot { display:flex; gap:14px; padding:9px 14px; border-top:1px solid var(--border-soft);
+    font-size:11.5px; color:var(--muted); }
+
+  /* ---- dimmed fleet behind ---- */
+  .fleet { padding:16px; display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:12px;
+    filter:brightness(.5) saturate(.7); pointer-events:none; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    border-top:2px solid var(--agent-accent,var(--neutral)); padding:11px 13px 12px; }
+  .card-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .adot { width:8px; height:8px; border-radius:50%; background:var(--agent-accent,var(--neutral)); }
+  .sname { font-weight:600; font-size:13.5px; }
+  .badge { font-family:var(--mono); font-size:10px; padding:2px 8px; border-radius:999px; }
+  .b-working { color:var(--working); background:rgba(74,158,255,.12); }
+  .b-att { color:var(--attention); background:rgba(246,167,51,.14); }
+  .b-idle { color:var(--idle); background:rgba(53,192,138,.12); }
+  .goal { font-size:12.5px; color:var(--muted); margin-top:7px; }
+  .meta { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:8px; }
+
+  /* ---- the everything palette ---- */
+  .veil { position:absolute; inset:46px 0 0; background:rgba(4,6,8,.55); z-index:2; }
+  .pal { position:absolute; top:330px; left:50%; transform:translateX(-50%); width:660px; max-width:92%;
+    background:var(--panel); border:1px solid var(--border); border-radius:14px; z-index:5;
+    box-shadow:0 30px 90px rgba(0,0,0,.7); overflow:hidden; }
+  .pal-in { display:flex; align-items:center; gap:10px; padding:13px 16px; border-bottom:1px solid var(--border); }
+  .pal-in .q { font-size:15px; }
+  .pal-in .cur { display:inline-block; width:2px; height:17px; background:var(--working); vertical-align:-3px;
+    animation:blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  @media (prefers-reduced-motion: reduce) { .pal-in .cur { animation:none; } }
+  .pal-group { font-family:var(--mono); font-size:9.5px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--dim); padding:10px 16px 4px; }
+  .pal-row { display:flex; align-items:center; gap:11px; padding:8px 16px; cursor:pointer; }
+  .pal-row:hover { background:var(--panel-2); }
+  .pal-row.sel { background:var(--panel-2); box-shadow:inset 2px 0 0 var(--working); }
+  .pal-row .g { width:18px; text-align:center; color:var(--muted); flex:none; }
+  .pal-t { font-size:13px; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pal-t small { color:var(--dim); font-size:11.5px; }
+  .pal-t .att { color:var(--attention); }
+  .kind { font-family:var(--mono); font-size:9.5px; padding:2px 7px; border-radius:999px;
+    border:1px solid var(--border); color:var(--dim); flex:none; }
+  .kind.k-wf { color:var(--working); border-color:rgba(74,158,255,.35); }
+  .kind.k-per { color:var(--neutral); }
+  .kind.k-ens { color:var(--purple); border-color:rgba(163,113,247,.4); }
+  .kind.k-mis { color:var(--idle); border-color:rgba(53,192,138,.35); }
+  .kind.k-set { color:var(--dim); }
+  .kind.k-act { color:var(--fg); border-color:var(--dim); }
+  .pal-foot { display:flex; gap:16px; padding:10px 16px; border-top:1px solid var(--border-soft);
+    font-family:var(--mono); font-size:10.5px; color:var(--dim); }
+
+  /* ---- notes ---- */
+  .notes { max-width:1280px; margin:10px auto 64px; padding:0 24px;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; }
+  .note { border:1px solid var(--border-soft); border-radius:10px; padding:11px 13px;
+    background:var(--bg-2); font-size:12.5px; color:var(--muted); }
+  .note b { color:var(--fg); font-weight:600; }
+  .note .n { font-family:var(--mono); color:var(--working); margin-right:7px; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="eyebrow">Mission Control - UI exploration - automation prominence</div>
+  <h1><span class="num">4/4</span>Palette and pulse: zero new chrome</h1>
+  <p class="stand">
+    The lightest touch, and it composes with any of the other three. Two moves: the topbar FleetPulse gains an
+    <b>automation segment</b> ("3 auto", purple - the color already reserved for the machinery, not the fleet)
+    that opens a summary popover; and ⌘K stops being a settings search and becomes the app-wide palette - every
+    workflow, Persona, run, ensemble, mission, source, setting and action, each row carrying its kind and its
+    live state. Shown with both open at once (they would not be).
+  </p>
+  <nav aria-label="Approaches">
+    <a href="index.html">Index</a>
+    <a href="1-rail.html">1 Rail</a>
+    <a href="2-library.html">2 Library</a>
+    <a href="3-line.html">3 The line</a>
+    <a href="4-palette.html" aria-current="page">4 Palette</a>
+  </nav>
+</header>
+
+<div class="frame">
+  <div class="topbar">
+    <div class="brand"><span class="brand-mark"></span><b>Mission Control</b></div>
+    <label class="filter">⌕ <input placeholder="Filter (/)" aria-label="Filter sessions"></label>
+    <div class="pulse">
+      <span class="pdot"></span> live <i>·</i> 12 sessions <i>·</i>
+      <b class="p-att">2 need you</b> <i>·</i> 5 working <i>·</i>
+      <b class="p-auto">3 auto ▾</b>
+    </div>
+    <div class="tb-spacer"></div>
+    <button class="btn ghost">📡 <kbd>r</kbd></button>
+    <button class="btn ghost">⚙</button>
+    <button class="btn primary">＋ Dispatch <kbd>+</kbd></button>
+  </div>
+
+  <div class="pop" role="dialog" aria-label="Automation summary">
+    <div class="pop-head">Automation - what the machinery is doing</div>
+    <div class="pop-row">
+      <span class="g">⌁</span>
+      <div class="pop-main">
+        <div class="pop-t">Workflows - the definition of done</div>
+        <div class="pop-s"><span class="run">2 runs live</span> · last verdict: <span class="ok">pass</span>, 4m ago</div>
+      </div>
+      <span class="pop-open">open →</span>
+    </div>
+    <div class="pop-row">
+      <span class="g">⧉</span>
+      <div class="pop-main">
+        <div class="pop-t">Ensembles - N agents race, you keep the best</div>
+        <div class="pop-s"><span class="att">Best of 3 waiting on you</span> · 22m · A recommended</div>
+      </div>
+      <span class="pop-open">decide →</span>
+    </div>
+    <div class="pop-row">
+      <span class="g">◷</span>
+      <div class="pop-main">
+        <div class="pop-t">Missions - standing work on a cadence</div>
+        <div class="pop-s">next: Dependency audit, Mon 08:00 · last filed task <span class="ok">merged</span></div>
+      </div>
+      <span class="pop-open">open →</span>
+    </div>
+    <div class="pop-row">
+      <span class="g">⇊</span>
+      <div class="pop-main">
+        <div class="pop-t">Sources - your real backlog, pulled in</div>
+        <div class="pop-s">github-issues swept 4m ago · filed 2 tasks</div>
+      </div>
+      <span class="pop-open">open →</span>
+    </div>
+    <div class="pop-foot">Search everything <kbd>⌘K</kbd> <span style="margin-left:auto">Open Workflows <kbd>w</kbd></span></div>
+  </div>
+
+  <div class="veil"></div>
+
+  <div class="pal" role="dialog" aria-label="Search everything">
+    <div class="pal-in">⌕ <span class="q">rev<span class="cur"></span></span></div>
+
+    <div class="pal-group">Jump to</div>
+    <div class="pal-row sel">
+      <span class="g">⧉</span>
+      <div class="pal-t"><span class="att">Best of 3 · refactor-discovery</span> <small>- waiting on your decision, 22m</small></div>
+      <span class="kind k-ens">ensemble</span>
+    </div>
+    <div class="pal-row">
+      <span class="g">⌁</span>
+      <div class="pal-t">No-Mistakes Review <small>- v3 · dispatch default · open builder</small></div>
+      <span class="kind k-wf">workflow</span>
+    </div>
+    <div class="pal-row">
+      <span class="g">⌁</span>
+      <div class="pal-t">pane-fix · round 2 <small>- waiting for session</small></div>
+      <span class="kind k-wf">run</span>
+    </div>
+    <div class="pal-row">
+      <span class="g">❝</span>
+      <div class="pal-t">Code Risk Reviewer <small>- built-in Persona · used by 2 workflows</small></div>
+      <span class="kind k-per">persona</span>
+    </div>
+    <div class="pal-row">
+      <span class="g">◷</span>
+      <div class="pal-t">Dependency audit <small>- Mondays 08:00 · healthy</small></div>
+      <span class="kind k-mis">mission</span>
+    </div>
+
+    <div class="pal-group">Do</div>
+    <div class="pal-row">
+      <span class="g">⧉</span>
+      <div class="pal-t">Launch an ensemble on a new task…</div>
+      <span class="kind k-act">action</span>
+    </div>
+    <div class="pal-row">
+      <span class="g">⌁</span>
+      <div class="pal-t">Bind a workflow to pane-fix…</div>
+      <span class="kind k-act">action</span>
+    </div>
+
+    <div class="pal-group">Settings</div>
+    <div class="pal-row">
+      <span class="g">⚙</span>
+      <div class="pal-t">Live repair delivery <small>- Off · workflows / delivery</small></div>
+      <span class="kind k-set">setting</span>
+    </div>
+
+    <div class="pal-foot">↑↓ navigate · ↵ open · ⇥ filter by kind · esc close</div>
+  </div>
+
+  <div class="fleet" aria-hidden="true">
+    <div class="card" style="--agent-accent:#d97757">
+      <div class="card-head"><span class="adot"></span><span class="sname">pane-fix</span><span class="badge b-working">working</span></div>
+      <div class="goal">Fix pane focus stealing in board drill-in</div>
+      <div class="meta">claude · opus · ≈$4.10</div>
+    </div>
+    <div class="card" style="--agent-accent:#3dc9b0">
+      <div class="card-head"><span class="adot"></span><span class="sname">refactor-a</span><span class="badge b-idle">submitted</span></div>
+      <div class="goal">Refactor session discovery behind one sweep</div>
+      <div class="meta">codex · gpt-5.3 · ≈$2.84</div>
+    </div>
+    <div class="card" style="--agent-accent:#c678dd">
+      <div class="card-head"><span class="adot"></span><span class="sname">docs-sweep</span><span class="badge b-att">needs you</span></div>
+      <div class="goal">Bring README runtime sections up to date</div>
+      <div class="meta">pi · ≈$0.61</div>
+    </div>
+    <div class="card" style="--agent-accent:#d97757">
+      <div class="card-head"><span class="adot"></span><span class="sname">flaky-tests</span><span class="badge b-idle">idle</span></div>
+      <div class="goal">Hunt the two flaky terminal-adapter cases</div>
+      <div class="meta">claude · opus · ≈$0.88</div>
+    </div>
+    <div class="card" style="--agent-accent:#3dc9b0">
+      <div class="card-head"><span class="adot"></span><span class="sname">issue-412</span><span class="badge b-working">working</span></div>
+      <div class="goal">Board column widths reset on reload</div>
+      <div class="meta">codex · gpt-5.3 · ≈$1.05</div>
+    </div>
+    <div class="card" style="--agent-accent:#d97757">
+      <div class="card-head"><span class="adot"></span><span class="sname">refactor-b</span><span class="badge b-working">working</span></div>
+      <div class="goal">Refactor session discovery behind one sweep</div>
+      <div class="meta">claude · sonnet · ≈$1.92</div>
+    </div>
+  </div>
+</div>
+
+<section class="notes" aria-label="Design notes">
+  <div class="note"><span class="n">01</span><b>Findability without chrome.</b> The palette indexes what people
+    actually hunt for - the builder, a live run, a Persona, an amber decision - not just settings controls.
+    Every row shows kind + live state, so search doubles as a status check.</div>
+  <div class="note"><span class="n">02</span><b>The pulse teaches by summary.</b> The popover rows each carry the
+    purpose sentence beside the live fact, so the first encounter with "Ensembles" explains itself. Purple is the
+    right color: it is already the app's machinery tone (Foreman, cost), deliberately outside the fleet's state tones.</div>
+  <div class="note"><span class="n">03</span><b>Ships in two small PRs.</b> Extend the existing settings-search
+    index with workflow/persona/ensemble/mission providers; add one pulse segment + popover. No routes move,
+    no page changes, fully keyboard-native.</div>
+  <div class="note"><span class="n">04</span><b>Limit:</b> prominence is still opt-in - you see automation when you
+    ask. This approach fixes discovery and reach, not the deeper "hidden by default" complaint. Best paired with
+    approach 1 or 3.</div>
+</section>
+
+</body>
+</html>

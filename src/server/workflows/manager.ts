@@ -1673,6 +1673,10 @@ export class WorkflowManager {
         }
       }
     }
+    // Binding is only the first half of the fallback. Deliberately continue into the same
+    // durable Foreman claim as a pre-bound conversation: it creates the initial submission,
+    // captures evidence and activates the workflow before this request returns. Returning
+    // after `createBinding` would leave the option visibly armed but permanently idle.
     if (!binding) return { claimed: false, reason: "no_binding" };
     if (binding.triggerMode !== "foreman_complete") {
       return { claimed: false, reason: "manual_trigger" };

@@ -29,7 +29,7 @@ const MODE_HINT: Record<"dry-run" | "semi-auto" | "live", string> = {
 const WRAPUP_HINT: Record<"ask" | "no-mistakes" | "pr", string> = {
   ask: "Show the Ship it? card and let you choose what happens next",
   "no-mistakes":
-    "After Foreman verifies the original work, hand off to its Foreman Complete workflow or bind No-Mistakes Review when none exists",
+    "After Foreman verifies the original work, submit its Foreman Complete workflow or bind and submit No-Mistakes Review when none exists",
   pr: "Skip the gate: commit, push, open a PR, then wait for green CI",
 };
 

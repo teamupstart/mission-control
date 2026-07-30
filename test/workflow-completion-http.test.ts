@@ -333,6 +333,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     new Set(["started", "already_claimed"]),
   );
   assert.equal(new Set(autoBodies.map((body) => body.runId)).size, 1);
+  assert.equal(new Set(autoBodies.map((body) => body.submissionId)).size, 1);
   const autoBinding = workflows.store.activeBindingForNote("auto-bound");
   assert.ok(autoBinding);
   assert.equal(
@@ -353,7 +354,10 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     workflows.store.getRun(autoBodies[0]!.runId)?.bindingId,
     autoBinding.id,
   );
-  assert.equal(workflows.store.listSubmissions(autoBodies[0]!.runId).length, 1);
+  const autoSubmissions = workflows.store.listSubmissions(autoBodies[0]!.runId);
+  assert.equal(autoSubmissions.length, 1);
+  assert.equal(autoSubmissions[0]?.id, autoBodies[0]!.submissionId);
+  assert.equal(autoSubmissions[0]?.triggerSource, "foreman");
 
   const concurrent = await Promise.all([
     request(app, "concurrent", "f".repeat(64)),

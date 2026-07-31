@@ -241,19 +241,37 @@ test("a turn's markup survives the SSE frames arriving under it", () => {
   assert.match(source, /const components = useMemo\(/, "the a component's identity must be stable");
   assert.match(source, /linkHandler\.current/, "the live handler is reached through a ref");
 
-  // Same text, a fresh handler closure each render: a hit, or the memo is decoration.
+  // Same props, including the same handler: a hit, or the memo is decoration.
   const paths = new Set(["a.ts"]);
-  assert.equal(
-    markdownPropsEqual(
-      { children: "x", breaks: true, onLinkClick: () => true, filePaths: paths },
-      { children: "x", breaks: true, onLinkClick: () => true, filePaths: paths },
-    ),
-    true,
-  );
+  const onLinkClick = () => true;
+  const base = { children: "x", breaks: true, onLinkClick, filePaths: paths };
+  assert.equal(markdownPropsEqual(base, { ...base }), true);
   // Everything that genuinely changes the output still re-renders.
-  const base = { children: "x", breaks: true, onLinkClick: () => true, filePaths: paths };
   assert.equal(markdownPropsEqual(base, { ...base, children: "y" }), false, "new text");
   assert.equal(markdownPropsEqual(base, { ...base, breaks: false }), false, "breaks toggled");
   assert.equal(markdownPropsEqual(base, { ...base, filePaths: new Set(["a.ts"]) }), false, "new listing");
   assert.equal(markdownPropsEqual(base, { ...base, onLinkClick: undefined }), false, "handler removed");
+});
+
+test("a replaced link handler re-renders, so no anchor is left calling the old one", () => {
+  // The body refreshes its handler ref DURING its own render, so skipping that render
+  // with a new handler pins every rendered anchor to the previous closure - and that
+  // closure carries App's `layout` and `sessions`. Switching layout with the transcript
+  // text unchanged would then open the grid's Files overlay from Console.
+  const paths = new Set(["a.ts"]);
+  const base = { children: "x", breaks: true, onLinkClick: () => true, filePaths: paths };
+  assert.equal(markdownPropsEqual(base, { ...base, onLinkClick: () => true }), false);
+
+  // Which is only affordable because the caller hands down ONE wrapper rather than a
+  // fresh closure per render. Both halves are required: compare identity without a
+  // stable caller and the memo never hits; a stable caller without the comparison is
+  // the staleness above.
+  const panel = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
+  assert.match(panel, /openFileRef\.current = onOpenFile;/, "the ref tracks the live handler");
+  assert.match(
+    panel,
+    /const openFile = useCallback<WorkspaceLinkHandler>\(\s*\(href, probe\) => openFileRef\.current\?\.\(href, probe\) \?\? false,\s*\[\],/,
+    "and the wrapper handed down never changes identity",
+  );
+  assert.match(panel, /onOpenFile=\{linkHandler\}/, "turns receive the stable wrapper");
 });

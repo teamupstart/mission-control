@@ -121,13 +121,16 @@ function MarkdownBody({
 }: MarkdownProps): React.JSX.Element {
   const paths = onLinkClick ? filePaths : null;
   // The handler reaches the rendered anchors through a ref, and that is load-bearing
-  // rather than tidy. Both call sites build it as a fresh closure per render
-  // (`cardProps`, ConsoleDetail's inline arrow), so a `components.a` that closed over it
-  // was a NEW COMPONENT TYPE on every SSE frame - and React unmounts a subtree whose
-  // element type changed. Every anchor in every turn was being destroyed and rebuilt a
-  // few times a second: the hover tooltip could never finish opening, the claim state
-  // was thrown away and re-probed, and text selection inside a turn collapsed. Behind a
-  // ref the map is built once, the types are stable, and the anchors survive the frame.
+  // rather than tidy. It keeps `components` off the handler's identity, and a
+  // `components.a` that closed over it was a NEW COMPONENT TYPE whenever the handler
+  // changed - React unmounts a subtree whose element type changed, so every anchor in
+  // every turn was destroyed and rebuilt: the hover tooltip could never finish opening,
+  // the claim state was thrown away and re-probed, and text selection inside a turn
+  // collapsed. Behind a ref the map is built once and the anchors survive.
+  //
+  // The ref is refreshed HERE, during this render, which is exactly why
+  // `markdownPropsEqual` has to compare the handler: skip this render with a new handler
+  // and every anchor keeps calling the old one.
   const linkHandler = useRef(onLinkClick);
   linkHandler.current = onLinkClick;
   const linkable = Boolean(onLinkClick);
@@ -173,20 +176,25 @@ function MarkdownBody({
 
 /**
  * Whether a re-render can be skipped. Exported so the rule is stated once and testable:
- * the default shallow compare cannot express it, and getting it wrong is invisible - it
- * fails as heat and a lost hover, never as a wrong pixel.
+ * the default shallow compare cannot express `filePaths`, and getting this wrong is
+ * invisible - it fails as heat, a lost hover, or a click routed through last render's
+ * state, never as a wrong pixel.
  *
- * `onLinkClick`'s IDENTITY is deliberately not compared. Both call sites rebuild it on
- * every render, so comparing it means "never equal", which is what this memo was while
- * its doc comment claimed the opposite. The rendered tree reaches the live handler
- * through a ref, so only its PRESENCE matters here - that is what picks the branch.
+ * `onLinkClick` IS compared by identity, and an earlier version of this that skipped it
+ * was wrong. The ref the body keeps is refreshed DURING that body's render, so a
+ * comparator that lets a new handler through without re-rendering pins every anchor to
+ * the previous closure - and that closure carries App's `layout` and `sessions`, so
+ * switching layout with the transcript text unchanged left path links opening the grid
+ * overlay from Console. Skipping the render is only safe when the handler really has not
+ * changed, which is a promise the CALLER has to make; `TranscriptPanel` makes it with a
+ * stable wrapper, so this stays a hit on every SSE frame without lying about it.
  */
 export function markdownPropsEqual(before: MarkdownProps, after: MarkdownProps): boolean {
   return (
     before.children === after.children &&
     before.breaks === after.breaks &&
     before.filePaths === after.filePaths &&
-    Boolean(before.onLinkClick) === Boolean(after.onLinkClick)
+    before.onLinkClick === after.onLinkClick
   );
 }
 

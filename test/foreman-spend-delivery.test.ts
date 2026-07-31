@@ -91,6 +91,7 @@ const {
 } = await import("../src/server/foreman/client.ts");
 const client = new ForemanClient();
 const SPOOL = spendOutboxTest.path();
+const DEAD_OWNER_PID = 2_147_483_647;
 
 after(async () => {
   await stop();
@@ -119,6 +120,10 @@ function orphanPath(id: string): string {
   return join(home, `foreman-spend-outbox.${id}.json`);
 }
 
+function storedSpool(ownerPid: number, entries: unknown[]): string {
+  return JSON.stringify({ ownerPid, entries });
+}
+
 function spoolFiles(): string[] {
   return readdirSync(home)
     .filter((name) => name.startsWith("foreman-spend-outbox.") && name.endsWith(".json"))
@@ -126,9 +131,10 @@ function spoolFiles(): string[] {
 }
 
 function spoolRunIds(path: string): string[] {
-  return (JSON.parse(readFileSync(path, "utf8")) as Array<{ runId: string }>).map(
-    (item) => item.runId,
-  );
+  const stored = JSON.parse(readFileSync(path, "utf8")) as
+    | Array<{ runId: string }>
+    | { entries: Array<{ runId: string }> };
+  return (Array.isArray(stored) ? stored : stored.entries).map((item) => item.runId);
 }
 
 async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -205,8 +211,11 @@ test("an undelivered report is written to disk, not just held in memory", async 
   // unrecoverable, because nothing else on the machine knows the run ever happened.
   await stop();
   await client.reportSpend(report("foreman:review", "run-crash"));
-  const spooled = JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>;
-  assert.deepEqual(spooled.map((r) => r.runId), ["run-crash"]);
+  assert.equal(
+    (JSON.parse(readFileSync(SPOOL, "utf8")) as { ownerPid: number }).ownerPid,
+    process.pid,
+  );
+  assert.deepEqual(spoolRunIds(SPOOL), ["run-crash"]);
 
   // Deliver it so the shared queue is clean for the tests below.
   await start();
@@ -220,7 +229,11 @@ test("a report left by a dead worker is recovered by the next one", () => {
   // and startup is the moment it either reaches the ledger or is lost - so `loadSpendOutbox`
   // is what makes the durability real rather than merely written down.
   const orphan = orphanPath("dead-worker");
-  writeFileSync(orphan, JSON.stringify([report("inspector:review", "run-from-the-dead")]), "utf8");
+  writeFileSync(
+    orphan,
+    storedSpool(DEAD_OWNER_PID, [report("inspector:review", "run-from-the-dead")]),
+    "utf8",
+  );
   const recovered = loadSpendOutbox();
   assert.equal(recovered, 1);
   assert.equal(pendingSpendReports(), 1);
@@ -235,17 +248,43 @@ test("the recovered report is delivered, and only then forgotten", async () => {
   assert.equal(existsSync(SPOOL), false);
 });
 
-test("a corrupt spool is discarded rather than replayed forever", () => {
+test("an unreadable or ownerless spool is left untouched", () => {
   const unreadable = orphanPath("corrupt");
   writeFileSync(unreadable, "{not json", "utf8");
   assert.equal(loadSpendOutbox(), 0);
-  assert.equal(existsSync(unreadable), false);
-  // Entries that parse but are not reports are dropped for the same reason: feeding them
-  // to the route would 4xx on every restart instead of once.
+  assert.equal(existsSync(unreadable), true);
+  rmSync(unreadable);
+
   const invalid = orphanPath("invalid");
-  writeFileSync(invalid, JSON.stringify([{ role: "foreman:review" }]), "utf8");
+  writeFileSync(invalid, JSON.stringify({ entries: [{ role: "foreman:review" }] }), "utf8");
   assert.equal(loadSpendOutbox(), 0);
-  assert.equal(existsSync(invalid), false);
+  assert.equal(existsSync(invalid), true);
+  rmSync(invalid);
+});
+
+test("a live owner's spool is not adopted or changed", () => {
+  const live = orphanPath("live-owner");
+  const raw = storedSpool(process.pid, [report("foreman:review", "run-live-owner")]);
+  writeFileSync(live, raw, "utf8");
+
+  assert.equal(loadSpendOutbox(), 0);
+  assert.equal(pendingSpendReports(), 0);
+  assert.equal(existsSync(SPOOL), false);
+  assert.equal(readFileSync(live, "utf8"), raw);
+  rmSync(live);
+});
+
+test("a previous-build array is recovered without deleting an unprovable owner", async () => {
+  const legacy = orphanPath("legacy-array");
+  writeFileSync(legacy, JSON.stringify([report("foreman:review", "run-legacy-array")]), "utf8");
+
+  assert.equal(loadSpendOutbox(), 1);
+  assert.deepEqual(spoolRunIds(SPOOL), ["run-legacy-array"]);
+  assert.equal(existsSync(legacy), true);
+
+  rmSync(legacy);
+  await flushPendingSpend();
+  assert.equal(existsSync(SPOOL), false);
 });
 
 test("spend survives the daemon being down, and lands when it returns", async () => {
@@ -295,8 +334,7 @@ test("reports are delivered oldest-first, so the queue cannot reorder history", 
   await client.reportSpend(report("foreman:triage", "run-6"));
   assert.equal(pendingSpendReports(), 2);
   // The spool preserves order too - a restart mid-outage must not shuffle history.
-  const spooled = JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>;
-  assert.deepEqual(spooled.map((r) => r.runId), ["run-5", "run-6"]);
+  assert.deepEqual(spoolRunIds(SPOOL), ["run-5", "run-6"]);
   await start();
   await flushPendingSpend();
   assert.deepEqual(
@@ -359,7 +397,7 @@ test("orphan adoption de-duplicates run ids into this worker's spool", async () 
   const second = orphanPath("dedup-second");
   writeFileSync(
     first,
-    JSON.stringify([
+    storedSpool(DEAD_OWNER_PID, [
       report("foreman:review", "run-adopt-a"),
       report("foreman:verify", "run-adopt-shared"),
     ]),
@@ -367,7 +405,7 @@ test("orphan adoption de-duplicates run ids into this worker's spool", async () 
   );
   writeFileSync(
     second,
-    JSON.stringify([
+    storedSpool(DEAD_OWNER_PID, [
       report("foreman:verify", "run-adopt-shared"),
       report("inspector:review", "run-adopt-b"),
     ]),
@@ -385,7 +423,7 @@ test("orphan adoption de-duplicates run ids into this worker's spool", async () 
 test("an orphan remains untouched until the adopter's spool is durable", async () => {
   assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
   const orphan = orphanPath("persist-first");
-  const raw = JSON.stringify([report("foreman:review", "run-persist-first")]);
+  const raw = storedSpool(DEAD_OWNER_PID, [report("foreman:review", "run-persist-first")]);
   writeFileSync(orphan, raw, "utf8");
   const blockedTmp = `${SPOOL}.${process.pid}.tmp`;
   mkdirSync(blockedTmp);
@@ -406,7 +444,11 @@ test("an orphan remains untouched until the adopter's spool is durable", async (
 test("two adopters of one orphan cannot lose its report", async () => {
   assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
   const orphan = orphanPath("two-adopters");
-  writeFileSync(orphan, JSON.stringify([report("foreman:review", "run-two-adopters")]), "utf8");
+  writeFileSync(
+    orphan,
+    storedSpool(DEAD_OWNER_PID, [report("foreman:review", "run-two-adopters")]),
+    "utf8",
+  );
 
   await Promise.all([spawnAdopter(), spawnAdopter()]);
   const durableRunIds = spoolFiles().flatMap(spoolRunIds);

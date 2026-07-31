@@ -148,17 +148,46 @@ function fsErrorCode(err: unknown): string | undefined {
   return String((err as { code?: unknown }).code);
 }
 
-function readSpendOutbox(path: string): SpendReportBody[] {
+interface StoredSpendOutbox {
+  ownerPid: number | null;
+  entries: SpendReportBody[];
+  legacy: boolean;
+}
+
+function readSpendOutbox(path: string): StoredSpendOutbox | null {
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch (err) {
-    if (fsErrorCode(err) === "ENOENT") return [];
+    if (fsErrorCode(err) === "ENOENT") return null;
     throw err;
   }
   const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error("spend outbox is not an array");
-  return parsed.filter(looksLikeSpendReport);
+  if (Array.isArray(parsed)) {
+    return { ownerPid: null, entries: parsed.filter(looksLikeSpendReport), legacy: true };
+  }
+  if (!parsed || typeof parsed !== "object") throw new Error("spend outbox is not an object");
+  const stored = parsed as Record<string, unknown>;
+  if (!Number.isInteger(stored.ownerPid) || (stored.ownerPid as number) <= 0) {
+    throw new Error("spend outbox has no valid owner pid");
+  }
+  if (!Array.isArray(stored.entries)) throw new Error("spend outbox entries are not an array");
+  return {
+    ownerPid: stored.ownerPid as number,
+    entries: stored.entries.filter(looksLikeSpendReport),
+    legacy: false,
+  };
+}
+
+function spendOutboxOwnerLiveness(pid: number): "alive" | "dead" | "unknown" {
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (err) {
+    if (fsErrorCode(err) === "ESRCH") return "dead";
+    console.warn(`[foreman] could not establish spend outbox owner ${pid} liveness:`, err);
+    return "unknown";
+  }
 }
 
 /**
@@ -182,7 +211,7 @@ function persistSpendOutbox(): boolean {
     }
     mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(spendOutbox), "utf8");
+    writeFileSync(tmp, JSON.stringify({ ownerPid: process.pid, entries: spendOutbox }), "utf8");
     renameSync(tmp, path);
     return true;
   } catch (err) {
@@ -197,10 +226,14 @@ function persistSpendOutbox(): boolean {
  * Returns how many were recovered so the worker can say so - a silent restore would make
  * the one moment this feature earns its keep invisible.
  *
- * Every orphan is copied into this process's own spool BEFORE its source is removed. Two
- * workers may adopt the same orphan during a handoff, but that can only duplicate delivery:
- * the daemon keys each insert by run id and absorbs the duplicate. Partitioning makes loss
- * impossible without asking any process to decide whether another process still owns a lock.
+ * Every provably dead owner's spool is copied into this process's own spool BEFORE its source
+ * is removed. A live or uncertain owner is left completely alone, so the failure direction
+ * is delayed recovery rather than deletion of an already-paid-for run. A recycled pid may
+ * make a dead owner look alive; waiting for a later startup is deliberately safer than
+ * guessing that a live writer is dead.
+ *
+ * Two workers may adopt the same dead owner's spool during a handoff, but that can only
+ * duplicate delivery: the daemon keys each insert by run id and absorbs the duplicate.
  */
 export function loadSpendOutbox(): number {
   const ownPath = spendOutboxPath();
@@ -223,23 +256,40 @@ export function loadSpendOutbox(): number {
     ) {
       continue;
     }
-    let restored: SpendReportBody[];
+    let restored: StoredSpendOutbox | null;
     try {
       restored = readSpendOutbox(path);
     } catch (err) {
-      console.warn(`[foreman] discarding unreadable spend outbox ${name}:`, err);
-      try {
-        rmSync(path, { force: true });
-      } catch (removeErr) {
-        console.warn(`[foreman] could not remove unreadable spend outbox ${name}:`, removeErr);
-      }
+      console.warn(`[foreman] leaving unreadable spend outbox ${name} untouched:`, err);
       continue;
     }
-    for (const report of restored) {
+    if (!restored) continue;
+    if (!restored.legacy) {
+      const ownerPid = restored.ownerPid!;
+      if (spendOutboxOwnerLiveness(ownerPid) !== "dead") continue;
+      try {
+        restored = readSpendOutbox(path);
+      } catch (err) {
+        console.warn(`[foreman] could not re-read dead owner's spend outbox ${name}:`, err);
+        continue;
+      }
+      if (
+        !restored ||
+        restored.legacy ||
+        restored.ownerPid !== ownerPid ||
+        spendOutboxOwnerLiveness(ownerPid) !== "dead"
+      ) {
+        continue;
+      }
+    }
+    for (const report of restored.entries) {
       if (!spendOutbox.some((queued) => queued.runId === report.runId)) spendOutbox.push(report);
     }
     while (spendOutbox.length > SPEND_OUTBOX_MAX) spendOutbox.shift();
     if (!persistSpendOutbox()) continue;
+    // A legacy array has no owner proof. Copying recovers it for this process, but retaining
+    // the source prevents an overlapping previous-build worker from losing a later append.
+    if (restored.legacy) continue;
     try {
       rmSync(path, { force: true });
     } catch (err) {

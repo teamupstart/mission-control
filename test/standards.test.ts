@@ -101,8 +101,9 @@ test("CLAUDE.md symlinked to AGENTS.md is ONE document, not two copies of it", (
   // The shape this repo itself ships, and both names are in ROOT_NAMES - so the bundle
   // asked for both, resolved both to the same file, and emitted it twice. The
   // de-duplication was keyed on the REQUESTED path, which cannot see that two names are
-  // one file. Byte-identical duplicate: 24KB per prompt on this repo, ~28% of the
-  // Inspector's small-PR prompt, paid on every review and every queue verify.
+  // one file. A whole second copy of the doc, byte-identical, paid on every Inspector
+  // review and every queue verify - min(fileSize, MAX_FILE_BYTES) of it, so the figure
+  // moves with the root doc. See docs/evidence/inspector-prompt-bytes.md.
   const root = mkRepo();
   writeFileSync(join(root, "AGENTS.md"), "# the one contract");
   symlinkSync(join(root, "AGENTS.md"), join(root, "CLAUDE.md"));

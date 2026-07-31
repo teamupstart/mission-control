@@ -44,8 +44,11 @@ export interface RepoDoc {
    * Two names for one file are one document, and only the resolved path can say so: a
    * repo whose CLAUDE.md is a symlink to its AGENTS.md - which is this one - satisfies
    * both entries of a caller's name list, and a de-duplication keyed on the REQUESTED
-   * path emits the same bytes twice. That cost 24KB of byte-identical duplicate in
-   * every Inspector review and Foreman verify prompt, ~28% of a small PR's.
+   * path emits the same bytes twice - a whole second copy of the doc in every Inspector
+   * review and Foreman verify prompt. The waste is `min(fileSize, maxBytes)` per
+   * duplicated doc, so it is not a fixed figure: it tracks whatever the root doc
+   * currently weighs. It was 24,576 bytes per prompt when the defect was found;
+   * `docs/evidence/inspector-prompt-bytes.md` holds the measurement and how to re-run it.
    *
    * Reported here rather than recomputed by the caller because the `realpathSync`
    * below has already paid for it, and - the load-bearing half - because a second

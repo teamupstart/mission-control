@@ -486,8 +486,28 @@ test("content changes inside the same dirty paths resume the next repair round",
   reportIdle(h, "content-persona", h.agentSessionId, h.paneId);
   await h.manager.sweepResumptions(SETTLED());
 
-  assert.equal(h.store.listSubmissions(h.runId).length, 2);
-  assert.equal(h.store.latestSubmission(h.runId)?.round, 2);
+  const submissions = h.store.listSubmissions(h.runId);
+  assert.equal(submissions.length, 2, "the content-only repair did not open a new submission");
+  const repair = submissions[1]!;
+  assert.equal(repair.round, 2);
+  assert.equal(repair.triggerSource, "session");
+  assert.equal(repair.triggerKey, `resume:${h.runId}:${submissions[0]!.evidenceFingerprint}`);
+  assert.notEqual(repair.evidenceFingerprint, submissions[0]!.evidenceFingerprint);
+
+  // Demonstrate the complete handoff, not only insertion of a submission row: round 2 is
+  // captured, reviewed, and its next repair packet reaches the bound live session.
+  await waitFor(
+    () => h.store.listDeliveries(h.runId).some((delivery) =>
+      delivery.submissionId === repair.id && delivery.state === "delivered"),
+    "round 2 was not reviewed and delivered back to the bound session",
+  );
+  assert.equal(h.injected.length, 2);
+  assert.equal(h.store.getRun(h.runId)?.status, "waiting_for_session");
+  assert.equal(h.store.getRun(h.runId)?.currentPhase, "persona_feedback");
+  assert.equal(
+    h.store.listEvents(h.runId).some((event) => event.kind === "resumption_started"),
+    true,
+  );
   await h.manager.stop();
 });
 

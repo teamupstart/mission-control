@@ -379,7 +379,7 @@
     <strong>Loop rate is almost irrelevant to cost.</strong> Foreman wakes up ~900 times an hour
     and makes a model call on a small fraction of those passes. What actually sets the bill is
     that <em>one</em> Foreman review carries ~61 KB of context and <em>one</em> Inspector review
-    carries ~88 KB, every call is a cold process with no context reuse, and roughly 40% of the
+    carries ~88 KB, every call is a cold process with no context reuse, and 28% of the
     Inspector's prompt on this repository is a duplicated file.
   </p>
 </div>

@@ -422,6 +422,7 @@ export function ConsoleDetail({
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               files={view.files}
               registerLaunchers={view.registerLaunchers}
+              registerFind={view.registerFind}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />
           </div>

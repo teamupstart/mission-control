@@ -504,6 +504,7 @@ function viewFor(session: Session): SessionViewProps {
     registerEl: () => {},
     registerActions: () => {},
     registerLaunchers: () => {},
+    registerFind: () => {},
     registerDetailScroll: () => {},
     registerReaderTab: () => {},
     renamingId: null,

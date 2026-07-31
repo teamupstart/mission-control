@@ -1,6 +1,7 @@
 import type { BacklogPlan, Session, Task } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
 import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
+import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkspaceLinkHandler } from "../Markdown.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
@@ -100,6 +101,9 @@ export interface SessionViewProps {
   registerActions: (id: string, handle: ActionBarHandle | null) => void;
   /** Register the conversation toolbar's terminal and agent launch controls. */
   registerLaunchers: (id: string, handle: SessionLaunchersHandle | null) => void;
+  /** Register the mounted transcript's find surface, so the fleet-wide chord can open
+   *  it on whichever conversation is selected. */
+  registerFind: (id: string, handle: TranscriptFindHandle | null) => void;
   /** Register the open detail pane's vertical reader for Console arrow-key scrolling. */
   registerDetailScroll: (id: string, scroll: ((direction: -1 | 1) => void) | null) => void;
   /** Register the open detail's tab stepper, so Tab/Shift+Tab can cycle its tabs. Returns
@@ -176,6 +180,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     registerEl: p.registerEl,
     registerActions: p.registerActions,
     registerLaunchers: p.registerLaunchers,
+    registerFind: p.registerFind,
     renaming: p.renamingId === s.id,
     onRenameStart: () => p.onRenameStart(s.id),
     onRenameClose: p.onRenameClose,

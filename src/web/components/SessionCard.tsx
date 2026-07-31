@@ -14,7 +14,11 @@ import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { Tooltip } from "./Tooltip.tsx";
-import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
+import {
+  TranscriptPanel,
+  type TranscriptFindHandle,
+  type TranscriptHandle,
+} from "./TranscriptPanel.tsx";
 import type { SessionLaunchersHandle } from "./LaunchMenu.tsx";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
 import type { SessionFilesController } from "../lib/sessionFiles.ts";
@@ -104,6 +108,7 @@ export function SessionCard({
   registerEl,
   registerActions,
   registerLaunchers,
+  registerFind,
   renaming = false,
   onRenameStart,
   onRenameClose,
@@ -151,6 +156,7 @@ export function SessionCard({
   registerEl?: (id: string, el: HTMLElement | null) => void;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
   registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
+  registerFind?: (id: string, handle: TranscriptFindHandle | null) => void;
   /** Whether this card's title is currently in its rename editor (App owns the id). */
   renaming?: boolean;
   /** Enter rename mode for this card (click the title, or the rename shortcut). */
@@ -472,6 +478,7 @@ export function SessionCard({
               onOpenFile={onOpenFile}
               files={files}
               registerLaunchers={registerLaunchers}
+              registerFind={registerFind}
               resetNonce={resetNonce}
             />
           )}

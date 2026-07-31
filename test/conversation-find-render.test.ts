@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ConversationFind } from "../src/web/components/ConversationFind.tsx";
+import { ConversationFindBar, ConversationFindRail } from "../src/web/components/ConversationFind.tsx";
 import { ACTIONS, chordHasCommandModifier } from "../src/web/lib/keybindings.ts";
 import type { FindHit } from "../src/web/lib/find.ts";
 
@@ -38,20 +38,38 @@ function hit(over: Partial<FindHit> = {}): FindHit {
   };
 }
 
-function find(over: Partial<Parameters<typeof ConversationFind>[0]> = {}): string {
+/**
+ * The bar and the rail are separate components because they render into different
+ * parents - the bar floats inside the log wrapper, the rail is a sibling of it so the
+ * flex row can give it a column. That split is exactly what makes the "no open find
+ * without a rail" invariant worth testing structurally: it is now two mount sites that
+ * have to agree, rather than one fragment that could not disagree.
+ */
+function bar(over: Partial<Parameters<typeof ConversationFindBar>[0]> = {}): string {
   return renderToStaticMarkup(
-    createElement(ConversationFind, {
+    createElement(ConversationFindBar, {
       query: "pane",
       onQuery: () => {},
       caseSensitive: false,
       onCaseSensitive: () => {},
+      hits: [hit()],
+      index: 0,
+      onStep: () => {},
+      onClose: () => {},
+      ...over,
+    }),
+  );
+}
+
+function rail(over: Partial<Parameters<typeof ConversationFindRail>[0]> = {}): string {
+  return renderToStaticMarkup(
+    createElement(ConversationFindRail, {
+      query: "pane",
       scope: "all",
       onScope: () => {},
       hits: [hit()],
       index: 0,
-      onStep: () => {},
       onJump: () => {},
-      onClose: () => {},
       loadedOnly: false,
       onLoadOlder: () => {},
       ...over,
@@ -59,37 +77,40 @@ function find(over: Partial<Parameters<typeof ConversationFind>[0]> = {}): strin
   );
 }
 
-test("find always renders its rail - there is no prop that suppresses it", () => {
-  // Every combination a caller can reach. If any of these can produce a bar without a
-  // rail, the invariant has a hole in it.
+test("the rail renders for every prop combination - none of them suppresses it", () => {
+  // Every combination a caller can reach. If any of these can produce nothing, the
+  // invariant has a hole in it.
   const cases = [
     {},
     { query: "" },
     { hits: [], index: -1 },
     { query: "", hits: [], index: -1 },
     { scope: "user" as const, hits: [], index: -1 },
-    { caseSensitive: true },
     { loadedOnly: true },
   ];
   for (const over of cases) {
-    const html = find(over);
+    const html = rail(over);
     assert.ok(html.includes('class="find-rail"'), `rail missing for ${JSON.stringify(over)}`);
-    assert.ok(html.includes('class="find-bar"'), `bar missing for ${JSON.stringify(over)}`);
+  }
+  for (const over of [{}, { query: "" }, { hits: [], index: -1 }, { caseSensitive: true }]) {
+    assert.ok(bar(over).includes('class="find-bar"'), `bar missing for ${JSON.stringify(over)}`);
   }
 });
 
-test("the transcript mounts find in exactly one place, behind the find state", () => {
-  // The structural half. The rail leaves by the panel UNMOUNTING find, so a second
-  // mount site - or one not guarded by `find &&` - is how a rail outlives its session
-  // or appears without one.
+test("the transcript mounts the bar and the rail on the same find state", () => {
+  // The structural half. The rail leaves by the panel UNMOUNTING it, so a mount site
+  // not guarded by `find &&` - or a rail guarded by something the bar is not - is how
+  // an open find ends up with no results list beside it.
   const src = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
-  const mounts = src.match(/<ConversationFind/g) ?? [];
-  assert.equal(mounts.length, 1, "find should be mounted once");
-  assert.match(
-    src,
-    /\{find && \(\s*<ConversationFind/,
-    "find must be mounted behind the find state, so closing it unmounts the rail",
-  );
+  for (const tag of ["ConversationFindBar", "ConversationFindRail"]) {
+    const mounts = src.match(new RegExp(`<${tag}`, "g")) ?? [];
+    assert.equal(mounts.length, 1, `${tag} should be mounted exactly once`);
+    assert.match(
+      src,
+      new RegExp(`\\{find && \\(\\s*<${tag}`),
+      `${tag} must be mounted behind the find state, so closing find unmounts it`,
+    );
+  }
 });
 
 test("no CSS rule can hide the rail while find is open", () => {
@@ -110,16 +131,16 @@ test("no CSS rule can hide the rail while find is open", () => {
 });
 
 test("the count reads as a browser's find does, and says so when nothing matches", () => {
-  assert.ok(find({ hits: [hit(), hit({ key: "k2" })], index: 0 }).includes("1 / 2"));
-  assert.ok(find({ hits: [hit(), hit({ key: "k2" })], index: 1 }).includes("2 / 2"));
-  assert.ok(find({ hits: [], index: -1 }).includes("No results"));
+  assert.ok(bar({ hits: [hit(), hit({ key: "k2" })], index: 0 }).includes("1 / 2"));
+  assert.ok(bar({ hits: [hit(), hit({ key: "k2" })], index: 1 }).includes("2 / 2"));
+  assert.ok(bar({ hits: [], index: -1 }).includes("No results"));
   // An empty query is not a failed search, so it reports neither.
-  const blank = find({ query: "", hits: [], index: -1 });
+  const blank = bar({ query: "", hits: [], index: -1 });
   assert.ok(!blank.includes("No results"));
 });
 
 test("the current hit is the only one marked current in the rail", () => {
-  const html = find({
+  const html = rail({
     hits: [hit(), hit({ key: "k2" }), hit({ key: "k3" })],
     index: 1,
   });
@@ -127,7 +148,7 @@ test("the current hit is the only one marked current in the rail", () => {
 });
 
 test("a rail row names who said it and shows the match in context", () => {
-  const html = find({
+  const html = rail({
     hits: [hit({ who: "claude", pre: "…reads the ", hit: "registry", post: " here…" })],
   });
   assert.ok(html.includes("claude"));
@@ -136,10 +157,10 @@ test("a rail row names who said it and shows the match in context", () => {
 });
 
 test("the windowed-log caveat appears only when there are older turns and a query", () => {
-  assert.ok(find({ loadedOnly: true }).includes("Searching loaded turns only"));
-  assert.ok(!find({ loadedOnly: false }).includes("Searching loaded turns only"));
+  assert.ok(rail({ loadedOnly: true }).includes("Searching loaded turns only"));
+  assert.ok(!rail({ loadedOnly: false }).includes("Searching loaded turns only"));
   assert.ok(
-    !find({ loadedOnly: true, query: "" }).includes("Searching loaded turns only"),
+    !rail({ loadedOnly: true, query: "" }).includes("Searching loaded turns only"),
     "with no query there is no count to qualify",
   );
 });

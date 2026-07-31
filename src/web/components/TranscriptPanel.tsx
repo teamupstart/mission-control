@@ -125,6 +125,7 @@ export function TranscriptPanel({
   onOpenFile,
   files,
   registerLaunchers,
+  registerFind,
   resetNonce = 0,
   ref,
 }: {
@@ -183,6 +184,7 @@ export function TranscriptPanel({
   files?: SessionFilesController;
   /** Register the launch buttons so App's selection shortcuts drive these exact controls. */
   registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
+  registerFind?: (id: string, handle: TranscriptFindHandle | null) => void;
   ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   // The body below was written against these two names and still is; only the PROP changed.

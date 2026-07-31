@@ -7,6 +7,7 @@ import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
+import type { TranscriptFindHandle } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
@@ -293,6 +294,11 @@ export function App(): React.JSX.Element {
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
   const launcherHandles = useRef<Map<string, SessionLaunchersHandle>>(new Map());
+  const findHandles = useRef<Map<string, TranscriptFindHandle>>(new Map());
+  // The session whose find was asked for before its transcript existed. Held for exactly
+  // one mount: `registerFind` replays it and clears it, so revealing a conversation for
+  // some other reason later never opens a find nobody asked for.
+  const pendingFind = useRef<string | null>(null);
   const detailScrollers = useRef<Map<string, (direction: -1 | 1) => void>>(new Map());
   // Tab cycles the open detail's tabs (Conversation -> Work queue -> Gate -> Diff -> Files);
   // ConsoleDetail owns that state, so it registers a stepper here that App's global key
@@ -362,6 +368,22 @@ export function App(): React.JSX.Element {
       if (!pending || pending.id !== id) return;
       pendingLauncherAction.current = null;
       handle[pending.run]();
+    },
+    [],
+  );
+
+  const registerFind = useCallback(
+    (id: string, handle: TranscriptFindHandle | null) => {
+      if (!handle) {
+        findHandles.current.delete(id);
+        return;
+      }
+      findHandles.current.set(id, handle);
+      // The chord fired while this panel was still unmounted; the reveal it asked for
+      // has now happened, so honour the original keystroke.
+      if (pendingFind.current !== id) return;
+      pendingFind.current = null;
+      handle.open();
     },
     [],
   );
@@ -809,6 +831,7 @@ export function App(): React.JSX.Element {
     registerEl,
     registerActions,
     registerLaunchers,
+    registerFind,
     registerDetailScroll,
     registerReaderTab,
     renamingId,

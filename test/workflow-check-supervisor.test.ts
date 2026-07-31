@@ -1,8 +1,17 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
 import {
@@ -404,6 +413,79 @@ test("a working subpath that leaves the leased tree is refused", async () => {
   }
 });
 
+test("a working subpath that is a SYMLINK out of the leased tree is refused", async () => {
+  const dir = workspace();
+  // Somewhere the run never captured, standing in for the rest of the machine.
+  const outside = workspace();
+  writeFileSync(join(outside, "not-the-captured-commit"), "");
+  // A branch can commit this: git stores symlinks, and a leased worktree is a checkout of
+  // branch-authored content. The subpath the operator configured - `packages/web` - is
+  // lexically perfect and points straight out of the tree.
+  mkdirSync(join(dir, "packages"), { recursive: true });
+  symlinkSync(outside, join(dir, "packages", "web"), "dir");
+
+  const { registry, records } = recordingRegistry();
+  const outcome = await runSupervisedCheck(
+    {
+      attemptId: "attempt-symlink-escape",
+      command: ["sh", "-c", "ls"],
+      leasePath: dir,
+      workingSubpath: "packages/web",
+    },
+    { registry, daemonToken: "" },
+  );
+
+  assert.equal(outcome.result.kind, "infrastructure");
+  assert.match(
+    outcome.result.kind === "infrastructure" ? outcome.result.reason : "",
+    /outside the worktree it was leased/,
+  );
+  assert.deepEqual(records, [], "nothing was spawned, so nothing was recorded");
+});
+
+test("a symlink that stays INSIDE the leased tree is still honoured", async () => {
+  // The over-blocking check. Resolving symlinks must refuse the escape without refusing the
+  // ordinary monorepo layouts that link one directory to another within the same checkout.
+  const dir = workspace();
+  mkdirSync(join(dir, "real", "web"), { recursive: true });
+  writeFileSync(join(dir, "real", "web", "here"), "");
+  mkdirSync(join(dir, "packages"), { recursive: true });
+  symlinkSync(join(dir, "real", "web"), join(dir, "packages", "web"), "dir");
+
+  const { registry } = recordingRegistry();
+  const outcome = await runSupervisedCheck(
+    {
+      attemptId: "attempt-symlink-inside",
+      command: ["sh", "-c", "ls here"],
+      leasePath: dir,
+      workingSubpath: "packages/web",
+    },
+    { registry, daemonToken: "" },
+  );
+  assert.equal(outcome.result.kind, "exited");
+  assert.equal(outcome.result.kind === "exited" && outcome.result.exitCode, 0);
+});
+
+test("a working subpath that is not there fails closed, and says so", async () => {
+  const dir = workspace();
+  const { registry, records } = recordingRegistry();
+  const outcome = await runSupervisedCheck(
+    {
+      attemptId: "attempt-missing-subpath",
+      command: ["sh", "-c", "ls"],
+      leasePath: dir,
+      workingSubpath: "packages/web",
+    },
+    { registry, daemonToken: "" },
+  );
+  assert.equal(outcome.result.kind, "infrastructure");
+  assert.match(
+    outcome.result.kind === "infrastructure" ? outcome.result.reason : "",
+    /could not be resolved inside the leased worktree/,
+  );
+  assert.deepEqual(records, []);
+});
+
 test("a nested working subpath inside the leased tree is honoured", async () => {
   const dir = workspace();
   const nested = join(dir, "packages", "web");
@@ -422,6 +504,87 @@ test("a nested working subpath inside the leased tree is honoured", async () => 
   );
   assert.equal(outcome.result.kind, "exited");
   assert.equal(outcome.result.kind === "exited" && outcome.result.exitCode, 0);
+});
+
+/**
+ * A stand-in daemon: it watches a live check group and then either handles `SIGTERM` the way
+ * `src/server/index.ts` does, or leaves Node's default in place.
+ *
+ * Spawned as a real process because the thing under test is process-level shutdown semantics,
+ * which cannot be observed from inside the process asserting them.
+ */
+function daemonFixture(dir: string): string {
+  const repo = fileURLToPath(new URL("..", import.meta.url));
+  const path = join(dir, "daemon-fixture.ts");
+  writeFileSync(
+    path,
+    [
+      `import { spawn } from "node:child_process";`,
+      `import { watchCheckGroup } from ${JSON.stringify(join(repo, "src/server/workflows/check-group.ts"))};`,
+      `import { processStartIdentity } from ${JSON.stringify(join(repo, "src/server/workflows/check-identity.ts"))};`,
+      `const victim = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });`,
+      `watchCheckGroup(victim.pid!, processStartIdentity(victim.pid!)!);`,
+      // Exactly `index.ts`: SIGINT/SIGTERM -> shutdown() -> process.exit(0).
+      `if (process.argv[2] === "handled") process.on("SIGTERM", () => process.exit(0));`,
+      `console.log("VICTIM=" + victim.pid);`,
+      `setInterval(() => {}, 1000);`,
+    ].join("\n"),
+  );
+  return path;
+}
+
+async function runFixture(mode: "handled" | "default", dir: string): Promise<boolean> {
+  const repo = fileURLToPath(new URL("..", import.meta.url));
+  const child = spawn(process.execPath, ["--import", "tsx", daemonFixture(dir), mode], {
+    cwd: repo,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  let out = "";
+  child.stdout!.setEncoding("utf8");
+  const victim = await new Promise<number>((resolve, reject) => {
+    child.stdout!.on("data", (d: string) => {
+      out += d;
+      const m = out.match(/VICTIM=(\d+)/);
+      if (m) resolve(Number(m[1]));
+    });
+    child.once("exit", () => reject(new Error(`fixture exited early: ${out}`)));
+  });
+  raw.push(victim);
+  await new Promise((r) => setTimeout(r, 250));
+  child.kill("SIGTERM");
+  await new Promise<void>((r) => child.once("exit", () => r()));
+  // The exit hook runs during the child's exit, but the group it signalled dies asynchronously.
+  for (let i = 0; i < 40 && pidAlive(victim); i += 1) await new Promise((r) => setTimeout(r, 50));
+  const survived = pidAlive(victim);
+  try {
+    process.kill(-victim, "SIGKILL");
+  } catch {
+    // already gone
+  }
+  return survived;
+}
+
+test("a daemon that handles SIGTERM the way ours does kills its live check groups", async () => {
+  // `process.on("exit")` does not run when a signal terminates a process BY DEFAULT, which is a
+  // real gap - but not ours: `src/server/index.ts` registers SIGINT/SIGTERM handlers that run
+  // `shutdown()`, ending at `process.exit(0)`. That makes a service stop an ordinary exit, and
+  // an ordinary exit reaches the hook.
+  assert.equal(
+    await runFixture("handled", workspace()),
+    false,
+    "a live check group survived a daemon shutdown shaped like ours",
+  );
+});
+
+test("and Node's DEFAULT signal handling would leak them - which is why the daemon's handler matters", async () => {
+  // The control, and the reason the comment on `killLiveCheckGroups` names its dependency
+  // explicitly. If someone ever removes the daemon's signal handlers, or makes `shutdown()`
+  // return without exiting, this is the behaviour that comes back.
+  assert.equal(
+    await runFixture("default", workspace()),
+    true,
+    "default signal handling unexpectedly reached the exit hook - re-check what this guards",
+  );
 });
 
 test("nothing stays registered for the exit hook once a check is finished", async () => {

@@ -472,3 +472,41 @@ command.
   a process the caller was never handed a pid for. Against the unfixed code the test does not
   merely fail, it HANGS: the orphaned shim's inherited handles keep the test file's event loop
   alive, which is the same mechanism that would have kept the daemon's alive.
+
+- **2026-07-31, review round 2 (Inspector).** Two `major` findings. One accepted and fixed, one
+  declined with measurement.
+
+  **Accepted - "Resolve symlinks before accepting the working subpath".** The containment check
+  was lexical, and the subpath is only half operator-authored: the STRING comes from settings,
+  but the filesystem it lands on is a checkout of branch content, and git stores symlinks. So a
+  branch could commit `packages/web` as a link out of the tree, a subpath the operator
+  configured in good faith would pass the `resolve()` check, and `spawn` would follow the link
+  and run the check against a directory the run never captured - reporting the answer as if it
+  were about this submission. That is the wrong-verdict-rather-than-a-crash failure this
+  function's own comment already named as the worst shape available, so the check was not
+  meeting its stated bar. Both sides now go through `realpath` before comparison, the resolved
+  path is what the command is given, and anything unresolvable fails closed with a reason.
+  Deliberately not `canonicalPath` from the pool adapter, whose `realpath` failure falls back to
+  the raw string: right for comparing two spellings of a tree we own, wrong for a containment
+  check. Three tests: the escape refused, a symlink that stays INSIDE still honoured (the
+  over-blocking control), and a missing subpath failing closed with its own message. The
+  residual - a component swapped between the check and `spawn`'s `chdir` - is named in the
+  comment, because no sequence of stat calls wins that race.
+
+  **Declined - "Handle daemon termination signals for live check groups".** The mechanism is
+  real: `process.on("exit")` does not run when a signal terminates a process BY DEFAULT. The
+  premise is not, for this daemon. `src/server/index.ts:331-332` registers handlers for both
+  `SIGINT` and `SIGTERM` that run `shutdown()`, which ends at `process.exit(0)` (`:329`), so a
+  service stop is an ordinary exit and the hook is reached. Measured rather than argued, with a
+  stand-in daemon spawned in both shapes: handled -> the watched group is killed; Node's default
+  -> it survives. Both cases now ship as tests, so the dependency is a guarded claim instead of
+  an implicit one, and `killLiveCheckGroups`' comment names it with the file and lines.
+
+  Making the requested change would have been a regression rather than a fix. A second
+  `SIGTERM` listener calling `process.exit` races the daemon's orderly `shutdown()` and
+  truncates it - skipping `sdkSessions.stopAll()` and `workflows.stop()`, cutting embedded
+  sessions off mid-turn - trading a hypothetical leak for a certain one, and adding exactly the
+  kind of second teardown path this repository forbids. Wiring into `shutdown()` itself is also
+  out of scope twice over: this phase ships unwired, and the plan assigns `WorkflowEngine.stop()`
+  cancelling live check groups to Phase 4. `SIGKILL` of the daemon defeats every version of
+  this, which is why the durable row and identity-verified recovery exist at all.

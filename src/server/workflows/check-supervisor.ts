@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { readToken } from "../../shared/harness-runtime.mjs";
 import type { CheckExecutionResult } from "./checks.ts";
@@ -88,14 +89,9 @@ export async function runSupervisedCheck(
   }
 
   const cwd = workingDirectory(request.leasePath, request.workingSubpath);
-  if (cwd === null) {
+  if (!cwd.ok) {
     return {
-      result: {
-        kind: "infrastructure",
-        reason:
-          `the check's working subpath ${JSON.stringify(request.workingSubpath)} does not stay ` +
-          "inside the worktree it was leased",
-      },
+      result: { kind: "infrastructure", reason: cwd.reason },
       emptiness: "empty",
       supervisor: null,
     };
@@ -104,7 +100,8 @@ export async function runSupervisedCheck(
   const outcome = await spawnCheckProcess({
     attemptId: request.attemptId,
     command: request.command,
-    cwd,
+    // The RESOLVED path, so what was checked for containment is what the command is given.
+    cwd: cwd.path,
     env: scrubCheckEnv(deps.env ?? process.env, deps.daemonToken ?? readToken()),
     timeoutMs: request.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
     maxOutputBytes: deps.maxOutputBytes,
@@ -176,24 +173,83 @@ export function createCheckGroupRecovery(
   };
 }
 
+type WorkingDirectory = { ok: true; path: string } | { ok: false; reason: string };
+
 /**
  * Join a relative working subpath onto a leased tree, refusing anything that leaves it.
  *
- * The subpath is derived from operator-authored settings and travels through a durable row, so
- * "it is always well-formed" is an assumption rather than a fact. Running a build one directory
- * ABOVE the leased tree would execute against a checkout the run never captured and report the
- * answer as if it were about this submission - a wrong verdict rather than a crash, which is
- * the worst shape a failure can take here.
+ * Running a build one directory ABOVE the leased tree would execute against a checkout the run
+ * never captured and report the answer as if it were about this submission - a wrong verdict
+ * rather than a crash, which is the worst shape a failure can take here.
+ *
+ * ## Why this resolves symlinks, and why a lexical check is not enough
+ *
+ * The subpath STRING is operator-authored, but the filesystem it lands on is not: a leased
+ * worktree is a checkout of branch-authored content, and git stores symlinks. So a branch can
+ * commit `packages/web` as a link to anywhere on the machine, and a lexically perfect subpath
+ * the operator configured in good faith then resolves outside the tree. `spawn` follows the
+ * link; a `resolve()`-only check does not, which is the whole gap.
+ *
+ * Both sides are therefore run through `realpath` before being compared, and the RESOLVED path
+ * is what the command is given - so what was checked is what runs, rather than a spelling of it
+ * that could resolve differently a moment later. Anything that cannot be resolved fails closed
+ * with a reason, including a subpath that simply is not there.
+ *
+ * Deliberately not `canonicalPath` from the pool adapter, which falls back to the raw string
+ * when `realpath` fails. That is right for its job - comparing two spellings of a tree we
+ * already own - and exactly wrong for a containment check, where an unresolvable path must
+ * refuse rather than degrade into a string comparison.
+ *
+ * The residual, stated because it cannot be closed from user space: a component swapped between
+ * this check and the `chdir` inside `spawn` is a race no sequence of stat calls can win. What
+ * `realpath` buys is that the ordinary, persistent case - a symlink sitting in the tree - is
+ * caught, rather than only the case where the operator typed `..`.
  */
-function workingDirectory(leasePath: string, workingSubpath: string): string | null {
-  if (isAbsolute(workingSubpath)) return null;
-  const root = resolve(leasePath);
-  const candidate = resolve(join(root, workingSubpath));
+function workingDirectory(leasePath: string, workingSubpath: string): WorkingDirectory {
+  if (isAbsolute(workingSubpath)) {
+    return {
+      ok: false,
+      reason:
+        `the check's working subpath ${JSON.stringify(workingSubpath)} is absolute, and it must ` +
+        "be relative to the worktree that was leased",
+    };
+  }
+  let root: string;
+  try {
+    root = realpathSync(resolve(leasePath));
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `the leased worktree ${leasePath} could not be resolved: ${message(err)}`,
+    };
+  }
+  let candidate: string;
+  try {
+    candidate = realpathSync(resolve(join(root, workingSubpath)));
+  } catch (err) {
+    return {
+      ok: false,
+      reason:
+        `the check's working directory ${JSON.stringify(workingSubpath)} could not be resolved ` +
+        `inside the leased worktree: ${message(err)}`,
+    };
+  }
   if (candidate !== root) {
     const rel = relative(root, candidate);
-    if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null;
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+      return {
+        ok: false,
+        reason:
+          `the check's working subpath ${JSON.stringify(workingSubpath)} resolves to ${candidate}, ` +
+          "which is outside the worktree it was leased",
+      };
+    }
   }
-  return candidate;
+  return { ok: true, path: candidate };
+}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export type { CheckSpawnOutcome } from "./check-spawn.ts";

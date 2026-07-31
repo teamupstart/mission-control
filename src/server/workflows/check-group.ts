@@ -234,6 +234,24 @@ export function liveCheckGroupCount(): number {
  *
  * The identity check is NOT dropped, though. Whatever else is true on the way out, we do not
  * signal a stranger.
+ *
+ * ## What this depends on, stated because it is somebody else's decision
+ *
+ * `process.on("exit")` does NOT run when a signal terminates a process by default, so this hook
+ * is only reached because `src/server/index.ts` registers handlers for `SIGINT` and `SIGTERM`
+ * that run `shutdown()`, which ends at `process.exit(0)`. That turns a service stop into an
+ * ordinary exit, and an ordinary exit fires this. Measured both ways in
+ * `test/workflow-check-supervisor.test.ts`: with the daemon's shape the group dies, and with
+ * Node's default signal handling it survives.
+ *
+ * Deliberately NOT fixed here by registering our own signal handlers. A second `SIGTERM`
+ * listener calling `process.exit` would race the daemon's orderly shutdown and truncate it -
+ * skipping `sdkSessions.stopAll()` and `workflows.stop()`, cutting embedded sessions off
+ * mid-turn - which trades a hypothetical leak for a certain one. The daemon owns its shutdown
+ * sequence; this module owns being reachable from it.
+ *
+ * `SIGKILL` of the daemon defeats every version of this, which is exactly why the durable row
+ * and identity-verified startup recovery exist.
  */
 export function killLiveCheckGroups(): void {
   for (const [pid, identity] of live) {

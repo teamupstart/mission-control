@@ -18,6 +18,8 @@ const {
   compactWorkflowContext,
   fallbackWorkflowContext,
   humanTranscriptDecisions,
+  probeMatchesEvidence,
+  readWorkflowEvidenceProbe,
   readWorkflowContextRaw,
   workflowReviewDecision,
   workflowContextFingerprint,
@@ -193,6 +195,20 @@ test("repository capture fails closed and detects worktree evidence changes", as
   writeFileSync(join(repo, "file.txt"), "two\n");
 
   assert.equal(await captureBoundaryChanged(registry, binding, captured.boundary), true);
+
+  const dirtyCapture = await readWorkflowContextRaw(registry, binding);
+  const dirtyProbe = await readWorkflowEvidenceProbe(registry, binding);
+  assert.equal(probeMatchesEvidence(dirtyProbe, dirtyCapture.context.evidence), true);
+
+  // Same HEAD, same path, same porcelain status and even the same byte length. Only the file
+  // contents move, which is exactly the consecutive-repair shape the old metadata-only probe
+  // silently classified as unchanged.
+  writeFileSync(join(repo, "file.txt"), "six\n");
+  const repairedProbe = await readWorkflowEvidenceProbe(registry, binding);
+  assert.deepEqual(repairedProbe.workingTreeStatus, dirtyProbe.workingTreeStatus);
+  assert.equal(repairedProbe.headSha, dirtyProbe.headSha);
+  assert.notEqual(repairedProbe.diffFingerprint, dirtyProbe.diffFingerprint);
+  assert.equal(probeMatchesEvidence(repairedProbe, dirtyCapture.context.evidence), false);
 
   writeFileSync(join(repo, "file.txt"), "one\n");
   for (let index = 0; index <= 500; index++) {

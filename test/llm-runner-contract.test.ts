@@ -58,7 +58,11 @@ cat > /dev/null
 for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
 pwd > "$RUN_CWD"
 printf '%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS" > "$RUN_ENV"
-printf 'the codex text'
+printf '%s\\n' '{"type":"thread.started","thread_id":"thread-abc"}'
+printf '%s\\n' '{"type":"turn.started"}'
+printf '%s\\n' '{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"ignore me"}}'
+printf '%s\\n' '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"the codex text"}}'
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":200,"cache_write_input_tokens":100,"output_tokens":40,"reasoning_output_tokens":10}}'
 `,
 );
 chmodSync(fakeCodexBin, 0o755);
@@ -67,10 +71,11 @@ process.env.MISSION_CODEX_BIN = fakeCodexBin;
 const { LLM_RUNNERS, DEFAULT_LLM_RUNNER_ID, allLlmRunners, llmRunner } = await import(
   "../src/server/llm/index.ts"
 );
-const { CLAUDE_GRANTABLE_TOOLS, claudeGrantSettings, claudeRunner } = await import(
-  "../src/server/llm/claude.ts"
-);
+const { CLAUDE_GRANTABLE_TOOLS, claudeGrantSettings, claudeRunner, claudeSpendReport } =
+  await import("../src/server/llm/claude.ts");
 const { codexRunner } = await import("../src/server/llm/codex.ts");
+const { setLlmSpendSink } = await import("../src/server/llm/spend.ts");
+type LlmSpendReport = import("../src/shared/llm-spend.ts").LlmSpendReport;
 const { HEADLESS_CWD } = await import("../src/server/claude-cli.ts");
 const { LLM_RUNNER_IDS, grantRefusal } = await import("../src/shared/llm.ts");
 // The one caller that holds tools, and therefore the one that decides whether the grant
@@ -158,10 +163,119 @@ test("Codex runs ephemerally with command tools disabled and returns its final t
   assert.equal(flag("--model"), "gpt-5.6-sol");
   assert.ok(args.includes("features.shell_tool=false"));
   assert.ok(args.includes("features.unified_exec=false"));
+  // The event stream, not the human transcript. Load-bearing twice over: it is what makes
+  // the returned text the model's own `agent_message` rather than a banner the caller has
+  // to parse around, and an `--ephemeral` run writes no rollout file, so this is the only
+  // place its token usage is ever stated.
+  assert.ok(args.includes("--json"));
   for (const forbidden of ["resume", "--dangerously-bypass-approvals-and-sandbox"]) {
     assert.equal(args.includes(forbidden), false);
   }
   assert.equal(lines(RUN_ENV)[2], "1");
+});
+
+test("a Codex run reports what it spent, under the role that asked for it", async () => {
+  clearRecording();
+  const seen: LlmSpendReport[] = [];
+  const previous = setLlmSpendSink((r) => void seen.push(r));
+  try {
+    await codexRunner.run("verify this item", { model: "gpt-5.6-terra", role: "foreman:verify" });
+  } finally {
+    setLlmSpendSink(previous);
+  }
+  assert.equal(seen.length, 1);
+  const report = seen[0]!;
+  assert.equal(report.role, "foreman:verify");
+  assert.equal(report.runner, "codex");
+  // The thread id is the dedup identity: a retried report must replace its own row rather
+  // than add a second one.
+  assert.equal(report.runId, "thread-abc");
+  // Codex reports `input_tokens` INCLUSIVE of both cache tiers; the ledger stores them
+  // disjoint. 1200 - 200 - 100 = 900 is that subtraction, and getting it wrong would
+  // inflate every headless row by the cached tier forever.
+  assert.deepEqual(report.models, [{
+    modelId: "gpt-5.6-terra",
+    input: 900,
+    output: 40,
+    reasoningOutput: 10,
+    cacheRead: 200,
+    cacheWrite: 100,
+    reportedCostUsd: null,
+  }]);
+});
+
+test("a Claude envelope is read for the run's own id, models and reported cost", () => {
+  // A REAL envelope, captured from `claude -p --output-format json --tools ""` on this
+  // machine and trimmed only of fields the parser ignores. A hand-written approximation
+  // would prove the parser matches the approximation.
+  const raw = JSON.stringify({
+    is_error: false,
+    subtype: "success",
+    result: "OK",
+    session_id: "19de2f1f-c04d-4cfd-a218-719095efe008",
+    total_cost_usd: 0.013531,
+    usage: {
+      input_tokens: 9,
+      cache_creation_input_tokens: 6661,
+      cache_read_input_tokens: 0,
+      output_tokens: 40,
+    },
+    modelUsage: {
+      "claude-haiku-4-5-20251001": {
+        inputTokens: 9,
+        outputTokens: 40,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 6661,
+        costUSD: 0.013531,
+        canonicalModel: "claude-haiku-4-5",
+      },
+    },
+  });
+  const report = claudeSpendReport(raw, "inspector:review", "opus", 1_700_000_000_000);
+  assert.ok(report);
+  // The run's own minted session id. This is what makes the row dedup - and it is the same
+  // id its OTel export arrives under, which is how that twin is later excluded from session
+  // spend instead of billing the run twice.
+  assert.equal(report.runId, "19de2f1f-c04d-4cfd-a218-719095efe008");
+  // The model that ACTUALLY served the request, not the "opus" that was asked for.
+  assert.deepEqual(report.models, [{
+    modelId: "claude-haiku-4-5-20251001",
+    input: 9,
+    output: 40,
+    reasoningOutput: 0,
+    cacheRead: 0,
+    cacheWrite: 6661,
+    reportedCostUsd: 0.013531,
+  }]);
+  // Anthropic reports the input tier already exclusive of cache, so unlike Codex there is
+  // no subtraction to do - asserting the raw 9 is what would catch someone adding one.
+  assert.equal(claudeRunner.price(report.models[0]!)?.basis, "reported");
+  assert.equal(claudeRunner.price(report.models[0]!)?.costUsd, 0.013531);
+});
+
+test("an envelope that states no usage produces no report", () => {
+  // The fake claude bin returns exactly this shape, and a failed run returns it for real -
+  // an auth fast-fail reports zeroes. A $0 row for a call that never reached the model
+  // would put a fictitious run in the automation line.
+  assert.equal(
+    claudeSpendReport('{"result":"the model text"}', "foreman:review", "opus", 1),
+    null,
+  );
+});
+
+test("a run with no role reports nothing at all", async () => {
+  clearRecording();
+  const seen: LlmSpendReport[] = [];
+  const previous = setLlmSpendSink((r) => void seen.push(r));
+  try {
+    await codexRunner.run("summarise", { model: "gpt-5.6-terra" });
+  } finally {
+    setLlmSpendSink(previous);
+  }
+  // Accounting is opt-in per call site, so a caller that has not been given a role - a
+  // workflow step, a future subsystem - stays out of the automation line rather than
+  // landing in whichever bucket happened to be last.
+  assert.equal(seen.length, 0);
 });
 
 test("Codex refuses Inspector-style tool grants instead of weakening their deny rules", async () => {

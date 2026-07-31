@@ -272,6 +272,7 @@ async function seed(over: SeedOptions = {}) {
     readEvidenceProbe: async () => ({
       headSha: head,
       workingTreeStatus: over.dirty ? [" M src/file.ts"] : [],
+      diffFingerprint: `diff-${head}`,
     }),
     resumptionSettleMs: 0,
   });

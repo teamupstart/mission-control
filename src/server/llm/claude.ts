@@ -2,7 +2,9 @@ import { HEADLESS_CWD, killLiveClaudeRuns, runClaudeText } from "../claude-cli.t
 import { unwrapEnvelope } from "./structured.ts";
 import { headlessTranscriptDir } from "../goal/prune.ts";
 import { grantRefusal } from "@shared/llm.ts";
+import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
 import type { LlmRunOptions, LlmRunner, LlmToolGrant } from "@shared/llm.ts";
+import type { LlmSpendModelUsage, LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 
 // The `claude -p` implementation of `LlmRunner`, with today's exact behaviour.
 //
@@ -61,6 +63,86 @@ export function claudeGrantSettings(grant: LlmToolGrant): string {
  */
 export { HEADLESS_CWD };
 
+function number(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * Turn a `claude -p --output-format json` envelope into a spend report.
+ *
+ * The envelope is READ rather than routed, and that is the whole design. `claude -p` already
+ * hands back everything the ledger wants - the run's own `session_id`, a cost figure it
+ * calculated itself, and a per-model token breakdown - so accounting for a headless run
+ * needs no exporter, no endpoint and no session identity invented for it. The alternative
+ * considered and rejected was OTel: these runs DO export it, but every run mints a fresh
+ * uuid (deliberately - see the flags-that-are-absent note in `claude-cli.ts`), so the rows
+ * land under a key matching no card and no role. Making that attributable would have meant
+ * `--session-id`, which is precisely the flag that would give these runs a resumable
+ * conversation and cost the context isolation the whole subsystem depends on.
+ *
+ * `modelUsage` is preferred over the flat `usage` block because it names the model that
+ * ACTUALLY served each request. A run that asked for one model and was served by another -
+ * a fallback, an alias resolving differently - would otherwise be filed under the id we
+ * asked for, and the ledger's `model_id` would quietly stop meaning what it says. The flat
+ * block is the fallback for an envelope that carries no per-model breakdown, and only then
+ * is the requested id used.
+ *
+ * Note the tier convention differs from Codex's and needs no subtraction: Anthropic reports
+ * `input_tokens` EXCLUSIVE of the two cache tiers, which is already what the ledger stores.
+ * See `codexTokenSplit` for the other half of that story.
+ */
+export function claudeSpendReport(
+  raw: string,
+  role: LlmSpendRole,
+  requestedModel: string,
+  ts: number,
+): LlmSpendReport | null {
+  let envelope: Record<string, unknown>;
+  try {
+    envelope = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!envelope || typeof envelope !== "object") return null;
+  const runId = typeof envelope.session_id === "string" ? envelope.session_id : "";
+  const perModel = envelope.modelUsage;
+  const models: LlmSpendModelUsage[] = [];
+  if (perModel && typeof perModel === "object") {
+    for (const [modelId, value] of Object.entries(perModel as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const u = value as Record<string, unknown>;
+      models.push({
+        modelId,
+        input: number(u.inputTokens),
+        output: number(u.outputTokens),
+        // Claude reports no reasoning tier of its own; the ledger column stays 0 rather
+        // than borrowing output, which would double-count it against the token total.
+        reasoningOutput: 0,
+        cacheRead: number(u.cacheReadInputTokens),
+        cacheWrite: number(u.cacheCreationInputTokens),
+        reportedCostUsd: typeof u.costUSD === "number" ? u.costUSD : null,
+      });
+    }
+  }
+  if (models.length === 0) {
+    const usage = envelope.usage;
+    if (!usage || typeof usage !== "object") return null;
+    const u = usage as Record<string, unknown>;
+    models.push({
+      modelId: requestedModel,
+      input: number(u.input_tokens),
+      output: number(u.output_tokens),
+      reasoningOutput: 0,
+      cacheRead: number(u.cache_read_input_tokens),
+      cacheWrite: number(u.cache_creation_input_tokens),
+      reportedCostUsd:
+        typeof envelope.total_cost_usd === "number" ? envelope.total_cost_usd : null,
+    });
+  }
+  const report: LlmSpendReport = { role, runner: "claude", runId, ts, models };
+  return spendReportIsRecordable(report) ? report : null;
+}
+
 export const claudeRunner: LlmRunner = {
   id: "claude",
   label: "Claude Code",
@@ -84,6 +166,12 @@ export const claudeRunner: LlmRunner = {
         ? { tools: grant.tools.join(","), cwd: grant.cwd, settings: claudeGrantSettings(grant) }
         : {}),
     });
+    // Read for accounting BEFORE the envelope is discarded below - the usage lives in the
+    // wrapper, not the text, so this is the only moment it exists.
+    if (opts.role) {
+      const report = claudeSpendReport(raw, opts.role, opts.model ?? "", Date.now());
+      if (report) reportLlmSpend(report);
+    }
     // Unwrapped here, so no caller ever sees the `{ result: "…" }` envelope. It exists
     // because THIS runner passes `--output-format json`; a caller that parsed it would be
     // undoing its own runner's flag, and a different provider's envelope would break it.
@@ -99,6 +187,20 @@ export const claudeRunner: LlmRunner = {
    * today summarises one window of one session and is better off with a clean context.
    */
   runInThread: null,
+
+  /**
+   * Claude Code prices its own runs, so this only forwards the figure the envelope carried.
+   *
+   * No local rate table, deliberately. The CLI bills through whatever account it is logged
+   * in as and calculates from rates it knows and this repo does not; a second table here
+   * would be a slower-moving copy that disagrees the first time either side changes, and
+   * the disagreement would be invisible - two plausible dollar figures. `reported` is the
+   * ledger's word for exactly this provenance.
+   */
+  price(usage) {
+    if (usage.reportedCostUsd === null) return null;
+    return { costUsd: usage.reportedCostUsd, basis: "reported", pricingVersion: "" };
+  },
 
   sandbox: { tools: CLAUDE_GRANTABLE_TOOLS, enforcesDenyPaths: true },
 

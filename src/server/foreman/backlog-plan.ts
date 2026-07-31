@@ -311,7 +311,12 @@ export async function planBacklog(
   }
 
   const result = await runStructured(
-    (p) => llmRunner(runnerId).run(p, { model, timeoutMs: backlogTimeoutMs(backlog.length) }),
+    (p) =>
+      llmRunner(runnerId).run(p, {
+        model,
+        timeoutMs: backlogTimeoutMs(backlog.length),
+        role: "foreman:backlog",
+      }),
     buildBacklogPrompt(backlog),
     (raw) => parseModelJson(raw, BacklogReportSchema),
     "The backlog planner",

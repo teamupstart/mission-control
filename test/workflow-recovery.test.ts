@@ -152,6 +152,7 @@ test("restart interrupts fresh calls, retries safely, and never duplicates recei
     label: "fake",
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     async run(_prompt, options) {

@@ -12,6 +12,7 @@ import type { CheapAction, Divergence } from "./foreman.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
+import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
@@ -264,7 +265,39 @@ export interface FleetCost {
   rateLimits: RateLimits | null;
   /** Quota windows grouped by provider, so account updates remain independent. */
   rateLimitSources?: RateLimitSource[];
+  /**
+   * What the app spent on ITSELF - the Foreman's and Inspector's own headless runs - kept
+   * out of every figure above.
+   *
+   * A separate line rather than part of the fleet total, and that is a product decision
+   * rather than a schema convenience. The figures above answer "what is the work I asked
+   * for costing me"; this answers "what is the overhead of having it watched", and they
+   * move for unrelated reasons - the loops spend while nobody is asking for anything. Rolled
+   * together, a quiet morning with a busy Inspector would read as fleet activity, and the
+   * operator would have no way to tell which half moved. Anyone who wants one number can add
+   * two that are each independently true.
+   */
+  automation: FleetAutomationCost;
   updatedAt: number;
+}
+
+/**
+ * The autonomous loops' own spend, today.
+ *
+ * Always present, never null: unlike a rate-limit window, whose absence means "not
+ * reported", an empty automation summary is a claim we can always make truthfully - the
+ * loops either ran or they did not, and the ledger knows which.
+ */
+export interface FleetAutomationCost {
+  /** API-equivalent estimate since local midnight; null when a row in it is unpriced. */
+  estimatedCostToday: number | null;
+  /** Every tier summed, since local midnight. */
+  tokensToday: number;
+  /**
+   * Per role, heaviest first, so the strip can name what the money went on rather than
+   * only how much. Empty when the loops have not run today.
+   */
+  roles: AutomationRoleCost[];
 }
 
 export interface Session {

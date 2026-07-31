@@ -1,0 +1,280 @@
+import { after, test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+
+// What is at stake: a headless run's cost exists exactly once, and only for as long as it
+// takes to deliver it.
+//
+// By the time the worker reports, the tokens are spent and the review is answered. There is
+// no retryable unit of work behind a failed report - dropping one does not skip work, it
+// deletes a number nothing can reconstruct. And the failure is routine rather than exotic:
+// the daemon restarts while the Foreman worker, which is a separate process, keeps running.
+// A single POST that logged its own failure would lose spend on the most ordinary event in
+// the system.
+
+// Set BEFORE the client is imported: `BASE_URL` is resolved at module load from
+// `envVar("PORT")`, which reads MISSION_/FLEET_/HARNESS_ prefixes. Getting this wrong would
+// not fail the test - it would quietly POST test rows into the REAL daemon's ledger on 7317.
+// Same reasoning for the spool: `stateDir()` honours MISSION_HOME, and without an override
+// these tests would write their outbox into the real install's state dir.
+const home = mkdtempSync(join(tmpdir(), "foreman-spend-"));
+process.env.MISSION_HOME = home;
+const SPOOL = join(home, "foreman-spend-outbox");
+const LEGACY_SPOOL = join(home, "foreman-spend-outbox.json");
+
+/** What the fake daemon does to the next request. */
+let mode: "ok" | "down" | "500" | "400" = "ok";
+const received: Array<Record<string, unknown>> = [];
+
+let server: Server | null = null;
+let port: number | null = null;
+
+function start(): Promise<void> {
+  return new Promise((resolve) => {
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        if (mode === "500") {
+          res.writeHead(503).end();
+          return;
+        }
+        if (mode === "400") {
+          res.writeHead(422).end();
+          return;
+        }
+        received.push(JSON.parse(body) as Record<string, unknown>);
+        res.writeHead(204).end();
+      });
+    });
+    server.listen(port ?? 0, "127.0.0.1", () => {
+      port = (server!.address() as AddressInfo).port;
+      resolve();
+    });
+  });
+}
+
+function stop(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!server) return resolve();
+    server.close(() => resolve());
+    server = null;
+  });
+}
+
+await start();
+process.env.MISSION_PORT = String(port);
+
+const { ForemanClient, flushPendingSpend, loadSpendOutbox, pendingSpendReports } = await import(
+  "../src/server/foreman/client.ts"
+);
+const client = new ForemanClient();
+
+after(async () => {
+  await stop();
+  rmSync(home, { recursive: true, force: true });
+});
+
+function report(role: string, runId: string) {
+  return {
+    role,
+    runner: "codex",
+    runId,
+    ts: 1_700_000_000_000,
+    models: [{
+      modelId: "gpt-5.6-terra",
+      input: 100,
+      output: 10,
+      reasoningOutput: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reportedCostUsd: null,
+    }],
+  } as never;
+}
+
+function spooledRunIds(): string[] {
+  if (!existsSync(SPOOL)) return [];
+  return readdirSync(SPOOL)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => JSON.parse(readFileSync(join(SPOOL, name), "utf8")) as { runId: string })
+    .sort((a, b) => a.runId.localeCompare(b.runId))
+    .map((entry) => entry.runId);
+}
+
+function writeSpooled(name: string, value: unknown): void {
+  mkdirSync(SPOOL, { recursive: true });
+  writeFileSync(join(SPOOL, name), JSON.stringify(value), "utf8");
+}
+
+test("a report reaches the daemon and leaves nothing queued or spooled", async () => {
+  await client.reportSpend(report("foreman:review", "run-1"));
+  assert.equal(received.length, 1);
+  assert.equal(pendingSpendReports(), 0);
+  // No report file remains at rest.
+  assert.equal(existsSync(SPOOL), false);
+});
+
+test("an undelivered report is written to disk, not just held in memory", async () => {
+  // The hole this closes: the run is finished and paid for, the daemon is down, and the
+  // worker is then killed. Held only in memory, that spend was gone for good -
+  // unrecoverable, because nothing else on the machine knows the run ever happened.
+  await stop();
+  await client.reportSpend(report("foreman:review", "run-crash"));
+  assert.deepEqual(spooledRunIds(), ["run-crash"]);
+
+  // Deliver it so the shared queue is clean for the tests below.
+  await start();
+  await flushPendingSpend();
+  assert.equal(existsSync(SPOOL), false, "and the spool is erased once it is acknowledged");
+  assert.equal((received.at(-1) as { runId: string }).runId, "run-crash");
+});
+
+test("a report left by a dead worker is recovered by the next one", () => {
+  // A worker that never got the chance to flush. The spool is all that is left of the run,
+  // and startup is the moment it either reaches the ledger or is lost - so `loadSpendOutbox`
+  // is what makes the durability real rather than merely written down.
+  writeSpooled("dead-worker.json", report("inspector:review", "run-from-the-dead"));
+  const recovered = loadSpendOutbox();
+  assert.equal(recovered, 1);
+  assert.equal(pendingSpendReports(), 1);
+});
+
+test("the recovered report is delivered, and only then forgotten", async () => {
+  await flushPendingSpend();
+  assert.equal((received.at(-1) as { runId: string }).runId, "run-from-the-dead");
+  assert.equal(pendingSpendReports(), 0);
+  assert.equal(existsSync(SPOOL), false);
+});
+
+test("a corrupt spool is discarded rather than replayed forever", () => {
+  mkdirSync(SPOOL, { recursive: true });
+  writeFileSync(join(SPOOL, "corrupt.json"), "{not json", "utf8");
+  assert.equal(loadSpendOutbox(), 0);
+  assert.deepEqual(spooledRunIds(), []);
+  // Entries that parse but are not reports are dropped for the same reason: feeding them
+  // to the route would 4xx on every restart instead of once.
+  writeSpooled("invalid.json", { role: "foreman:review" });
+  assert.equal(loadSpendOutbox(), 0);
+});
+
+test("the shared legacy array migrates without losing its pending reports", () => {
+  writeFileSync(
+    LEGACY_SPOOL,
+    JSON.stringify([report("foreman:review", "legacy-1"), report("inspector:reply", "legacy-2")]),
+    "utf8",
+  );
+  assert.equal(loadSpendOutbox(), 2);
+  assert.equal(existsSync(LEGACY_SPOOL), false);
+  assert.deepEqual(spooledRunIds(), ["legacy-1", "legacy-2"]);
+});
+
+test("migrated reports are delivered before later cases", async () => {
+  await flushPendingSpend();
+  assert.equal(pendingSpendReports(), 0);
+  assert.deepEqual(spooledRunIds(), []);
+});
+
+test("spend survives the daemon being down, and lands when it returns", async () => {
+  // The case the outbox exists for. The daemon is restarting; the run already happened.
+  // Counted relative to what has already arrived, so this asserts about its own report
+  // rather than about how many tests ran before it.
+  const before = received.length;
+  await stop();
+  await client.reportSpend(report("foreman:verify", "run-2"));
+  assert.equal(pendingSpendReports(), 1, "held rather than discarded");
+  assert.equal(received.length, before, "and not delivered while nothing was listening");
+
+  // The daemon comes back. Nothing about the run is recoverable from anywhere else, so
+  // this is the only path by which its cost ever reaches the ledger.
+  await start();
+  await flushPendingSpend();
+  assert.equal(pendingSpendReports(), 0);
+  assert.equal(received.length, before + 1);
+  assert.equal((received.at(-1) as { runId: string }).runId, "run-2");
+});
+
+test("a 5xx holds the report; a 4xx drops it rather than blocking the queue", async () => {
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  mode = "500";
+  await client.reportSpend(report("inspector:review", "run-3"));
+  assert.equal(pendingSpendReports(), 1, "a daemon-side error is transient, so it is kept");
+
+  // A 422 means this body will never validate - a worker newer than its daemon, say.
+  // Retrying it forever would wedge every later report behind it, so it is dropped loudly.
+  mode = "400";
+  await flushPendingSpend();
+  assert.equal(pendingSpendReports(), 0, "the unprocessable report did not stall the queue");
+
+  mode = "ok";
+  await client.reportSpend(report("inspector:reply", "run-4"));
+  assert.equal(
+    (received.at(-1) as { runId: string }).runId,
+    "run-4",
+    "and later reports still get through",
+  );
+});
+
+test("reports are delivered oldest-first, so the queue cannot reorder history", async () => {
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  await stop();
+  await client.reportSpend(report("foreman:triage", "run-5"));
+  await client.reportSpend(report("foreman:triage", "run-6"));
+  assert.equal(pendingSpendReports(), 2);
+  // The spool preserves order too - a restart mid-outage must not shuffle history.
+  assert.deepEqual(spooledRunIds(), ["run-5", "run-6"]);
+  await start();
+  await flushPendingSpend();
+  assert.deepEqual(
+    received.slice(-2).map((r) => (r as { runId: string }).runId),
+    ["run-5", "run-6"],
+  );
+});
+
+test("overlapping workers cannot delete a report owned only by the other", async () => {
+  assert.equal(pendingSpendReports(), 0, "the primary module starts drained");
+  await stop();
+  writeSpooled("shared.json", report("foreman:review", "run-shared"));
+
+  // Query suffixes produce independent module state, standing in for two Foreman processes
+  // while keeping both on the same state directory and daemon endpoint.
+  const clientModulePath = "../src/server/foreman/client.ts";
+  const workerA = await import(`${clientModulePath}?spend-worker-a`) as typeof import(
+    "../src/server/foreman/client.ts"
+  );
+  const workerB = await import(`${clientModulePath}?spend-worker-b`) as typeof import(
+    "../src/server/foreman/client.ts"
+  );
+  assert.equal(workerA.loadSpendOutbox(), 1);
+  assert.equal(workerB.loadSpendOutbox(), 1);
+
+  const clientB = new workerB.ForemanClient();
+  await clientB.reportSpend(report("foreman:verify", "run-only-in-b"));
+  assert.deepEqual(spooledRunIds(), ["run-only-in-b", "run-shared"]);
+
+  // Worker B exits here in the failure sequence. Worker A rescans before its drain, adopts
+  // B's file, and removes each file only after that exact report is acknowledged.
+  await start();
+  await workerA.flushPendingSpend();
+  assert.deepEqual(
+    received.slice(-2).map((entry) => (entry as { runId: string }).runId),
+    ["run-shared", "run-only-in-b"],
+  );
+  assert.deepEqual(spooledRunIds(), []);
+
+  // Clear B's unref'ed retry timer and in-memory duplicates before the test process exits.
+  await workerB.flushPendingSpend();
+});

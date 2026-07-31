@@ -501,6 +501,7 @@ test("Live sends one exact packet, attributes it once, and re-arms only the drai
     label: "fake",
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     async run() {

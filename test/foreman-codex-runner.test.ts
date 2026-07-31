@@ -10,10 +10,15 @@ const fake = join(home, "codex");
 process.env.HARNESS_HOME = join(home, "state");
 process.env.MISSION_CODEX_BIN = fake;
 process.env.CODEX_TEST_ARGV = argvPath;
+// The verdict arrives the way the real CLI delivers it under `--json`: as the `text` of an
+// `agent_message` item, not as bare stdout. That is the runner's contract now, and a fake
+// still printing raw text would be asserting against a CLI this code no longer speaks to.
 writeFileSync(fake, `#!/bin/sh
 printf '%s\\n' "$@" > "$CODEX_TEST_ARGV"
 cat >/dev/null
-printf '%s' '{"purpose":"Routine dependency approval.","classification":"access","action":"answer","answer":{"text":"Approve.","submit":true},"confidence":0.99}'
+printf '%s\\n' '{"type":"thread.started","thread_id":"thread-review"}'
+printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"purpose\\":\\"Routine dependency approval.\\",\\"classification\\":\\"access\\",\\"action\\":\\"answer\\",\\"answer\\":{\\"text\\":\\"Approve.\\",\\"submit\\":true},\\"confidence\\":0.99}"}}'
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":900,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":30,"reasoning_output_tokens":0}}'
 `);
 chmodSync(fake, 0o755);
 

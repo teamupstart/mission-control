@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import type { AgentType, ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { activePaneDialog, reportBucket } from "@shared/session.ts";
-import { ForemanClient } from "./client.ts";
+import {
+  ForemanClient,
+  flushPendingSpend,
+  loadSpendOutbox,
+  pendingSpendReports,
+} from "./client.ts";
+import { setLlmSpendSink } from "../llm/spend.ts";
 import { reviewModel, reviewSession } from "./review.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
@@ -233,13 +239,36 @@ function installShutdown(client: ForemanClient): void {
       // Every runner, not just `claude -p`: the cheap tier spawns through whichever one
       // is configured, and these children are detached so they outlive this process.
       killLiveLlmRuns();
-      void client.releaseLease(WORKER_ID).finally(() => process.exit(0));
+      // One last attempt to deliver accounting for runs that already happened. Best-effort
+      // rather than load-bearing now that the outbox is durable: anything this does not
+      // manage to send stays on disk and the next worker picks it up. It still runs first,
+      // because delivering now is better than delivering after the next restart.
+      if (pendingSpendReports() > 0) log(`flushing ${pendingSpendReports()} spend report(s)…`);
+      void flushPendingSpend()
+        .catch(() => {})
+        .then(() => client.releaseLease(WORKER_ID))
+        .finally(() => process.exit(0));
     });
   }
 }
 
 async function main(): Promise<void> {
   const client = new ForemanClient();
+  // This process's half of usage accounting, installed before anything can spend. The
+  // worker never opens the database, so its runs reach the ledger the way everything else
+  // it does reaches it - over a route. `void` rather than await: the runner reports on the
+  // way out of a call that has already produced its answer, and blocking a review on an
+  // accounting POST would let a slow daemon slow the loop down.
+  setLlmSpendSink((report) => void client.reportSpend(report));
+  // Anything a previous worker spent but never managed to report - it crashed, or was
+  // restarted while the daemon was down. This is the moment that spend either reaches the
+  // ledger or is lost for good, so it happens before the loop rather than on the first
+  // report of this process's own.
+  const recovered = loadSpendOutbox();
+  if (recovered > 0) {
+    log(`recovered ${recovered} undelivered spend report(s) from a previous run`);
+    void flushPendingSpend();
+  }
   installShutdown(client);
   startLeaseRenewal(client);
   log(`Foreman worker started (${WORKER_ID}); watching the needs-you queue + session work queues.`);
@@ -1987,7 +2016,11 @@ function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
     runModel: (prompt, model) =>
-      llmRunner(triageRunnerId).run(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
+      llmRunner(triageRunnerId).run(prompt, {
+        model,
+        timeoutMs: TRIAGE_TIMEOUT_MS,
+        role: "foreman:triage",
+      }),
   };
 }
 

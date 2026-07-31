@@ -43,6 +43,8 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Skill directory prefixes
 - Task source kinds
 - LLM job IDs
+- LLM spend roles (`LLM_SPEND_ROLES`) - these are written into `usage_ledger.note_key` and
+  queried back by exact value, so a rename orphans every historical row it wrote
 - Schedule enum values
 - Ensemble strategy, driver, artifact, source, run, and member values
 - Inspector marker versions

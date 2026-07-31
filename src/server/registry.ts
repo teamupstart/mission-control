@@ -106,6 +106,9 @@ import {
   recordEpisode as dbRecordEpisode,
   resolveEpisode as dbResolveEpisode,
   episodesFor,
+  automationEstimatedCostSince,
+  automationSpendSince,
+  automationTokensSince,
   fleetEstimatedCostSince,
   fleetTokensSince,
   firstWorkEpisodePromptAfter,
@@ -3692,6 +3695,18 @@ export class Registry extends EventEmitter {
     this.recomputeFleetCost();
   }
 
+  /**
+   * Refresh the fleet strip after a headless run was recorded.
+   *
+   * No `syncSessionsForCost`, and that absence is the point rather than an omission: an
+   * automation row's note key is a ROLE, so no session holds it and there is no card
+   * whose denormalized cost could have changed. Calling the session sync with a role key
+   * would walk every session to match a key none of them can ever have.
+   */
+  applyAutomationUsage(): void {
+    this.recomputeFleetCost();
+  }
+
   /** The fleet figures as of now, read straight from the ledger. */
   private fleetCostNow(now = Date.now()): FleetCost {
     const dayStart = startOfLocalDay(now);
@@ -3710,6 +3725,13 @@ export class Registry extends EventEmitter {
       rateLimitSources: [...this.latestRateLimitSources.values()]
         .map((source) => ({ ...source, windows: source.windows.filter((w) => w.resetsAt * 1000 > now) }))
         .filter((source) => source.windows.length > 0),
+      // The app's own spend, on the same local-midnight boundary as everything above so the
+      // two lines are comparable, and kept out of every figure above so they are distinct.
+      automation: {
+        estimatedCostToday: automationEstimatedCostSince(dayStart),
+        tokensToday: automationTokensSince(dayStart),
+        roles: automationSpendSince(dayStart),
+      },
       updatedAt: now,
     };
   }
@@ -3732,6 +3754,13 @@ export class Registry extends EventEmitter {
       this.lastFleetCost.estimatedBurnPerHour === fleet.estimatedBurnPerHour &&
       this.lastFleetCost.tokensToday === fleet.tokensToday &&
       this.lastFleetCost.prsToday === fleet.prsToday &&
+      // Compared through the same `JSON.stringify` shortcut `syncSessionsForCost` uses on
+      // `SessionCost`, and for the same reason: the roles array is a handful of flat
+      // records built in a fixed order by one SQL ORDER BY, so structural equality and
+      // string equality coincide, and a hand-rolled comparator would be a third place the
+      // shape has to be kept in step. Without this the strip would sit on a stale
+      // automation line whenever the loops spent but the fleet did not.
+      JSON.stringify(this.lastFleetCost.automation) === JSON.stringify(fleet.automation) &&
       rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits) &&
       rateLimitSourcesEqual(this.lastFleetCost.rateLimitSources, fleet.rateLimitSources);
     this.lastFleetCost = fleet;

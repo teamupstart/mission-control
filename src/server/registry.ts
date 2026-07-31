@@ -887,13 +887,13 @@ export class Registry extends EventEmitter {
     // out"), and makes the two ways a session can be marked exited converge here.
     //
     // SCOPED TO PANE-BACKED SESSIONS, and that scope is load-bearing rather than tidy.
-    // "Unseen" here means "no process on a tty matched", which is a statement about the
-    // process table - and an SDK session has no tty by construction (discovery's own rule
-    // is that an interactive session requires one), so this loop would have evicted every
-    // one of them on the very first sweep after it was registered. Their lifecycle has an
-    // authority that cannot be wrong about it: the supervisor holds the handle, and its
-    // `exited` event goes through `beginEviction` below - the same sequence, so
-    // `session_remove` reaches WorkflowManager and TaskManager identically.
+    // "Unseen" here means terminal discovery produced no matching process. An SDK session
+    // has no terminal-discovery identity by construction, and `groupAgentsByTty` excludes
+    // its daemon-owned subprocesses, so this loop would have evicted every one of them on
+    // the very first sweep after registration. Their lifecycle has an authority that cannot
+    // be wrong about it: the supervisor holds the handle, and its `exited` event goes through
+    // `beginEviction` below - the same sequence, so `session_remove` reaches WorkflowManager
+    // and TaskManager identically.
     for (const [id, s] of this.sessions) {
       if (s.runtime !== "terminal") continue;
       if (seen.has(id) || this.exitTimers.has(id)) continue;
@@ -1154,12 +1154,12 @@ export class Registry extends EventEmitter {
 
   // ---- sdk-driven sessions ----
   //
-  // The counterpart of passive discovery for sessions no `ps` sweep will ever see. Two
-  // methods, mirroring the two the terminal axis has: one that puts a session in the map,
-  // one that ingests what the thing running it says about it. Everything else about an SDK
-  // session - its note, goal, queue, task, cost, eviction - goes through the SAME machinery
-  // a pane-backed session does, which is the entire point of making this a runtime axis
-  // rather than a second kind of card.
+  // The counterpart of passive discovery for sessions terminal discovery deliberately does
+  // not produce. Two methods, mirroring the two the terminal axis has: one that puts a
+  // session in the map, one that ingests what the thing running it says about it. Everything
+  // else about an SDK session - its note, goal, queue, task, cost, eviction - goes through
+  // the SAME machinery a pane-backed session does, which is the entire point of making this
+  // a runtime axis rather than a second kind of card.
 
   /**
    * Put a driver-run session in the map, as `applyDiscovery` does for a pane-backed one.
@@ -1171,8 +1171,8 @@ export class Registry extends EventEmitter {
    *
    * No attribution guard, unlike `applyHook`: the supervisor started the subprocess it is
    * reporting, which is a stronger claim than any hook can make. `discoveredIdentity` stays
-   * exactly as it is - it holds what `lsof` read off a live process, and there is no process
-   * on a tty here to read.
+   * exactly as it is - it holds what `lsof` read off a terminal session's live process, and
+   * the daemon-owned subprocess behind this session is deliberately excluded from discovery.
    */
   registerSdkSession(input: SdkSessionRegistration): Session {
     const refusal = this.sdkRegistrationRefusal(input.id);

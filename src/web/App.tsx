@@ -1835,6 +1835,12 @@ export function App(): React.JSX.Element {
               Start a {agentList(AGENT_TYPES)} session in a terminal pane and it will appear
               here.
             </p>
+            {/* The stream can be reconnecting behind this screen, which looks identical to
+                "nothing is running" - so the way out of a stale view is printed here rather
+                than left for the operator to guess. */}
+            <p className="empty-sub empty-hint">
+              Already running one? Press <kbd>⌘R</kbd> or <kbd>Ctrl+R</kbd> to refresh.
+            </p>
           </div>
         )}
 

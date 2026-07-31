@@ -781,8 +781,8 @@ export function openDb(): DatabaseSync {
 
     -- Sessions the daemon RUNS rather than finds: one row per embedded (SDK-runtime)
     -- session. Live sessions are otherwise never persisted because the OS can rebuild
-    -- them, and that argument does not reach these - there is no process on a tty to
-    -- re-find, so without this row a daemon restart loses the session, its harness-native
+    -- them, but not these: terminal discovery deliberately excludes daemon-owned
+    -- subprocesses. Without this row a daemon restart loses the session, its harness-native
     -- thread id (the only way to resume the conversation), and any task bound to it.
     --
     -- The id is the supervisor's own sdk:<uuid>, which is why it is durable: it is the

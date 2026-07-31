@@ -633,6 +633,7 @@ test("resubmit fingerprints are durable, unchanged confirmation reuses its trigg
     label: "fake",
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     async run() {

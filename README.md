@@ -949,6 +949,7 @@ thinking / context row, and the topbar grows a foldable **Usage** row:
 | **Estimated rate** | the last hour of that same combined estimate |
 | **Tokens today** | input, output and cache, every tier summed |
 | **Cost / PR** | today's combined estimate over pull requests either agent opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
+| **Automation today** | what the Foreman and the Inspector spent on their own model calls since midnight. Hover for the per-role split |
 | **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
 
 The runway is the only forward-looking number in the app, and it is an average
@@ -962,7 +963,7 @@ sessions reads as calm for a while.
 Folding the row away keeps today's estimate visible beside the toggle, and the choice
 persists per machine like the layout.
 
-Four transports feed the strip, each kept to the facts it actually reports:
+Five transports feed the strip, each kept to the facts it actually reports:
 
 | Source | Provides |
 |---|---|
@@ -970,6 +971,60 @@ Four transports feed the strip, each kept to the facts it actually reports:
 | **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows for terminal sessions; OTel has no quota metric |
 | **Claude Agent SDK usage** | the same account windows for embedded SDK sessions, refreshed when the session resumes after a daemon restart and after each completed turn |
 | **Codex rollout file** | quota windows plus request-level `last_token_usage`, including model, cached input, cache writes, output, and reasoning output. A durable byte cursor and event identity make restarts/replays idempotent |
+| **Headless run envelopes** | the app's OWN model calls: `claude -p --output-format json` reports its cost and per-model tokens, `codex exec --json` reports tokens on `turn.completed`. Read straight from the process the run already returns, so no exporter or endpoint is involved |
+
+#### What the app spends on itself
+
+The Foreman and the Inspector call models on their own schedule, with nobody asking them
+to. That spend is real - on a busy fleet it is the largest thing running when you are not
+looking - and until it was attributed it was also invisible: a `codex exec --ephemeral` run
+writes no rollout file and exports nothing, while a `claude -p` run *does* export
+OpenTelemetry, but under the fresh session id every headless run mints, so it landed in the
+ledger under a key belonging to no card and was silently counted as session spend.
+
+Both now report themselves under a **role** - a synthetic note key naming the subsystem and
+the job:
+
+| Role | What it pays for |
+|---|---|
+| `foreman:triage` | the cheap Tier 1 router that decides whether a full review is needed |
+| `foreman:review` | the full Tier 2 session review |
+| `foreman:verify` | verifying a finished work-queue item against the diff |
+| `foreman:backlog` | the dependency planner |
+| `inspector:review` | one PR review round |
+| `inspector:reply` | one follow-up reply in a review thread |
+
+Keeping them separate is the point: it makes "is shadow triage worth what it costs" and
+"did that prompt fix land" questions the app can answer, which one `automation` bucket
+could not.
+
+**This is a separate line, not part of the fleet total.** Session cost is work you asked
+for; this is the overhead of having that work watched, and it moves while nothing else is
+happening - rolled together, a quiet morning with a busy Inspector would read as fleet
+activity with no way to see which half moved. The two are each independently true and can
+be added by anyone who wants one number.
+
+The runs are valued exactly as everything else is: Claude runs carry the cost the CLI
+calculated (`reported`), Codex runs are priced from the same versioned Standard API
+snapshot an interactive Codex session uses (`api-equivalent`), and a model with no verified
+rate stays honestly unpriced. Each row is keyed to the run's own id - `claude -p`'s
+`session_id`, `codex exec`'s `thread_id` - so a retried report cannot double-count, and a
+Claude run's OpenTelemetry twin is recognised by that same id and excluded from session
+spend rather than billed twice.
+
+The Foreman worker never writes the database, so it reports over
+`POST /api/usage/automation` like everything else it does; the daemon prices what it is
+told and writes it. Because the run is already paid for by the time it is reported, a
+report that cannot be delivered is spend nothing can reconstruct - so undelivered ones are
+spooled to `foreman-spend-outbox.json` in the state dir and retried with backoff, and are
+erased only once the daemon acknowledges them. A worker that crashes or restarts mid-outage
+picks the spool back up on startup. That file is a buffer for requests, not a second
+ledger: it holds no schema, the daemon never reads it, and a duplicate delivery is harmless
+because each row is keyed to the run's own id. Attribution deliberately did **not** take the other available route -
+giving these runs a stable `--session-id` so their OpenTelemetry could be attributed -
+because that is exactly the flag that would hand them a resumable conversation and cost the
+context isolation the Foreman depends on to review many sessions without one bleeding into
+the next.
 
 Terminal Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
 (`npm run install-statusline`); embedded Claude SDK sessions repopulate them automatically.

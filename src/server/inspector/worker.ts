@@ -11,6 +11,7 @@ import {
 } from "../db.ts";
 import { createLimiter, parseModelJson, runStructured } from "../llm/structured.ts";
 import { llmRunner } from "../llm/index.ts";
+import type { LlmSpendRole } from "@shared/llm-spend.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
 import {
@@ -162,13 +163,25 @@ function reviewModel(cfg: InspectorConfig): string {
   return inspectorModel(cfg).id;
 }
 
-function inspectorRunOptions(cfg: InspectorConfig, timeoutMs: number, cwd: string) {
+/**
+ * `role` rides alongside `timeoutMs` rather than being derived here, because the two calls
+ * this builds for are different jobs with different prices - a full review carries the
+ * largest prompt in the system, a follow-up reply a third of it - and folding them into one
+ * `inspector` bucket would answer none of the questions worth asking about either.
+ */
+function inspectorRunOptions(
+  cfg: InspectorConfig,
+  timeoutMs: number,
+  cwd: string,
+  role: LlmSpendRole,
+) {
   const runner = llmRunner(cfg.runner ?? "claude");
   return {
     runner,
     options: {
       model: reviewModel(cfg),
       timeoutMs,
+      role,
       // Claude can enforce Inspector's exact read-tool deny list. Codex currently
       // cannot, so it reviews the supplied diff without repository tools instead of
       // silently accepting a weaker grant.
@@ -691,7 +704,7 @@ async function answerFollowUp(
 
   let text: string;
   try {
-    const run = inspectorRunOptions(cfg, REPLY_TIMEOUT_MS, dir);
+    const run = inspectorRunOptions(cfg, REPLY_TIMEOUT_MS, dir, "inspector:reply");
     text = await run.runner.run(prompt, run.options);
   } catch (err) {
     return noteFailure(pr, `reply failed: ${String(err)}`, now, tick);
@@ -788,7 +801,7 @@ async function reviewRound(
     round: pr.round + 1,
   });
 
-  const run = inspectorRunOptions(cfg, TIMEOUT_MS, dir);
+  const run = inspectorRunOptions(cfg, TIMEOUT_MS, dir, "inspector:review");
   const result = await runStructured<typeof InspectorVerdictSchema>(
     (p) => run.runner.run(p, run.options),
     prompt,

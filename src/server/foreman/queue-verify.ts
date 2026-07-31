@@ -174,7 +174,7 @@ export async function verifyItem(
   runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
 ): Promise<QueueVerifyResult> {
   const r = await runStructured<typeof QueueVerdictSchema>(
-    (p) => llmRunner(runnerId).run(p, { model }),
+    (p) => llmRunner(runnerId).run(p, { model, role: "foreman:verify" }),
     buildVerifyPrompt(input),
     extractQueueVerdict,
     "Foreman verify",

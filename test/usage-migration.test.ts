@@ -39,7 +39,9 @@ raw.exec(`
 `);
 raw.close();
 
-const { openDb, sessionCostFor } = await import("../src/server/db.ts");
+const { openDb, sessionCostFor, automationSpendSince, fleetEstimatedCostSince } = await import(
+  "../src/server/db.ts"
+);
 after(() => rmSync(home, { recursive: true, force: true }));
 
 test("legacy usage rows gain truthful reported-cost defaults", () => {
@@ -53,6 +55,33 @@ test("legacy usage rows gain truthful reported-cost defaults", () => {
   assert.equal(summary?.costUsd, 1.25);
   assert.deepEqual(summary?.pricingVersions, []);
   assert.equal(summary?.reasoningOutput, 0);
+});
+
+test("a pre-feature database gains spend_kind, and its rows stay session spend", () => {
+  const db = openDb();
+  const columns = db.prepare(`PRAGMA table_info(usage_ledger)`).all() as unknown as Array<{ name: string }>;
+  assert.ok(columns.some((c) => c.name === "spend_kind"), "missing migrated spend_kind");
+  // The backfill has to be 'session': every row written before headless accounting existed
+  // came from a card's own OTel or rollout stream. Defaulting the other way would move a
+  // day's real fleet spend into the automation line on the first upgrade.
+  const row = db
+    .prepare(`SELECT spend_kind FROM usage_ledger WHERE note_key = 'legacy-session'`)
+    .get() as { spend_kind: string } | undefined;
+  assert.equal(row?.spend_kind, "session");
+  assert.equal(fleetEstimatedCostSince(0), 1.25, "and it still counts toward the fleet");
+  assert.deepEqual(automationSpendSince(0), [], "with nothing invented in the automation line");
+});
+
+test("the index on the migrated column exists on an upgraded database", () => {
+  // The trap this guards: an index naming spend_kind cannot live in the CREATE TABLE block,
+  // because that block runs BEFORE migrate() adds the column - an upgraded database would
+  // fail to open at all. Asserting the index exists here proves it was created on the
+  // migration path, on a database that genuinely predates the column.
+  const db = openDb();
+  const idx = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_ledger_kind'`)
+    .get() as { name: string } | undefined;
+  assert.equal(idx?.name, "idx_ledger_kind");
 });
 
 test("the new cursor table is created on an upgraded database", () => {

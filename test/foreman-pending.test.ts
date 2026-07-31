@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyPending } from "../src/server/foreman/pending.ts";
 import { planFromVerdict, VerdictSchema } from "../src/server/foreman/verdict.ts";
+import { buildTriagePrompt } from "../src/server/foreman/triage-prompt.ts";
+import type { ReviewInput } from "../src/server/foreman/prompt.ts";
 import type { ReviewItem, Session, SessionState } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
@@ -451,6 +453,29 @@ test("awaiting_input with no menu keeps its await: marker", () => {
     [],
   );
   assert.equal(p.marker, "await:42");
+});
+
+test("a terminal-pane pending's activity-borne question reaches the router capped", () => {
+  // Pins the chain end to end, because it is easy to misread: `terminal-pane` is a
+  // SITUATION, while the router's clip keys on the SURFACE - and every terminal situation
+  // classifies with `surface: "terminal"`, so a chatty `report_status` that becomes the
+  // question here cannot outgrow the Tier 1 prompt. The ReviewInput is assembled exactly
+  // as `triageSession` assembles it: surface and question read off the classification.
+  const pending = classifyPending(
+    mkSession({ state: "awaiting_input" as SessionState, activity: "x".repeat(50_000), terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })], lastActivity: 42 }),
+    [],
+  );
+  assert.equal(pending.situation, "terminal-pane");
+  assert.equal(pending.surface, "terminal");
+  const p = buildTriagePrompt({
+    session: { agent: "claude", runtime: "terminal", name: "sess", cwd: null, gitBranch: null, state: "awaiting_input", activity: null, goal: null },
+    surface: pending.surface,
+    question: pending.question,
+    transcript: [],
+    truncated: false,
+    instructions: "",
+  } as ReviewInput);
+  assert.ok(p.length < 20_000, `terminal-pane question was not capped - prompt is ${p.length}`);
 });
 
 test("an exited session's stale menu is not a question anyone can answer", () => {

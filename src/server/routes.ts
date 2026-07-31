@@ -63,6 +63,8 @@ import {
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  TRANSCRIPT_DEFAULT_TAIL_TURNS,
+  TRANSCRIPT_HEAD_TURNS,
   UpdateTaskSchema,
   UpdatePersonaSchema,
   ArchivePersonaSchema,
@@ -1347,8 +1349,8 @@ export function buildApp(
   // reviewer, the queue verifier, and the dashboard's scroll-back).
   //
   // `?since=<byteOffset>` reads FORWARD from an offset - how the queue scopes a
-  // window to one work item. A turn count can't do that: a 48-turn window can span
-  // three items, and the head+tail window elides the middle of a big file, so
+  // window to one work item. A turn count can't do that: the default 60-turn window
+  // can span three items, and the head+tail window elides the middle of a big file, so
   // filtering it by timestamp would silently drop an item's earliest turns (the
   // ones that establish what the agent set out to do). The transcript is
   // append-only, so a stored file size is an exact, O(1) item boundary.
@@ -1384,8 +1386,8 @@ export function buildApp(
     const since = Number(c.req.query("since"));
     if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));
     const turns = Number(c.req.query("turns"));
-    const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : 48;
-    return c.json(t.read.window(t.path, 12, tail));
+    const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : TRANSCRIPT_DEFAULT_TAIL_TURNS;
+    return c.json(t.read.window(t.path, TRANSCRIPT_HEAD_TURNS, tail));
   });
 
   // The child's rendered screen - the only place an ask that is BLOCKING on the user

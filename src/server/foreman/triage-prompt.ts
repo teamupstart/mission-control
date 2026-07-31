@@ -1,4 +1,4 @@
-import { formatTranscript, paneSection, promptHarness, requestSection } from "./prompt.ts";
+import { ACTIVITY_CAP, clip, formatTranscript, paneSection, promptHarness, requestSection } from "./prompt.ts";
 import type { PromptHarness } from "./prompt.ts";
 import { fromChild, instructionsSection } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
@@ -81,8 +81,17 @@ export function buildTriagePrompt(input: ReviewInput): string {
     `reply surface: ${surface}`,
     "",
     "## The pending question",
-    // Child-controlled, exactly as in `buildReviewPrompt` - and this tier can dispose.
-    fromChild(question.trim()) ||
+    // Child-controlled, exactly as in `buildReviewPrompt` - and this tier can dispose, so the
+    // guard depends on which door the question came through. On the terminal surface it IS
+    // `session.activity` - the one input the child writes unbounded through `report_status`,
+    // and never the ask itself (that is read off the screen or the structured request below) -
+    // so it gets the reviewer's own cap, clipped BEFORE `fromChild` scans it, because linear
+    // work on an unbounded string is still unbounded and this is the tier whose whole purpose
+    // is being cheap. On `input-review` the question is the WHOLE ask, offered options and
+    // required label included, and is never rendered partially: clipping would hide the
+    // options from a tier that answers - the answer-inventing failure `withOfferedOptions`
+    // exists to prevent - so `tier0` routes an oversized ask up before this builder runs.
+    fromChild(surface === "terminal" ? clip(question.trim(), ACTIVITY_CAP) : question.trim()) ||
       "(no explicit question text - read the ask off the terminal screen below)",
     "",
     truncated

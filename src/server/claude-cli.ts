@@ -40,7 +40,7 @@ import { resolveAgentBin } from "./harness/index.ts";
 const CLAUDE_BIN = resolveAgentBin("claude");
 /**
  * Default cap on a single run so a hung child can't stall its caller. Sized for the
- * full reviewer (Opus reading 48 turns with the whole POLICY), which is the most
+ * full reviewer (Opus reading a 60-turn head+tail window with the whole POLICY), which is the most
  * expensive thing that runs through here; every cheaper caller - the Tier 1 router,
  * the goal refiner - passes its own `timeoutMs` rather than inheriting this.
  */

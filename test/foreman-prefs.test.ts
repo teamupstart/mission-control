@@ -406,6 +406,32 @@ test("the child's self-reported activity cannot grow without bound", () => {
   assert.match(p, /activity: x+…/);
 });
 
+test("the router's prompt is bounded against the same unbounded activity", () => {
+  // The same field reaches Tier 1 by a different door: `classifyPending` sets `question` to
+  // `s.activity` on the terminal surfaces, and the router renders the question where the
+  // reviewer renders its capped `activity:` line. Uncapped, a chatty `report_status` inflates
+  // the prompt of exactly the tier whose purpose is being cheap. A 50KB activity must render
+  // no larger than one already at the cap.
+  const atCap = buildTriagePrompt(reviewInput({ question: "x".repeat(2_000) }));
+  const huge = buildTriagePrompt(reviewInput({ question: "x".repeat(50_000) }));
+  assert.ok(
+    huge.length <= atCap.length + 1,
+    `question was not capped - ${huge.length} vs ${atCap.length} at the cap`,
+  );
+  assert.match(huge, /x+…/);
+});
+
+test("an input-review question is never rendered partially, however long", () => {
+  // On that surface the question IS the whole ask - `withOfferedOptions` puts the offered
+  // options and the "state the LABEL" instruction at the END, exactly where a clip would
+  // cut. The terminal cap must not apply here: an oversized ask is routed up whole by
+  // `tier0` instead, so this builder either renders all of it or never sees it.
+  const ask = `${"x".repeat(3_000)}\nThe agent offered these options:\n- Alpha\n- Beta: riskier\nstate the LABEL of the option you are choosing`;
+  const p = buildTriagePrompt(reviewInput({ surface: "input-review", question: ask }));
+  assert.ok(p.includes("- Beta: riskier"), "the offered options must survive to the render");
+  assert.ok(p.includes("state the LABEL of the option you are choosing"), "the closing instruction must survive to the render");
+});
+
 test("a huge transcript cannot outgrow the verify prompt", () => {
   // Restoring real tool rendering restored real size: the deleted renderer printed every call
   // as `[object Object]`, so this block could not grow no matter what the agent ran.

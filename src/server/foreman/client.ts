@@ -1,7 +1,7 @@
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { DEFAULT_LLM_RUNNER_ID, isLlmRunnerId } from "@shared/llm.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import { ForemanConfigSchema } from "@shared/protocol.ts";
+import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/protocol.ts";
 import type {
   BacklogPlanInput,
   ForemanConfig,
@@ -256,8 +256,11 @@ export class ForemanClient implements ForemanActions {
    * of the response is cast like every other read: `headCount` already refuses to let its own
    * absence mean anything permissive (see `recentTurns`), and the remaining fields cost a bad
    * log line at worst.
+   *
+   * `turns` is the TAIL only: the route adds a fixed opening head of `TRANSCRIPT_HEAD_TURNS`
+   * on top, so the default full-reviewer window is 12 + 48 = 60 turns, not 48.
    */
-  async transcript(id: string, turns = 48): Promise<TranscriptWindowResponse> {
+  async transcript(id: string, turns = TRANSCRIPT_DEFAULT_TAIL_TURNS): Promise<TranscriptWindowResponse> {
     const w = await get<TranscriptWindowResponse>(`/api/sessions/${enc(id)}/transcript?turns=${turns}`);
     return { ...w, messages: (w.messages ?? []).map((m) => ({ ...m, tools: normalizeTools(m.tools) })) };
   }

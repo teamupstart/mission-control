@@ -932,16 +932,16 @@ export const ForemanConfigSchema = z.object({
    * What happens when a wrap-up fires, whichever trigger fired it.
    *
    * `ask` is the shipped behaviour and the default: Foreman marks the moment and the
-   * human picks from the Wrapup card. `no-mistakes` and `pr` let Foreman type that
-   * instruction itself, unattended - the difference between the two is only which
-   * text gets sent (see `autoWrapupPayload`).
+   * human picks from the Wrapup card. `no-mistakes` claims the verified completion for
+   * an existing binding or, when there is none, binds the built-in No-Mistakes Review
+   * workflow. `pr` lets Foreman type the direct shipping instruction unattended.
    *
    * Automating this is strictly more dangerous than the per-item send it resembles,
-   * because the instruction PUSHES: `/no-mistakes` opens a PR at the end of its
-   * pipeline. So the auto path carries every gate the manual one does and one more -
-   * it is refused outright unless `mode` is live AND the repo is on the allowlist
-   * (`mayActLive`), exactly like a queue send. Setting this to `no-mistakes` while
-   * in dry-run does NOT type; it degrades to `ask`. Dry-run means dry-run.
+   * because either automated path can ultimately PUSH. So the auto path carries every
+   * gate the manual one does and one more - it is refused outright unless `mode` is live
+   * AND the repo is on the allowlist (`mayActLive`), exactly like a queue send. Setting
+   * this to `no-mistakes` while in dry-run does not auto-bind; it degrades to `ask`.
+   * Dry-run means dry-run.
    */
   wrapup: z.enum(WRAPUP_MODES).default("ask"),
   /**
@@ -1997,6 +1997,10 @@ export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
  */
 export const PromptedWrapupSchema = z.object({
   goal: z.string().min(1).max(INTENT_MAX),
+  // The human-decision path must retire the prompted episode and raise its Ship it?
+  // card in one durable write. If that write fails, neither marker lands and the
+  // worker can retry the whole verified boundary on its next unhurried tick.
+  ask: z.boolean().optional().default(false),
 });
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 
@@ -2592,6 +2596,9 @@ export const WorkflowCompletionClaimSchema = z.object({
   marker: z.string().regex(/^[a-f0-9]{64}$/),
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
+  // Closed to the built-in fallback the Foreman option names. The daemon resolves its
+  // immutable version; the worker never gets to choose an arbitrary workflow id.
+  fallbackWorkflow: z.literal("no-mistakes").nullable().optional().default(null),
   // Optional on the wire only for drain-claim compatibility with an older worker.
   // A prompted claim without it is refused by the daemon rather than trusted.
   expectedGoal: z.string().min(1).max(INTENT_MAX).nullable().optional().default(null),

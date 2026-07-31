@@ -985,6 +985,31 @@ test("the prompted trigger's episode guard round-trips, and is separate from the
   assert.equal(((await read.json()) as { promptedGoal: string | null }).promptedGoal, goal);
 });
 
+test("a prompted human handoff retires its episode and raises the card atomically", async () => {
+  seedSession();
+  await app.request("/api/sessions/sess-1/queue/wrapup", {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ answer: "/no-mistakes" }),
+  });
+
+  const goal = "preserve the existing Manual workflow binding";
+  const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ goal, ask: true }),
+  });
+  assert.equal(res.status, 200);
+  const queue = (await res.json()) as {
+    promptedGoal: string | null;
+    wrapupAskedAt: number | null;
+    wrapupAnswer: string | null;
+  };
+  assert.equal(queue.promptedGoal, goal);
+  assert.ok(queue.wrapupAskedAt, "the Ship it? card is raised with the episode guard");
+  assert.equal(queue.wrapupAnswer, null, "the previous episode's answer cannot hide the new card");
+});
+
 test("a second in-flight item is refused with a clean 409, not a raw 500", async () => {
   // The single-flight index is the enforcement and must stay that way - but the
   // raw ERR_SQLITE_ERROR escaping the route meant the daemon logged a stack trace

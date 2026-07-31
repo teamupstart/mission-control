@@ -18,6 +18,8 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { buildApp } = await import("../src/server/routes.ts");
+const { setForemanConfig } = await import("../src/server/foreman/config.ts");
+const { NO_MISTAKES_REVIEW_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");
 
 function discovered(id: string): DiscoveredSession {
   return {
@@ -45,6 +47,7 @@ function request(
   expectedGoal: string | null = completionKind === "prompted"
     ? "Finish the prompted workflow"
     : null,
+  fallbackWorkflow: "no-mistakes" | null = null,
 ) {
   return app.request(`/api/sessions/${sessionId}/workflow-completion`, {
     method: "POST",
@@ -55,6 +58,7 @@ function request(
       summary: "Foreman proved the queue complete.",
       evidenceFingerprint: "evidence",
       expectedGoal,
+      fallbackWorkflow,
     }),
   });
 }
@@ -93,6 +97,11 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     discovered("repair"),
     discovered("concurrent"),
     discovered("prompted"),
+    discovered("auto-bound"),
+    discovered("unverified-auto"),
+    discovered("disabled-auto"),
+    discovered("dry-run-auto"),
+    discovered("off-list-auto"),
   ]);
   const queues = new QueueManager(registry);
   const personas = new PersonaManager(registry);
@@ -232,12 +241,27 @@ test("completion HTTP claims server-owned identity once and atomically retires t
      ) VALUES ('prompted', '/repo', 'feature', NULL, NULL, 'Finish the prompted workflow', 10)`,
   ).run();
   db.prepare(
+    `INSERT INTO foreman_queues (
+       note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
+     ) VALUES ('auto-bound', '/repo', 'feature', NULL, NULL, NULL, 10)`,
+  ).run();
+  db.prepare(
     `INSERT INTO foreman_queue_items (
        id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
        send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
        proposed_payload, recovered_at, revision, created_at, updated_at, sent_at, completed_at
      ) VALUES (
        'repair-item', 'repair', 0, 'work', 'verified', 1, 'base', 1, '[]',
+       1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2
+     )`,
+  ).run();
+  db.prepare(
+    `INSERT INTO foreman_queue_items (
+       id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
+       send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
+       proposed_payload, recovered_at, revision, created_at, updated_at, sent_at, completed_at
+     ) VALUES (
+       'auto-bound-item', 'auto-bound', 0, 'work', 'verified', 1, 'base', 1, '[]',
        1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2
      )`,
   ).run();
@@ -261,6 +285,25 @@ test("completion HTTP claims server-owned identity once and atomically retires t
        1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2
      )`,
   ).run();
+  const insertAuthorizedQueue = db.prepare(
+    `INSERT INTO foreman_queues (
+       note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
+     ) VALUES (?, '/repo', 'feature', NULL, NULL, NULL, 10)`,
+  );
+  const insertAuthorizedItem = db.prepare(
+    `INSERT INTO foreman_queue_items (
+       id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
+       send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
+       proposed_payload, recovered_at, revision, created_at, updated_at, sent_at, completed_at
+     ) VALUES (
+       ?, ?, 0, 'work', 'verified', 1, 'base', 1, '[]',
+       1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2
+     )`,
+  );
+  for (const noteKey of ["disabled-auto", "dry-run-auto", "off-list-auto"]) {
+    insertAuthorizedQueue.run(noteKey);
+    insertAuthorizedItem.run(`${noteKey}-item`, noteKey);
+  }
   const app = buildApp(
     registry,
     new ReviewManager(registry),
@@ -270,15 +313,135 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     personas,
     workflows,
   );
+  setForemanConfig({
+    enabled: true,
+    mode: "live",
+    repoAllowlist: ["/repo"],
+  });
 
   assert.deepEqual(await (await request(app, "unbound", "0".repeat(64))).json(), {
     claimed: false,
     reason: "no_binding",
   });
-  assert.deepEqual(await (await request(app, "manual", "1".repeat(64))).json(), {
+  assert.deepEqual(await (await request(
+    app,
+    "manual",
+    "1".repeat(64),
+    "drain",
+    null,
+    "no-mistakes",
+  )).json(), {
     claimed: false,
     reason: "manual_trigger",
   });
+  assert.equal(workflows.store.activeBindingForNote("manual")?.id, "manual-binding");
+
+  for (const denied of [
+    {
+      sessionId: "disabled-auto",
+      config: { enabled: false, mode: "live" as const, repoAllowlist: ["/repo"] },
+    },
+    {
+      sessionId: "dry-run-auto",
+      config: { enabled: true, mode: "dry-run" as const, repoAllowlist: ["/repo"] },
+    },
+    {
+      sessionId: "off-list-auto",
+      config: { enabled: true, mode: "live" as const, repoAllowlist: ["/other"] },
+    },
+  ]) {
+    setForemanConfig(denied.config);
+    const response = await request(
+      app,
+      denied.sessionId,
+      "8".repeat(64),
+      "drain",
+      null,
+      "no-mistakes",
+    );
+    assert.equal(response.status, 409);
+    assert.match(
+      (await response.json() as { error: string }).error,
+      /requires Foreman Live mode and an allowlisted repository/,
+    );
+    assert.equal(
+      workflows.store.activeBindingForNote(denied.sessionId),
+      null,
+      `${denied.sessionId} crossed the server-side Foreman authorization boundary`,
+    );
+  }
+  setForemanConfig({
+    enabled: true,
+    mode: "live",
+    repoAllowlist: ["/repo"],
+  });
+
+  const bindingCountBeforeRejectedFallback = workflows.store.listBindings().length;
+  const rejectedFallback = await request(
+    app,
+    "unverified-auto",
+    "9".repeat(64),
+    "drain",
+    null,
+    "no-mistakes",
+  );
+  assert.equal(rejectedFallback.status, 409);
+  assert.match(
+    (await rejectedFallback.json() as { error: string }).error,
+    /completion guard is no longer armed/,
+  );
+  assert.equal(
+    workflows.store.activeBindingForNote("unverified-auto"),
+    null,
+    "a rejected completion claim must not leave its fallback workflow bound",
+  );
+  assert.equal(workflows.store.listBindings().length, bindingCountBeforeRejectedFallback);
+
+  const autoBound = await Promise.all([
+    request(app, "auto-bound", "a".repeat(64), "drain", null, "no-mistakes"),
+    request(app, "auto-bound", "a".repeat(64), "drain", null, "no-mistakes"),
+  ]);
+  const autoBodies = await Promise.all(autoBound.map((response) => response.json())) as Array<{
+    claimed: boolean;
+    runId: string;
+    submissionId: string;
+    state: string;
+  }>;
+  assert.deepEqual(
+    autoBound.map((response) => response.status),
+    [200, 200],
+    JSON.stringify(autoBodies),
+  );
+  assert.deepEqual(
+    new Set(autoBodies.map((body) => body.state)),
+    new Set(["started", "already_claimed"]),
+  );
+  assert.equal(new Set(autoBodies.map((body) => body.runId)).size, 1);
+  assert.equal(new Set(autoBodies.map((body) => body.submissionId)).size, 1);
+  const autoBinding = workflows.store.activeBindingForNote("auto-bound");
+  assert.ok(autoBinding);
+  assert.equal(
+    autoBinding.workflowVersionId,
+    workflows.get(NO_MISTAKES_REVIEW_WORKFLOW_ID)?.workflow.currentVersionId,
+  );
+  assert.equal(autoBinding.triggerMode, "foreman_complete");
+  assert.equal(
+    autoBinding.deliveryMode,
+    "preview",
+    "Foreman may start the review without silently granting Workflow repair delivery",
+  );
+  assert.equal(
+    workflows.store.listBindings().filter((binding) => binding.noteKey === "auto-bound").length,
+    1,
+  );
+  assert.equal(
+    workflows.store.getRun(autoBodies[0]!.runId)?.bindingId,
+    autoBinding.id,
+  );
+  const autoSubmissions = workflows.store.listSubmissions(autoBodies[0]!.runId);
+  assert.equal(autoSubmissions.length, 1);
+  assert.equal(autoSubmissions[0]?.id, autoBodies[0]!.submissionId);
+  assert.equal(autoSubmissions[0]?.triggerSource, "foreman");
 
   const concurrent = await Promise.all([
     request(app, "concurrent", "f".repeat(64)),

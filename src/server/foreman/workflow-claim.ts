@@ -36,6 +36,7 @@ export function drainCompletionClaim(
     marker: sha256(proof),
     summary: `Foreman queue drained after ${queue.items.length} terminal item${queue.items.length === 1 ? "" : "s"}.`,
     evidenceFingerprint: sha256({ headSha, transcriptAnchor, items: proof.items }),
+    fallbackWorkflow: null,
     expectedGoal: null,
   };
 }
@@ -61,8 +62,22 @@ export function promptedCompletionClaim(input: {
       transcriptAnchor: input.transcriptAnchor,
       summary: input.summary,
     }),
+    fallbackWorkflow: null,
     expectedGoal: input.goal,
   };
+}
+
+/**
+ * Ask the daemon for the one automatic binding Foreman's no-mistakes option owns.
+ *
+ * Kept as a projection over an already-built proof so the worker cannot request a binding
+ * until the drain/prompted path has reached its verified-complete branch.
+ */
+export function withNoMistakesFallback(
+  claim: WorkflowCompletionClaim,
+  enabled: boolean,
+): WorkflowCompletionClaim {
+  return enabled ? { ...claim, fallbackWorkflow: "no-mistakes" } : claim;
 }
 
 /** Non-throwing seam: a failed HTTP call is distinct from an explicit unclaimed answer. */

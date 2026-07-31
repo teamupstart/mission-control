@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -249,14 +250,41 @@ function quarantineSpend(report: SpendReportBody, status: number): boolean {
   try {
     mkdirSync(dirname(path), { recursive: true });
     let entries: unknown[] = [];
+    let existing: string | null = null;
     try {
-      const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-      if (Array.isArray(parsed)) entries = parsed;
+      existing = readFileSync(path, "utf8");
     } catch (err) {
-      // A missing file is the ordinary case; an unreadable one must not cost us the report
-      // we are trying to save, so it is replaced rather than treated as fatal.
-      if (fsErrorCode(err) !== "ENOENT") {
-        console.warn("[foreman] replacing an unreadable spend quarantine file:", err);
+      // A missing quarantine is the ordinary case - there is simply nothing held yet.
+      if (fsErrorCode(err) !== "ENOENT") throw err;
+    }
+    if (existing !== null) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(existing);
+      } catch {
+        parsed = undefined;
+      }
+      if (Array.isArray(parsed)) {
+        entries = parsed;
+      } else {
+        // The file holds something this build cannot read - filesystem corruption, a
+        // half-written document, a hand-edit. It must NOT simply be replaced: every entry
+        // in it is a rejected run that was already paid for, and overwriting would delete
+        // the whole history to make room for one new report. That is the same
+        // delete-before-preserve mistake this path exists to prevent, one level further in.
+        //
+        // So the unreadable bytes are moved aside under a name nothing else writes, and the
+        // fresh quarantine starts empty beside them. Both are then recoverable by hand,
+        // which is the most this code can honestly promise about content it cannot parse.
+        const kept = preserveUnreadable(path);
+        console.error(
+          `[foreman] the spend quarantine at ${path} could not be read; ` +
+            (kept
+              ? `its bytes are preserved at ${kept} and a new file starts empty. Both hold ` +
+                `runs that were already paid for - neither is retried automatically.`
+              : `and it could not be preserved either, so its earlier entries may be lost.`),
+        );
+        if (!kept) return false;
       }
     }
     // De-duplicated by run id, because this can legitimately be reached twice for the same
@@ -286,6 +314,34 @@ function quarantineSpend(report: SpendReportBody, status: number): boolean {
     );
     return false;
   }
+}
+
+/**
+ * Move an unreadable file aside under a name that is free, returning where it went.
+ *
+ * A FREE name specifically: `renameSync` overwrites its destination silently on POSIX, so
+ * a fixed suffix would let the second corruption destroy what the first one preserved -
+ * which would be this whole function failing at the one job it has. The counter is bounded
+ * so a pathological directory cannot spin here forever; giving up returns null and the
+ * caller then refuses to touch the original at all.
+ *
+ * Returns null on failure, and the caller treats that as "do not proceed" rather than
+ * pressing on, because proceeding would mean overwriting the very bytes this preserves.
+ */
+function preserveUnreadable(path: string): string | null {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const suffix = attempt === 0 ? "" : `-${attempt}`;
+    const kept = `${path}.unreadable-${process.pid}-${Date.now()}${suffix}`;
+    try {
+      if (existsSync(kept)) continue;
+      renameSync(path, kept);
+      return kept;
+    } catch (err) {
+      if (fsErrorCode(err) === "ENOENT") return null; // it vanished; nothing to preserve
+      return null;
+    }
+  }
+  return null;
 }
 
 /** The run id inside a stored quarantine entry, tolerating anything hand-edited. */

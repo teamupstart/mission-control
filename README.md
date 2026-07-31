@@ -1019,7 +1019,9 @@ there for you to re-send. That is deliberate rather than lazy, because a 4xx doe
 mean a bad body - it is also what a daemon too old for the route answers during a rolling
 upgrade, and those runs are already paid for. Nothing drains that file automatically, since
 re-queueing a genuinely invalid body would loop forever; the worker logs an error naming the
-file when it puts something there. The daemon holds up the other end of that contract: it
+file when it puts something there. If that file is ever unreadable - corruption, a
+hand-edit - its bytes are moved aside to a `.unreadable-*` name rather than replaced, since
+every entry in it is a run that was already paid for. The daemon holds up the other end of that contract: it
 acknowledges a report only when the row was written or there was genuinely nothing to write,
 and answers 422 for one it cannot record at all - a runner a newer worker named that this
 build has no pricing for - so the sender quarantines it instead of treating silence as

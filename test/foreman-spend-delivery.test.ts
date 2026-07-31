@@ -412,6 +412,36 @@ test("quarantining the same run twice does not duplicate it", () => {
   );
 });
 
+test("an unreadable quarantine is preserved, not overwritten by the next rejection", async () => {
+  // Every entry in that file is a rejected run that was already paid for. Replacing it to
+  // make room for one new report would delete the whole history - the same
+  // delete-before-preserve mistake as the outbox, one level further in. The unreadable bytes
+  // have to survive somewhere a human can still find them.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const quarantine = spendOutboxTest.quarantinePath();
+  rmSync(quarantine, { force: true });
+  writeFileSync(quarantine, '[{"report":{"runId":"older-paid-run"}},{"trunc', "utf8");
+
+  mode = "400";
+  await client.reportSpend(report("foreman:review", "run-after-corruption"));
+  mode = "ok";
+
+  // The new report landed in a fresh file...
+  const held = JSON.parse(readFileSync(quarantine, "utf8")) as Array<{ report: { runId: string } }>;
+  assert.deepEqual(held.map((h) => h.report.runId), ["run-after-corruption"]);
+
+  // ...and the damaged bytes are still on disk, verbatim, under a name nothing else writes.
+  const preserved = readdirSync(home).filter((n) => n.includes(".unreadable-"));
+  assert.equal(preserved.length, 1, "the unreadable quarantine was moved aside, not deleted");
+  assert.match(
+    readFileSync(join(home, preserved[0]!), "utf8"),
+    /older-paid-run/,
+    "and the earlier rejected run is still recoverable from it",
+  );
+  assert.equal(pendingSpendReports(), 0, "the new rejection still left the delivery queue");
+  rmSync(join(home, preserved[0]!), { force: true });
+});
+
 test("a daemon too old for the route keeps the run, and later reports still drain", async () => {
   // The rolling-upgrade case: the worker is newer than the daemon, so /api/usage/automation
   // does not exist yet and every report 404s. Nothing about those runs is wrong - the daemon

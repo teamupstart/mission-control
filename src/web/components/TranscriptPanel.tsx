@@ -27,6 +27,7 @@ import { mergeEpisodes } from "../lib/episodes.ts";
 import {
   collectHits,
   hitsInScope,
+  hitsInWindow,
   buildMatcher,
   splitForHighlight,
   stepIndex,
@@ -649,7 +650,7 @@ export function TranscriptPanel({
                   key={row.id}
                   tools={row.tools}
                   agentLabel={agentLabel}
-                  find={findFor(allHits, row.id, find?.query ?? "", currentKey)}
+                  find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                 />
               ) : (
                 <Turn
@@ -658,7 +659,7 @@ export function TranscriptPanel({
                   agentLabel={agentLabel}
                   onOpenFile={linkHandler}
                   filePaths={filePaths}
-                  find={findFor(allHits, row.id, find?.query ?? "", currentKey)}
+                  find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                 />
               ),
         )}
@@ -765,15 +766,22 @@ interface RowFind {
   caseSensitive: boolean;
 }
 
-/** Narrow the whole hit list to one row. Null when there is no search running. */
+/**
+ * Narrow the hit list to one row. Null when there is no search running.
+ *
+ * Takes the SCOPED hits, not every hit in the log. What is highlighted and what is
+ * counted have to be the same set: fed the unscoped list, picking "You" would report a
+ * count over user turns while the agent's turns stayed lit up, so the number on the bar
+ * described a different search than the one on screen.
+ */
 function findFor(
-  all: FindHit[],
+  scoped: FindHit[],
   rowId: string,
   query: string,
   currentKey: string | null,
 ): RowFind | null {
   if (!query) return null;
-  const hits = all.filter((h) => h.rowId === rowId);
+  const hits = scoped.filter((h) => h.rowId === rowId);
   return { hits, query, currentKey, caseSensitive: false };
 }
 
@@ -918,12 +926,12 @@ function ToolChips({ tools, find }: { tools: ToolCall[]; find?: RowFind | null }
         const chipHits = find ? find.hits.filter((h) => h.toolIndex === i) : [];
         const searchText = toolSearchText(t);
         const detailOffset = searchText.length - (chip.detail?.length ?? 0);
-        // Hits are collected over "<name> <detail>", so a hit inside the detail has to
-        // be shifted back into the detail's own coordinates before it can be rendered.
-        const detailHits = chipHits
-          .filter((h) => h.start >= detailOffset)
-          .map((h) => ({ ...h, start: h.start - detailOffset, end: h.end - detailOffset }));
-        const nameHits = chipHits.filter((h) => h.end <= chip.name.length);
+        // Hits are collected over "<name> <detail>" but rendered as two spans, so each
+        // is re-expressed in its own span's coordinates. `hitsInWindow` clips rather
+        // than filters, which is what lets a match spanning the two - "read prompt" -
+        // mark both halves instead of neither.
+        const nameHits = hitsInWindow(chipHits, 0, chip.name.length);
+        const detailHits = hitsInWindow(chipHits, detailOffset, searchText.length);
         return (
           <Tooltip key={`${t.name}-${i}`} label={chip.title}>
             <span className={`tool-chip${chipHits.length ? " has-find-hit" : ""}`}>

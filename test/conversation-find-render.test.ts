@@ -113,6 +113,40 @@ test("the transcript mounts the bar and the rail on the same find state", () => 
   }
 });
 
+test("rows are highlighted from the scoped hits, so the count describes what is lit", () => {
+  // `hits` is scope-filtered; `allHits` is not. Feeding rows the unscoped list makes
+  // picking "You" report a count over user turns while the agent's turns stay
+  // highlighted - the number on the bar then describes a different search than the one
+  // on screen, and neither the reader nor the rail can tell.
+  const src = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
+  // Call sites only - the declaration names its own parameter and is not a call.
+  const args = [...src.matchAll(/findFor\(\s*([A-Za-z]+),\s*row\.id/g)].map((m) => m[1]);
+  assert.ok(args.length >= 2, "both row kinds should derive their highlights from findFor");
+  for (const arg of args) {
+    assert.equal(arg, "hits", "findFor must be fed the scoped hit list, never allHits");
+  }
+});
+
+test("a chip's two spans are derived by clipping, so a match across them survives", () => {
+  // The model half of this lives in conversation-find-model. This is the half that
+  // pins the RENDERER to it: a chip is searched as "<name> <detail>" but drawn as two
+  // spans, and deriving each by containment (`h.end <= name.length`) silently drops a
+  // hit spanning the two - counted in the rail, marked nowhere on screen.
+  const src = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
+  for (const which of ["nameHits", "detailHits"]) {
+    assert.match(
+      src,
+      new RegExp(`const ${which} = hitsInWindow\\(chipHits,`),
+      `${which} must be clipped into its span's window, not filtered by containment`,
+    );
+  }
+  assert.doesNotMatch(
+    src,
+    /chipHits\s*\n?\s*\.filter\(/,
+    "a containment filter over chipHits is the dropped-boundary-match bug returning",
+  );
+});
+
 test("no CSS rule can hide the rail while find is open", () => {
   // The stylesheet half of the same invariant. A `display: none` on `.find-rail` keyed
   // on anything other than find being closed would reintroduce exactly the state

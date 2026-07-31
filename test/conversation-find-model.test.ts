@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   collectHits,
   hitsInScope,
+  hitsInWindow,
   matchesIn,
   buildMatcher,
   splitForHighlight,
   stepIndex,
+  toolSearchText,
   turnWho,
 } from "../src/web/lib/find.ts";
 import type { ConversationRow } from "../src/web/lib/episodes.ts";
@@ -112,6 +114,49 @@ test("tool chips are searchable, because that is where the paths are", () => {
   assert.equal(hits.length, 1);
   assert.equal(hits[0]?.scope, "tool");
   assert.equal(hits[0]?.toolIndex, 0);
+});
+
+test("a match spanning a chip's name and detail marks both halves, not neither", () => {
+  // A chip is collected as one string ("read registry.ts") and rendered as two spans,
+  // so a query across the space between them belongs to both. Filtering each span by
+  // containment drops it from both, and the rail could then navigate to a match with
+  // nothing marked on screen - a counted hit that is not a visible one.
+  const rows = [
+    tools("t1", [{ name: "Read", input: JSON.stringify({ file_path: "/repo/registry.ts" }) }]),
+  ];
+  const searchText = toolSearchText(rows[0]!.kind === "tools" ? rows[0]!.tools[0]! : ({} as ToolCall));
+  const name = "read";
+  const detailOffset = searchText.length - "registry.ts".length;
+
+  const hits = collectHits(rows, "read registry", { caseSensitive: false }, "claude");
+  assert.equal(hits.length, 1, "the chip text is searched as one unit");
+
+  const nameHits = hitsInWindow(hits, 0, name.length);
+  const detailHits = hitsInWindow(hits, detailOffset, searchText.length);
+  assert.equal(nameHits.length, 1, "the part inside the name survives, clipped");
+  assert.equal(detailHits.length, 1, "so does the part inside the detail");
+  assert.deepEqual({ start: nameHits[0]?.start, end: nameHits[0]?.end }, { start: 0, end: 4 });
+  assert.deepEqual({ start: detailHits[0]?.start, end: detailHits[0]?.end }, { start: 0, end: 8 });
+  // Both halves are the SAME match, so the ring still counts it once.
+  assert.equal(nameHits[0]?.key, detailHits[0]?.key);
+});
+
+test("hitsInWindow drops what is wholly outside and keeps what straddles", () => {
+  const base = { key: "k", rowId: "r", toolIndex: null, scope: "user", who: "you", pre: "", hit: "", post: "" } as const;
+  const hits = [
+    { ...base, key: "before", start: 0, end: 3 },
+    { ...base, key: "straddle", start: 8, end: 14 },
+    { ...base, key: "inside", start: 12, end: 15 },
+    { ...base, key: "after", start: 30, end: 34 },
+  ];
+  const out = hitsInWindow(hits, 10, 20);
+  assert.deepEqual(
+    out.map((h) => [h.key, h.start, h.end]),
+    [
+      ["straddle", 0, 4],
+      ["inside", 2, 5],
+    ],
+  );
 });
 
 test("scope filters by who said it, and `all` is the identity", () => {

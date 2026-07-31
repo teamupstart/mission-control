@@ -117,6 +117,31 @@ export function toolSearchText(t: ToolCall): string {
 }
 
 /**
+ * Narrow hits to the window `[from, to)` of the text they were collected over, in that
+ * window's own coordinates.
+ *
+ * A hit straddling an edge is CLIPPED, not dropped. A tool chip is searched as one
+ * string - "read prompt.ts" - but rendered as two spans, and a query spanning the space
+ * between them ("read prompt") belongs to both. Dropping such a hit left the rail able
+ * to navigate to a match that nothing on screen marked, which breaks the rule the whole
+ * count rests on: every counted match is a visible one.
+ *
+ * Both halves keep the original hit's `key`, so the pair still reads as the one match it
+ * is - the jump anchor resolves to the first of them.
+ */
+export function hitsInWindow(hits: FindHit[], from: number, to: number): FindHit[] {
+  const out: FindHit[] = [];
+  for (const h of hits) {
+    const start = Math.max(h.start, from);
+    const end = Math.min(h.end, to);
+    // Not merely empty - a hit entirely on the far side of the window lands here too.
+    if (start >= end) continue;
+    out.push({ ...h, start: start - from, end: end - from });
+  }
+  return out;
+}
+
+/**
  * Walk the rendered conversation and collect every occurrence, in document order.
  *
  * Episodes are skipped: they are Foreman's own cards rather than transcript turns,

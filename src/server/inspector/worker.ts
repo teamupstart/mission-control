@@ -119,7 +119,14 @@ export const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 600_000);
  * marked as such rather than dressed up.
  */
 export const REPLY_TIMEOUT_MS = Number(envVar("INSPECTOR_REPLY_TIMEOUT_MS") ?? 300_000);
-/** Cap on the diff we put in a prompt. A 2MB refactor is not reviewable in one pass anyway. */
+/**
+ * Cap on the diff we put in a prompt. A 2MB refactor is not reviewable in one pass anyway.
+ *
+ * BYTES, and `fetchDiff` applies it as such - it read as UTF-16 code units, which let a
+ * diff of CJK or box-drawing content through at ~3x this. Overridden by
+ * `MISSION_INSPECTOR_MAX_DIFF_BYTES` (or the `FLEET_` / `HARNESS_` fallbacks `envVar`
+ * accepts); the bare suffix below is not itself an environment variable name.
+ */
 const MAX_DIFF_BYTES = Number(envVar("INSPECTOR_MAX_DIFF_BYTES") ?? 400_000);
 /**
  * Replies we will write in one thread before we stop.

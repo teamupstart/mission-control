@@ -10,6 +10,7 @@ import type {
   WorkflowStandardsDocument,
 } from "@shared/workflow.ts";
 import { computeSessionDiff } from "../diff.ts";
+import { clipUtf8Bytes } from "../util/utf8.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
 import { sessionMessages } from "../harness/index.ts";
 import { changedPaths } from "../inspector/diff-lines.ts";
@@ -80,27 +81,15 @@ function clip(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
-function clipBytes(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value) <= maxBytes) return value;
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(value.slice(0, middle)) <= maxBytes) low = middle;
-    else high = middle - 1;
-  }
-  return value.slice(0, low);
-}
-
 function boundedDecisions(items: WorkflowHumanDecision[]): WorkflowHumanDecision[] {
   const out: WorkflowHumanDecision[] = [];
   let remaining = MAX_DECISION_BYTES;
   for (const item of items) {
     if (remaining <= 0 || out.length >= MAX_DECISIONS) break;
-    const decision = clipBytes(item.decision, Math.min(remaining, MAX_DECISION_TEXT));
+    const decision = clipUtf8Bytes(item.decision, Math.min(remaining, MAX_DECISION_TEXT));
     remaining -= Buffer.byteLength(decision);
     const rationale = item.rationale && remaining > 0
-      ? clipBytes(item.rationale, Math.min(remaining, MAX_DECISION_TEXT))
+      ? clipUtf8Bytes(item.rationale, Math.min(remaining, MAX_DECISION_TEXT))
       : null;
     remaining -= rationale ? Buffer.byteLength(rationale) : 0;
     if (decision) out.push({ ...item, decision, rationale: rationale || null });
@@ -113,12 +102,12 @@ function boundedFeedback(items: PersonaFeedbackSummary[]): PersonaFeedbackSummar
   let remaining = MAX_FEEDBACK_BYTES;
   for (const item of items.slice(-100)) {
     if (remaining <= 0) break;
-    const summary = clipBytes(item.summary, Math.min(remaining, 2_000));
+    const summary = clipUtf8Bytes(item.summary, Math.min(remaining, 2_000));
     remaining -= Buffer.byteLength(summary);
     const requestedChanges: string[] = [];
     for (const change of item.requestedChanges) {
       if (remaining <= 0 || requestedChanges.length >= 20) break;
-      const bounded = clipBytes(change, Math.min(remaining, 2_000));
+      const bounded = clipUtf8Bytes(change, Math.min(remaining, 2_000));
       remaining -= Buffer.byteLength(bounded);
       if (bounded) requestedChanges.push(bounded);
     }
@@ -132,7 +121,7 @@ function boundedStrings(items: string[], maxBytes: number, maxItems: number): st
   let remaining = maxBytes;
   for (const item of items) {
     if (remaining <= 0 || out.length >= maxItems) break;
-    const bounded = clipBytes(item, Math.min(remaining, 4_000));
+    const bounded = clipUtf8Bytes(item, Math.min(remaining, 4_000));
     remaining -= Buffer.byteLength(bounded);
     if (bounded) out.push(bounded);
   }
@@ -401,10 +390,10 @@ export async function readWorkflowContextRaw(
       })),
     ...humanTranscriptDecisions(transcriptWindow.messages),
   ]);
-  const boundedDiff = clipBytes(diff.patch, MAX_DIFF_BYTES);
+  const boundedDiff = clipUtf8Bytes(diff.patch, MAX_DIFF_BYTES);
   const transcript = transcriptWindow.messages.map((message) => ({
     role: message.role,
-    content: clipBytes(message.text, MAX_TRANSCRIPT_TURN),
+    content: clipUtf8Bytes(message.text, MAX_TRANSCRIPT_TURN),
     ...(message.ts > 0 ? { timestamp: message.ts } : {}),
   }));
   const raw: RawWorkflowContext = {

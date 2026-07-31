@@ -1,5 +1,6 @@
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
+import { clipUtf8Bytes, utf8Bytes } from "../util/utf8.ts";
 import { BODY_ONLY_FINDINGS_MARKER, isCleanReview, isOurs, parseMarker } from "./marker.ts";
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
@@ -699,9 +700,12 @@ export async function fetchDiff(
   }
   if (res.code !== 0) return fail("gh api (diff)", res);
   const full = res.stdout;
+  // BYTES, not code units: `full.slice(0, maxBytes)` charged one unit for a character
+  // costing three or four on the wire, so a diff of CJK, emoji or box-drawing content
+  // passed 3x the advertised cap into the prompt. See `util/utf8.ts`.
   return {
     ok: true,
-    value: { diff: full.slice(0, maxBytes), truncated: full.length > maxBytes },
+    value: { diff: clipUtf8Bytes(full, maxBytes), truncated: utf8Bytes(full) > maxBytes },
   };
 }
 

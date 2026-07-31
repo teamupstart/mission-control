@@ -2298,7 +2298,7 @@ export class WorkflowManager {
         return;
       }
       const adopted = getInspectorPr(candidate.key);
-      if (!adopted) {
+      if (!adopted || !this.matchesUnpinnedGate(binding, state, adopted)) {
         this.transitionInspectorGate(
           run,
           state,
@@ -2648,8 +2648,9 @@ export class WorkflowManager {
       return false;
     }
     if (
-      binding.sessionRepoRoot
-      && !repoAllowlisted(inspection.cwd, inspection.repoRoot, [binding.sessionRepoRoot])
+      !binding.sessionRepoRoot
+      || !inspection.repoRoot
+      || inspection.repoRoot !== binding.sessionRepoRoot
     ) return false;
     return true;
   }

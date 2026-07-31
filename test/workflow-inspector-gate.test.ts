@@ -645,6 +645,56 @@ test("an unpinned durable handoff keeps vetoing Shipping across restart", async 
   }
 });
 
+test("durable handoff provenance requires an exact known repository identity", async () => {
+  for (const [label, repoRoot] of [
+    ["nested", "/repo/nested"],
+    ["missing", null],
+  ] as const) {
+    const seeded = await seed({
+      withHint: false,
+      adopted: false,
+      deliveryMode: "live",
+    });
+    try {
+      const handoff = await seeded.manager.preparePr(seeded.ids.run, `${label}-repo-handoff`);
+      assert.equal(handoff.ok, true);
+      await waitFor(
+        () => seeded.store.listDeliveries(seeded.ids.run)
+          .some((delivery) => delivery.kind === "pr_handoff" && delivery.state === "delivered"),
+        `the ${label} repository handoff was not delivered`,
+      );
+
+      const adoptedAt = Date.now();
+      adoptInspectorPr({
+        ...inspectorPr(seeded.key, seeded.url, seeded.ids.session, adoptedAt),
+        cwd: repoRoot ?? "/repo",
+        repoRoot,
+      });
+      assert.equal(seeded.manager.blocksMerge(seeded.key), false);
+
+      seeded.registry.applyHook({
+        agent: "claude",
+        event: "PostToolUse",
+        sessionId: seeded.ids.session,
+        cwd: repoRoot ?? "/repo",
+        transcriptPath: null,
+        env: { tmuxPane: `%${serial}` },
+        prUrl: seeded.url,
+        prCreated: false,
+      });
+      seeded.registry.inspectionUpdated(seeded.key, null, null, adoptedAt);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(
+        (seeded.store.getRun(seeded.ids.run)?.gateState as { prKey?: string | null })?.prKey,
+        null,
+      );
+    } finally {
+      await seeded.manager.stop();
+      setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    }
+  }
+});
+
 test("a Preview binding RECORDS the automatic PR handoff it withheld", async () => {
   // Automatic PR preparation is Live-only and stays that way: preparing a pull request is
   // done by TYPING the skill into the pane, which is the terminal write Preview exists to

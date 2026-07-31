@@ -541,6 +541,88 @@ test("a peer that dies mid-outage is adopted by a worker that never restarts", a
   );
 });
 
+test("two dead workers' spools merge in timestamp order, not filename order", async () => {
+  // Adoption walks the directory in filename order, and those names carry a random
+  // per-process id - so without an explicit sort, which dead worker's reports go first is
+  // decided by a uuid. The queue promises oldest-first; this is where that promise would
+  // quietly break after a recovery.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  await stop();
+  const early = { ...(report("foreman:review", "run-earlier") as object), ts: 1_700_000_000_000 };
+  const late = { ...(report("foreman:review", "run-later") as object), ts: 1_700_000_009_999 };
+  // Written so the LATER report sits in the alphabetically-first file: filename order and
+  // chronological order disagree, which is the whole point of the case.
+  writeFileSync(orphanPath("aaaa-holds-the-later-run"), storedSpool(DEAD_OWNER_PID, [late]), "utf8");
+  writeFileSync(orphanPath("zzzz-holds-the-earlier-run"), storedSpool(DEAD_OWNER_PID, [early]), "utf8");
+
+  assert.equal(loadSpendOutbox(), 2);
+  assert.deepEqual(
+    spoolRunIds(SPOOL),
+    ["run-earlier", "run-later"],
+    "the merged queue is ordered by when the runs happened",
+  );
+
+  await start();
+  await flushPendingSpend();
+  assert.deepEqual(
+    received.slice(-2).map((r) => (r as { runId: string }).runId),
+    ["run-earlier", "run-later"],
+    "and they are delivered in that order",
+  );
+});
+
+test("an acknowledged report is removed by identity, not by position", async () => {
+  // What makes the sort above safe. A sweep can adopt - and therefore re-sort - while a
+  // flush is awaiting its POST, so the entry at the front afterwards need not be the one the
+  // daemon just acknowledged. Removing positionally would delete an unacknowledged run while
+  // acknowledging a different one.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  await stop();
+  const inFlight = { ...(report("foreman:verify", "run-in-flight") as object), ts: 1_700_000_005_000 };
+  writeFileSync(SPOOL, storedSpool(process.pid, [inFlight]), "utf8");
+  assert.equal(loadSpendOutbox(), 0, "our own spool is not adopted by us");
+  await client.reportSpend(inFlight as never);
+  assert.equal(pendingSpendReports(), 1);
+
+  // Hold the delivery open, then adopt an OLDER report from a dead peer mid-flight. The
+  // sort moves it in front of the one being delivered.
+  await start();
+  delayedRunId = "run-in-flight";
+  void flushPendingSpend();
+  await eventually(() => attempted.includes("run-in-flight"));
+  const older = { ...(report("foreman:triage", "run-older-adopted") as object), ts: 1_600_000_000_000 };
+  writeFileSync(orphanPath("dead-peer-older"), storedSpool(DEAD_OWNER_PID, [older]), "utf8");
+  sweepSpendOutbox();
+  assert.equal(spoolRunIds(SPOOL)[0], "run-older-adopted", "the adopted run sorted to the front");
+
+  // Now let the in-flight delivery finish. The 204 is for run-in-flight, so run-in-flight is
+  // what must leave the queue - not whatever the sort happened to move to index 0.
+  //
+  // This is the discriminating assertion: with a positional shift, the 204 would have
+  // removed run-older-adopted (now at the front), so that run would vanish having never been
+  // sent, while run-in-flight stayed queued and was delivered twice. Requiring each run to
+  // arrive exactly once catches precisely that swap.
+  delayedRunId = null;
+  delayedResponse?.writeHead(204).end();
+  delayedResponse = null;
+  await eventually(() => pendingSpendReports() === 0, 4_000);
+  // Asserted on POST ATTEMPTS rather than on `received`, because the harness parks the
+  // delayed request before recording it - so `attempted` is the only place the in-flight
+  // send appears at all.
+  assert.equal(
+    attempted.filter((id) => id === "run-in-flight").length,
+    1,
+    "the acknowledged run was sent once and then forgotten, not left queued and retried",
+  );
+  assert.equal(
+    received.filter((r) => (r as { runId: string }).runId === "run-older-adopted").length,
+    1,
+    "and the adopted run was itself delivered, not silently removed in its place",
+  );
+  assert.equal(existsSync(SPOOL), false, "nothing is left queued");
+  rmSync(orphanPath("dead-peer-older"), { force: true });
+});
+
 test("a rate limit is waited out, not filed away as a bad report", async () => {
   // 429 and 408 are transient by definition - from the daemon or anything in front of it -
   // and the run behind them is already paid for. Quarantining them is a one-way door:

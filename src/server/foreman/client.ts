@@ -491,9 +491,21 @@ function scanAndAdoptSpools(): void {
         continue;
       }
     }
+    let merged = false;
     for (const report of restored.entries) {
-      if (!spendOutbox.some((queued) => queued.runId === report.runId)) spendOutbox.push(report);
+      if (spendOutbox.some((queued) => queued.runId === report.runId)) continue;
+      spendOutbox.push(report);
+      merged = true;
     }
+    // Restore oldest-first across the MERGED queue. Adoption walks the directory in filename
+    // order, and those names carry a random per-process id, so two dead workers' spools
+    // arrive in an order that has nothing to do with when their runs happened. Appending
+    // blindly would deliver a later report before an earlier one and quietly break the
+    // oldest-first contract the queue otherwise keeps.
+    //
+    // Sorted by `ts`, and stable, so this process's own pending reports - already appended
+    // in time order - keep their relative positions and equal timestamps do not shuffle.
+    if (merged) spendOutbox.sort((a, b) => a.ts - b.ts);
     if (!persistSpendOutbox()) continue;
     if (restored.legacy) {
       // A legacy array carries no owner pid, so liveness cannot be proven and it must not be
@@ -584,6 +596,23 @@ function looksLikeSpendReport(value: unknown): value is SpendReportBody {
   );
 }
 
+/**
+ * Drop one report from the queue BY IDENTITY, never by position.
+ *
+ * A positional `shift()` was correct only while the queue could not be reordered underneath
+ * an in-flight delivery. It can now: adoption re-sorts by timestamp, and a sweep can adopt
+ * while a flush is awaiting its POST, so the entry at index 0 afterwards need not be the one
+ * the daemon just acknowledged. Removing by run id makes the removal mean what the code
+ * says - "forget the report that landed" - rather than "forget whatever is at the front".
+ *
+ * Getting this wrong would delete an unacknowledged run while acknowledging a different one,
+ * which is the precise failure this whole path exists to prevent.
+ */
+function forgetQueued(runId: string): void {
+  const at = spendOutbox.findIndex((queued) => queued.runId === runId);
+  if (at >= 0) spendOutbox.splice(at, 1);
+}
+
 function enqueueSpend(report: SpendReportBody): void {
   spendOutbox.push(report);
   // Persisted BEFORE the first delivery attempt, which is the ordering the durability
@@ -628,7 +657,7 @@ async function flushSpend(): Promise<void> {
         // Removed only now, on the daemon's ACK. Erasing it any earlier would reopen the
         // exact hole the spool closes - the report would be gone from disk while still
         // only maybe recorded.
-        spendOutbox.shift();
+        forgetQueued(report.runId);
         persistSpendOutbox();
         spendFailures = 0;
         continue;
@@ -657,7 +686,7 @@ async function flushSpend(): Promise<void> {
           scheduleSpendRetry();
           return;
         }
-        spendOutbox.shift();
+        forgetQueued(report.runId);
         persistSpendOutbox();
         continue;
       }

@@ -4841,10 +4841,19 @@ kbd {
 .find-split[data-find="closed"] {
   display: contents;
 }
+/* The log's new parent, and therefore the flex item the log's bounded height now hangs
+   off. `min-height: 0` is the load-bearing line, not a tidy-up: closed, `.find-split` is
+   `display: contents`, so THIS is the item in `.transcript`'s column, and a flex item's
+   automatic minimum size is its content's height. Without it the wrapper refuses to
+   shrink below a whole conversation, the log inherits an unbounded height, its
+   `overflow-y: auto` has nothing to scroll, and the reply box is pushed out of a pane
+   that clips. That is the shape of the bug this line fixes - the conversation stopped
+   scrolling the moment the log gained a wrapper. */
 .find-logwrap {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }

@@ -1,6 +1,6 @@
 import type { AgentType, NameSource, PaneDialog, PermissionMode } from "@shared/types.ts";
 import type { TerminalHandle } from "@shared/terminal.ts";
-import { listProcesses, type Proc } from "./processes.ts";
+import { daemonOwnedPids, listProcesses, type Proc } from "./processes.ts";
 import { enumerateTerminals, type TerminalEnumeration } from "../terminal/enumerate.ts";
 import { ttysHostedBy } from "../terminal/host.ts";
 import type {
@@ -311,11 +311,25 @@ export function chooseAgentRoot(group: Proc[]): Proc | null {
   return [...cands].sort((a, b) => a.startMs - b.startMs || a.pid - b.pid)[0] ?? null;
 }
 
-/** Group tty-attached agent processes by tty. */
+/**
+ * Group tty-attached agent processes by tty, skipping the ones we spawned ourselves.
+ *
+ * This is what a session IS, and it is asked in exactly one place so that the two callers -
+ * `correlate`, which builds the cards, and `representativeAgentPids`, which resolves their
+ * cwds - cannot come to different answers about what is on the dashboard.
+ *
+ * The three conditions are three different claims. Being an agent is `processes.ts`'s
+ * question. Having a tty is what makes it somebody's INTERACTIVE session rather than a
+ * headless run. Not being ours (`daemonOwnedPids`) is what stops an embedded session's own
+ * CLI subprocess - which inherits the daemon's controlling terminal, because the vendor SDK
+ * owns that spawn - from being carded a second time as a terminal session beside the SDK
+ * card it already has.
+ */
 function groupAgentsByTty(procs: Proc[]): Map<string, Proc[]> {
+  const ours = daemonOwnedPids(procs);
   const byTty = new Map<string, Proc[]>();
   for (const p of procs) {
-    if (!p.agent || !p.tty) continue;
+    if (!p.agent || !p.tty || ours.has(p.pid)) continue;
     let g = byTty.get(p.tty);
     if (!g) byTty.set(p.tty, (g = []));
     g.push(p);

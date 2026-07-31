@@ -179,8 +179,13 @@ that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in 
 
 That same sweep re-reads the mutable Git facts in each session's checkout: its branch and
 whether the repo is gated by no-mistakes. Sessions the daemon runs itself (Agent SDK
-`runtime`) have no process on a tty for the sweep to find, so those facts are read directly
-from their working directory at launch or restoration and refreshed on the same cadence.
+`runtime`) are never carded by that sweep: it skips every agent process inside the daemon's
+own subtree, because those are the daemon's own subprocesses rather than somebody's session.
+Without that rule an embedded session's CLI subprocess - which inherits the terminal the
+daemon itself was started from, since the Agent SDK owns the spawn - would appear a second
+time as a terminal card, named after the daemon's tab and claiming its session's branch and
+PR. Their Git facts are instead read directly from their working directory at launch or
+restoration and refreshed on the same cadence.
 This keeps both the **PR chip** and [no-mistakes](#no-mistakes) status honest without a
 terminal session sharing the checkout. A pooled worktree is often leased with no branch at
 all, and the PR poller finds a session's pull request by asking

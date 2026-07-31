@@ -1313,6 +1313,7 @@ export class WorkflowManager {
 
   /** Shipping may only be vetoed by active Inspector-gated workflow ownership. */
   blocksMerge(prKey: string): boolean {
+    const adopted = getInspectorPr(prKey);
     for (const binding of this.store.listBindings()) {
       if (binding.state !== "active") continue;
       const run = this.store.activeRunForBinding(binding.id);
@@ -1320,6 +1321,11 @@ export class WorkflowManager {
       if (!run || version?.completionPolicy.kind !== "inspector") continue;
       const gate = this.gateState(run);
       if (gate?.prKey === prKey) return true;
+      // A PR handoff can open the PR without changing one repository byte. Until the gate
+      // pins that PR, the live Session.prUrl is only a convenience and disappears across an
+      // SDK restart. The Inspector row is the durable proof that this session opened this PR,
+      // so it must preserve the veto during that pinning window as well.
+      if (gate && adopted && this.matchesUnpinnedGate(binding, gate, adopted)) return true;
       const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const candidate = session?.state !== "exited" && session?.prUrl
         ? parsePrUrl(session.prUrl)
@@ -2171,6 +2177,10 @@ export class WorkflowManager {
       }
       if (state.prKey) continue;
       const binding = this.store.getBinding(run.bindingId);
+      if (binding && this.matchesUnpinnedGate(binding, state, event.ledger)) {
+        this.scheduleGateEvaluation(run.id, event);
+        continue;
+      }
       const session = binding?.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
       const candidate = session?.prUrl ? parsePrUrl(session.prUrl) : null;
       if (candidate?.key === event.prKey) this.scheduleGateEvaluation(run.id, event);
@@ -2238,14 +2248,26 @@ export class WorkflowManager {
   ): Promise<void> {
     let run = this.store.getRun(runId);
     let state = run ? this.gateState(run) : null;
-    if (!run || !state || runIsTerminal(run) || run.status === "waiting_for_session") return;
+    const waitingForPrHandoff = run?.status === "waiting_for_session"
+      && run.currentPhase === "pr_handoff";
+    if (
+      !run
+      || !state
+      || runIsTerminal(run)
+      || (run.status === "waiting_for_session" && !waitingForPrHandoff)
+    ) return;
     if (run.status === "blocked" && run.currentPhase !== "inspector_disabled") return;
     const binding = this.store.getBinding(run.bindingId);
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     if (!binding || version?.completionPolicy.kind !== "inspector") return;
     const now = Date.now();
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
-    const candidateUrl = session?.state !== "exited" ? session?.prUrl ?? null : null;
+    const durableCandidate = observation
+      && this.matchesUnpinnedGate(binding, state, observation.ledger)
+      ? observation.ledger
+      : null;
+    const candidateUrl = durableCandidate?.url
+      ?? (session?.state !== "exited" ? session?.prUrl ?? null : null);
     const candidate = candidateUrl ? parsePrUrl(candidateUrl) : null;
 
     if (state.prKey && candidate && candidate.key !== state.prKey) {
@@ -2299,8 +2321,8 @@ export class WorkflowManager {
         run,
         state,
         pinned,
-        "waiting_for_inspector",
-        "inspector_awaiting_fresh_observation",
+        waitingForPrHandoff ? "waiting_for_session" : "waiting_for_inspector",
+        waitingForPrHandoff ? "pr_handoff" : "inspector_awaiting_fresh_observation",
         "inspector_pr_pinned",
         { prKey: adopted.key, source: adopted.source },
         now,
@@ -2309,6 +2331,12 @@ export class WorkflowManager {
       run = updated;
       state = pinned;
     }
+
+    // Adoption proves the handoff opened a PR, but the agent may still be finishing that
+    // turn. Keep the gate pinned and keep Shipping vetoed until the resumption observer sees
+    // the session settled. It then compares repository evidence: changed work gets another
+    // full workflow round, while an unchanged clean handoff advances without spending one.
+    if (waitingForPrHandoff) return;
 
     const cfg = getInspectorConfig();
     if (!cfg.enabled) {
@@ -2502,11 +2530,13 @@ export class WorkflowManager {
     }
     if (state.observedHeadSha !== submittedHead) {
       const afterPin = state.targetHeadSha !== null;
+      const handoffChangedHead = submission.mode === "full_workflow"
+        && this.submissionHadPrHandoff(run.id, submission.id);
       this.transitionInspectorGate(
         run,
         state,
         { ...state, waitReason: "head_mismatch" },
-        afterPin
+        afterPin || handoffChangedHead
           ? submission.mode === "full_workflow" ? "waiting_for_session" : "blocked"
           : "waiting_for_inspector",
         "inspector_head_mismatch",
@@ -2594,6 +2624,40 @@ export class WorkflowManager {
       { prKey: state.prKey, targetHeadSha: state.targetHeadSha, reviewPosture: ledger.reviewPosture },
       now,
     );
+  }
+
+  /**
+   * Match an unpinned Inspector gate to durable PR provenance.
+   *
+   * Session.prUrl is intentionally not provenance and is not durable. An Inspector row is:
+   * it exists only after a trusted creation hook or no-mistakes reported its own PR.
+   * Session identity plus repository plus adoption-after-entry makes that row the PR this
+   * gate was waiting for without claiming an older PR from the same long-lived session.
+   */
+  private matchesUnpinnedGate(
+    binding: WorkflowBinding,
+    state: WorkflowInspectorGateState,
+    inspection: Pick<
+      InspectionUpdated["ledger"],
+      "state" | "sessionId" | "adoptedAt" | "cwd" | "repoRoot"
+    >,
+  ): boolean {
+    if (state.prKey || !binding.sessionId || inspection.state !== "open") return false;
+    if (state.waitReason !== "missing_pr" && state.waitReason !== "unadopted_pr") return false;
+    if (inspection.sessionId !== binding.sessionId || inspection.adoptedAt < state.enteredAt) {
+      return false;
+    }
+    if (
+      binding.sessionRepoRoot
+      && !repoAllowlisted(inspection.cwd, inspection.repoRoot, [binding.sessionRepoRoot])
+    ) return false;
+    return true;
+  }
+
+  /** Whether PR preparation was requested for the submission whose head is being compared. */
+  private submissionHadPrHandoff(runId: string, submissionId: string): boolean {
+    return this.store.listDeliveries(runId).some((delivery) =>
+      delivery.submissionId === submissionId && delivery.kind === "pr_handoff");
   }
 
   private async handleInspectorFindings(
@@ -3667,7 +3731,30 @@ export class WorkflowManager {
       this.registry,
       binding,
     );
-    if (probeMatchesEvidence(probe, parsed.data.evidence)) return;
+    if (probeMatchesEvidence(probe, parsed.data.evidence)) {
+      if (run.currentPhase === "pr_handoff") {
+        const gate = this.gateState(run);
+        if (gate?.prKey) {
+          this.transitionInspectorGate(
+            run,
+            gate,
+            {
+              ...gate,
+              lastObservedAt: null,
+              observedHeadSha: null,
+              reviewPosture: null,
+              waitReason: "awaiting_fresh_observation",
+            },
+            "waiting_for_inspector",
+            "inspector_awaiting_fresh_observation",
+            "pr_handoff_settled",
+            { prKey: gate.prKey, submissionId: latest.id },
+            now,
+          );
+        }
+      }
+      return;
+    }
     // Re-read after the awaits above: a Foreman claim or a human Resubmit may have moved this
     // run while git was running, and the round we are about to create was computed from what
     // it looked like before.

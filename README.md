@@ -2713,6 +2713,11 @@ If no adopted PR exists, the published policy waits, offers **Prepare PR in sess
 it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate
 itself never pushes or opens a pull request. The offered action prepares the packet under Preview
 or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
+When that handoff opens an already-reviewed clean commit, its durable adoption record pins the PR.
+After the handoff turn settles, unchanged repository evidence advances the gate to a fresh Inspector
+observation without spending another Persona round. If PR preparation changed the head, the normal
+full resubmission requirement still applies. The durable adoption also preserves the workflow's
+Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
 **Recheck Inspector** only reevaluates the current durable observation and remains waiting until
 Inspector's normal sweep has seen a new head.
 

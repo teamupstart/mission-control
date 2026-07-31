@@ -4428,6 +4428,46 @@ quotes treehouse's own words rather than blaming a full pool - `get` fails the s
 way for an unresolvable pool or a bad config, and sending you to a `treehouse status`
 that looks perfectly healthy would help nobody.
 
+### Check leases
+
+A [Workflow check](#workflows-and-personas) runs a build in a pooled worktree of its
+own, pinned to the exact commit the run captured. That tree is leased like any other,
+with one difference you will see in `treehouse status`: it is held by
+**`mission-control-check-<attemptId>`**, not by plain `mission-control`.
+
+The distinct holder is the point, not decoration. A check has no session standing in
+it and no task recording it, and between the lease and the build starting it has no
+processes either - so every signal the sweep above trusts reads "idle" on a tree that
+is about to be written into, and a reclaim would kill the build and hard-reset the
+work. Because the sweep only ever returns leases stamped with a name this app has used
+(`mission-control`, `fleet-control`, `ai-harness`), a check lease is refused by the
+same rung that protects your own `--holder` reservations. The daemon also pins the path
+outright while a check holds it, which is deliberate redundancy: the holder is a string
+a future rename could break, and the pin is a path the daemon knows it is holding.
+
+The consequence is that the sweep can never collect a *leaked* check lease either, so
+the daemon collects its own. It keeps a durable record of every check lease and, at
+startup and on the same timer as the sweep, hands back the ones nobody is coming back
+for - but only after proving both that the tree is still ours (same path, same exact
+holder token) and that nothing is still running in it. A tree it cannot prove is empty
+is kept rather than reclaimed, because the cost of keeping one is a pool slot and the
+cost of guessing wrong is somebody's work. A path that has been re-leased to a
+different holder in the meantime is never returned at all; the daemon records it and
+walks away, which is what stops a crash-recovery from handing back a tree that is now
+yours.
+
+One residual, stated plainly because it cannot be closed from this side: the daemon
+serialises its own `treehouse get` / `status` / `return` calls so they cannot interleave,
+but that lock binds **one process**. A `make session` or a hand-run `treehouse get` in
+another terminal is outside it. What makes that safe is the holder comparison rather
+than the lock - anything leasing a tree from outside gets `mission-control` or its own
+label, never a check token, so the daemon sees the mismatch and refuses to touch it.
+(`treehouse return` accepts a path and no holder, and `--lease-holder` is a label
+treehouse records and never checks, so this is a rule the harness imposes on itself.)
+
+If you ever see an idle `mission-control-check-…` lease that outlives its daemon, it is
+safe to hand back by hand: `treehouse return <path>`.
+
 ## Configuration
 
 | Env | Default | Meaning |

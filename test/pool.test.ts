@@ -22,7 +22,7 @@ import { gitIn, mkOriginAndClone, mkLinkedWorktree } from "./helpers/git-fixture
 
 /** What the harness is holding; nothing, unless a test says otherwise. */
 function pins(over: Partial<PoolPins> = {}): PoolPins {
-  return { sessionCwds: [], taskWorktrees: [], ...over };
+  return { sessionCwds: [], taskWorktrees: [], checkLeasePaths: [], ...over };
 }
 
 // --- parsing ----------------------------------------------------------------

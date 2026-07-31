@@ -33,7 +33,9 @@ const { verifyHeadIs } = await import("../src/server/git/ensemble-snapshot.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [] });
+// Every one of these cases provisions into a plain `git worktree`, so there is nothing
+// for a reap to consider and nothing held: no live session, no task, and no check lease.
+const NO_PINS = () => ({ sessionCwds: [], taskWorktrees: [], checkLeasePaths: [] });
 
 function git(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" }).toString().trim();

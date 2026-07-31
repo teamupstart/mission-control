@@ -591,6 +591,83 @@ export function openDb(): DatabaseSync {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_binding_claims_binding
       ON workflow_binding_claims(binding_id);
 
+    -- The durable owner of a pooled worktree a Workflow check is holding.
+    --
+    -- Not workflow_node_attempts.output_json, which holds the final CheckOutcome and
+    -- nothing else. A lease is a RESOURCE, and a resource outlives the row that asked for
+    -- it: a daemon killed mid-check has to be able to find the tree it was holding, prove
+    -- it is still ours, and hand it back - long after attempt retention would have removed
+    -- the attempt itself.
+    --
+    -- NO FOREIGN KEY to workflow_node_attempts, deliberately, and it must stay that way.
+    -- PRAGMA foreign_keys = ON is set above, so a REFERENCES clause here would be
+    -- ENFORCED, and both enforcement modes are wrong: ON DELETE CASCADE would delete this
+    -- row when retention removes the attempt, destroying the only record of a tree that is
+    -- still held; RESTRICT would make retention fail outright on a leaked lease. The
+    -- requirement is precisely that this table outlives both. (It also matches the house
+    -- rule that the ensemble family is the only one here that declares foreign keys.)
+    --
+    -- submission_id and node_id are CARRIED rather than joined for, for the same reason.
+    -- Before a check node may retry, it has to answer "does this node still own an
+    -- unresolved lease?" - because a retry is a NEW attempt id, so it carries a new holder
+    -- token and would happily lease a DIFFERENT tree while the first group may still be
+    -- writing into the original. There is no natural collision to rely on. A join through
+    -- workflow_node_attempts would answer that correctly right up until the moment it
+    -- matters, which is exactly when retention has deleted the attempt.
+    --
+    -- Every column is NOT NULL, and attempt_id says so explicitly even though it is the
+    -- primary key: on a non-STRICT rowid table SQLite does NOT imply it (a long-standing
+    -- compatibility quirk), so PRIMARY KEY alone would admit several NULL keys - see
+    -- workflow_binding_claims above.
+    --
+    -- supervisor_pid = 0 and supervisor_start_ticks = '' are SENTINELS meaning "the gate
+    -- was never released", and that state is load-bearing rather than filler. A row
+    -- carrying the sentinel is positive proof that branch code never started, which is the
+    -- one thing that distinguishes a crash between spawn and persist from a process group
+    -- that is still alive - and only the first of those may have its tree returned on
+    -- ownership alone. Do NOT "clean these up" into nullable columns: a NULL is
+    -- indistinguishable from a row written by a build that did not set the column, and the
+    -- distinction is what authorises a destructive return.
+    --
+    -- cleanup_state is the lease's own lifecycle: 'held' -> 'returning' -> 'returned', plus
+    -- the terminal 'lost'. A failed return moves to 'returning' and STAYS there; it must
+    -- never delete the row, release its reaper pin, or permit a second lease for the same
+    -- attempt. 'lost' is the holder-mismatch terminal: the path is held by a token that is
+    -- not ours, so no return is issued, the row is kept for audit, and the pin IS dropped
+    -- (see check-lease.ts for why those two are compatible).
+    CREATE TABLE IF NOT EXISTS workflow_check_leases (
+      attempt_id             TEXT    NOT NULL PRIMARY KEY,
+      submission_id          TEXT    NOT NULL,
+      node_id                TEXT    NOT NULL,
+      repo_root              TEXT    NOT NULL,
+      lease_path             TEXT    NOT NULL,
+      holder_token           TEXT    NOT NULL,
+      cleanup_state          TEXT    NOT NULL,
+      supervisor_pid         INTEGER NOT NULL,
+      supervisor_start_ticks TEXT    NOT NULL,
+      created_at             INTEGER NOT NULL,
+      updated_at             INTEGER NOT NULL
+    );
+    -- UNIQUE over LIVE rows only. Two attempts believing they hold the same tree is the
+    -- corruption this whole subsystem exists to prevent, so it fails at the insert - but
+    -- the uniqueness has to be scoped to the states that mean "we are holding it", because
+    -- terminal rows are retained for audit and the pool hands the SAME slot out again and
+    -- again. Unscoped, the second check to ever use pool slot 3 would fail its insert
+    -- against slot 3's retained 'returned' row, and would keep failing forever. This is the
+    -- same seam that keeps the reaper's checkLeasePaths honest: retaining a row for audit
+    -- and treating the table as a live index are different jobs, and the state filter is
+    -- what makes both claims true at once. Write it as the WHERE, not as a convention.
+    --
+    -- Do not "restore" the unscoped index this was written as. The failure is not
+    -- hypothetical and it is not recoverable: it strands a pool slot for every future run.
+    -- Proven by "a pool slot can be leased again after an earlier lease of it went terminal"
+    -- in test/workflow-check-lease.test.ts, which fails with UNIQUE constraint failed the
+    -- moment the WHERE is removed.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_check_leases_path
+      ON workflow_check_leases(lease_path) WHERE cleanup_state IN ('held', 'returning');
+    CREATE INDEX IF NOT EXISTS idx_workflow_check_leases_node
+      ON workflow_check_leases(submission_id, node_id);
+
     -- What each task source has already filed, and will never file again.
     --
     -- Its OWN table rather than de-duplicating against the three columns on tasks, and

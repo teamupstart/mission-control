@@ -33,13 +33,6 @@ export interface FileMatrixRow {
   onlyIn: string | null;
 }
 
-export interface RationalePathToken {
-  path: string;
-  /** UTF-16 string offsets, matching `String.prototype.slice`. */
-  start: number;
-  end: number;
-}
-
 export interface CompareClaim {
   summary: string | null;
   checksCount: number;
@@ -132,104 +125,6 @@ export function buildFileMatrix(
       return { ...row, onlyIn: touchedBy.length === 1 ? touchedBy[0]! : null };
     })
     .sort((a, b) => b.totalChurn - a.totalChurn || a.path.localeCompare(b.path));
-}
-
-const KNOWN_PATH_EXTENSIONS = new Set([
-  "bash",
-  "c",
-  "cc",
-  "cjs",
-  "cpp",
-  "css",
-  "go",
-  "h",
-  "hpp",
-  "html",
-  "java",
-  "js",
-  "json",
-  "jsx",
-  "kt",
-  "kts",
-  "md",
-  "mdx",
-  "mjs",
-  "php",
-  "py",
-  "rb",
-  "rs",
-  "scss",
-  "sh",
-  "sql",
-  "svg",
-  "swift",
-  "toml",
-  "ts",
-  "tsx",
-  "txt",
-  "xml",
-  "yaml",
-  "yml",
-  "zsh",
-]);
-
-const LEADING_TOKEN_PUNCTUATION = new Set(["`", "'", "\"", "(", "[", "{", "<"]);
-const TRAILING_TOKEN_PUNCTUATION = new Set([
-  "`",
-  "'",
-  "\"",
-  ")",
-  "]",
-  "}",
-  ">",
-  ".",
-  ",",
-  ";",
-  ":",
-  "!",
-  "?",
-]);
-
-function pathShaped(token: string): boolean {
-  if (
-    token.length === 0 ||
-    token.startsWith("/") ||
-    token.includes("\\") ||
-    token.includes("://") ||
-    !/^[A-Za-z0-9_@+.,=~%/()[\]{}-]+$/.test(token)
-  ) {
-    return false;
-  }
-  const segments = token.split("/");
-  if (segments.some((segment) => segment === "" || segment === "..")) return false;
-  if (token.includes("/")) return true;
-  const dot = token.lastIndexOf(".");
-  return dot > 0 && KNOWN_PATH_EXTENSIONS.has(token.slice(dot + 1).toLowerCase());
-}
-
-/**
- * Detect exact path-shaped tokens without consulting the compare union. A scorecard renders this
- * on its first pass, before selecting artifacts has started any files-only fetch.
- */
-export function detectRationalePaths(text: string): RationalePathToken[] {
-  const paths: RationalePathToken[] = [];
-  for (const match of text.matchAll(/\S+/g)) {
-    const raw = match[0];
-    const rawStart = match.index;
-    if (rawStart === undefined) continue;
-    let left = 0;
-    let right = raw.length;
-    while (left < right && LEADING_TOKEN_PUNCTUATION.has(raw[left]!)) left += 1;
-    while (right > left && TRAILING_TOKEN_PUNCTUATION.has(raw[right - 1]!)) right -= 1;
-    const token = raw.slice(left, right);
-    if (!pathShaped(token)) continue;
-    paths.push({
-      path: token,
-      start: rawStart + left,
-      end: rawStart + right,
-    });
-  }
-  return paths;
 }
 
 /**

@@ -29,9 +29,9 @@ import {
   chooseCompareArtifactIds,
   compareClaim,
   comparePatchKey,
-  detectRationalePaths,
   updateCompareSelection,
 } from "../src/web/ensembles/compare.ts";
+import { detectPathTokens } from "../src/web/lib/workspaceLinks.ts";
 import { RationaleText } from "../src/web/ensembles/results/dossier.tsx";
 import { ENSEMBLE_RESULT_RENDERERS } from "../src/web/ensembles/results/index.ts";
 import type {
@@ -306,7 +306,7 @@ test("rationale path detection is exact-token and shape-gated without a file uni
   const text =
     "See `src/server/scheduler.ts`, README.md and config/retries; not scheduler, release.v2, ../escape.ts, /abs/file.ts, or https://example.test/a.ts.";
   assert.deepEqual(
-    detectRationalePaths(text).map((token) => token.path),
+    detectPathTokens(text).map((token) => token.path),
     ["src/server/scheduler.ts", "README.md", "config/retries"],
   );
 });

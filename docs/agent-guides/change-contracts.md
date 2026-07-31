@@ -118,6 +118,13 @@ Extend existing registries instead of adding parallel lists:
 
 Exhaustive `Record<Id, Value>` registries are intentional compiler enforcement.
 
+"That word is a file path" is two questions, both answered in `src/web/lib/workspaceLinks.ts`, and which one you get depends on whether you hold a list of real files:
+
+- `matchCheckoutPaths(text, paths)` — the transcript's. Membership decides, so every listed file is reachable with no excluded extension, shape, or length; longest match wins; candidates go through the same `normalizeRelative` a written href does, and absolute candidates are refused because normalization would otherwise read `/a` as the listed `a`.
+- `detectPathTokens(text)` — the fallback for a caller that cannot ask, which is the ensemble scorecard rendering a rationale before any file union is fetched. It guesses from shape and therefore misses every extensionless name, dotfile, and spaced path.
+
+Do not reach for the shape matcher while holding a listing, and do not add a third: they already share the word-boundary and `:line[:column]` rules, and the copies that preceded them had drifted.
+
 ## Electron and build surfaces
 
 An Electron capability spans:

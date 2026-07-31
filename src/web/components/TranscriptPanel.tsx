@@ -23,6 +23,7 @@ import {
   seedTail,
 } from "../lib/transcript-history.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
+import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeEpisodes } from "../lib/episodes.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { useRichText } from "../lib/rich-text.ts";
@@ -86,6 +87,7 @@ export function TranscriptPanel({
   episodes = [],
   onReplyBox,
   onOpenFile,
+  files,
   registerLaunchers,
   resetNonce = 0,
   ref,
@@ -137,6 +139,12 @@ export function TranscriptPanel({
   onReplyBox?: (present: boolean) => void;
   /** Claim links that resolve to a file in this transcript's session checkout. */
   onOpenFile?: WorkspaceLinkHandler;
+  /**
+   * The session files store, for the checkout listing that decides which bare paths in
+   * the prose are real files. Only ever read through `useWorkspacePaths` below - this
+   * panel does not browse files, it only needs to know which words name one.
+   */
+  files?: SessionFilesController;
   /** Register the launch buttons so App's selection shortcuts drive these exact controls. */
   registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
   ref?: React.Ref<TranscriptHandle>;
@@ -144,6 +152,22 @@ export function TranscriptPanel({
   // The body below was written against these two names and still is; only the PROP changed.
   const sessionId = session.id;
   const agent = session.agent;
+  // Only a session with a checkout and a handler that can open one has any use for the
+  // listing; without both, a path in the prose stays the text the agent typed.
+  const filePaths = useWorkspacePaths(files, sessionId, Boolean(session.cwd && onOpenFile));
+  // Both hosts build `onOpenFile` as a fresh closure every render (`cardProps`,
+  // ConsoleDetail's inline arrow), and `Markdown` is memoized on its props - including
+  // this one, because it must be: a skipped render leaves the rendered anchors calling
+  // the previous closure, which carries App's `layout` and `sessions`. Handing the same
+  // wrapper down every time makes that comparison true HONESTLY, so the turns below stay
+  // memoized through every SSE frame while a click still reaches the newest handler.
+  const openFileRef = useRef(onOpenFile);
+  openFileRef.current = onOpenFile;
+  const openFile = useCallback<WorkspaceLinkHandler>(
+    (href, probe) => openFileRef.current?.(href, probe) ?? false,
+    [],
+  );
+  const linkHandler = onOpenFile ? openFile : undefined;
   // Hydrated from the history map rather than starting empty, so re-opening a session
   // you had scrolled back through shows that scroll-back immediately instead of blanking
   // to the stream's tail and making you find your place again.
@@ -513,7 +537,13 @@ export function TranscriptPanel({
               ) : row.kind === "tools" ? (
                 <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_IDENTITY[agent].speaker} />
               ) : (
-                <Turn key={row.id} m={row.message} agentLabel={AGENT_IDENTITY[agent].speaker} onOpenFile={onOpenFile} />
+                <Turn
+                  key={row.id}
+                  m={row.message}
+                  agentLabel={AGENT_IDENTITY[agent].speaker}
+                  onOpenFile={linkHandler}
+                  filePaths={filePaths}
+                />
               ),
         )}
       </div>
@@ -593,10 +623,12 @@ function Turn({
   m,
   agentLabel,
   onOpenFile,
+  filePaths,
 }: {
   m: TranscriptMessage;
   agentLabel: string;
   onOpenFile?: WorkspaceLinkHandler;
+  filePaths?: ReadonlySet<string> | null;
 }): React.JSX.Element {
   const [richText] = useRichText();
   // A turn the human didn't type says who did. Much of the "user" side of a supervised
@@ -612,7 +644,13 @@ function Turn({
         // tint are the same either way. Only what's inside it changes, and `markdown` swaps
         // the `pre-wrap` raw text for parsed blocks.
         <div className={`turn-text${richText ? " markdown" : ""}`}>
-          {richText ? <Markdown breaks onLinkClick={onOpenFile}>{m.text}</Markdown> : m.text}
+          {richText
+            ? (
+              <Markdown breaks onLinkClick={onOpenFile} filePaths={filePaths}>
+                {m.text}
+              </Markdown>
+            )
+            : m.text}
         </div>
       )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} />}

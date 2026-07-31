@@ -444,11 +444,14 @@ command.
   `docker run --init`. Both fail in the safe direction: they delay a lease return rather than
   authorising one early.
 
-  **Confirmed the phase ships unwired**, as required: nothing imports `check-supervisor.ts`,
-  `checkDeps.execute` is still null, and a configured check still reports `unavailable` and
-  passes. Phase 4 remains its only intended consumer. **No file owned by another phase is
-  modified**: the diff outside the five new modules and their tests is README prose and these
-  planning documents.
+  **Confirmed the phase ships unwired**, as required: **no production code imports
+  `check-supervisor.ts`** - verified as `grep -rn` over `src/`, whose only hits are the new
+  modules importing each other - so `checkDeps.execute` is still null and a configured check
+  still reports `unavailable` and passes. Its TESTS import it, obviously and deliberately: this
+  phase ships tested-but-unwired, and a module with no test importing it would be the other
+  failure. Phase 4 remains its only intended *runtime* consumer. **No file owned by another
+  phase is modified**: the diff outside the five new modules and their tests is README prose and
+  these planning documents.
 
 - **2026-07-31, review round 1 (Inspector).** One `major`, accepted and fixed: *"Abort an
   unreleased supervisor when the run timer fires."* A `timeoutMs` shorter than the supervisor's

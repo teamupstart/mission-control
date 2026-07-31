@@ -123,11 +123,22 @@ export const REPLY_TIMEOUT_MS = Number(envVar("INSPECTOR_REPLY_TIMEOUT_MS") ?? 3
  * Cap on the diff we put in a prompt. A 2MB refactor is not reviewable in one pass anyway.
  *
  * BYTES, and `fetchDiff` applies it as such - it read as UTF-16 code units, which let a
- * diff of CJK or box-drawing content through at ~3x this. Overridden by
- * `MISSION_INSPECTOR_MAX_DIFF_BYTES` (or the `FLEET_` / `HARNESS_` fallbacks `envVar`
- * accepts); the bare suffix below is not itself an environment variable name.
+ * diff of CJK or box-drawing content through at ~3x this.
+ *
+ * `INSPECTOR_MAX_DIFF_BYTES` is the documented override and is read BARE, with the
+ * `MISSION_` / `FLEET_` / `HARNESS_` spellings `envVar` resolves still winning ahead of
+ * it so no existing setting stops working. The bare alias is granted HERE, on this one
+ * setting, and deliberately NOT added to `envVar`'s chain: that chain also serves
+ * `envVar("HOME")` and `envVar("PORT")`, so a bare tier in it would let the `HOME` every
+ * shell exports relocate the state directory and a stray `PORT` move the daemon off
+ * 7317. This name is specific enough to carry no such collision.
  */
-const MAX_DIFF_BYTES = Number(envVar("INSPECTOR_MAX_DIFF_BYTES") ?? 400_000);
+export function resolveMaxDiffBytes(): number {
+  return Number(
+    envVar("INSPECTOR_MAX_DIFF_BYTES") ?? process.env.INSPECTOR_MAX_DIFF_BYTES ?? 400_000,
+  );
+}
+const MAX_DIFF_BYTES = resolveMaxDiffBytes();
 /**
  * Replies we will write in one thread before we stop.
  *

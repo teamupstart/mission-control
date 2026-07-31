@@ -66,6 +66,22 @@ export interface PrHandoffInput {
   skillCommand: string;
 }
 
+export interface UnchangedEvidenceNudgeInput {
+  workflowName: string;
+  workflowVersion: number;
+  runId: string;
+  /** The refused round, so the packet names the same number the run detail shows. */
+  round: number;
+  originalGoal: string;
+  /** The fingerprint that matched, shown short - it is an identifier here, not a value to act on. */
+  evidenceFingerprint: string;
+  /** The packet this session already received and did not act on, or null if it was pruned. */
+  priorPacket: string | null;
+  /** Which nudge this is, and how many there are. Stated so the bound is not a surprise. */
+  nudge: number;
+  nudgeLimit: number;
+}
+
 /** Remove bytes that a terminal could interpret as controls while retaining plain line breaks. */
 export function sanitizeWorkflowFeedback(value: string): string {
   return value
@@ -265,6 +281,63 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
   return {
     ...finalizePacket(body, truncated, policyInstruction),
     failedPersonaCount: findings.length,
+  };
+}
+
+/**
+ * Render the answer to a completion signal that changed nothing.
+ *
+ * This packet exists because the alternative is a permanently dead loop. The completion guard
+ * is retired inside the claim transaction, BEFORE capture runs, so a capture that then refuses
+ * for unchanged evidence leaves a spent guard and a parked run that no later signal can move.
+ * Re-arming the guard on refusal instead would be a hot loop - one Foreman tick plus the settle
+ * is about fourteen seconds, and each pass spends a real context-compaction call against a
+ * session that is not changing. A packet costs one write, lands in the session, and lets the
+ * ordinary confirmed-delivery re-arm supply the next legitimate claim.
+ *
+ * It states the bound (`nudge N of M`) rather than hiding it. An agent that knows it has one
+ * more chance to explain itself behaves differently from one that thinks it has unlimited ones,
+ * and the run really does block after the limit.
+ */
+export function renderUnchangedEvidenceNudge(
+  input: UnchangedEvidenceNudgeInput,
+): RenderedWorkflowFeedback {
+  let truncated = false;
+  const bounded = (value: string): string => {
+    const result = field(value);
+    truncated ||= result.truncated;
+    return result.value;
+  };
+  const fingerprint = sanitizeWorkflowFeedback(input.evidenceFingerprint).slice(0, 16);
+  const body = [
+    "This work was reported complete, but nothing changed since the last review round.",
+    "",
+    `The evidence snapshot is byte-identical to the round that asked for changes (${fingerprint}).`,
+    "No commit, no working-tree edit, no new file. Reviewing the same bytes again would return",
+    "the same verdict, so this round was refused rather than re-run.",
+    "",
+    "Original user goal:",
+    bounded(input.originalGoal),
+    "",
+    `Workflow: ${bounded(input.workflowName)} v${input.workflowVersion}`,
+    `Run: ${input.runId}`,
+    `Repair round: ${input.round}`,
+    `Nudge ${input.nudge} of ${input.nudgeLimit}`,
+    "",
+    ...(input.priorPacket
+      ? ["The review packet you already received asked for this:", "", bounded(input.priorPacket)]
+      : [
+        "The original review packet is no longer retained, so re-read the review on the run",
+        "detail page for what it asked for.",
+      ]),
+  ].join("\n");
+  const instruction =
+    "Exactly two responses are acceptable. Either make the change the packet asks for, or say "
+    + "plainly why it should not be made and leave the work as it stands. Reporting completion "
+    + "again without doing one of those two will block this run for a human to resolve.";
+  return {
+    ...finalizePacket(body, truncated, instruction),
+    failedPersonaCount: 0,
   };
 }
 

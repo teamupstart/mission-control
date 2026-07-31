@@ -16,18 +16,41 @@ const { getWorkflowConfig, setWorkflowConfig } = await import("../src/server/wor
 const { setAppConfig } = await import("../src/server/db.ts");
 const { resolveRepoRoot } = await import("../src/server/repos.ts");
 
-test("workflow live consent defaults off and parsed writes replace the allowlist", () => {
+test("workflow live consent defaults ON with an empty allowlist, which authorises nothing", () => {
   assert.equal(DEFAULT_WORKFLOW_CONFIG.defaultWorkflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
   assert.deepEqual(getWorkflowConfig(), DEFAULT_WORKFLOW_CONFIG);
+
+  // The pair that makes the flipped default safe, asserted together rather than separately:
+  // delivery is authorised machine-wide AND there is no repository it is authorised in. A
+  // future change that seeded the allowlist would pass either assertion alone.
+  assert.equal(DEFAULT_WORKFLOW_CONFIG.liveEnabled, true);
+  assert.deepEqual(DEFAULT_WORKFLOW_CONFIG.repoAllowlist, []);
+  assert.equal(repoAllowlisted("/repo", "/repo", DEFAULT_WORKFLOW_CONFIG.repoAllowlist), false);
+
   assert.deepEqual(
     setWorkflowConfig({ liveEnabled: true, repoAllowlist: ["/repo"] }),
-    { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: true, repoAllowlist: ["/repo"] },
+    { ...DEFAULT_WORKFLOW_CONFIG, repoAllowlist: ["/repo"] },
   );
   assert.deepEqual(
     setWorkflowConfig({ liveEnabled: false, repoAllowlist: [] }),
-    DEFAULT_WORKFLOW_CONFIG,
+    { ...DEFAULT_WORKFLOW_CONFIG, liveEnabled: false },
   );
   assert.throws(() => setWorkflowConfig({ liveEnabled: true, repoAllowlist: [""] }));
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
+});
+
+test("an operator who explicitly turned live delivery off keeps it off across the flip", () => {
+  // The upgrade case the default flip turns on. `liveEnabled` is a `.default()` over an
+  // `app_config` blob, so it is only consulted when the key is ABSENT. A stored `false` is an
+  // answered question and must survive, or the flip silently re-authorises terminal writes for
+  // the one operator who said no.
+  setAppConfig("workflows", { liveEnabled: false, repoAllowlist: ["/repo"] });
+  assert.equal(getWorkflowConfig().liveEnabled, false);
+
+  // And the never-opened case, which is the flip's whole point: no key at all reads as ON.
+  setAppConfig("workflows", { repoAllowlist: ["/repo"] });
+  assert.equal(getWorkflowConfig().liveEnabled, true);
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
 });
 
 test("the dispatch Workflow default is durable and explicit none clears it", () => {
@@ -178,7 +201,7 @@ test("check consent defaults off with no commands, and survives a round trip", (
   assert.deepEqual(saved.checkCommands, [{ repoRoot: "/repo", slot: "test", command: ["npm", "test"] }]);
   assert.deepEqual(getWorkflowConfig(), saved);
 
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: [] });
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
   assert.deepEqual(getWorkflowConfig(), DEFAULT_WORKFLOW_CONFIG);
 });
 
@@ -208,12 +231,19 @@ test("an unreadable stored config falls back to defaults rather than throwing", 
     [1, 2, 3],
   ]) {
     setAppConfig("workflows", blob);
-    // The whole default, not a field-by-field salvage: the two consent fields are what an
-    // unreadable config would otherwise be trusted to grant, and off is the only safe way
-    // to be wrong about them.
-    assert.deepEqual(getWorkflowConfig(), DEFAULT_WORKFLOW_CONFIG, `${JSON.stringify(blob)} should degrade`);
+    // The whole default, not a field-by-field salvage. What makes that safe is the ALLOWLIST
+    // coming back empty, not the consent boolean coming back off - `liveEnabled` now defaults
+    // on, and an argument resting on the boolean would already be wrong. A field-by-field
+    // salvage is the dangerous one: it could keep a parsed allowlist beside a defaulted flag.
+    const degraded = getWorkflowConfig();
+    assert.deepEqual(degraded, DEFAULT_WORKFLOW_CONFIG, `${JSON.stringify(blob)} should degrade`);
+    assert.equal(
+      repoAllowlisted("/repo", "/repo", degraded.repoAllowlist),
+      false,
+      `${JSON.stringify(blob)} must authorise no repository after degrading`,
+    );
   }
-  setWorkflowConfig({ liveEnabled: false, repoAllowlist: [] });
+  setWorkflowConfig({ liveEnabled: true, repoAllowlist: [] });
 });
 
 test("the WRITE path still refuses what the read path tolerates", () => {

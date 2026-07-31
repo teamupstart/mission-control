@@ -507,10 +507,23 @@ export const WORKFLOW_NODE_ATTEMPT_STATES = [
 ] as const;
 export type WorkflowNodeAttemptState = (typeof WORKFLOW_NODE_ATTEMPT_STATES)[number];
 
+/**
+ * What a delivered packet IS. APPEND-ONLY, for `EVIDENCE_REF_KINDS`' reason: these strings
+ * reach durable rows, so a build that cannot read a persisted kind fails the whole row at its
+ * zod boundary rather than degrading. Add to the end; never rename, never remove.
+ *
+ * `unchanged_evidence_nudge` is the odd one out and deliberately so. The other three carry a
+ * REVIEW's output to the session. This one carries the loop's own refusal: the session said it
+ * was done, the evidence fingerprint was byte-identical to the round that asked for changes, and
+ * capture refused. Without a packet that refusal is silent and terminal - the completion guard
+ * is already spent by the time capture runs, so nothing would ever ask again. See
+ * `renderUnchangedEvidenceNudge`.
+ */
 export const WORKFLOW_DELIVERY_KINDS = [
   "persona_feedback",
   "inspector_feedback",
   "pr_handoff",
+  "unchanged_evidence_nudge",
 ] as const;
 export type WorkflowDeliveryKind = (typeof WORKFLOW_DELIVERY_KINDS)[number];
 
@@ -615,6 +628,20 @@ export interface WorkflowCheckCommand {
 }
 
 export interface WorkflowConfig {
+  /**
+   * Machine-wide authorisation to TYPE a repair packet into a session's pane.
+   *
+   * On by default, and that is only half a gate. `repoAllowlist` is the other half and stays
+   * empty, so a fresh install authorises delivery in NO repository until a human names one:
+   * `repoAllowlisted(cwd, repoRoot, [])` is false for every path. `deliveryBlock` asks both in
+   * one place and refuses with `live_not_authorized`, which is a visible reason on the run
+   * rather than silence.
+   *
+   * Off by default would be the safer-looking choice and is the wrong one. It makes the
+   * repair loop dead on arrival for everybody - the packet is prepared, never sent, and the
+   * run parks forever - while the allowlist already carries the consent this flag looks like
+   * it is carrying. Two gates that both default closed means the second one never gets read.
+   */
   liveEnabled: boolean;
   repoAllowlist: string[];
   /**
@@ -628,8 +655,10 @@ export interface WorkflowConfig {
   defaultWorkflowId: WorkflowId | null;
   retention: WorkflowRetentionConfig;
   /**
-   * Machine-wide consent for running a configured command from a workflow. Off by default,
-   * matching `liveEnabled`, and it is only half the gate: `repoAllowlist` is the other, and
+   * Machine-wide consent for running a configured command from a workflow. Off by default -
+   * deliberately NOT following `liveEnabled`, which is now on. Delivery types text a human
+   * reads before anything happens; a check executes an argv on disk unattended, which is a
+   * different question and gets its own answer. `repoAllowlist` is still the other half, and
    * `checkBlockedReason` is the one place both are asked.
    */
   checksEnabled: boolean;
@@ -651,7 +680,9 @@ export interface WorkflowRetentionConfig {
 }
 
 export const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
-  liveEnabled: false,
+  // Authorised, and gated on `repoAllowlist` being non-empty. See the field's docstring: an
+  // empty allowlist authorises nothing, so this changes nothing for a repository nobody named.
+  liveEnabled: true,
   repoAllowlist: [],
   // Store the stable workflow identity, not today's version. A task resolves it to the
   // newest immutable shipped version when its session is armed (v5 in this build), while

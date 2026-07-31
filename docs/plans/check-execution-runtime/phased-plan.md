@@ -186,7 +186,7 @@ Phase 1 owns that test.
 
 | # | Phase | Depends on | Concurrency group | Size |
 |---|---|---|---|---|
-| 1 | [Automatic repair loop](phase-1-automatic-repair-loop.md) **- superseded in part by PR #327, needs re-scoping** | planning PR | A | M |
+| 1 | [Automatic repair loop](phase-1-automatic-repair-loop.md) | planning PR | A | M |
 | 2 | [Lease foundation](phase-2-lease-foundation.md) | planning PR | A | L |
 | 3 | [Streaming process supervisor](phase-3-process-supervisor.md) | 2 | B | L |
 | 4 | [Check executor wiring](phase-4-executor-wiring.md) | 2, 3 | C | M |
@@ -389,6 +389,18 @@ After Phase 1, these hold and no later phase may weaken them:
   #327 took over and what still holds, and it must not be implemented until the operator
   re-decides its scope. Phases 2, 3 and 4 are untouched: #327 changes nothing in the lease,
   supervisor or executor surfaces, and no cross-phase contract moved.
+- **2026-07-31, Phase 1 re-scoped and implemented.** The operator kept the original scope and
+  operator decision 5 stands. The collision proved to be smaller than it read: the two
+  mechanisms cannot both open a round (the run-status transition is the lock, and the observer
+  re-reads after its `await`), and #327's observer serves only versions pinned to
+  `resumptionPolicy: "auto"` - built-in v7 alone - so every binding on v1-v6 still reaches round
+  N+1 through the Foreman claim Phase 1 repairs. Both mechanisms additionally need Live
+  delivery, so Phase 1's `liveEnabled` flip is what switches #327 on as well. Phase 1's own
+  audit record carries two corrections found while implementing, one of which contradicts a
+  finding in its "Data, API and compatibility" section: the nudge counter does NOT fit in the
+  run's gate state, because every path that opens a round nulls `gate_state_json`. It is derived
+  from the event log instead, which keeps the no-schema-change constraint intact. No phase
+  boundary, dependency edge or cross-phase contract moved.
 - **2026-07-30, Inspector rounds 5 and 6 (PR #326):** two majors, both accepted, both about the
   same seam between ownership and liveness. Round 5: Phase 2's startup reconciliation would have
   returned a lease on ownership alone, hard-resetting a tree a live check was still writing into

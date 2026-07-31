@@ -638,6 +638,43 @@ test("an orphaned binding refuses the send-side recoveries instead of failing at
   assert.doesNotMatch(bound, /<button[^>]*disabled[^>]*>Discard and send new round/);
 });
 
+/**
+ * A packet's card has to say what KIND of packet it is, in words.
+ *
+ * The header used to render `delivery.kind.replaceAll("_", " ")`, which was survivable while
+ * every kind read as a review and stopped being survivable the moment one of them was the
+ * loop's own refusal: `unchanged evidence nudge` sat in the same slot as `persona feedback`
+ * with nothing distinguishing a review from a complaint that no review had happened.
+ */
+test("each delivery card names its packet kind in words rather than as a machine string", () => {
+  const base = runningDetail();
+  const packet = (id: string, kind: WorkflowRunDetail["deliveries"][number]["kind"]) => ({
+    id,
+    runId: "run",
+    submissionId: "submission-1",
+    kind,
+    sessionId: "session",
+    noteKey: "note",
+    payload: "PACKET",
+    payloadSha256: "c".repeat(64),
+    state: "delivered" as const,
+    error: null,
+    createdAt: 2,
+    updatedAt: 3,
+    deliveredAt: 3,
+  });
+  const html = render({
+    ...base,
+    deliveries: [
+      packet("d-persona", "persona_feedback"),
+      packet("d-nudge", "unchanged_evidence_nudge"),
+    ],
+  } as WorkflowRunDetail);
+  assert.match(html, /<span>Review feedback<\/span>/);
+  assert.match(html, /<span>Nothing changed<\/span>/);
+  assert.doesNotMatch(html, /unchanged evidence nudge/, "no raw machine string reaches a reader");
+});
+
 test("the strip's meta line follows the retry, not the attempt that failed", () => {
   const base = runningDetail();
   const html = render({

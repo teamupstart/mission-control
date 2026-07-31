@@ -34,6 +34,8 @@ import {
   personasForDisplay,
   workflowsForDisplay,
   type WorkflowTriggerSource,
+  type WorkflowCompletionKind,
+  type WorkflowDeliveryKind,
   type WorkflowGateSummary,
   type WorkflowInspectorGateState,
   type WorkflowResumptionPolicy,
@@ -630,6 +632,25 @@ const WorkflowDeliveryRowSchema = z.object({
   delivered_at: nullableInteger,
   payload_pruned_at: nullableInteger.optional().default(null),
 });
+
+/**
+ * The run phase a CONFIRMED delivery of each kind leaves behind.
+ *
+ * A `Record` rather than the ternary chain this replaced, so a fifth delivery kind fails
+ * typecheck here until somebody decides what state a run is in once that packet has landed -
+ * the same reason the display vocabulary lives in one exhaustive map in `run-model.ts`.
+ *
+ * `unchanged_evidence_nudge` deliberately KEEPS `unchanged_evidence`. The nudge does not undo
+ * the refusal, it asks the session to answer it; relabelling the phase `persona_feedback` would
+ * tell the run detail page a review had been delivered when what was delivered was a refusal,
+ * and would lose the one phase a human scanning stalled runs needs to see.
+ */
+const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string> = {
+  persona_feedback: "persona_feedback",
+  inspector_feedback: "inspector_findings",
+  pr_handoff: "pr_handoff",
+  unchanged_evidence_nudge: "unchanged_evidence",
+};
 
 export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
   const row = parseShape("workflow_deliveries", WorkflowDeliveryRowSchema, value);
@@ -3158,7 +3179,7 @@ export class WorkflowStore {
     transcriptAnchor: number | null,
     submitVerified: boolean,
     now = Date.now(),
-  ): { delivery: WorkflowDelivery; rearmedDrain: boolean } | null {
+  ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return transaction(this.db, () => {
       const delivery = this.getDelivery(id);
       if (!delivery || delivery.state !== "sending") return null;
@@ -3179,15 +3200,10 @@ export class WorkflowStore {
       const nextStatus = delivery.kind === "inspector_feedback" && inspectorOnly
         ? "waiting_for_new_head"
         : "waiting_for_session";
-      const nextPhase = delivery.kind === "pr_handoff"
-        ? "pr_handoff"
-        : delivery.kind === "inspector_feedback"
-          ? "inspector_findings"
-          : "persona_feedback";
       this.setRunState(
         delivery.runId,
         nextStatus,
-        nextPhase,
+        DELIVERY_RUN_PHASE[delivery.kind],
         delivery.kind === "persona_feedback"
           ? { deliveryId: delivery.id, transcriptAnchor }
           : run.gateState,
@@ -3198,14 +3214,14 @@ export class WorkflowStore {
         transcriptAnchor,
         submitVerified,
       }, now);
-      const rearmedDrain = this.rearmDrainCompletionForDelivery(delivery, now);
-      if (rearmedDrain) {
+      const rearmed = this.rearmCompletionForDelivery(delivery, now);
+      if (rearmed) {
         this.appendEvent(delivery.runId, "foreman_completion_rearmed", {
           deliveryId: delivery.id,
-          completionKind: "drain",
+          completionKind: rearmed,
         }, now);
       }
-      return { delivery: this.mustDelivery(id), rearmedDrain };
+      return { delivery: this.mustDelivery(id), rearmed };
     });
   }
 
@@ -3316,7 +3332,11 @@ export class WorkflowStore {
     resolution: "mark_delivered" | "discard_and_new_round",
     requestId: string,
     now = Date.now(),
-  ): { delivery: WorkflowDelivery; idempotent: boolean; rearmedDrain: boolean } | null {
+  ): {
+    delivery: WorkflowDelivery;
+    idempotent: boolean;
+    rearmed: WorkflowCompletionKind | null;
+  } | null {
     return transaction(this.db, () => {
       const delivery = this.getDelivery(id);
       if (!delivery) return null;
@@ -3333,7 +3353,7 @@ export class WorkflowStore {
       ).get(delivery.runId, id, requestId) as { resolution: string } | undefined;
       if (prior) {
         return prior.resolution === resolution
-          ? { delivery, idempotent: true, rearmedDrain: false }
+          ? { delivery, idempotent: true, rearmed: null }
           : null;
       }
       if (delivery.state !== "uncertain") return null;
@@ -3351,7 +3371,7 @@ export class WorkflowStore {
         requestId,
         resolution,
       }, now);
-      let rearmedDrain = false;
+      let rearmed: WorkflowCompletionKind | null = null;
       if (resolution === "mark_delivered" && !runTerminal) {
         const binding = this.getBinding(run.bindingId);
         if (
@@ -3368,30 +3388,25 @@ export class WorkflowStore {
           const nextStatus = delivery.kind === "inspector_feedback" && inspectorOnly
             ? "waiting_for_new_head"
             : "waiting_for_session";
-          const nextPhase = delivery.kind === "pr_handoff"
-            ? "pr_handoff"
-            : delivery.kind === "inspector_feedback"
-              ? "inspector_findings"
-              : "persona_feedback";
           this.setRunState(
             delivery.runId,
             nextStatus,
-            nextPhase,
+            DELIVERY_RUN_PHASE[delivery.kind],
             delivery.kind === "persona_feedback"
               ? { deliveryId: delivery.id, resolvedByOperator: true }
               : run.gateState,
             now,
           );
-          rearmedDrain = this.rearmDrainCompletionForDelivery(delivery, now);
-          if (rearmedDrain) {
+          rearmed = this.rearmCompletionForDelivery(delivery, now);
+          if (rearmed) {
             this.appendEvent(delivery.runId, "foreman_completion_rearmed", {
               deliveryId: delivery.id,
-              completionKind: "drain",
+              completionKind: rearmed,
             }, now);
           }
         }
       }
-      return { delivery: this.mustDelivery(id), idempotent: false, rearmedDrain };
+      return { delivery: this.mustDelivery(id), idempotent: false, rearmed };
     });
   }
 
@@ -4224,6 +4239,36 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * How many unchanged-evidence refusals this run has taken in a row.
+   *
+   * Derived from the event log rather than held in `gate_state_json`, because every path that
+   * opens a round - `createRepairSubmission`, `claimForemanCompletion`, the full restart -
+   * writes `gate_state_json = NULL`, so a counter kept there would reset on exactly the event
+   * it is supposed to be counting. The events are already durable, already indexed by
+   * `(run_id, id)`, and are only ever deleted with the whole run family.
+   *
+   * "In a row" is the id of the newest reset. `submission_captured` is the honest reset - it is
+   * appended only when a capture produced a fingerprint that DIFFERS, which is precisely "the
+   * session changed something". `resubmit_unchanged_confirmed` resets too: a human looked at
+   * the same bytes and said proceed anyway, and holding their override against the next
+   * automatic round would block a run the human just unblocked.
+   */
+  consecutiveUnchangedRefusals(runId: string): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n
+         FROM workflow_events
+        WHERE run_id = ?
+          AND event_kind = 'resubmit_refused_unchanged'
+          AND id > COALESCE((
+            SELECT MAX(id) FROM workflow_events
+             WHERE run_id = ?
+               AND event_kind IN ('submission_captured', 'resubmit_unchanged_confirmed')
+          ), 0)`,
+    ).get(runId, runId) as { n: number | bigint } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
   private retireDrainGuard(noteKey: string, answer: string, now: number): boolean {
     const terminal = TERMINAL_ITEM_STATES.map((state) => `'${state}'`).join(",");
     const result = this.db.prepare(
@@ -4255,6 +4300,55 @@ export class WorkflowStore {
           )`,
     ).run(now, delivery.noteKey);
     return Number(result.changes) === 1;
+  }
+
+  /**
+   * The other half of the re-arm pair: put the PROMPTED episode back in play.
+   *
+   * `rearmDrainCompletionForDelivery` above can only speak for a session that has queue
+   * items - its `EXISTS` clause is what makes "the queue drained again" a true statement.
+   * A session driven by a human prompt has no items at all, so before this existed a
+   * confirmed repair packet re-armed nothing and the loop depended on the session's goal
+   * text happening to move. Clearing `prompted_goal` is the exact inverse of what
+   * `retirePromptedGuard` writes, so `decidePromptedWrapup` step 10 stops matching and the
+   * episode is armed again.
+   *
+   * Deliberately UPDATE-only, matching the drain function's shape: an absent row means this
+   * session has no wrap-up state to re-arm, and inserting one here would manufacture a queue
+   * for a session Foreman was never watching. `retirePromptedGuard` may insert because it is
+   * recording an episode that actually fired; this is only ever undoing one.
+   */
+  private rearmPromptedCompletionForDelivery(
+    delivery: WorkflowDelivery,
+    now: number,
+  ): boolean {
+    const result = this.db.prepare(
+      `UPDATE foreman_queues
+          SET prompted_goal = NULL, updated_at = ?
+        WHERE note_key = ? AND prompted_goal IS NOT NULL`,
+    ).run(now, delivery.noteKey);
+    return Number(result.changes) === 1;
+  }
+
+  /**
+   * Re-arm EXACTLY ONE completion episode for a confirmed delivery, and say which.
+   *
+   * Drain first, prompted only if drain declined. Re-arming both would let one repair packet
+   * produce two completion claims and therefore two repair rounds for one fix - the session
+   * would be reviewed twice for work it did once, and the second round would land on
+   * `unchanged_evidence` because nothing moved between them.
+   *
+   * Drain wins the tie because it is the more specific statement: it fires only for a session
+   * that has queue items and has drained them, which is a real event with a real moment. The
+   * prompted episode is the fallback for a session Foreman is merely watching.
+   */
+  private rearmCompletionForDelivery(
+    delivery: WorkflowDelivery,
+    now: number,
+  ): WorkflowCompletionKind | null {
+    if (this.rearmDrainCompletionForDelivery(delivery, now)) return "drain";
+    if (this.rearmPromptedCompletionForDelivery(delivery, now)) return "prompted";
+    return null;
   }
 
   private retirePromptedGuard(

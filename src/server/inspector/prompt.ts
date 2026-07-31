@@ -1,6 +1,7 @@
 import type { InspectorComment } from "@shared/types.ts";
 import type { StandardsBundle } from "../standards.ts";
 import type { Brief } from "./brief.ts";
+import { SEVERITY_RANK } from "./verdict.ts";
 
 // The two prompts the Inspector sends: review a pull request, and answer a follow-up in
 // one of its own threads.
@@ -60,6 +61,27 @@ Rules that are yours alone, and are not negotiable:
 - "title" is how an issue is IDENTIFIED across pushes, so keep it short, specific, and
   phrase it the same way if you raise it again.`;
 
+// Caps on the four inputs nothing upstream bounds. The brief, the standards bundle and
+// the diff all arrive already capped (MAX_BRIEF_BYTES, MAX_TOTAL_BYTES, MAX_DIFF_BYTES);
+// these come straight from GitHub or from the ledger, whose own ceiling is 2000 open
+// findings - 348 KB of prompt on its own. Every cut is ANNOUNCED in the text, matching
+// the diff heading and the standards "(truncated)" suffix: a silent cut reads as "that
+// is everything", which is exactly the wrong claim, and for `changedPaths` it is worse -
+// the model is told off-list findings are discarded, so a silently dropped path would
+// make real findings on that file unsayable. Paths themselves are never shortened, only
+// counted out, because the discard rule matches them literally; their length is bounded
+// transitively by the diff cap they are parsed from.
+export const REVIEW_PROMPT_CAPS = {
+  /** GitHub renders ~70 chars of title; ten times that is already a paragraph. */
+  titleChars: 300,
+  /** GitHub allows a 65,536-char body. A description worth reading fits in far less. */
+  bodyChars: 8 * 1024,
+  /** ~33 bytes/row measured; 1000 rows matches standards.ts MAX_CHANGED_PATHS. */
+  changedPathRows: 1000,
+  /** Most severe first. 200 rows is ten full rounds of comments, ~35 KB at worst. */
+  openRows: 200,
+} as const;
+
 export interface ReviewPromptInput {
   brief: Brief;
   standards: StandardsBundle;
@@ -99,18 +121,45 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     }
   }
 
-  lines.push("## The pull request", `title: ${input.prTitle}`, "");
-  if (input.prBody.trim()) lines.push(...fence("pr-description", input.prBody.trim()));
+  const title =
+    input.prTitle.length > REVIEW_PROMPT_CAPS.titleChars
+      ? `${input.prTitle.slice(0, REVIEW_PROMPT_CAPS.titleChars)} (title truncated)`
+      : input.prTitle;
+  lines.push("## The pull request", `title: ${title}`, "");
+  const body = input.prBody.trim();
+  if (body) {
+    if (body.length > REVIEW_PROMPT_CAPS.bodyChars) {
+      lines.push(
+        "(The description is TRUNCATED for length - do not conclude anything from what is missing.)",
+      );
+    }
+    lines.push(...fence("pr-description", body.slice(0, REVIEW_PROMPT_CAPS.bodyChars)));
+  }
 
-  lines.push(
-    "## Files this pull request changed",
-    "A finding that does not name one of these will be discarded.",
-    "",
-    ...input.changedPaths.map((p) => `- ${p}`),
-    "",
-  );
+  const shownPaths = input.changedPaths.slice(0, REVIEW_PROMPT_CAPS.changedPathRows);
+  const omittedPaths = input.changedPaths.length - shownPaths.length;
+  lines.push("## Files this pull request changed");
+  if (omittedPaths > 0) {
+    // The discard rule must soften here: told "off-list findings are discarded" against
+    // an incomplete list, the model would silently drop real findings on the cut files.
+    lines.push(
+      `This list is TRUNCATED for length: ${omittedPaths} more changed files are not shown.`,
+      "A finding is discarded only when it names a file OUTSIDE this pull request's diff,",
+      "so a changed file missing from this list is still fair to raise.",
+    );
+  } else {
+    lines.push("A finding that does not name one of these will be discarded.");
+  }
+  lines.push("", ...shownPaths.map((p) => `- ${p}`), "");
 
   if (input.open.length) {
+    const shownOpen = [...input.open]
+      .sort(
+        (a, b) =>
+          SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.updatedAt - a.updatedAt,
+      )
+      .slice(0, REVIEW_PROMPT_CAPS.openRows);
+    const omittedOpen = input.open.length - shownOpen.length;
     lines.push(
       "## Issues you raised earlier that are still open",
       "If this push fixes one, put its fingerprint in `resolved`. If it is still a",
@@ -118,7 +167,14 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
       "it posts a duplicate.",
       "",
     );
-    for (const c of input.open) {
+    if (omittedOpen > 0) {
+      lines.push(
+        `(TRUNCATED for length: the ${shownOpen.length} most severe of ${input.open.length}`,
+        `open issues are listed; the ${omittedOpen} omitted simply stay open.)`,
+        "",
+      );
+    }
+    for (const c of shownOpen) {
       lines.push(`- ${c.fingerprint} - ${c.path}: ${c.title}`);
     }
     lines.push("");

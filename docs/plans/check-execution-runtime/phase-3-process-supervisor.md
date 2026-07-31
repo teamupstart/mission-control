@@ -511,6 +511,32 @@ command.
   cancelling live check groups to Phase 4. `SIGKILL` of the daemon defeats every version of
   this, which is why the durable row and identity-verified recovery exist at all.
 
+- **2026-07-31, review round 8 (Inspector).** One `major`, declined on the remedy and accepted on
+  the fact: *"Do not pass the daemon HOME to check commands."*
+
+  The fact is correct. With no state-dir alias set, the daemon's state directory - and its token
+  file - defaults to a folder in the invoking user's home, and `HOME` points there.
+
+  Both proposed remedies were measured, and neither closes anything. Deleting `HOME` from the
+  child's environment entirely: `process.env.HOME` is gone, and `os.homedir()` still returns the
+  real home through `getpwuid`, and the token still reads. Substituting a decoy `HOME`:
+  `os.homedir()` follows the decoy, and `os.userInfo().homedir` ignores `$HOME` outright and
+  hands back the real one, and the token still reads. The token is reachable because the command
+  runs **as that user with that user's filesystem authority**, which is a property of the design
+  this phase explicitly does not change - it is the stated non-goal, in the same words, in the
+  scope section and the README. Meanwhile `HOME` is load-bearing for npm, cargo, git and ssh, so
+  dropping it would break nearly every real build in exchange for nothing.
+
+  What the finding DID expose is an overstatement, and that is fixed. The module comment claimed
+  to remove "the daemon's admission credential and the coordinates that locate it", which reads
+  as though the location were hidden. It is not, and cannot be. The comment now says what is
+  true: the token is removed from the environment so it is never HANDED to a check, the three
+  aliases are removed because an OVERRIDE is the one part of the location not otherwise
+  derivable, and the default location is not concealed by this or anything else. The README
+  gained the same correction, and `HOME`'s entry in the scrubber's table now carries the argument
+  for keeping it rather than sitting there unexplained. The allowlist is the boundary; this
+  function is hygiene.
+
 - **2026-07-31, review round 7 (Inspector).** One `major`, accepted, and it invalidated a claim
   made two rounds earlier in this very record.
 

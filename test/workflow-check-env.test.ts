@@ -16,7 +16,11 @@ const TOKEN = "4f3c2b1a9e8d7c6b5a4938271605f4e3d2c1b0a998877665";
 const CASES: ReadonlyArray<{ name: string; value?: string; kept: boolean; why: string }> = [
   // --- kept: a build has to be able to find and run its own toolchain -----------------
   { name: "PATH", kept: true, why: "without it nothing resolves at all" },
-  { name: "HOME", kept: true, why: "npm, cargo and git all read per-user config from it" },
+  // Kept DELIBERATELY, and it is the one entry here worth arguing for. HOME does point at
+  // the daemon's default state directory, but removing it neither hides that directory
+  // (os.homedir() falls back to getpwuid, and os.userInfo().homedir ignores $HOME outright)
+  // nor leaves a usable build environment - npm, cargo, git and ssh all need it.
+  { name: "HOME", kept: true, why: "npm, cargo, git and ssh read per-user config from it" },
   { name: "SHELL", kept: true, why: "test runners that shell out read it" },
   { name: "LANG", kept: true, why: "locale changes compiler and test output" },
   { name: "LC_ALL", kept: true, why: "same family as LANG" },

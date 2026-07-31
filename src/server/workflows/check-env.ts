@@ -3,11 +3,24 @@
 //
 // THIS IS NOT A SANDBOX AND MUST NEVER BE DESCRIBED AS ONE. The command still runs with the
 // daemon's own filesystem authority, its own network access and its own user. What this
-// removes is the daemon's ADMISSION credential and the coordinates that locate it, so a
-// check that goes looking cannot trivially drive the control plane that invoked it. A build
-// that wants to do damage with the authority it already has is outside what any function in
-// this repository can prevent; saying so plainly is more useful than implying a boundary
-// that is not here.
+// removes is the daemon's ADMISSION credential from the environment, so a check does not get
+// handed one by accident. A build that wants to do damage with the authority it already has is
+// outside what any function in this repository can prevent; saying so plainly is more useful
+// than implying a boundary that is not here.
+//
+// ## What it explicitly does NOT do: hide where the daemon keeps its state
+//
+// The token file lives under the state directory, which defaults to a folder in the invoking
+// user's home. A check runs as that user, so it can read it - and no amount of environment
+// editing changes that. Measured rather than assumed, because it is the obvious thing to reach
+// for: deleting `HOME` from the child's environment still leaves `os.homedir()` resolving the
+// real home through `getpwuid`, and substituting a decoy `HOME` is defeated by
+// `os.userInfo().homedir`, which ignores `$HOME` altogether. In both cases the token remains
+// readable. Meanwhile `HOME` is load-bearing for npm, cargo, git and ssh, so dropping it buys
+// nothing and breaks nearly every real build.
+//
+// The **allowlist** is the boundary here, not this function. A repository has to be authorised
+// before any of its commands run at all.
 //
 // ## Deny-list, and the choice is deliberate
 //
@@ -25,12 +38,17 @@
 // file.
 
 /**
- * The three spellings of the variable that locates the daemon's state directory.
+ * The three spellings of the variable that OVERRIDES the daemon's state directory.
  *
  * `src/shared/harness-runtime.mjs` owns the fallback chain (`envVar("HOME")` reads
  * `MISSION_HOME`, then `FLEET_HOME`, then `HARNESS_HOME`), and that directory is where the
- * auth token file lives. Dropping only the token value would leave a check able to read the
- * token straight off disk by following one of these, so both go.
+ * auth token file lives.
+ *
+ * Removed because an OVERRIDE is the one part of the location that is not otherwise
+ * derivable: an operator who moved their state dir somewhere unusual has not published that
+ * choice anywhere else, and passing it on would hand it over for free. The DEFAULT location is
+ * a different matter and is not hidden by this or by anything else - see the module comment.
+ * So this narrows an incidental disclosure; it is not a barrier.
  *
  * None of them is credential-SHAPED, which is exactly why they need naming: a name-shape
  * rule alone would keep every one of them.

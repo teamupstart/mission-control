@@ -4633,10 +4633,13 @@ What a check command gets:
   arguments, so there is no string for a repository's configured command to break out of.
 - **The captured commit, in a pooled worktree**, not your own working copy - so a check never
   sees, and can never disturb, whatever you have open.
-- **A trimmed environment.** The daemon's auth token is removed, along with the variables that
-  locate the directory holding it and anything whose name reads like a credential (`…_TOKEN`,
-  `…_SECRET`, `…_PASSWORD`, `…_KEY`, `…_CREDENTIALS`). `PATH`, `HOME`, `SHELL`, the locale and
-  proxy variables and everything else a build needs are passed through.
+- **A trimmed environment.** The daemon's auth token is removed, along with any variable that
+  overrides where its state directory lives and anything whose name reads like a credential
+  (`…_TOKEN`, `…_SECRET`, `…_PASSWORD`, `…_KEY`, `…_CREDENTIALS`). `PATH`, `HOME`, `SHELL`, the
+  locale and proxy variables and everything else a build needs are passed through. This stops a
+  credential being *handed* to a check; it does not hide the daemon's default state directory,
+  which sits in your home folder and which anything running as you can find whatever the
+  environment says.
 - **A closed stdin**, so a command that stops to ask a question fails immediately instead of
   hanging until its timeout.
 - **Bounded output.** The last 4,000 bytes are kept, because a failing build's useful lines are

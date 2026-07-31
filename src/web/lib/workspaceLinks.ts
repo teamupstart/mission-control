@@ -272,10 +272,21 @@ function maxWordSpan(paths: ReadonlySet<string>): number {
   return span;
 }
 
-/** Every way one candidate span can be read, longest first, so longest-match wins. */
+/**
+ * Every way one candidate span can be read, longest first, so longest-match wins.
+ *
+ * Punctuation is peeled from BOTH ends the same way - repeatedly, one character at a
+ * time, stopping at the first character that is not punctuation. The two ends used to
+ * disagree: the trailing end looped while the leading end peeled exactly one, so
+ * `(README.md)` resolved and `([README.md])` did not. Nesting like that is ordinary in
+ * prose and in Markdown - a quoted path inside parentheses, a bracketed one inside a
+ * sentence - and the asymmetry made the difference invisible from the outside.
+ *
+ * Advancing `from` never enters a word: it stops at the first non-punctuation character,
+ * so a listed `a` still cannot match inside "cat".
+ */
 function* candidateSpans(text: string, start: number, end: number): Generator<[number, number]> {
-  const trimmedStart = LEADING_TOKEN_PUNCTUATION.has(text[start]!) ? start + 1 : start;
-  for (const from of trimmedStart === start ? [start] : [start, trimmedStart]) {
+  for (let from = start; from < end; from += 1) {
     let to = end;
     // Longest first: a listing holding both `notes.md` and `notes.md.bak` must match the
     // longer one when the text says so, rather than stopping at the shorter prefix.
@@ -284,6 +295,7 @@ function* candidateSpans(text: string, start: number, end: number): Generator<[n
       if (!TRAILING_TOKEN_PUNCTUATION.has(text[to - 1]!)) break;
       to -= 1;
     }
+    if (!LEADING_TOKEN_PUNCTUATION.has(text[from]!)) break;
   }
 }
 

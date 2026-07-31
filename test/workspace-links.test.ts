@@ -173,6 +173,21 @@ test("what a one-character file costs is paid in prose, and boundaries still hol
   assert.deepEqual(found("cat sat on a mat"), ["a"]);
 });
 
+test("punctuation is peeled from both ends, however deeply a path is nested", () => {
+  // The two ends used to disagree - trailing looped, leading peeled exactly one - so
+  // `(README.md)` resolved and `([README.md])` did not. Nesting like that is ordinary in
+  // prose and in Markdown, and the asymmetry made the difference invisible from outside.
+  const checkout = new Set(["README.md", "src/App.tsx"]);
+  const found = (text: string) => matchCheckoutPaths(text, checkout).map((t) => t.raw);
+  assert.deepEqual(found("see ([README.md]) there"), ["README.md"]);
+  assert.deepEqual(found('run ("src/App.tsx") now'), ["src/App.tsx"]);
+  assert.deepEqual(found("{`README.md`} and [[README.md]]"), ["README.md", "README.md"]);
+  // Peeling stops at the first character that is not punctuation, so advancing the start
+  // still never enters a word - the boundary guarantee the whole matcher rests on.
+  assert.deepEqual(matchCheckoutPaths("catamaran", new Set(["a"])), []);
+  assert.deepEqual(matchCheckoutPaths("(a)", new Set(["a"])).map((t) => t.raw), ["a"]);
+});
+
 test("an absolute path is never read as the listed file with its slash removed", () => {
   // Found in a live transcript: an inline `</a>` peeled down to the substring `/a` and
   // linked a file named `a`, because path normalization drops an empty leading segment

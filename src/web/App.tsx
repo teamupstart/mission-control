@@ -1217,6 +1217,33 @@ export function App(): React.JSX.Element {
         else if (reveal === "tab") requestConversationTab(sel.id);
         return;
       }
+      // Find in the selected session's conversation. Reuses `conversationReveal` rather
+      // than requiring the transcript to be on screen already: asking to search a
+      // conversation is asking to see it, so an unrevealed one is revealed first and the
+      // open is replayed by `registerFind` when that panel mounts. A transcript already
+      // mounted takes the direct path and opens on this keystroke.
+      if (chord === bindings.findInConversation) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel) return;
+        e.preventDefault();
+        const mounted = findHandles.current.get(sel.id);
+        if (mounted) {
+          mounted.open();
+          return;
+        }
+        const reveal = conversationReveal({
+          layout,
+          hasSelection: true,
+          selectedIsExpanded: expandedId === sel.id,
+          boardDetailOpen: boardOpen,
+        });
+        if (reveal === "none") return;
+        pendingFind.current = sel.id;
+        if (reveal === "expand") toggleExpand(sel.id);
+        else if (reveal === "drill-in") setBoardOpen(true);
+        else if (reveal === "tab") requestConversationTab(sel.id);
+        return;
+      }
       if (chord === bindings.diff) {
         if (!selectedId) return;
         e.preventDefault();

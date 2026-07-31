@@ -4514,7 +4514,13 @@ npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
 npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
+npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```
+
+`measure-inspector-prompt` prints the review prompt's byte size for the current source and
+for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in
+bytes rather than asserted. It reads the older source out of git and never touches the
+working tree, so it is safe to run on dirty state.
 
 ## Security
 

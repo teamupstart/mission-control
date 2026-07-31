@@ -36,7 +36,7 @@ const home = mkdtempSync(join(tmpdir(), "foreman-spend-"));
 process.env.MISSION_HOME = home;
 
 /** What the fake daemon does to the next request. */
-let mode: "ok" | "down" | "500" | "400" | "404" | "429" | "418" = "ok";
+let mode: "ok" | "down" | "500" | "400" | "404" | "429" | "418" | "413" = "ok";
 const received: Array<Record<string, unknown>> = [];
 const attempted: string[] = [];
 let delayedRunId: string | null = null;
@@ -77,6 +77,11 @@ function start(): Promise<void> {
         // A status this code has never heard of, to prove the DEFAULT is to wait.
         if (mode === "418") {
           res.writeHead(418).end();
+          return;
+        }
+        // A payload limit. Plausibly a proxy's rather than the daemon's, so not a verdict.
+        if (mode === "413") {
+          res.writeHead(413).end();
           return;
         }
         received.push(report);
@@ -637,6 +642,24 @@ test("a rate limit is waited out, not filed away as a bad report", async () => {
   mode = "ok";
   await flushPendingSpend();
   assert.equal((received.at(-1) as { runId: string }).runId, "run-rate-limited");
+  assert.equal(pendingSpendReports(), 0);
+});
+
+test("a payload limit is waited out, because only the daemon's own verdict is durable", async () => {
+  // 413 and 415 look like refusals of the body, but a proxy can emit either about the same
+  // request - and a proxy's payload limit or content-type configuration is exactly the kind
+  // of thing that changes. Only this daemon's own 400 or 422 is a durable verdict, so
+  // anything else waits rather than being filed away for a human.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const heldBefore = quarantinedSpendReports();
+  mode = "413";
+  await client.reportSpend(report("foreman:backlog", "run-too-large-for-a-proxy"));
+  assert.equal(pendingSpendReports(), 1, "held rather than quarantined");
+  assert.equal(quarantinedSpendReports(), heldBefore, "and not set aside for a human");
+
+  mode = "ok";
+  await flushPendingSpend();
+  assert.equal((received.at(-1) as { runId: string }).runId, "run-too-large-for-a-proxy");
   assert.equal(pendingSpendReports(), 0);
 });
 

@@ -393,7 +393,7 @@ export function quarantinedSpendReports(): number {
  * duplicate delivery: the daemon keys each insert by run id and absorbs the duplicate.
  */
 /**
- * Statuses that mean THIS BODY will never be accepted, however long we wait.
+ * Statuses that mean THIS DAEMON has looked at this body and will never accept it.
  *
  * An allowlist, and the direction is the point. The obvious shape - list what is retryable
  * and quarantine the rest - puts every status nobody thought of on the one-way path, and
@@ -401,16 +401,22 @@ export function quarantinedSpendReports(): number {
  * Inverting it means an unanticipated answer waits, which is recoverable, instead of being
  * set aside for a human, which is not.
  *
- * These four are what a route that exists returns after looking at the body: the schema
- * rejected it (400), it is too large (413), the encoding is wrong (415), or the daemon
- * understood it and cannot record it (422). This daemon only ever emits 400 and 422; the
- * other two are here because a proxy can produce them about the same request.
+ * Exactly the two `/api/usage/automation` itself emits about a body: the schema rejected it
+ * (400, from `parseBody`) or the daemon understood it and cannot record it (422, an unknown
+ * runner). Nothing else qualifies, because quarantine is only defensible when the refusal
+ * is DURABLE, and only the daemon's own verdict is.
  *
- * Notably NOT here: 401/403. If the loopback route ever grew auth, that is a configuration
+ * 413 and 415 were briefly here and are deliberately gone. The comment justifying them
+ * admitted they could come from a proxy rather than the daemon - and a proxy's payload limit
+ * or content-type configuration is exactly the kind of thing that changes, so treating one
+ * as a permanent verdict about the report contradicted the retry-by-default contract. They
+ * now wait, like every other status this code cannot attribute to the daemon.
+ *
+ * Also not here: 401/403. If the loopback route ever grew auth, that is a configuration
  * problem an operator fixes, and the run should wait for the fix rather than be filed away.
  */
 function permanentlyRejected(status: number): boolean {
-  return status === 400 || status === 413 || status === 415 || status === 422;
+  return status === 400 || status === 422;
 }
 
 /**

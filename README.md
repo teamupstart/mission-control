@@ -1015,9 +1015,11 @@ finished, the buffer has no retention limit: it trades unbounded growth during a
 outage for never discarding spend, and its small entries drain as soon as the daemon
 acknowledges them. **Waiting is the default for every failure**, and only a body the daemon
 has definitively refused - a schema rejection, or a runner it has no pricing for - is set
-aside. A daemon mid-rolling-upgrade that has no `/api/usage/automation` yet, a rate limit, a
-timeout, a status nothing here anticipated: all of those simply hold, and land by themselves
-once the condition clears, with nobody involved. That direction is deliberate, because the
+aside - and only that daemon's own verdict counts, because only it is durable. A daemon
+mid-rolling-upgrade that has no `/api/usage/automation` yet, a rate limit, a timeout, a
+payload limit that may belong to a proxy rather than the daemon, a status nothing here
+anticipated: all of those simply hold, and land by themselves once the condition clears,
+with nobody involved. That direction is deliberate, because the
 only unacceptable outcome is losing an already-paid-for run, and holding one costs a stalled
 queue that resolves itself. A definitively rejected report is still not deleted: it moves to
 a `foreman-spend-quarantine.<id>.json` file so it cannot stall the reports behind it, and

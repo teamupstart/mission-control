@@ -84,7 +84,6 @@ function recordingRegistry(over: Partial<CheckProcessRegistry> = {}): {
   const cleared: string[] = [];
   const registry: CheckProcessRegistry = {
     record: (attemptId, pid, startTimeTicks) => records.push({ attemptId, pid, startTimeTicks }),
-    read: () => (records.length ? { pid: records[0]!.pid, startTimeTicks: records[0]!.startTimeTicks } : null),
     clear: (attemptId) => cleared.push(attemptId),
     ...over,
   };
@@ -329,38 +328,34 @@ test("a group still answering at the bound is not reported empty", async () => {
 
 test("recovery proves a live group dead, and reports the tri-state honestly", async () => {
   const { pid, identity } = bystander();
-  const recovery = createCheckGroupRecovery(
-    {
-      record: () => {},
-      read: () => ({ pid, startTimeTicks: identity }),
-      clear: () => {},
-    },
-    { graceMs: 200, confirmMs: 2_000, pollMs: 10 },
-  );
+  const recovery = createCheckGroupRecovery(() => ({ pid, startTimeTicks: identity }), {
+    graceMs: 200,
+    confirmMs: 2_000,
+    pollMs: 10,
+  });
   assert.equal(await recovery("attempt-live"), "empty");
   assert.equal(pidAlive(pid), false);
 });
 
-test("recovery of a sentinel row is `empty` - nothing ever ran", async () => {
-  const recovery = createCheckGroupRecovery({
-    record: () => {},
-    // A missing row and a sentinel row both read as null, and both mean the same thing here.
-    read: () => null,
-    clear: () => {},
-  });
-  assert.equal(await recovery("attempt-never-started"), "empty");
+test("recovery of a row that recorded nothing is `empty` - nothing ever ran", async () => {
+  // A missing row reads as null...
+  assert.equal(await createCheckGroupRecovery(() => null)("attempt-never-started"), "empty");
+  // ...and a supplier that hands the raw sentinel columns through instead reaches the same
+  // answer, because the teardown ladder refuses a non-signallable pid on its own. The sentinel
+  // comparison therefore cannot be got wrong by whoever wires this up.
+  assert.equal(
+    await createCheckGroupRecovery(() => ({ pid: 0, startTimeTicks: "" }))("attempt-sentinel"),
+    "empty",
+  );
 });
 
 test("recovery of a recycled pid is `unknown`, and signals nothing", async () => {
   const { pid, identity } = bystander();
-  const recovery = createCheckGroupRecovery(
-    {
-      record: () => {},
-      read: () => ({ pid, startTimeTicks: `${identity}-stale` }),
-      clear: () => {},
-    },
-    { graceMs: 20, confirmMs: 20, pollMs: 10 },
-  );
+  const recovery = createCheckGroupRecovery(() => ({ pid, startTimeTicks: `${identity}-stale` }), {
+    graceMs: 20,
+    confirmMs: 20,
+    pollMs: 10,
+  });
   assert.equal(await recovery("attempt-recycled"), "unknown");
   assert.equal(pidAlive(pid), true);
 });

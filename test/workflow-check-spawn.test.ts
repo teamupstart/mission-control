@@ -1,6 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -199,6 +200,51 @@ test("stdin is closed, so a command that reads it fails rather than hanging", as
   // The point is that it ANSWERS - quickly - instead of blocking until the timeout.
   assert.equal(result.kind, "exited");
   assert.equal(result.kind === "exited" && result.output, 'read:""');
+});
+
+/**
+ * Every process whose command line carries this attempt id.
+ *
+ * The attempt id is in the supervisor's argv so that ITS identity is unique, and that makes it
+ * the one reliable way a test can ask "is a supervisor of mine still out there" without being
+ * handed a pid. `-ww` because macOS otherwise clips the line, and the id sits after the shim's
+ * own source in the argv.
+ */
+function processesCarrying(attemptId: string): string[] {
+  const out = execFileSync("ps", ["-ww", "-eo", "pid=,command="], {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  return out.split("\n").filter((line) => line.includes(attemptId));
+}
+
+test("a timeout before the supervisor is ready leaves no held shim behind", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-check-spawn-"));
+  dirs.push(dir);
+  const marker = join(dir, "branch-ran");
+  const attemptId = `attempt-early-timeout-${process.pid}`;
+
+  // 1ms: the run timer fires long before `node` can start and report readiness, so the gate is
+  // still HELD when the command's own timeout expires. That path has no process group to tear
+  // down - nothing was released - so it has to abort the shim directly. Getting this wrong
+  // returns a tidy-looking `empty` while leaving a detached supervisor waiting on its gate
+  // forever, registered with nothing and owned by nobody.
+  const outcome = await spawnCheckProcess({
+    attemptId,
+    command: ["sh", "-c", 'touch "$1"', "sh", marker],
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "" },
+    timeoutMs: 1,
+  });
+
+  assert.equal(outcome.result.kind, "infrastructure");
+  assert.equal(outcome.supervisor, null, "the gate never opened, so there is no owner to report");
+  assert.equal(existsSync(marker), false, "and no branch code may run");
+  assert.deepEqual(
+    processesCarrying(attemptId),
+    [],
+    "a supervisor was left holding its gate after the call returned",
+  );
 });
 
 test("an unusable working directory is infrastructure, not a missing executable", async () => {

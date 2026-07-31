@@ -117,22 +117,6 @@ export interface CheckLeaseRow {
 export interface CheckProcessRegistry {
   /** Persist supervisor identity BEFORE branch code is allowed to run. */
   record(attemptId: string, pid: number, startTimeTicks: string): void;
-  /**
-   * What was recorded, or null when nothing ever was.
-   *
-   * The reader half of the contract, and it exists because the supervisor's recovery pass -
-   * `CheckGroupRecovery` below - is handed nothing but an attempt id and has to find the pid
-   * and identity it persisted before the daemon died. Without it that seam could not be
-   * implemented at all except by reaching into this table, which is the one thing its
-   * consumer is forbidden to do.
-   *
-   * A MISSING row and a SENTINEL row both answer null, deliberately. They are different
-   * facts - "no lease was ever taken" and "a lease was taken but the gate never released" -
-   * and they have one identical consequence for every caller of this method: no branch code
-   * ran, so there is nothing to signal and nothing to prove. Collapsing them here is what
-   * stops each caller from re-deriving the sentinel comparison and getting it subtly wrong.
-   */
-  read(attemptId: string): { pid: number; startTimeTicks: string } | null;
   /** Clear after confirmed group emptiness, never merely leader exit. */
   clear(attemptId: string): void;
 }
@@ -355,14 +339,6 @@ export class CheckLeaseManager {
   readonly processes: CheckProcessRegistry = {
     record: (attemptId, pid, startTimeTicks) =>
       this.store.setSupervisor(attemptId, pid, startTimeTicks, this.now()),
-    read: (attemptId) => {
-      const row = this.store.get(attemptId);
-      if (!row) return null;
-      if (row.supervisorPid === NO_SUPERVISOR_PID && row.supervisorStartTicks === NO_SUPERVISOR_TICKS) {
-        return null;
-      }
-      return { pid: row.supervisorPid, startTimeTicks: row.supervisorStartTicks };
-    },
     clear: (attemptId) =>
       this.store.setSupervisor(attemptId, NO_SUPERVISOR_PID, NO_SUPERVISOR_TICKS, this.now()),
   };

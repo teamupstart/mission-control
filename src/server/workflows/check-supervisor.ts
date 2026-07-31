@@ -126,6 +126,31 @@ export async function runSupervisedCheck(
 }
 
 /**
+ * How this module reads back an identity it persisted through Contract P.
+ *
+ * Declared HERE, as this phase's own dependency, rather than added to `CheckProcessRegistry`.
+ * That interface is owned and published by the lease foundation, which has already merged, and
+ * widening somebody else's contract to serve a consumer is the wrong direction even when the
+ * addition is additive: it makes a later phase's need into an earlier phase's obligation. The
+ * seam pattern this repository already uses everywhere - `CheckExecutor`,
+ * `CheckoutSubpathResolver`, `PaneDeps.pane` - is for the consumer to name the narrow function
+ * it needs and let its composer supply one.
+ *
+ * So the executor that composes this with the lease manager provides the reader, from whatever
+ * accessor it already holds. Contract P is consumed exactly as published: `record` at the gate,
+ * `clear` on proven emptiness, and nothing else.
+ *
+ * Returning `null` means "nothing was ever recorded". Passing a row's raw sentinel values
+ * through instead is also safe and needs no special handling by the supplier, because
+ * `terminateCheckGroup` already treats a non-signallable pid or an empty identity as "nothing
+ * ever ran" - which is the same conclusion by a different route, and one fewer place for the
+ * sentinel comparison to be re-derived incorrectly.
+ */
+export type CheckSupervisorLookup = (
+  attemptId: string,
+) => { pid: number; startTimeTicks: string } | null;
+
+/**
  * The other direction of the seam: can this attempt's process group be proven gone?
  *
  * The lease manager declares `CheckGroupRecovery` with a default that refuses, because at
@@ -138,12 +163,12 @@ export async function runSupervisedCheck(
  * the same question, and the softer one would be the one that killed a stranger.
  */
 export function createCheckGroupRecovery(
-  registry: CheckProcessRegistry,
+  lookup: CheckSupervisorLookup,
   teardown: CheckGroupTeardownOptions = {},
 ): CheckGroupRecovery {
   return async (attemptId: string) => {
-    const owner = registry.read(attemptId);
-    // No identity persisted: either no lease row at all, or one still carrying the sentinel.
+    const owner = lookup(attemptId);
+    // No identity recorded: either no lease row at all, or one still carrying the sentinel.
     // Both mean the gate was never released, so no branch code ever ran and there is no group
     // to prove empty.
     if (!owner) return "empty";

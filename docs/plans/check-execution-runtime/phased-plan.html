@@ -310,16 +310,18 @@
 <pre><code>export interface CheckProcessRegistry {
   /** Persist supervisor identity BEFORE branch code is allowed to run. */
   record(attemptId: string, pid: number, startTimeTicks: string): void;
-  /** What was recorded, or null when nothing ever was. Sentinel and missing rows both read null. */
-  read(attemptId: string): { pid: number; startTimeTicks: string } | null;
   /** Clear after confirmed group emptiness, never merely leader exit. */
   clear(attemptId: string): void;
 }</code></pre>
 <p>
-  <code>read</code> was added while implementing Phase 3 and is recorded in its audit. The seam
-  below hands Phase 3 nothing but an attempt id, so without a reader it could not find the pid it
-  had persisted except by reaching into <code>workflow_check_leases</code> - the one thing it is
-  forbidden to do. Additive: <code>record</code> and <code>clear</code> are unchanged.
+  <strong>This interface is closed.</strong> Phase 3 consumes it exactly as published and adds
+  nothing to it. Recovery needs to READ back an identity, which Contract P does not offer, so
+  Phase 3 declares that need as its own narrow seam - <code>CheckSupervisorLookup</code> in
+  <code>check-supervisor.ts</code> - for Phase 4 to supply from an accessor it already holds.
+  Recorded in Phase 3's audit, after a first implementation added a <code>read</code> here and was
+  corrected: widening an earlier phase's published contract to serve a later phase's consumer
+  turns a consumer's need into an owner's obligation, and that is the wrong direction even when
+  the addition is purely additive.
 </p>
 <p>
   A <strong>second, opposite-direction seam</strong> joins the same two phases:

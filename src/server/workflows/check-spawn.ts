@@ -350,8 +350,17 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
    * `child.kill` on the handle rather than a group signal: this pid cannot have been recycled
    * (we hold an unreaped child), and because the gate never opened there is nothing else in
    * the group to reach.
+   *
+   * The flag is not bookkeeping. Killing the shim does not retract a readiness byte the
+   * kernel has already handed us, so `onReady` can still be delivered afterwards - and without
+   * a way to know an abort has happened it would dutifully read the identity of the process we
+   * just killed, persist it as a live owner, and register a dead pid with the exit hook. Once
+   * abandoned, always abandoned.
    */
+  let aborted = false;
   const abortBeforeRelease = (reason: string): void => {
+    if (aborted) return;
+    aborted = true;
     failure ??= infrastructure(reason);
     gate.destroy();
     child.kill("SIGKILL");
@@ -368,6 +377,21 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     // A timeout is INFRASTRUCTURE, never a fail. The command never reported its own exit, so
     // this says nothing about the submission - the same conclusion `RunResult.outcomeUnknown`
     // draws for the buffered runner.
+    //
+    // WHICH timeout this is depends on whether the gate was ever released, and the two need
+    // opposite handling. A command timeout shorter than the supervisor's own start-up - a
+    // small configured value, or a loaded machine - fires while the shim is still HELD. There
+    // is no process group to tear down in that case, because nothing was released, and asking
+    // for one returns a tidy `empty` that is true and useless: it settles the call while
+    // leaving a detached shim waiting on its gate, recorded nowhere and registered with
+    // neither the durable row nor the exit hook. It has to be aborted directly, exactly as a
+    // readiness timeout would.
+    if (!supervisor) {
+      abortBeforeRelease(
+        `the check supervisor did not start within the command's ${request.timeoutMs}ms timeout`,
+      );
+      return;
+    }
     failure ??= infrastructure(
       `the check command did not finish within ${request.timeoutMs}ms and its process group was terminated`,
     );
@@ -414,7 +438,7 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
    * Steps 3 to 5. Synchronous from here to the released byte, on purpose.
    */
   function onReady(): void {
-    if (supervisor || settled) return;
+    if (aborted || supervisor || settled) return;
     clearTimeout(readyTimer);
     const pid = child.pid;
     if (pid === undefined) {

@@ -363,14 +363,23 @@ command.
   `check-group.ts`, `check-spawn.ts`, `check-supervisor.ts`; tests
   `test/workflow-check-{env,spawn,supervisor}.test.ts`.
 
-  1. **Contract P gained a `read`, and the index was updated to match.** This phase must
-     implement `CheckGroupRecovery(attemptId)`, which is handed nothing but an attempt id and
-     has to find the pid it persisted before the daemon died. The published interface had only
-     `record` and `clear`, so there was no way to do that except by reaching into
-     `workflow_check_leases` - the one thing this phase is forbidden to do. Additive: the two
-     existing members and Phase 2's implementation of them are untouched. A missing row and a
-     sentinel row both read `null`, deliberately, because they are different facts with one
-     identical consequence for every caller (nothing ran, so there is nothing to signal).
+  1. **Contract P is consumed exactly as published, and `check-lease.ts` is untouched.** This
+     phase must implement `CheckGroupRecovery(attemptId)`, which is handed nothing but an
+     attempt id and has to find the pid it persisted before the daemon died - and Contract P
+     offers no reader. The first implementation added a `read` member to
+     `CheckProcessRegistry` and implemented it in `CheckLeaseManager`. **That was wrong and has
+     been reverted**, on review: Phase 2 has merged, it owns and publishes that interface, and
+     widening it to serve a later phase's consumer turns a consumer's need into an owner's
+     obligation. Additive is not the same as in-bounds.
+
+     The capability is now supplied the way every other seam in this design is - the consumer
+     names the narrow function it needs and its composer supplies one. `CheckSupervisorLookup`
+     is declared in `check-supervisor.ts`, and Phase 4, which already composes the lease
+     manager with the supervisor, provides it from an accessor it holds. `runSupervisedCheck`
+     calls only `record` and `clear`. As a bonus the sentinel comparison stopped being anyone's
+     obligation: a supplier may return `null` for "nothing recorded" or hand the raw sentinel
+     columns straight through, because `terminateCheckGroup` already refuses a non-signallable
+     pid or an empty identity. Both routes reach `empty`, and both are asserted.
   2. **The output ring works in BYTES, not in decoded text**, so `setEncoding("utf8")` is not
      used on stdout/stderr. Taken under this document's own escape clause about the exactness
      invariant, and the field stays a number rather than becoming a boolean. A decoded ring can
@@ -437,4 +446,29 @@ command.
 
   **Confirmed the phase ships unwired**, as required: nothing imports `check-supervisor.ts`,
   `checkDeps.execute` is still null, and a configured check still reports `unavailable` and
-  passes. Phase 4 remains its only intended consumer.
+  passes. Phase 4 remains its only intended consumer. **No file owned by another phase is
+  modified**: the diff outside the five new modules and their tests is README prose and these
+  planning documents.
+
+- **2026-07-31, review round 1 (Inspector).** One `major`, accepted and fixed: *"Abort an
+  unreleased supervisor when the run timer fires."* A `timeoutMs` shorter than the supervisor's
+  own start-up - a small configured value, or a loaded machine - fired the run timer while the
+  gate was still HELD. `tearDown()` then answered `empty`, truthfully (nothing had been
+  released, so there was no group), and settled the call **without closing the gate or killing
+  the shim**. The result was a detached supervisor waiting on its gate forever, recorded in no
+  durable row and registered with neither the `live` set nor the exit hook - the one process in
+  this design that nothing would ever come back for.
+
+  Fixed by branching the run timer on whether the gate was released: unreleased goes to
+  `abortBeforeRelease`, and group teardown is used only after release. A second, adjacent hole
+  was found while fixing it and closed in the same change: killing the shim does not retract a
+  readiness byte the kernel has already delivered, so `onReady` could still run afterwards and
+  persist the identity of a process just killed. `abortBeforeRelease` now latches, and
+  `onReady` refuses once it has.
+
+  The regression test is `"a timeout before the supervisor is ready leaves no held shim
+  behind"`. It asserts the leak directly rather than by proxy, by scanning `ps` for the attempt
+  id the shim carries in its argv - which is that argument's own purpose, used here to identify
+  a process the caller was never handed a pid for. Against the unfixed code the test does not
+  merely fail, it HANGS: the orphaned shim's inherited handles keep the test file's event loop
+  alive, which is the same mechanism that would have kept the daemon's alive.

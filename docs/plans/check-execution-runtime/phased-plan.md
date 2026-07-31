@@ -278,17 +278,18 @@ a bounded retry, and that is a requirement rather than a nicety.
 export interface CheckProcessRegistry {
   /** Persist supervisor identity BEFORE branch code is allowed to run. */
   record(attemptId: string, pid: number, startTimeTicks: string): void;
-  /** What was recorded, or null when nothing ever was. Sentinel and missing rows both read null. */
-  read(attemptId: string): { pid: number; startTimeTicks: string } | null;
   /** Clear after confirmed group emptiness, never merely leader exit. */
   clear(attemptId: string): void;
 }
 ```
 
-`read` was added while implementing Phase 3 and is recorded in its audit. The seam below hands
-Phase 3 nothing but an attempt id, so without a reader it could not find the pid it had
-persisted except by reaching into `workflow_check_leases` - the one thing it is forbidden to
-do. Additive: `record` and `clear` are unchanged, and Phase 2's implementation of them is too.
+**This interface is closed.** Phase 3 consumes it exactly as published and adds nothing to it.
+Recovery needs to READ back an identity, which Contract P does not offer, and Phase 3 therefore
+declares that need as its own narrow seam - `CheckSupervisorLookup` in `check-supervisor.ts` -
+for Phase 4 to supply from an accessor it already holds. Recorded in Phase 3's audit, after a
+first implementation added a `read` here and was corrected: widening an earlier phase's
+published contract to serve a later phase's consumer turns a consumer's need into an owner's
+obligation, and it is the wrong direction even when the addition is purely additive.
 
 Phase 2 defines this interface and implements it against `workflow_check_leases`. Phase 3
 consumes it and must not reach the table directly.

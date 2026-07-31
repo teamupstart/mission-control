@@ -93,6 +93,7 @@ const {
   loadSpendOutbox,
   pendingSpendReports,
   quarantinedSpendReports,
+  sweepSpendOutbox,
   spendOutboxTest,
 } = await import("../src/server/foreman/client.ts");
 const client = new ForemanClient();
@@ -460,6 +461,32 @@ test("a daemon too old for the route keeps the run, and later reports still drai
     (received.at(-1) as { runId: string }).runId,
     "run-after-upgrade",
     "the upgraded daemon still receives everything that follows",
+  );
+});
+
+test("a peer that dies mid-outage is adopted by a worker that never restarts", async () => {
+  // The gap startup-only adoption leaves. Worker B spools a report while the daemon is down
+  // and exits; worker A stays up. Nothing ever restarts, so if adoption only happened at
+  // boot, B's already-paid-for run would sit on disk indefinitely - on a machine whose
+  // worker simply keeps running, that means forever.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  await stop();
+  writeFileSync(
+    orphanPath("dead-peer-mid-outage"),
+    storedSpool(DEAD_OWNER_PID, [report("foreman:verify", "run-from-dead-peer")]),
+    "utf8",
+  );
+
+  // A is alive and has nothing of its own queued, so no retry is armed and no restart is
+  // coming. The sweep is the only thing that can find this.
+  await start();
+  sweepSpendOutbox();
+  await eventually(() => received.some((r) => (r as { runId: string }).runId === "run-from-dead-peer"));
+  assert.equal(pendingSpendReports(), 0, "and it was delivered, not merely queued");
+  assert.equal(
+    existsSync(orphanPath("dead-peer-mid-outage")),
+    false,
+    "the adopted spool is removed once its report is acknowledged",
   );
 });
 

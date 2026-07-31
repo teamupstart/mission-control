@@ -118,6 +118,15 @@ const enc = encodeURIComponent;
 const spendOutbox: SpendReportBody[] = [];
 const SPEND_RETRY_BASE_MS = 1_000;
 const SPEND_RETRY_MAX_MS = 30_000;
+/**
+ * How often a running worker re-scans for spools abandoned by an exited peer.
+ *
+ * A recovery interval rather than a poll of anything live: the reports it finds belong to
+ * runs that already happened, so arriving 30s late costs nothing, while scanning on every
+ * delivery would read the state directory for each report a busy Foreman makes.
+ */
+const SPEND_ADOPT_SCAN_MS = 30_000;
+let lastAdoptScanAt = 0;
 const SPEND_OUTBOX_PREFIX = "foreman-spend-outbox.";
 const SPEND_OUTBOX_SUFFIX = ".json";
 const LEGACY_SPEND_OUTBOX_NAME = "foreman-spend-outbox.json";
@@ -378,7 +387,7 @@ export function quarantinedSpendReports(): number {
  * Two workers may adopt the same dead owner's spool during a handoff, but that can only
  * duplicate delivery: the daemon keys each insert by run id and absorbs the duplicate.
  */
-export function loadSpendOutbox(): number {
+function scanAndAdoptSpools(): void {
   const ownPath = spendOutboxPath();
   const dir = dirname(ownPath);
   let names: string[];
@@ -388,7 +397,7 @@ export function loadSpendOutbox(): number {
     if (fsErrorCode(err) !== "ENOENT") {
       console.warn("[foreman] could not scan spend outboxes:", err);
     }
-    return spendOutbox.length;
+    return;
   }
   for (const name of names) {
     const path = join(dir, name);
@@ -438,7 +447,49 @@ export function loadSpendOutbox(): number {
       console.warn(`[foreman] could not remove adopted spend outbox ${name}:`, err);
     }
   }
+}
+
+/**
+ * Scan for adoptable spools, at most once per `SPEND_ADOPT_SCAN_MS` unless forced.
+ *
+ * Throttled because the scan is a `readdir` plus a read per candidate, and the drain calls
+ * it on every pass. Startup forces it: that is the one moment where waiting 30s to discover
+ * a dead predecessor's reports would be pure delay for no saving.
+ */
+function adoptOrphanSpools(force = false): void {
+  const now = Date.now();
+  if (!force && now - lastAdoptScanAt < SPEND_ADOPT_SCAN_MS) return;
+  lastAdoptScanAt = now;
+  scanAndAdoptSpools();
+}
+
+/** Adopt a dead predecessor's reports at startup. Returns how many are now queued. */
+export function loadSpendOutbox(): number {
+  adoptOrphanSpools(true);
   return spendOutbox.length;
+}
+
+/**
+ * Look for work left by an exited peer, and deliver it.
+ *
+ * Called from the worker's main loop, because startup adoption alone is not enough: a peer
+ * can die while THIS worker keeps running, and its spool would then sit unreported until
+ * some future process happened to start - potentially never, on a machine whose worker
+ * simply stays up. Recovery has to be something a living worker does, not only something a
+ * booting one does.
+ *
+ * It also flushes, because adopting without delivering just moves the reports into a queue
+ * nothing is draining: this worker's own queue may have been empty, in which case no retry
+ * is armed and nothing else would ever send them.
+ */
+export function sweepSpendOutbox(): void {
+  // Unthrottled, deliberately: this is called by a caller that owns a loop and can therefore
+  // decide its own cadence, and a hidden time gate here would make "I asked for a sweep and
+  // nothing happened" a silent outcome that depends on how recently something else ran.
+  // The throttle stays on the drain's internal call, where the frequency is not the
+  // caller's to choose.
+  adoptOrphanSpools(true);
+  if (spendOutbox.length > 0) void flushSpend();
 }
 
 export const spendOutboxTest = { path: spendOutboxPath, quarantinePath: spendQuarantinePath };
@@ -481,6 +532,11 @@ async function flushSpend(): Promise<void> {
   if (flushing) return;
   flushing = true;
   try {
+    // Pick up anything an exited peer left before draining. This is the path that matters
+    // after an outage: the daemon comes back, this worker retries its own queue, and a dead
+    // peer's reports should ride along rather than waiting for someone to restart. Throttled
+    // internally, so a busy drain does not re-scan the directory per report.
+    adoptOrphanSpools();
     while (spendOutbox.length > 0) {
       const report = spendOutbox[0]!;
       let res: Response;

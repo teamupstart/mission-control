@@ -7,6 +7,7 @@ import {
   flushPendingSpend,
   loadSpendOutbox,
   pendingSpendReports,
+  sweepSpendOutbox,
 } from "./client.ts";
 import { setLlmSpendSink } from "../llm/spend.ts";
 import { reviewModel, reviewSession } from "./review.ts";
@@ -125,6 +126,16 @@ function askOnScreen(session: Session, pane: string | null): PaneDialog | null {
 const IDLE_MS = 4000;
 /** Small breather between processing two sessions. */
 const BETWEEN_MS = 400;
+/**
+ * How often to look for spend reports abandoned by an exited peer.
+ *
+ * A recovery interval, not a poll of anything live: what it finds belongs to runs that have
+ * already finished and been paid for, so arriving half a minute late costs nothing, while
+ * scanning on every pass of a loop that can spin at `BETWEEN_MS` would read the state
+ * directory dozens of times a minute for no benefit.
+ */
+const SPEND_SWEEP_MS = 30_000;
+let lastSpendSweepAt = 0;
 /**
  * Minimum wall-clock gap between two full reviews of the *same* session. The marker
  * idempotency check already skips an unchanged episode for free; this floor stops a
@@ -274,6 +285,20 @@ async function main(): Promise<void> {
   log(`Foreman worker started (${WORKER_ID}); watching the needs-you queue + session work queues.`);
 
   for (;;) {
+    // Recovery for a peer that died while THIS worker kept running. Startup adoption cannot
+    // cover that: the abandoned spool would sit unreported until some future process
+    // happened to boot, which on a machine whose worker simply stays up is never.
+    //
+    // The cadence is the worker's rather than the client's, because this loop spins as fast
+    // as BETWEEN_MS when it is busy and a scan on every pass would read the state directory
+    // dozens of times a minute for reports that are in no hurry - they belong to runs that
+    // already finished. Placed before the config read so it still runs while the daemon is
+    // unreachable, and not gated on leadership: a standby that outlives the leader is
+    // exactly who should be carrying the leader's last reports.
+    if (Date.now() - lastSpendSweepAt >= SPEND_SWEEP_MS) {
+      lastSpendSweepAt = Date.now();
+      sweepSpendOutbox();
+    }
     let cfg;
     try {
       cfg = await client.getConfig();

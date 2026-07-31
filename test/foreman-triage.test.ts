@@ -90,6 +90,21 @@ test("tier0: terminal-no-pane routes up - its question is never self-contained e
   if (out.kind === "route-up") assert.equal(out.reason, "terminal-no-pane");
 });
 
+test("tier0: an oversized input-review question routes up instead of being read partially", () => {
+  // The question IS the whole ask on this surface - body, offered options, and the "state
+  // the LABEL" instruction. Clipped, the options can fall off the end while Tier 1 keeps
+  // its power to dispose, so the router must either read it whole or not at all.
+  const over = tier0(
+    pend({ situation: "input-review", surface: "input-review", question: "x".repeat(2001), inputReviewId: "r1", canSend: false }),
+  );
+  assert.equal(over.kind, "route-up");
+  assert.match((over as { reason: string }).reason, /question-too-long/);
+  const atCap = tier0(
+    pend({ situation: "input-review", surface: "input-review", question: "x".repeat(2000), inputReviewId: "r1", canSend: false }),
+  );
+  assert.equal(atCap.kind, "continue");
+});
+
 test("tier0: a stateful no-question needs-you is skipped", () => {
   const out = tier0(pend({ situation: "no-question", canSend: false }));
   assert.equal(out.kind, "dispose");

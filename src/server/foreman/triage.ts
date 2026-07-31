@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
-import { describeRequest } from "./prompt.ts";
+import { ACTIVITY_CAP, describeRequest } from "./prompt.ts";
 import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
@@ -285,6 +285,18 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
       };
     }
     case "input-review":
+      // On this surface the question IS the whole ask: `withOfferedOptions` renders the body,
+      // the offered options and the "state the LABEL" closing instruction into it, and
+      // `paneSection` renders nothing. The router must never read it PARTIALLY - clipped, the
+      // options can fall off the end while the tier keeps its power to dispose, which is the
+      // answer-inventing failure the full reviewer avoids by leaving its question untrimmed.
+      // So an oversized ask is not rendered here at all: it routes up to the reviewer, which
+      // reads it whole. At worst that costs the pre-triage price, and only for a question no
+      // honest ask needs to be. Same constant as the terminal question's clip on purpose -
+      // one ceiling on what the router reads, two enforcements fitted to what the field is.
+      return pending.question.length > ACTIVITY_CAP
+        ? { kind: "route-up", reason: "input-review-question-too-long" }
+        : { kind: "continue" };
     case "terminal-pane":
     // A driver request is answerable by the same machinery a pane menu is (name a row, or
     // submit the whole form) and needs the same judgment to decide WHICH row - so it gets no

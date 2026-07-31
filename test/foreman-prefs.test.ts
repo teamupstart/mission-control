@@ -421,6 +421,17 @@ test("the router's prompt is bounded against the same unbounded activity", () =>
   assert.match(huge, /x+…/);
 });
 
+test("an input-review question is never rendered partially, however long", () => {
+  // On that surface the question IS the whole ask - `withOfferedOptions` puts the offered
+  // options and the "state the LABEL" instruction at the END, exactly where a clip would
+  // cut. The terminal cap must not apply here: an oversized ask is routed up whole by
+  // `tier0` instead, so this builder either renders all of it or never sees it.
+  const ask = `${"x".repeat(3_000)}\nThe agent offered these options:\n- Alpha\n- Beta: riskier\nstate the LABEL of the option you are choosing`;
+  const p = buildTriagePrompt(reviewInput({ surface: "input-review", question: ask }));
+  assert.ok(p.includes("- Beta: riskier"), "the offered options must survive to the render");
+  assert.ok(p.includes("state the LABEL of the option you are choosing"), "the closing instruction must survive to the render");
+});
+
 test("a huge transcript cannot outgrow the verify prompt", () => {
   // Restoring real tool rendering restored real size: the deleted renderer printed every call
   // as `[object Object]`, so this block could not grow no matter what the agent ran.

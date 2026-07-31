@@ -501,3 +501,76 @@ test("computeSessionActivity returns null when nothing datable is found", () => 
     "a non-string timestamp is not datable",
   );
 });
+
+/** The `system` record a client-side command writes, naming the record it ran. */
+const localCommandMarker = (parentUuid: string): string =>
+  JSON.stringify({
+    type: "system",
+    subtype: "local_command",
+    isSidechain: false,
+    parentUuid,
+    content: "<local-command-stdout></local-command-stdout>",
+  });
+
+test("computeSessionActivity does not count a client-side slash command as a turn", () => {
+  // `/reload-skills` writes a main-chain user record that no assistant answers and no
+  // Stop hook follows. Counted as a turn it pins a FINISHED session at `working` for as
+  // long as the transcript stands, which strands anything waiting on `settledIdle`.
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "end_turn", timestamp: "2026-07-11T02:05:00.000Z" }),
+    rec({
+      role: "user",
+      isMeta: true,
+      content: "<local-command-caveat>Caveat: …</local-command-caveat>",
+      timestamp: "2026-07-11T02:06:00.000Z",
+    }),
+    rec({
+      role: "user",
+      uuid: "cmd-1",
+      content: "<command-name>/reload-skills</command-name>",
+      timestamp: "2026-07-11T02:06:00.000Z",
+    }),
+    localCommandMarker("cmd-1"),
+  ]);
+  // Falls through to the cleanly-ended assistant turn, which is the real last activity.
+  assert.deepEqual(a, { state: "idle", lastActivity: Date.parse("2026-07-11T02:05:00.000Z") });
+});
+
+test("computeSessionActivity still counts a prompt-expanding slash command as a turn", () => {
+  // `/no-mistakes` writes the SAME <command-name> tag but opens a real turn, and no
+  // local_command marker follows it. Skipping on the tag alone would report a working
+  // session as idle - worse than the bug above, because it invites a wrap-up mid-turn.
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "end_turn", timestamp: "2026-07-11T02:05:00.000Z" }),
+    rec({
+      role: "user",
+      uuid: "cmd-2",
+      content: "<command-message>no-mistakes</command-message>\n<command-name>/no-mistakes</command-name>",
+      timestamp: "2026-07-11T02:07:00.000Z",
+    }),
+    rec({
+      role: "user",
+      isMeta: true,
+      content: [{ type: "text", text: "Base directory for this skill: …" }],
+      timestamp: "2026-07-11T02:07:00.000Z",
+    }),
+  ]);
+  assert.equal(a?.state, "working");
+  assert.equal(a?.lastActivity, Date.parse("2026-07-11T02:07:00.000Z"));
+});
+
+test("computeSessionActivity's local_command marker disqualifies only the record it names", () => {
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "end_turn", timestamp: "2026-07-11T02:01:00.000Z" }),
+    rec({
+      role: "user",
+      uuid: "human-prompt",
+      content: "ship it",
+      timestamp: "2026-07-11T02:08:00.000Z",
+    }),
+    localCommandMarker("some-earlier-record"),
+  ]);
+  // A marker naming a different record leaves the human's prompt standing as a live turn.
+  assert.equal(a?.state, "working");
+  assert.equal(a?.lastActivity, Date.parse("2026-07-11T02:08:00.000Z"));
+});

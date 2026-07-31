@@ -3656,13 +3656,11 @@ export class WorkflowManager {
     // The cheap pre-filter, and the whole reason there is no "capture then discard" mode: an
     // idle session with unchanged work must leave the run exactly where it is, and re-reading
     // the diff, the transcript window and the standards on every tick to discover that is not
-    // free. `readWorkflowEvidenceProbe` costs two git commands and reads the REPOSITORY only.
-    // The guarantee it buys is one-directional and that is deliberate: every field it reads is
-    // a fingerprint input, so a probe that DIFFERS cannot lead to `unchanged_evidence`. The
-    // converse is intentionally NOT true - a transcript-only change leaves the probe matching
-    // while the fingerprint has moved, and that run stays parked, because a repair that
-    // changed no code is not a repair. See the probe's own comment: reading the transcript
-    // here spent the entire repair budget resubmitting byte-identical code.
+    // free. `readWorkflowEvidenceProbe` reads repository content but deliberately excludes the
+    // transcript: delivering a packet moves the transcript before any repair starts, while a
+    // content-sensitive diff fingerprint is the proof that the work itself changed. Comparing
+    // only HEAD and dirty paths missed edits inside a path that was already dirty in the failed
+    // round, which is the ordinary shape of a second repair.
     const probe = await (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(
       this.registry,
       binding,

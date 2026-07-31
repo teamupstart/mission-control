@@ -2569,6 +2569,11 @@ the settle window, is not waiting on you, has been handed its packet, and the **
 changed**, the run opens the next repair round by itself - fresh evidence, same graph, the
 round counter and `Max repair rounds` budget it always had.
 
+Repository change is content-sensitive: the observer compares the bounded diff fingerprint
+captured by the failed round, not only HEAD and the list of dirty paths. A repair that edits a
+file which was already dirty therefore resumes correctly even when it neither commits nor adds
+a new path.
+
 Four things it deliberately does not do:
 
 - **It does not ask the model to signal anything.** The instruction that used to end every

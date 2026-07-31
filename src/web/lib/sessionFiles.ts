@@ -401,10 +401,20 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
 
   const warmPaths = useCallback((sessionId: string) => {
     if (pathIndexRef.current[sessionId]) return;
+    // The same staleness guard every other fetch in this file uses, and it is load
+    // bearing for the SAME reason `drop` already calls `forgetSession`: a warm that is
+    // still in flight when the session goes away would otherwise land afterwards and
+    // write an index back for a session nobody is showing. Nothing clears that - `drop`
+    // has already run - so it leaks until the tab closes, and if the id is ever reused
+    // the `pathIndexRef` check above turns it into a real defect: the new transcript
+    // skips its own warm and links against the OLD checkout's files. Checking "is the
+    // key still absent" cannot see this, because after `drop` it is absent by design.
+    const key = `${sessionId}\0paths`;
+    const request = requests.current.begin(key);
     void listPaths(sessionId).then((paths) => {
+      if (!requests.current.isCurrent(key, request)) return;
       setPathIndex((all) => {
-        // A listing that lost a race to `refresh` must not replace the newer one, and a
-        // session dropped while this was in flight must not be resurrected by it.
+        // A listing that lost a race to `refresh` must not replace the newer one.
         if (all[sessionId]) return all;
         const next = { ...all, [sessionId]: paths };
         pathIndexRef.current = next;

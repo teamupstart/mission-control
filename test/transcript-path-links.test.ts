@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown, markdownPropsEqual } from "../src/web/components/Markdown.tsx";
 import { rehypeWorkspacePaths } from "../src/web/lib/rehypeWorkspacePaths.ts";
+import { LatestFileRequests } from "../src/web/lib/sessionFiles.ts";
 import { tooltipLabels } from "./helpers/markup.ts";
 
 // What is at stake: an agent names a file the way it reads in a terminal - in backticks or
@@ -186,6 +187,47 @@ test("the link probe and the path index share one request; the Files tab publish
   // transcript and the two surfaces drift apart.
   assert.equal(store.match(/api\.listFiles\(/g)?.length, 3, "listPaths, ensure, refresh");
   assert.equal(store.match(/publishPaths\(sessionId, result\.files\)/g)?.length, 2, "ensure and refresh");
+});
+
+test("a path warm that lands after the session was dropped does not resurrect it", () => {
+  // The race, in order: `warmPaths` starts a listing, the session leaves the fleet and
+  // `drop` clears its state, then the listing resolves. Writing the index at that point
+  // leaves a path set for a session nobody is showing, which nothing clears - `drop`
+  // has already run - and which makes `warmPaths` skip its own fetch if the id is ever
+  // reused, so the new transcript links against the OLD checkout's files.
+  //
+  // Guarding on "is the key still absent" cannot catch it: after `drop` it is absent by
+  // design. The guard has to be the request generation, which is why `warmPaths` books
+  // one and `drop` already calls `forgetSession`. Driven against the real class.
+  const requests = new LatestFileRequests();
+  const key = "s1\0paths";
+  const inFlight = requests.begin(key);
+  requests.forgetSession("s1");
+  assert.equal(requests.isCurrent(key, inFlight), false, "the completion must be dropped");
+
+  // And with the id reused, the newer warm owns the index while the older one stays dead.
+  const reused = requests.begin(key);
+  assert.equal(requests.isCurrent(key, inFlight), false);
+  assert.equal(requests.isCurrent(key, reused), true);
+
+  // Both halves have to be wired or the guard above is inert. Sliced to the function
+  // body rather than matched across the file: `ensure` and `refresh` carry the same two
+  // calls, so a loose pattern passes while `warmPaths` itself has no guard at all.
+  const store = readFileSync("src/web/lib/sessionFiles.ts", "utf8");
+  const from = store.indexOf("const warmPaths = useCallback(");
+  assert.ok(from > 0, "warmPaths still exists");
+  const warmBody = store.slice(from, store.indexOf("\n  const ", from + 1));
+  assert.match(warmBody, /requests\.current\.begin\(key\)/, "warmPaths books a request");
+  assert.match(
+    warmBody,
+    /if \(!requests\.current\.isCurrent\(key, request\)\) return;/,
+    "and drops its own completion when that request is no longer current",
+  );
+  assert.match(
+    store,
+    /const drop = useCallback\(\(sessionId: string\) => \{\s*requests\.current\.forgetSession\(sessionId\)/,
+    "drop invalidates this session's in-flight requests",
+  );
 });
 
 test("a turn's markup survives the SSE frames arriving under it", () => {

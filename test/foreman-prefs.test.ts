@@ -530,7 +530,9 @@ test("standards docs stay BELOW the fence, on the far side of the operator's doc
   const p = buildVerifyPrompt(
     verifyInput({
       instructions: PREFS,
-      standards: [{ path: "CLAUDE.md", text: "repo says: use tabs", truncated: false }],
+      standards: [
+        { path: "CLAUDE.md", realPath: "/repo/CLAUDE.md", text: "repo says: use tabs", truncated: false },
+      ],
     }),
   );
   const fence = p.indexOf("BEGIN UNTRUSTED EVIDENCE");

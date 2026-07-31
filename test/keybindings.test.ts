@@ -220,6 +220,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("c")),
     chordFromEvent(key("k")),
     chordFromEvent(key("k", { meta: true })),
+    chordFromEvent(key("f", { meta: true })),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
 });

@@ -67,6 +67,7 @@ function props(sessions: Session[]): SessionViewProps {
     registerEl: noop,
     registerActions: noop,
     registerLaunchers: noop,
+    registerFind: noop,
     registerDetailScroll: noop,
     registerReaderTab: noop,
     renamingId: null,

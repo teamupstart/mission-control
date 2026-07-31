@@ -820,6 +820,38 @@ the agent wrote more than a reconnect can honestly be said to have missed. Both 
 honest answer rather than a continuation with an invisible hole in it, and scrolling up
 re-reads whatever was dropped.
 
+### Find in a conversation
+
+<kbd>⌘</kbd><kbd>F</kbd> searches the open conversation the way a browser's find searches a
+page: it counts the occurrences, highlights every one, and steps between them. A bar
+appears over the top-right of the log - it floats, so nothing you were reading moves -
+and beside it a rail lists each match with the sentence around it and who said it.
+
+<kbd>Enter</kbd> goes to the next match and <kbd>⇧</kbd><kbd>Enter</kbd> to the previous,
+wrapping at both ends; the chevrons do the same with the mouse. Clicking a row in the rail
+jumps straight to that match. The current match is the solid highlight, every other match a
+tint of the same colour, so you can see where you are without reading the count.
+<kbd>Esc</kbd> closes find and takes the highlights and the rail with it.
+
+**The rail is there exactly when find is open.** There is no separate control for it, and
+it is never dropped to reclaim space - on a narrow card it moves below the conversation
+rather than disappearing. Closed, find costs a conversation nothing at all.
+
+| Control | What it does |
+|---|---|
+| **Aa** | match case. Off by default, so `ghostty` finds `Ghostty` |
+| **All / You / Agent / Tools** | which side of the conversation to search. A transcript is mostly folded tool output by volume, so **You** and **Agent** are how you find what was actually *said* - and **Tools** is how you find a file path |
+
+The query is literal, not a pattern: `foo(bar)` finds those seven characters.
+
+Tool chips are searched too, because that is where the file paths are. Role bylines are
+not - otherwise `you` would match the label above every message you ever sent.
+
+One caveat the bar states rather than hides: the log holds the session's recent turns, not
+the whole file (above), so find counts what is **loaded**. When there is more to load the
+rail says so and offers the same **Load older** the scroll-back uses; load it and the
+count grows to include it.
+
 ### Shadow reading: Claude's own session state
 
 Claude Code ships `claude agents --json`, which lists every live session - background and

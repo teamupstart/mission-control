@@ -25,6 +25,7 @@ export type ActionId =
   | "workflows"
   | "expand"
   | "conversation"
+  | "findInConversation"
   | "diff"
   | "files"
   | "filePicker"
@@ -109,6 +110,18 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Open conversation",
     description: "Show the selected session's conversation.",
     defaultBinding: "g",
+    group: "selection",
+  },
+  {
+    // The one chord in this list nobody has to learn. It is also the only shape that
+    // works from inside the reply box: App's typing guard lets a chord through only
+    // when it carries a command modifier, so a bare letter could not open find while
+    // the cursor was in a half-written reply - which is exactly when you want it.
+    // `/` is the fleet filter and `cmd+k` is the settings palette, so neither was free.
+    id: "findInConversation",
+    label: "Find in conversation",
+    description: "Search the selected session's conversation, and step between matches.",
+    defaultBinding: "cmd+f",
     group: "selection",
   },
   {

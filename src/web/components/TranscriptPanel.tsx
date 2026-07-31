@@ -4,7 +4,6 @@ import type {
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
-  TurnOrigin,
   Session,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -25,6 +24,19 @@ import {
 import { toolChip, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeEpisodes } from "../lib/episodes.ts";
+import {
+  collectHits,
+  hitsInScope,
+  hitsInWindow,
+  buildMatcher,
+  splitForHighlight,
+  stepIndex,
+  toolSearchText,
+  turnWho,
+  type FindHit,
+  type FindScope,
+} from "../lib/find.ts";
+import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -39,14 +51,6 @@ import {
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { SessionLaunchers, type SessionLaunchersHandle } from "./LaunchMenu.tsx";
-
-/** Who typed a turn, when it wasn't the human. "mission control" rather than "harness"
- *  because that's the name on the window the reader is looking at. */
-const ORIGIN_LABEL: Record<TurnOrigin, string> = {
-  foreman: "foreman",
-  harness: "mission control",
-  workflow: "workflow",
-};
 
 /**
  * Reconnect backoff for the transcript stream, which this panel drives itself rather than
@@ -71,7 +75,30 @@ export interface TranscriptHandle {
   scrollToEpisode: (marker: string | null) => void;
   /** Move the conversation reader by one comfortable keyboard step. */
   scrollByArrow: (direction: -1 | 1) => void;
+  /** Open find-in-conversation and focus its box. Reports false when there is no
+   *  panel mounted, so the caller can reveal the conversation first. */
+  openFind: () => boolean;
 }
+
+/**
+ * What the fleet-wide find chord can do to a mounted transcript. Deliberately one
+ * verb: find is a surface the panel owns, and App's job is to ask for it, not to
+ * hold its query.
+ */
+export interface TranscriptFindHandle {
+  open: () => void;
+}
+
+/** What one open find session holds. Closed is the absence of this, not a flag on it. */
+interface FindState {
+  query: string;
+  caseSensitive: boolean;
+  scope: FindScope;
+  /** Index into the SCOPED hits, or -1 when nothing matches. */
+  index: number;
+}
+
+const FIND_INITIAL: FindState = { query: "", caseSensitive: false, scope: "all", index: 0 };
 
 /**
  * The expanded card's live conversation. Opens a dedicated SSE stream to the
@@ -89,6 +116,7 @@ export function TranscriptPanel({
   onOpenFile,
   files,
   registerLaunchers,
+  registerFind,
   resetNonce = 0,
   ref,
 }: {
@@ -147,6 +175,7 @@ export function TranscriptPanel({
   files?: SessionFilesController;
   /** Register the launch buttons so App's selection shortcuts drive these exact controls. */
   registerLaunchers?: (id: string, handle: SessionLaunchersHandle | null) => void;
+  registerFind?: (id: string, handle: TranscriptFindHandle | null) => void;
   ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   // The body below was written against these two names and still is; only the PROP changed.
@@ -182,6 +211,12 @@ export function TranscriptPanel({
   const [sending, setSending] = useState(false);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  /**
+   * Find-in-conversation. `null` is closed, and closed means the rail is not mounted
+   * at all - see `ConversationFind` for why that is the invariant rather than a
+   * detail. The query survives a close/reopen the way a browser's find does.
+   */
+  const [find, setFind] = useState<FindState | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -203,6 +238,57 @@ export function TranscriptPanel({
   // take newlines or images. So: mounted panel, reply box - reported as such.
   const notifyRef = useRef(onReplyBox);
   notifyRef.current = onReplyBox;
+
+  /**
+   * The conversation as rows, computed once and shared by the renderer and the
+   * search. Both MUST walk the same list: hits are addressed by row id and offset,
+   * so a search over a differently-folded list would highlight the wrong span.
+   */
+  const rows = mergeEpisodes(transcriptRows(messages), episodes);
+  const agentLabel = AGENT_IDENTITY[agent].speaker;
+
+  // Derived, never stored. A streamed turn arriving re-runs the search, which is what
+  // keeps the count honest as the conversation grows underneath an open find.
+  const allHits = find ? collectHits(rows, find.query, { caseSensitive: find.caseSensitive }, agentLabel) : [];
+  const hits = find ? hitsInScope(allHits, find.scope) : [];
+  // Clamped on read rather than stored clamped: the hit list changes shape as the
+  // query, the scope, and the transcript itself move, and a stored index that outlived
+  // its list is how a "current" ring ends up pointing at nothing.
+  const hitIndex = hits.length === 0 ? -1 : Math.min(find?.index ?? 0, hits.length - 1);
+  const current: FindHit | null = hitIndex < 0 ? null : (hits[hitIndex] ?? null);
+  const currentKey = current?.key ?? null;
+
+  // Bring the current match into view. Instant, not smooth: a browser's find does not
+  // animate, and stepping quickly through matches with Enter outruns a 250ms animation
+  // so the view lands somewhere between two hits.
+  useEffect(() => {
+    if (!currentKey) return;
+    const el = logRef.current?.querySelector(`[data-find-key="${CSS.escape(currentKey)}"]`);
+    el?.scrollIntoView({ block: "center" });
+  }, [currentKey]);
+
+  // Registered the same way the launchers are: App holds a per-session map and reaches
+  // the mounted panel through it. Deregistering on unmount is what stops the chord from
+  // opening find on a card that has since collapsed.
+  const registerFindRef = useRef(registerFind);
+  registerFindRef.current = registerFind;
+  useEffect(() => {
+    const reg = registerFindRef.current;
+    if (!reg) return;
+    reg(sessionId, { open: () => setFind((f) => f ?? FIND_INITIAL) });
+    return () => reg(sessionId, null);
+  }, [sessionId]);
+
+  function closeFind(): void {
+    setFind(null);
+    // Hand the keyboard back to the grid rather than leaving focus on a box that no
+    // longer exists.
+    logRef.current?.focus?.();
+  }
+
+  function stepFind(direction: 1 | -1): void {
+    setFind((f) => (f ? { ...f, index: stepIndex(hits.length, hitIndex, direction) } : f));
+  }
 
   function showFlash(next: { text: string; ok: boolean }, duration: number): void {
     if (flashTimer.current) clearTimeout(flashTimer.current);
@@ -254,6 +340,12 @@ export function TranscriptPanel({
       const el = logRef.current;
       if (!el) return;
       el.scrollBy({ top: direction * Math.max(80, el.clientHeight * 0.18) });
+    },
+    openFind: () => {
+      // Reopening keeps the last query, like a browser - `ConversationFind` selects it
+      // on mount so typing replaces it.
+      setFind((f) => f ?? FIND_INITIAL);
+      return true;
     },
   }), []);
 
@@ -496,6 +588,25 @@ export function TranscriptPanel({
       onClick={(e) => e.stopPropagation()}
     >
       <SessionLaunchers session={session} registerLaunchers={registerLaunchers} />
+      {/* The split exists only while find does. Closed, the log is the sole child and
+          the DOM is byte-for-byte what it was before this feature - which is the
+          "costs nothing to read a conversation you are not searching" property. */}
+      <div className="find-split" data-find={find ? "open" : "closed"}>
+        <div className="find-logwrap">
+          {find && (
+            <ConversationFindBar
+              query={find.query}
+              onQuery={(query) => setFind((f) => (f ? { ...f, query, index: 0 } : f))}
+              caseSensitive={find.caseSensitive}
+              onCaseSensitive={(caseSensitive) =>
+                setFind((f) => (f ? { ...f, caseSensitive, index: 0 } : f))
+              }
+              hits={hits}
+              index={hitIndex}
+              onStep={stepFind}
+              onClose={closeFind}
+            />
+          )}
       <div className="transcript-log" ref={logRef} onScroll={onScroll}>
         {/* An unavailable transcript still shows Foreman's record, and this is the
             case that most needs it: a session with no resolvable JSONL is exactly
@@ -525,7 +636,7 @@ export function TranscriptPanel({
         {status !== "unavailable" && messages.length === 0 && episodes.length === 0 && (
           <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
         )}
-        {mergeEpisodes(transcriptRows(messages), episodes).map((row) =>
+        {rows.map((row) =>
               row.kind === "episode" ? (
                 <div
                   key={`ep-${row.episode.id}`}
@@ -535,16 +646,40 @@ export function TranscriptPanel({
                   <ForemanEpisodeCard episode={row.episode} />
                 </div>
               ) : row.kind === "tools" ? (
-                <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_IDENTITY[agent].speaker} />
+                <ToolRun
+                  key={row.id}
+                  tools={row.tools}
+                  agentLabel={agentLabel}
+                  find={findFor(hits, row.id, find?.query ?? "", currentKey)}
+                />
               ) : (
                 <Turn
                   key={row.id}
                   m={row.message}
-                  agentLabel={AGENT_IDENTITY[agent].speaker}
+                  agentLabel={agentLabel}
                   onOpenFile={linkHandler}
                   filePaths={filePaths}
+                  find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                 />
               ),
+        )}
+          </div>
+        </div>
+        {/* Sibling of the log wrapper, not a child of it: `.find-split` is the flex row
+            that gives the rail its 244px column, and the container query that stacks it
+            under the log at narrow widths flips THIS element's direction. Nested inside
+            the wrapper the rail would sit above the conversation at every width. */}
+        {find && (
+          <ConversationFindRail
+            query={find.query}
+            scope={find.scope}
+            onScope={(scope) => setFind((f) => (f ? { ...f, scope, index: 0 } : f))}
+            hits={hits}
+            index={hitIndex}
+            onJump={(i) => setFind((f) => (f ? { ...f, index: i } : f))}
+            loadedOnly={canLoadOlder}
+            onLoadOlder={() => void loadOlder()}
+          />
         )}
       </div>
 
@@ -619,41 +754,136 @@ export function TranscriptPanel({
   );
 }
 
+/**
+ * What one row needs to draw its share of an open search: the hits inside it, the
+ * live query, and which hit is the current one. Null when find is closed, which is
+ * what lets every row below take its pre-existing render path unchanged.
+ */
+interface RowFind {
+  hits: FindHit[];
+  query: string;
+  currentKey: string | null;
+  caseSensitive: boolean;
+}
+
+/**
+ * Narrow the hit list to one row. Null when there is no search running.
+ *
+ * Takes the SCOPED hits, not every hit in the log. What is highlighted and what is
+ * counted have to be the same set: fed the unscoped list, picking "You" would report a
+ * count over user turns while the agent's turns stayed lit up, so the number on the bar
+ * described a different search than the one on screen.
+ */
+function findFor(
+  scoped: FindHit[],
+  rowId: string,
+  query: string,
+  currentKey: string | null,
+): RowFind | null {
+  if (!query) return null;
+  const hits = scoped.filter((h) => h.rowId === rowId);
+  return { hits, query, currentKey, caseSensitive: false };
+}
+
+/**
+ * Text with its matches wrapped in `<mark>`.
+ *
+ * Rendered as React children rather than by injecting elements into the DOM. The
+ * design exploration did the latter, which is correct for a static page and wrong
+ * here: React owns these nodes, so a streamed turn arriving would destroy injected
+ * marks, and mutating React-owned children can trip the reconciler outright.
+ *
+ * `data-find-key` is what the scroll-into-view effect queries, so the anchor a jump
+ * lands on is the very span being highlighted rather than the turn around it.
+ */
+function Highlighted({
+  text,
+  hits,
+  currentKey,
+}: {
+  text: string;
+  hits: FindHit[];
+  currentKey: string | null;
+}): React.JSX.Element {
+  const segments = splitForHighlight(
+    text,
+    hits.map((h) => ({ start: h.start, end: h.end })),
+  );
+  return (
+    <>
+      {segments.map((seg, i) => {
+        if (!seg.isMatch) return <span key={i}>{seg.text}</span>;
+        const hit = hits.find((h) => h.start === seg.start);
+        const isCurrent = hit != null && hit.key === currentKey;
+        return (
+          <mark
+            key={i}
+            className={`find-hit${isCurrent ? " is-current" : ""}`}
+            data-find-key={hit?.key}
+          >
+            {seg.text}
+          </mark>
+        );
+      })}
+    </>
+  );
+}
+
 function Turn({
   m,
   agentLabel,
   onOpenFile,
   filePaths,
+  find,
 }: {
   m: TranscriptMessage;
   agentLabel: string;
   onOpenFile?: WorkspaceLinkHandler;
   filePaths?: ReadonlySet<string> | null;
+  find?: RowFind | null;
 }): React.JSX.Element {
   const [richText] = useRichText();
+  const textHits = find ? find.hits.filter((h) => h.toolIndex === null) : [];
   // A turn the human didn't type says who did. Much of the "user" side of a supervised
   // session is Foreman delivering work or the dashboard reloading skills, and reading
   // those back as "you" makes the log claim the human asked for things they never asked
   // for - while hiding the machinery that did.
-  const who = m.role === "assistant" ? agentLabel : m.origin ? ORIGIN_LABEL[m.origin] : "you";
+  const who = turnWho(m, agentLabel);
+  /**
+   * A turn that CONTAINS matches renders its literal text while find is open, even
+   * with markdown on. Offsets are computed over `m.text`, and parsed markdown is a
+   * different string - the syntax characters are gone - so a highlight placed by
+   * source offset would land beside the match or on nothing at all. Rendering the
+   * bytes the match was found in is the only way every counted match is also a
+   * visible one, which is the property the whole count depends on.
+   *
+   * Scoped to matching turns rather than the whole log, so typing into find does not
+   * reflow a conversation wholesale: the turns you are not being sent to keep their
+   * formatting.
+   */
+  const highlight = textHits.length > 0;
   return (
     <div className={`turn turn-${m.origin ?? m.role}`}>
+      {/* Not searched: a byline is chrome, not conversation. Were it included,
+          "you" would match the label above every message the human ever sent. */}
       <div className="turn-role">{who}</div>
       {m.text && (
         // Formatted turns still wear `turn-text` - the bubble's colour, padding, and per-role
         // tint are the same either way. Only what's inside it changes, and `markdown` swaps
         // the `pre-wrap` raw text for parsed blocks.
-        <div className={`turn-text${richText ? " markdown" : ""}`}>
-          {richText
-            ? (
-              <Markdown breaks onLinkClick={onOpenFile} filePaths={filePaths}>
-                {m.text}
-              </Markdown>
-            )
-            : m.text}
+        <div className={`turn-text${richText && !highlight ? " markdown" : ""}`}>
+          {highlight ? (
+            <Highlighted text={m.text} hits={textHits} currentKey={find?.currentKey ?? null} />
+          ) : richText ? (
+            <Markdown breaks onLinkClick={onOpenFile} filePaths={filePaths}>
+              {m.text}
+            </Markdown>
+          ) : (
+            m.text
+          )}
         </div>
       )}
-      {m.tools.length > 0 && <ToolChips tools={m.tools} />}
+      {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
     </div>
   );
 }
@@ -663,27 +893,67 @@ function Turn({
  * "claude executed  bash ls  bash wc" - because to the person watching, that's what
  * it was: one stretch of the agent working, not a dozen turns worth a header each.
  */
-function ToolRun({ tools, agentLabel }: { tools: ToolCall[]; agentLabel: string }): React.JSX.Element {
+function ToolRun({
+  tools,
+  agentLabel,
+  find,
+}: {
+  tools: ToolCall[];
+  agentLabel: string;
+  find?: RowFind | null;
+}): React.JSX.Element {
   return (
     <div className="turn turn-assistant turn-toolrun">
       <div className="turn-role">{agentLabel} executed</div>
-      <ToolChips tools={tools} />
+      <ToolChips tools={tools} find={find} />
     </div>
   );
 }
 
-function ToolChips({ tools }: { tools: ToolCall[] }): React.JSX.Element {
+function ToolChips({ tools, find }: { tools: ToolCall[]; find?: RowFind | null }): React.JSX.Element {
+  // Tool chips are searchable because this is where the file paths are, and a path is
+  // the single most likely thing to be looking for in an agent's transcript. The
+  // searched string is the chip as rendered ("read registry.ts"), so what matches is
+  // what the reader can see - matching the untruncated tool input would highlight
+  // nothing and count things that are not on screen.
+  const matcher = find ? buildMatcher(find.query, { caseSensitive: find.caseSensitive }) : null;
   return (
     <div className="turn-tools">
       {tools.map((t, i) => {
         // The name alone ("Bash", nine times over) is frame without content; the chip
         // carries what the call actually touched, and the title the literal input.
         const chip = toolChip(t);
+        const chipHits = find ? find.hits.filter((h) => h.toolIndex === i) : [];
+        const searchText = toolSearchText(t);
+        const detailOffset = searchText.length - (chip.detail?.length ?? 0);
+        // Hits are collected over "<name> <detail>" but rendered as two spans, so each
+        // is re-expressed in its own span's coordinates. `hitsInWindow` clips rather
+        // than filters, which is what lets a match spanning the two - "read prompt" -
+        // mark both halves instead of neither.
+        const nameHits = hitsInWindow(chipHits, 0, chip.name.length);
+        const detailHits = hitsInWindow(chipHits, detailOffset, searchText.length);
         return (
           <Tooltip key={`${t.name}-${i}`} label={chip.title}>
-            <span className="tool-chip">
-              <span className="tool-chip-name">{chip.name}</span>
-              {chip.detail && <span className="tool-chip-detail">{chip.detail}</span>}
+            <span className={`tool-chip${chipHits.length ? " has-find-hit" : ""}`}>
+              <span className="tool-chip-name">
+                {nameHits.length && matcher ? (
+                  <Highlighted text={chip.name} hits={nameHits} currentKey={find?.currentKey ?? null} />
+                ) : (
+                  chip.name
+                )}
+              </span>
+              {chip.detail &&
+                (detailHits.length && matcher ? (
+                  <span className="tool-chip-detail">
+                    <Highlighted
+                      text={chip.detail}
+                      hits={detailHits}
+                      currentKey={find?.currentKey ?? null}
+                    />
+                  </span>
+                ) : (
+                  <span className="tool-chip-detail">{chip.detail}</span>
+                ))}
             </span>
           </Tooltip>
         );

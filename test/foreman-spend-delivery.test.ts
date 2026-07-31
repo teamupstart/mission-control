@@ -475,25 +475,34 @@ test("an unreadable quarantine is preserved, not overwritten by the next rejecti
   rmSync(join(home, preserved[0]!), { force: true });
 });
 
-test("a daemon too old for the route keeps the run, and later reports still drain", async () => {
-  // The rolling-upgrade case: the worker is newer than the daemon, so /api/usage/automation
-  // does not exist yet and every report 404s. Nothing about those runs is wrong - the daemon
-  // will have the route in a minute - so deleting them would lose spend to a version skew
-  // that heals itself. They are held, and crucially they do not wedge the queue behind them.
+test("a daemon with no such route holds the run and delivers it after the upgrade", async () => {
+  // The rolling-upgrade case: this worker is newer than its daemon, so
+  // /api/usage/automation does not exist and every report 404s. That is version skew, not a
+  // bad body, and it is answered by upgrading the daemon - so the run WAITS rather than
+  // being set aside.
+  //
+  // Quarantining it instead looked safe (nothing deleted) but was a one-way door: nothing
+  // drains the quarantine automatically, so an upgrade seconds later still left the run
+  // needing a human to reconstruct and resend it.
   assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
   const heldBefore = quarantinedSpendReports();
   mode = "404";
   await client.reportSpend(report("foreman:backlog", "run-rolling-upgrade"));
-  assert.equal(pendingSpendReports(), 0, "it did not stay at the head blocking everything");
-  assert.equal(quarantinedSpendReports(), heldBefore + 1, "and it was retained, not discarded");
+  assert.equal(pendingSpendReports(), 1, "the run is still queued, waiting for the route");
+  assert.equal(quarantinedSpendReports(), heldBefore, "and was NOT set aside for a human");
+  assert.deepEqual(spoolRunIds(SPOOL), ["run-rolling-upgrade"], "and stayed durable meanwhile");
 
+  // Blocking the queue behind it is harmless here and worth stating: a daemon with no route
+  // is delivering nothing else either, so there is nothing to hold up.
   mode = "ok";
-  await client.reportSpend(report("foreman:review", "run-after-upgrade"));
+  await flushPendingSpend();
   assert.equal(
     (received.at(-1) as { runId: string }).runId,
-    "run-after-upgrade",
-    "the upgraded daemon still receives everything that follows",
+    "run-rolling-upgrade",
+    "once the daemon has the route, the held run lands by itself with no human involved",
   );
+  assert.equal(pendingSpendReports(), 0);
+  assert.equal(existsSync(SPOOL), false);
 });
 
 test("a peer that dies mid-outage is adopted by a worker that never restarts", async () => {

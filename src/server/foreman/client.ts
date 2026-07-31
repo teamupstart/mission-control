@@ -393,6 +393,23 @@ export function quarantinedSpendReports(): number {
  * duplicate delivery: the daemon keys each insert by run id and absorbs the duplicate.
  */
 /**
+ * Whether a status means "this daemon has no such route" rather than "your body is wrong".
+ *
+ * The distinction decides whether an already-paid-for run waits or is set aside for a human,
+ * so it is worth being explicit about. A worker newer than its daemon gets 404 (the route
+ * does not exist), 405 (the path exists for another method) or 501 (not implemented); every
+ * one of those is answered by upgrading the daemon and none of them says anything about the
+ * report. A 400 or 422 comes from a route that IS there and has looked at the body.
+ *
+ * Treating the first group as retryable is what stops a rolling upgrade from stranding
+ * spend: waiting costs nothing, because a daemon with no route is delivering nothing else
+ * either.
+ */
+function routeUnavailable(status: number): boolean {
+  return status === 404 || status === 405 || status === 501;
+}
+
+/**
  * Complain about one file once, not once per scan.
  *
  * The scan became PERIODIC when a running worker started sweeping for dead peers, and that
@@ -600,15 +617,28 @@ async function flushSpend(): Promise<void> {
         spendFailures = 0;
         continue;
       }
+      if (routeUnavailable(res.status)) {
+        // The route is not there. That is version skew, not a bad body: a daemon older than
+        // this worker has no `/api/usage/automation` at all, and it will have one the moment
+        // it is upgraded. So this is RETRYABLE and the report simply waits, exactly as it
+        // would for a daemon that was down.
+        //
+        // Quarantining it instead - which is what this branch used to do - looked safe
+        // because nothing was deleted, but it was a one-way door: nothing drains the
+        // quarantine automatically, so an upgrade that fixed the problem seconds later left
+        // the run needing a human to reconstruct and resend it. Waiting costs nothing here,
+        // because a missing route means nothing else is draining either.
+        console.warn(
+          `[foreman] the daemon has no /api/usage/automation (${res.status}); ` +
+            `holding ${report.role} until it does`,
+        );
+        scheduleSpendRetry();
+        return;
+      }
       if (res.status >= 400 && res.status < 500) {
-        // A 4xx cannot be retried in place: this daemon will keep rejecting this body, and
-        // leaving it at the head would stall every later report behind it. But it must not
-        // be DELETED either, and that is the correction here. A 4xx does not only mean "the
-        // body is wrong forever" - it is also what a daemon OLDER than this worker returns
-        // during a rolling upgrade, when `/api/usage/automation` does not exist yet (404) or
-        // the schema has moved (422). Those resolve on their own the moment the daemon
-        // catches up, and the runs behind them are already paid for, so discarding them
-        // would lose real spend to a version skew that lasts seconds.
+        // A route that EXISTS refused this body, so retrying it in place would fail
+        // identically forever and stall every later report behind it. It must not be
+        // deleted either - the run is already paid for.
         //
         // So it is QUARANTINED: taken out of the delivery queue, where it can no longer
         // block anything, and written to a separate durable file that nothing drains

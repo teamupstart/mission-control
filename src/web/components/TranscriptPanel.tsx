@@ -4,7 +4,6 @@ import type {
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
-  TurnOrigin,
   Session,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -28,7 +27,6 @@ import { mergeEpisodes } from "../lib/episodes.ts";
 import {
   collectHits,
   hitsInScope,
-  matchesIn,
   buildMatcher,
   splitForHighlight,
   stepIndex,
@@ -52,14 +50,6 @@ import {
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { SessionLaunchers, type SessionLaunchersHandle } from "./LaunchMenu.tsx";
-
-/** Who typed a turn, when it wasn't the human. "mission control" rather than "harness"
- *  because that's the name on the window the reader is looking at. */
-const ORIGIN_LABEL: Record<TurnOrigin, string> = {
-  foreman: "foreman",
-  harness: "mission control",
-  workflow: "workflow",
-};
 
 /**
  * Reconnect backoff for the transcript stream, which this panel drives itself rather than

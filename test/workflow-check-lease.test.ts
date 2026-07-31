@@ -296,6 +296,155 @@ test("a pool slot can be leased again after an earlier lease of it went terminal
   await m.manager.releaseForAttempt("att-slot-3");
 });
 
+test("two concurrent acquires for one attempt cannot strip the winner of its row", async () => {
+  // The failure this prevents is silent and unrecoverable. Both callers get past the
+  // "already holds" check because neither has inserted yet; the first inserts and keeps its
+  // tree; the second's INSERT fails on the primary key, and its unwind - which acts on
+  // `attemptId` - deletes the FIRST caller's row. The winner then holds a live tree with no
+  // durable record, and because a check holder is deliberately invisible to the shared
+  // reaper, NOTHING would ever collect it. Not the reaper (wrong holder), not reclamation
+  // (it reads the table), not a restart.
+  const m = mkManager({ slots: 4 });
+
+  const results = await Promise.allSettled([
+    acquire(m, "att-concurrent"),
+    acquire(m, "att-concurrent"),
+  ]);
+  const won = results.filter((r) => r.status === "fulfilled");
+  const lost = results.filter((r) => r.status === "rejected");
+  assert.equal(won.length, 1, "exactly one caller may win the attempt");
+  assert.equal(lost.length, 1);
+  assert.match(
+    String((lost[0] as PromiseRejectedResult).reason),
+    /refusing to take a second lease for one attempt/,
+  );
+
+  // The winner's row survives, still live, still naming the tree it is holding.
+  const path = (won[0] as PromiseFulfilledResult<string>).value;
+  const row = store.get("att-concurrent");
+  assert.equal(row?.cleanupState, "held");
+  assert.equal(row?.leasePath, path);
+  assert.ok(m.manager.pinnedPaths().includes(path));
+  // And the loser took no tree at all, so the pool lost nothing.
+  assert.equal(m.trees.filter((t) => t.state === "leased").length, 1);
+
+  await m.manager.releaseForAttempt("att-concurrent");
+});
+
+test("a primary-key clash from another manager leaves the winner's row alone", async () => {
+  // The in-flight claim above is per manager, so it closes the concurrent case for the one
+  // manager the daemon runs - but the guard underneath it has to hold on its own, or it is
+  // just a comment. Two managers over one table reach the INSERT that the claim prevents:
+  // both read `store.get` as null before either has written, then the pool lock serialises
+  // them, and the second's INSERT fails on the primary key. Its unwind must not touch the
+  // row, because that row now belongs to a live lease the first manager is holding.
+  const m = mkManager({ slots: 4 });
+  const other = new CheckLeaseManager(db, {
+    cli: m.cli,
+    pin: async () => {},
+    verifyBase: async (_r, s) => s,
+  });
+  const ask = (mgr: InstanceType<typeof CheckLeaseManager>) =>
+    mgr.acquireForAttempt({
+      attemptId: "att-two-managers",
+      submissionId: "sub-tm",
+      nodeId: "node-tm",
+      repoRoot: m.repoRoot,
+      headSha: SHA,
+    });
+
+  const results = await Promise.allSettled([ask(m.manager), ask(other)]);
+  const won = results.filter((r) => r.status === "fulfilled");
+  assert.equal(won.length, 1, "the primary key must let exactly one through");
+  assert.match(
+    String((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason),
+    /UNIQUE constraint failed|already holds/,
+  );
+
+  // The survivor's row still describes the tree it is actually holding.
+  const path = (won[0] as PromiseFulfilledResult<string>).value;
+  const row = store.get("att-two-managers");
+  assert.equal(row?.cleanupState, "held", "the loser's unwind deleted the winner's row");
+  assert.equal(row?.leasePath, path);
+  // And the loser handed its own tree back, so the pool kept every slot but one.
+  assert.equal(m.trees.filter((t) => t.state === "leased").length, 1);
+
+  await m.manager.releaseForAttempt("att-two-managers");
+});
+
+test("a loser whose unwind cannot return its tree still leaves the winner's row held", async () => {
+  // The same clash, but now the loser's own return fails too - the one path that reaches the
+  // `returning` write. Unconditional, that write lands on the WINNER's row and marks a live
+  // check's lease as being handed back, which invites reclamation to force-return a tree
+  // with a build running in it.
+  const m = mkManager({ slots: 4 });
+  const other = new CheckLeaseManager(db, {
+    cli: { ...m.cli, return: async () => stubRun({ stdout: "", stderr: "tree is busy", code: 1 }) },
+    pin: async () => {},
+    verifyBase: async (_r, s) => s,
+  });
+  const ask = (mgr: InstanceType<typeof CheckLeaseManager>) =>
+    mgr.acquireForAttempt({
+      attemptId: "att-clash-stuck",
+      submissionId: "sub-cs",
+      nodeId: "node-cs",
+      repoRoot: m.repoRoot,
+      headSha: SHA,
+    });
+
+  const [first, second] = await Promise.allSettled([ask(m.manager), ask(other)]);
+  assert.equal(first.status, "fulfilled", "the first caller through the lock should win");
+  assert.equal(second.status, "rejected");
+  // It names the tree it could neither record nor return, because a human has to hand that
+  // one back - there is no row for reclamation to find it by.
+  assert.match(String((second as PromiseRejectedResult).reason), /no lease row could be written/);
+
+  const row = store.get("att-clash-stuck");
+  assert.equal(row?.cleanupState, "held", "the loser's unwind re-stated the winner's lease");
+  assert.equal(row?.leasePath, (first as PromiseFulfilledResult<string>).value);
+
+  await m.manager.releaseForAttempt("att-clash-stuck");
+});
+
+test("a failed insert never deletes or re-states a row this acquire did not write", async () => {
+  // The other half of the same rule, reached without concurrency: the pool hands out a path
+  // that a DIFFERENT live attempt already records, so the unique lease-path index rejects
+  // the INSERT. The unwind must return the tree it just took and leave the other attempt's
+  // row exactly as it found it.
+  const m = mkManager({ slots: 2 });
+  const held = await acquire(m, "att-owner");
+
+  // Force the next acquire onto the same path, behind the owner's back.
+  const stealer = new CheckLeaseManager(db, {
+    cli: {
+      ...m.cli,
+      get: async () => stubRun({ stdout: `${held}\n`, stderr: "", code: 0 }),
+    },
+    pin: async () => {},
+    verifyBase: async (_r, s) => s,
+  });
+
+  await assert.rejects(
+    () => stealer.acquireForAttempt({
+      attemptId: "att-stealer",
+      submissionId: "sub-s",
+      nodeId: "node-s",
+      repoRoot: m.repoRoot,
+      headSha: SHA,
+    }),
+    /UNIQUE constraint failed/,
+  );
+
+  // The owner is untouched: same state, same path, still pinned, still gating a retry.
+  const row = store.get("att-owner");
+  assert.equal(row?.cleanupState, "held");
+  assert.equal(row?.leasePath, held);
+  assert.equal(m.manager.unresolvedLeaseForNode("sub-att-owner", "node-att-owner"), true);
+  assert.equal(store.get("att-stealer"), null, "the failed acquire wrote no row of its own");
+
+  await m.manager.releaseForAttempt("att-owner");
+});
+
 test("acquire refuses a short base sha through the existing pinned-base check", async () => {
   // The real `verifyPinnedBase`, not a second regex - and it must refuse before a slot is
   // taken, so a bad caller costs an error rather than a pool tree that has to be unwound.

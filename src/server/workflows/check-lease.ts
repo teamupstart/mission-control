@@ -375,23 +375,36 @@ export class CheckLeaseManager {
     headSha: string;
   }): Promise<string> {
     const { attemptId, repoRoot } = input;
-    // Resolved BEFORE anything is leased, so a caller naming a commit this repository does
-    // not have costs an error rather than a pool slot that then has to be unwound.
-    const baseSha = await this.verifyBase(repoRoot, input.headSha);
-    // One lease per attempt id, EVER - not merely one at a time. A live row means the
-    // resource is still owned and a second lease would put two writers in one tree; a
-    // terminal row means this attempt has already had its turn, and a retry is a new
-    // attempt id by construction. Both are refused here, with a message, rather than left
-    // to surface as a primary-key violation from the INSERT below.
-    const existing = this.store.get(attemptId);
-    if (existing) {
+    // Claimed SYNCHRONOUSLY, before the first await, and this ordering is the guard rather
+    // than a detail. Every check below reads state that a concurrent call for the same
+    // attempt could still change: two callers that both got past `store.get` would each
+    // lease a tree, the second would fail its INSERT on the primary key, and its unwind
+    // would then act on `attemptId` - deleting the FIRST caller's row. That caller keeps a
+    // live tree with no durable record of it, and because a check holder is deliberately
+    // invisible to the shared reaper, nothing would ever collect it.
+    if (this.busy.has(attemptId)) {
       throw new Error(
-        `check attempt ${attemptId} already holds ${existing.leasePath} (${existing.cleanupState}) - ` +
+        `check attempt ${attemptId} is already acquiring a lease - ` +
           "refusing to take a second lease for one attempt",
       );
     }
     this.busy.add(attemptId);
     try {
+      // Resolved BEFORE anything is leased, so a caller naming a commit this repository does
+      // not have costs an error rather than a pool slot that then has to be unwound.
+      const baseSha = await this.verifyBase(repoRoot, input.headSha);
+      // One lease per attempt id, EVER - not merely one at a time. A live row means the
+      // resource is still owned and a second lease would put two writers in one tree; a
+      // terminal row means this attempt has already had its turn, and a retry is a new
+      // attempt id by construction. Both are refused here, with a message, rather than left
+      // to surface as a primary-key violation from the INSERT below.
+      const existing = this.store.get(attemptId);
+      if (existing) {
+        throw new Error(
+          `check attempt ${attemptId} already holds ${existing.leasePath} (${existing.cleanupState}) - ` +
+            "refusing to take a second lease for one attempt",
+        );
+      }
       return await withPoolLock(repoRoot, async () => {
         const lease = await acquireLease(repoRoot, checkHolderToken(attemptId), this.cli);
         if (lease.path === null) {
@@ -405,6 +418,12 @@ export class CheckLeaseManager {
         // Pinned first and synchronously: from here on the reaper must see this path even
         // though the row below has not been written yet.
         this.justAcquired.add(path);
+        // Whether the row under `attemptId` is OURS. The unwind below may only touch a row
+        // this invocation actually wrote: an INSERT can fail because some other row already
+        // owns this attempt id or this path, and in that case the row under that key belongs
+        // to a live lease somebody else is holding. Deleting it, or flipping it to
+        // `returning`, would strip a live tree of its only durable record.
+        let inserted = false;
         try {
           this.store.insertHeld({
             attemptId,
@@ -415,6 +434,7 @@ export class CheckLeaseManager {
             holderToken: checkHolderToken(attemptId),
             now: this.now(),
           });
+          inserted = true;
           await this.pin(repoRoot, path, baseSha);
         } catch (err) {
           // The lease is LIVE and we are about to throw, so nothing downstream will ever
@@ -426,14 +446,17 @@ export class CheckLeaseManager {
           const cause = err instanceof Error ? err.message : String(err);
           const returned = await this.cli.return({ cwd: repoRoot, path, force: true });
           if (returned.code === 0) {
-            this.store.delete(attemptId);
+            if (inserted) this.store.delete(attemptId);
             this.justAcquired.delete(path);
             throw new Error(cause);
           }
-          this.store.setState(attemptId, "returning", this.now());
+          if (inserted) this.store.setState(attemptId, "returning", this.now());
           throw new Error(
             `${cause} - and the pool lease could not be returned: ` +
-              `${returned.stderr.trim() || `exit ${returned.code}`} (${path} is still held)`,
+              `${returned.stderr.trim() || `exit ${returned.code}`} (${path} is still held` +
+              // A tree we could neither record nor return. Naming it is all we can do: there
+              // is no row to reclaim it from, so a human has to hand it back.
+              (inserted ? ")" : ", and no lease row could be written for it)"),
           );
         }
         this.owned.add(attemptId);

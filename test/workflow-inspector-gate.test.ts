@@ -155,8 +155,9 @@ async function seed(over: SeedOptions = {}) {
   db.prepare(
     `INSERT INTO workflow_definitions (
        id, name, normalized_name, description, draft_graph_json, completion_policy_json,
-       binding_defaults_json, draft_revision, current_version_id, archived_at, created_at, updated_at
-     ) VALUES (?, ?, ?, '', ?, ?, ?, 1, ?, NULL, 1, 1)`,
+       resumption_policy, binding_defaults_json, draft_revision, current_version_id,
+       archived_at, created_at, updated_at
+     ) VALUES (?, ?, ?, '', ?, ?, 'auto', ?, 1, ?, NULL, 1, 1)`,
   ).run(
     ids.workflow,
     `Workflow ${suffix}`,
@@ -169,8 +170,8 @@ async function seed(over: SeedOptions = {}) {
   db.prepare(
     `INSERT INTO workflow_versions (
        id, workflow_id, version, source_draft_revision, graph_json,
-       completion_policy_json, binding_defaults_json, published_at
-     ) VALUES (?, ?, 1, 1, ?, ?, ?, 1)`,
+       completion_policy_json, resumption_policy, binding_defaults_json, published_at
+     ) VALUES (?, ?, 1, 1, ?, ?, 'auto', ?, 1)`,
   ).run(
     ids.version,
     ids.workflow,
@@ -268,6 +269,11 @@ async function seed(over: SeedOptions = {}) {
     requireSkill: (session, id) => over.skillAvailable === false
       ? { ok: false, message: `${id} is not ready` }
       : { ok: true, command: skillCommand(session.agent, id)! },
+    readEvidenceProbe: async () => ({
+      headSha: head,
+      workingTreeStatus: over.dirty ? [" M src/file.ts"] : [],
+    }),
+    resumptionSettleMs: 0,
   });
   if (over.startBeforeGate) manager.start();
   const claimed = (manager as unknown as {
@@ -304,7 +310,7 @@ test("no final-gate policy keeps the Phase 4 completion path unclaimed", async (
 test("missing and unadopted PR hints wait without creating Inspector provenance", async () => {
   const missing = await seed({ withHint: false, adopted: false });
   assert.equal(missing.store.getRun(missing.ids.run)?.status, "waiting_for_pr");
-  assert.equal((missing.store.getRun(missing.ids.run)?.gateState as { waitReason: string }).waitReason, "missing_pr");
+  assert.equal((missing.store.getRun(missing.ids.run)?.gateState as { waitReason?: string })?.waitReason, "missing_pr");
   const handoff = await missing.manager.preparePr(missing.ids.run, "prepare-request");
   assert.equal(handoff.ok, true);
   if (handoff.ok) {
@@ -319,7 +325,7 @@ test("missing and unadopted PR hints wait without creating Inspector provenance"
 
   const unadopted = await seed({ withHint: true, adopted: false });
   assert.equal(unadopted.store.getRun(unadopted.ids.run)?.status, "waiting_for_pr");
-  assert.equal((unadopted.store.getRun(unadopted.ids.run)?.gateState as { waitReason: string }).waitReason, "unadopted_pr");
+  assert.equal((unadopted.store.getRun(unadopted.ids.run)?.gateState as { waitReason?: string })?.waitReason, "unadopted_pr");
   assert.equal(
     (openDb().prepare(`SELECT COUNT(*) AS n FROM inspector_prs WHERE key = ?`).get(unadopted.key) as { n: number }).n,
     0,
@@ -449,6 +455,246 @@ test("the automatic missing-PR policy sends one shipping handoff after a passed 
   }
 });
 
+test("durable PR adoption advances a clean handoff without another workflow round", async () => {
+  const seeded = await seed({
+    withHint: false,
+    adopted: false,
+    deliveryMode: "live",
+  });
+  try {
+    const handoff = await seeded.manager.preparePr(seeded.ids.run, "clean-handoff");
+    assert.equal(handoff.ok, true);
+    await waitFor(
+      () => seeded.store.listDeliveries(seeded.ids.run)
+        .some((delivery) => delivery.kind === "pr_handoff" && delivery.state === "delivered"),
+      "the clean PR handoff was not delivered",
+    );
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "pr_handoff");
+
+    // Opening an already-committed PR changes no repository evidence. The durable Inspector
+    // row, not a new Git commit or a transient Session.prUrl, completes the handoff's job.
+    const adoptedAt = Date.now();
+    adoptInspectorPr(inspectorPr(seeded.key, seeded.url, seeded.ids.session, adoptedAt));
+    seeded.registry.inspectionUpdated(seeded.key, null, null, adoptedAt);
+    await waitFor(
+      () => (seeded.store.getRun(seeded.ids.run)?.gateState as { prKey?: string | null })?.prKey
+        === seeded.key,
+      "durable adoption did not pin the handed-off PR",
+    );
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_session");
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "pr_handoff");
+
+    updateInspectorPr(seeded.key, {
+      headSha: seeded.head,
+      lastAttemptSha: seeded.head,
+      reviewPosture: "live",
+      round: 1,
+      lastReviewedAt: adoptedAt + 1,
+    }, adoptedAt + 1);
+    seeded.registry.inspectionUpdated(seeded.key, seeded.head, "OPEN", adoptedAt + 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+      seeded.store.getRun(seeded.ids.run)?.status,
+      "waiting_for_session",
+      "Inspector completed the gate before the PR handoff turn settled",
+    );
+
+    seeded.registry.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: seeded.ids.session,
+      cwd: "/repo",
+      transcriptPath: null,
+      env: { tmuxPane: `%${serial}` },
+      prCreated: false,
+    });
+    await seeded.manager.sweepResumptions(Date.now() + 1);
+    await waitFor(
+      () => seeded.store.getRun(seeded.ids.run)?.status === "waiting_for_inspector",
+      "the unchanged settled handoff did not advance to Inspector",
+    );
+    const afterSettle = seeded.store.getRun(seeded.ids.run)?.gateState as {
+      lastObservedAt?: number | null;
+    };
+    assert.equal(afterSettle.lastObservedAt, null, "a pre-settle observation was reused");
+
+    seeded.registry.inspectionUpdated(seeded.key, seeded.head, "OPEN", Date.now() + 2);
+    await waitFor(
+      () => seeded.store.getRun(seeded.ids.run)?.status === "completed",
+      "a fresh clean observation did not complete the adopted handoff",
+    );
+    assert.equal(
+      seeded.store.listSubmissions(seeded.ids.run).length,
+      1,
+      "opening the PR reran Personas despite unchanged reviewed work",
+    );
+  } finally {
+    await seeded.manager.stop();
+    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  }
+});
+
+test("a PR handoff that changes the remote head still requires a workflow resubmission", async () => {
+  const seeded = await seed({
+    withHint: false,
+    adopted: false,
+    deliveryMode: "live",
+  });
+  try {
+    const handoff = await seeded.manager.preparePr(seeded.ids.run, "changed-head-handoff");
+    assert.equal(handoff.ok, true);
+    await waitFor(
+      () => seeded.store.listDeliveries(seeded.ids.run)
+        .some((delivery) => delivery.kind === "pr_handoff" && delivery.state === "delivered"),
+      "the changed-head PR handoff was not delivered",
+    );
+
+    const adoptedAt = Date.now();
+    adoptInspectorPr(inspectorPr(seeded.key, seeded.url, seeded.ids.session, adoptedAt));
+    seeded.registry.inspectionUpdated(seeded.key, null, null, adoptedAt);
+    await waitFor(
+      () => (seeded.store.getRun(seeded.ids.run)?.gateState as { prKey?: string | null })?.prKey
+        === seeded.key,
+      "durable adoption did not pin the changed-head PR",
+    );
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_session");
+
+    const changedHead = `${seeded.head}-after-handoff`;
+    updateInspectorPr(seeded.key, {
+      headSha: changedHead,
+      lastAttemptSha: changedHead,
+      reviewPosture: "live",
+      round: 1,
+      lastReviewedAt: adoptedAt + 1,
+    }, adoptedAt + 1);
+    seeded.registry.inspectionUpdated(seeded.key, changedHead, "OPEN", adoptedAt + 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "pr_handoff");
+
+    seeded.registry.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: seeded.ids.session,
+      cwd: "/repo",
+      transcriptPath: null,
+      env: { tmuxPane: `%${serial}` },
+      prCreated: false,
+    });
+    await seeded.manager.sweepResumptions(Date.now() + 1);
+    await waitFor(
+      () => seeded.store.getRun(seeded.ids.run)?.status === "waiting_for_inspector",
+      "the settled handoff did not request a fresh Inspector observation",
+    );
+    seeded.registry.inspectionUpdated(seeded.key, changedHead, "OPEN", Date.now() + 2);
+    await waitFor(
+      () => seeded.store.getRun(seeded.ids.run)?.currentPhase === "inspector_head_mismatch",
+      "the changed handoff head was not rejected",
+    );
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "waiting_for_session");
+    assert.equal(seeded.store.listSubmissions(seeded.ids.run).length, 1);
+  } finally {
+    await seeded.manager.stop();
+    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  }
+});
+
+test("an unpinned durable handoff keeps vetoing Shipping across restart", async () => {
+  const seeded = await seed({
+    withHint: false,
+    adopted: false,
+    deliveryMode: "live",
+  });
+  try {
+    const staleKey = `owner/repo#${900 + serial}`;
+    const staleUrl = `https://github.com/owner/repo/pull/${900 + serial}`;
+    adoptInspectorPr(inspectorPr(staleKey, staleUrl, seeded.ids.session, seeded.now - 1));
+    assert.equal(
+      seeded.manager.blocksMerge(staleKey),
+      false,
+      "an older PR from the same long-lived session was claimed by the new gate",
+    );
+
+    const handoff = await seeded.manager.preparePr(seeded.ids.run, "restart-handoff");
+    assert.equal(handoff.ok, true);
+    await waitFor(
+      () => seeded.store.listDeliveries(seeded.ids.run)
+        .some((delivery) => delivery.kind === "pr_handoff" && delivery.state === "delivered"),
+      "the restart PR handoff was not delivered",
+    );
+    const adoptedAt = Date.now();
+    adoptInspectorPr(inspectorPr(seeded.key, seeded.url, seeded.ids.session, adoptedAt));
+    assert.equal(
+      (seeded.store.getRun(seeded.ids.run)?.gateState as { prKey?: string | null })?.prKey,
+      null,
+      "the test requires the restart window before the gate pins its PR",
+    );
+    assert.equal(seeded.manager.blocksMerge(seeded.key), true);
+
+    await seeded.manager.stop();
+    const recovered = new WorkflowManager(seeded.registry, seeded.store);
+    try {
+      // No Inspector event and no Session.prUrl has been restored. The persisted adoption row
+      // alone must fail closed until normal Inspector reconciliation pins and evaluates it.
+      assert.equal(recovered.blocksMerge(seeded.key), true);
+    } finally {
+      await recovered.stop();
+    }
+  } finally {
+    await seeded.manager.stop();
+    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  }
+});
+
+test("durable handoff provenance requires an exact known repository identity", async () => {
+  for (const [label, repoRoot] of [
+    ["nested", "/repo/nested"],
+    ["missing", null],
+  ] as const) {
+    const seeded = await seed({
+      withHint: false,
+      adopted: false,
+      deliveryMode: "live",
+    });
+    try {
+      const handoff = await seeded.manager.preparePr(seeded.ids.run, `${label}-repo-handoff`);
+      assert.equal(handoff.ok, true);
+      await waitFor(
+        () => seeded.store.listDeliveries(seeded.ids.run)
+          .some((delivery) => delivery.kind === "pr_handoff" && delivery.state === "delivered"),
+        `the ${label} repository handoff was not delivered`,
+      );
+
+      const adoptedAt = Date.now();
+      adoptInspectorPr({
+        ...inspectorPr(seeded.key, seeded.url, seeded.ids.session, adoptedAt),
+        cwd: repoRoot ?? "/repo",
+        repoRoot,
+      });
+      assert.equal(seeded.manager.blocksMerge(seeded.key), false);
+
+      seeded.registry.applyHook({
+        agent: "claude",
+        event: "PostToolUse",
+        sessionId: seeded.ids.session,
+        cwd: repoRoot ?? "/repo",
+        transcriptPath: null,
+        env: { tmuxPane: `%${serial}` },
+        prUrl: seeded.url,
+        prCreated: false,
+      });
+      seeded.registry.inspectionUpdated(seeded.key, null, null, adoptedAt);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(
+        (seeded.store.getRun(seeded.ids.run)?.gateState as { prKey?: string | null })?.prKey,
+        null,
+      );
+    } finally {
+      await seeded.manager.stop();
+      setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+    }
+  }
+});
+
 test("a Preview binding RECORDS the automatic PR handoff it withheld", async () => {
   // Automatic PR preparation is Live-only and stays that way: preparing a pull request is
   // done by TYPING the skill into the pane, which is the terminal write Preview exists to
@@ -529,12 +775,16 @@ test("restart recovers an automatic PR handoff that was still parked at its gate
 test("disabled Inspector blocks honestly and a post-entry observation is required", async () => {
   const disabled = await seed({ enabled: false });
   assert.equal(disabled.store.getRun(disabled.ids.run)?.status, "blocked");
-  assert.equal((disabled.store.getRun(disabled.ids.run)?.gateState as { waitReason: string }).waitReason, "inspector_disabled");
+  assert.equal((disabled.store.getRun(disabled.ids.run)?.gateState as { waitReason?: string })?.waitReason, "inspector_disabled");
   await disabled.manager.stop();
 
   const waiting = await seed();
   assert.equal(waiting.store.getRun(waiting.ids.run)?.status, "waiting_for_inspector");
-  assert.equal((waiting.store.getRun(waiting.ids.run)?.gateState as { lastObservedAt: number | null }).lastObservedAt, null);
+  assert.equal(
+    (waiting.store.getRun(waiting.ids.run)?.gateState as { lastObservedAt?: number | null })
+      ?.lastObservedAt,
+    null,
+  );
   await waiting.manager.stop();
 });
 

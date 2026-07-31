@@ -179,8 +179,13 @@ that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in 
 
 That same sweep re-reads the mutable Git facts in each session's checkout: its branch and
 whether the repo is gated by no-mistakes. Sessions the daemon runs itself (Agent SDK
-`runtime`) have no process on a tty for the sweep to find, so those facts are read directly
-from their working directory at launch or restoration and refreshed on the same cadence.
+`runtime`) are never carded by that sweep: it skips every agent process inside the daemon's
+own subtree, because those are the daemon's own subprocesses rather than somebody's session.
+Without that rule an embedded session's CLI subprocess - which inherits the terminal the
+daemon itself was started from, since the Agent SDK owns the spawn - would appear a second
+time as a terminal card, named after the daemon's tab and claiming its session's branch and
+PR. Their Git facts are instead read directly from their working directory at launch or
+restoration and refreshed on the same cadence.
 This keeps both the **PR chip** and [no-mistakes](#no-mistakes) status honest without a
 terminal session sharing the checkout. A pooled worktree is often leased with no branch at
 all, and the PR poller finds a session's pull request by asking
@@ -2721,6 +2726,13 @@ If no adopted PR exists, the published policy waits, offers **Prepare PR in sess
 it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate
 itself never pushes or opens a pull request. The offered action prepares the packet under Preview
 or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
+When that handoff opens an already-reviewed clean commit, its durable adoption record pins the PR.
+The record must belong to the bound session, match its exact known repository root, and have been
+adopted after gate entry, so an older PR or one from a nested checkout is never claimed.
+After the handoff turn settles, unchanged repository evidence advances the gate to a fresh Inspector
+observation without spending another Persona round. If PR preparation changed the head, the normal
+full resubmission requirement still applies. The durable adoption also preserves the workflow's
+Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
 **Recheck Inspector** only reevaluates the current durable observation and remains waiting until
 Inspector's normal sweep has seen a new head.
 
@@ -4236,9 +4248,10 @@ landing in the seconds between the decision and the call makes GitHub refuse rat
 merge code nothing has looked at. Squash by default; merge commit and rebase are the other
 two options.
 
-The workflow veto is narrow and can only block. Inspector remains the sole PR poller and the
-sole GitHub merge path. An active published Inspector gate vetoes its adopted or candidate PR;
-completed, cancelled, archived, and no-final-gate workflows do not.
+The workflow veto is narrow and can only block. Inspector remains the sole PR poller, and Shipping
+remains the sole merge executor; Shipping rides the Inspector tick instead of polling independently.
+An active published Inspector gate vetoes its adopted or candidate PR; completed, cancelled,
+archived, and no-final-gate workflows do not.
 
 ### It needs the Inspector, fully on
 

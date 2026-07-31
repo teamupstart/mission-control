@@ -200,8 +200,8 @@ export function buildVerifyPrompt(input: VerifyInput): string {
   // Capped like the diff and the standards beside it, and it needs to be for a reason this
   // change created: the deleted private renderer printed every tool call as `[object Object]`,
   // about fifteen characters, so the transcript block could not grow no matter what ran.
-  // Rendering them properly restores up to TOOL_INPUT_CAP (1800) per call. Even a source
-  // window capped at 48 turns can therefore exceed the prompt budget when those turns carry
+  // Rendering them properly restores up to TOOL_INPUT_CAP (1800) per call. Even the default
+  // 60-turn head+tail window can therefore exceed the prompt budget when those turns carry
   // several tools. The header says so when it bites, exactly as the diff's does, because a
   // verifier silently judging a truncated record is the failure this whole file guards
   // against.

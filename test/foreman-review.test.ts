@@ -30,7 +30,8 @@ const { runClaudeText } = await import("../src/server/claude-cli.ts");
 
 test("runClaudeText honours a caller's own timeoutMs", async () => {
   // The Tier 1 router passes a budget sized for Haiku emitting one small object; it must not
-  // inherit the full reviewer's, which is sized for Opus reading 48 turns with the whole POLICY.
+  // inherit the full reviewer's, which is sized for Opus reading a 60-turn window (head plus
+  // tail - see `client.transcript`) with the whole POLICY.
   // In `on` mode the router and the full review run serially, so a shared cap would let a
   // degraded API double the serial queue's worst case instead of failing fast into a route-up.
   const started = Date.now();

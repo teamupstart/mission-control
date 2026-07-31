@@ -34,7 +34,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src hooks test scripts",
     "test": "node --test --test-concurrency=2 --import tsx 'test/**/*.test.ts'",
-    "test:electron": "node --test --import tsx test/workflow-builder-electron.test.ts",
+    "test:electron": "node --test --import tsx 'test/*-electron.test.ts'",
     "init": "node scripts/init.mjs",
     "personas": "tsx scripts/builtin-personas.ts",
     "session": "node scripts/new-session.mjs",

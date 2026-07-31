@@ -32,7 +32,8 @@ const GOAL_POLL_MS = Number(envVar("GOAL_POLL_MS") ?? 5000);
 const GOAL_REFRESH_MS = Number(envVar("GOAL_REFRESH_MS") ?? 60_000);
 /**
  * Sized for Haiku emitting one short object from a ~12-turn window. Deliberately not the
- * reviewer's 120s: that budget is for Opus reading 48 turns with the whole POLICY, and a
+ * reviewer's 120s: that budget is for Opus reading a 60-turn head+tail window with the whole
+ * POLICY, and a
  * goal that takes half a minute has already failed at being a glanceable status line.
  */
 const GOAL_TIMEOUT_MS = Number(envVar("GOAL_TIMEOUT_MS") ?? 30_000);

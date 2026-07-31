@@ -1257,7 +1257,8 @@ test("the orphan sweep's by-key route drives an item whose session is gone", asy
 test("/sent and /reattach validate their bodies instead of hand-checking them", async () => {
   // A negative `transcriptAnchor` doesn't reach `readSync` - the transcript route
   // guards `since >= 0` - it falls through to the default head+tail window, so the
-  // verify scope silently degrades from "this item's turns" to "the last 48 turns".
+  // verify scope silently degrades from "this item's turns" to "the default 60-turn
+  // head+tail window".
   // A verifier judging work it was never scoped to invents gaps, which is exactly the
   // quiet fail-open the evidence-first design exists to avoid.
   seedSession();

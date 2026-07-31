@@ -1111,13 +1111,19 @@
   </p>
 </div>
 
-<div class="call">
-  <div class="ct"><span class="dot" style="background:var(--series-1)"></span>6. The diff is fetched twice per active tick</div>
+<div class="call good">
+  <div class="ct"><span class="dot" style="background:var(--good)"></span>6. The diff was fetched twice per active tick (fixed)</div>
   <p>
-    A tick that both replies and reviews calls <code>fetchDiff</code> at
-    <span class="src">worker.ts:555</span> and again at <span class="src">worker.ts:698</span>,
-    two <code>gh</code> subprocesses each buffering up to 16 MiB, with no sharing. Not a token
-    cost, but it is latency and memory on the expensive path.
+    A tick that both replied and reviewed used to call <code>fetchDiff</code> once in the reply
+    branch and again at the top of <code>reviewRound</code>, two <code>gh</code> subprocesses each
+    buffering up to 16 MiB, with no sharing. Not a token cost, but it was latency and memory on
+    the expensive path. <strong>Fixed:</strong> <code>processPr</code> now creates a lazy per-tick
+    memo (<code>diffOncePerTick</code>, <span class="src">worker.ts</span>) shared by both call
+    sites, so an active tick fetches the diff exactly once and the steady-state tick still fetches
+    zero. The memo shares the raw result, failures included, so each consumer keeps its own
+    failure semantics: the reply degrades to an empty diff while the review books
+    <code>tooLarge</code> as push-fixable. Covered by
+    <code>test/inspector-diff-once-per-tick.test.ts</code>.
   </p>
 </div>
 

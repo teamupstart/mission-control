@@ -165,14 +165,20 @@ export interface CapturedInputs {
 /** Per-message text cap so a long turn can't blow up the prompt. */
 const MSG_CAP = 1800;
 /**
- * Cap on the child's self-reported `activity` line. See its use for why this field alone
- * needs one: it is the only prompt input that is both unbounded by any schema and written
- * directly by the party being judged.
+ * Cap on the child's self-reported `activity` line, applied at every rendering of it: the
+ * reviewer's `activity:` line below, and the router's terminal-surface question in
+ * `buildTriagePrompt`, which IS this string there (`classifyPending` sets `question` from
+ * `s.activity`). See the `activity:` line for why this field alone needs one: it is the only
+ * prompt input that is both unbounded by any schema and written directly by the party being
+ * judged. It also serves as the router's question-size ceiling on `input-review`, where the
+ * question is the whole ask and must never render partially - `tier0` routes an oversized
+ * one up whole instead of clipping it (see triage.ts). Shared rather than redeclared so the
+ * enforcement points cannot drift.
  */
-const ACTIVITY_CAP = 2000;
+export const ACTIVITY_CAP = 2000;
 
 /** Truncate for display, preserving null - the `?? "(none)"` defaults still read correctly. */
-function clip<T extends string | null | undefined>(text: T, max: number): T {
+export function clip<T extends string | null | undefined>(text: T, max: number): T {
   return (text != null && text.length > max ? `${text.slice(0, max)}…` : text) as T;
 }
 

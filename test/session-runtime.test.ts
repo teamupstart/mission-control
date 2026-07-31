@@ -8,13 +8,15 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
-// What is at stake: a session with no process, no tty and no pane has to live in the same
-// map, leave by the same door, and be reasoned about by the same code as every session the
-// dashboard has ever shown. Three specific ways that goes wrong, all of them quiet:
+// What is at stake: a session with no terminal-discovery identity, tty or pane has to live in
+// the same map, leave by the same door, and be reasoned about by the same code as every
+// session the dashboard has ever shown. Three specific ways that goes wrong, all of them
+// quiet:
 //
-//  1. The discovery sweep evicts it. "Unseen by a completed sweep" is a statement about the
-//     process table, and an embedded session is not in it - so an unscoped sweep marks it
-//     exited 1.5 seconds after it was registered, for ever, and no dispatch can survive.
+//  1. The discovery sweep evicts it. "Unseen by a completed sweep" is a statement about
+//     terminal discovery, which deliberately excludes an embedded session's daemon-owned
+//     subprocess - so an unscoped sweep marks it exited 1.5 seconds after it was registered,
+//     for ever, and no dispatch can survive.
 //  2. It leaves by a path of its own. `session_remove` is THE durable signal: WorkflowManager
 //     orphans its bindings on it and TaskManager settles the task the session was running.
 //     A teardown that skips it makes a card vanish while its task stays `running` for ever.
@@ -225,8 +227,8 @@ test("a completed discovery sweep does not evict an SDK session", () => {
   const r = new Registry();
   r.registerSdkSession(registration());
   // A sweep that sees an entirely different session. For a pane-backed entry this is the
-  // eviction signal; for an embedded one it is no information at all, because there was
-  // never a process on a tty to find.
+  // eviction signal; for an embedded one it is no information at all, because its
+  // daemon-owned subprocess is excluded before terminal sessions are correlated.
   r.applyDiscovery([discovered("proc:ttys9:4242:0")]);
   r.applyDiscovery([discovered("proc:ttys9:4242:0")]);
   assert.equal(r.getSession(SDK_ID)?.state, "starting");

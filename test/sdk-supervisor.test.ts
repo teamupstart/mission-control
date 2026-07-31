@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // What is at stake: the supervisor is the only thing that knows an embedded session's
-// harness-native id, its checkout and its task belong together. Nothing else can rebuild
-// that - there is no process on a tty for a sweep to re-find - so every question this file
-// asks is about a card or a task that would otherwise be stranded:
+// harness-native id, its checkout and its task belong together. Terminal discovery
+// deliberately excludes the daemon-owned subprocess, so every question this file asks is
+// about a card or a task that would otherwise be stranded:
 //
 //  - a launch that starts a driver and then cannot take ownership must not leak it;
 //  - a restart must RESUME rather than restart the conversation, or the agent redoes work;

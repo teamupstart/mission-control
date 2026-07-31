@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
-import { describeRequest } from "./prompt.ts";
+import { ACTIVITY_CAP, describeRequest } from "./prompt.ts";
 import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
@@ -31,7 +31,8 @@ import type { CheapAction, Divergence } from "@shared/foreman.ts";
  */
 export const DEFAULT_TRIAGE_MODEL = FOREMAN_MODEL_SPECS.triage.fallback;
 /**
- * The RECENT turns Tier 1 works from - a smaller window than the full reviewer's 48.
+ * The RECENT turns Tier 1 works from - a smaller window than the full reviewer's 60
+ * (`TRANSCRIPT_HEAD_TURNS` plus the default tail - see `client.transcript`).
  *
  * The endpoint aims its tail reader at this many turns, but a small file still comes back
  * whole and every large response also carries its opening turns. Apply the exact recent
@@ -284,6 +285,18 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
       };
     }
     case "input-review":
+      // On this surface the question IS the whole ask: `withOfferedOptions` renders the body,
+      // the offered options and the "state the LABEL" closing instruction into it, and
+      // `paneSection` renders nothing. The router must never read it PARTIALLY - clipped, the
+      // options can fall off the end while the tier keeps its power to dispose, which is the
+      // answer-inventing failure the full reviewer avoids by leaving its question untrimmed.
+      // So an oversized ask is not rendered here at all: it routes up to the reviewer, which
+      // reads it whole. At worst that costs the pre-triage price, and only for a question no
+      // honest ask needs to be. Same constant as the terminal question's clip on purpose -
+      // one ceiling on what the router reads, two enforcements fitted to what the field is.
+      return pending.question.length > ACTIVITY_CAP
+        ? { kind: "route-up", reason: "input-review-question-too-long" }
+        : { kind: "continue" };
     case "terminal-pane":
     // A driver request is answerable by the same machinery a pane menu is (name a row, or
     // submit the whole form) and needs the same judgment to decide WHICH row - so it gets no
@@ -590,7 +603,10 @@ export async function triageSession(
    * off-limits - on the most frequent path in the system, which is precisely the one they
    * wrote the file to govern. A preferences doc only the expensive tier honours is not a
    * preferences doc, it is a coin flip on which tier happens to pick the ask up. The extra
-   * tokens are real but small against that: the doc is capped at 16KB, this tier is Haiku.
+   * tokens are real: the doc is schema-capped at 64,000 characters
+   * (`ForemanInstructionsSchema.text`) and its rendered section adds about 2.4KB of framing,
+   * so a filled-in box rides along on every triage, review and verify prompt. Worth it
+   * against the coin flip, and this tier is Haiku.
    */
   captured: CapturedInputs,
 ): Promise<TriageOutcome> {

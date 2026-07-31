@@ -56,7 +56,7 @@ import {
   resolveThread,
   wasRefused,
 } from "./github.ts";
-import type { PrSnapshot, ThreadSnapshot } from "./github.ts";
+import type { GhResult, PrSnapshot, ThreadSnapshot } from "./github.ts";
 
 // The Inspector's tick: review the pull requests we opened, answer follow-ups in our own
 // threads, and close our own threads once a push has fixed what they were about.
@@ -468,6 +468,30 @@ function threadsAwaitingUs(
   return out;
 }
 
+/**
+ * The tick's diff, fetched AT MOST once.
+ *
+ * Two steps of `processPr` want the same bytes: the reply pass and `reviewRound` both
+ * reason about the head sha read once at the top of the tick, so a second `gh api`
+ * subprocess - each buffering up to 16MB of pipe - can only re-buy the same answer, and
+ * it costs the most on exactly the large-diff PRs closest to that ceiling. Lazy rather
+ * than hoisted, because the common steady-state tick (nothing waiting, nothing pushed)
+ * returns before either consumer runs and must keep fetching ZERO diffs.
+ *
+ * The memo shares the raw result, FAILURES INCLUDED. The two consumers disagree about
+ * what a failed fetch means and each is right: a reply is answering a person, so it
+ * degrades to an empty diff rather than leaving them unanswered, while a review with no
+ * diff has nothing to judge, so it books the failure - `tooLarge` into the push-fixable
+ * park, everything else onto the ordinary ladder. Only the fetch is shared; the
+ * interpretation stays at each call site.
+ */
+type TickDiff = () => Promise<GhResult<{ diff: string; truncated: boolean }>>;
+
+function diffOncePerTick(dir: string, pr: InspectorPr): TickDiff {
+  let fetched: ReturnType<TickDiff> | null = null;
+  return () => (fetched ??= fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES));
+}
+
 /** Run one PR through the whole cycle. Returns true when it did something. */
 async function processPr(
   cfg: InspectorConfig,
@@ -562,6 +586,7 @@ async function processPr(
   const rows = existingByFingerprint(pr.key);
   const posture = inspectorPosture(cfg, pr.cwd, pr.repoRoot);
   const post = posture === "live";
+  const readDiff = diffOncePerTick(dir, pr);
   let acted = false;
 
   // 1. Answer anyone waiting on us. Before the re-review, because a question asked three
@@ -570,7 +595,7 @@ async function processPr(
   //    running one we cannot post spends a model call to produce nothing.
   const waiting = post ? threadsAwaitingUs(s, rows, login) : [];
   if (waiting.length) {
-    const diff = await fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
+    const diff = await readDiff();
     for (const w of waiting) {
       const replied = await answerFollowUp(
         cfg,
@@ -628,7 +653,7 @@ async function processPr(
     return acted;
   }
 
-  const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now, tick);
+  const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now, tick, readDiff);
   return acted || reviewed;
 }
 
@@ -709,11 +734,12 @@ async function reviewRound(
   login: string,
   now: number,
   tick: TickState,
+  readDiff: TickDiff,
 ): Promise<boolean> {
   const threads = ourThreads(s, login);
   reconcilePosting(rows, threads, now);
 
-  const diffRes = await fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
+  const diffRes = await readDiff();
   if (!diffRes.ok || !diffRes.value) {
     // A diff too large to buffer is not a transient failure - the same request returns
     // the same bytes forever - so it goes straight to the backoff ceiling instead of

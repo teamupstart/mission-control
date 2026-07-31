@@ -14,7 +14,7 @@ import {
 import type { AwayBuffer } from "@shared/away-buffer.ts";
 import { getAwayConfig, stallThresholds } from "./config.ts";
 import type { Session, Task } from "@shared/types.ts";
-import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 
 // The away watcher: the daemon half of away mode. Diffs the registry snapshot on a
@@ -38,6 +38,19 @@ export interface AwaySource {
     workflowRunSummaries?: WorkflowRunSummary[];
     ensembleSummaries?: EnsembleSummary[];
   };
+}
+
+/**
+ * The daemon-computed signals that do not travel on the registry snapshot.
+ *
+ * Injected rather than read, because this module must not import the Workflow store: the
+ * derivation walks submissions and attempts, which is exactly why it is detail-only and not a
+ * field on `WorkflowRunSummary`. Optional so an embedder (and every existing test) still gets
+ * a watcher, which simply emits no repeat alerts - the "not read yet" reading `AlertScope`
+ * documents for `stalls`.
+ */
+export interface AwayDeps {
+  workflowRepeatOffenders?: () => WorkflowRunRepeatOffender[];
 }
 
 export interface AwayWatcher {
@@ -67,7 +80,11 @@ export interface AwayWatcher {
   tick: () => void;
 }
 
-export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): AwayWatcher {
+export function startAwayWatcher(
+  registry: AwaySource,
+  now = () => Date.now(),
+  deps: AwayDeps = {},
+): AwayWatcher {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -114,6 +131,9 @@ export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): 
         tasks: snap.tasks,
         stalls,
         workflowRuns: snap.workflowRunSummaries ?? [],
+        ...(deps.workflowRepeatOffenders
+          ? { workflowRepeatOffenders: deps.workflowRepeatOffenders() }
+          : {}),
         ensembleSummaries: snap.ensembleSummaries ?? [],
       };
 

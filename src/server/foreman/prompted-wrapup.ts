@@ -4,7 +4,8 @@ import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/que
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { VERIFY_FAILURE_CAP, hasPane, settledIdle } from "./queue-machine.ts";
+import { VERIFY_FAILURE_CAP, hasPane } from "./queue-machine.ts";
+import { settledIdle } from "@shared/session.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
 // The `prompted` wrap-up trigger's decision core: the human typed straight into the

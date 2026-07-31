@@ -198,7 +198,11 @@ const stopInspector = startInspector(registry, {
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 const stopUsage = startUsagePoller(registry);
 const stopGoalRefiner = startGoalRefiner(registry);
-const away = startAwayWatcher(registry);
+// The repeat-offender derivation is detail-only (it walks a run's submissions and attempts),
+// so it reaches the alert engine on its own channel rather than by widening the SSE summary.
+const away = startAwayWatcher(registry, undefined, {
+  workflowRepeatOffenders: () => workflows.repeatOffenderSignals(),
+});
 const stopHeadlessPruner = startHeadlessPruner();
 const stopPoolReaper = startPoolReaper(registry);
 const stopSkillsReloader = startSkillsReloader(registry);

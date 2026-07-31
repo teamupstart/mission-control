@@ -2,7 +2,8 @@ import type { NmRunSummary, Session } from "@shared/types.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { hasPane, settledIdle } from "./queue-machine.ts";
+import { hasPane } from "./queue-machine.ts";
+import { settledIdle } from "@shared/session.ts";
 
 // The review follow-through trigger's decision core: a session's work has become an
 // OPEN pull request, it has parked, and the PR now carries feedback nobody is acting on

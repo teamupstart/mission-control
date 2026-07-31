@@ -276,6 +276,7 @@ const KIND_ORDER: { kind: AlertKind; one: string; many: string }[] = [
   { kind: "gate", one: "gate parked", many: "gates parked" },
   { kind: "foreman", one: "Foreman ask", many: "Foreman asks" },
   { kind: "workflow", one: "workflow update", many: "workflow updates" },
+  { kind: "workflow-repeat", one: "review loop", many: "review loops" },
   { kind: "ensemble", one: "ensemble update", many: "ensemble updates" },
   { kind: "task-failed", one: "failed", many: "failed" },
   { kind: "task-done", one: "task done", many: "tasks done" },

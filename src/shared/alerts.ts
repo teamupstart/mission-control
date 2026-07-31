@@ -23,7 +23,7 @@ import {
 } from "./session.ts";
 import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
-import type { WorkflowRunSummary } from "./workflow.ts";
+import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "./workflow.ts";
 import { ensembleIsTerminal, type EnsembleSummary } from "./ensemble.ts";
 
 export type AlertKind =
@@ -36,6 +36,17 @@ export type AlertKind =
   | "stuck"
   | "foreman"
   | "workflow"
+  /**
+   * A workflow member has failed the same work several rounds running.
+   *
+   * Its own kind rather than another `workflow` transition because it is not a transition at
+   * all: the run is progressing normally by every status it reports, and the thing worth
+   * saying is that the progress is circular. It became worth SAYING when repair rounds stopped
+   * needing a human click - a `resumptionPolicy: "auto"` run can spend its entire repair
+   * budget with nobody watching, and five rounds of the same Persona rejecting the same change
+   * is a loop to interrupt, not a digest line.
+   */
+  | "workflow-repeat"
   | "ensemble";
 export type AlertSeverity = "attention" | "info";
 
@@ -63,6 +74,17 @@ export interface AlertScope {
    */
   stalls?: Stall[];
   workflowRuns?: WorkflowRunSummary[];
+  /**
+   * Workflow members failing consecutive rounds, from the daemon's own derivation.
+   *
+   * On its own channel for the reason `stalls` is: nothing but the daemon can COMPUTE it. The
+   * derivation walks every submission and attempt of a run, which is why it lives on
+   * `WorkflowRunDetail` and deliberately NOT on `WorkflowRunSummary` - summaries travel over
+   * SSE for every run in the fleet and must stay compact. Absent therefore means "not read
+   * yet", exactly as it does for stalls, and a scope without it emits no repeat alerts rather
+   * than reporting every offender as newly resolved.
+   */
+  workflowRepeatOffenders?: WorkflowRunRepeatOffender[];
   /**
    * The compact ensemble catalog projection, from the same SSE snapshot the rest of the
    * scope comes from. Optional for the reason `workflowRuns` is: a scope built before the
@@ -405,6 +427,30 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       sessionId: run.sessionId,
       workflowRunId: run.id,
       severity: transition.severity,
+    });
+  }
+
+  // workflow-repeat: the same member has now rejected the same work several rounds running.
+  //
+  // Edge-triggered on the STREAK GROWING, not on the offender merely existing, so a loop that
+  // persists across ticks announces once per round it burns rather than every five seconds -
+  // and so the third failure is still news after the second was reported. Keyed per
+  // (run, node) for the same reason the workflow loop is keyed per (run, cause): two members
+  // stuck on the same run are two different things to look at.
+  const previousOffenders = new Map(
+    (prev.workflowRepeatOffenders ?? []).map((o) => [`${o.runId}:${o.nodeId}`, o]),
+  );
+  for (const o of next.workflowRepeatOffenders ?? []) {
+    const before = previousOffenders.get(`${o.runId}:${o.nodeId}`);
+    if (before && before.rounds >= o.rounds) continue;
+    alerts.push({
+      id: `workflow-repeat:${o.runId}:${o.nodeId}`,
+      kind: "workflow-repeat",
+      title: `${o.personaName} has failed ${o.rounds} rounds running`,
+      body: `${o.workflowName} is on round ${o.round} of ${o.maxRepairRounds}`,
+      sessionId: o.sessionId,
+      workflowRunId: o.runId,
+      severity: "attention",
     });
   }
 

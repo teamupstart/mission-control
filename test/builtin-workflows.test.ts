@@ -186,7 +186,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 6),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 7),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -206,7 +206,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and final gate", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 6);
+  assert.equal(builtin.versions.length, 7);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -219,11 +219,13 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
       maxRepairRounds: 5,
     });
   }
-  assert.deepEqual(builtin.versions[5]!.bindingDefaults, {
-    ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
-    deliveryMode: "live",
-  });
-  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions[5]!.bindingDefaults);
+  for (const recent of builtin.versions.slice(5)) {
+    assert.deepEqual(recent.bindingDefaults, {
+      ...DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+      deliveryMode: "live",
+    });
+  }
+  assert.deepEqual(builtin.definition.bindingDefaults, builtin.versions.at(-1)!.bindingDefaults);
   assert.deepEqual(builtin.definition.completionPolicy, {
     kind: "inspector",
     onFindings: "inspector_only",
@@ -334,7 +336,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 6, "one workflow, six versions");
+  assert.equal(builtin.versions.length, 7, "one workflow, seven versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -417,10 +419,6 @@ test("version 5 adds automatic PR preparation after the Inspector-only repair po
 
 test("version 6 defaults submission to Foreman complete without rewriting history", () => {
   const builtin = noMistakesReview();
-  assert.equal(
-    builtin.definition.currentVersionId,
-    builtinWorkflowVersionId("no-mistakes-review", 6),
-  );
   for (const historical of builtin.versions.slice(0, 5)) {
     assert.equal(historical.bindingDefaults.triggerMode, "manual");
   }
@@ -434,5 +432,35 @@ test("version 6 defaults submission to Foreman complete without rewriting histor
     deliveryMode: "live",
     maxRepairRounds: 5,
   });
+});
+
+test("version 7 turns on engine-owned resumption and leaves every prior version manual", () => {
+  const builtin = noMistakesReview();
+  assert.equal(
+    builtin.definition.currentVersionId,
+    builtinWorkflowVersionId("no-mistakes-review", 7),
+  );
+  // The whole point of appending rather than editing: a binding pinned to any earlier version
+  // keeps the posture it was published with, so upgrading this build cannot start resubmitting
+  // runs on somebody's machine.
+  for (const historical of builtin.versions.slice(0, 6)) {
+    assert.equal(historical.resumptionPolicy, "manual");
+  }
+  const previous = builtin.versions[5]!;
+  const current = builtin.versions[6]!;
+  assert.equal(current.sourceDraftRevision, 6);
+  assert.equal(current.resumptionPolicy, "auto");
+  assert.deepEqual(current.graph, previous.graph, "v7 changes policy without rewriting v6");
+  assert.deepEqual(current.completionPolicy, {
+    kind: "inspector",
+    onFindings: "inspector_only",
+    missingPrAction: "prepare_pr",
+  });
+  assert.deepEqual(current.bindingDefaults, {
+    triggerMode: "foreman_complete",
+    deliveryMode: "live",
+    maxRepairRounds: 5,
+  });
   assert.deepEqual(builtin.definition.bindingDefaults, current.bindingDefaults);
+  assert.equal(builtin.definition.resumptionPolicy, "auto");
 });

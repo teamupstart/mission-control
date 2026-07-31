@@ -236,6 +236,7 @@ test("Publish validates and snapshots a shadowed built-in by id", () => {
     description: "",
     draft,
     completionPolicy: { kind: "none" },
+    resumptionPolicy: "manual",
     bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
     createdAt: 1,
     updatedAt: 1,

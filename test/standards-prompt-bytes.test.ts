@@ -16,11 +16,21 @@ import { buildReviewPrompt } from "../src/server/inspector/prompt.ts";
 // REQUESTED path emitted the same file twice. Nothing was wrong-looking about it: the
 // bundle was well-formed, the prompt was well-formed, every finding still worked, and
 // the second copy was simply paid for on every Inspector review and every Foreman
-// verify. Measured on this checkout the review prompt went 52,091 -> 27,486 bytes.
+// verify.
 //
 // A regression here is silent for the same reason, so the guard has to be a byte count
 // rather than an eyeball: this builds the prompt BOTH ways from the same repo and
 // asserts the difference.
+//
+// The fixture is sized at MAX_FILE_BYTES deliberately, which is the WORST case rather
+// than any particular repo's: the waste is `min(fileSize, MAX_FILE_BYTES)`, so it tracks
+// whatever the root doc currently weighs. That is also why this test builds its own repo
+// instead of reading the checkout it runs in - AGENTS.md was streamlined from 80,918 to
+// 6,076 bytes while this fix was in review, which moved the real-checkout saving from
+// 24,605 bytes to 6,093 without anything here changing. A guard pinned to the live file
+// would have started failing for a reason that has nothing to do with the defect.
+// `docs/evidence/inspector-prompt-bytes.md` is where the checkout-specific number lives,
+// and it is re-measurable by design.
 
 /** Mirrors MAX_FILE_BYTES, so the numbers here are the ones production actually pays. */
 const DOC_BYTES = 24 * 1024;

@@ -90,9 +90,9 @@ Compose surfaces:
 | Dispatch task | dispatch-owned | yes |
 | Action bar send | `send` | no |
 
-Drafts live in `lib/drafts.ts`, survive unmounts, and clear only after successful submission or durable session removal. Uncontrolled boxes participate in the reset nonce chain. Image-enabled composers wire all `ImageDrop.tsx` pieces and block Enter while uploads are pending.
+Drafts live in `lib/drafts.ts` and survive unmounts. Successful submission clears only the submitted draft. A successful reset calls `dropMessageDrafts` to clear `send` and `reply` while preserving the `queue` draft; uncontrolled message boxes participate in the reset nonce chain. Durable `session_remove` calls `dropSessionDrafts` to clear every draft kind. Image-enabled composers wire all `ImageDrop.tsx` pieces and block Enter while uploads are pending.
 
-Reset routes through `resetSession` in `src/server/reset.ts`. Clear all session-scoped queues, drafts, attachments, and logs there or through the durable removal subscriber.
+Route every server-side reset through `resetSession` in `src/server/reset.ts`; it owns server-side queue, workflow, work-episode, and cache cleanup. The UI reset callback separately clears message drafts, transcript history, file buffers, and reply attachments. Keep durable removal cleanup on `session_remove`, not `state === "exited"`.
 
 ## Overlays and shortcuts
 

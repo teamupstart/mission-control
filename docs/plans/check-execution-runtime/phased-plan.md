@@ -51,7 +51,10 @@ Submitted by the operator on 2026-07-30, before decomposition:
 
 ## Investigated findings (what the repository actually does)
 
-Verified against `HEAD` at `b44f7232`.
+Verified against `HEAD` at `b44f7232`, then re-verified in full against `6453445a` after a
+rebase. PR #323 (Foreman-completion binding) and #322 (check-repository combobox) landed in
+the middle of this decomposition; the two substantive consequences are recorded in Phase 1's
+findings and Phase 4's presentation non-goal.
 
 ### The check seam is built and the production executor is null
 
@@ -129,13 +132,13 @@ This was the biggest surprise of the investigation and it substantially shrank P
 Built-in v6 already ships `triggerMode: "foreman_complete"` + `deliveryMode: "live"`
 (`builtin-workflows.ts:441`, via `NO_MISTAKES_REVIEW_LIVE_DEFAULTS` at `:361-364`). And
 `confirmDeliverySend` **already re-arms Foreman's drain guard in the same transaction**
-(`store.ts:3095-3103` calling `rearmDrainCompletionForDelivery` at `store.ts:4140-4153`), with
-`manager.ts:2915` refreshing the queue. The full cycle - persona fail → `waiting_for_session`
+(`store.ts:3171-3178` calling `rearmDrainCompletionForDelivery` at `store.ts:4215-4228`), with
+`manager.ts:2976` refreshing the queue. The full cycle - persona fail → `waiting_for_session`
 → live delivery → drain re-arm → session fixes → Foreman reclaims → round N+1 → graph re-runs
 from the top - is implemented.
 
 Confirmed that "start over" is literal: attempts and edge receipts are keyed by
-`submissionId` (`shared/workflow.ts:1090`, `:1114`), so a new submission means an empty
+`submissionId` (`shared/workflow.ts:1098`, `:1122`), so a new submission means an empty
 attempt table and `advanceStructure` re-emits from the Session node (`engine.ts:252-271`).
 
 What stops it running by default:
@@ -144,12 +147,13 @@ What stops it running by default:
    `deliveryBlock` clause 10 (`manager.ts:2816`) returns `live_not_authorized` and nothing is
    ever delivered.
 2. `ForemanConfigSchema.enabled` defaults `false` (`protocol.ts:856`), so `bindingModeBlock`
-   (`manager.ts:2585-2594`) refuses `foreman_complete` at bind time.
+   (`manager.ts:2646-2655`) refuses `foreman_complete` at bind time.
 3. **`unchanged_evidence` permanently kills the loop.** `claimForemanCompletion` retires the
-   guard unconditionally inside its transaction (`store.ts:2288-2293`) *before*
+   guard inside its transaction - at one of two sites since PR #323, `store.ts:2260-2272` on the
+   fallback path or `store.ts:2360-2366` otherwise - *before*
    `captureAndActivate` runs. If capture then refuses for unchanged evidence
-   (`manager.ts:3110-3124`), the guard is spent, the run parks, and no further claim will ever
-   arrive. `test/workflow-completion-http.test.ts:429-431` has to clear `wrapup_asked_at` with
+   (`manager.ts:3171-3186`), the guard is spent, the run parks, and no further claim will ever
+   arrive. `test/workflow-completion-http.test.ts:592-594` has to clear `wrapup_asked_at` with
    raw SQL to continue - the test documents the gap.
 4. **Item-less sessions never re-arm.** `rearmDrainCompletionForDelivery` requires
    `EXISTS (SELECT 1 FROM foreman_queue_items …)` (`store.ts:4147-4149`). There is **no
@@ -166,7 +170,7 @@ Phase 1 owns that test.
 - **The `check` evidence kind shipped.** `phase-2-check-node.md:351-357` asked the
   implementation to decide between adding a `check` `EvidenceRef` kind or relaxing the
   citation rule. It was decided: `EVIDENCE_REF_KINDS` includes `"check"`
-  (`shared/workflow.ts:1256-1263`) with a docstring defending it as a real kind. No phase
+  (`shared/workflow.ts:1264-1272`) with a docstring defending it as a real kind. No phase
   re-opens this.
 - **`workflow_node_attempts` needs no widening.** Confirmed (`db.ts:461-478`,
   `store.ts:2443`). Only the durable lease table is new.
@@ -213,8 +217,8 @@ planning PR
 
 Phase 1 and Phase 4 both edit `src/server/workflows/manager.ts`, in disjoint regions:
 
-- Phase 1 owns the `unchanged_evidence` handling around `manager.ts:3110-3124` and
-  `claimCompletion` at `:1632-1673`.
+- Phase 1 owns the `unchanged_evidence` handling around `manager.ts:3171-3186` and
+  `claimCompletion` at `:1632-1737` (widened by #323, still clear of Phase 4's region).
 - Phase 4 owns `WorkflowManagerOptions` (`:178-220`) and its forwarding to the engine
   (`:330-346`).
 

@@ -51,7 +51,10 @@ Explicit non-goals:
   check. That was `phase-2-check-node.md`'s non-goal and belongs to
   `phase-3-pipeline-checks-and-v2.md` in the parent plan.
 - **No presentation work.** The first check unit already shipped `WorkflowNode`,
-  `WorkflowLibrary`, the settings panel and `run-model.ts`'s four status sentences. This phase
+  `WorkflowLibrary` and `run-model.ts`'s four status sentences, and PR #322 has since revised
+  the settings panel's check-command row onto the shared `RepoCombobox`
+  (`WorkflowSettingsPanel.tsx:128-146`, `:317-328`, `:724-736`) - check *configuration*, not
+  check *outcome* rendering, so this non-goal survives. This phase
   verifies they read correctly now that `passed` and `failed` actually occur, and changes them
   only if they do not.
 - **No sandbox.** Still.
@@ -59,7 +62,7 @@ Explicit non-goals:
 ## Repository findings this phase depends on
 
 - **The passthrough genuinely does not exist.** `WorkflowManagerOptions`
-  (`manager.ts:178-220`) has `checkScheduler` (`:197`, forwarded at `:338`) and **no**
+  (`manager.ts:180-221`) has `checkScheduler` (`:199`, forwarded at `:340`) and **no**
   `checkDeps`. `WorkflowEngineOptions.checkDeps` exists (`engine.ts:77`) and defaults to `{}`
   (`:193`). `src/server/index.ts:102-109` constructs the manager with no `engine` option.
   Three edits, one line each, and the gate goes live.
@@ -70,10 +73,10 @@ Explicit non-goals:
   `DEFAULT_CHECK_CONCURRENCY = 2` (`checks.ts:124`), `createCheckScheduler` (`:129`).
 - **`checkVerdict` already synthesises the verdict** (`engine.ts:133-157`), including
   `evidence: [{ kind: "check", quote }]` against the shipped `EVIDENCE_REF_KINDS`
-  (`shared/workflow.ts:1256-1263`). No verdict work here.
+  (`shared/workflow.ts:1264-1272`). No verdict work here.
 - **`WorkflowEngine.stop()` cancels nothing** (`engine.ts:204-209`): it sets `stopped`, clears
   the wake timer, and awaits `inFlight`. A live check would hold shutdown for its full timeout.
-  `manager.stop()` (`manager.ts:423-434`) is called from `src/server/index.ts:282`, before the
+  `manager.stop()` (`manager.ts:425-436`) is called from `src/server/index.ts:282`, before the
   pool reaper stops at `:286`.
 - **`handleInfrastructureFailure`** (`engine.ts:777-833`) finishes the old attempt and creates
   a fresh retry, `MAX_INFRA_ATTEMPTS = 3`, backoff `retryBaseMs * 4^(n-1)`. The source plan's
@@ -122,8 +125,8 @@ Rules, each with the failure it prevents:
 ### 2. The passthrough
 
 - `WorkflowManagerOptions`: add `checkDeps?: CheckRunDeps` beside `checkScheduler`
-  (`manager.ts:197`).
-- Forward it where `checkScheduler` is forwarded (`manager.ts:338`).
+  (`manager.ts:199`).
+- Forward it where `checkScheduler` is forwarded (`manager.ts:340`).
 - `src/server/index.ts:102-109`: construct the executor and pass
   `checkDeps: { execute: … }`.
 
@@ -149,7 +152,8 @@ render in run detail. Change only what reads wrong.
 
 ### 5. README
 
-- The check node now executes: which platforms, what consent is required, that both
+- Extend the check-repositories section PR #322 already added rather than writing a new one.
+  The check node now executes: which platforms, what consent is required, that both
   `checksEnabled` **and** the repository allowlist are asked, and that this grants
   branch-authored code the daemon's filesystem authority and is not a sandbox.
 - The pooled lease: pinned to the captured commit, warm dependencies preserved because
@@ -238,8 +242,8 @@ group emptiness is confirmed.
   Contract E unchanged, Phase 2's lease API, and Phase 3's tri-state emptiness. Adds no
   interface of its own.
 - **Shared file with Phase 1:** `workflows/manager.ts`. Regions disjoint - this phase owns
-  `WorkflowManagerOptions` (`:178-220`) and engine forwarding (`:330-346`); Phase 1 owns
-  `unchanged_evidence` (`:3110-3124`) and `claimCompletion` (`:1632-1673`). Recorded in the
+  `WorkflowManagerOptions` (`:180-221`) and engine forwarding (`:332-348`); Phase 1 owns
+  `unchanged_evidence` (`:3171-3186`) and `claimCompletion` (`:1632-1737`, widened by #323). Recorded in the
   index. Whichever merges second rebases and keeps both.
 - **Checked that no earlier phase needs editing.** Phase 2's `releaseForAttempt` already
   refuses without positive identity, which is what step 1's cleanup-before-classification rule

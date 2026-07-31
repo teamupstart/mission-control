@@ -56,33 +56,71 @@ Explicit non-goals:
 
 ## Repository findings this phase depends on
 
+Every line reference below was re-verified against `6453445a` after a rebase. PR #323 shifted
+`manager.ts` by roughly +61 above line 1660 and `store.ts` by +75 above 2380, and changed two
+things in substance - both called out.
+
 - **The cycle is already implemented.** `engine.ts:322-337` parks the submission and cancels
   siblings; `onSubmissionWaiting` → `scheduleWaitingDelivery` → `prepareAndMaybeDeliver`
-  (`manager.ts:339-340`, `:2620-2663`); live delivery calls `deliverPrepared`
-  (`manager.ts:2662`); `confirmDeliverySend` re-arms the drain guard in the same transaction
-  (`store.ts:3095-3103`) and `manager.ts:2915` refreshes the queue; Foreman reclaims and
-  `claimForemanCompletion` creates round N+1 (`store.ts:2238-2261`).
+  (`manager.ts:339-340`, `:2681-2724`); live delivery calls `deliverPrepared`
+  (`manager.ts:2723`); `confirmDeliverySend` (`store.ts:3126`) re-arms the drain guard in the
+  same transaction (`store.ts:3171-3178`) and `manager.ts:2976` refreshes the queue; Foreman
+  reclaims and `claimForemanCompletion` creates round N+1 (`store.ts:~2310-2333`).
 - **Restart is from the top, verified.** Attempts and receipts are keyed by `submissionId`
-  (`shared/workflow.ts:1090`, `:1114`), so `advanceStructure` re-emits from the Session node
+  (`shared/workflow.ts:1098`, `:1122`), so `advanceStructure` re-emits from the Session node
   (`engine.ts:252-271`) and every reachable node gets a fresh attempt (`engine.ts:305-321`).
-- **`liveEnabled` is asked twice**, at bind time (`manager.ts:2576-2584`) and at send time
-  (`deliveryBlock` clause 10, `manager.ts:2816`). Both read `getWorkflowConfig()`, so one
+- **`liveEnabled` is asked twice**, at bind time (`manager.ts:2637-2645`) and at send time
+  (`deliveryBlock` clause 10, `manager.ts:2877`). Both read `getWorkflowConfig()`, so one
   default change reaches both.
+- **#323 added a THIRD reader of `liveEnabled`, and it makes this phase's default flip louder
+  than it looks.** `claimCompletion` gained an auto-bind path (`manager.ts:1643-1699`): when no
+  active binding exists and the claim carries `fallbackWorkflow: "no-mistakes"`
+  (`protocol.ts:2599-2601`, `shared/workflow.ts:949-956`, set by
+  `foreman/workflow-claim.ts:80` when `cfg.wrapup === "no-mistakes"`), the daemon re-proves
+  Foreman enabled + live + repo-allowlisted, resolves the built-in No-Mistakes Review version,
+  and creates a binding pinned to `triggerMode: "foreman_complete"` whose `deliveryMode` is
+  `liveDeliveryAuthorized ? "live" : "preview"`. Consequences for step 5, all three of which
+  belong in the PR description: flipping `liveEnabled` silently upgrades every auto-created
+  No-Mistakes binding from preview to live on an allowlisted repository; flipping Foreman
+  `enabled` makes this auto-bind path reachable at all; and adding `prompted` to
+  `wrapupTriggers` makes its prompted variant reachable, which retires through the very
+  `retirePromptedGuard` this phase is mirroring.
 - **`repoAllowlisted(cwd, repoRoot, [])` is false.** An empty allowlist authorises nothing.
   This is why flipping `liveEnabled` alone is safe.
 - **`bindingModeBlock` refuses `foreman_complete` when Foreman is disabled**
-  (`manager.ts:2585-2594`), and dispatch refuses earlier (`manager.ts:480-486`).
+  (`manager.ts:2646-2655`), and dispatch refuses earlier (`manager.ts:482-488`).
 - **The drain re-arm requires queue items.** `rearmDrainCompletionForDelivery`'s `EXISTS`
-  clause (`store.ts:4147-4149`) returns false for an item-less session. `retirePromptedGuard`
-  exists (`store.ts:4155-4181`) but **there is no `rearmPromptedCompletionForDelivery`**.
-- **The guard is retired unconditionally before capture.** `store.ts:2288-2293`, inside
-  `claimForemanCompletion`'s transaction; `captureAndActivate` runs after
-  (`manager.ts:1659-1665`) and may refuse at `manager.ts:3110-3124`.
-- **`claimCompletion` passes `allowUnchanged: false`** hard-coded (`manager.ts:1660`), and the
-  uncertain-delivery replacement round passes `true` (`manager.ts:1624`).
+  clause (`store.ts:4223-4225`) returns false for an item-less session. `retirePromptedGuard`
+  exists (`store.ts:4230-4256`) but **there is no `rearmPromptedCompletionForDelivery`**
+  anywhere in `src/` or `test/`.
+- **The guard is still spent on an unchanged-evidence refusal, but retirement is now two
+  sites, not one.** PR #323 restructured `claimForemanCompletion`. Retirement happens either
+  early, on the fallback path (`store.ts:2260-2272`), or at the original site, now guarded by
+  `if (!guardRetired)` (`store.ts:2360-2366`). Either way it commits inside the claim
+  transaction; `captureAndActivate` runs afterwards (`manager.ts:1721-1726`) and may refuse at
+  `manager.ts:3171-3186`. The dead end is intact.
+- **#323 made that dead end worse on one path, and Phase 1 must cover the worse variant.** On
+  the fallback path the same transaction retires the guard **and inserts a brand-new
+  No-Mistakes binding** before capture runs. An unchanged-evidence refusal there leaves a
+  freshly created binding attached to a blocked run with a spent guard - a binding the
+  operator never asked for and cannot advance.
+- **The precedent for "return rather than spend" already exists**, and Phase 1 should cite it
+  rather than invent the idea: `store.ts:2198-2208` re-resolves the binding and returns
+  `{ claimed: false, reason: "manual_trigger" }` **without touching the guard**.
+- **Two signatures moved under #323**, and steps 2-3 must match them: `retirePromptedGuard`
+  (`store.ts:4230`) now takes `Pick<WorkflowBinding, "noteKey" | "sessionCwd">` rather than a
+  whole `WorkflowBinding`, and `ForemanCompletionStoreResult` is now a **discriminated union**
+  with a `claimed: false` arm plus a `binding` field - so `stored.run` is nullable at every
+  call site.
+- **`claimCompletion` passes `allowUnchanged: false`** positionally (`manager.ts:1721-1726`;
+  consumed at `:3171`, parameter default at `:3019`), and the uncertain-delivery replacement
+  round passes `true`.
 - **The test gap is documented in the tests.** `workflow-delivery.test.ts:111` and `:142`
-  assert `rearmedDrain === false`; `workflow-completion-http.test.ts:429-431` clears
-  `wrapup_asked_at` with raw SQL to get past the guard.
+  assert `rearmedDrain === false`; `workflow-completion-http.test.ts:592-594` clears
+  `wrapup_asked_at` with raw SQL to get past the guard, and a **second** pre-existing raw-SQL
+  re-arm sits at `:521-524`. Both go.
+- **A second re-arm site already exists** and must keep working: `resolveUncertainDelivery`
+  (`store.ts:3355-3362`, refresh at `manager.ts:1550`).
 
 ## Implementation steps, in execution order
 
@@ -93,22 +131,22 @@ upgrade. Everything below lands in one PR, but write and test it in this order.
 
 ### 2. `rearmPromptedCompletionForDelivery` (`src/server/workflows/store.ts`)
 
-Mirror `rearmDrainCompletionForDelivery` (`:4140-4153`) for the prompted episode. It clears
-whatever `retirePromptedGuard` (`:4155-4181`) wrote, so the next prompted evaluation sees an
+Mirror `rearmDrainCompletionForDelivery` (`:4215-4228`) for the prompted episode. It clears
+whatever `retirePromptedGuard` (`:4230-4256`) wrote, so the next prompted evaluation sees an
 un-answered episode. Return `boolean` the same way, so the caller can tell whether it fired.
 
 Match the drain function's guard shape: only re-arm a row that exists, and never create one.
 
 ### 3. One episode per confirmed delivery (`store.ts`, `confirmDeliverySend`)
 
-At `:3095-3103`, replace the unconditional drain call with: try drain; if it returns false, try
+At `store.ts:3171-3178`, replace the unconditional drain call with: try drain; if it returns false, try
 prompted. Report which fired on the returned object (widen `rearmedDrain: boolean` to a
 discriminated `rearmed: "drain" | "prompted" | null`, or add a sibling field - the
-implementation picks, but callers must be able to tell, because `manager.ts:2915` refreshes the
+implementation picks, but callers must be able to tell, because `manager.ts:2976` refreshes the
 queue only for the drain case).
 
 Append the existing `foreman_completion_rearmed` event with the kind it actually re-armed
-(`store.ts:3097-3102` already carries a `completionKind` field - populate it honestly rather
+(the event at `store.ts:3171-3178` already carries a `completionKind` field - populate it honestly rather
 than hard-coding `"drain"`).
 
 **Exactly one.** Re-arming both would let a single delivery produce two completion claims and
@@ -132,7 +170,7 @@ delivery's confirmation:
   signalled but the evidence fingerprint is identical, names what the last packet asked for,
   and says the two acceptable responses are to make the change or to say why it should not be
   made.
-- On the `unchanged_evidence` refusal path (`manager.ts:3110-3124`), prepare that delivery
+- On the `unchanged_evidence` refusal path (`manager.ts:3171-3186`), prepare that delivery
   instead of only parking. In `live` it sends; its `confirmDeliverySend` re-arms one episode
   through step 3, so the next Foreman claim is legitimate and gated on a fresh idle+settle.
 - **Bound it.** Count consecutive unchanged refusals on the run. After the second, stop
@@ -141,7 +179,7 @@ delivery's confirmation:
   explicit nudges is not going to be fixed by a third.
 - The counter resets on any submission that captures a changed fingerprint.
 
-Keep `allowUnchanged: false` at `manager.ts:1660`. The nudge is the answer to an unchanged
+Keep `allowUnchanged: false` at `manager.ts:1721-1726`. The nudge is the answer to an unchanged
 resubmission, not a reason to accept one.
 
 ### 5. Flip the defaults
@@ -176,7 +214,7 @@ app data, and the comment above it says why.
   column for it would be a migration for a value that dies with the run.
 - **New delivery kind** reaches durable rows and the SSE payload. Treat the delivery-kind
   vocabulary as append-only for the same reason `EVIDENCE_REF_KINDS` is
-  (`shared/workflow.ts:1240-1244`): a build that cannot read a persisted kind fails the row at
+  (`shared/workflow.ts:1264-1272`): a build that cannot read a persisted kind fails the row at
   its zod boundary. Add it to every schema that enumerates kinds, and give
   `src/web/workflows/run-model.ts` a sentence for it - that module owns vocabulary, so a new
   kind should fail typecheck until someone says what it means.
@@ -203,7 +241,7 @@ Extend existing:
 
 - `test/workflow-delivery.test.ts:111,142` - the `rearmedDrain === false` assertions now have
   a sibling asserting the prompted path fires when there are no items.
-- `test/workflow-completion-http.test.ts:429-431` - delete the raw-SQL workaround; the test
+- `test/workflow-completion-http.test.ts:592-594` **and `:521-524`** - delete both raw-SQL workarounds; the test
   should now traverse the re-arm honestly. If it cannot, the re-arm is wrong.
 - Unchanged-evidence: first refusal prepares a nudge; second refusal prepares a nudge; third
   blocks with the exhausted phase; a changed fingerprint resets the counter.
@@ -248,7 +286,7 @@ identically twice is telling the truth.
   `web/workflows/run-model.ts`) are disjoint from Phase 2's (`server/pool.ts`,
   `server/dispatcher.ts`, `server/db.ts`, `server/index.ts`) and Phase 3's (new modules).
 - **Shared file with Phase 4:** `workflows/manager.ts`. Regions are disjoint - this phase owns
-  `unchanged_evidence` (`:3110-3124`) and `claimCompletion` (`:1632-1673`); Phase 4 owns
+  `unchanged_evidence` (`:3171-3186`) and `claimCompletion` (`:1632-1737`, widened by #323); Phase 4 owns
   `WorkflowManagerOptions` (`:178-220`) and engine forwarding (`:330-346`). Recorded in the
   index under "Shared-file notice".
 - **Confirmed no built-in catalog change**, so `test/builtin-workflows.test.ts`'s pinned

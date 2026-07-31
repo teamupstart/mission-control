@@ -91,9 +91,9 @@
 <p class="lede">A phased implementation plan. Four phases, two of which run concurrently.</p>
 
 <div class="meta">
-  <div><strong>Source plan</strong> — <code>docs/plans/builtin-workflows/phase-2-check-node.md</code>, its dependency-linked execution-runtime unit</div>
-  <div><strong>Index (source of truth)</strong> — <code>docs/plans/check-execution-runtime/phased-plan.md</code></div>
-  <div><strong>Verified against</strong> — <code>HEAD</code> at <code>b44f7232</code></div>
+  <div><strong>Source plan</strong> - <code>docs/plans/builtin-workflows/phase-2-check-node.md</code>, its dependency-linked execution-runtime unit</div>
+  <div><strong>Index (source of truth)</strong> - <code>docs/plans/check-execution-runtime/phased-plan.md</code></div>
+  <div><strong>Verified against</strong> - <code>b44f7232</code>, re-verified in full against <code>6453445a</code> after a rebase</div>
 </div>
 
 <div class="callout">
@@ -111,7 +111,7 @@
   <thead><tr><th>#</th><th>Decision</th><th>Consequence</th></tr></thead>
   <tbody>
     <tr><td>1</td><td>Personas never fix</td><td>Already true in code. Now a recorded invariant (Contract F) no phase may weaken.</td></tr>
-    <tr><td>2</td><td>The loop is automatic by default</td><td>Resubmission, not <code>git push</code> — confirmed before decomposition. Phase 1.</td></tr>
+    <tr><td>2</td><td>The loop is automatic by default</td><td>Resubmission, not <code>git push</code> - confirmed before decomposition. Phase 1.</td></tr>
     <tr><td>3</td><td>Inspector findings keep <code>inspector_only</code></td><td>No built-in v7. A Persona failure restarts the full graph; an Inspector nit re-checks only Inspector.</td></tr>
     <tr><td>4</td><td>Consent stays required</td><td><code>liveEnabled</code> flips true; <code>repoAllowlist</code> stays empty and still gates. "Allowlist everything" was offered and declined.</td></tr>
     <tr><td>5</td><td>One completion detector</td><td>Reuse Foreman rather than growing a second idle detector. Foreman <code>enabled</code> flips true.</td></tr>
@@ -225,7 +225,7 @@
   <text x="124" y="138" text-anchor="middle" class="sv-s">new submissionId</text>
 
   <path d="M124 148 L124 174 L79 174 L79 66" class="sv-e hi" marker-end="url(#b)"/>
-  <text x="300" y="178" class="sv-l">graph re-runs from the top — attempts are keyed by submissionId</text>
+  <text x="300" y="178" class="sv-l">graph re-runs from the top - attempts are keyed by submissionId</text>
 
   <defs>
     <marker id="b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
@@ -240,17 +240,24 @@
 <ol>
   <li><code>liveEnabled</code> is <code>false</code>, so nothing is ever delivered.</li>
   <li>Foreman <code>enabled</code> is <code>false</code>, so <code>foreman_complete</code> is refused at bind time.</li>
-  <li><strong>An <code>unchanged_evidence</code> refusal permanently kills the loop.</strong> The guard is retired inside the claim transaction, <em>before</em> capture runs. If capture then refuses, the guard is spent and no further claim ever arrives.</li>
+  <li><strong>An <code>unchanged_evidence</code> refusal permanently kills the loop.</strong> The guard is retired inside the claim transaction, <em>before</em> capture runs. If capture then refuses, the guard is spent and no further claim ever arrives. PR #323 split retirement across two sites and added a worse variant: on the fallback path the same transaction also inserts a brand-new No-Mistakes binding, so a refusal there strands a binding nobody asked for on a blocked run.</li>
   <li><strong>Item-less sessions never re-arm.</strong> The drain re-arm requires queue items to exist, and there is no <code>rearmPromptedCompletionForDelivery</code> anywhere.</li>
 </ol>
-<p>And no test asserts the cycle end to end — the completion test fakes the re-arm with raw SQL.</p>
+<p>And no test asserts the cycle end to end - the completion test fakes the re-arm with raw SQL, in two places.</p>
+<div class="callout info">
+  <strong>Landed mid-decomposition</strong>
+  PR #323 also gave <code>claimCompletion</code> an auto-bind path that reads <code>liveEnabled</code>
+  to choose its own delivery mode. So Phase 1's default flip does more than switch delivery on:
+  it silently upgrades every auto-created No-Mistakes binding from preview to live on an
+  allowlisted repository. Recorded in Phase 1's findings, and it belongs in that PR's description.
+</div>
 
 <h3>The pool reaper will destroy a check lease</h3>
 <div class="callout">
   <strong>Currently reachable the moment leases exist</strong>
   Walk <code>cheapVerdict</code> against an idle check lease held as <code>mission-control</code>:
   state <code>leased</code> ✓, holder recognised ✓, not busy ✓ (the command has not spawned yet),
-  not a task worktree ✓, not a session cwd ✓, path exists ✓ — verdict <code>null</code>, so it is
+  not a task worktree ✓, not a session cwd ✓, path exists ✓ - verdict <code>null</code>, so it is
   returned with <code>treehouse return --force</code>, which terminates processes and hard-resets
   the tree. This is why Phase 2 cannot be split into "table now, pins later".
 </div>
@@ -260,16 +267,16 @@
   Verified against the installed binary: <code>return [path] [--force]</code>, no
   <code>--holder</code>; <code>status</code> has no flags and no <code>--json</code>. So the source
   plan's "holder-verified idempotent return" cannot be obtained by asking treehouse, and its own
-  escape clause applies — <em>supply holder-aware semantics or exclusive coordination, or pooled
+  escape clause applies - <em>supply holder-aware semantics or exclusive coordination, or pooled
   check execution cannot ship</em>.
 </p>
 
 <h2>Cross-phase contracts</h2>
 
-<h3>Contract L — lease safety <span class="sv-s">(Phase 2)</span></h3>
+<h3>Contract L - lease safety <span class="sv-s">(Phase 2)</span></h3>
 <ol>
   <li><strong>Distinct holder token</strong> <code>mission-control-check-&lt;attemptId&gt;</code>. Because <code>cheapVerdict</code> gates on <code>LEASE_HOLDERS.includes(holder)</code>, the shared reaper <em>structurally cannot</em> return a check lease. Primary protection, no new reaper code.</li>
-  <li><strong><code>PoolPins.checkLeasePaths</code></strong> — defence in depth for a token-scheme change or a widened <code>LEASE_HOLDERS</code>.</li>
+  <li><strong><code>PoolPins.checkLeasePaths</code></strong> - defence in depth for a token-scheme change or a widened <code>LEASE_HOLDERS</code>.</li>
   <li><strong>A per-repository pool lock</strong> serialising every <code>get</code> / <code>status</code> / <code>return</code> this process issues.</li>
 </ol>
 <div class="callout">
@@ -278,10 +285,10 @@
   Layer 1 is what makes that survivable: an out-of-process re-lease gets the bare
   <code>mission-control</code> holder, never the check token, so the identity comparison fails and
   the return is refused. Because the shared reaper cannot <em>see</em> check leases, Phase 2 also
-  owns collecting its own leaks — that is an obligation, not a nicety.
+  owns collecting its own leaks - that is an obligation, not a nicety.
 </div>
 
-<h3>Contract P — process identity <span class="sv-s">(Phase 2 defines, Phase 3 consumes)</span></h3>
+<h3>Contract P - process identity <span class="sv-s">(Phase 2 defines, Phase 3 consumes)</span></h3>
 <pre><code>export interface CheckProcessRegistry {
   /** Persist supervisor identity BEFORE branch code is allowed to run. */
   record(attemptId: string, pid: number, startTimeTicks: string): void;
@@ -289,7 +296,7 @@
   clear(attemptId: string): void;
 }</code></pre>
 
-<h3>Contract E — the executor signature <span class="sv-s">(shipped; changed by nobody)</span></h3>
+<h3>Contract E - the executor signature <span class="sv-s">(shipped; changed by nobody)</span></h3>
 <p>
   <code>CheckExecutor</code>, <code>CheckExecutionRequest</code>, <code>CheckExecutionResult</code>
   are already published and tested. <code>workingSubpath</code> stays <strong>relative</strong>, to be
@@ -297,7 +304,7 @@
   <code>shell: false</code>.
 </p>
 
-<h3>Contract F — the repair loop <span class="sv-s">(Phase 1)</span></h3>
+<h3>Contract F - the repair loop <span class="sv-s">(Phase 1)</span></h3>
 <ul>
   <li>A Persona or Check <code>fail</code> returns a rendered packet and never a patch.</li>
   <li>A confirmed live delivery re-arms <strong>exactly one</strong> completion episode, drain or prompted.</li>
@@ -308,7 +315,7 @@
 <h2>Decisions already settled in shipped code</h2>
 <div class="callout good">
   <strong>Not re-opened by any phase</strong>
-  The <code>check</code> <code>EvidenceRef</code> kind shipped — <code>EVIDENCE_REF_KINDS</code>
+  The <code>check</code> <code>EvidenceRef</code> kind shipped - <code>EVIDENCE_REF_KINDS</code>
   includes it, with a docstring defending it as a real kind rather than a relaxation of the
   citation rule. And <code>workflow_node_attempts</code> needs no widening; only the durable lease
   table is new.
@@ -316,11 +323,11 @@
 
 <h2>Verification for the completed set</h2>
 <ol>
-  <li>The CI matrix — typecheck, test, build, bundle smoke, on Node 24 and 26.</li>
-  <li>Phase 1's repair-cycle test still passes after Phase 4, extended so a real failing check is the trigger. Extended, not forked — the point is that the loop is shared.</li>
+  <li>The CI matrix - typecheck, test, build, bundle smoke, on Node 24 and 26.</li>
+  <li>Phase 1's repair-cycle test still passes after Phase 4, extended so a real failing check is the trigger. Extended, not forked - the point is that the loop is shared.</li>
   <li>Manual: a failing <code>typecheck</code> on a real allowlisted repository fails the submission, the packet reaches the session, the session fixes, and round 2 passes.</li>
   <li>Manual: kill the daemon mid-check. The lease row survives, the group is reconciled by identity, the tree is returned only once emptiness is confirmed, and the reaper never touched it.</li>
-  <li>The suite ends with no leaked lease — the cheapest guard against the worst failure mode.</li>
+  <li>The suite ends with no leaked lease - the cheapest guard against the worst failure mode.</li>
 </ol>
 
 <footer>

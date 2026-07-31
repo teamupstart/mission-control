@@ -3558,7 +3558,7 @@ export class Registry extends EventEmitter {
     if (!sessionEqual(s, next)) this.emitSession(next);
   }
 
-  // ---- cost telemetry (OpenTelemetry ingest + fleet roll-up) ----
+  // ---- cost telemetry ingest + fleet roll-up ----
 
   /**
    * Record the subscription's rate-limit windows from either live Claude transport.

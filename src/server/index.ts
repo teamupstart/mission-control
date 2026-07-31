@@ -27,6 +27,8 @@ import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPoolReaper } from "./pool.ts";
+import { installCheckLeasePins } from "./pool-lease.ts";
+import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { startPrPoller } from "./pr.ts";
 import { startInspector } from "./inspector/worker.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
@@ -204,7 +206,39 @@ const away = startAwayWatcher(registry, undefined, {
   workflowRepeatOffenders: () => workflows.repeatOffenderSignals(),
 });
 const stopHeadlessPruner = startHeadlessPruner();
-const stopPoolReaper = startPoolReaper(registry);
+// Workflow check leases, and the ORDERING here is the whole protection, not tidiness.
+//
+// A check holds a pooled worktree with no session, no task and - between the lease and the
+// spawn - no processes, so every liveness signal the reaper trusts reads "idle" on a tree
+// that is about to be built in. Two things stop it being reaped, and both have to be in
+// place before the reaper's first sweep: the pin source below, and the durable rows
+// reconciliation restores into it. A pin registered after that sweep is invisible to it -
+// the same rule that makes `sdkSessions.restore()` run before `startPoller`.
+//
+// Reconciliation resolves only what it can prove safe. It returns a tree whose supervisor
+// gate was never released, and otherwise keeps the lease: proving the tree is OURS is not
+// proving that nothing is still writing in it, and only the second authorises a
+// `return --force`. The group-emptiness seam that can answer that is injected by a later
+// change; until then the default refuses and the lease is kept, which is the fail-closed
+// direction. Inert today either way - nothing acquires a check lease yet.
+//
+// Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
+// daemon that refused to start over one unreconcilable lease would be worse than one
+// running without it.
+const checkLeases = new CheckLeaseManager();
+installCheckLeasePins(() => checkLeases.pinnedPaths());
+try {
+  await checkLeases.reconcileOnStartup();
+} catch (err) {
+  console.error("[mission-control] could not reconcile check leases:", err);
+}
+// The reclamation pass rides the reaper's tick: same cadence, same lock, and it collects
+// what the reaper structurally cannot see. A check lease is held under a token outside
+// LEASE_HOLDERS precisely so the reaper refuses it, which means the reaper can never
+// collect a leaked one either - so this is an obligation that comes with that protection.
+const stopPoolReaper = startPoolReaper(registry, {
+  reclaimLeases: () => checkLeases.reclaimLeaked(),
+});
 const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload

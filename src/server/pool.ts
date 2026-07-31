@@ -1,9 +1,19 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { LEASE_HOLDER, LEASE_HOLDERS } from "../shared/harness-runtime.mjs";
 import { remoteDefaultRef } from "./actions.ts";
 import { envVar } from "./config.ts";
+import {
+  canonicalPath,
+  checkLeasePaths,
+  defaultPoolDeps,
+  leaseGeneration,
+  leasedSince,
+  leasePendingRegistration,
+  withPoolLock,
+  type PoolDeps,
+} from "./pool-lease.ts";
 import type { Registry } from "./registry.ts";
 import { listRepos } from "./repos.ts";
 import { run, type RunResult } from "./util/exec.ts";
@@ -95,18 +105,15 @@ export interface ReapResult {
   skipped: ReapCandidate[];
 }
 
-/** treehouse shell-outs, injectable so tests never need the binary installed. */
-export interface PoolDeps {
-  status: (repoRoot: string) => Promise<RunResult>;
-  /** `treehouse return --force <path>` - non-interactive, so it can't block a poller. */
-  returnTree: (repoRoot: string, path: string) => Promise<RunResult>;
-}
-
-export const defaultPoolDeps: PoolDeps = {
-  status: (repoRoot) => run("treehouse", ["status"], { cwd: repoRoot, timeoutMs: 15000 }),
-  returnTree: (repoRoot, path) =>
-    run("treehouse", ["return", "--force", path], { cwd: repoRoot, timeoutMs: 30000 }),
-};
+/**
+ * treehouse shell-outs, injectable so tests never need the binary installed.
+ *
+ * Re-exported rather than defined here: every `treehouse` argv this process writes lives in
+ * `pool-lease.ts`, beside the mutex that serialises them and the holder tokens that decide
+ * which of them are ours. Importers keep reading it from the reaper, which is where it is
+ * used.
+ */
+export { defaultPoolDeps, type PoolDeps };
 
 /** How often the daemon sweeps known pools for leaked leases, absent an override. */
 const DEFAULT_REAP_MS = 300_000;
@@ -162,7 +169,7 @@ export function isTreehouseRepo(repoRoot: string): boolean {
 
 /**
  * Everything the harness itself is holding, so a reap can't pull a tree out from
- * under its own work. Two separate claims, because they miss different things:
+ * under its own work. Three separate claims, because they miss different things:
  *
  *  - `sessionCwds` - where live agents are actually standing. Independent of the
  *    process list treehouse reports; either view seeing a session spares its tree.
@@ -171,10 +178,30 @@ export function isTreehouseRepo(repoRoot: string): boolean {
  *    work; a failed-but-alive task still holds its checkout), and such a tree is
  *    exactly what the git gate green-lights: idle, clean, and merged if the agent
  *    pushed. Sessions alone cannot see it, because there is no session left.
+ *  - `checkLeasePaths` - trees a Workflow check is holding. A check has no session
+ *    and no task: it is a build running in a leased tree, and between the lease and
+ *    the spawn it has no processes either, so all three rungs above read "idle" on a
+ *    tree that is about to be written into.
+ *
+ * `checkLeasePaths` is DEFENCE IN DEPTH and its redundancy is the point, so do not
+ * delete it as duplicated work. The reaper already refuses a check lease on the rung
+ * above these, because a check is held under `mission-control-check-<attemptId>` and
+ * that is not in `LEASE_HOLDERS`. The two protections fail differently: the holder is
+ * a STRING, and a rename, a legacy row, or a future caller widening `LEASE_HOLDERS`
+ * breaks it silently; the pin is a PATH this process knows it is holding right now,
+ * and it survives all three. Neither alone is worth a hard-reset of a tree with a
+ * running build in it.
  */
 export interface PoolPins {
   sessionCwds: readonly string[];
   taskWorktrees: readonly string[];
+  /**
+   * Required, with no `?` and no `?? []` anywhere downstream: this is a
+   * `readonly string[]`, so every constructor of a `PoolPins` has to say what it means,
+   * and a test that has not thought about check leases fails to compile rather than
+   * quietly disarming a rung.
+   */
+  checkLeasePaths: readonly string[];
 }
 
 /** The working dirs of every live agent. */
@@ -185,7 +212,14 @@ export function occupiedCwds(registry: Registry): string[] {
     .filter((cwd): cwd is string => cwd !== null);
 }
 
-/** Everything a reap must leave alone; pass to `reapPool`/`planReap`. */
+/**
+ * Everything a reap must leave alone; pass to `reapPool`/`planReap`.
+ *
+ * The check-lease half comes from a source the daemon installs (`installCheckLeasePins`)
+ * rather than an import, so this module - which every layer above it uses - never pulls in
+ * a Workflow module or the database. Nothing installed means no check leases, which is the
+ * truthful answer for a process that has none.
+ */
 export function poolPins(registry: Registry): PoolPins {
   return {
     sessionCwds: occupiedCwds(registry),
@@ -193,6 +227,7 @@ export function poolPins(registry: Registry): PoolPins {
       .listTasks()
       .map((t) => t.worktreePath)
       .filter((p): p is string => p !== null && p !== undefined),
+    checkLeasePaths: checkLeasePaths(),
   };
 }
 
@@ -248,6 +283,25 @@ export async function poolRepos(registry: Registry): Promise<string[]> {
 }
 
 /**
+ * Work that rides the sweep's timer without being the sweep's business.
+ *
+ * `reclaimLeases` is the check lease manager's own collection pass. It gets a seat on this
+ * tick rather than a timer of its own because it wants the same cadence and the same lock,
+ * and one pool-facing schedule is easier to reason about than two - but it stays the
+ * caller's logic, injected here, never a fourth rung inside `cheapVerdict`. The reaper
+ * decides nothing about check leases; it cannot even see them.
+ *
+ * The consequence of sharing the timer is stated rather than hidden: `MISSION_POOL_REAP_MS=0`
+ * switches this off too. That is coherent - both are leak collectors, and an operator who
+ * turned leak collection off gets what they asked for - and it costs nothing while a check
+ * is running, because a live lease is not a leak. Startup reconciliation is unconditional
+ * either way.
+ */
+export interface PoolReapHooks {
+  reclaimLeases?: () => Promise<void>;
+}
+
+/**
  * Sweep known pools for leaked leases on a slow timer, so a tree freed by an
  * agent that has simply gone away is back in the pool before anyone needs it -
  * including `make session`, which leases directly and never asks the daemon for
@@ -261,7 +315,7 @@ export async function poolRepos(registry: Registry): Promise<string[]> {
  * The dispatch-time reap stays on either way: that one is on-demand, and its
  * alternative is abandoning the pool for a throwaway worktree.
  */
-export function startPoolReaper(registry: Registry): () => void {
+export function startPoolReaper(registry: Registry, hooks: PoolReapHooks = {}): () => void {
   const intervalMs = reapIntervalMs();
   if (intervalMs === null) return () => {};
 
@@ -280,6 +334,10 @@ export function startPoolReaper(registry: Registry): () => void {
           );
         }
       }
+      // The leases this sweep is structurally blind to, collected by whoever owns them.
+      // After the sweep, so a tree a check hands back here is available to the next one
+      // rather than waiting a full interval.
+      await hooks.reclaimLeases?.();
     } catch {
       // Never let a sweep take the daemon down - the pool heals on the next tick.
     }
@@ -361,34 +419,23 @@ function within(cwd: string, root: string): boolean {
 
 /**
  * Resolve a path to its physical form, because the two sides of `within` arrive
- * by different routes and only agree once canonicalized. A session's cwd is read
- * from the kernel (`lsof`), which always reports the physical path; a tree's path
- * is whatever `treehouse status` prints for the configured `root`. One symlink
- * anywhere on that route - `~/work` -> `/Volumes/Data/work`, a `$TMPDIR` under
- * `/private` - and the strings never match, which would silently retire the
- * liveness rung that is the one saving a just-pushed agent.
- *
- * An unresolvable path (gone, unreadable) falls back to the raw string: a failed
- * realpath must read as "compare what we have", never as "nobody is standing here".
+ * by different routes and only agree once canonicalized. Defined in `pool-lease.ts`,
+ * which needs the same resolution to key its mutex; see the reasoning there.
  */
-function canonical(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-}
+const canonical = canonicalPath;
 
 /** `PoolPins` with every path resolved once, rather than per tree. */
 interface CanonicalPins {
   sessionCwds: string[];
   taskWorktrees: string[];
+  checkLeasePaths: string[];
 }
 
 function canonicalPins(pins: PoolPins): CanonicalPins {
   return {
     sessionCwds: pins.sessionCwds.map(canonical),
     taskWorktrees: pins.taskWorktrees.map(canonical),
+    checkLeasePaths: pins.checkLeasePaths.map(canonical),
   };
 }
 
@@ -507,6 +554,14 @@ function cheapVerdict(tree: PoolTree, pins: CanonicalPins): string | null {
   const root = canonical(tree.path);
   if (pins.taskWorktrees.some((wt) => within(wt, root))) return "a task still holds it";
   if (pins.sessionCwds.some((cwd) => within(cwd, root))) return "a live session is standing in it";
+  // A Workflow check's lease. Unreachable in practice - a check holds its tree under a
+  // token no rung above recognises, so the holder rung already refused it - and that is
+  // exactly why this one is here rather than deleted as dead code. It is the rung that
+  // still stands if the token scheme is renamed, if a legacy row reads `mission-control`,
+  // or if someone appends the check token to `LEASE_HOLDERS` (which nobody may do). The
+  // failure it prevents is a forced return under a running build: processes killed,
+  // tree hard-reset, and a check that reports infrastructure noise instead of a verdict.
+  if (pins.checkLeasePaths.some((lease) => within(lease, root))) return "a check is running in it";
   if (!existsSync(tree.path)) return "the worktree is missing";
   return null;
 }
@@ -552,7 +607,10 @@ export async function reapPool(
   const empty: ReapResult = { reaped: [], skipped: [] };
   if (!isTreehouseRepo(repoRoot)) return empty;
 
-  const status = await deps.status(repoRoot);
+  // Read BEFORE the status below, so "this process leased that tree after we looked" is
+  // answerable at the moment of each return. See `returnIfStillIdle`.
+  const generation = leaseGeneration();
+  const status = await withPoolLock(repoRoot, () => deps.status(repoRoot));
   if (status.code !== 0) return empty;
   const trees = parsePoolStatus(status.stdout);
   if (trees.length === 0) return empty;
@@ -600,35 +658,76 @@ export async function reapPool(
   // acceptable is that dirtying a tree takes a WRITER, and no writer gets in
   // without a process, a session, or a task record - every one of which IS re-read
   // below, per candidate, fresh.
+  //
+  // The re-read and the return it authorises happen inside ONE acquisition of this
+  // pool's lock. Splitting them would leave the re-read proving nothing about the
+  // moment that matters: this process's own lease manager could take the very tree we
+  // just re-read as free and be pinning it while we shell out to return it. The lock
+  // does not reach another process (see `pool-lease.ts`), which is why the holder rung
+  // above and not the lock is what keeps a stranger's lease safe - but it does close
+  // the window against ourselves, which is the one we can close.
   for (const tree of candidates) {
-    const fresh = await deps.status(repoRoot);
-    // Fail closed, and only for this tree: a re-check we couldn't take is not a
-    // re-check that passed, but one unreadable moment is no reason to strand the
-    // rest of the pool until the next sweep.
-    if (fresh.code !== 0) {
-      result.skipped.push({ tree, skip: "its pool state could not be re-read before returning it" });
-      continue;
-    }
-    const now = parsePoolStatus(fresh.stdout);
-    const nowPins = canonicalPins(pins());
-    // Re-confirm the slot is still leased and still looks like the lease we
-    // judged. Same path, same holder is ALL the identity `treehouse status`
-    // affords - it prints no lease id and no timestamp - so be clear about what
-    // this cannot do: a return plus a re-lease inside the window reads identical
-    // to an untouched lease, since both lease paths hold as `mission-control`
-    // (the dispatcher's `--lease-holder`, and new-session.mjs's default). That
-    // window is covered instead by the rung below, re-derived from the fresh
-    // status: a re-leased tree with an agent running in it reads busy. The
-    // uncovered sliver is a re-lease whose agent has yet to start a process.
-    const still = now.find((t) => t.path === tree.path && t.holder === tree.holder);
-    const changed = still ? cheapVerdict(still, nowPins) : "its lease changed while we looked";
-    if (changed) {
-      result.skipped.push({ tree, skip: changed });
-      continue;
-    }
-    const r = await deps.returnTree(repoRoot, tree.path);
-    if (r.code === 0) result.reaped.push(tree);
-    else result.skipped.push({ tree, skip: `treehouse return failed: ${r.stderr.trim() || "unknown"}` });
+    const outcome = await withPoolLock(repoRoot, () =>
+      returnIfStillIdle(repoRoot, tree, pins, deps, generation));
+    if (outcome === null) result.reaped.push(tree);
+    else result.skipped.push({ tree, skip: outcome });
   }
   return result;
+}
+
+/**
+ * Re-derive the liveness rungs against a reading taken NOW and, if they still pass, hand
+ * the tree back. Returns null when it was reaped, or the reason it was spared.
+ *
+ * Callers must already hold this repo's pool lock - the freshness of the re-read is only
+ * worth anything for as long as nothing else in this process can act between it and the
+ * return below.
+ */
+async function returnIfStillIdle(
+  repoRoot: string,
+  tree: PoolTree,
+  pins: () => PoolPins,
+  deps: PoolDeps,
+  /** The acquisition count read before the status this candidate was judged against. */
+  generation: number,
+): Promise<string | null> {
+  const fresh = await deps.status(repoRoot);
+  // Fail closed, and only for this tree: a re-check we couldn't take is not a
+  // re-check that passed, but one unreadable moment is no reason to strand the
+  // rest of the pool until the next sweep.
+  if (fresh.code !== 0) return "its pool state could not be re-read before returning it";
+  const now = parsePoolStatus(fresh.stdout);
+  const nowPins = canonicalPins(pins());
+  // Re-confirm the slot is still leased and still looks like the lease we
+  // judged. Same path, same holder is ALL the identity `treehouse status`
+  // affords - it prints no lease id and no timestamp - so be clear about what
+  // this cannot do: a return plus a re-lease inside the window reads identical
+  // to an untouched lease, since both lease paths hold as `mission-control`
+  // (the dispatcher's `--lease-holder`, and new-session.mjs's default). That
+  // window is covered instead by the rung below, re-derived from the fresh
+  // status: a re-leased tree with an agent running in it reads busy. The
+  // uncovered sliver is a re-lease whose agent has yet to start a process.
+  const still = now.find((t) => t.path === tree.path && t.holder === tree.holder);
+  const changed = still ? cheapVerdict(still, nowPins) : "its lease changed while we looked";
+  if (changed) return changed;
+  // That sliver, closed for the half of it we can actually see. A dispatch takes its tree
+  // and does not record `worktreePath` on the task until provisioning returns, so for the
+  // whole of that window it has no process, no session and no task pin - and because it
+  // stamps the same `mission-control` holder, the re-read above cannot tell it apart from
+  // the stale lease this sweep planned to collect. Force-returning it would clean and reset
+  // a checkout an agent is about to be launched into. The lease ledger answers the one
+  // question status cannot: did WE take this tree after we looked?
+  //
+  // Only the in-process half. A `make session` or a hand-run `treehouse get` is still
+  // outside this, and stays the documented residual - see `pool-lease.ts`.
+  if (leasedSince(tree.path, generation)) return "this process re-leased it while we looked";
+  // And the same window seen from a sweep that STARTED inside it, where the check above is
+  // no help: this sweep's generation already includes the acquisition, so ordering says
+  // nothing. `provisionWorktree` runs exactly such a sweep whenever it finds the pool dry,
+  // which makes a second concurrent dispatch the trigger. Elapsed ownership is what answers
+  // it - the lease is spared until its taker has made it visible some other way.
+  if (leasePendingRegistration(tree.path)) return "this process is still provisioning it";
+  const r = await deps.returnTree(repoRoot, tree.path);
+  if (r.code === 0) return null;
+  return `treehouse return failed: ${r.stderr.trim() || "unknown"}`;
 }

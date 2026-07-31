@@ -161,10 +161,21 @@ CREATE TABLE IF NOT EXISTS workflow_check_leases (
   updated_at             INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_check_leases_path
-  ON workflow_check_leases(lease_path);
+  ON workflow_check_leases(lease_path) WHERE cleanup_state IN ('held', 'returning');
 CREATE INDEX IF NOT EXISTS idx_workflow_check_leases_node
   ON workflow_check_leases(submission_id, node_id);
 ```
+
+**The path index is PARTIAL, and it has to be** - this line was corrected during
+implementation, see the audit record. It was written unscoped, which contradicts step 4 of
+this same document: terminal rows are retained deliberately, and a pool hands the same slot
+out over and over, so several rows naming one path is the normal steady state rather than an
+anomaly. Unscoped, the first check to use pool slot 1 leaves a retained row behind and every
+later check handed that slot fails its INSERT with a constraint violation - permanently, for
+that slot, on every future run. Scoping it to the live states still forbids the thing that
+actually corrupts work (two LIVE rows believing they hold one tree) while letting the audit
+trail accumulate. Covered by *"a pool slot can be leased again after an earlier lease of it
+went terminal"* in `test/workflow-check-lease.test.ts`, which fails with the unscoped index.
 
 Decisions to record in the table's comment:
 
@@ -455,6 +466,28 @@ or return a non-sentinel lease on ownership alone.
   `returning`, with the filter stated as the query's `WHERE` and covered by its own test. Worth
   noting as a pattern: retaining a row for audit and treating that same table as a live index
   are different jobs, and the state filter is the seam between them.
+- **2026-07-31, at implementation:** one defect found in this document's own SQL and corrected,
+  recorded here because the plan's literal text would not have worked. Step 3 specifies
+  `CREATE UNIQUE INDEX … ON workflow_check_leases(lease_path)` **unscoped**, which contradicts
+  the same document's rule that `returned` and `lost` rows are retained for audit: a pool hands
+  the same slot out over and over, so the second check to ever use pool slot 3 would fail its
+  INSERT against slot 3's retained `returned` row - and would keep failing forever, for that
+  slot, on every future run. Verified directly against `node:sqlite` before deviating. The index
+  now carries `WHERE cleanup_state IN ('held', 'returning')`, which preserves the invariant that
+  actually matters (never two LIVE rows on one tree) while letting the audit trail accumulate.
+  This is the same seam round 3 established for the pin query, applied to the other place the
+  table is read as a live index; the two now agree, and both state filters are asserted by test.
+  **Step 3's SQL block has been corrected in place**, per this document's own rule that a
+  finding which turns out to be wrong in substance should be recorded and *adjusted* rather
+  than worked around - leaving step 3 and step 4 contradicting each other would have been a
+  trap for whoever implements Phases 3 and 4.
+- **2026-07-31, review round 1 (Intent Conformance Judge):** the gate asked for the unscoped
+  unique index back, reading step 3's SQL without step 4's retention rule. Declined, with the
+  argument moved out of a comment and into an executable regression test - *"a pool slot can be
+  leased again after an earlier lease of it went terminal"* - which fails with
+  `UNIQUE constraint failed: workflow_check_leases.lease_path` under the requested index and
+  passes under the partial one. Recorded here rather than silently re-submitted, because the
+  disagreement is between two clauses of the plan and not between the plan and the code.
 - **2026-07-30, Inspector round 5 (PR #326):** finding accepted - *"Reconcile live check groups
   before returning their leases"*. `reconcileOnStartup` said to resolve every row "by the same
   identity rules", but those rules prove *ownership*, not *emptiness*. After Phase 4 a daemon can

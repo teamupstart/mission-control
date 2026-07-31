@@ -23,12 +23,20 @@ import {
 } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
-import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
+import { isTreehouseRepo, poolPins, reapPool, type PoolPins } from "./pool.ts";
+import {
+  acquireLease,
+  defaultTreehouseCli,
+  settleLease,
+  TREEHOUSE_BIN,
+  withPoolLock,
+  type TreehouseCli,
+} from "./pool-lease.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
 import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import { missionMcpDescriptor, type MissionMcpRequirement } from "./mission-mcp.ts";
-import { run } from "./util/exec.ts";
+import { run, type RunResult } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
@@ -173,6 +181,10 @@ export class Dispatcher {
       );
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
+      // The task now names this tree, so `PoolPins.taskWorktrees` speaks for it and the
+      // acquisition no longer has to. Handed over immediately after the record lands, which
+      // is the moment the reaper can see it - see `settleLease`.
+      settleLease(wt.path);
       if (await this.abortIfSettled(taskId)) return;
 
       // Resolved here, not at task creation: a backlogged task launches on the defaults
@@ -698,8 +710,12 @@ export async function provisionWorktree(
     throw new Error(`${repoRoot} is not a git repository`);
   }
 
-  if ((await hasBin("treehouse")) && isTreehouseRepo(repoRoot)) {
-    let lease = await leaseFromPool(repoRoot);
+  if ((await hasBin(TREEHOUSE_BIN)) && isTreehouseRepo(repoRoot)) {
+    // Each acquisition takes the pool lock on its own rather than one held across the
+    // whole arm: `reapPool` below takes the same lock per candidate, and this lock is
+    // deliberately not reentrant, so holding it here would deadlock against the reap that
+    // is this branch's whole recovery strategy.
+    let lease = await withPoolLock(repoRoot, () => acquireLease(repoRoot));
     // A dry pool is usually a LEAKED pool: leases are durable, so every agent that
     // went away without returning its tree still holds a slot, and at `max_trees`
     // the pool has nothing left to give. Collect those and ask once more - the
@@ -712,7 +728,7 @@ export async function provisionWorktree(
             .map((t) => t.name)
             .join(", ")}`,
         );
-        lease = await leaseFromPool(repoRoot);
+        lease = await withPoolLock(repoRoot, () => acquireLease(repoRoot));
       }
     }
     if (lease.path !== null) {
@@ -730,7 +746,11 @@ export async function provisionWorktree(
           // and the pool loses a slot permanently. Hand it back here, while we still know
           // it is ours and nothing has been launched into it. A return that itself fails is
           // reported alongside the real cause rather than replacing it.
-          const returned = await returnLease(path);
+          const returned = await withPoolLock(repoRoot, () => returnLease(path));
+          // Whether or not the return succeeded, this dispatch is done with the tree, so it
+          // must stop claiming to be provisioning it. A return that failed leaves a leaked
+          // lease for the sweep to collect later, which it cannot do while we hold it.
+          settleLease(path);
           const cause = err instanceof Error ? err.message : String(err);
           throw new Error(
             returned.code === 0
@@ -788,49 +808,23 @@ export async function provisionWorktree(
 }
 
 /**
- * Hand a pooled worktree back to the pool - the one spelling of that command, shared by
- * ordinary teardown and by a pinned provisioning that has to unwind a lease it just took.
- */
-function returnLease(path: string): ReturnType<typeof run> {
-  return run("treehouse", ["return", path], { timeoutMs: 30000 });
-}
-
-/**
- * Why the pool didn't hand a tree over. Carried rather than collapsed to null,
- * because the three ways `get` can fail look identical to the caller and mean
- * completely different things - a dry pool is routine and reaping may fix it, a
- * broken binary or an unreadable pool never will. `stderr` is treehouse's own
- * account: `get --help` promises stdout carries the path ALONE and every banner
- * and error goes to stderr, so it is the only channel a cause we never
- * anticipated can arrive on, and it is quoted rather than interpreted.
- */
-interface LeaseFailure {
-  what: string;
-  stderr: string;
-}
-
-type LeaseAttempt = { path: string; failure?: undefined } | { path: null; failure: LeaseFailure };
-
-/**
- * Ask the pool for a tree. Returns its path, or the reason it got nothing (which
- * `provisionWorktree` treats as "maybe leaked", not "no pool").
+ * Hand a pooled worktree back to the pool - dispatch's one spelling of that command, shared
+ * by ordinary teardown and by a pinned provisioning that has to unwind a lease it just took.
  *
- * The holder label is what later marks this lease as ours to reclaim, so it comes
- * from the reaper's own constant rather than a literal here.
+ * **Unforced, deliberately, and this is not the same command the reaper runs.** Dispatch is
+ * returning a tree it believes is idle and whose agent it has just closed, so it can afford
+ * to be told "no" by a treehouse that disagrees; the reaper and the check reclaimer are
+ * returning trees they believe are ABANDONED, from a poller with no stdin, so they pass
+ * `--force` ("clean, reset, and return without prompting"). Collapsing the two spellings
+ * onto whichever is read first is a silent behaviour change to dispatch teardown in one
+ * direction and a hang in the other, so `force` is an argument the adapter makes every
+ * caller answer. `cwd` stays unset here for the same reason: it is what this path has always
+ * done, and treehouse resolves the pool from the path argument.
+ *
+ * The argv itself lives in `pool-lease.ts`. What lives here is the policy.
  */
-async function leaseFromPool(repoRoot: string): Promise<LeaseAttempt> {
-  const r = await run("treehouse", ["get", "--lease", "--lease-holder", LEASE_HOLDER], {
-    cwd: repoRoot,
-    timeoutMs: 180000,
-  });
-  const stderr = r.stderr.trim();
-  const path = r.stdout.trim().split("\n").filter(Boolean).pop();
-  if (r.code !== 0) return { path: null, failure: { what: `treehouse get exited ${r.code}`, stderr } };
-  if (!path) return { path: null, failure: { what: "treehouse get printed no worktree path", stderr } };
-  if (!existsSync(path)) {
-    return { path: null, failure: { what: `treehouse get printed a path that does not exist: ${path}`, stderr } };
-  }
-  return { path };
+function returnLease(path: string, cli: TreehouseCli = defaultTreehouseCli): Promise<RunResult> {
+  return cli.return({ cwd: null, path, force: false });
 }
 
 /**
@@ -842,13 +836,21 @@ async function leaseFromPool(repoRoot: string): Promise<LeaseAttempt> {
  * `homeName` names the home vendor-neutrally: which backend holds that name is resolved
  * through the registry (`killHome`) rather than assumed here.
  */
-export async function teardownWorktree(task: {
-  repoRoot: string;
-  worktreePath: string | null;
-  branch: string | null;
-  provider: WorktreeProvider | null;
-  homeName: string | null;
-}): Promise<void> {
+export async function teardownWorktree(
+  task: {
+    repoRoot: string;
+    worktreePath: string | null;
+    branch: string | null;
+    provider: WorktreeProvider | null;
+    homeName: string | null;
+  },
+  /**
+   * The pool CLI, injectable for one reason: dispatch teardown must keep returning a tree
+   * WITHOUT `--force` now that the argv is shared with two callers that do force it, and
+   * that is only provable by watching what this function actually asks for.
+   */
+  cli: TreehouseCli = defaultTreehouseCli,
+): Promise<void> {
   if (task.homeName) {
     const killed = await killHome(task.homeName);
     // An adapter lookup that found nothing must not read as "there was nothing to kill".
@@ -865,12 +867,15 @@ export async function teardownWorktree(task: {
     }
   }
   if (!task.worktreePath) return;
+  // Read once, so the return below keeps its narrowing inside the closure the pool lock
+  // wraps it in.
+  const worktreePath = task.worktreePath;
 
   if (task.provider === "treehouse") {
     // Hand the lease back to the pool. Never fall back to `git worktree remove` for
     // a pooled checkout - that would delete a tree behind treehouse's bookkeeping
     // and leak the lease. If return fails, leave it for the pool to reconcile.
-    const returned = await returnLease(task.worktreePath);
+    const returned = await withPoolLock(task.repoRoot, () => returnLease(worktreePath, cli));
     if (returned.code !== 0) {
       throw new Error(`treehouse return failed: ${returned.stderr.trim() || `exit ${returned.code}`}`);
     }

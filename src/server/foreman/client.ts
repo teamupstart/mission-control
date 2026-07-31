@@ -244,7 +244,7 @@ function spendQuarantinePath(): string {
  * rather than filed with the routine retry chatter. The message names the file, because the
  * only way this spend ever lands is somebody acting on it.
  */
-function quarantineSpend(report: SpendReportBody, status: number): void {
+function quarantineSpend(report: SpendReportBody, status: number): boolean {
   const path = spendQuarantinePath();
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -259,6 +259,13 @@ function quarantineSpend(report: SpendReportBody, status: number): void {
         console.warn("[foreman] replacing an unreadable spend quarantine file:", err);
       }
     }
+    // De-duplicated by run id, because this can legitimately be reached twice for the same
+    // report: the entry is written here BEFORE it leaves the outbox, so a crash in that
+    // window leaves the run in both files and the next delivery attempt quarantines it
+    // again. Duplication is the safe side of that window - it is the price of never having
+    // a moment where the run exists in neither - but the file should still not grow a copy
+    // per crash.
+    if (entries.some((e) => quarantinedRunId(e) === report.runId)) return true;
     entries.push({ status, quarantinedAt: Date.now(), report });
     const tmp = `${path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(entries), "utf8");
@@ -268,13 +275,26 @@ function quarantineSpend(report: SpendReportBody, status: number): void {
         `quarantined in ${path} (${entries.length} held). It is NOT retried automatically - ` +
         `if this was a daemon too old for /api/usage/automation, re-send the file once it is upgraded.`,
     );
+    return true;
   } catch (err) {
+    // The caller keeps the report in the outbox when this returns false, so nothing is lost
+    // here - the run simply stays queued until the quarantine can be written.
     console.error(
       `[foreman] spend rejected: ${report.role} run ${report.runId} -> ${status}, ` +
-        `and it could not be quarantined - this run's usage is lost:`,
+        `and it could not be quarantined; keeping it queued rather than dropping it:`,
       err,
     );
+    return false;
   }
+}
+
+/** The run id inside a stored quarantine entry, tolerating anything hand-edited. */
+function quarantinedRunId(entry: unknown): string | null {
+  if (!entry || typeof entry !== "object") return null;
+  const report = (entry as { report?: unknown }).report;
+  if (!report || typeof report !== "object") return null;
+  const runId = (report as { runId?: unknown }).runId;
+  return typeof runId === "string" ? runId : null;
 }
 
 /** How many rejected reports are held for explicit recovery. For the shutdown log and tests. */
@@ -442,9 +462,22 @@ async function flushSpend(): Promise<void> {
         // daemon rejects would loop forever - so recovery is an explicit operator act, which
         // is the honest shape for "we cannot tell whether this is a bad body or a stale
         // peer". Nothing is lost in the meantime.
+        //
+        // ORDER IS LOAD-BEARING: the quarantine entry is made durable BEFORE the report
+        // leaves the outbox. Doing it the other way round leaves a window where a worker
+        // that exits has erased the run from the outbox without having written it anywhere
+        // else, which is exactly the loss this whole path exists to prevent. This ordering
+        // can instead leave the run in both files for a moment, and duplication is the
+        // recoverable side of that trade - `quarantineSpend` de-duplicates by run id.
+        if (!quarantineSpend(report, res.status)) {
+          // The quarantine could not be written. Keep the report exactly where it is and
+          // try again on the next pass: a stalled queue is recoverable, a deleted run is
+          // not. Everything behind it stays durable in the outbox meanwhile.
+          scheduleSpendRetry();
+          return;
+        }
         spendOutbox.shift();
         persistSpendOutbox();
-        quarantineSpend(report, res.status);
         continue;
       }
       // 5xx: the daemon is there but unhappy. Hold the report and back off.

@@ -365,6 +365,53 @@ test("a 5xx holds the report; a 4xx quarantines it rather than blocking the queu
   );
 });
 
+test("a rejected report is never dropped when its quarantine cannot be written", async () => {
+  // The ordering guarantee. The quarantine entry is made durable BEFORE the report leaves
+  // the outbox, so there is no instant where the run exists in neither file. This proves the
+  // half that is observable: when the quarantine write fails, the report stays queued rather
+  // than being erased on the strength of a write that did not happen.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const quarantine = spendOutboxTest.quarantinePath();
+  rmSync(quarantine, { force: true });
+  // A directory where the file belongs: writeFileSync onto it fails, standing in for a full
+  // disk or a permissions problem.
+  mkdirSync(quarantine, { recursive: true });
+  try {
+    mode = "400";
+    await client.reportSpend(report("foreman:verify", "run-unquarantinable"));
+    assert.equal(
+      pendingSpendReports(),
+      1,
+      "the run stayed queued rather than being deleted with nowhere to put it",
+    );
+    assert.deepEqual(spoolRunIds(SPOOL), ["run-unquarantinable"], "and it is still durable");
+  } finally {
+    rmSync(quarantine, { recursive: true, force: true });
+  }
+
+  // With the quarantine writable again the same report moves across cleanly, which is what
+  // makes the stall recoverable rather than permanent.
+  await flushPendingSpend();
+  assert.equal(pendingSpendReports(), 0);
+  assert.equal(existsSync(SPOOL), false);
+  const held = JSON.parse(readFileSync(quarantine, "utf8")) as Array<{ report: { runId: string } }>;
+  assert.equal(held.at(-1)?.report.runId, "run-unquarantinable");
+  mode = "ok";
+});
+
+test("quarantining the same run twice does not duplicate it", () => {
+  // Reachable in normal operation: the entry is written before the outbox drops it, so a
+  // crash in that window replays the same report into the quarantine on the next attempt.
+  const quarantine = spendOutboxTest.quarantinePath();
+  const before = JSON.parse(readFileSync(quarantine, "utf8")) as unknown[];
+  const runIds = before.map((e) => (e as { report: { runId: string } }).report.runId);
+  assert.equal(
+    new Set(runIds).size,
+    runIds.length,
+    "every quarantined run appears exactly once",
+  );
+});
+
 test("a daemon too old for the route keeps the run, and later reports still drain", async () => {
   // The rolling-upgrade case: the worker is newer than the daemon, so /api/usage/automation
   // does not exist yet and every report 404s. Nothing about those runs is wrong - the daemon

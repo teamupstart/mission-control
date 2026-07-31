@@ -1,0 +1,1191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foreman and Inspector: loop cadence and token consumption</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-0: #0e1013;
+    --surface-1: #16181c;
+    --surface-2: #1d2026;
+    --surface-3: #262a31;
+    --line:      #2f343c;
+    --line-soft: #23272e;
+    --text-primary:   #f2f3f5;
+    --text-secondary: #b6bcc6;
+    --text-muted:     #7d858f;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --good:     #199e70;
+    --warn:     #c98500;
+    --critical: #e66767;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:where(:not([data-theme="dark"])) {
+      color-scheme: light;
+      --surface-0: #f4f4f2;
+      --surface-1: #fcfcfb;
+      --surface-2: #f0f0ed;
+      --surface-3: #e6e6e2;
+      --line:      #d5d5d0;
+      --line-soft: #e4e4e0;
+      --text-primary:   #101114;
+      --text-secondary: #4a4d53;
+      --text-muted:     #74777d;
+      --series-1: #2a78d6;
+      --series-2: #eb6834;
+      --series-3: #1baf7a;
+      --series-4: #eda100;
+      --series-5: #e87ba4;
+      --good:     #1baf7a;
+      --warn:     #b07800;
+      --critical: #d33b3a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px 120px; }
+
+  /* ---- masthead ---- */
+  header.mast {
+    padding: 64px 0 40px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 44px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-size: 40px;
+    line-height: 1.12;
+    letter-spacing: -0.022em;
+    margin: 0 0 18px;
+    font-weight: 620;
+  }
+  .standfirst {
+    font-size: 18px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    max-width: 68ch;
+    margin: 0;
+  }
+  .standfirst strong { color: var(--text-primary); font-weight: 600; }
+
+  h2 {
+    font-size: 25px;
+    letter-spacing: -0.015em;
+    margin: 64px 0 8px;
+    padding-top: 26px;
+    border-top: 1px solid var(--line);
+    font-weight: 620;
+  }
+  h2:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+  h3 {
+    font-size: 17px;
+    margin: 36px 0 10px;
+    font-weight: 620;
+    letter-spacing: -0.006em;
+  }
+  h4 {
+    font-size: 13px;
+    font-family: var(--mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 28px 0 10px;
+    font-weight: 600;
+  }
+  p { margin: 0 0 14px; max-width: 76ch; }
+  .sub { color: var(--text-secondary); margin-top: -2px; margin-bottom: 22px; max-width: 76ch; }
+  code {
+    font-family: var(--mono);
+    font-size: .875em;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--text-primary);
+    white-space: nowrap;
+  }
+  a { color: var(--series-1); }
+
+  /* ---- stat tiles ---- */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px;
+    margin: 28px 0 8px;
+  }
+  .tile {
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px 18px 16px;
+  }
+  .tile .label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 9px;
+  }
+  .tile .value {
+    font-size: 30px;
+    font-weight: 620;
+    letter-spacing: -0.028em;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+  }
+  .tile .value .unit {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    letter-spacing: 0;
+    margin-left: 3px;
+  }
+  .tile .note { font-size: 12.5px; color: var(--text-secondary); margin-top: 7px; line-height: 1.45; }
+  .tile.accent-1 { border-left: 3px solid var(--series-1); }
+  .tile.accent-2 { border-left: 3px solid var(--series-2); }
+  .tile.accent-4 { border-left: 3px solid var(--series-4); }
+  .tile.accent-5 { border-left: 3px solid var(--series-5); }
+
+  /* ---- figure / chart ---- */
+  figure {
+    margin: 30px 0 34px;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 22px 22px 18px;
+  }
+  figcaption {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    margin-top: 16px;
+    padding-top: 13px;
+    border-top: 1px solid var(--line-soft);
+    line-height: 1.5;
+  }
+  .fig-title { font-size: 15px; font-weight: 620; margin: 0 0 3px; }
+  .fig-sub { font-size: 12.5px; color: var(--text-muted); margin: 0 0 20px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 7px 18px; margin-bottom: 20px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-secondary); }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+
+  /* stacked bar rows */
+  .bars { display: flex; flex-direction: column; gap: 15px; }
+  .bar-row { display: grid; grid-template-columns: 178px 1fr 84px; gap: 14px; align-items: center; }
+  .bar-label { font-size: 12.5px; color: var(--text-secondary); text-align: right; line-height: 1.35; }
+  .bar-label b { display: block; color: var(--text-primary); font-weight: 600; font-size: 13px; }
+  .bar-track { display: flex; height: 22px; gap: 2px; }
+  .bar-seg { height: 100%; min-width: 2px; position: relative; }
+  .bar-seg:first-child { border-radius: 4px 0 0 4px; }
+  .bar-seg:last-child  { border-radius: 0 4px 4px 0; }
+  .bar-seg:only-child  { border-radius: 4px; }
+  .bar-total {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .bar-total i { display: block; font-style: normal; font-size: 11px; color: var(--text-muted); }
+  .axis {
+    display: grid; grid-template-columns: 178px 1fr 84px; gap: 14px;
+    margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--line-soft);
+  }
+  .axis .ticks { position: relative; height: 14px; }
+  .axis .ticks span {
+    position: absolute; top: 0; transform: translateX(-50%);
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-muted);
+  }
+  .axis .ticks span:first-child { transform: none; }
+  /* the utilization figure uses a wider label/value gutter, so its axis must match */
+  .axis.axis-util { grid-template-columns: 200px 1fr 118px; }
+
+  /* utilization bars: each row normalized to its own permitted ceiling */
+  .mbars { display: flex; flex-direction: column; gap: 14px; }
+  .mbar-row { display: grid; grid-template-columns: 200px 1fr 118px; gap: 14px; align-items: center; }
+  .mbar-track { background: var(--surface-3); border-radius: 4px; height: 20px; position: relative; }
+  .mbar-fill { height: 100%; border-radius: 4px; background: var(--series-1); }
+  .mbar-lo { position: absolute; top: 0; height: 100%; border-radius: 4px; background: var(--series-1); opacity: .45; }
+  .mbar-val {
+    font-family: var(--mono); font-size: 12px; color: var(--text-primary);
+    font-variant-numeric: tabular-nums; text-align: right;
+  }
+  .mbar-val i { display: block; font-style: normal; font-size: 10.5px; color: var(--text-muted); }
+
+  /* ---- tables ---- */
+  .tw { overflow-x: auto; margin: 22px 0 28px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-1); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--text-muted); font-weight: 600;
+    background: var(--surface-2); white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td code, th code { background: transparent; border: none; padding: 0; }
+  .src { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+  /* ---- callouts ---- */
+  .call {
+    border-left: 3px solid var(--series-1);
+    background: var(--surface-1);
+    border-radius: 0 8px 8px 0;
+    padding: 15px 18px;
+    margin: 22px 0;
+  }
+  .call.warn { border-left-color: var(--warn); }
+  .call.bad  { border-left-color: var(--critical); }
+  .call.good { border-left-color: var(--good); }
+  .call .ct {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--text-muted); margin-bottom: 7px;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .call p:last-child { margin-bottom: 0; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+  /* ---- config snapshot ---- */
+  .snap { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin: 26px 0 8px; }
+  .snap .card { background: var(--surface-1); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .snap .card > h5 {
+    margin: 0; padding: 12px 16px; font-size: 12px; font-family: var(--mono);
+    letter-spacing: .09em; text-transform: uppercase; color: var(--text-secondary);
+    background: var(--surface-2); border-bottom: 1px solid var(--line); font-weight: 600;
+  }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 0; }
+  .kv dt { padding: 7px 16px; font-size: 12.5px; color: var(--text-muted); border-bottom: 1px solid var(--line-soft); }
+  .kv dd {
+    margin: 0; padding: 7px 16px; font-size: 12.5px; font-family: var(--mono);
+    color: var(--text-primary); border-bottom: 1px solid var(--line-soft); text-align: right;
+  }
+  .kv dt:last-of-type, .kv dd:last-of-type { border-bottom: none; }
+  .pill {
+    display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 11px;
+    font-family: var(--mono); border: 1px solid;
+  }
+  .pill.on   { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+  .pill.off  { color: var(--text-muted); border-color: var(--line); }
+  .pill.hot  { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+
+  /* ---- timeline ---- */
+  .tl { width: 100%; height: auto; display: block; }
+  .tl text { font-family: var(--mono); font-size: 10px; fill: var(--text-muted); }
+  .tl .lane-label { font-family: var(--sans); font-size: 11.5px; fill: var(--text-secondary); }
+
+  ul, ol { max-width: 76ch; padding-left: 22px; margin: 0 0 16px; }
+  li { margin-bottom: 7px; }
+  li > ul { margin-top: 7px; }
+
+  .toc { background: var(--surface-1); border: 1px solid var(--line); border-radius: 10px; padding: 18px 22px; margin: 32px 0 0; }
+  .toc ol { columns: 2; column-gap: 34px; margin: 0; font-size: 13.5px; }
+  .toc a { text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  @media (max-width: 720px) {
+    .wrap { padding: 0 18px 80px; }
+    h1 { font-size: 30px; }
+    .bar-row, .axis { grid-template-columns: 118px 1fr 70px; }
+    .mbar-row, .axis.axis-util { grid-template-columns: 118px 1fr 96px; }
+    .toc ol { columns: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Mission Control &middot; subsystem analysis</p>
+  <h1>Foreman and Inspector:<br>loop cadence and token consumption</h1>
+  <p class="standfirst">
+    Two autonomous loops spend model tokens without anyone asking them to. This is what they
+    actually do, how often they do it, and what each pass costs. Every byte figure below was
+    <strong>measured by executing the real prompt builders</strong>, not estimated, and every
+    cadence figure is quoted from the constant that sets it. The configuration numbers are
+    read from the <strong>live daemon on this machine</strong>.
+  </p>
+  <div class="toc">
+    <ol>
+      <li><a href="#verdict">The short answer</a><br><span style="font-size:12px;color:var(--text-muted)">incl. does polling cost anything?</span></li>
+      <li><a href="#config">Live configuration</a></li>
+      <li><a href="#cadence">Cadence: how often each loops</a></li>
+      <li><a href="#foreman">Foreman: four calls</a></li>
+      <li><a href="#inspector">Inspector: two calls</a></li>
+      <li><a href="#composition">What fills a prompt</a></li>
+      <li><a href="#rates">Token rates: ceiling and reality</a></li>
+      <li><a href="#waste">Waste and defects found</a></li>
+      <li><a href="#levers">Levers</a></li>
+    </ol>
+  </div>
+</header>
+
+<!-- ============================================ -->
+<h2 id="verdict">The short answer</h2>
+<p class="sub">
+  Neither loop is expensive at rest. Both become expensive in proportion to how much the
+  fleet is doing, and the dominant cost is not the loop rate, it is the size of a single prompt.
+</p>
+
+<div class="tiles">
+  <div class="tile accent-1">
+    <div class="label">Foreman loop floor</div>
+    <div class="value">4<span class="unit">s / pass</span></div>
+    <div class="note">Not a scheduled poller. A <code>for(;;)</code> loop that sleeps 4s only when a pass changed nothing.</div>
+  </div>
+  <div class="tile accent-2">
+    <div class="label">Inspector sweep</div>
+    <div class="value">90<span class="unit">s / sweep</span></div>
+    <div class="note">Fixed. Re-armed after the sweep finishes, so the real period is 90s plus sweep duration.</div>
+  </div>
+  <div class="tile accent-4">
+    <div class="label">Model calls at rest</div>
+    <div class="value">0</div>
+    <div class="note">Both loops are gated so a quiet fleet and an unchanged PR head cost zero tokens.</div>
+  </div>
+  <div class="tile accent-5">
+    <div class="label">Combined, fleet busy</div>
+    <div class="value">1.2&ndash;3.0<span class="unit">M tok/hr</span></div>
+    <div class="note">10 live sessions plus one actively-iterating PR. Derived below, not guessed.</div>
+  </div>
+</div>
+
+<div class="call">
+  <div class="ct"><span class="dot" style="background:var(--series-1)"></span>The governing fact</div>
+  <p>
+    <strong>Loop rate is almost irrelevant to cost.</strong> Foreman wakes up ~900 times an hour
+    and makes a model call on a small fraction of those passes. What actually sets the bill is
+    that <em>one</em> Foreman review carries ~61 KB of context and <em>one</em> Inspector review
+    carries ~88 KB, every call is a cold process with no context reuse, and 28% of the
+    Inspector's prompt on this repository is a duplicated file.
+  </p>
+</div>
+
+<h3>Does the polling itself cost anything?</h3>
+<p>
+  <strong>No. Not one token.</strong> A poll that finds nothing new spends localhost HTTP calls,
+  one <code>gh</code> subprocess per PR, and a SQL query. A model is spawned only when
+  something genuinely changed:
+</p>
+<ul>
+  <li><b>Inspector:</b> the PR head sha moved (a new PR, or a new commit pushed to one), or
+    somebody replied in one of our threads.</li>
+  <li><b>Foreman:</b> a session produced a <em>new episode</em>, meaning a distinct
+    <code>handledMarker</code>. That is a new dialog on the pane, a new structured request from
+    a driver, or a newly parked no-mistakes gate. An idle session that keeps being idle mints
+    no new marker and costs nothing.</li>
+  <li><b>Foreman queue:</b> a work item finished and the session settled idle, so there is a
+    real diff to verify.</li>
+</ul>
+<p>
+  Selection is deliberately <em>separate</em> from spending, and this is the part worth
+  understanding. <code>tickTargets</code> over-selects on purpose: <code>promptedWantsATick</code>
+  keeps every idle instrumented session on the list forever, because the card summary cannot
+  see whether it already wrapped up. Those sessions get <em>looked at</em> every pass and the
+  machine answers <code>skip</code> in pure code. <strong>Being selected is free; only a state
+  change opens the wallet.</strong>
+</p>
+
+<div class="call warn">
+  <div class="ct"><span class="dot" style="background:var(--warn)"></span>Four honest exceptions</div>
+  <p>
+    <b>1. Retries pay twice for one answer.</b> <code>runStructured</code> re-sends the entire
+    prompt plus a 74-byte scolding when the model's reply will not parse. One logical review
+    can cost two full spawns, and the failure caps allow up to six across ticks.
+  </p>
+  <p>
+    <b>2. A failing PR burns tokens producing nothing.</b> This is why the backoff ladder
+    exists. Before it, a permanently broken PR was retried every 90s forever, at up to two
+    <code>claude -p</code> runs a tick. It is now capped, but the first few failures are real
+    spend for zero output.
+  </p>
+  <p>
+    <b>3. A flapping marker is not real work.</b> <code>EVAL_DEBOUNCE_MS = 60_000</code> exists
+    specifically because a marker keyed on a moving <code>lastActivity</code> can change without
+    anything meaningful happening. The debounce bounds that to one call per session per minute
+    rather than eliminating it.
+  </p>
+  <p>
+    <b>4. Two settings would break the rule, and you have both set the cheap way.</b> Foreman's
+    <code>triage: "shadow"</code> (the shipped default) runs the cheap <em>and</em> the expensive
+    tier concurrently on every evaluation. The Inspector's <code>mode: "dry-run"</code> still
+    pays the <em>full</em> review call and simply does not post the result, and switching
+    dry-run to live re-reviews the same unchanged head a second time
+    (<code>reviewNeedsLiveRerun</code>). You are on <code>triage: "off"</code> and
+    <code>mode: "live"</code>, so neither applies to you today.
+  </p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="config">Live configuration on this machine</h2>
+<p class="sub">
+  Read from <code>/api/foreman/config</code> and <code>/api/inspector/config</code> on the running
+  daemon. This matters a great deal: both subsystems are on the <strong>codex</strong> runner, and
+  Foreman's cheap triage tier is <strong>off</strong>.
+</p>
+
+<div class="snap">
+  <div class="card">
+    <h5>Foreman</h5>
+    <dl class="kv">
+      <dt>enabled</dt><dd><span class="pill on">true</span></dd>
+      <dt>mode</dt><dd><span class="pill hot">live</span></dd>
+      <dt>runner</dt><dd>codex</dd>
+      <dt>triage</dt><dd><span class="pill off">off</span></dd>
+      <dt>review model</dt><dd>gpt-5.6-terra</dd>
+      <dt>verify model</dt><dd>gpt-5.6-terra</dd>
+      <dt>backlog model</dt><dd>gpt-5.6-luna</dd>
+      <dt>maxSessions</dt><dd>9</dd>
+      <dt>maxFixAttempts</dt><dd>4</dd>
+      <dt>maxFixRounds</dt><dd>7</dd>
+      <dt>autoBacklog</dt><dd><span class="pill on">true</span></dd>
+      <dt>wrapupTriggers</dt><dd>drain, prompted</dd>
+      <dt>live sessions now</dt><dd>10</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h5>Inspector</h5>
+    <dl class="kv">
+      <dt>enabled</dt><dd><span class="pill on">true</span></dd>
+      <dt>mode</dt><dd><span class="pill hot">live</span></dd>
+      <dt>runner</dt><dd>codex</dd>
+      <dt>model</dt><dd>gpt-5.6-terra</dd>
+      <dt>maxCommentsPerRound</dt><dd>8</dd>
+      <dt>allowlisted repos</dt><dd>3</dd>
+      <dt>adopted PRs</dt><dd>3 (1 open)</dd>
+      <dt>open PR round</dt><dd>3</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="call warn">
+  <div class="ct"><span class="dot" style="background:var(--warn)"></span>Two consequences of "runner: codex"</div>
+  <p>
+    <strong>1. The Inspector gets no tools.</strong> <code>codexRunner.sandbox</code> is
+    <code>null</code>, so <code>inspectorRunOptions</code> omits the tool grant entirely
+    (<span class="src">inspector/worker.ts:157</span>). The review is one shot over the supplied
+    diff, with no <code>Read</code>/<code>Grep</code>/<code>Glob</code> round-trips. On the Claude
+    runner the same review was measured at <strong>13 turns on Opus, 23 on Sonnet</strong>, each
+    turn re-sending accumulated context. So your prompt size <em>is</em> roughly your cost;
+    on Claude it would be closer to an order of magnitude more.
+  </p>
+  <p>
+    <strong>2. Neither subsystem's spend reaches Mission Control's own cost ledger.</strong> The
+    only writer of <code>usage_ledger</code> is <code>applyOtelMetrics</code>
+    (<span class="src">registry.ts:3608</span>), fed by the OTLP route from Claude Code sessions.
+    Headless runs spawn as <code>codex exec --ephemeral --ignore-user-config</code>, which exports
+    nothing. <strong>The fleet cost figure on the dashboard excludes both loops entirely.</strong>
+  </p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="cadence">Cadence: how often each one loops</h2>
+
+<h3>They are not the same kind of loop</h3>
+<p>
+  The Inspector is a <strong>poller</strong>: <code>tick()</code> runs, then arms
+  <code>setTimeout(tick, POLL_MS)</code> at the end
+  (<span class="src">inspector/worker.ts:1081</span>). Period is 90s plus however long the sweep took.
+</p>
+<p>
+  The Foreman is a <strong>busy loop</strong>: <code>main()</code> is <code>for(;;)</code>, and the
+  4s sleep is conditional on <code>if (!advanced)</code>
+  (<span class="src">foreman/worker.ts:364</span>). A pass that did something comes straight back
+  around. Between two sessions inside one pass it waits only
+  <code>BETWEEN_MS&nbsp;=&nbsp;400</code>.
+</p>
+
+<figure>
+  <p class="fig-title">Five minutes of wall clock</p>
+  <p class="fig-sub">Tick marks are loop passes. Filled marks are passes that reached a model call.</p>
+  <svg class="tl" viewBox="0 0 980 200" role="img" aria-label="Timeline comparing Foreman's 4-second loop passes against the Inspector's 90-second sweeps over five minutes">
+    <!-- lane 1: foreman -->
+    <text class="lane-label" x="0" y="34">Foreman</text>
+    <text x="0" y="50">~75 passes</text>
+    <line x1="118" y1="30" x2="960" y2="30" stroke="var(--line)" stroke-width="1"/>
+    <g fill="var(--series-1)">
+      <!-- 75 ticks across 842px -->
+      <g id="fticks"></g>
+    </g>
+
+    <!-- lane 2: inspector. 300s / POLL_MS 90s = 4 sweeps -->
+    <text class="lane-label" x="0" y="112">Inspector</text>
+    <text x="0" y="128">4 sweeps</text>
+    <line x1="118" y1="108" x2="960" y2="108" stroke="var(--line)" stroke-width="1"/>
+    <g fill="var(--series-2)">
+      <rect x="116" y="99" width="4" height="18" rx="2"/>
+      <rect x="369" y="99" width="4" height="18" rx="2"/>
+      <rect x="621" y="99" width="4" height="18" rx="2"/>
+      <rect x="874" y="99" width="4" height="18" rx="2"/>
+    </g>
+    <text x="118" y="140">0s</text>
+    <text x="359" y="140">90s</text>
+    <text x="608" y="140">180s</text>
+    <text x="861" y="140">270s</text>
+
+    <!-- axis: 0 to 300s across x 118..960 -->
+    <line x1="118" y1="168" x2="960" y2="168" stroke="var(--line-soft)" stroke-width="1"/>
+    <text x="118" y="186">0</text>
+    <text x="326" y="186">1 min</text>
+    <text x="494" y="186">2 min</text>
+    <text x="662" y="186">3 min</text>
+    <text x="831" y="186">4 min</text>
+    <text x="936" y="186">5 min</text>
+  </svg>
+  <figcaption>
+    Foreman's density is the point: it wakes constantly and is cheap because the
+    <em>gates</em> stop it, not the clock. The Inspector is the opposite shape, a slow
+    poll that does real work when it fires.
+  </figcaption>
+</figure>
+
+<script>
+  // Draw Foreman's 75 ticks. Marks 9, 31 and 58 are "reached a model call".
+  (function () {
+    const g = document.getElementById('fticks');
+    if (!g) return;
+    const hot = new Set([9, 31, 58]);
+    const x0 = 118, x1 = 960, n = 75;
+    for (let i = 0; i < n; i++) {
+      const x = x0 + (i * (x1 - x0)) / (n - 1);
+      const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      const isHot = hot.has(i);
+      r.setAttribute('x', (x - 1.5).toFixed(1));
+      r.setAttribute('y', isHot ? '21' : '25');
+      r.setAttribute('width', isHot ? '4' : '3');
+      r.setAttribute('height', isHot ? '18' : '10');
+      r.setAttribute('rx', isHot ? '2' : '1.5');
+      r.setAttribute('opacity', isHot ? '1' : '0.4');
+      g.appendChild(r);
+    }
+  })();
+</script>
+
+<h3>Per-pass work that costs nothing</h3>
+<div class="tw">
+<table>
+  <thead><tr><th>Loop</th><th>Every pass, unconditionally</th><th>Cost</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>Foreman</b></td>
+      <td><code>getConfig()</code>, then if leader <code>sessions()</code>, <code>reviews()</code>,
+        <code>sweepOrphanedQueues()</code></td>
+      <td class="num">3&ndash;4 localhost HTTP, 0 tokens</td>
+    </tr>
+    <tr>
+      <td><b>Foreman</b></td>
+      <td>Lease renewal on a background timer, <code>LEASE_RENEW_MS = 30_000</code>, TTL 90s</td>
+      <td class="num">1 HTTP / 30s</td>
+    </tr>
+    <tr>
+      <td><b>Inspector</b></td>
+      <td>Per adopted open PR: one <code>gh api graphql</code> (<code>fetchPr</code>), which runs
+        <em>even while backed off</em> by design</td>
+      <td class="num">1 subprocess / PR, 0 tokens</td>
+    </tr>
+    <tr>
+      <td><b>Inspector</b></td>
+      <td><code>authenticatedLogin</code>, cached <code>LOGIN_TTL_MS = 300_000</code> across all PRs</td>
+      <td class="num">~0.3 subprocess / sweep</td>
+    </tr>
+    <tr>
+      <td><b>Inspector</b></td>
+      <td><code>registry.refreshInspections()</code>, one grouped query, once per sweep</td>
+      <td class="num">1 SQL, 0 tokens</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============================================ -->
+<h2 id="foreman">Foreman: four model calls</h2>
+<p class="sub">
+  Verified exhaustively: the only <code>llmRunner(...).run(...)</code> sites reachable from
+  <code>foreman/worker.ts</code> are four.
+  <code>review-followup.ts</code> and <code>prompted-wrapup.ts</code> make no call of their own;
+  prompted wrap-up reuses the queue verifier.
+</p>
+
+<div class="tw">
+<table>
+  <thead>
+    <tr><th>Call</th><th>Model</th><th>Timeout</th><th>Spawns per logical call</th><th>Typical prompt</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>Tier-1 triage</b><br><span class="src">triage-prompt.ts:65</span></td>
+      <td class="num">gpt-5.6-luna</td>
+      <td class="num">30s</td>
+      <td>1, never retries</td>
+      <td class="num">26 KB &middot; ~7.1k tok</td>
+    </tr>
+    <tr>
+      <td><b>Tier-2 full review</b><br><span class="src">prompt.ts:392</span></td>
+      <td class="num">gpt-5.6-terra</td>
+      <td class="num">120s</td>
+      <td>&le;2 (<code>runStructured</code>), &le;6 across 3 strikes</td>
+      <td class="num">61 KB &middot; ~16.6k tok</td>
+    </tr>
+    <tr>
+      <td><b>Queue verify</b><br><span class="src">queue-prompt.ts:125</span></td>
+      <td class="num">gpt-5.6-terra</td>
+      <td class="num">120s</td>
+      <td>&le;2, &le;6 across <code>VERIFY_FAILURE_CAP</code></td>
+      <td class="num">106 KB &middot; ~28.7k tok</td>
+    </tr>
+    <tr>
+      <td><b>Backlog plan</b><br><span class="src">backlog-prompt.ts:63</span></td>
+      <td class="num">gpt-5.6-luna</td>
+      <td class="num">60s + 20s/task, cap 600s</td>
+      <td>&le;2</td>
+      <td class="num">7 KB &middot; ~1.9k tok</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="call bad">
+  <div class="ct"><span class="dot" style="background:var(--critical)"></span>Triage is off, so the expensive tier runs unconditionally</div>
+  <p>
+    The cheap tier exists precisely to keep Tier-2 from firing. With <code>triage: "off"</code>
+    every needs-you episode that clears the debounce goes <strong>straight to gpt-5.6-terra at
+    ~16.6k tokens</strong>. Setting it to <code>"on"</code> puts a ~7.1k-token gpt-5.6-luna
+    router in front and escalates only on route-up. Note that <code>"shadow"</code>, the shipped
+    default, is the <em>worst</em> setting for cost: it runs both, concurrently, on every
+    evaluation.
+  </p>
+</div>
+
+<h3>The gate ladder before a Tier-2 review fires</h3>
+<p>Each of these can stop the call, in this order:</p>
+<div class="tw">
+<table>
+  <thead><tr><th>Gate</th><th>Constant</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td>Daemon reachable</td><td class="num">&mdash;</td><td>else sleep 4s</td></tr>
+    <tr><td>Config enabled</td><td class="num">cfg.enabled</td><td>re-read mid-drain, breaks the loop</td></tr>
+    <tr><td>Worker holds the lease</td><td class="num">LEASE_TTL_MS = 90_000</td><td>a standby idles, never calls</td></tr>
+    <tr><td>Harness authorized</td><td class="num">foremanTriageAuthorized</td><td>needs <code>workQueue</code> plus hooks or a gate park</td></tr>
+    <tr><td><b>Marker idempotency</b></td><td class="num">handledMarker === marker</td><td><b>the main brake:</b> one call per distinct episode, not per tick</td></tr>
+    <tr><td><b>Evaluation debounce</b></td><td class="num">EVAL_DEBOUNCE_MS = 60_000</td><td>at most one evaluation per session per minute</td></tr>
+    <tr><td>Tier-0 pure gate</td><td class="num">tier0(pending)</td><td>disposes <code>no-question</code> and <code>non-input-review</code> free</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>The gate ladder before a queue verify fires</h3>
+<div class="tw">
+<table>
+  <thead><tr><th>Gate</th><th>Constant</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td>Settled idle</td><td class="num">SETTLE_MS = 10_000</td><td>session must be idle 10s</td></tr>
+    <tr><td>Pickup window</td><td class="num">PICKUP_TIMEOUT_MS = 45_000</td><td>an <code>awaiting_pickup</code> item makes no call</td></tr>
+    <tr><td>Evidence present</td><td class="num">&mdash;</td><td>unreadable diff, unavailable window or empty patch all skip the call</td></tr>
+    <tr><td>Failure cap</td><td class="num">VERIFY_FAILURE_CAP = 3</td><td>durable on the item, then escalate</td></tr>
+    <tr><td>Round budget</td><td class="num">maxFixRounds = 7</td><td>your config; default is 10</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Backlog autopilot: currently free</h3>
+<p>
+  <code>autoBacklog</code> is on, but the planner short-circuits at
+  <code>backlog.length &lt; 2</code> and again on <code>planStale</code>. Your backlog reports
+  <code>ready 0 / blocked 0 / disabled 0</code>, so <strong>this call is making no requests at
+  all right now</strong>. It becomes relevant fast: the prompt is ~443 bytes per task, and the
+  ceiling is <code>PLANNABLE_LIMIT = 400</code> tasks, which at the 1200-char intent cap is
+  ~547 KB, about 148k tokens in a single call.
+</p>
+
+<!-- ============================================ -->
+<h2 id="inspector">Inspector: two model calls</h2>
+<p class="sub">
+  A full review and a follow-up reply. <code>shipping/merge.ts</code> makes
+  <strong>zero</strong> model calls: <code>maybeMerge</code> is a pure predicate plus at most one
+  <code>gh api --method PUT</code>.
+</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Call</th><th>Model</th><th>Timeout</th><th>Spawns</th><th>Prompt on this repo</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>Full review</b><br><span class="src">prompt.ts:76</span></td>
+      <td class="num">gpt-5.6-terra</td>
+      <td class="num">600s</td>
+      <td>&le;2, parse-miss retry only</td>
+      <td class="num">88 KB &middot; ~23.7k tok</td>
+    </tr>
+    <tr>
+      <td><b>Follow-up reply</b><br><span class="src">prompt.ts:161</span></td>
+      <td class="num">gpt-5.6-terra</td>
+      <td class="num">300s</td>
+      <td>1, no retry</td>
+      <td class="num">36 KB &middot; ~9.8k tok</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="call good">
+  <div class="ct"><span class="dot" style="background:var(--good)"></span>The gate that does the real work</div>
+  <p>
+    <code>if (s.headSha === pr.headSha &amp;&amp; !reviewNeedsLiveRerun(...)) return</code>
+    (<span class="src">worker.ts:595</span>). <strong>One review per push, not per tick.</strong>
+    A PR that sits untouched for a day costs 40 <code>gh</code> calls an hour and zero tokens.
+    This is why the Inspector is cheap despite carrying the largest prompts in the system.
+  </p>
+</div>
+
+<h3>Measured from your live database</h3>
+<p>
+  PR <code>#323</code> was adopted at <code>1785456624059</code> and last reviewed at
+  <code>1785457338438</code>, at <code>round: 3</code>. That is
+  <strong>3 review rounds in 11.9 minutes</strong>, about 238s per round, consistent with a 90s
+  poll plus review duration. Extrapolated: <strong>~15 rounds/hour on one actively-iterating
+  PR</strong>, or roughly <strong>355k tokens/hour</strong> from a single PR while an agent is
+  pushing to it.
+</p>
+
+<h3>Backoff, so a broken PR is nearly free</h3>
+<p>
+  <code>backoffMs(n) = min(90s &times; 2<sup>n-1</sup>, 6h)</code>, giving 90s, 180s, 360s, 720s
+  and so on to <code>BACKOFF_CEILING_MS = 21_600_000</code>. A diff too large to buffer goes
+  <em>straight</em> to the six-hour ceiling as <code>push-fixable</code>, and only a new push can
+  clear it. A push otherwise cuts the wait short at most
+  <code>PUSH_UNPARK_MAX_FAILURES = 3</code> times.
+</p>
+
+<h3>The one uncapped fan-out</h3>
+<p>
+  <code>waiting.length</code> in <code>processPr</code> is unbounded. Every thread of ours where
+  somebody else spoke last gets its own reply call, run <strong>serially at up to 300s each</strong>,
+  before the review even starts. <code>createLimiter(1)</code> bounds PRs against each other, not
+  calls within a PR. The only brake is <code>MAX_REPLIES_PER_THREAD = 6</code> per thread.
+</p>
+
+<!-- ============================================ -->
+<h2 id="composition">What actually fills a prompt</h2>
+<p class="sub">
+  Measured by importing the real builders and calling them against this repository.
+  This is where the money goes, and it is not where you would guess.
+</p>
+
+<figure>
+  <p class="fig-title">Prompt composition by call type</p>
+  <p class="fig-sub">Bytes, measured on the ai-harness checkout. Every segment is direct-labeled in the table below.</p>
+  <div class="legend">
+    <span><i class="swatch" style="background:var(--series-1)"></i>Static prompt policy</span>
+    <span><i class="swatch" style="background:var(--series-2)"></i>Operator brief (FOREMAN.md / INSPECTOR.md)</span>
+    <span><i class="swatch" style="background:var(--series-3)"></i>Repo standards (AGENTS.md)</span>
+    <span><i class="swatch" style="background:var(--series-4)"></i>Payload (diff / transcript / pane)</span>
+    <span><i class="swatch" style="background:var(--series-5)"></i>Duplicated standards (waste)</span>
+  </div>
+  <div class="bars">
+
+    <div class="bar-row">
+      <div class="bar-label"><b>Foreman verify</b>work-queue item</div>
+      <div class="bar-track" style="width:96.6%">
+        <div class="bar-seg" style="background:var(--series-1); flex:5431"></div>
+        <div class="bar-seg" style="background:var(--series-2); flex:6388"></div>
+        <div class="bar-seg" style="background:var(--series-3); flex:24576"></div>
+        <div class="bar-seg" style="background:var(--series-4); flex:45326"></div>
+        <div class="bar-seg" style="background:var(--series-5); flex:24576"></div>
+      </div>
+      <div class="bar-total">106 KB<i>~28.7k tok</i></div>
+    </div>
+
+    <div class="bar-row">
+      <div class="bar-label"><b>Inspector review</b>small PR, 28 KB diff</div>
+      <div class="bar-track" style="width:79.9%">
+        <div class="bar-seg" style="background:var(--series-1); flex:4124"></div>
+        <div class="bar-seg" style="background:var(--series-2); flex:6582"></div>
+        <div class="bar-seg" style="background:var(--series-3); flex:24576"></div>
+        <div class="bar-seg" style="background:var(--series-4); flex:27988"></div>
+        <div class="bar-seg" style="background:var(--series-5); flex:24576"></div>
+      </div>
+      <div class="bar-total">88 KB<i>~23.7k tok</i></div>
+    </div>
+
+    <div class="bar-row">
+      <div class="bar-label"><b>Foreman Tier-2</b>full review</div>
+      <div class="bar-track" style="width:55.9%">
+        <div class="bar-seg" style="background:var(--series-1); flex:7282"></div>
+        <div class="bar-seg" style="background:var(--series-2); flex:6388"></div>
+        <div class="bar-seg" style="background:var(--series-4); flex:47800"></div>
+      </div>
+      <div class="bar-total">61 KB<i>~16.6k tok</i></div>
+    </div>
+
+    <div class="bar-row">
+      <div class="bar-label"><b>Inspector reply</b>follow-up in a thread</div>
+      <div class="bar-track" style="width:33.1%">
+        <div class="bar-seg" style="background:var(--series-1); flex:1846"></div>
+        <div class="bar-seg" style="background:var(--series-2); flex:6582"></div>
+        <div class="bar-seg" style="background:var(--series-4); flex:27951"></div>
+      </div>
+      <div class="bar-total">36 KB<i>~9.8k tok</i></div>
+    </div>
+
+    <div class="bar-row">
+      <div class="bar-label"><b>Foreman triage</b>disabled in your config</div>
+      <div class="bar-track" style="width:23.9%">
+        <div class="bar-seg" style="background:var(--series-1); flex:3574"></div>
+        <div class="bar-seg" style="background:var(--series-2); flex:6388"></div>
+        <div class="bar-seg" style="background:var(--series-4); flex:16291"></div>
+      </div>
+      <div class="bar-total">26 KB<i>~7.1k tok</i></div>
+    </div>
+
+    <div class="bar-row">
+      <div class="bar-label"><b>Foreman backlog</b>10 tasks</div>
+      <div class="bar-track" style="width:6.5%">
+        <div class="bar-seg" style="background:var(--series-1); flex:2707"></div>
+        <div class="bar-seg" style="background:var(--series-4); flex:4431"></div>
+      </div>
+      <div class="bar-total">7 KB<i>~1.9k tok</i></div>
+    </div>
+
+  </div>
+  <div class="axis">
+    <div></div>
+    <div class="ticks">
+      <span style="left:0">0</span>
+      <span style="left:22.73%">25 KB</span>
+      <span style="left:45.45%">50 KB</span>
+      <span style="left:68.18%">75 KB</span>
+      <span style="left:90.91%">100 KB</span>
+    </div>
+    <div></div>
+  </div>
+  <figcaption>
+    Read the magenta segments first. On this repository, <strong>24,576 bytes of the Inspector's
+    88 KB prompt is a byte-identical duplicate of the 24,576 bytes immediately before it</strong>,
+    and the same is true of the Foreman verify prompt. That is ~6.6k tokens per call, thrown away.
+    Explained under Waste below.
+  </figcaption>
+</figure>
+
+<h4>The same figures as a table</h4>
+<div class="tw">
+<table>
+  <thead>
+    <tr><th>Call</th><th>Static</th><th>Brief</th><th>Standards</th><th>Payload</th><th>Duplicate</th><th>Total</th><th>Tokens</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Foreman verify</td><td class="num">5,431</td><td class="num">6,388</td><td class="num">24,576</td><td class="num">45,326</td><td class="num">24,576</td><td class="num">106,297</td><td class="num">~28.7k</td></tr>
+    <tr><td>Inspector review</td><td class="num">4,124</td><td class="num">6,582</td><td class="num">24,576</td><td class="num">27,988</td><td class="num">24,576</td><td class="num">87,846</td><td class="num">~23.7k</td></tr>
+    <tr><td>Foreman Tier-2</td><td class="num">7,282</td><td class="num">6,388</td><td class="num">0</td><td class="num">47,800</td><td class="num">0</td><td class="num">61,470</td><td class="num">~16.6k</td></tr>
+    <tr><td>Inspector reply</td><td class="num">1,846</td><td class="num">6,582</td><td class="num">0</td><td class="num">27,951</td><td class="num">0</td><td class="num">36,379</td><td class="num">~9.8k</td></tr>
+    <tr><td>Foreman triage</td><td class="num">3,574</td><td class="num">6,388</td><td class="num">0</td><td class="num">16,291</td><td class="num">0</td><td class="num">26,253</td><td class="num">~7.1k</td></tr>
+    <tr><td>Foreman backlog</td><td class="num">2,707</td><td class="num">0</td><td class="num">0</td><td class="num">4,431</td><td class="num">0</td><td class="num">7,138</td><td class="num">~1.9k</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Every cap that bounds a dynamic input</h3>
+<div class="tw">
+<table>
+  <thead><tr><th>Input</th><th>Cap</th><th>Value</th><th>Where</th></tr></thead>
+  <tbody>
+    <tr><td>Inspector diff</td><td class="num">MAX_DIFF_BYTES</td><td class="num">400,000</td><td class="src">inspector/worker.ts:123</td></tr>
+    <tr><td>Verify diff</td><td class="num">DIFF_CAP</td><td class="num">120,000</td><td class="src">queue-prompt.ts:18</td></tr>
+    <tr><td>Verify transcript</td><td class="num">TRANSCRIPT_CAP</td><td class="num">60,000</td><td class="src">queue-prompt.ts:23</td></tr>
+    <tr><td>Standards, per file</td><td class="num">MAX_FILE_BYTES</td><td class="num">24,576</td><td class="src">standards.ts:14</td></tr>
+    <tr><td>Standards, bundle</td><td class="num">MAX_TOTAL_BYTES</td><td class="num">65,536</td><td class="src">standards.ts:16</td></tr>
+    <tr><td>Inspector brief</td><td class="num">MAX_BRIEF_BYTES</td><td class="num">24,576</td><td class="src">brief.ts:11</td></tr>
+    <tr><td>Foreman instructions</td><td class="num">ForemanInstructionsSchema</td><td class="num">64,000 chars</td><td class="src">protocol.ts:1112</td></tr>
+    <tr><td>Review transcript window</td><td class="num">head 12 + tail 48</td><td class="num">60 turns</td><td class="src">routes.ts:1387</td></tr>
+    <tr><td>Per turn, prose</td><td class="num">MSG_CAP</td><td class="num">1,800</td><td class="src">foreman/prompt.ts:166</td></tr>
+    <tr><td>Per turn, per tool</td><td class="num">TOOL_INPUT_CAP</td><td class="num">1,800</td><td class="src">claude/transcript.ts:67</td></tr>
+    <tr><td>Session activity</td><td class="num">ACTIVITY_CAP</td><td class="num">2,000</td><td class="src">foreman/prompt.ts:172</td></tr>
+    <tr><td><b>Pane capture</b></td><td class="num">none</td><td class="num"><b>uncapped</b></td><td class="src">bounded only by viewport</td></tr>
+    <tr><td><b>PR title / body</b></td><td class="num">none</td><td class="num"><b>uncapped</b></td><td class="src">inspector/prompt.ts:102</td></tr>
+    <tr><td><b>Changed paths</b></td><td class="num">none</td><td class="num"><b>uncapped</b></td><td class="src">inspector/prompt.ts:105</td></tr>
+    <tr><td><b>Open findings</b></td><td class="num">none</td><td class="num"><b>uncapped</b></td><td class="src">inspector/prompt.ts:113</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="call">
+  <div class="ct"><span class="dot" style="background:var(--series-1)"></span>No caching, by design</div>
+  <p>
+    Every call is a cold subprocess. <code>claude -p</code> passes no <code>--resume</code>,
+    <code>--continue</code> or <code>--session-id</code>; <code>codex exec</code> passes
+    <code>--ephemeral</code>. Both set <code>runInThread: null</code>. This is a stated
+    correctness property, not an oversight: Foreman reviews many sessions, and a shared context
+    would let session A's transcript influence the verdict on session B, while growing
+    monotonically forever. Server-side prompt caching still applies and is the only reuse
+    available.
+  </p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="rates">Token rates: ceiling and reality</h2>
+
+<figure>
+  <p class="fig-title">How much of the permitted call rate is actually used</p>
+  <p class="fig-sub">Each row is normalized to <em>its own</em> ceiling, because the ceilings differ by 100x. Absolute figures are on the right.</p>
+  <div class="mbars">
+    <div class="mbar-row">
+      <div class="bar-label"><b>Foreman Tier-2</b>10 sessions</div>
+      <div class="mbar-track">
+        <div class="mbar-lo" style="left:0; width:10%"></div>
+        <div class="mbar-fill" style="width:5%"></div>
+      </div>
+      <div class="mbar-val">5&ndash;10%<i>30&ndash;60 of 600/hr</i></div>
+    </div>
+    <div class="mbar-row">
+      <div class="bar-label"><b>Foreman verify</b>queue drain</div>
+      <div class="mbar-track">
+        <div class="mbar-lo" style="left:0; width:8.3%"></div>
+        <div class="mbar-fill" style="width:2.8%"></div>
+      </div>
+      <div class="mbar-val">3&ndash;8%<i>10&ndash;30 of ~360/hr</i></div>
+    </div>
+    <div class="mbar-row">
+      <div class="bar-label"><b>Inspector review</b>per iterating PR</div>
+      <div class="mbar-track">
+        <div class="mbar-fill" style="width:37.5%"></div>
+      </div>
+      <div class="mbar-val">~38%<i>~15 of 40/hr</i></div>
+    </div>
+    <div class="mbar-row">
+      <div class="bar-label"><b>Foreman backlog</b>your backlog is empty</div>
+      <div class="mbar-track">
+        <div class="mbar-fill" style="width:0.6%"></div>
+      </div>
+      <div class="mbar-val">0%<i>0 of ~6/hr</i></div>
+    </div>
+  </div>
+  <div class="axis axis-util">
+    <div></div>
+    <div class="ticks">
+      <span style="left:0">0</span>
+      <span style="left:25%">25%</span>
+      <span style="left:50%">50%</span>
+      <span style="left:75%">75%</span>
+      <span style="left:100%">100%</span>
+    </div>
+    <div></div>
+  </div>
+  <figcaption>
+    Solid is the low end of the realistic band, pale is the high end. The Foreman ceiling is
+    set by <code>EVAL_DEBOUNCE_MS</code>: at most one evaluation per session per 60s, times 10
+    sessions. It is never approached, because marker idempotency means a session is only
+    re-evaluated when its episode actually changes. <strong>The Inspector is the one that runs
+    near its limit</strong>, because a PR under active iteration produces a new head almost
+    every sweep.
+  </figcaption>
+</figure>
+
+<h3>The arithmetic</h3>
+<div class="tw">
+<table>
+  <thead><tr><th>Scenario</th><th>Foreman</th><th>Inspector</th><th>Combined</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>At rest</b><br><span class="src">all sessions idle, no pushes</span></td>
+      <td class="num">0 tok/hr<br><span class="src">~3,600 HTTP calls</span></td>
+      <td class="num">0 tok/hr<br><span class="src">~40 gh calls</span></td>
+      <td class="num"><b>~0</b></td>
+    </tr>
+    <tr>
+      <td><b>Busy</b><br><span class="src">10 sessions, 1 PR iterating</span></td>
+      <td class="num">0.8&ndash;1.9M tok/hr</td>
+      <td class="num">0.35&ndash;1.1M tok/hr</td>
+      <td class="num"><b>1.2&ndash;3.0M tok/hr</b></td>
+    </tr>
+    <tr>
+      <td><b>Gate ceiling</b><br><span class="src">every gate saturated</span></td>
+      <td class="num">~10M tok/hr<br><span class="src">600 &times; 16.6k</span></td>
+      <td class="num">~5M tok/hr<br><span class="src">40 &times; 125k large diff</span></td>
+      <td class="num"><b>~15M tok/hr</b></td>
+    </tr>
+    <tr>
+      <td><b>Pathological</b><br><span class="src">400-task backlog, capped diffs, retries</span></td>
+      <td class="num">151k tok single call</td>
+      <td class="num">255k tok single call</td>
+      <td class="num"><b>doubles on parse-miss retry</b></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  Token conversion throughout uses <strong>3.7 characters per token</strong>. The true range for
+  code-and-diff content is roughly 3.5 to 4.0, so read every token figure as
+  <strong>&plusmn;7%</strong>. The provider's own system prompt sits on top of every figure and
+  is not measurable from this repository.
+</p>
+
+<!-- ============================================ -->
+<h2 id="waste">Waste and defects found while measuring</h2>
+
+<div class="call bad">
+  <div class="ct"><span class="dot" style="background:var(--critical)"></span>1. 24 KB duplicated in every review and every verify</div>
+  <p>
+    <code>CLAUDE.md</code> in this repository is a <strong>symlink to <code>AGENTS.md</code></strong>.
+    Both names are in <code>ROOT_NAMES</code>, and <code>readStandards</code> deduplicates on the
+    <em>requested</em> absolute path (<code>seen.add(abs)</code>,
+    <span class="src">standards.ts:126</span>) while <code>readRepoDoc</code> resolves the symlink
+    only for the read. The bundle therefore ships the same 24,576 bytes twice. Verified directly:
+    <code>docs[0].text === docs[1].text</code> returns <strong>true</strong>.
+  </p>
+  <p>
+    Cost: <strong>~6.6k tokens per Inspector review and per Foreman verify</strong>, about 28% of
+    the Inspector's small-PR prompt. At the measured 15 rounds/hour that is roughly
+    <strong>100k wasted tokens per hour</strong> from one PR alone. The fix is one line, resolving
+    the real path before the <code>seen</code> check.
+  </p>
+</div>
+
+<div class="call warn">
+  <div class="ct"><span class="dot" style="background:var(--warn)"></span>2. MAX_DIFF_BYTES is a character slice, not a byte cap</div>
+  <p>
+    <code>full.slice(0, maxBytes)</code> (<span class="src">github.ts:704</span>) operates on a JS
+    string. Measured: a 400,000-character slice produced <strong>400,556 bytes</strong> on a real
+    diff, and up to <strong>1,200,000 bytes</strong> on synthetic 3-byte-per-character content.
+    The name and the <code>INSPECTOR_MAX_DIFF_BYTES</code> environment variable both promise bytes.
+  </p>
+</div>
+
+<div class="call warn">
+  <div class="ct"><span class="dot" style="background:var(--warn)"></span>3. Four uncapped inputs in the Inspector review prompt</div>
+  <p>
+    <code>prTitle</code>, <code>prBody</code>, <code>changedPaths</code> and <code>open</code> have
+    no cap in <code>buildReviewPrompt</code>. At the ledger's own
+    <code>maxFindingFingerprints = 2000</code>, the open-findings section alone would add
+    <strong>348,230 bytes</strong>. The worst-case prompt is <strong>944 KB, about 255k
+    tokens</strong>.
+  </p>
+</div>
+
+<div class="call warn">
+  <div class="ct"><span class="dot" style="background:var(--warn)"></span>4. Two smaller inconsistencies in Foreman</div>
+  <p>
+    <code>ACTIVITY_CAP = 2000</code> is applied in <code>buildReviewPrompt</code> but
+    <strong>not</strong> in <code>buildTriagePrompt</code>, so the router renders the one field a
+    child writes unbounded via <code>report_status</code> un-clipped. Separately, the full
+    reviewer's transcript window is <strong>60 turns, not the 48</strong> that every comment in
+    the worker claims: <code>client.transcript(id)</code> sends <code>turns=48</code>, which the
+    route reads as the <em>tail</em> and adds a fixed head of 12
+    (<span class="src">routes.ts:1388</span>). The comment at
+    <span class="src">triage.ts:593</span> also says instructions are "capped at 16KB"; the real
+    cap is 64,000 characters.
+  </p>
+</div>
+
+<div class="call bad">
+  <div class="ct"><span class="dot" style="background:var(--critical)"></span>5. This spend is invisible to the cost dashboard</div>
+  <p>
+    <code>usage_ledger</code> has exactly one writer, <code>applyOtelMetrics</code>, fed by the
+    OTLP route that Claude Code sessions push to. Foreman and Inspector runs on the codex runner
+    spawn with <code>--ignore-user-config</code> and export nothing. Even on the Claude runner they
+    would land under a fresh <code>session.id</code> per run, orphaned from any card, and
+    <code>foremanStatus</code> scopes its counts to live sessions. <strong>The fleet cost number
+    you are looking at excludes both loops.</strong>
+  </p>
+</div>
+
+<div class="call">
+  <div class="ct"><span class="dot" style="background:var(--series-1)"></span>6. The diff is fetched twice per active tick</div>
+  <p>
+    A tick that both replies and reviews calls <code>fetchDiff</code> at
+    <span class="src">worker.ts:555</span> and again at <span class="src">worker.ts:698</span>,
+    two <code>gh</code> subprocesses each buffering up to 16 MiB, with no sharing. Not a token
+    cost, but it is latency and memory on the expensive path.
+  </p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="levers">Levers, in order of return</h2>
+
+<div class="tw">
+<table>
+  <thead><tr><th>#</th><th>Change</th><th>Saving</th><th>Cost of doing it</th></tr></thead>
+  <tbody>
+    <tr>
+      <td class="num">1</td>
+      <td><b>Resolve symlinks before the <code>seen</code> check in <code>readStandards</code></b></td>
+      <td>~6.6k tok per review and verify, ~28% of the Inspector prompt</td>
+      <td>One line. No behaviour change.</td>
+    </tr>
+    <tr>
+      <td class="num">2</td>
+      <td><b>Set <code>triage: "on"</code></b></td>
+      <td>Replaces a 16.6k-token terra call with a 7.1k-token luna call on every episode the router can dispose</td>
+      <td>Config toggle. Accepts the router's judgement on easy cases.</td>
+    </tr>
+    <tr>
+      <td class="num">3</td>
+      <td>Trim <code>AGENTS.md</code>, or scope what <code>readStandards</code> sends</td>
+      <td>Up to 24 KB per call; the file is 80,918 bytes and already truncated to 24,576</td>
+      <td>Editorial. The reviewer currently sees the first 30% of it.</td>
+    </tr>
+    <tr>
+      <td class="num">4</td>
+      <td>Cap <code>prBody</code>, <code>changedPaths</code> and <code>open</code></td>
+      <td>Removes the 944 KB tail risk</td>
+      <td>Three <code>clip()</code> calls, matching the existing pattern.</td>
+    </tr>
+    <tr>
+      <td class="num">5</td>
+      <td>Narrow the Tier-2 transcript window below 60 turns</td>
+      <td>Transcript is 78% of the Foreman review prompt</td>
+      <td>Needs judgement. It is the evidence the verdict rests on.</td>
+    </tr>
+    <tr>
+      <td class="num">6</td>
+      <td>Raise <code>EVAL_DEBOUNCE_MS</code> above 60s</td>
+      <td>Lowers a ceiling that is never reached</td>
+      <td>Almost none, because marker idempotency is the real brake. Low priority.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="call good">
+  <div class="ct"><span class="dot" style="background:var(--good)"></span>What not to change</div>
+  <p>
+    The loop rates are fine. Foreman's 4s floor and the Inspector's 90s poll cost essentially
+    nothing, because both are gated on state change rather than on the clock. Cutting either
+    would trade responsiveness for a saving that does not exist. Likewise the cold-process
+    design: the absence of context reuse is what keeps one session's transcript out of another
+    session's verdict, and it is worth its price.
+  </p>
+</div>
+
+<p style="margin-top:48px; padding-top:20px; border-top:1px solid var(--line); font-size:12.5px; color:var(--text-muted);">
+  Byte figures produced by executing <code>buildReviewPrompt</code>, <code>buildReplyPrompt</code>,
+  <code>buildTriagePrompt</code>, <code>buildBacklogPrompt</code>, <code>readStandards</code> and
+  <code>readBrief</code> against this checkout. Configuration read from the live daemon on
+  <code>127.0.0.1:7317</code>. Constants quoted from source at the cited lines.
+</p>
+
+</div>
+</body>
+</html>

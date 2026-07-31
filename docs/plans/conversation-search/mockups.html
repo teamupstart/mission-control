@@ -1,0 +1,2463 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Find in conversation &middot; four approaches</title>
+    <style>
+      /* ==========================================================================
+         Tokens, copied verbatim from src/web/styles.css so these mockups are the
+         real palette rather than an approximation of it. The one addition is
+         --find, and it is deliberately NOT --attention: amber already means
+         "this session needs you" everywhere else in the product, and a reading
+         aid that borrows a state colour teaches the eye the wrong thing.
+         ========================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #0a0c0f;
+        --bg-2: #0e1116;
+        --panel: #14181e;
+        --panel-2: #171c23;
+        --border: #232a33;
+        --border-soft: #1b2129;
+        --fg: #e7ebf1;
+        --muted: #939eae;
+        --dim: #7c8798;
+
+        --working: #4a9eff;
+        --idle: #35c08a;
+        --attention: #f6a733;
+        --danger: #f85149;
+        --exited: #707a88;
+        --neutral: #8b94a3;
+        --select: #35c08a;
+        --purple: #a371f7;
+        --foreman: var(--purple);
+        --pr-open: #3fb950;
+        --pr-merged: var(--purple);
+
+        /* Proposed. One hue, two weights: every hit is a tint, the current hit is
+           the solid. Browser-find muscle memory without stealing a state colour. */
+        --find: #e3b341;
+
+        --radius: 13px;
+        --shadow:
+          0 1px 2px rgba(0, 0, 0, 0.4),
+          0 8px 24px rgba(0, 0, 0, 0.28);
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background:
+          radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+          radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+          var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ==========================================================================
+         Presentation chrome for this document only. `mk-` prefix so nothing here
+         could ever be mistaken for a class the app ships.
+         ========================================================================== */
+      .mk-page {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 40px 32px 140px;
+      }
+      .mk-masthead {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 26px;
+        margin-bottom: 30px;
+      }
+      .mk-eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin: 0 0 10px;
+      }
+      .mk-masthead h1 {
+        margin: 0 0 14px;
+        font-size: 30px;
+        font-weight: 660;
+        letter-spacing: -0.015em;
+      }
+      .mk-lede {
+        margin: 0 0 10px;
+        max-width: 82ch;
+        color: var(--muted);
+        font-size: 14.5px;
+        line-height: 1.65;
+      }
+      .mk-lede strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .mk-lede code,
+      .mk-prose code,
+      .mk-note code,
+      .mk-table code {
+        font-family: var(--mono);
+        font-size: 0.9em;
+        color: var(--fg);
+        background: color-mix(in oklab, var(--working) 9%, var(--bg-2));
+        border: 1px solid var(--border-soft);
+        border-radius: 4px;
+        padding: 0 4px;
+      }
+
+      .mk-toolbar {
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 0 -32px 34px;
+        padding: 12px 32px;
+        background: color-mix(in oklab, var(--bg) 88%, transparent);
+        backdrop-filter: blur(14px);
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .mk-toolbar-label {
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .mk-toolbar-jump {
+        margin-left: auto;
+        display: flex;
+        gap: 6px;
+      }
+      .mk-toolbar-jump a {
+        font-size: 11.5px;
+        color: var(--dim);
+        text-decoration: none;
+        padding: 5px 9px;
+        border-radius: 7px;
+      }
+      .mk-toolbar-jump a:hover {
+        color: var(--fg);
+        background: var(--panel);
+      }
+
+      .mk-section {
+        margin: 0 0 68px;
+        scroll-margin-top: 78px;
+      }
+      .mk-section-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .mk-num {
+        flex: none;
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 9px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--find);
+      }
+      .mk-section-head h2 {
+        margin: 4px 0 2px;
+        font-size: 20px;
+        font-weight: 640;
+        letter-spacing: -0.01em;
+      }
+      .mk-sub {
+        margin: 0;
+        color: var(--dim);
+        font-size: 13px;
+      }
+      .mk-prose {
+        max-width: 82ch;
+        margin: 0 0 18px 50px;
+        color: var(--muted);
+        font-size: 13.5px;
+        line-height: 1.68;
+      }
+      .mk-prose p {
+        margin: 0 0 10px;
+      }
+      .mk-prose strong {
+        color: var(--fg);
+        font-weight: 600;
+      }
+
+      /* The framed "screenshot": a Console detail pane, at the width it really
+         gets on a 1440px laptop with the rail open. */
+      .mk-frame {
+        margin-left: 50px;
+        max-width: 720px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .mk-frame-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border-soft);
+        background: var(--panel-2);
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .mk-frame-bar .mk-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--working);
+      }
+      .mk-frame-bar b {
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 12px;
+      }
+      .mk-frame-bar .mk-tabs {
+        margin-left: auto;
+        display: flex;
+        gap: 2px;
+      }
+      .mk-frame-bar .mk-tabs span {
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+      }
+      .mk-frame-bar .mk-tabs .on {
+        color: var(--fg);
+        background: color-mix(in oklab, var(--working) 16%, transparent);
+      }
+      .mk-frame-body {
+        padding: 12px 14px 14px;
+      }
+      .mk-caption {
+        margin: 10px 0 0 50px;
+        max-width: 720px;
+        font-size: 12px;
+        color: var(--dim);
+        display: flex;
+        gap: 8px;
+      }
+      .mk-caption::before {
+        content: "↑";
+        color: var(--find);
+      }
+
+      .mk-note {
+        margin: 16px 0 0 50px;
+        max-width: 82ch;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--find);
+        border-radius: 0 9px 9px 0;
+        background: var(--panel);
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .mk-note b {
+        color: var(--fg);
+      }
+      .mk-note.warn {
+        border-left-color: var(--attention);
+      }
+
+      .mk-tradeoffs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin: 18px 0 0 50px;
+        max-width: 720px;
+      }
+      .mk-tradeoff {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel);
+        padding: 12px 14px;
+      }
+      .mk-tradeoff h4 {
+        margin: 0 0 8px;
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .mk-tradeoff.pro h4 {
+        color: var(--idle);
+      }
+      .mk-tradeoff.con h4 {
+        color: var(--danger);
+      }
+      .mk-tradeoff ul {
+        margin: 0;
+        padding-left: 16px;
+        font-size: 12.5px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .mk-tradeoff li {
+        margin-bottom: 5px;
+      }
+      .mk-tradeoff li:last-child {
+        margin-bottom: 0;
+      }
+      .mk-tradeoff li b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+
+      .mk-table {
+        width: 100%;
+        max-width: 1000px;
+        margin-left: 50px;
+        border-collapse: collapse;
+        font-size: 12.5px;
+      }
+      .mk-table th,
+      .mk-table td {
+        text-align: left;
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: top;
+      }
+      .mk-table thead th {
+        font-size: 11px;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--dim);
+        border-bottom: 1px solid var(--border);
+      }
+      .mk-table tbody th {
+        color: var(--fg);
+        font-weight: 600;
+        width: 210px;
+      }
+      .mk-table td {
+        color: var(--muted);
+      }
+      /* Qualified with `td` deliberately: `.mk-table td` sets `color: var(--muted)`
+         and outranks a bare `.mk-yes` on specificity, so the whole verdict column
+         silently rendered grey - the table looked complete and carried none of its
+         meaning. */
+      .mk-table td.mk-yes {
+        color: var(--idle);
+        font-weight: 600;
+      }
+      .mk-table td.mk-no {
+        color: var(--danger);
+        font-weight: 600;
+      }
+      .mk-table td.mk-partial {
+        color: var(--attention);
+        font-weight: 600;
+      }
+
+      /* ==========================================================================
+         Below this line: candidate product CSS. These class names are the ones
+         the real feature would ship with, so the mockup and the diff can be read
+         against each other. Existing app classes (.transcript, .turn, .turn-text,
+         .transcript-log, .transcript-older) are lifted verbatim from
+         src/web/styles.css.
+         ========================================================================== */
+
+      /* ---- transcript (verbatim from src/web/styles.css) ---- */
+      .transcript {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        position: relative;
+      }
+      .transcript-log {
+        max-height: 380px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding-right: 4px;
+        /* Positioned so a hit's offsetTop is measured against the scroll box. */
+        position: relative;
+        /* Deliberately NOT `scroll-behavior: smooth`. A browser's find jumps instantly,
+           and an animated jump on every Enter makes rapid stepping feel laggy - the
+           250ms animation is still running when the next press arrives. It also makes
+           `scrollTop` assignment asynchronous, which silently breaks any code that
+           reads the position back. */
+      }
+      .transcript-older {
+        display: flex;
+        justify-content: center;
+        flex-shrink: 0;
+        padding: 2px 0 6px;
+      }
+      .transcript-older-btn {
+        font-size: 12px;
+        color: var(--dim);
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: transparent;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .transcript-older-btn:hover {
+        color: var(--fg);
+        border-color: var(--dim);
+      }
+      .turn {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .turn-role {
+        font: 600 10px/1 var(--sans);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .turn-assistant .turn-role {
+        color: color-mix(in oklab, var(--agent-accent, var(--muted)) 70%, var(--muted));
+      }
+      .turn-text {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font: 13px/1.5 var(--sans);
+        color: var(--fg);
+        background: var(--bg-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 9px;
+        padding: 8px 10px;
+      }
+      .turn-user .turn-text {
+        background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
+        border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft));
+      }
+      .turn-foreman .turn-role {
+        color: color-mix(in oklab, var(--foreman) 78%, var(--muted));
+      }
+      .turn-foreman .turn-text {
+        background: color-mix(in oklab, var(--foreman) 9%, var(--bg-2));
+        border-color: color-mix(in oklab, var(--foreman) 24%, var(--border-soft));
+      }
+      .turn-tools {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .tool-chip {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 5px;
+        min-width: 0;
+        font: 500 11px/1 var(--mono);
+        color: var(--muted);
+        background: color-mix(in oklab, var(--neutral) 12%, transparent);
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+        padding: 3px 6px;
+      }
+      .tool-chip-name {
+        color: var(--dim);
+      }
+      .tool-chip-detail {
+        color: var(--fg);
+        overflow-wrap: anywhere;
+      }
+      .turn-toolrun {
+        flex-direction: row;
+        align-items: baseline;
+        gap: 8px;
+      }
+      .turn-toolrun .turn-role {
+        flex: none;
+        padding-top: 1px;
+      }
+      .transcript-compose {
+        flex: none;
+        display: flex;
+        gap: 6px;
+        align-items: flex-end;
+      }
+      .transcript-input {
+        flex: 1;
+        min-width: 0;
+        resize: vertical;
+        min-height: 38px;
+        font: 13px/1.45 var(--sans);
+        color: var(--fg);
+        background: var(--bg-2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 8px 10px;
+      }
+      .transcript-input::placeholder {
+        color: var(--dim);
+      }
+      .send-btn {
+        padding: 8px 14px;
+        font: 600 12px/1 var(--sans);
+        color: #06121f;
+        background: var(--working);
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+
+      /* ---- THE HIT (shared by all four approaches) ----
+         One hue in two weights. Every hit is a tint that keeps the text legible
+         at its own weight; the current hit inverts to solid so the eye lands on
+         it without reading the count. `scroll-margin` so a jump never parks a hit
+         under the find bar. */
+      mark.find-hit {
+        background: color-mix(in oklab, var(--find) 24%, transparent);
+        color: var(--fg);
+        border-radius: 3px;
+        box-shadow: 0 0 0 1px color-mix(in oklab, var(--find) 34%, transparent);
+        padding: 0 1px;
+        scroll-margin: 60px 0;
+      }
+      mark.find-hit.is-current {
+        background: var(--find);
+        color: #10130a;
+        font-weight: 600;
+        box-shadow: 0 0 0 2px color-mix(in oklab, var(--find) 40%, transparent);
+      }
+
+      /* ---- shared find-bar atoms ---- */
+      .find-input {
+        flex: 1;
+        min-width: 0;
+        font: 12.5px/1.3 var(--sans);
+        color: var(--fg);
+        background: transparent;
+        border: none;
+        outline: none;
+        padding: 0;
+      }
+      .find-input::placeholder {
+        color: var(--dim);
+      }
+      .find-count {
+        flex: none;
+        font: 500 11.5px/1 var(--mono);
+        color: var(--muted);
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      .find-count.none {
+        color: var(--danger);
+      }
+      .find-btn {
+        flex: none;
+        width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+        transition:
+          color 0.12s ease,
+          background 0.12s ease;
+      }
+      .find-btn:hover:not(:disabled) {
+        color: var(--fg);
+        background: var(--panel-2);
+      }
+      .find-btn:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      .find-btn.on {
+        color: var(--find);
+        border-color: color-mix(in oklab, var(--find) 40%, transparent);
+        background: color-mix(in oklab, var(--find) 12%, transparent);
+      }
+      .find-btn.toggle {
+        width: auto;
+        padding: 0 6px;
+        font: 600 10.5px/1 var(--mono);
+      }
+      .find-sep {
+        flex: none;
+        width: 1px;
+        height: 15px;
+        background: var(--border);
+      }
+
+      /* ==========================================================================
+         A. FLOATING FIND BAR - browser parity
+         ========================================================================== */
+      /* The float is positioned against the LOG, not against `.transcript` - anchored
+         to the latter it covers the launcher strip's buttons instead of the
+         conversation, and the strip's height is not a constant to offset by. */
+      .find-anchor {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      .find-float {
+        position: absolute;
+        top: 6px;
+        right: 12px;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 300px;
+        padding: 5px 6px 5px 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: color-mix(in oklab, var(--panel-2) 94%, transparent);
+        backdrop-filter: blur(10px);
+        box-shadow: var(--shadow);
+      }
+      .find-float:focus-within {
+        border-color: color-mix(in oklab, var(--find) 45%, var(--border));
+      }
+      .find-float[hidden] {
+        display: none;
+      }
+      /* The closed state: one quiet affordance so the feature is discoverable
+         without a keyboard. Sits in the toolbar strip the launchers already use. */
+      .find-open-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 9px;
+        font: 500 11.5px/1 var(--sans);
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        cursor: pointer;
+      }
+      .find-open-btn:hover {
+        color: var(--fg);
+        border-color: var(--dim);
+      }
+      .find-open-btn kbd {
+        font: 500 10px/1 var(--mono);
+        color: var(--dim);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 2px 3px;
+      }
+
+      /* ==========================================================================
+         B. SEARCH RAIL - a results list beside the conversation
+         ========================================================================== */
+      .find-rail-wrap {
+        display: grid;
+        grid-template-columns: 1fr 244px;
+        gap: 10px;
+        align-items: start;
+      }
+      .find-dock {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 8px 6px 10px;
+        margin-bottom: 8px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--bg-2);
+      }
+      .find-dock:focus-within {
+        border-color: color-mix(in oklab, var(--find) 45%, var(--border));
+      }
+      .find-rail {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg-2);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        max-height: 380px;
+      }
+      .find-rail-head {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 9px;
+        border-bottom: 1px solid var(--border-soft);
+        font: 600 10px/1 var(--sans);
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .find-rail-head .find-count {
+        margin-left: auto;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      /* Scope filters. This is the affordance the other two approaches cannot
+         offer: a conversation is 80% tool output by volume, and "only what the
+         human and the agent SAID" is the query most of the time. */
+      .find-scopes {
+        flex: none;
+        display: flex;
+        gap: 4px;
+        padding: 7px 9px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .find-scope {
+        font: 500 10.5px/1 var(--sans);
+        color: var(--dim);
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+      .find-scope:hover {
+        color: var(--fg);
+      }
+      .find-scope[aria-pressed="true"] {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--find) 50%, var(--border));
+        background: color-mix(in oklab, var(--find) 14%, transparent);
+      }
+      .find-results {
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 4px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .find-result {
+        text-align: left;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        padding: 6px 8px;
+        cursor: pointer;
+        font: inherit;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .find-result:hover {
+        background: var(--panel-2);
+      }
+      .find-result.is-current {
+        background: color-mix(in oklab, var(--find) 13%, transparent);
+        border-color: color-mix(in oklab, var(--find) 38%, transparent);
+      }
+      .find-result-who {
+        font: 600 9.5px/1 var(--sans);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .find-result.r-user .find-result-who {
+        color: var(--working);
+      }
+      .find-result.r-assistant .find-result-who {
+        color: color-mix(in oklab, var(--agent-accent, var(--muted)) 78%, var(--muted));
+      }
+      .find-result.r-foreman .find-result-who {
+        color: var(--foreman);
+      }
+      .find-result.r-tool .find-result-who {
+        color: var(--neutral);
+      }
+      .find-result-snip {
+        font: 11.5px/1.45 var(--sans);
+        color: var(--muted);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .find-result-snip b {
+        color: var(--fg);
+        font-weight: 600;
+        background: color-mix(in oklab, var(--find) 26%, transparent);
+        border-radius: 2px;
+        padding: 0 1px;
+      }
+      .find-rail-empty {
+        padding: 18px 12px;
+        text-align: center;
+        font-size: 12px;
+        color: var(--dim);
+      }
+
+      /* ==========================================================================
+         C. DOCKED BAR + SCROLL-TRACK MINIMAP
+         ========================================================================== */
+      .find-track-wrap {
+        display: flex;
+        gap: 6px;
+        align-items: stretch;
+      }
+      .find-track-wrap .transcript-log {
+        flex: 1;
+        min-width: 0;
+      }
+      /* The overview ruler. Every hit in the WHOLE loaded conversation gets a
+         tick at its proportional position, so a long scroll-back is legible
+         without walking it. Clickable: a tick is a jump target. */
+      .find-track {
+        flex: none;
+        width: 12px;
+        position: relative;
+        border-radius: 6px;
+        background: color-mix(in oklab, var(--panel-2) 70%, transparent);
+        border: 1px solid var(--border-soft);
+        cursor: pointer;
+      }
+      .find-tick {
+        position: absolute;
+        left: 2px;
+        right: 2px;
+        height: 3px;
+        border-radius: 2px;
+        background: color-mix(in oklab, var(--find) 62%, transparent);
+        transform: translateY(-1.5px);
+        transition:
+          background 0.12s ease,
+          height 0.12s ease;
+      }
+      .find-tick.is-current {
+        background: var(--find);
+        height: 5px;
+        left: 1px;
+        right: 1px;
+        box-shadow: 0 0 6px color-mix(in oklab, var(--find) 70%, transparent);
+      }
+      /* Where the reader is now, so the ticks mean something relative to them. */
+      .find-viewport {
+        position: absolute;
+        left: 0;
+        right: 0;
+        border-radius: 5px;
+        background: color-mix(in oklab, var(--fg) 8%, transparent);
+        border: 1px solid color-mix(in oklab, var(--fg) 12%, transparent);
+        pointer-events: none;
+      }
+      /* Hits that exist BEYOND the loaded window. The transcript is windowed -
+         `.transcript-older` is real - so a find that silently stops at the window
+         edge is a find that lies. This row is the honest answer. */
+      .find-beyond {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        padding: 6px 10px;
+        border: 1px dashed color-mix(in oklab, var(--find) 40%, var(--border));
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--find) 7%, transparent);
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+      .find-beyond b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .find-beyond button {
+        margin-left: auto;
+        font: 600 11px/1 var(--sans);
+        color: #10130a;
+        background: var(--find);
+        border: none;
+        border-radius: 6px;
+        padding: 5px 9px;
+        cursor: pointer;
+      }
+
+      /* ==========================================================================
+         D. FLOATING BAR + RAIL ON DEMAND (A merged with B)
+         The rail exists only while find is open, so the closed state is byte-for-byte
+         approach A. The bar floats over the LOG rather than over the whole panel, so
+         it sits in the same place whether or not the rail is beside it - which is what
+         lets the narrow mount drop the rail and change nothing else.
+         ========================================================================== */
+      .find-split {
+        display: flex;
+        gap: 10px;
+        align-items: stretch;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      .find-logwrap {
+        position: relative;
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      /* The whole point of D: no rail at all when find is CLOSED, so it costs nothing
+         to read a conversation you are not searching. `data-rail` is written only by
+         open() and close(), so this selector can never hide the rail while find is
+         open - the invariant is enforced by there being exactly one thing that sets it. */
+      .find-split[data-rail="off"] .find-rail {
+        display: none;
+      }
+      /* The rail must NOT contribute its content height to the row - it is a column
+         beside the log, not a reason for the panel to grow. Without the bound it
+         stretches to fit all 25 results and the conversation ends up a short box
+         floating next to a very tall list. Its `.find-results` child already scrolls;
+         this is what gives that overflow something to be relative to. */
+      .find-split .find-rail {
+        flex: none;
+        width: 244px;
+        align-self: stretch;
+        max-height: 380px;
+        min-height: 0;
+      }
+      /* The narrow mount RELOCATES the rail; it does not drop it. A 244px column beside
+         a 430px card would leave ~170px of conversation, so below the threshold the split
+         becomes a column and the rail takes height from the log instead of width. The rail
+         is still visible whenever find is open - which is the invariant - it is simply
+         somewhere else. Driven by a container query rather than a viewport one because the
+         same 720px Console pane exists at every window size.
+
+         This block sits AFTER the base `.find-split .find-rail` rule deliberately: a
+         container query adds no specificity, so at an equal (0,2,0) tie the later rule
+         wins. Placed before it, the stacked layout silently kept the 244px width and the
+         380px height and only LOOKED applied, because the sibling `.transcript-log` rule
+         had no competing declaration to lose to. */
+      .find-container {
+        container-type: inline-size;
+      }
+      @container (max-width: 560px) {
+        .find-split {
+          flex-direction: column;
+          gap: 8px;
+        }
+        .find-split .transcript-log {
+          max-height: 216px;
+        }
+        .find-split .find-rail {
+          width: auto;
+          align-self: stretch;
+          max-height: 156px;
+        }
+        /* The "Results 25" header is dropped here, not shrunk. Stacked, the rail has
+           ~156px to spend and 63px of it was going on chrome, which left room for a
+           single result - a list of one is not a list. The header was the redundant
+           half: the find bar directly above already reads "1 / 25", so the count was
+           being stated twice while the thing it counts had nowhere to render. Without
+           it two results fit, which is the least that makes a list worth having. */
+        .find-split .find-rail-head {
+          display: none;
+        }
+      }
+      .mk-narrow {
+        max-width: 430px;
+      }
+      .mk-frame-note {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        margin: 0 0 10px;
+        font-size: 11.5px;
+        color: var(--dim);
+        border-left: 2px solid var(--border);
+      }
+
+      /* The conversation launcher strip the transcript already has, reused as the
+         dock in approaches A (button) and C (bar). */
+      .conv-launchers {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: none;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border-soft);
+        margin-bottom: 8px;
+      }
+      .conv-launchers .lbl {
+        font: 600 10px/1 var(--sans);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-right: 2px;
+      }
+      .conv-launchers .ghost {
+        font: 500 11.5px/1 var(--sans);
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 5px 9px;
+      }
+      .conv-launchers .spacer {
+        margin-left: auto;
+      }
+
+      @media (max-width: 900px) {
+        .mk-tradeoffs {
+          grid-template-columns: 1fr;
+        }
+        .find-rail-wrap {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mk-page">
+      <header class="mk-masthead">
+        <p class="mk-eyebrow">Mission Control &middot; mockups</p>
+        <h1>Find in conversation</h1>
+        <p class="mk-lede">
+          Four approaches to searching inside a session's conversation window. All four
+          do the thing a browser's find does - <strong>count the occurrences, highlight
+          every one, and step between them</strong> - and all four are
+          <strong>live in this page</strong>: type in any find box below and it really
+          searches the transcript beside it. They differ in where the control lives, what
+          it tells you about matches you cannot currently see, and how much they cost.
+          <strong>D is the one to read last</strong>: it merges A and B, and it is what
+          the recommendation lands on.
+        </p>
+        <p class="mk-lede">
+          Every mockup is drawn with the shipping <code>.transcript</code> /
+          <code>.turn</code> / <code>.turn-text</code> CSS lifted verbatim from
+          <code>src/web/styles.css</code>, at the width a Console detail pane really gets.
+          The frame is the Console/Board detail; the same component mounts on an expanded
+          Card, so anything that only works at 720px wide is disqualified.
+        </p>
+      </header>
+
+      <nav class="mk-toolbar">
+        <span class="mk-toolbar-label">Jump to</span>
+        <span class="mk-toolbar-jump">
+          <a href="#today">Today</a>
+          <a href="#a">A &middot; Floating bar</a>
+          <a href="#b">B &middot; Results rail</a>
+          <a href="#c">C &middot; Bar + minimap</a>
+          <a href="#d">D &middot; Rail on demand</a>
+          <a href="#compare">Compare</a>
+          <a href="#pick">Recommendation</a>
+        </span>
+      </nav>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="today">
+        <div class="mk-section-head">
+          <div class="mk-num">0</div>
+          <div>
+            <h2>What the conversation window does today</h2>
+            <p class="mk-sub">And the one constraint every approach has to answer</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            <code>TranscriptPanel</code> renders a flat list of <code>.turn</code> rows
+            into a <code>.transcript-log</code> scroll box (<code>max-height: 340px</code>
+            on a card, taller in the Console). Four roles are drawn differently -
+            <strong>you</strong> in blue, the <strong>agent</strong> in its own
+            <code>--agent-accent</code>, <strong>Foreman</strong> in purple, and the
+            harness's own plumbing turns in grey - plus folded
+            <strong>tool runs</strong> rendered as <code>.tool-chip</code> rows.
+          </p>
+          <p>
+            <strong>Constraint 1 - the log is windowed.</strong> The stream opens with
+            roughly the last <strong>80 turns</strong> (<code>INIT_LIMIT</code>, capped at
+            512KB, <code>src/server/transcript.ts</code>); everything older exists only as
+            a byte-anchored <code>?before=</code> page the reader has explicitly scrolled
+            back to, held in a module-level LRU outside React
+            (<code>lib/transcript-history.ts</code>). So a find that walks the DOM and
+            reports <em>"3 results"</em> when the session has said the word forty times is
+            not a browser-parity find, it is a
+            <strong>wrong count presented confidently</strong> - the worst of the three
+            outcomes. Each approach below is graded partly on how it answers that.
+          </p>
+          <p>
+            <strong>Constraint 2 - two render modes.</strong> A turn's text is rendered
+            <em>either</em> as raw text under <code>white-space: pre-wrap</code>
+            <em>or</em> parsed through <code>&lt;Markdown&gt;</code>, depending on the
+            <code>useRichText()</code> setting. The mockups below highlight by walking text
+            nodes and injecting <code>&lt;mark&gt;</code>, which is fine for a static
+            page - but <strong>React owns those nodes in the real app</strong>, and a
+            streamed turn arriving would blow the marks away or trip the reconciler. The
+            shipping version has to compute match ranges and render the segments
+            <em>in React</em>. That is the same work for all four approaches, so it does
+            not decide between them, but it is why "it's just a <code>&lt;mark&gt;</code>"
+            underestimates approach A.
+          </p>
+          <p>
+            <strong>Constraint 3 - the chord.</strong> <code>/</code> is the session
+            filter, <code>⌘K</code> is the settings palette, and the 21 entries in
+            <code>ACTIONS</code> have taken most single letters. <code><strong>⌘F</strong></code>
+            is free, is what every user already presses, and - because it carries a command
+            modifier - is the one shape that can fire
+            <strong>while the reply box has focus</strong>, via App's existing
+            <code>chordHasCommandModifier</code> bypass. A bare letter could not.
+          </p>
+          <p>
+            <strong>What is not a constraint:</strong> there is no virtualization anywhere
+            in <code>src/web</code>, so every held turn is a real DOM node and
+            <code>querySelectorAll</code> + measured scroll work exactly as the existing
+            <code>scrollToEpisode</code> already does.
+          </p>
+        </div>
+        <div class="mk-note">
+          <b>Try it:</b> hover any frame below and press <kbd>⌘F</kbd> / <kbd>Ctrl+F</kbd>
+          to open its find bar. <kbd>Enter</kbd> next, <kbd>⇧Enter</kbd> previous,
+          <kbd>Esc</kbd> close. Each is pre-seeded with <code>pane</code> so you can see
+          the counts and highlights immediately. Try <code>registry</code>,
+          <code>tmux</code>, <code>wezterm</code>, <code>null</code> or
+          <code>the</code> for a high-count case.
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="a">
+        <div class="mk-section-head">
+          <div class="mk-num">A</div>
+          <div>
+            <h2>Floating find bar</h2>
+            <p class="mk-sub">Browser parity. The bar floats over the top-right of the log.</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            Exactly Chrome's find, transplanted. <code>⌘F</code> reveals a small bar
+            pinned over the top-right corner of <code>.transcript-log</code>; it takes no
+            layout, so nothing below it moves and the reading position is preserved to the
+            pixel. Every hit is tinted, the current hit is solid, and the count reads
+            <code>3 / 17</code>. <kbd>Enter</kbd> / <kbd>⇧Enter</kbd> and the chevrons walk
+            the ring in document order, wrapping at both ends. <kbd>Esc</kbd> closes it,
+            clears the highlights, and restores the scroll position it opened at.
+          </p>
+          <p>
+            When it is closed, the only trace is a quiet
+            <strong><code>⌘F</code> Find</strong> button in the launcher strip the
+            transcript already has, so the feature is reachable without a keyboard.
+          </p>
+        </div>
+
+        <div class="mk-frame" data-demo="a">
+          <div class="mk-frame-bar">
+            <span class="mk-dot"></span>
+            <b>terminal-registry-ghostty</b>
+            <span>claude &middot; working &middot; 42m</span>
+            <span class="mk-tabs">
+              <span class="on">Conversation</span><span>Work queue</span><span>Diff</span
+              ><span>Files</span>
+            </span>
+          </div>
+          <div class="mk-frame-body">
+            <div class="transcript" style="--agent-accent: #d97757">
+              <div class="conv-launchers">
+                <span class="lbl">Open in</span>
+                <span class="ghost">Terminal</span>
+                <span class="ghost">Claude</span>
+                <span class="spacer"></span>
+                <button class="find-open-btn" data-role="open">
+                  <span>⌕</span> Find <kbd>⌘F</kbd>
+                </button>
+              </div>
+
+              <div class="find-anchor">
+                <div class="find-float" data-role="bar">
+                  <span style="color: var(--dim); font-size: 12px">⌕</span>
+                  <input
+                    class="find-input"
+                    data-role="input"
+                    placeholder="Find in conversation"
+                    value="pane"
+                    spellcheck="false"
+                  />
+                  <span class="find-count" data-role="count">1 / 1</span>
+                  <button class="find-btn toggle" data-role="case" title="Match case">Aa</button>
+                  <span class="find-sep"></span>
+                  <button class="find-btn" data-role="prev" title="Previous (⇧Enter)">‹</button>
+                  <button class="find-btn" data-role="next" title="Next (Enter)">›</button>
+                  <button class="find-btn" data-role="close" title="Close (Esc)">✕</button>
+                </div>
+
+                <div class="transcript-log" data-role="log"></div>
+              </div>
+
+              <div class="transcript-compose">
+                <textarea class="transcript-input" rows="1" placeholder="Reply to this session…"></textarea>
+                <button class="send-btn">Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          Live. The bar overlays the first turn - which is the cost of taking no layout.
+        </p>
+
+        <div class="mk-tradeoffs">
+          <div class="mk-tradeoff pro">
+            <h4>What it buys</h4>
+            <ul>
+              <li><b>Zero learning curve.</b> It is the control every user has already used ten thousand times.</li>
+              <li><b>No layout shift.</b> Opening find does not move the text you were reading, which matters most on the 340px card log.</li>
+              <li><b>Fits every mount.</b> Card, Console detail, Board drill-in - one absolutely-positioned box, no width assumptions.</li>
+              <li><b>Cheapest to build.</b> One component, one range-walk, one <code>OVERLAY_IDS</code> entry.</li>
+            </ul>
+          </div>
+          <div class="mk-tradeoff con">
+            <h4>What it costs</h4>
+            <ul>
+              <li><b>It occludes content.</b> 300&times;32px sits over the top-right of the log; on a card that is a real fraction of the reading area.</li>
+              <li><b>No sense of distribution.</b> "7 / 41" tells you nothing about whether the other 34 are just above or 300 turns back.</li>
+              <li><b>Says nothing about the window.</b> It counts the DOM. Everything before <code>.transcript-older</code> is silently missing from the total.</li>
+              <li><b>No scoping.</b> A transcript is mostly tool output; searching <code>error</code> buries the two turns where someone <em>said</em> it.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="b">
+        <div class="mk-section-head">
+          <div class="mk-num">B</div>
+          <div>
+            <h2>Results rail</h2>
+            <p class="mk-sub">A docked bar plus a list of every match, in context, beside the log.</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            The bar docks above the log rather than floating, and a rail on the right lists
+            <strong>every match with its surrounding sentence and the role that said
+            it</strong>. Clicking a result jumps the log to it; <kbd>Enter</kbd> and the
+            arrows still walk the ring, and the rail's selection tracks the current hit in
+            both directions. Because each result carries a role, the rail can offer the one
+            filter the other two approaches structurally cannot:
+            <strong>You / Agent / Foreman / Tools</strong>.
+          </p>
+          <p>
+            That scoping is not a nicety. By volume a real Mission Control transcript is
+            overwhelmingly folded tool output, so an unscoped find for a common word puts
+            the two turns a human actually wrote somewhere in the middle of forty file
+            paths. This is also the only shape that
+            <strong>degrades gracefully to a server-side search</strong>: the rail is
+            already a list of results with context, so results from beyond the loaded
+            window are just more rows, and clicking one loads that region of the
+            conversation.
+          </p>
+        </div>
+
+        <div class="mk-frame" data-demo="b">
+          <div class="mk-frame-bar">
+            <span class="mk-dot"></span>
+            <b>terminal-registry-ghostty</b>
+            <span>claude &middot; working &middot; 42m</span>
+            <span class="mk-tabs">
+              <span class="on">Conversation</span><span>Work queue</span><span>Diff</span
+              ><span>Files</span>
+            </span>
+          </div>
+          <div class="mk-frame-body">
+            <div class="transcript" style="--agent-accent: #d97757">
+              <div class="find-dock" data-role="bar">
+                <span style="color: var(--dim); font-size: 12px">⌕</span>
+                <input
+                  class="find-input"
+                  data-role="input"
+                  placeholder="Find in conversation"
+                  value="pane"
+                  spellcheck="false"
+                />
+                <span class="find-count" data-role="count">1 / 1</span>
+                <button class="find-btn toggle" data-role="case" title="Match case">Aa</button>
+                <button class="find-btn toggle" data-role="regex" title="Regular expression">.*</button>
+                <span class="find-sep"></span>
+                <button class="find-btn" data-role="prev" title="Previous (⇧Enter)">‹</button>
+                <button class="find-btn" data-role="next" title="Next (Enter)">›</button>
+                <button class="find-btn" data-role="close" title="Close (Esc)">✕</button>
+              </div>
+
+              <div class="find-rail-wrap">
+                <div class="transcript-log" data-role="log"></div>
+
+                <aside class="find-rail">
+                  <div class="find-rail-head">
+                    Results <span class="find-count" data-role="railcount">0</span>
+                  </div>
+                  <div class="find-scopes" data-role="scopes">
+                    <button class="find-scope" data-scope="all" aria-pressed="true">All</button>
+                    <button class="find-scope" data-scope="user" aria-pressed="false">You</button>
+                    <button class="find-scope" data-scope="assistant" aria-pressed="false">Agent</button>
+                    <button class="find-scope" data-scope="tool" aria-pressed="false">Tools</button>
+                  </div>
+                  <div class="find-results" data-role="results"></div>
+                </aside>
+              </div>
+
+              <div class="transcript-compose">
+                <textarea class="transcript-input" rows="1" placeholder="Reply to this session…"></textarea>
+                <button class="send-btn">Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          Live, including the scope filters. Click a result to jump; the rail tracks the
+          current hit as you press Enter.
+        </p>
+
+        <div class="mk-tradeoffs">
+          <div class="mk-tradeoff pro">
+            <h4>What it buys</h4>
+            <ul>
+              <li><b>Answers "where?" not just "how many".</b> You read all 17 matches at once and pick the one you meant, instead of pressing Enter 11 times.</li>
+              <li><b>Role scoping.</b> The only shape that can separate what was <em>said</em> from what a tool <em>printed</em>.</li>
+              <li><b>The natural home for server-side search.</b> Matches beyond the loaded window are just more rows in a list that already exists.</li>
+              <li><b>Nothing is occluded.</b> Every pixel of the conversation stays readable.</li>
+            </ul>
+          </div>
+          <div class="mk-tradeoff con">
+            <h4>What it costs</h4>
+            <ul>
+              <li><b>It takes 244px of width.</b> On an expanded Card - the narrowest of the four mounts - that is not affordable, so this needs a fallback and now there are two find UIs.</li>
+              <li><b>Not browser parity.</b> Reading a list is a different, slower gesture than Enter-Enter-Enter for the common "jump to the next one" case.</li>
+              <li><b>Most expensive.</b> New component, new scroll box, snippet extraction, scope state, selection sync in two directions.</li>
+              <li><b>Layout shift on open</b> unless the rail is always present, and an always-present empty rail is a permanent tax on reading.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="c">
+        <div class="mk-section-head">
+          <div class="mk-num">C</div>
+          <div>
+            <h2>Docked bar + scroll-track minimap</h2>
+            <p class="mk-sub">The bar takes a row; a 12px gutter shows where every match lives.</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            The bar docks into the launcher strip instead of floating, so it occludes
+            nothing, and the scroll box grows a <strong>12px overview ruler</strong> on its
+            right edge - VS Code's minimap marks, or Chrome's own scrollbar ticks. Every
+            match in the loaded conversation gets a tick at its proportional position; the
+            current one is brighter and taller; a soft block shows where the viewport
+            currently is. <strong>The ticks are clickable</strong>, so a match 40 turns back
+            is one click rather than 12 presses of Enter.
+          </p>
+          <p>
+            It is also the approach that can be <strong>honest about the window</strong>
+            cheaply: because the gutter is already a picture of "where the matches are", a
+            dashed row underneath saying <em>"9 more in older turns"</em> with a
+            <strong>Load</strong> button reads as part of the same picture rather than as a
+            bolted-on caveat. Search for <code>tmux</code> in the frame below to see it.
+          </p>
+        </div>
+
+        <div class="mk-frame" data-demo="c">
+          <div class="mk-frame-bar">
+            <span class="mk-dot"></span>
+            <b>terminal-registry-ghostty</b>
+            <span>claude &middot; working &middot; 42m</span>
+            <span class="mk-tabs">
+              <span class="on">Conversation</span><span>Work queue</span><span>Diff</span
+              ><span>Files</span>
+            </span>
+          </div>
+          <div class="mk-frame-body">
+            <div class="transcript" style="--agent-accent: #d97757">
+              <div class="find-dock" data-role="bar">
+                <span style="color: var(--dim); font-size: 12px">⌕</span>
+                <input
+                  class="find-input"
+                  data-role="input"
+                  placeholder="Find in conversation"
+                  value="pane"
+                  spellcheck="false"
+                />
+                <span class="find-count" data-role="count">1 / 1</span>
+                <button class="find-btn toggle" data-role="case" title="Match case">Aa</button>
+                <span class="find-sep"></span>
+                <button class="find-btn" data-role="prev" title="Previous (⇧Enter)">‹</button>
+                <button class="find-btn" data-role="next" title="Next (Enter)">›</button>
+                <button class="find-btn" data-role="close" title="Close (Esc)">✕</button>
+              </div>
+
+              <div class="find-track-wrap">
+                <div class="transcript-log" data-role="log"></div>
+                <div class="find-track" data-role="track" title="Every match, in position. Click to jump.">
+                  <div class="find-viewport" data-role="viewport"></div>
+                </div>
+              </div>
+
+              <div class="find-beyond" data-role="beyond" hidden>
+                <span>⌕</span>
+                <span><b data-role="beyondn">0</b> more in older turns, not yet loaded</span>
+                <button type="button">Load</button>
+              </div>
+
+              <div class="transcript-compose">
+                <textarea class="transcript-input" rows="1" placeholder="Reply to this session…"></textarea>
+                <button class="send-btn">Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          Live, including the ruler. Click a tick to jump straight to that match. Search
+          <code>tmux</code> to see the beyond-the-window row.
+        </p>
+
+        <div class="mk-tradeoffs">
+          <div class="mk-tradeoff pro">
+            <h4>What it buys</h4>
+            <ul>
+              <li><b>Distribution at a glance.</b> "All 17 are in the last three turns" and "they are spread over the whole session" look completely different, instantly.</li>
+              <li><b>Random access without a list.</b> A tick is a jump target, so far-away matches cost one click, at ~2% of the rail's width cost.</li>
+              <li><b>Occludes nothing</b> and keeps browser-parity keys for the common case.</li>
+              <li><b>Makes the windowing honest</b> in a way that reads as information rather than as an apology.</li>
+            </ul>
+          </div>
+          <div class="mk-tradeoff con">
+            <h4>What it costs</h4>
+            <ul>
+              <li><b>Ticks get dense.</b> At 340px tall with 60 matches the gutter saturates into a solid bar and stops meaning anything - it needs clustering, which is more code than it looks.</li>
+              <li><b>Layout shift on open.</b> The docked row pushes the log down ~40px, moving the text you were reading.</li>
+              <li><b>Positions need remeasuring</b> on resize, on markdown images loading, and on every streamed turn - a live session invalidates the ruler constantly.</li>
+              <li><b>No scoping.</b> Same tool-output problem as A.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="d">
+        <div class="mk-section-head">
+          <div class="mk-num">D</div>
+          <div>
+            <h2>Floating bar + rail on demand</h2>
+            <p class="mk-sub">A merged with B. The rail exists only while find is open.</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            <strong>Closed, this is exactly approach A</strong> - one quiet
+            <code>⌘F</code> button in the launcher strip and not one pixel more. Open it
+            and the floating bar appears <em>and</em> a results rail slides in beside the
+            log, carrying B's context snippets and its
+            <strong>You / Agent / Tools</strong> scoping. Close it and the rail leaves
+            with it.
+          </p>
+          <p>
+            That single change - <strong>the rail is bound to the find session, not to
+            the panel</strong> - removes B's worst property. B's rail is a permanent tax
+            on reading a conversation you are not searching; D's costs nothing until you
+            ask for it. The bar floats over the <em>log</em> rather than over the whole
+            panel, which is what lets it sit in the same place with or without the rail.
+          </p>
+          <p>
+            It also turns B's disqualifying flaw into a graceful degradation.
+            <strong>The rail RELOCATES on a narrow mount; it is never dropped.</strong> A
+            244px column beside a 430px Card would leave about 170px of conversation, so
+            below the threshold the split becomes a column: the rail sits under the log and
+            takes its space from the log's height instead of its width. It is still
+            visible whenever find is open - that part does not bend - it is simply
+            somewhere else. Both frames below are the same wiring and the same markup;
+            only the axis changes, and it changes by container query rather than by
+            anything hand-applied.
+          </p>
+          <p>
+            <strong>The rail's visibility is not a separate control.</strong> There is no
+            button to collapse it while find stays open: the rail is visible exactly when
+            find is open and gone exactly when it is closed, which is what makes it one
+            state rather than two. A toggle would buy back the log's full width mid-search,
+            but it would also mean "find is open" no longer tells you what you are looking
+            at - and the closed state, which is the whole of D's argument, would stop being
+            the only way to get the conversation back.
+          </p>
+        </div>
+
+        <div class="mk-frame" data-demo="d">
+          <div class="mk-frame-bar">
+            <span class="mk-dot"></span>
+            <b>terminal-registry-ghostty</b>
+            <span>Console detail &middot; 720px</span>
+            <span class="mk-tabs">
+              <span class="on">Conversation</span><span>Work queue</span><span>Diff</span
+              ><span>Files</span>
+            </span>
+          </div>
+          <div class="mk-frame-body">
+            <div class="transcript find-container" style="--agent-accent: #d97757">
+              <div class="conv-launchers">
+                <span class="lbl">Open in</span>
+                <span class="ghost">Terminal</span>
+                <span class="ghost">Claude</span>
+                <span class="spacer"></span>
+                <button class="find-open-btn" data-role="open">
+                  <span>⌕</span> Find <kbd>⌘F</kbd>
+                </button>
+              </div>
+
+              <div class="find-split" data-role="split" data-rail="on">
+                <div class="find-logwrap">
+                  <div class="find-float" data-role="bar">
+                    <span style="color: var(--dim); font-size: 12px">⌕</span>
+                    <input
+                      class="find-input"
+                      data-role="input"
+                      placeholder="Find in conversation"
+                      value="pane"
+                      spellcheck="false"
+                    />
+                    <span class="find-count" data-role="count">1 / 1</span>
+                    <button class="find-btn toggle" data-role="case" title="Match case">Aa</button>
+                    <span class="find-sep"></span>
+                    <button class="find-btn" data-role="prev" title="Previous (⇧Enter)">‹</button>
+                    <button class="find-btn" data-role="next" title="Next (Enter)">›</button>
+                    <button class="find-btn" data-role="close" title="Close (Esc)">✕</button>
+                  </div>
+                  <div class="transcript-log" data-role="log"></div>
+                </div>
+
+                <aside class="find-rail">
+                  <div class="find-rail-head">
+                    Results <span class="find-count" data-role="railcount"></span>
+                  </div>
+                  <div class="find-scopes" data-role="scopes">
+                    <button class="find-scope" data-scope="all" aria-pressed="true">All</button>
+                    <button class="find-scope" data-scope="user" aria-pressed="false">You</button>
+                    <button class="find-scope" data-scope="assistant" aria-pressed="false">Agent</button>
+                    <button class="find-scope" data-scope="tool" aria-pressed="false">Tools</button>
+                  </div>
+                  <div class="find-results" data-role="results"></div>
+                </aside>
+              </div>
+
+              <div class="transcript-compose">
+                <textarea class="transcript-input" rows="1" placeholder="Reply to this session…"></textarea>
+                <button class="send-btn">Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="mk-caption">
+          Live. Press <kbd>✕</kbd> to see the closed state - it is approach A exactly, and
+          it is the only way the rail goes away.
+        </p>
+
+        <p class="mk-frame-note" style="margin-top: 26px; margin-left: 50px">
+          The same wiring and the same markup at an expanded Card's width. The rail is
+          still here and still bound to find - it has moved under the log rather than
+          beside it.
+        </p>
+        <div class="mk-frame mk-narrow" data-demo="d">
+          <div class="mk-frame-bar">
+            <span class="mk-dot"></span>
+            <b>terminal-registry</b>
+            <span>Card &middot; 430px</span>
+          </div>
+          <div class="mk-frame-body">
+            <div class="transcript find-container" style="--agent-accent: #d97757">
+              <div class="conv-launchers">
+                <span class="lbl">Open in</span>
+                <span class="ghost">Terminal</span>
+                <span class="spacer"></span>
+                <button class="find-open-btn" data-role="open">
+                  <span>⌕</span> Find <kbd>⌘F</kbd>
+                </button>
+              </div>
+
+              <div class="find-split" data-role="split" data-rail="on">
+                <div class="find-logwrap">
+                  <div class="find-float" data-role="bar" style="width: auto; left: 8px; right: 8px">
+                    <span style="color: var(--dim); font-size: 12px">⌕</span>
+                    <input
+                      class="find-input"
+                      data-role="input"
+                      placeholder="Find"
+                      value="pane"
+                      spellcheck="false"
+                    />
+                    <span class="find-count" data-role="count">1 / 1</span>
+                    <button class="find-btn toggle" data-role="case" title="Match case">Aa</button>
+                    <span class="find-sep"></span>
+                    <button class="find-btn" data-role="prev" title="Previous (⇧Enter)">‹</button>
+                    <button class="find-btn" data-role="next" title="Next (Enter)">›</button>
+                    <button class="find-btn" data-role="close" title="Close (Esc)">✕</button>
+                  </div>
+                  <div class="transcript-log" data-role="log"></div>
+                </div>
+
+                <aside class="find-rail">
+                  <div class="find-rail-head">
+                    Results <span class="find-count" data-role="railcount"></span>
+                  </div>
+                  <div class="find-scopes" data-role="scopes">
+                    <button class="find-scope" data-scope="all" aria-pressed="true">All</button>
+                    <button class="find-scope" data-scope="user" aria-pressed="false">You</button>
+                    <button class="find-scope" data-scope="assistant" aria-pressed="false">Agent</button>
+                    <button class="find-scope" data-scope="tool" aria-pressed="false">Tools</button>
+                  </div>
+                  <div class="find-results" data-role="results"></div>
+                </aside>
+              </div>
+
+              <div class="transcript-compose">
+                <textarea class="transcript-input" rows="1" placeholder="Reply…"></textarea>
+                <button class="send-btn">Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mk-tradeoffs">
+          <div class="mk-tradeoff pro">
+            <h4>What it buys</h4>
+            <ul>
+              <li><b>A's closed state, B's open state.</b> Costs nothing to read a conversation you are not searching, and gives full context when you are.</li>
+              <li><b>One implementation at every width.</b> Narrow mounts reflow the rail under the log rather than dropping it - one chord, one match ring, one set of states, no parity trap.</li>
+              <li><b>Role scoping</b> survives the merge, so the tool-output problem is still solved where there is room to solve it.</li>
+              <li><b>Still the natural home for server-side search</b> - matches beyond the loaded window are more rows in a list that already exists.</li>
+            </ul>
+          </div>
+          <div class="mk-tradeoff con">
+            <h4>What it costs</h4>
+            <ul>
+              <li><b>Opening find reflows the conversation.</b> The log narrows by 244px and every line re-wraps - a bigger disturbance than C's one-row push.</li>
+              <li><b>Two layouts to design and test</b>, and the container-query threshold between them is a new thing that can be wrong.</li>
+              <li><b>The stacked rail costs the log height</b>, which is the scarcer axis on a Card - a 380px log becomes ~216px while find is open, and the rail still only shows two results at a time.</li>
+              <li><b>The bar still occludes</b> - and worse where it can least afford to. At Console width it covers a corner; at Card width it spans the entire top row of the log, because there is no room for it to be narrower than the panel.</li>
+              <li><b>No distribution picture.</b> The rail says which matches exist, not how they are spread across a long scroll-back - the one thing C's gutter gives.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="mk-note">
+          <b>The reflow is smaller than it looks, and here is why.</b> Opening find is not a
+          passive change to the page - the user has just asked to be taken somewhere, and
+          the same keystroke scrolls the first hit to the middle of the log. The re-wrap
+          lands <em>underneath</em> a jump they asked for, rather than yanking prose they
+          were mid-sentence on. That is not true of a rail that is always present and
+          re-wraps when it is not wanted, which is what makes D's timing different from
+          B's rather than just smaller.
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="compare">
+        <div class="mk-section-head">
+          <div class="mk-num">=</div>
+          <div>
+            <h2>Side by side</h2>
+            <p class="mk-sub">The questions that actually decide it</p>
+          </div>
+        </div>
+        <table class="mk-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>A &middot; Floating bar</th>
+              <th>B &middot; Results rail</th>
+              <th>C &middot; Bar + minimap</th>
+              <th>D &middot; Rail on demand</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Count + highlight + step</th>
+              <td class="mk-yes">Yes</td>
+              <td class="mk-yes">Yes</td>
+              <td class="mk-yes">Yes</td>
+              <td class="mk-yes">Yes</td>
+            </tr>
+            <tr>
+              <th>Browser muscle memory</th>
+              <td class="mk-yes">Exact</td>
+              <td class="mk-partial">Keys yes, gesture no</td>
+              <td class="mk-yes">Exact, plus extra</td>
+              <td class="mk-yes">Exact, plus extra</td>
+            </tr>
+            <tr>
+              <th>Occludes the conversation</th>
+              <td class="mk-no">Yes, 300&times;32px</td>
+              <td class="mk-yes">No</td>
+              <td class="mk-yes">No</td>
+              <td class="mk-no">Yes, the same bar</td>
+            </tr>
+            <tr>
+              <th>Costs anything while closed</th>
+              <td class="mk-yes">Nothing</td>
+              <td class="mk-no">244px, always</td>
+              <td class="mk-yes">Nothing</td>
+              <td class="mk-yes">Nothing</td>
+            </tr>
+            <tr>
+              <th>Layout shift on open</th>
+              <td class="mk-yes">None</td>
+              <td class="mk-no">Width + a row</td>
+              <td class="mk-partial">One row</td>
+              <td class="mk-no">Width - the log re-wraps</td>
+            </tr>
+            <tr>
+              <th>Shows <em>where</em> matches are</th>
+              <td class="mk-no">No</td>
+              <td class="mk-yes">Listed, with context</td>
+              <td class="mk-yes">Spatially, in the gutter</td>
+              <td class="mk-yes">Listed, with context</td>
+            </tr>
+            <tr>
+              <th>Filter by who said it</th>
+              <td class="mk-no">No</td>
+              <td class="mk-yes">Yes</td>
+              <td class="mk-no">No</td>
+              <td class="mk-yes">Yes, where there is room</td>
+            </tr>
+            <tr>
+              <th>Honest about the windowed log</th>
+              <td class="mk-no">Needs a bolt-on</td>
+              <td class="mk-yes">Natural - more rows</td>
+              <td class="mk-yes">Natural - a "beyond" row</td>
+              <td class="mk-yes">Natural - more rows</td>
+            </tr>
+            <tr>
+              <th>Survives the 340px Card mount</th>
+              <td class="mk-yes">Yes</td>
+              <td class="mk-no">No - needs a fallback UI</td>
+              <td class="mk-partial">Yes, ticks get cramped</td>
+              <td class="mk-yes">Yes - the rail stacks below</td>
+            </tr>
+            <tr>
+              <th>Roughly what it costs</th>
+              <td>The shared match model + one bar</td>
+              <td>The match model + three components, snippet extraction, scope state, two-way selection sync, and a narrow-mount fallback</td>
+              <td>A + a measured gutter and its invalidation</td>
+              <td>B's components, minus the fallback, plus one container-query breakpoint</td>
+            </tr>
+            <tr>
+              <th>Shared by all four</th>
+              <td colspan="4">
+                The match model: ranges computed over <code>TranscriptMessage[]</code> and
+                rendered as segments <em>in React</em> (not DOM-injected
+                <code>&lt;mark&gt;</code>s, which a streamed turn would destroy), a
+                <code>⌘F</code> entry in <code>ACTIONS</code>, and a new method on
+                <code>TranscriptHandle</code> reached through App's existing per-session ref
+                map - the same route <code>detailScrollers</code> already takes.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ================================================================= -->
+      <section class="mk-section" id="pick">
+        <div class="mk-section-head">
+          <div class="mk-num">→</div>
+          <div>
+            <h2>Recommendation</h2>
+            <p class="mk-sub">D, and it supersedes the earlier call for C</p>
+          </div>
+        </div>
+        <div class="mk-prose">
+          <p>
+            <strong>A</strong> is the honest minimum - but its two weaknesses are the two
+            things that make find useful in an <em>agent</em> conversation specifically.
+            Agent transcripts are long, dense, and mostly not written by a human, so "17
+            matches" without "and here is where they are" leaves the user pressing Enter
+            until something looks right, and a count that quietly excludes everything
+            before the scroll-back button is a confident lie.
+          </p>
+          <p>
+            <strong>B</strong> answers both, and is the only shape that can scope by
+            speaker - but 244px taken permanently from every conversation, searched or
+            not, is not affordable, and on an expanded Card it is not available at all.
+          </p>
+          <p>
+            <strong>D collapses that objection rather than trading against it.</strong>
+            Binding the rail to the find session instead of to the panel means the closed
+            state is exactly A - nothing taken from anyone who is not searching - and the
+            open state is B. The narrow mount stops being a second find UI to keep in
+            parity and becomes the same one on a different axis: the rail reflows under the
+            log rather than beside it. That was the specific thing disqualifying B, and it
+            is gone.
+          </p>
+          <p>
+            The invariant that makes it one feature instead of two is worth stating on its
+            own, because everything above depends on it:
+            <strong>the rail is visible exactly when find is open, at every width</strong>.
+            It is never a separate control, never a preference, and never dropped to buy
+            back space - the narrow mount moves it, the closed state removes it, and
+            nothing else touches it. That is what lets "find is open" remain a single
+            legible state rather than a family of them.
+          </p>
+          <p>
+            This supersedes the earlier recommendation of <strong>C</strong>, which was the
+            best available answer only while B's width cost was assumed to be permanent.
+            C's gutter is still the better answer to <em>distribution</em> - where matches
+            sit across a long scroll-back - and that is a real question the rail answers
+            worse. But it is the second question. The first is "which of these did I mean",
+            and a list of contextual snippets answers it better than tick marks do. The two
+            are also not exclusive: the gutter is ~40 lines of CSS and a measured loop over
+            the same match model, so it can be added to D later as a third presentation
+            without disturbing either.
+          </p>
+          <p>
+            The build order that falls out: <strong>the match model first</strong>, then
+            A's bar as the only presentation, then D's rail in both its axes, then C's
+            gutter if distribution turns out to matter in practice. Each step is shippable
+            on its own and none of them rewrites the one before.
+          </p>
+        </div>
+        <div class="mk-note warn" style="border-left-color: var(--working)">
+          <b>The threshold, and what it is measured on.</b> It cannot be a viewport media
+          query - the same 720px Console pane exists at every window size, and an expanded
+          Card's width depends on the grid's column count. It has to be the panel's own
+          width, so the mockup uses a <strong>container query</strong>
+          (<code>container-type: inline-size</code> on the transcript, <code>@container
+          (max-width: 560px)</code> for the stacked axis). That is a mechanism this codebase
+          does not use yet, and adopting it is a real part of D's cost - but it is the only
+          honest way to ask "how wide is this panel", and both D frames on this page are
+          driven by it rather than by anything hand-applied. What remains open is where the
+          number sits: 560px is a guess that wants checking against a real Board drill-in
+          column, which is the narrowest surface that still shows a rail.
+        </div>
+        <div class="mk-note">
+          <b>Five things the mockups settle, whichever shape wins.</b>
+          <br /><b>The chord is <code>⌘F</code></b> - free, universal, and the only shape
+          that can fire from inside the reply box. It goes in <code>ACTIONS</code>
+          (<code>lib/keybindings.ts</code>), which makes it rebindable and
+          settings-searchable for free.
+          <br /><b>It is not an overlay.</b> Registering in <code>OVERLAY_IDS</code> makes
+          App's <code>overlays.anyOpen</code> stand every grid chord down - right for a
+          modal, wrong for a bar inside a panel that does not own the screen.
+          <br /><b>Its Escape is its own</b>, with <code>stopPropagation</code>, following
+          the topbar filter's convention: first Escape clears the query, second closes.
+          <br /><b>The highlight gets a <code>--find</code> token</b> rather than borrowing
+          <code>--attention</code>, which already means "this session needs you". It is the
+          first <code>&lt;mark&gt;</code> in the codebase.
+          <br /><b><code>.turn-role</code> is excluded</b> from the search - otherwise
+          <code>you</code> matches the byline of every message you ever sent.
+        </div>
+        <div class="mk-note warn">
+          <b>Open questions these mockups do not answer.</b>
+          Does a streamed turn arriving re-run the search and move the current-hit ring out
+          from under the reader mid-read - and if it does not, is the count now stale?
+          Does a folded tool run, which collapses several turns into one row with no
+          individual node, need to unfold to show a hit inside it? And does find follow the
+          reader across the <kbd>Tab</kbd> ladder - is finding in the Diff tab and the Files
+          tab the same feature, or three?
+        </div>
+      </section>
+    </div>
+
+    <script>
+      /* ====================================================================
+         Mock conversation. One dataset, rendered into every frame, so
+         the comparison is fair. Deliberately full of repeated technical terms
+         ("pane", "registry", "tmux", "wezterm", "null") because that is what a
+         real session reads like and what makes a find worth having.
+         ==================================================================== */
+      const AGENT = "Claude";
+      const TURNS = [
+        {
+          role: "user",
+          who: "You",
+          text: "The Ghostty adapter is the only emulator that can't read its own screen. Is capture legitimately null there, or did we just not check?",
+        },
+        {
+          role: "assistant",
+          who: AGENT,
+          text: "It was not checked. The line in AGENTS.md said Ghostty \"has no scripting CLI, so list / write / capture are all legitimately null\", and that turned out to be three wrong claims read off release notes rather than off a real install. The CLI is useless, but the AppleScript dictionary enumerates, focuses, spawns and types.\n\nSo write and list are not null. capture genuinely is - AppleScript can't read back the contents of a pane - and retitle is too.",
+        },
+        {
+          role: "toolrun",
+          who: "Ran",
+          tools: [
+            ["Read", "src/server/terminal/registry.ts"],
+            ["Read", "src/server/terminal/ghostty.ts"],
+            ["Grep", "capture: null"],
+          ],
+        },
+        {
+          role: "user",
+          who: "You",
+          text: "Right. And how does the registry correlate a Ghostty pane to a session if the pane has no tty of its own?",
+        },
+        {
+          role: "assistant",
+          who: AGENT,
+          text: "That is exactly the gap hostProcess was added to close. tty was the only join key, and an emulator can answer every other EmulatorPane field and still not know which tty a given pane is on.\n\nSo the registry now walks process ancestry generically in terminal/host.ts, matching argv0 basenames the adapter declares. Where a tty-less pane can be paired unambiguously - the cwd agrees, or it is the last one standing - it pairs. Otherwise it declines, because a wrong pairing does not degrade gracefully: it types into a stranger's tab.",
+        },
+        {
+          role: "toolrun",
+          who: "Ran",
+          tools: [
+            ["Read", "src/server/terminal/host.ts"],
+            ["Bash", "npm test -- correlate.test.ts"],
+          ],
+        },
+        {
+          role: "foreman",
+          who: "Foreman",
+          text: "This session has been on the same pane-correlation question for 40 minutes with no commit. Worth checking whether the tmux path is being regressed while the Ghostty path is added - terminal-enumerate.test.ts covers both.",
+        },
+        {
+          role: "assistant",
+          who: AGENT,
+          text: "Fair. The ordering matters here: MULTIPLEXER_IDS and EMULATOR_IDS are ordered arrays and the order IS naming priority. enumerateTerminals sweeps multiplexers first, then emulators, and the first backend holding a pane on a session's tty gets to name it.\n\nSince a tmux pane lives inside a wezterm pane, that ordering is what keeps a tmux session from being labelled by the wezterm window that happens to be showing it. Adding Ghostty to the emulator list can't disturb that, but I'll pin it anyway.",
+        },
+        {
+          role: "toolrun",
+          who: "Ran",
+          tools: [
+            ["Edit", "test/terminal-enumerate.test.ts"],
+            ["Bash", "npm test -- terminal-enumerate"],
+          ],
+        },
+        {
+          role: "user",
+          who: "You",
+          text: "What about writes? If Ghostty has no tty for the pane, does bindPane still land on the right one?",
+        },
+        {
+          role: "assistant",
+          who: AGENT,
+          text: "Yes, because bindPane defers to innermostPane rather than restating the rule. The multiplexer pane wins when there is one - it is the agent's - and the emulator's pane is only the client showing it.\n\nSo for a bare Ghostty session with no tmux inside it, the innermost pane IS the Ghostty pane and the write goes there. For a tmux session hosted in a Ghostty tab, the tmux pane wins and Ghostty is only ever used to raise the window. The write lock is keyed on paneToken of whatever innermostPane returned, so the lock guards the pane the write actually reaches, by construction.",
+        },
+        {
+          role: "toolrun",
+          who: "Ran",
+          tools: [
+            ["Read", "src/shared/pane.ts"],
+            ["Bash", "npm test -- pane-lock.test.ts"],
+            ["Bash", "npm test -- pane-write-capabilities"],
+          ],
+        },
+        {
+          role: "assistant",
+          who: AGENT,
+          text: "One more thing worth flagging before I open the PR. Because an Apple Events backend LAUNCHES its terminal by being asked anything at all, the sweep has to skip Ghostty entirely when the host process is not running - otherwise the 1500ms discovery tick would start Ghostty on a machine where nobody opened it. That is gated on hostProcess being present in the process table, not on the adapter being registered.",
+        },
+        {
+          role: "harness",
+          who: "Mission Control",
+          text: "/reload-skills",
+        },
+        {
+          role: "user",
+          who: "You",
+          text: "Good. Ship it - but make sure the null capabilities are declared, not omitted, so a reader can tell \"we asked and the answer is no\" from \"nobody filled this in\".",
+        },
+        {
+          role: "assistant",
+          who: AGENT,
+          text: "Declared. capture: null and retitle: null both carry a comment naming the AppleScript limitation that produced them, and terminal-ghostty.test.ts asserts the adapter is complete rather than partially filled. Opening the PR now.",
+        },
+        {
+          role: "toolrun",
+          who: "Ran",
+          tools: [
+            ["Bash", "git commit -m feat(terminal): ghostty emulator adapter"],
+            ["Bash", "gh pr create"],
+          ],
+        },
+      ];
+
+      const ROLE_CLASS = {
+        user: "turn-user",
+        assistant: "turn-assistant",
+        foreman: "turn-foreman",
+        harness: "turn-harness",
+        toolrun: "turn-toolrun",
+      };
+
+      function renderTranscript(log) {
+        log.innerHTML = "";
+        const older = document.createElement("div");
+        older.className = "transcript-older find-skip";
+        older.innerHTML =
+          '<button class="transcript-older-btn" type="button">Load 34 older turns</button>';
+        log.appendChild(older);
+
+        for (const t of TURNS) {
+          const el = document.createElement("div");
+          el.className = "turn " + (ROLE_CLASS[t.role] || "");
+          el.dataset.role = t.role;
+          el.dataset.who = t.who;
+
+          const role = document.createElement("div");
+          /* find-skip: a role byline is chrome, not conversation. Without this,
+             searching "you" hits the label above every message you ever sent. */
+          role.className = "turn-role find-skip";
+          role.textContent = t.who;
+          el.appendChild(role);
+
+          if (t.tools) {
+            const wrap = document.createElement("div");
+            wrap.className = "turn-tools";
+            for (const [name, detail] of t.tools) {
+              const chip = document.createElement("span");
+              chip.className = "tool-chip";
+              chip.innerHTML =
+                '<span class="tool-chip-name"></span><span class="tool-chip-detail"></span>';
+              chip.firstChild.textContent = name;
+              chip.lastChild.textContent = detail;
+              wrap.appendChild(chip);
+            }
+            el.appendChild(wrap);
+          } else {
+            const body = document.createElement("div");
+            body.className = "turn-text";
+            body.textContent = t.text;
+            el.appendChild(body);
+          }
+          log.appendChild(el);
+        }
+      }
+
+      /* ====================================================================
+         The finder. Shared by all four approaches, which is the point: the
+         match model is one thing and the three mockups are three presentations
+         of it. If this ships, this is the piece that gets factored out.
+         ==================================================================== */
+      function createFinder(log) {
+        let hits = [];
+        let idx = -1;
+
+        function clear() {
+          const marks = log.querySelectorAll("mark.find-hit");
+          const parents = new Set();
+          marks.forEach((m) => {
+            const p = m.parentNode;
+            parents.add(p);
+            p.replaceChild(document.createTextNode(m.textContent), m);
+          });
+          parents.forEach((p) => p.normalize());
+          hits = [];
+          idx = -1;
+        }
+
+        function snippet(text, start, len) {
+          const a = Math.max(0, start - 46);
+          const b = Math.min(text.length, start + len + 46);
+          return {
+            pre: (a > 0 ? "…" : "") + text.slice(a, start),
+            hit: text.slice(start, start + len),
+            post: text.slice(start + len, b) + (b < text.length ? "…" : ""),
+          };
+        }
+
+        function search(query, opts) {
+          opts = opts || {};
+          clear();
+          if (!query) return { hits, idx, error: false };
+
+          let re;
+          try {
+            const src = opts.regex
+              ? query
+              : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            re = new RegExp(src, opts.caseSensitive ? "g" : "gi");
+          } catch (e) {
+            return { hits: [], idx: -1, error: true };
+          }
+
+          const walker = document.createTreeWalker(log, NodeFilter.SHOW_TEXT, {
+            acceptNode(n) {
+              if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
+              if (n.parentElement && n.parentElement.closest(".find-skip"))
+                return NodeFilter.FILTER_REJECT;
+              return NodeFilter.FILTER_ACCEPT;
+            },
+          });
+          const nodes = [];
+          let n;
+          while ((n = walker.nextNode())) nodes.push(n);
+
+          for (const node of nodes) {
+            const text = node.nodeValue;
+            re.lastIndex = 0;
+            let m;
+            let last = 0;
+            let found = false;
+            const frag = document.createDocumentFragment();
+            while ((m = re.exec(text))) {
+              if (m[0] === "") {
+                re.lastIndex++;
+                continue;
+              }
+              found = true;
+              if (m.index > last)
+                frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+              const mk = document.createElement("mark");
+              mk.className = "find-hit";
+              mk.textContent = m[0];
+              const s = snippet(text, m.index, m[0].length);
+              mk.dataset.pre = s.pre;
+              mk.dataset.post = s.post;
+              frag.appendChild(mk);
+              last = m.index + m[0].length;
+            }
+            if (found) {
+              if (last < text.length)
+                frag.appendChild(document.createTextNode(text.slice(last)));
+              node.parentNode.replaceChild(frag, node);
+            }
+          }
+
+          hits = Array.from(log.querySelectorAll("mark.find-hit"));
+          idx = hits.length ? 0 : -1;
+          return { hits, idx, error: false };
+        }
+
+        function setCurrent(i, scroll) {
+          if (!hits.length) return -1;
+          idx = ((i % hits.length) + hits.length) % hits.length;
+          hits.forEach((h, k) => h.classList.toggle("is-current", k === idx));
+          if (scroll !== false) {
+            const el = hits[idx];
+            const top = el.offsetTop - log.clientHeight / 2 + el.offsetHeight / 2;
+            log.scrollTop = Math.max(0, top);
+          }
+          return idx;
+        }
+
+        return {
+          search,
+          clear,
+          setCurrent,
+          next: (s) => setCurrent(idx + 1, s),
+          prev: (s) => setCurrent(idx - 1, s),
+          get hits() {
+            return hits;
+          },
+          get idx() {
+            return idx;
+          },
+        };
+      }
+
+      /* Pretend server-side knowledge: how many matches live in the 34 turns
+         that have not been loaded into the DOM. In the real feature this is a
+         count the daemon returns; here it is a plausible fixed table so the
+         "beyond the window" affordance can be seen working. */
+      const BEYOND = { tmux: 9, pane: 22, registry: 14, wezterm: 6, null: 4 };
+      function beyondCount(q) {
+        return BEYOND[q.trim().toLowerCase()] || 0;
+      }
+
+      /* ==================== wiring, per demo ====================
+         Capabilities are read off the MARKUP, not off the demo's letter. That is what
+         lets D's two frames - the 720px Console pane and the 430px Card - run the same
+         code and differ only by whether a rail element exists, which is precisely the
+         claim approach D is making. */
+      function wire(frame, kind) {
+        const q = (sel) => frame.querySelector(`[data-role="${sel}"]`);
+        const log = q("log");
+        renderTranscript(log);
+
+        const finder = createFinder(log);
+        const input = q("input");
+        const count = q("count");
+        const bar = q("bar");
+        const caseBtn = q("case");
+        const regexBtn = q("regex");
+        const opts = { caseSensitive: false, regex: false };
+
+        const hasRail = Boolean(q("results"));
+        const hasTrack = Boolean(q("track"));
+        const floats = bar.classList.contains("find-float");
+        const split = q("split");
+
+        let scope = "all";
+        /* B's rail is part of the panel and always on. D's is part of the find
+           SESSION: on exactly while find is open, off exactly when it is closed.
+           Nothing else moves it - there is deliberately no independent toggle, so
+           "find is open" and "the rail is showing" are one state, not two. */
+        let railOn = hasRail;
+        /* An unparseable pattern is not "nothing matched" - it is "that is not a
+           question I can ask". Reporting it as No results tells the user their
+           search was fine and the conversation is empty, which is the wrong half
+           of the problem to go looking at. */
+        let badPattern = false;
+
+        function render(scroll) {
+          const total = finder.hits.length;
+          const shown = visibleHits();
+          if (!input.value) {
+            count.textContent = "";
+            count.classList.remove("none");
+          } else if (badPattern) {
+            count.textContent = "Bad pattern";
+            count.classList.add("none");
+          } else if (!shown.length) {
+            count.textContent = "No results";
+            count.classList.add("none");
+          } else {
+            const at = shown.indexOf(finder.hits[finder.idx]);
+            count.textContent = `${at < 0 ? 1 : at + 1} / ${shown.length}`;
+            count.classList.remove("none");
+          }
+          if (hasRail) renderRail();
+          if (hasTrack) renderTrack();
+          void total;
+          void scroll;
+        }
+
+        function visibleHits() {
+          if (!hasRail || !railOn || scope === "all") return finder.hits;
+          return finder.hits.filter((h) => hitScope(h) === scope);
+        }
+        function hitScope(h) {
+          const turn = h.closest(".turn");
+          const r = turn ? turn.dataset.role : "";
+          if (r === "toolrun") return "tool";
+          if (r === "user") return "user";
+          if (r === "assistant") return "assistant";
+          return "other";
+        }
+
+        function run(scroll) {
+          badPattern = finder.search(input.value, opts).error;
+          if (finder.hits.length) {
+            const vis = visibleHits();
+            const first = vis.length ? finder.hits.indexOf(vis[0]) : 0;
+            finder.setCurrent(first, scroll !== false);
+          }
+          render();
+        }
+
+        function step(dir) {
+          const vis = visibleHits();
+          if (!vis.length) return;
+          const cur = vis.indexOf(finder.hits[finder.idx]);
+          const nextVis = vis[(((cur + dir) % vis.length) + vis.length) % vis.length];
+          finder.setCurrent(finder.hits.indexOf(nextVis), true);
+          render();
+        }
+
+        input.addEventListener("input", () => run(true));
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            step(e.shiftKey ? -1 : 1);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            close();
+          }
+        });
+        q("next").addEventListener("click", () => step(1));
+        q("prev").addEventListener("click", () => step(-1));
+        caseBtn.addEventListener("click", () => {
+          opts.caseSensitive = !opts.caseSensitive;
+          caseBtn.classList.toggle("on", opts.caseSensitive);
+          run(false);
+        });
+        if (regexBtn)
+          regexBtn.addEventListener("click", () => {
+            opts.regex = !opts.regex;
+            regexBtn.classList.toggle("on", opts.regex);
+            run(false);
+          });
+
+        /* Called only from open() and close(). Its single caller pair IS the
+           contract: the rail cannot reach a state find did not put it in. */
+        function setRail(on) {
+          railOn = on && hasRail;
+          if (split) split.dataset.rail = railOn ? "on" : "off";
+        }
+
+        function open() {
+          if (floats) {
+            bar.hidden = false;
+            const ob = q("open");
+            if (ob) ob.style.visibility = "hidden";
+          }
+          /* D: the rail comes back with the find session that owns it. */
+          if (hasRail && floats) setRail(true);
+          input.focus();
+          input.select();
+          run(true);
+        }
+        function close() {
+          finder.clear();
+          if (floats) {
+            bar.hidden = true;
+            const ob = q("open");
+            if (ob) ob.style.visibility = "visible";
+          }
+          /* The rail leaves with find - that is the whole of D's argument, so the
+             closed state has to be genuinely rail-free rather than merely empty. */
+          if (hasRail && floats) setRail(false);
+          input.blur();
+          render();
+          if (hasTrack) {
+            q("beyond").hidden = true;
+            renderTrack();
+          }
+          if (hasRail) q("results").innerHTML = "";
+        }
+        q("close").addEventListener("click", close);
+        const openBtn = q("open");
+        if (openBtn) openBtn.addEventListener("click", open);
+
+        /* ---- B: the results rail ---- */
+        function renderRail() {
+          const box = q("results");
+          const railcount = q("railcount");
+          if (!box || !railOn) return;
+          const vis = visibleHits();
+          railcount.textContent = input.value ? String(vis.length) : "";
+          box.innerHTML = "";
+          if (!input.value) return;
+          if (badPattern) {
+            box.innerHTML = `<div class="find-rail-empty"><b>${escapeHtml(
+              input.value,
+            )}</b> is not a valid regular expression.</div>`;
+            return;
+          }
+          if (!vis.length) {
+            box.innerHTML = `<div class="find-rail-empty">Nothing matches <b>${escapeHtml(
+              input.value,
+            )}</b>${scope !== "all" ? " in this scope" : ""}.</div>`;
+            return;
+          }
+          vis.forEach((h) => {
+            const turn = h.closest(".turn");
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "find-result r-" + hitScope(h);
+            if (h === finder.hits[finder.idx]) btn.classList.add("is-current");
+            btn.innerHTML =
+              `<span class="find-result-who">${escapeHtml(
+                turn ? turn.dataset.who : "",
+              )}</span>` +
+              `<span class="find-result-snip">${escapeHtml(
+                h.dataset.pre || "",
+              )}<b>${escapeHtml(h.textContent)}</b>${escapeHtml(h.dataset.post || "")}</span>`;
+            btn.addEventListener("click", () => {
+              finder.setCurrent(finder.hits.indexOf(h), true);
+              render();
+            });
+            box.appendChild(btn);
+          });
+          const cur = box.querySelector(".is-current");
+          if (cur) cur.scrollIntoView({ block: "nearest" });
+        }
+        const scopes = q("scopes");
+        if (scopes)
+          scopes.addEventListener("click", (e) => {
+            const b = e.target.closest("[data-scope]");
+            if (!b) return;
+            scope = b.dataset.scope;
+            scopes.querySelectorAll("[data-scope]").forEach((x) =>
+              x.setAttribute("aria-pressed", String(x === b)),
+            );
+            run(true);
+          });
+
+        /* ---- C: the overview ruler ---- */
+        function renderTrack() {
+          const track = q("track");
+          if (!track) return;
+          track.querySelectorAll(".find-tick").forEach((t) => t.remove());
+          const h = log.scrollHeight || 1;
+          finder.hits.forEach((hit, i) => {
+            const tick = document.createElement("div");
+            tick.className = "find-tick" + (i === finder.idx ? " is-current" : "");
+            tick.style.top = ((hit.offsetTop + hit.offsetHeight / 2) / h) * 100 + "%";
+            tick.addEventListener("click", (e) => {
+              e.stopPropagation();
+              finder.setCurrent(i, true);
+              render();
+            });
+            track.appendChild(tick);
+          });
+          const vp = q("viewport");
+          vp.style.top = (log.scrollTop / h) * 100 + "%";
+          vp.style.height = (log.clientHeight / h) * 100 + "%";
+
+          const beyond = q("beyond");
+          const n = input.value ? beyondCount(input.value) : 0;
+          beyond.hidden = !n;
+          if (n) q("beyondn").textContent = String(n);
+        }
+        if (hasTrack) {
+          log.addEventListener("scroll", () => {
+            const vp = q("viewport");
+            const h = log.scrollHeight || 1;
+            vp.style.top = (log.scrollTop / h) * 100 + "%";
+            vp.style.height = (log.clientHeight / h) * 100 + "%";
+          });
+          q("track").addEventListener("click", (e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            log.scrollTop = ((e.clientY - r.top) / r.height) * log.scrollHeight -
+              log.clientHeight / 2;
+          });
+        }
+
+        /* ⌘F only while the pointer is over this frame, so the mockup does not
+           steal the reader's own browser-find for the whole document. */
+        let hot = false;
+        frame.addEventListener("mouseenter", () => (hot = true));
+        frame.addEventListener("mouseleave", () => (hot = false));
+        document.addEventListener("keydown", (e) => {
+          if (!hot) return;
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+            e.preventDefault();
+            open();
+          }
+        });
+
+        /* Pre-seeded so the counts and highlights are visible on load.
+           Scheduled after `load` rather than on a rAF for two reasons, both of
+           which only exist because this is a static page seeding itself - the real
+           feature seeds on a keypress, long after either could bite. Centring a hit
+           divides by the log's clientHeight, and demo B's log is a grid item whose
+           height is not resolved in the first frame. And Chrome restores the scroll
+           position of sub-scrollers asynchronously after load, which lands on top of
+           an earlier seed and parks the log at the bottom. */
+        if (floats) {
+          bar.hidden = false;
+          const ob = q("open");
+          if (ob) ob.style.visibility = "hidden";
+        }
+        const seed = () => setTimeout(() => run(true), 120);
+        if (document.readyState === "complete") seed();
+        else window.addEventListener("load", seed, { once: true });
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(
+          /[&<>"']/g,
+          (c) =>
+            ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+        );
+      }
+
+      document.querySelectorAll("[data-demo]").forEach((f) => wire(f, f.dataset.demo));
+    </script>
+  </body>
+</html>

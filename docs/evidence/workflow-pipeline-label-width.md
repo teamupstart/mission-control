@@ -35,15 +35,26 @@ The Session card, to scale, from the numbers above (card `x=2 y=104 w=176 h=84`)
  x=2                                                    x=178
   +--------------------------------------------------------+  y=104
   |                                                         |
-  |  ◇      Session                                         |  "Session"          x 37.7 -> 86.6,  y 117
-  | x=15    Submits the work                                |  "Submits the work" x 37.7 -> 121.5, y 134
-  |         ( Changes requested )                           |  chip               x 37.7 -> 157.9, y 152
-  |                                                         |
+  |         Session                                         |  "Session"          x 37.7 -> 86.6,  y 117
+  |  ◇      Submits the work                                |  "Submits the work" x 37.7 -> 121.5, y 134
+  | x=15    ( Changes requested )                           |  chip               x 37.7 -> 157.9, y 152
+  |                                                         |  ◇ mark             x 15 -> 29.7,    y 136.5
   +--------------------------------------------------------+  y=188
 ```
 
 The diamond holds the left column; the label, the subtitle and the chip stack as three rows of
 the right column. Every one of them runs left-to-right.
+
+The diamond is centred against the whole card: its box is `y 136.5 -> 155.5`, centre **146.0**,
+and the card is `y 104 -> 188`, centre **146.0**.
+
+That centring needs saying because the first version of this fix got it wrong. The mark carried
+`grid-row: 1 / -1`, which reads as "span every row" and is not: `-1` counts back from the last
+line of the EXPLICIT grid, and the chip's row here is implicit, so it resolved to row 1 alone and
+drew the diamond 14.5px above the card's centre. The span is now written explicitly, and scoped
+with `:has(.wf-pipeline-status)` to the cards that have a chip - spanning unconditionally would
+add an empty second track to the editor's chipless terminus, which `row-gap` then makes 6px
+taller (measured: 61px against 55px).
 
 ## Per-character proof
 
@@ -118,7 +129,8 @@ rows, and would have folded a stage subtitle into three lines under a long stage
 
 Each of the three cards that pairs a label with a chip - `.wf-pipeline-terminus`,
 `.wf-pipeline-reviewer`, `.wf-pipeline-stage-head` - is a grid that gives the chip its own row,
-and the labels use `overflow-wrap: break-word` rather than `anywhere`.
+and the labels use `overflow-wrap: break-word` rather than `anywhere`. On the terminus the
+diamond spans the chip's row so it stays centred against the card.
 
 The chip takes its own row unconditionally rather than only when it will not fit. A run is live,
 and a member's chip travels `Not started` -> `Running` -> `Changes requested` while the operator

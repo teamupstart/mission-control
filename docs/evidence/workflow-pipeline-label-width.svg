@@ -42,7 +42,7 @@
     <text x="1099.8" y="258.0" fill="rgb(246, 167, 51)" font-size="11" text-anchor="middle">Not started</text>
     <rect x="1437.7" y="152" width="82.5" height="23" rx="11.5" fill="none" stroke="rgb(246, 167, 51)" stroke-opacity="0.75"/>
     <text x="1479.0" y="167.0" fill="rgb(246, 167, 51)" font-size="11" text-anchor="middle">Not reached</text>
-    <text x="15.0" y="135.7" fill="rgb(74, 158, 255)" font-size="11">◇</text>
+    <text x="15.0" y="150.2" fill="rgb(74, 158, 255)" font-size="11">◇</text>
     <text x="236.9" y="161.0" fill="rgb(35, 42, 51)" font-size="11">→</text>
     <rect x="333" y="92" width="47" height="15" rx="4" fill="none" stroke="#39414f"/>
     <text x="356.5" y="103.1" fill="rgb(124, 135, 152)" font-size="8.5" letter-spacing="0.4" text-anchor="middle">CHECK</text>
@@ -51,7 +51,7 @@
     <text x="600.9" y="161.0" fill="rgb(35, 42, 51)" font-size="11">→</text>
     <text x="964.9" y="161.0" fill="rgb(35, 42, 51)" font-size="11">→</text>
     <text x="1328.9" y="161.0" fill="rgb(35, 42, 51)" font-size="11">→</text>
-    <text x="1415.0" y="135.7" fill="rgb(74, 158, 255)" font-size="11">◆</text>
+    <text x="1415.0" y="150.2" fill="rgb(74, 158, 255)" font-size="11">◆</text>
     <text x="244.0" y="139.6" fill="#7d8797" font-size="9.5" letter-spacing="0.8" text-anchor="middle">SUBMITTED</text>
     <text x="608.1" y="139.6" fill="#7d8797" font-size="9.5" letter-spacing="0.8" text-anchor="middle">ALL PASS</text>
     <text x="972.0" y="139.6" fill="#7d8797" font-size="9.5" letter-spacing="0.8" text-anchor="middle">PASS</text>

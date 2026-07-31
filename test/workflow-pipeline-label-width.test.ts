@@ -143,6 +143,43 @@ test("no pipeline label reports a one-character min-content width", () => {
   );
 });
 
+/**
+ * Giving the chip its own row moved the terminus from one row to two, and the diamond has to
+ * stay centred against the whole card rather than against the label row.
+ *
+ * The trap this pins is `grid-row: 1 / -1`, which reads as "span every row" and does not:
+ * `-1` counts back from the last line of the EXPLICIT grid, and the chip's row is implicit, so
+ * it resolves to row 1 alone. It shipped that way once and left the diamond 14.5px high.
+ */
+test("the terminus diamond spans the chip's row rather than floating above centre", () => {
+  const markRules = rulesFor("wf-pipeline-terminus-mark");
+
+  const trap = markRules
+    .filter((rule) => /\/\s*-1\s*$/.test(declaration(rule, "grid-row") ?? ""))
+    .flatMap((rule) => rule.selectors);
+  assert.deepEqual(
+    trap,
+    [],
+    "`grid-row: <n> / -1` does not span an implicit row - `-1` is the last line of the " +
+      "EXPLICIT grid, and `.wf-pipeline-terminus` declares no `grid-template-rows`. Use an " +
+      "explicit `span`. Offenders: " + trap.join(", "),
+  );
+
+  // The span has to be scoped to the cards that HAVE a chip: spanning unconditionally adds an
+  // empty second track to the editor's chipless terminus, which `row-gap` then makes 6px taller.
+  const scopedSpan = markRules.some(
+    (rule) =>
+      /\bspan\b/.test(declaration(rule, "grid-row") ?? "")
+      && rule.selectors.some((s) => s.includes(":has(.wf-pipeline-status)")),
+  );
+  assert.ok(
+    scopedSpan,
+    "`.wf-pipeline-terminus-mark` needs a `grid-row` span scoped by " +
+      "`:has(.wf-pipeline-status)`, so the diamond spans the chip's row on a run and the " +
+      "chipless terminus in the editor keeps its single-row height.",
+  );
+});
+
 test("every chip render site is one of the containers the escape was checked on", () => {
   const renderSites = [...source.matchAll(/<PipelineStatusChip\b/g)].length;
   assert.equal(

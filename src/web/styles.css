@@ -10565,12 +10565,11 @@ select.ensemble-judge-persona {
   border-radius: 12px;
   background: var(--panel);
 }
-/* The mark spans every row so the diamond stays centred against the whole card, and the
-   label column is `minmax(0, 1fr)` so a long name wraps inside the card instead of widening
-   it. The status chip takes the label column on its own row rather than sitting beside the
-   label: a run's chip is as wide as "Changes requested" (120px of a 176px card), so there is
-   no beside-the-label to sit in, and a row that tried to fit both crushed the label to zero
-   width and stacked "Session" one letter per line. */
+/* The label column is `minmax(0, 1fr)` so a long name wraps inside the card instead of
+   widening it. The status chip takes the label column on its own row rather than sitting
+   beside the label: a run's chip is as wide as "Changes requested" (120px of a 176px card),
+   so there is no beside-the-label to sit in, and a row that tried to fit both crushed the
+   label to zero width and stacked "Session" one letter per line. */
 .wf-pipeline-terminus {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -10580,7 +10579,16 @@ select.ensemble-judge-persona {
   row-gap: 6px;
   width: 176px;
 }
-.wf-pipeline-terminus-mark { grid-row: 1 / -1; font-size: 15px; color: var(--working); }
+.wf-pipeline-terminus-mark { grid-row: 1; font-size: 15px; color: var(--working); }
+/* The diamond is centred against the WHOLE card, so where a chip adds a second row the mark
+   has to span it. `grid-row: 1 / -1` cannot do that here and is the trap this rule replaces:
+   `-1` counts back from the last line of the EXPLICIT grid, and these rows are implicit, so
+   it resolved to row 1 alone and left the diamond 14.5px above the card's centre.
+   Scoped to the cards that HAVE a chip, because spanning unconditionally would add an empty
+   second track to the editor's chipless terminus and `row-gap` would make it 6px taller. */
+.wf-pipeline-terminus:has(.wf-pipeline-status) .wf-pipeline-terminus-mark {
+  grid-row: 1 / span 2;
+}
 .wf-pipeline-terminus .wf-pipeline-status { grid-column: 2; justify-self: start; }
 .wf-pipeline-terminus-body,
 .wf-pipeline-reviewer-body,

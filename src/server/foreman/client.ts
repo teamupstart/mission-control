@@ -1,4 +1,14 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  rmdirSync,
+  writeFileSync,
+  type Dirent,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { BASE_URL, stateDir } from "@shared/harness-runtime.mjs";
 import { DEFAULT_LLM_RUNNER_ID, isLlmRunnerId } from "@shared/llm.ts";
@@ -85,12 +95,13 @@ const enc = encodeURIComponent;
 // dropped. A daemon restart is an ordinary event, and the worker deliberately outlives one,
 // so "the daemon was down for four seconds" must not be a way to lose spend.
 //
-// It is a FILE, not the database, and that distinction is the whole of how this respects
+// It is a FILE SPOOL, not the database, and that distinction is the whole of how this respects
 // the worker/daemon boundary. The rule the worker lives under is that the daemon is the
-// only process that opens SQLite - not that the worker may never write a byte. A spool file
-// beside the token in `stateDir()` owns nothing the daemon reads, defines no schema, and
-// participates in no migration; it is a buffer for requests the worker has not managed to
-// make yet. The ledger is still written in exactly one place, by the daemon, off the route.
+// only process that opens SQLite - not that the worker may never write a byte. Report files
+// beside the token in `stateDir()` own nothing the daemon reads, define no schema, and
+// participate in no migration; the directory is a buffer for requests the worker has not
+// managed to make yet. The ledger is still written in exactly one place, by the daemon,
+// off the route.
 //
 // Entries leave the spool only on a daemon ACK. An in-memory queue alone had a real hole:
 // a worker crash, a redeploy, or a Ctrl-C while the daemon happened to be down lost every
@@ -99,8 +110,13 @@ const enc = encodeURIComponent;
 // mode "delivered twice", which the daemon already absorbs - `window_end_ns` holds the run
 // id, so its insert is idempotent.
 
-/** Reports awaiting delivery, oldest first. Mirrored to `spendOutboxPath()` on every change. */
-const spendOutbox: SpendReportBody[] = [];
+interface PendingSpendReport {
+  report: SpendReportBody;
+  spoolPath: string;
+}
+
+/** Reports awaiting delivery, oldest first. Each owns one file in `spendOutboxDir()`. */
+const spendOutbox: PendingSpendReport[] = [];
 /**
  * How many reports to hold before shedding.
  *
@@ -115,6 +131,8 @@ const SPEND_RETRY_MAX_MS = 30_000;
 let spendRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let spendFailures = 0;
 let flushing = false;
+const spendSpoolProcessId = `${process.pid}-${randomUUID()}`;
+let spendSpoolSequence = 0;
 
 /**
  * Where undelivered reports wait out a daemon outage.
@@ -124,76 +142,153 @@ let flushing = false;
  * pair (a test, an E2E) from inheriting the real install's pending reports, and it is
  * resolved per call rather than cached because a test sets the override after import.
  *
- * One shared path rather than one per worker id: the id is minted fresh per process, so a
- * per-worker file would be orphaned by the very restart this exists to survive. Two live
- * workers both draining it is possible in principle and harmless in practice - the lease
- * means only the leader spends, and a duplicate delivery is idempotent at the daemon.
+ * One shared directory rather than one per worker id: the id is minted fresh per process,
+ * so a per-worker directory would be orphaned by the very restart this exists to survive.
+ * Each provider run gets its own file. Two workers may load and deliver the same file, but
+ * the daemon deduplicates that report by run id and either ACK makes deleting that exact file
+ * safe. Crucially, neither worker rewrites or removes a different report owned by the other.
  */
-function spendOutboxPath(): string {
+function spendOutboxDir(): string {
+  return join(stateDir(), "foreman-spend-outbox");
+}
+
+/** The single-file spool written by the first version of this feature. */
+function legacySpendOutboxPath(): string {
   return join(stateDir(), "foreman-spend-outbox.json");
 }
 
-/**
- * Mirror the queue to disk. Never throws - a spool that cannot be written must not take
- * down a worker, it just costs the durability this function is here to add.
- *
- * Written whole and renamed into place rather than appended, because a torn write is worse
- * than a slow one: `rename` is atomic within a filesystem, so a crash mid-write leaves the
- * previous complete spool rather than half a JSON document that would fail to parse and
- * lose everything. The queue is capped at a few hundred small objects, so rewriting it is
- * cheaper than the compaction an append-only log would eventually need.
- *
- * An empty queue REMOVES the file instead of writing `[]`, so "nothing is pending" is the
- * absence of a spool rather than a state that has to be parsed to discover.
- */
-function persistSpendOutbox(): void {
-  const path = spendOutboxPath();
-  try {
-    if (spendOutbox.length === 0) {
-      rmSync(path, { force: true });
-      return;
-    }
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.tmp`;
-    writeFileSync(tmp, JSON.stringify(spendOutbox), "utf8");
-    renameSync(tmp, path);
-  } catch (err) {
-    console.warn("[foreman] could not persist the spend outbox:", err);
-  }
+function spendReportSpoolPath(report: SpendReportBody): string {
+  const identity = createHash("sha256")
+    .update(report.role)
+    .update("\0")
+    .update(report.runner)
+    .update("\0")
+    .update(report.runId)
+    .digest("hex");
+  return join(spendOutboxDir(), `${identity}.json`);
 }
 
 /**
- * Restore reports a previous worker never managed to deliver. Call once, at startup.
+ * Persist one report before delivery. Never throws: accounting remains downstream of the
+ * completed model call, although a failed write is logged because it loses crash durability.
  *
- * Returns how many were recovered so the worker can say so - a silent restore would make
- * the one moment this feature earns its keep invisible.
- *
- * A malformed spool is discarded rather than repaired. It can only come from a partial
- * write this module did not make or a hand-edit, and the alternative - feeding unvalidated
- * shapes to the route - trades a lost row for a queue that 4xxs forever.
+ * A process-unique temporary path prevents overlapping workers from sharing scratch state.
+ * The final path is deterministic per provider run, so concurrent writes of the same report
+ * converge and `rename` makes each visible file complete.
  */
-export function loadSpendOutbox(): number {
+function persistSpendReport(report: SpendReportBody): string | null {
+  const path = spendReportSpoolPath(report);
+  const tmp = `${path}.${spendSpoolProcessId}-${spendSpoolSequence++}.tmp`;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(tmp, JSON.stringify(report), "utf8");
+    renameSync(tmp, path);
+  } catch (err) {
+    try { rmSync(tmp, { force: true }); } catch {}
+    console.warn("[foreman] could not persist a spend report:", err);
+    return null;
+  }
+  return path;
+}
+
+/**
+ * Remove only the file whose report the daemon acknowledged. A second worker may already
+ * have loaded it, but that can produce only a duplicate delivery of this same idempotent run.
+ */
+function forgetSpendReport(entry: PendingSpendReport): void {
+  try { rmSync(entry.spoolPath, { force: true }); } catch {}
+  try { rmdirSync(spendOutboxDir()); } catch {}
+}
+
+function readSpooledReports(): PendingSpendReport[] {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(spendOutboxDir(), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const restored: PendingSpendReport[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const spoolPath = join(spendOutboxDir(), entry.name);
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(spoolPath, "utf8"));
+      if (!looksLikeSpendReport(parsed)) throw new Error("invalid spend report");
+      restored.push({ report: parsed, spoolPath });
+    } catch {
+      console.warn(`[foreman] discarding unreadable spend report ${entry.name}`);
+      try { rmSync(spoolPath, { force: true }); } catch {}
+    }
+  }
+  return restored.sort((a, b) => a.report.ts - b.report.ts || a.spoolPath.localeCompare(b.spoolPath));
+}
+
+function trimSpendOutbox(): void {
+  // Array#sort is stable, so equal provider timestamps retain the order this worker
+  // observed them instead of letting unrelated filename hashes reorder its own reports.
+  spendOutbox.sort((a, b) => a.report.ts - b.report.ts);
+  while (spendOutbox.length > SPEND_OUTBOX_MAX) {
+    const dropped = spendOutbox.shift()!;
+    forgetSpendReport(dropped);
+    console.warn(
+      `[foreman] spend outbox full; dropped ${dropped.report.role} usage undelivered`,
+    );
+  }
+}
+
+function mergeSpooledReports(): void {
+  const knownPaths = new Set(spendOutbox.map((entry) => entry.spoolPath));
+  for (const entry of readSpooledReports()) {
+    if (knownPaths.has(entry.spoolPath)) continue;
+    spendOutbox.push(entry);
+    knownPaths.add(entry.spoolPath);
+  }
+  trimSpendOutbox();
+}
+
+/**
+ * Migrate the original shared JSON array into independent report files. Deterministic final
+ * names make two workers performing this migration concurrently converge safely. The legacy
+ * file leaves only after every valid report has reached its new file.
+ */
+function migrateLegacySpendOutbox(): void {
+  const legacyPath = legacySpendOutboxPath();
   let raw: string;
   try {
-    raw = readFileSync(spendOutboxPath(), "utf8");
+    raw = readFileSync(legacyPath, "utf8");
   } catch {
-    return 0; // no spool: the ordinary case
+    return;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    console.warn("[foreman] discarding an unreadable spend outbox");
-    try { rmSync(spendOutboxPath(), { force: true }); } catch {}
-    return 0;
+    console.warn("[foreman] discarding an unreadable legacy spend outbox");
+    try { rmSync(legacyPath, { force: true }); } catch {}
+    return;
   }
-  if (!Array.isArray(parsed)) return 0;
-  const restored = parsed.filter(looksLikeSpendReport);
-  if (restored.length === 0) {
-    try { rmSync(spendOutboxPath(), { force: true }); } catch {}
-    return 0;
+  if (!Array.isArray(parsed)) {
+    try { rmSync(legacyPath, { force: true }); } catch {}
+    return;
   }
-  spendOutbox.push(...restored.slice(-SPEND_OUTBOX_MAX));
+  const reports = parsed.filter(looksLikeSpendReport).slice(-SPEND_OUTBOX_MAX);
+  const migrated = reports.every((report) => persistSpendReport(report) !== null);
+  if (migrated) {
+    try { rmSync(legacyPath, { force: true }); } catch {}
+  }
+}
+
+/**
+ * Restore reports a previous or overlapping worker never managed to deliver. Called at
+ * startup and before each drain so a surviving worker adopts files left by a process that
+ * exited after persisting but before posting.
+ *
+ * Returns how many were recovered so the worker can say so - a silent restore would make
+ * the one moment this feature earns its keep invisible.
+ */
+export function loadSpendOutbox(): number {
+  migrateLegacySpendOutbox();
+  mergeSpooledReports();
   return spendOutbox.length;
 }
 
@@ -213,19 +308,17 @@ function looksLikeSpendReport(value: unknown): value is SpendReportBody {
 }
 
 function enqueueSpend(report: SpendReportBody): void {
-  spendOutbox.push(report);
-  // Shed the OLDEST on overflow. Both ends lose real spend, so the tiebreak is which loss
-  // is more useful to keep: the newest reports describe what the fleet is doing now, which
-  // is what the strip is read for, and the oldest are the likeliest to already be beyond
-  // the window anyone is looking at.
-  while (spendOutbox.length > SPEND_OUTBOX_MAX) {
-    const dropped = spendOutbox.shift();
-    console.warn(`[foreman] spend outbox full; dropped ${dropped?.role} usage undelivered`);
-  }
   // Persisted BEFORE the first delivery attempt, which is the ordering the durability
   // depends on: a crash between the run finishing and the POST landing must still find the
   // report on disk.
-  persistSpendOutbox();
+  const spoolPath = persistSpendReport(report) ?? spendReportSpoolPath(report);
+  mergeSpooledReports();
+  if (!spendOutbox.some((entry) => entry.spoolPath === spoolPath)) {
+    // Keep trying in this process even when the disk write failed. That case loses crash
+    // durability, but it must not also suppress the live delivery attempt.
+    spendOutbox.push({ report, spoolPath });
+    trimSpendOutbox();
+  }
 }
 
 /**
@@ -243,8 +336,12 @@ async function flushSpend(): Promise<void> {
   if (flushing) return;
   flushing = true;
   try {
+    // Another worker may have exited after persisting a report. Merge its files before each
+    // drain so the survivor adopts them without waiting for a future process restart.
+    loadSpendOutbox();
     while (spendOutbox.length > 0) {
-      const report = spendOutbox[0]!;
+      const entry = spendOutbox[0]!;
+      const report = entry.report;
       let res: Response;
       try {
         res = await send("POST", "/api/usage/automation", report);
@@ -260,7 +357,7 @@ async function flushSpend(): Promise<void> {
         // exact hole the spool closes - the report would be gone from disk while still
         // only maybe recorded.
         spendOutbox.shift();
-        persistSpendOutbox();
+        forgetSpendReport(entry);
         spendFailures = 0;
         continue;
       }
@@ -271,7 +368,7 @@ async function flushSpend(): Promise<void> {
         // one failure mode where losing the row is better than stalling the queue. It
         // leaves the spool too, or the next restart would replay it into the same 4xx.
         spendOutbox.shift();
-        persistSpendOutbox();
+        forgetSpendReport(entry);
         console.warn(
           `[foreman] spend rejected as unprocessable: ${report.role} -> ${res.status}; dropped`,
         );

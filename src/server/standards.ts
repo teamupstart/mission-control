@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { readRepoDoc, realpathOr } from "./util/repo-doc.ts";
 import type { RepoDoc } from "./util/repo-doc.ts";
+import { utf8Bytes } from "./util/utf8.ts";
 
 // The repo's own standards docs - what the queue verifier judges an item's diff
 // against when it asks "was this actually finished, to this repo's bar?".
@@ -158,11 +159,15 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
     // omission would say two docs are missing when one is.
     if (identity.has(doc.realPath)) continue;
     identity.add(doc.realPath);
-    if (total + doc.text.length > MAX_TOTAL_BYTES) {
+    // BYTES, to match what the budget is named and what `MAX_FILE_BYTES` already
+    // measures: `doc.text.length` is UTF-16 code units, so a bundle of CJK or
+    // box-drawing docs undercounted itself and could pass ~3x this ceiling.
+    const docBytes = utf8Bytes(doc.text);
+    if (total + docBytes > MAX_TOTAL_BYTES) {
       truncated = true;
       continue;
     }
-    total += doc.text.length;
+    total += docBytes;
     docs.push(doc);
   }
   return { docs, truncated: truncated || droppedPaths || droppedDirs };

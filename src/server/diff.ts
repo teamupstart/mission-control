@@ -1,4 +1,5 @@
 import { run } from "./util/exec.ts";
+import { clipUtf8Bytes, utf8Bytes } from "./util/utf8.ts";
 import type { SessionDiff } from "@shared/types.ts";
 
 // Computes a session's changes against its source branch (typically main) by
@@ -7,7 +8,11 @@ import type { SessionDiff } from "@shared/types.ts";
 // unstaged, and untracked worktree edits - so you see the work done in that
 // checkout without the mainline's own newer commits bleeding in. Read-only.
 
-/** Cap on the returned patch text; the numeric stats stay complete past this. */
+/**
+ * Cap on the returned patch text; the numeric stats stay complete past this. Applied in
+ * BYTES via `clipUtf8Bytes` - `patch.slice` counted UTF-16 code units, so a patch of CJK or
+ * box-drawing content ran to 3x this before being handed to the UI. See `util/utf8.ts`.
+ */
 const MAX_PATCH_BYTES = 1_200_000;
 /** Don't generate new-file diffs for an unbounded pile of untracked files. */
 const MAX_UNTRACKED = 100;
@@ -83,8 +88,8 @@ export async function computeCommitDiff(cwd: string | null, sha: string): Promis
   if (patchRes.code !== 0) return failed("could not read the diff");
   let patch = patchRes.stdout;
   let truncated = false;
-  if (patch.length > MAX_PATCH_BYTES) {
-    patch = patch.slice(0, MAX_PATCH_BYTES);
+  if (utf8Bytes(patch) > MAX_PATCH_BYTES) {
+    patch = clipUtf8Bytes(patch, MAX_PATCH_BYTES);
     truncated = true;
   }
 
@@ -302,8 +307,8 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   }
 
   let truncated = untracked.length > MAX_UNTRACKED;
-  if (patch.length > MAX_PATCH_BYTES) {
-    patch = patch.slice(0, MAX_PATCH_BYTES);
+  if (utf8Bytes(patch) > MAX_PATCH_BYTES) {
+    patch = clipUtf8Bytes(patch, MAX_PATCH_BYTES);
     truncated = true;
   }
 

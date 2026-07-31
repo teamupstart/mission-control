@@ -1,5 +1,6 @@
 import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, normalize, relative } from "node:path";
+import { decodeUtf8Whole } from "./utf8.ts";
 
 // Reading a markdown doc OUT of a repo and INTO a model prompt, safely.
 //
@@ -23,13 +24,21 @@ export function realpathOr(p: string): string {
   }
 }
 
-/** Read at most `n` bytes off the front of a file - never more than we'll use. */
+/**
+ * Read at most `n` bytes off the front of a file - never more than we'll use.
+ *
+ * Decoded through `decodeUtf8Whole` rather than `toString("utf8")` because `n` can land
+ * mid-character: a doc capped at its byte ceiling would otherwise end in U+FFFD, and
+ * these go straight into a model prompt. Whole characters only, so the partial tail is
+ * dropped instead of mangled - and it has to be judged on the BYTES, since decoding
+ * first bakes the replacement character in where no later clip can remove it.
+ */
 export function readCapped(path: string, n: number): string {
   const fd = openSync(path, "r");
   try {
     const buf = Buffer.alloc(n);
     const read = readSync(fd, buf, 0, n, 0);
-    return buf.subarray(0, read).toString("utf8");
+    return decodeUtf8Whole(buf.subarray(0, read));
   } finally {
     closeSync(fd);
   }

@@ -19,11 +19,11 @@ import { Tooltip } from "./Tooltip.tsx";
  * review for creating an open-find state with no visible rail.
  */
 
-const SCOPES: { id: FindScope; label: string }[] = [
-  { id: "all", label: "All" },
-  { id: "user", label: "You" },
-  { id: "assistant", label: "Agent" },
-  { id: "tool", label: "Tools" },
+const SCOPES: { id: FindScope; label: string; hint: string }[] = [
+  { id: "all", label: "All", hint: "Match anywhere in this conversation" },
+  { id: "user", label: "You", hint: "Match only turns sent to the agent" },
+  { id: "assistant", label: "Agent", hint: "Match only the agent's replies" },
+  { id: "tool", label: "Tools", hint: "Match only tool calls - where the file paths are" },
 ];
 
 /**
@@ -191,15 +191,16 @@ export function ConversationFindRail({
         </div>
         <div className="find-scopes">
           {SCOPES.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className="find-scope"
-              aria-pressed={scope === s.id}
-              onClick={() => onScope(s.id)}
-            >
-              {s.label}
-            </button>
+            <Tooltip key={s.id} label={s.hint}>
+              <button
+                type="button"
+                className="find-scope"
+                aria-pressed={scope === s.id}
+                onClick={() => onScope(s.id)}
+              >
+                {s.label}
+              </button>
+            </Tooltip>
           ))}
         </div>
         <div className="find-results" ref={railRef}>
@@ -212,31 +213,37 @@ export function ConversationFindRail({
             </div>
           ) : (
             hits.map((h, i) => (
-              <button
-                key={h.key}
-                type="button"
-                className={`find-result r-${h.scope}${i === index ? " is-current" : ""}`}
-                // Keep the caret in the query box: clicking a result is navigation,
-                // not a reason to stop typing.
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => onJump(i)}
-              >
-                <span className="find-result-who">{h.who}</span>
-                <span className="find-result-snip">
-                  {h.pre}
-                  <b>{h.hit}</b>
-                  {h.post}
-                </span>
-              </button>
+              // The snippet is elided at both ends, so the tooltip is where the rest of
+              // the line goes - it says which turn the jump lands on rather than
+              // repeating the text already rendered in the row.
+              <Tooltip key={h.key} label={`Jump to match ${i + 1} of ${hits.length}, from ${h.who}`}>
+                <button
+                  type="button"
+                  className={`find-result r-${h.scope}${i === index ? " is-current" : ""}`}
+                  // Keep the caret in the query box: clicking a result is navigation,
+                  // not a reason to stop typing.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => onJump(i)}
+                >
+                  <span className="find-result-who">{h.who}</span>
+                  <span className="find-result-snip">
+                    {h.pre}
+                    <b>{h.hit}</b>
+                    {h.post}
+                  </span>
+                </button>
+              </Tooltip>
             ))
           )}
         </div>
         {loadedOnly && query !== "" && (
           <div className="find-beyond">
             <span>Searching loaded turns only.</span>
-            <button type="button" onClick={onLoadOlder}>
-              Load older
-            </button>
+            <Tooltip label="Read further back in this session's transcript, then search it too">
+              <button type="button" onClick={onLoadOlder}>
+                Load older
+              </button>
+            </Tooltip>
           </div>
         )}
       </aside>

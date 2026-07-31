@@ -507,7 +507,19 @@ export class CheckLeaseManager {
   private async resolveLocked(row: CheckLeaseRow): Promise<CheckLeaseRelease> {
     const status = await this.cli.status(row.repoRoot);
     if (status.code !== 0) {
-      return this.failedReturn(row, `treehouse status exited ${status.code}`);
+      // A pool we could not READ is not a return we attempted, and the difference is
+      // load-bearing rather than pedantic. `returning` means AUTHORISED - startup recovery
+      // retries such a row without re-consulting group emptiness, precisely because the
+      // decision to return it was already made against a tree we had proven was ours and
+      // finished. Here we proved neither: we failed to look. Writing `returning` would let
+      // one unreadable moment during cleanup become a forced return after the next restart,
+      // terminating a check that is still running and hard-resetting its tree - the exact
+      // failure the group-recovery seam exists to prevent.
+      //
+      // So the row keeps whatever authorisation it already had: a `held` row stays `held`
+      // and will be asked about its process group; a row that was already `returning`
+      // stays authorised, because that verdict was reached honestly.
+      return this.retryLater(row, `treehouse status exited ${status.code}`);
     }
     const wanted = canonicalPath(row.leasePath);
     const tree = parsePoolStatus(status.stdout).find((t) => canonicalPath(t.path) === wanted);
@@ -545,7 +557,19 @@ export class CheckLeaseManager {
    * one tree. Nothing downstream may treat this as clean.
    */
   private failedReturn(row: CheckLeaseRow, reason: string): CheckLeaseRelease {
+    // Authorised: we read the pool, proved the tree was ours, issued the return, and it
+    // failed. That verdict survives a restart, which is what `returning` records.
     this.store.setState(row.attemptId, "returning", this.now());
+    return this.retryLater(row, reason);
+  }
+
+  /**
+   * Back off and try again later, WITHOUT changing what this lease is authorised to do.
+   *
+   * Split from `failedReturn` so that "we could not look" can never be mistaken later for
+   * "we decided and failed". Only the second may skip the group-emptiness question.
+   */
+  private retryLater(row: CheckLeaseRow, reason: string): CheckLeaseRelease {
     const prior = this.backoff.get(row.attemptId)?.failures ?? 0;
     const failures = prior + 1;
     this.backoff.set(row.attemptId, {
@@ -596,10 +620,12 @@ export class CheckLeaseManager {
    * The rule that separates ownership from emptiness, applied to a row this process did not
    * acquire.
    *
-   *  - A `returning` row already had its return authorised and recorded; that decision was
-   *    made when the group was known to be finished, so retrying the return is all that is
-   *    left. Re-asking about the group would strand it behind a seam that may not be
-   *    injected.
+   *  - A `returning` row already had its return AUTHORISED and recorded: the pool was read,
+   *    the tree was proven ours, the return was issued, and it failed. Retrying it is all
+   *    that is left, and re-asking about the group would strand it behind a seam that may
+   *    not be injected. This is only sound because nothing else writes that state - a
+   *    release that could not read the pool deliberately leaves the row where it was, so
+   *    "unreadable" can never be mistaken for "decided". See `retryLater`.
    *  - A sentinel row never released the supervisor gate, so no branch code ever ran and
    *    there is no group to prove empty. Identity alone authorises its return.
    *  - Anything else may still have a live process group writing into the tree, and

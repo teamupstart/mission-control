@@ -601,18 +601,65 @@ test("a failed return keeps the row in returning, keeps the pin, and permits no 
   assert.deepEqual(m.manager.pinnedPaths(), []);
 });
 
-test("release keeps the lease when the pool cannot be read at all", async () => {
+test("a release that cannot read the pool does not become an authorised return", async () => {
+  // `returning` MEANS authorised: startup recovery retries such a row without re-consulting
+  // group emptiness, because the decision was already made against a tree proven ours and
+  // finished. A status read that fails proves neither - it is a failure to look. Recording
+  // it as `returning` would let one unreadable moment during cleanup turn into a forced
+  // return after the next restart, killing a check that is still running.
   const m = mkManager();
-  await acquire(m, "att-blindstatus");
+  const path = await acquire(m, "att-blindstatus");
+  // Non-sentinel: a supervisor is recorded, so this lease may NOT be returned on ownership
+  // alone. That is what makes the misfiling dangerous rather than merely untidy.
+  m.manager.processes.record("att-blindstatus", 4242, "ticks-4242");
   m.fail.status = true;
 
   const result = await m.manager.releaseForAttempt("att-blindstatus");
   assert.equal(result.outcome, "retry");
   assert.equal(m.calls.filter((c) => c.cmd === "return").length, 0, "never return on an unread pool");
-  assert.equal(store.get("att-blindstatus")?.cleanupState, "returning");
+  assert.equal(
+    store.get("att-blindstatus")?.cleanupState,
+    "held",
+    "an unreadable pool must not promote the lease to an authorised return",
+  );
 
+  // The consequence, which is the part worth asserting: a restart must still ask whether the
+  // group is gone. With the refusing default it keeps the tree instead of resetting it.
   m.fail.status = false;
+  const restarted = new CheckLeaseManager(db, {
+    cli: m.cli,
+    pin: async () => {},
+    verifyBase: async (_r, s) => s,
+  });
+  await restarted.reconcileOnStartup();
+  assert.equal(store.get("att-blindstatus")?.cleanupState, "held");
+  assert.equal(m.calls.filter((c) => c.cmd === "return").length, 0, "a live check's tree was reset");
+  assert.deepEqual(restarted.pinnedPaths(), [path]);
+
   await m.manager.releaseForAttempt("att-blindstatus");
+});
+
+test("a return that was issued and failed stays authorised across a restart", async () => {
+  // The other side of the same distinction: this row reached `returning` honestly - the pool
+  // was read, the tree proven ours, the return issued and refused - so recovery may retry it
+  // without re-asking about the group, even for a non-sentinel row.
+  const m = mkManager();
+  await acquire(m, "att-authorised");
+  m.manager.processes.record("att-authorised", 777, "ticks-777");
+  m.fail.return = true;
+  assert.equal((await m.manager.releaseForAttempt("att-authorised")).outcome, "retry");
+  assert.equal(store.get("att-authorised")?.cleanupState, "returning");
+
+  m.fail.return = false;
+  const restarted = new CheckLeaseManager(db, {
+    cli: m.cli,
+    pin: async () => {},
+    verifyBase: async (_r, s) => s,
+  });
+  let asked = 0;
+  await restarted.reconcileOnStartup(async () => { asked++; return "unknown"; });
+  assert.equal(asked, 0, "an already-authorised return must not be re-litigated");
+  assert.equal(store.get("att-authorised")?.cleanupState, "returned");
 });
 
 // ---- startup reconciliation ------------------------------------------------

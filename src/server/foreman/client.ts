@@ -1,4 +1,14 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { BASE_URL, stateDir } from "@shared/harness-runtime.mjs";
 import { DEFAULT_LLM_RUNNER_ID, isLlmRunnerId } from "@shared/llm.ts";
@@ -99,7 +109,7 @@ const enc = encodeURIComponent;
 // mode "delivered twice", which the daemon already absorbs - `window_end_ns` holds the run
 // id, so its insert is idempotent.
 
-/** Reports awaiting delivery, oldest first. Mirrored to `spendOutboxPath()` on every change. */
+/** Reports awaiting delivery by this process, oldest first. */
 const spendOutbox: SpendReportBody[] = [];
 /**
  * How many reports to hold before shedding.
@@ -112,6 +122,11 @@ const spendOutbox: SpendReportBody[] = [];
 const SPEND_OUTBOX_MAX = 256;
 const SPEND_RETRY_BASE_MS = 1_000;
 const SPEND_RETRY_MAX_MS = 30_000;
+const SPEND_LOCK_RETRIES = 8;
+const SPEND_LOCK_RETRY_BASE_MS = 10;
+// A dead worker must not leave every later worker unable to make its accounting durable.
+const SPEND_LOCK_STALE_MS = 5_000;
+const spendLockWait = new Int32Array(new SharedArrayBuffer(4));
 let spendRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let spendFailures = 0;
 let flushing = false;
@@ -125,41 +140,159 @@ let flushing = false;
  * resolved per call rather than cached because a test sets the override after import.
  *
  * One shared path rather than one per worker id: the id is minted fresh per process, so a
- * per-worker file would be orphaned by the very restart this exists to survive. Two live
- * workers both draining it is possible in principle and harmless in practice - the lease
- * means only the leader spends, and a duplicate delivery is idempotent at the daemon.
+ * per-worker file would be orphaned by the very restart this exists to survive. Every
+ * mutation merges one process's change under `spendOutboxLockPath()` because workers can
+ * overlap during lease handoff even though only the leader creates new spend.
  */
 function spendOutboxPath(): string {
   return join(stateDir(), "foreman-spend-outbox.json");
 }
 
+function spendOutboxLockPath(): string {
+  return join(stateDir(), "foreman-spend-outbox.lock");
+}
+
+function fsErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== "object" || !("code" in err)) return undefined;
+  return String((err as { code?: unknown }).code);
+}
+
+interface SpendOutboxLock {
+  fd: number;
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+function acquireSpendOutboxLock(): SpendOutboxLock {
+  const path = spendOutboxLockPath();
+  mkdirSync(dirname(path), { recursive: true });
+  for (let attempt = 0; attempt < SPEND_LOCK_RETRIES; attempt++) {
+    let fd: number | null = null;
+    try {
+      fd = openSync(path, "wx");
+      const identity = fstatSync(fd);
+      writeFileSync(fd, `${process.pid}\n`, "utf8");
+      return { fd, path, dev: identity.dev, ino: identity.ino };
+    } catch (err) {
+      if (fd !== null) {
+        try { closeSync(fd); } catch {}
+        try { rmSync(path, { force: true }); } catch {}
+      }
+      if (fsErrorCode(err) !== "EEXIST") throw err;
+      try {
+        if (Date.now() - statSync(path).mtimeMs > SPEND_LOCK_STALE_MS) {
+          rmSync(path, { force: true });
+          continue;
+        }
+      } catch (statErr) {
+        if (fsErrorCode(statErr) === "ENOENT") continue;
+        throw statErr;
+      }
+      if (attempt + 1 < SPEND_LOCK_RETRIES) {
+        const delay = SPEND_LOCK_RETRY_BASE_MS * (attempt + 1);
+        Atomics.wait(spendLockWait, 0, 0, delay);
+      }
+    }
+  }
+  throw new Error(`timed out acquiring ${spendOutboxLockPath()}`);
+}
+
+function assertSpendOutboxLockOwned(lock: SpendOutboxLock): void {
+  const current = statSync(lock.path);
+  if (current.dev !== lock.dev || current.ino !== lock.ino) {
+    throw new Error("spend outbox lock ownership changed");
+  }
+}
+
+function releaseSpendOutboxLock(lock: SpendOutboxLock): void {
+  try {
+    closeSync(lock.fd);
+  } catch (err) {
+    console.warn("[foreman] could not close the spend outbox lock:", err);
+  }
+  try {
+    const current = statSync(lock.path);
+    if (current.dev === lock.dev && current.ino === lock.ino) rmSync(lock.path, { force: true });
+  } catch (err) {
+    if (fsErrorCode(err) !== "ENOENT") {
+      console.warn("[foreman] could not release the spend outbox lock:", err);
+    }
+  }
+}
+
+function withSpendOutboxLock<T>(fallback: T, operation: (lock: SpendOutboxLock) => T): T {
+  let lock: SpendOutboxLock | null = null;
+  try {
+    lock = acquireSpendOutboxLock();
+    return operation(lock);
+  } catch (err) {
+    console.warn("[foreman] could not update the spend outbox:", err);
+    return fallback;
+  } finally {
+    if (lock) releaseSpendOutboxLock(lock);
+  }
+}
+
+function readSpendOutbox(path: string): SpendReportBody[] {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if (fsErrorCode(err) === "ENOENT") return [];
+    throw err;
+  }
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("spend outbox is not an array");
+  return parsed.filter(looksLikeSpendReport);
+}
+
+function writeSpendOutbox(
+  path: string,
+  reports: SpendReportBody[],
+  lock: SpendOutboxLock,
+): void {
+  assertSpendOutboxLockOwned(lock);
+  if (reports.length === 0) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(reports), "utf8");
+  renameSync(tmp, path);
+}
+
+type SpendOutboxDelta =
+  | { kind: "append"; report: SpendReportBody }
+  | { kind: "remove"; runId: string };
+
 /**
- * Mirror the queue to disk. Never throws - a spool that cannot be written must not take
- * down a worker, it just costs the durability this function is here to add.
+ * Merge one local queue change into the shared spool. Never throws - a spool that cannot
+ * be written must not take down a worker, it just costs the durability this function adds.
  *
  * Written whole and renamed into place rather than appended, because a torn write is worse
  * than a slow one: `rename` is atomic within a filesystem, so a crash mid-write leaves the
- * previous complete spool rather than half a JSON document that would fail to parse and
- * lose everything. The queue is capped at a few hundred small objects, so rewriting it is
- * cheaper than the compaction an append-only log would eventually need.
+ * previous complete spool rather than half a JSON document. The read and rename share one
+ * lock so an overlapping worker's append cannot disappear behind this process's ACK.
  *
  * An empty queue REMOVES the file instead of writing `[]`, so "nothing is pending" is the
  * absence of a spool rather than a state that has to be parsed to discover.
  */
-function persistSpendOutbox(): void {
+function persistSpendOutbox(delta: SpendOutboxDelta): void {
   const path = spendOutboxPath();
-  try {
-    if (spendOutbox.length === 0) {
-      rmSync(path, { force: true });
-      return;
+  withSpendOutboxLock(undefined, (lock) => {
+    const reports = readSpendOutbox(path);
+    if (delta.kind === "append") {
+      if (!reports.some((report) => report.runId === delta.report.runId)) {
+        reports.push(delta.report);
+      }
+    } else {
+      const index = reports.findIndex((report) => report.runId === delta.runId);
+      if (index >= 0) reports.splice(index, 1);
     }
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.tmp`;
-    writeFileSync(tmp, JSON.stringify(spendOutbox), "utf8");
-    renameSync(tmp, path);
-  } catch (err) {
-    console.warn("[foreman] could not persist the spend outbox:", err);
-  }
+    while (reports.length > SPEND_OUTBOX_MAX) reports.shift();
+    writeSpendOutbox(path, reports, lock);
+  });
 }
 
 /**
@@ -173,28 +306,25 @@ function persistSpendOutbox(): void {
  * shapes to the route - trades a lost row for a queue that 4xxs forever.
  */
 export function loadSpendOutbox(): number {
-  let raw: string;
-  try {
-    raw = readFileSync(spendOutboxPath(), "utf8");
-  } catch {
-    return 0; // no spool: the ordinary case
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    console.warn("[foreman] discarding an unreadable spend outbox");
-    try { rmSync(spendOutboxPath(), { force: true }); } catch {}
-    return 0;
-  }
-  if (!Array.isArray(parsed)) return 0;
-  const restored = parsed.filter(looksLikeSpendReport);
-  if (restored.length === 0) {
-    try { rmSync(spendOutboxPath(), { force: true }); } catch {}
-    return 0;
-  }
-  spendOutbox.push(...restored.slice(-SPEND_OUTBOX_MAX));
-  return spendOutbox.length;
+  const path = spendOutboxPath();
+  return withSpendOutboxLock(0, (lock) => {
+    let restored: SpendReportBody[];
+    try {
+      restored = readSpendOutbox(path);
+    } catch {
+      console.warn("[foreman] discarding an unreadable spend outbox");
+      writeSpendOutbox(path, [], lock);
+      return 0;
+    }
+    if (restored.length === 0) {
+      writeSpendOutbox(path, [], lock);
+      return 0;
+    }
+    for (const report of restored.slice(-SPEND_OUTBOX_MAX)) {
+      if (!spendOutbox.some((queued) => queued.runId === report.runId)) spendOutbox.push(report);
+    }
+    return spendOutbox.length;
+  });
 }
 
 /** The shape check the restore path applies. Deliberately structural, not a zod import. */
@@ -225,7 +355,7 @@ function enqueueSpend(report: SpendReportBody): void {
   // Persisted BEFORE the first delivery attempt, which is the ordering the durability
   // depends on: a crash between the run finishing and the POST landing must still find the
   // report on disk.
-  persistSpendOutbox();
+  persistSpendOutbox({ kind: "append", report });
 }
 
 /**
@@ -260,7 +390,7 @@ async function flushSpend(): Promise<void> {
         // exact hole the spool closes - the report would be gone from disk while still
         // only maybe recorded.
         spendOutbox.shift();
-        persistSpendOutbox();
+        persistSpendOutbox({ kind: "remove", runId: report.runId });
         spendFailures = 0;
         continue;
       }
@@ -271,7 +401,7 @@ async function flushSpend(): Promise<void> {
         // one failure mode where losing the row is better than stalling the queue. It
         // leaves the spool too, or the next restart would replay it into the same 4xx.
         spendOutbox.shift();
-        persistSpendOutbox();
+        persistSpendOutbox({ kind: "remove", runId: report.runId });
         console.warn(
           `[foreman] spend rejected as unprocessable: ${report.role} -> ${res.status}; dropped`,
         );
@@ -840,6 +970,7 @@ export class ForemanClient implements ForemanActions {
    */
   async reportSpend(report: SpendReportBody): Promise<void> {
     enqueueSpend(report);
+    if (spendRetryTimer) return;
     await flushSpend();
   }
 

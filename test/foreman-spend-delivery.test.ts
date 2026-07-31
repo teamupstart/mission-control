@@ -1,10 +1,11 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Server } from "node:http";
+import type { Server, ServerResponse } from "node:http";
 
 // What is at stake: a headless run's cost exists exactly once, and only for as long as it
 // takes to deliver it.
@@ -30,6 +31,9 @@ const SPOOL = join(home, "foreman-spend-outbox.json");
 /** What the fake daemon does to the next request. */
 let mode: "ok" | "down" | "500" | "400" = "ok";
 const received: Array<Record<string, unknown>> = [];
+const attempted: string[] = [];
+let delayedRunId: string | null = null;
+let delayedResponse: ServerResponse | null = null;
 
 let server: Server | null = null;
 
@@ -39,6 +43,12 @@ function start(): Promise<void> {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
+        const report = JSON.parse(body) as Record<string, unknown>;
+        attempted.push(String(report.runId));
+        if (report.runId === delayedRunId) {
+          delayedResponse = res;
+          return;
+        }
         if (mode === "500") {
           res.writeHead(503).end();
           return;
@@ -47,7 +57,7 @@ function start(): Promise<void> {
           res.writeHead(422).end();
           return;
         }
-        received.push(JSON.parse(body) as Record<string, unknown>);
+        received.push(report);
         res.writeHead(204).end();
       });
     });
@@ -91,6 +101,40 @@ function report(role: string, runId: string) {
       reportedCostUsd: null,
     }],
   } as never;
+}
+
+async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("condition did not become true before timeout");
+}
+
+function spawnReporter(role: string, runId: string): Promise<void> {
+  const clientUrl = new URL("../src/server/foreman/client.ts", import.meta.url).href;
+  const script =
+    `const { ForemanClient } = await import(${JSON.stringify(clientUrl)});` +
+    `await new ForemanClient().reportSpend(${JSON.stringify(report(role, runId))});`;
+  const child = spawn(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", script],
+    {
+      env: { ...process.env, MISSION_HOME: home, MISSION_PORT: String(PORT) },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => (stderr += String(chunk)));
+  return new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`reporter exited ${code ?? signal}: ${stderr}`));
+    });
+  });
 }
 
 test("a report reaches the daemon and leaves nothing queued or spooled", async () => {
@@ -200,4 +244,47 @@ test("reports are delivered oldest-first, so the queue cannot reorder history", 
     received.slice(-2).map((r) => (r as { runId: string }).runId),
     ["run-5", "run-6"],
   );
+});
+
+test("a new report joins an armed delivery backoff without posting immediately", async () => {
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  mode = "500";
+  const before = attempted.length;
+  await client.reportSpend(report("foreman:review", "run-backoff-1"));
+  assert.equal(attempted.length, before + 1, "the first failure armed the retry");
+
+  await client.reportSpend(report("foreman:verify", "run-backoff-2"));
+  assert.equal(attempted.length, before + 1, "the new report did not bypass the backoff");
+
+  mode = "ok";
+  await flushPendingSpend();
+  assert.equal(pendingSpendReports(), 0);
+  assert.deepEqual(
+    received.slice(-2).map((item) => item.runId),
+    ["run-backoff-1", "run-backoff-2"],
+  );
+});
+
+test("one worker's acknowledgement cannot erase another worker's pending report", async () => {
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  delayedRunId = "run-shared-ack";
+  const acknowledgedWorker = spawnReporter("foreman:review", delayedRunId);
+  await eventually(() => delayedResponse !== null);
+
+  mode = "500";
+  await spawnReporter("foreman:verify", "run-shared-pending");
+  let spooled = JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>;
+  assert.deepEqual(spooled.map((item) => item.runId), ["run-shared-ack", "run-shared-pending"]);
+
+  mode = "ok";
+  delayedRunId = null;
+  delayedResponse!.writeHead(204).end();
+  delayedResponse = null;
+  await acknowledgedWorker;
+  spooled = JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>;
+  assert.deepEqual(spooled.map((item) => item.runId), ["run-shared-pending"]);
+
+  assert.equal(loadSpendOutbox(), 1);
+  await flushPendingSpend();
+  assert.equal(existsSync(SPOOL), false);
 });

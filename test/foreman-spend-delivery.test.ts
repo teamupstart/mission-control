@@ -4,11 +4,11 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
-  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,8 +34,6 @@ process.env.MISSION_PORT = String(PORT);
 // these tests would write their outbox into the real install's state dir.
 const home = mkdtempSync(join(tmpdir(), "foreman-spend-"));
 process.env.MISSION_HOME = home;
-const SPOOL = join(home, "foreman-spend-outbox.json");
-const LOCK = join(home, "foreman-spend-outbox.lock");
 
 /** What the fake daemon does to the next request. */
 let mode: "ok" | "down" | "500" | "400" = "ok";
@@ -89,9 +87,10 @@ const {
   flushPendingSpend,
   loadSpendOutbox,
   pendingSpendReports,
-  spendOutboxLockTest,
+  spendOutboxTest,
 } = await import("../src/server/foreman/client.ts");
 const client = new ForemanClient();
+const SPOOL = spendOutboxTest.path();
 
 after(async () => {
   await stop();
@@ -114,6 +113,22 @@ function report(role: string, runId: string) {
       reportedCostUsd: null,
     }],
   } as never;
+}
+
+function orphanPath(id: string): string {
+  return join(home, `foreman-spend-outbox.${id}.json`);
+}
+
+function spoolFiles(): string[] {
+  return readdirSync(home)
+    .filter((name) => name.startsWith("foreman-spend-outbox.") && name.endsWith(".json"))
+    .map((name) => join(home, name));
+}
+
+function spoolRunIds(path: string): string[] {
+  return (JSON.parse(readFileSync(path, "utf8")) as Array<{ runId: string }>).map(
+    (item) => item.runId,
+  );
 }
 
 async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -150,6 +165,31 @@ function spawnReporter(role: string, runId: string): Promise<void> {
   });
 }
 
+function spawnAdopter(): Promise<void> {
+  const clientUrl = new URL("../src/server/foreman/client.ts", import.meta.url).href;
+  const script =
+    `const { loadSpendOutbox } = await import(${JSON.stringify(clientUrl)});` +
+    "loadSpendOutbox();";
+  const child = spawn(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", script],
+    {
+      env: { ...process.env, MISSION_HOME: home, MISSION_PORT: String(PORT) },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => (stderr += String(chunk)));
+  return new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`adopter exited ${code ?? signal}: ${stderr}`));
+    });
+  });
+}
+
 test("a report reaches the daemon and leaves nothing queued or spooled", async () => {
   await client.reportSpend(report("foreman:review", "run-1"));
   assert.equal(received.length, 1);
@@ -179,10 +219,13 @@ test("a report left by a dead worker is recovered by the next one", () => {
   // A worker that never got the chance to flush. The spool is all that is left of the run,
   // and startup is the moment it either reaches the ledger or is lost - so `loadSpendOutbox`
   // is what makes the durability real rather than merely written down.
-  writeFileSync(SPOOL, JSON.stringify([report("inspector:review", "run-from-the-dead")]), "utf8");
+  const orphan = orphanPath("dead-worker");
+  writeFileSync(orphan, JSON.stringify([report("inspector:review", "run-from-the-dead")]), "utf8");
   const recovered = loadSpendOutbox();
   assert.equal(recovered, 1);
   assert.equal(pendingSpendReports(), 1);
+  assert.equal(existsSync(SPOOL), true, "the adopting worker made its own durable copy");
+  assert.equal(existsSync(orphan), false, "before removing the dead worker's copy");
 });
 
 test("the recovered report is delivered, and only then forgotten", async () => {
@@ -193,13 +236,16 @@ test("the recovered report is delivered, and only then forgotten", async () => {
 });
 
 test("a corrupt spool is discarded rather than replayed forever", () => {
-  writeFileSync(SPOOL, "{not json", "utf8");
+  const unreadable = orphanPath("corrupt");
+  writeFileSync(unreadable, "{not json", "utf8");
   assert.equal(loadSpendOutbox(), 0);
-  assert.equal(existsSync(SPOOL), false);
+  assert.equal(existsSync(unreadable), false);
   // Entries that parse but are not reports are dropped for the same reason: feeding them
   // to the route would 4xx on every restart instead of once.
-  writeFileSync(SPOOL, JSON.stringify([{ role: "foreman:review" }]), "utf8");
+  const invalid = orphanPath("invalid");
+  writeFileSync(invalid, JSON.stringify([{ role: "foreman:review" }]), "utf8");
   assert.equal(loadSpendOutbox(), 0);
+  assert.equal(existsSync(invalid), false);
 });
 
 test("spend survives the daemon being down, and lands when it returns", async () => {
@@ -278,7 +324,7 @@ test("a new report joins an armed delivery backoff without posting immediately",
   );
 });
 
-test("one worker's acknowledgement cannot erase another worker's pending report", async () => {
+test("each live worker writes only its own spool", async () => {
   assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
   delayedRunId = "run-shared-ack";
   const acknowledgedWorker = spawnReporter("foreman:review", delayedRunId);
@@ -286,60 +332,92 @@ test("one worker's acknowledgement cannot erase another worker's pending report"
 
   mode = "500";
   await spawnReporter("foreman:verify", "run-shared-pending");
-  let spooled = JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>;
-  assert.deepEqual(spooled.map((item) => item.runId), ["run-shared-ack", "run-shared-pending"]);
+  let files = spoolFiles();
+  assert.equal(files.length, 2);
+  assert.deepEqual(
+    files.map(spoolRunIds).sort((a, b) => a[0]!.localeCompare(b[0]!)),
+    [["run-shared-ack"], ["run-shared-pending"]],
+  );
 
   mode = "ok";
   delayedRunId = null;
   delayedResponse!.writeHead(204).end();
   delayedResponse = null;
   await acknowledgedWorker;
-  spooled = JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>;
-  assert.deepEqual(spooled.map((item) => item.runId), ["run-shared-pending"]);
+  files = spoolFiles();
+  assert.equal(files.length, 1);
+  assert.deepEqual(spoolRunIds(files[0]!), ["run-shared-pending"]);
 
   assert.equal(loadSpendOutbox(), 1);
+  await flushPendingSpend();
+  assert.deepEqual(spoolFiles(), []);
+});
+
+test("orphan adoption de-duplicates run ids into this worker's spool", async () => {
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const first = orphanPath("dedup-first");
+  const second = orphanPath("dedup-second");
+  writeFileSync(
+    first,
+    JSON.stringify([
+      report("foreman:review", "run-adopt-a"),
+      report("foreman:verify", "run-adopt-shared"),
+    ]),
+    "utf8",
+  );
+  writeFileSync(
+    second,
+    JSON.stringify([
+      report("foreman:verify", "run-adopt-shared"),
+      report("inspector:review", "run-adopt-b"),
+    ]),
+    "utf8",
+  );
+  assert.equal(loadSpendOutbox(), 3);
+  assert.deepEqual(spoolRunIds(SPOOL), ["run-adopt-a", "run-adopt-shared", "run-adopt-b"]);
+  assert.equal(existsSync(first), false);
+  assert.equal(existsSync(second), false);
+
   await flushPendingSpend();
   assert.equal(existsSync(SPOOL), false);
 });
 
-test("a stale claimant cannot remove the fresh lock that replaced its observation", async () => {
+test("an orphan remains untouched until the adopter's spool is durable", async () => {
   assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
-  writeFileSync(SPOOL, JSON.stringify([report("foreman:review", "run-before-takeover")]), "utf8");
-  writeFileSync(LOCK, "stale-owner:old-token\n", "utf8");
-  const staleAt = new Date(Date.now() - 10_000);
-  utimesSync(LOCK, staleAt, staleAt);
-  const observed = spendOutboxLockTest.observe(LOCK);
+  const orphan = orphanPath("persist-first");
+  const raw = JSON.stringify([report("foreman:review", "run-persist-first")]);
+  writeFileSync(orphan, raw, "utf8");
+  const blockedTmp = `${SPOOL}.${process.pid}.tmp`;
+  mkdirSync(blockedTmp);
 
-  rmSync(LOCK);
-  const freshToken = "fresh-owner:new-token";
-  writeFileSync(LOCK, `${freshToken}\n`, "utf8");
-  assert.equal(
-    spendOutboxLockTest.claimObserved(LOCK, observed),
-    false,
-    "the stale observer did not become a second lock holder",
-  );
-  assert.equal(readFileSync(LOCK, "utf8").trim(), freshToken);
-  assert.deepEqual(
-    readdirSync(home).filter((name) => name.includes(".steal.")),
-    [],
-    "the failed claim left no takeover file behind",
-  );
-  assert.deepEqual(
-    (JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>).map((item) => item.runId),
-    ["run-before-takeover"],
-  );
+  assert.equal(loadSpendOutbox(), 1);
+  assert.equal(readFileSync(orphan, "utf8"), raw, "the source was neither changed nor removed");
+  assert.equal(existsSync(SPOOL), false);
 
-  rmSync(LOCK);
-  await stop();
-  await client.reportSpend(report("foreman:verify", "run-after-takeover"));
-  const spooled = JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>;
-  assert.deepEqual(
-    spooled.map((item) => item.runId),
-    ["run-before-takeover", "run-after-takeover"],
-  );
+  rmSync(blockedTmp, { recursive: true });
+  assert.equal(loadSpendOutbox(), 1, "the repeated adoption de-duplicated the run id");
+  assert.equal(existsSync(orphan), false);
+  assert.deepEqual(spoolRunIds(SPOOL), ["run-persist-first"]);
 
-  assert.equal(loadSpendOutbox(), 2);
-  await start();
   await flushPendingSpend();
   assert.equal(existsSync(SPOOL), false);
+});
+
+test("two adopters of one orphan cannot lose its report", async () => {
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const orphan = orphanPath("two-adopters");
+  writeFileSync(orphan, JSON.stringify([report("foreman:review", "run-two-adopters")]), "utf8");
+
+  await Promise.all([spawnAdopter(), spawnAdopter()]);
+  const durableRunIds = spoolFiles().flatMap(spoolRunIds);
+  assert.deepEqual(
+    [...new Set(durableRunIds)],
+    ["run-two-adopters"],
+    "at least one per-worker copy survived concurrent adoption",
+  );
+
+  assert.equal(loadSpendOutbox(), 1);
+  assert.deepEqual(spoolRunIds(SPOOL), ["run-two-adopters"]);
+  await flushPendingSpend();
+  assert.deepEqual(spoolFiles(), []);
 });

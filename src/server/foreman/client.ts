@@ -1,18 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
-  closeSync,
-  fstatSync,
-  linkSync,
   mkdirSync,
-  openSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { BASE_URL, stateDir } from "@shared/harness-runtime.mjs";
 import { DEFAULT_LLM_RUNNER_ID, isLlmRunnerId } from "@shared/llm.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -125,11 +120,10 @@ const spendOutbox: SpendReportBody[] = [];
 const SPEND_OUTBOX_MAX = 256;
 const SPEND_RETRY_BASE_MS = 1_000;
 const SPEND_RETRY_MAX_MS = 30_000;
-const SPEND_LOCK_RETRIES = 8;
-const SPEND_LOCK_RETRY_BASE_MS = 10;
-// A dead worker must not leave every later worker unable to make its accounting durable.
-const SPEND_LOCK_STALE_MS = 5_000;
-const spendLockWait = new Int32Array(new SharedArrayBuffer(4));
+const SPEND_OUTBOX_PREFIX = "foreman-spend-outbox.";
+const SPEND_OUTBOX_SUFFIX = ".json";
+const LEGACY_SPEND_OUTBOX_NAME = "foreman-spend-outbox.json";
+const spendOutboxId = randomUUID();
 let spendRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let spendFailures = 0;
 let flushing = false;
@@ -142,215 +136,16 @@ let flushing = false;
  * pair (a test, an E2E) from inheriting the real install's pending reports, and it is
  * resolved per call rather than cached because a test sets the override after import.
  *
- * One shared path rather than one per worker id: the id is minted fresh per process, so a
- * per-worker file would be orphaned by the very restart this exists to survive. Every
- * mutation merges one process's change under `spendOutboxLockPath()` because workers can
- * overlap during lease handoff even though only the leader creates new spend.
+ * The id is minted once per process, so this path has exactly one writer for its lifetime.
+ * A restart naturally leaves the old path behind for `loadSpendOutbox()` to adopt.
  */
 function spendOutboxPath(): string {
-  return join(stateDir(), "foreman-spend-outbox.json");
-}
-
-function spendOutboxLockPath(): string {
-  return join(stateDir(), "foreman-spend-outbox.lock");
+  return join(stateDir(), `${SPEND_OUTBOX_PREFIX}${spendOutboxId}${SPEND_OUTBOX_SUFFIX}`);
 }
 
 function fsErrorCode(err: unknown): string | undefined {
   if (!err || typeof err !== "object" || !("code" in err)) return undefined;
   return String((err as { code?: unknown }).code);
-}
-
-interface SpendOutboxLock {
-  fd: number;
-  path: string;
-  token: string;
-  dev: number;
-  ino: number;
-}
-
-interface SpendOutboxLockObservation {
-  token: string;
-  mtimeMs: number;
-}
-
-function spendLockClaimPath(path: string): string {
-  return `${path}.steal.${Date.now()}.${process.pid}.${randomUUID()}`;
-}
-
-function cleanupSpendLockClaims(path: string): void {
-  const prefix = `${basename(path)}.steal.`;
-  const now = Date.now();
-  try {
-    for (const name of readdirSync(dirname(path))) {
-      if (!name.startsWith(prefix)) continue;
-      const claimedAt = Number(name.slice(prefix.length).split(".", 1)[0]);
-      if (Number.isFinite(claimedAt) && now - claimedAt > SPEND_LOCK_STALE_MS) {
-        try {
-          rmSync(join(dirname(path), name), { force: true });
-        } catch (err) {
-          console.warn("[foreman] could not clean a stale spend lock claim:", err);
-        }
-      }
-    }
-  } catch (err) {
-    if (fsErrorCode(err) !== "ENOENT") {
-      console.warn("[foreman] could not inspect stale spend lock claims:", err);
-    }
-  }
-}
-
-function observeSpendOutboxLock(path: string): SpendOutboxLockObservation {
-  const token = readFileSync(path, "utf8").trim();
-  return { token, mtimeMs: statSync(path).mtimeMs };
-}
-
-function restoreClaimedSpendOutboxLock(path: string, claimPath: string): void {
-  try {
-    linkSync(claimPath, path);
-  } catch (err) {
-    if (fsErrorCode(err) !== "EEXIST") throw err;
-  } finally {
-    rmSync(claimPath, { force: true });
-  }
-}
-
-/**
- * Atomically move one observed lock instance out of the live pathname.
- *
- * `rename` is the claim primitive because only one contender can move the pathname that
- * named the stale inode. The token check is still required: another worker can replace the
- * lock after observation but before rename, and that fresh instance must be put back rather
- * than mistaken for the stale one.
- */
-function claimObservedSpendOutboxLock(
-  path: string,
-  observed: SpendOutboxLockObservation,
-): boolean {
-  const claimPath = spendLockClaimPath(path);
-  try {
-    renameSync(path, claimPath);
-  } catch (err) {
-    if (fsErrorCode(err) === "ENOENT") return false;
-    throw err;
-  }
-  try {
-    if (readFileSync(claimPath, "utf8").trim() !== observed.token) {
-      restoreClaimedSpendOutboxLock(path, claimPath);
-      return false;
-    }
-    rmSync(claimPath, { force: true });
-    return true;
-  } catch (err) {
-    try { restoreClaimedSpendOutboxLock(path, claimPath); } catch {}
-    throw err;
-  }
-}
-
-function removeOwnedSpendOutboxLock(lock: SpendOutboxLock): void {
-  const claimPath = spendLockClaimPath(lock.path);
-  try {
-    renameSync(lock.path, claimPath);
-  } catch (err) {
-    if (fsErrorCode(err) === "ENOENT") return;
-    throw err;
-  }
-  try {
-    const claimed = statSync(claimPath);
-    const token = readFileSync(claimPath, "utf8").trim();
-    if (claimed.dev !== lock.dev || claimed.ino !== lock.ino || token !== lock.token) {
-      restoreClaimedSpendOutboxLock(lock.path, claimPath);
-      return;
-    }
-    rmSync(claimPath, { force: true });
-  } catch (err) {
-    try { restoreClaimedSpendOutboxLock(lock.path, claimPath); } catch {}
-    throw err;
-  }
-}
-
-function acquireSpendOutboxLock(): SpendOutboxLock {
-  const path = spendOutboxLockPath();
-  mkdirSync(dirname(path), { recursive: true });
-  cleanupSpendLockClaims(path);
-  for (let attempt = 0; attempt < SPEND_LOCK_RETRIES; attempt++) {
-    let fd: number | null = null;
-    let lock: SpendOutboxLock | null = null;
-    try {
-      const token = `${process.pid}:${randomUUID()}`;
-      fd = openSync(path, "wx");
-      const identity = fstatSync(fd);
-      lock = { fd, path, token, dev: identity.dev, ino: identity.ino };
-      writeFileSync(fd, `${token}\n`, "utf8");
-      return lock;
-    } catch (err) {
-      if (fd !== null) {
-        try { closeSync(fd); } catch {}
-        if (lock) {
-          try { removeOwnedSpendOutboxLock(lock); } catch {}
-        }
-      }
-      if (fsErrorCode(err) !== "EEXIST") throw err;
-      try {
-        const observed = observeSpendOutboxLock(path);
-        if (
-          Date.now() - observed.mtimeMs > SPEND_LOCK_STALE_MS &&
-          claimObservedSpendOutboxLock(path, observed)
-        ) {
-          attempt--;
-          continue;
-        }
-      } catch (statErr) {
-        if (fsErrorCode(statErr) === "ENOENT") continue;
-        throw statErr;
-      }
-      if (attempt + 1 < SPEND_LOCK_RETRIES) {
-        const delay = SPEND_LOCK_RETRY_BASE_MS * (attempt + 1);
-        Atomics.wait(spendLockWait, 0, 0, delay);
-      }
-    }
-  }
-  throw new Error(`timed out acquiring ${spendOutboxLockPath()}`);
-}
-
-function assertSpendOutboxLockOwned(lock: SpendOutboxLock): void {
-  const current = statSync(lock.path);
-  const token = readFileSync(lock.path, "utf8").trim();
-  if (current.dev !== lock.dev || current.ino !== lock.ino || token !== lock.token) {
-    throw new Error("spend outbox lock ownership changed");
-  }
-}
-
-function releaseSpendOutboxLock(lock: SpendOutboxLock): void {
-  try {
-    closeSync(lock.fd);
-  } catch (err) {
-    console.warn("[foreman] could not close the spend outbox lock:", err);
-  }
-  try {
-    removeOwnedSpendOutboxLock(lock);
-  } catch (err) {
-    if (fsErrorCode(err) !== "ENOENT") {
-      console.warn("[foreman] could not release the spend outbox lock:", err);
-    }
-  }
-}
-
-export const spendOutboxLockTest = {
-  claimObserved: claimObservedSpendOutboxLock,
-  observe: observeSpendOutboxLock,
-};
-
-function withSpendOutboxLock<T>(fallback: T, operation: (lock: SpendOutboxLock) => T): T {
-  let lock: SpendOutboxLock | null = null;
-  try {
-    lock = acquireSpendOutboxLock();
-    return operation(lock);
-  } catch (err) {
-    console.warn("[foreman] could not update the spend outbox:", err);
-    return fallback;
-  } finally {
-    if (lock) releaseSpendOutboxLock(lock);
-  }
 }
 
 function readSpendOutbox(path: string): SpendReportBody[] {
@@ -366,52 +161,34 @@ function readSpendOutbox(path: string): SpendReportBody[] {
   return parsed.filter(looksLikeSpendReport);
 }
 
-function writeSpendOutbox(
-  path: string,
-  reports: SpendReportBody[],
-  lock: SpendOutboxLock,
-): void {
-  assertSpendOutboxLockOwned(lock);
-  if (reports.length === 0) {
-    rmSync(path, { force: true });
-    return;
-  }
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(reports), "utf8");
-  renameSync(tmp, path);
-}
-
-type SpendOutboxDelta =
-  | { kind: "append"; report: SpendReportBody }
-  | { kind: "remove"; runId: string };
-
 /**
- * Merge one local queue change into the shared spool. Never throws - a spool that cannot
- * be written must not take down a worker, it just costs the durability this function adds.
+ * Mirror this process's queue to its own spool. Never throws - a spool that cannot be
+ * written must not take down a worker, it just costs the durability this function adds.
  *
  * Written whole and renamed into place rather than appended, because a torn write is worse
  * than a slow one: `rename` is atomic within a filesystem, so a crash mid-write leaves the
- * previous complete spool rather than half a JSON document. The read and rename share one
- * lock so an overlapping worker's append cannot disappear behind this process's ACK.
+ * previous complete spool rather than half a JSON document. Serializing the in-memory queue
+ * is safe because the per-process id makes this file single-writer for its entire lifetime.
  *
  * An empty queue REMOVES the file instead of writing `[]`, so "nothing is pending" is the
  * absence of a spool rather than a state that has to be parsed to discover.
  */
-function persistSpendOutbox(delta: SpendOutboxDelta): void {
+function persistSpendOutbox(): boolean {
   const path = spendOutboxPath();
-  withSpendOutboxLock(undefined, (lock) => {
-    const reports = readSpendOutbox(path);
-    if (delta.kind === "append") {
-      if (!reports.some((report) => report.runId === delta.report.runId)) {
-        reports.push(delta.report);
-      }
-    } else {
-      const index = reports.findIndex((report) => report.runId === delta.runId);
-      if (index >= 0) reports.splice(index, 1);
+  try {
+    if (spendOutbox.length === 0) {
+      rmSync(path, { force: true });
+      return true;
     }
-    while (reports.length > SPEND_OUTBOX_MAX) reports.shift();
-    writeSpendOutbox(path, reports, lock);
-  });
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(spendOutbox), "utf8");
+    renameSync(tmp, path);
+    return true;
+  } catch (err) {
+    console.warn("[foreman] could not persist the spend outbox:", err);
+    return false;
+  }
 }
 
 /**
@@ -420,31 +197,59 @@ function persistSpendOutbox(delta: SpendOutboxDelta): void {
  * Returns how many were recovered so the worker can say so - a silent restore would make
  * the one moment this feature earns its keep invisible.
  *
- * A malformed spool is discarded rather than repaired. It can only come from a partial
- * write this module did not make or a hand-edit, and the alternative - feeding unvalidated
- * shapes to the route - trades a lost row for a queue that 4xxs forever.
+ * Every orphan is copied into this process's own spool BEFORE its source is removed. Two
+ * workers may adopt the same orphan during a handoff, but that can only duplicate delivery:
+ * the daemon keys each insert by run id and absorbs the duplicate. Partitioning makes loss
+ * impossible without asking any process to decide whether another process still owns a lock.
  */
 export function loadSpendOutbox(): number {
-  const path = spendOutboxPath();
-  return withSpendOutboxLock(0, (lock) => {
+  const ownPath = spendOutboxPath();
+  const dir = dirname(ownPath);
+  let names: string[];
+  try {
+    names = readdirSync(dir).sort();
+  } catch (err) {
+    if (fsErrorCode(err) !== "ENOENT") {
+      console.warn("[foreman] could not scan spend outboxes:", err);
+    }
+    return spendOutbox.length;
+  }
+  for (const name of names) {
+    const path = join(dir, name);
+    if (path === ownPath) continue;
+    if (
+      name !== LEGACY_SPEND_OUTBOX_NAME &&
+      !(name.startsWith(SPEND_OUTBOX_PREFIX) && name.endsWith(SPEND_OUTBOX_SUFFIX))
+    ) {
+      continue;
+    }
     let restored: SpendReportBody[];
     try {
       restored = readSpendOutbox(path);
-    } catch {
-      console.warn("[foreman] discarding an unreadable spend outbox");
-      writeSpendOutbox(path, [], lock);
-      return 0;
+    } catch (err) {
+      console.warn(`[foreman] discarding unreadable spend outbox ${name}:`, err);
+      try {
+        rmSync(path, { force: true });
+      } catch (removeErr) {
+        console.warn(`[foreman] could not remove unreadable spend outbox ${name}:`, removeErr);
+      }
+      continue;
     }
-    if (restored.length === 0) {
-      writeSpendOutbox(path, [], lock);
-      return 0;
-    }
-    for (const report of restored.slice(-SPEND_OUTBOX_MAX)) {
+    for (const report of restored) {
       if (!spendOutbox.some((queued) => queued.runId === report.runId)) spendOutbox.push(report);
     }
-    return spendOutbox.length;
-  });
+    while (spendOutbox.length > SPEND_OUTBOX_MAX) spendOutbox.shift();
+    if (!persistSpendOutbox()) continue;
+    try {
+      rmSync(path, { force: true });
+    } catch (err) {
+      console.warn(`[foreman] could not remove adopted spend outbox ${name}:`, err);
+    }
+  }
+  return spendOutbox.length;
 }
+
+export const spendOutboxTest = { path: spendOutboxPath };
 
 /** The shape check the restore path applies. Deliberately structural, not a zod import. */
 function looksLikeSpendReport(value: unknown): value is SpendReportBody {
@@ -474,7 +279,7 @@ function enqueueSpend(report: SpendReportBody): void {
   // Persisted BEFORE the first delivery attempt, which is the ordering the durability
   // depends on: a crash between the run finishing and the POST landing must still find the
   // report on disk.
-  persistSpendOutbox({ kind: "append", report });
+  persistSpendOutbox();
 }
 
 /**
@@ -509,7 +314,7 @@ async function flushSpend(): Promise<void> {
         // exact hole the spool closes - the report would be gone from disk while still
         // only maybe recorded.
         spendOutbox.shift();
-        persistSpendOutbox({ kind: "remove", runId: report.runId });
+        persistSpendOutbox();
         spendFailures = 0;
         continue;
       }
@@ -520,7 +325,7 @@ async function flushSpend(): Promise<void> {
         // one failure mode where losing the row is better than stalling the queue. It
         // leaves the spool too, or the next restart would replay it into the same 4xx.
         spendOutbox.shift();
-        persistSpendOutbox({ kind: "remove", runId: report.runId });
+        persistSpendOutbox();
         console.warn(
           `[foreman] spend rejected as unprocessable: ${report.role} -> ${res.status}; dropped`,
         );

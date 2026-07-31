@@ -32,7 +32,8 @@ In scope:
 - `WorkflowManagerOptions.checkDeps` - the passthrough that does not exist.
 - Injection in `src/server/index.ts`.
 - `WorkflowEngine.stop()` cancelling live check groups before awaiting in-flight attempts.
-- Cleanup-before-retry ordering against `handleInfrastructureFailure`.
+- Cleanup-before-retry ordering against `handleInfrastructureFailure`, including the
+  unresolved-lease retry gate.
 - README, and the pool-capacity consequence.
 - Extending Phase 1's repair-cycle test so a real failing check is the trigger.
 
@@ -79,9 +80,11 @@ Explicit non-goals:
   `manager.stop()` (`manager.ts:425-436`) is called from `src/server/index.ts:282`, before the
   pool reaper stops at `:286`.
 - **`handleInfrastructureFailure`** (`engine.ts:777-833`) finishes the old attempt and creates
-  a fresh retry, `MAX_INFRA_ATTEMPTS = 3`, backoff `retryBaseMs * 4^(n-1)`. The source plan's
-  rule (`:266-269`, `:274-279`): a lease-return failure must **not** reach it until the
-  resource is clean, or a retry acquires a second lease while the first is still held.
+  a **fresh** retry, `MAX_INFRA_ATTEMPTS = 3`, backoff `retryBaseMs * 4^(n-1)`. The source
+  plan's rule (`:266-269`, `:274-279`): a lease-return failure must **not** reach it until the
+  resource is clean, or a retry acquires a second lease while the first is still held. Note
+  the retry is a **new attempt id**, so it gets a new holder token and can lease a *different*
+  pool tree - there is no natural collision that would stop it. The gate has to be explicit.
 - **`workingSubpath` is relative** (`checks.ts:54-67`), to be joined onto the leased tree -
   never onto `sessionRepoRoot`, which names the shared main repository behind a linked
   worktree.
@@ -114,9 +117,18 @@ Rules, each with the failure it prevents:
   whole unit exists to avoid.
 - **Cleanup precedes classification.** Steps 6-7 complete before returning an
   `infrastructure` result, so `handleInfrastructureFailure`'s retry cannot acquire a second
-  lease behind the first. Where emptiness is `unknown`, Phase 2 keeps the row and the pin -
-  the executor still returns `infrastructure`, but the retry will fail to lease and block,
-  which is the correct visible outcome rather than a silent double-hold.
+  lease behind the first.
+- **An `unknown` emptiness must BLOCK, not retry**, and this needs a guard in the engine
+  rather than a rule in the executor. `handleInfrastructureFailure` finishes the old attempt
+  and creates a **fresh** one, and a lease is keyed by attempt id - so the retry carries a new
+  id, therefore a new holder token, and `acquireForAttempt` will cheerfully lease a *different*
+  pool tree while the original group may still be writing into the first. Add the guard where
+  the retry is created: before `handleInfrastructureFailure` produces a new runnable attempt
+  for a check node, ask Phase 2's `unresolvedLeaseForNode(submissionId, nodeId)`. If a lease is
+  still `held` or `returning`, set the run `blocked` with a distinct phase (suggested
+  `check_cleanup_unresolved`) instead of retrying, and let Phase 2's reclamation pass resolve
+  the lease. Contract E stays untouched - the executor still returns the published
+  three-variant result, and the retry decision stays where retry decisions already live.
 - **Attempt id is the lease key.** It is what `CheckProcessRegistry` and
   `workflow_check_leases` are keyed by, and what makes the holder token unique.
 - The executor never decides pass or fail. `runCheck`'s ladder and `checkVerdict` own that,
@@ -192,6 +204,10 @@ render in run detail. Change only what reads wrong.
 - A lease failure is infrastructure and never a `failed` verdict.
 - Cleanup completes before an infrastructure result is returned - assert the lease row is gone
   (or deliberately retained on `unknown`) at the moment the result surfaces.
+- **An `unknown` emptiness blocks instead of retrying.** Force the tri-state to `unknown` and
+  assert no second attempt is created, no second lease is acquired, and the run is `blocked`
+  with the distinct phase. Without this test the defect is invisible, because the happy path
+  and the broken path both look like "the check eventually finished".
 
 Extend `test/workflow-engine.test.ts`: `stop()` with a live check terminates its group promptly
 rather than awaiting the command timeout.
@@ -220,6 +236,7 @@ Manual, required - the phased-plan verification step 3 and 4:
 - The command demonstrably runs in the leased tree.
 - Daemon shutdown with a live check completes promptly and leaves no orphan and no leaked
   lease.
+- An unresolved group never produces a second lease - the run blocks and says so.
 - README documents execution, consent, platforms, the non-sandbox, and pool capacity.
 - `phase-2-check-node.md`'s "deliberately null" note is corrected.
 
@@ -233,8 +250,9 @@ sandbox (`phase-2-check-node.md:325-330`); a trusted per-repository command file
 default branch (`:232-244`); and `lint` / `build` slots in a built-in graph.
 
 Nobody may: run a check outside a pinned lease; use `sessionRepoRoot` or `sessionCwd` as the
-execution directory; make a lease or pin failure a `failed` verdict; or return a lease before
-group emptiness is confirmed.
+execution directory; make a lease or pin failure a `failed` verdict; return a lease before
+group emptiness is confirmed; or let a check node retry while it still holds an unresolved
+lease.
 
 ## Cross-phase audit record
 
@@ -253,3 +271,15 @@ group emptiness is confirmed.
 - **Confirmed the ordering constraint is transitive:** Phase 2 requires lease reconciliation
   before `startPoolReaper`; this phase's injection must sit after that reconciliation and
   therefore also above `:203`. Stated in step 2 so it is not rediscovered.
+
+- **2026-07-30, Inspector round 2 (PR #326):** finding accepted - *"Do not retry while group
+  cleanup is unknown"*. It was correct and the plan's reasoning was wrong. This phase had
+  claimed that on an `unknown` emptiness "the retry will fail to lease and block". It would
+  not: `handleInfrastructureFailure` creates a fresh attempt, a lease is keyed by attempt id,
+  so the retry carries a different holder token and the pool has other slots to give it. The
+  retry would succeed on a second tree while the first group may still be writing. Corrected
+  to an explicit gate at the point the retry is created, consuming Phase 2's new
+  `unresolvedLeaseForNode`. The enabling columns were added to Phase 2 rather than looked up
+  here, per the rule that a shared decision belongs to the earliest phase that must own it;
+  recorded in that phase's audit too. Contract E is unchanged - the fix is in the retry
+  policy, not the executor's result type.

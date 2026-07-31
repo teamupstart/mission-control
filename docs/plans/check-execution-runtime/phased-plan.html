@@ -284,7 +284,10 @@
   Layer 3 binds only this process. A <code>make session</code> in another terminal is outside it.
   Layer 1 is what makes that survivable: an out-of-process re-lease gets the bare
   <code>mission-control</code> holder, never the check token, so the identity comparison fails and
-  the return is refused. Because the shared reaper cannot <em>see</em> check leases, Phase 2 also
+  the return is refused. A refused return is <strong>terminal, not a hold</strong>: the row survives
+  as <code>lost</code> for audit and the pin is dropped, because holding a pin on a tree we have just
+  proven is not ours would bar the ordinary reaper from that path for the life of the daemon.
+  Because the shared reaper cannot <em>see</em> check leases, Phase 2 also
   owns collecting its own leaks - that is an obligation, not a nicety.
 </div>
 
@@ -295,6 +298,14 @@
   /** Clear after confirmed group emptiness, never merely leader exit. */
   clear(attemptId: string): void;
 }</code></pre>
+
+<h3>Contract R - the retry gate <span class="sv-s">(Phase 2 defines, Phase 4 consumes)</span></h3>
+<p>
+  <code>unresolvedLeaseForNode(submissionId, nodeId)</code> answers whether a check node still owns
+  a lease. Phase 4 consults it <strong>before</strong> a retry is created and blocks the run instead
+  of retrying when the answer is yes. A retry is a <em>new attempt id</em>, so it carries a new
+  holder token and would otherwise lease a second tree while the first group may still be writing.
+</p>
 
 <h3>Contract E - the executor signature <span class="sv-s">(shipped; changed by nobody)</span></h3>
 <p>

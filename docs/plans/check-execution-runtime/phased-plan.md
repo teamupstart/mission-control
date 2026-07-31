@@ -261,7 +261,10 @@ layer 3 binds only this process. A `make session` or a hand-run `treehouse get` 
 terminal is outside the mutex, so a status-read-then-return remains non-atomic against it.
 Layer 1 is what makes that survivable: an out-of-process actor re-leasing the same path gets
 the bare `mission-control` holder or its own, never `mission-control-check-<attemptId>`, so
-the identity comparison fails and the return is refused. `pool.ts:603-628` already lives with
+the identity comparison fails and the return is refused. **A refused return is terminal, not
+a hold**: the row survives as `lost` for audit and the pin is dropped, because the pin protects
+our lease and a mismatch proves the tree is no longer ours. Holding it would outlive the
+external holder and bar the ordinary reaper from that path for the life of the daemon. `pool.ts:603-628` already lives with
 the analogous residual and names it: *"The uncovered sliver is a re-lease whose agent has yet
 to start a process."*
 
@@ -283,6 +286,19 @@ export interface CheckProcessRegistry {
 Phase 2 defines this interface and implements it against `workflow_check_leases`. Phase 3
 consumes it and must not reach the table directly. The ordering invariant - persist, then
 release the gate - belongs to Phase 3's supervisor; the durability belongs to Phase 2.
+
+### Contract R: the retry gate (owned by Phase 2, consumed by Phase 4)
+
+`unresolvedLeaseForNode(submissionId, nodeId)` answers whether a check node still owns a lease
+in `held` or `returning`. Phase 4 consults it **before** `handleInfrastructureFailure` creates
+a fresh attempt, and blocks the run instead of retrying when the answer is yes.
+
+The reason it has to exist: a retry is a **new attempt id**, so it carries a new holder token
+and will happily lease a *different* pool tree while the original group may still be writing
+into the first. There is no natural collision to rely on. `workflow_check_leases` therefore
+carries `submission_id` and `node_id` as columns rather than joining through
+`workflow_node_attempts`, so retention deleting the attempt cannot make the answer wrong -
+the same argument that keeps the table free of a foreign key.
 
 ### Contract E: the executor signature (owned by the shipped code, changed by nobody)
 
@@ -333,3 +349,10 @@ After Phase 1, these hold and no later phase may weaken them:
   allowlist still asked); 5 → Phase 1; 6 → Phase 2.
 - Confirmed no phase re-opens the `check` evidence kind or widens
   `workflow_node_attempts`, both settled in the shipped unit.
+- **2026-07-30, Inspector round 2 (PR #326):** two failure paths contradicted the guarantees
+  above and both were corrected. A holder mismatch used to retain the pin, permanently
+  consuming a pool slot - Contract L now names `lost` as a terminal that drops the pin. And an
+  `unknown` group-emptiness used to return a plain `infrastructure`, which retries onto a
+  second tree rather than blocking - Contract R is the new gate, with its enabling columns
+  placed in Phase 2 rather than looked up from Phase 4. Both phases' audit records carry the
+  detail. No operator decision, phase boundary or dependency edge changed.

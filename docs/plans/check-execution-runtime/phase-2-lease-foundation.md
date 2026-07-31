@@ -149,6 +149,8 @@ index immediately beneath, following `workflow_binding_claims` as the model.
 ```sql
 CREATE TABLE IF NOT EXISTS workflow_check_leases (
   attempt_id             TEXT    NOT NULL PRIMARY KEY,
+  submission_id          TEXT    NOT NULL,
+  node_id                TEXT    NOT NULL,
   repo_root              TEXT    NOT NULL,
   lease_path             TEXT    NOT NULL,
   holder_token           TEXT    NOT NULL,
@@ -160,6 +162,8 @@ CREATE TABLE IF NOT EXISTS workflow_check_leases (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_check_leases_path
   ON workflow_check_leases(lease_path);
+CREATE INDEX IF NOT EXISTS idx_workflow_check_leases_node
+  ON workflow_check_leases(submission_id, node_id);
 ```
 
 Decisions to record in the table's comment:
@@ -178,9 +182,16 @@ Decisions to record in the table's comment:
   proof branch code never started, which is exactly the crash-between-spawn-and-persist case
   Phase 3's recovery has to distinguish from a live group. Say so in the comment or the next
   reader will "clean up" the sentinels into nullable columns and destroy the distinction.
-- **`cleanup_state`** is the lease's own lifecycle (`held` → `returning` → `returned`), and a
-  failed return moves to `returning` and **stays there**. It must not delete the row, release
-  its pin, or permit a second lease (`phase-2-check-node.md:274-279`).
+- **`cleanup_state`** is the lease's own lifecycle: `held` → `returning` → `returned`, plus
+  the terminal `lost`. A failed return moves to `returning` and **stays there** - it must not
+  delete the row, release its pin, or permit a second lease
+  (`phase-2-check-node.md:274-279`). `lost` is the holder-mismatch terminal described in step
+  6: audit row kept, no return issued, pin dropped.
+- **`submission_id` and `node_id` are carried, not joined for.** Phase 4 must ask "does this
+  node still have an unresolved lease?" before it is allowed to retry, and the answer has to
+  survive retention deleting the attempt row - the same reason this table has no foreign key.
+  A join through `workflow_node_attempts` would answer correctly right up until the moment it
+  matters.
 
 `WorkflowStore` reads the shared handle (`store.ts:996`), so the accessors live there or in a
 small sibling; either is fine, but only one module writes this table.
@@ -234,11 +245,23 @@ One module owning the lifecycle. Public surface, roughly:
   - Match → `return --force`, mark `returned`, drop the pin.
   - Path available, or absent from status → the prior return already succeeded; complete
     cleanup.
-  - **Path held by any different token → refuse, leave it untouched, keep the row.** This is
-    the invariant that stops recovery-after-crash from returning a tree now leased to someone
-    else and destroying their work.
+  - **Path held by any different token → issue no return, and move to the terminal
+    `lost` state: keep the row for audit, DROP the pin.** Refusing the return is the
+    invariant that stops recovery-after-crash from returning a tree now leased to someone
+    else and destroying their work. Keeping the *pin* would be a different bug: the pin
+    exists to protect **our** lease, and a mismatch is positive proof this tree is not ours.
+    Held forever it would outlive the external holder's lease and permanently bar the normal
+    reaper from reclaiming that path - one pool slot lost for the life of the daemon.
+    Dropping it is safe in every sub-case, and the reasoning is worth keeping because it is
+    the non-obvious part: an external re-lease is genuinely not ours; another check's lease
+    is pinned by *its own* row; and our own still-running check cannot reach this branch,
+    because a live process makes `tree.busy` true and its holder token is not in
+    `LEASE_HOLDERS` - so a live check keeps two independent reaper refusals even with no pin.
   - Return failure → `cleanup_state = "returning"`, row retained, pin retained, bounded
     backoff retry. Never `handleInfrastructureFailure` until the resource is actually clean.
+- `unresolvedLeaseForNode(submissionId, nodeId)` - is there a row for this node in a state
+  other than `returned` or `lost`? **Phase 4 gates its retry on this**, so it must answer from
+  the table alone, never from a join that retention can break.
 - `reconcileOnStartup()` - restore rows into the in-memory pin set and resolve each by the
   same identity rules. Rows carrying the sentinel pid are known never to have run branch code
   and can be returned once identity matches.
@@ -286,12 +309,16 @@ of the pool lock stated plainly.
 - Acquire persists the row and pins the path **before** the persist resolves - assert the
   in-memory union, not just the table.
 - Return is idempotent across all four identity outcomes: match, path available, path absent,
-  path held by a different token. The fourth must refuse and leave the row.
+  path held by a different token. The fourth must issue **no** return, keep the row as `lost`,
+  and **drop the pin** - then assert the reaper can subsequently reclaim that path, which is
+  the regression the pin-retention bug would cause.
 - Return failure keeps the row in `returning`, keeps the pin, and does not permit a second
   lease for the same attempt.
 - Startup reconciliation restores pins before the reaper could run, and resolves a sentinel-pid
   row.
 - Pin/verify failure unwinds the lease and surfaces the return's own outcome in the error.
+- `unresolvedLeaseForNode` answers true for `held` and `returning`, false for `returned` and
+  `lost`, and keeps answering correctly after the attempt row is deleted.
 
 `test/pool-check-pins.test.ts` (or extend `test/pool.test.ts` if it exists):
 
@@ -322,7 +349,7 @@ Commands: `npm run typecheck`, `npm test`, `npm run build`.
 - `workflow_check_leases` exists, is empty, and nothing writes it yet.
 - Reconciliation is wired above `startPoolReaper` in `src/server/index.ts` with a comment
   saying why.
-- Suite ends with no leaked lease.
+- Suite ends with no leaked lease, and no path is left pinned by a `lost` row.
 
 ## Downstream handoff
 
@@ -336,13 +363,15 @@ Phase 3 may rely on:
 Phase 4 may rely on:
 
 - `acquireForAttempt` / `releaseForAttempt` and their identity rules.
+- `unresolvedLeaseForNode(submissionId, nodeId)`, the retry gate.
 - The pin being live from acquisition through confirmed return, so a check may run for minutes
   without the reaper noticing.
 - Lease or pin failure already being classified as infrastructure, so Phase 4 forwards it to
   `handleInfrastructureFailure` rather than re-deciding.
 
 Nobody may: add the check token to `LEASE_HOLDERS`; give the lease table a foreign key; make
-`checkLeasePaths` optional; or collapse the two `return` spellings.
+`checkLeasePaths` optional; collapse the two `return` spellings; or hold a pin in the `lost`
+state.
 
 ## Cross-phase audit record
 
@@ -365,3 +394,20 @@ Nobody may: add the check token to `LEASE_HOLDERS`; give the lease table a forei
   reaper refuse a check lease outright. Both ship. The token is primary; the pin is defence in
   depth. The consequence the source plan therefore also missed - that leaked check leases are
   no longer collected by the shared reaper - is new obligation step 7.
+
+- **2026-07-30, Inspector round 2 (PR #326):** two findings accepted against this phase and
+  Phase 4, both valid.
+  - *Release stale pins after holder mismatch.* The mismatch branch retained the pin as well
+    as the row, so an external re-lease would leave that path permanently unreapable - a pool
+    slot lost for the life of the daemon. Corrected: mismatch is now the terminal `lost`
+    state, which keeps the audit row, issues no return, and **drops the pin**. The safety of
+    dropping it is argued in step 6 rather than asserted, because a live check keeps two
+    independent reaper refusals (`tree.busy`, and a holder token outside `LEASE_HOLDERS`)
+    without needing a pin at all.
+  - *Do not retry while group cleanup is unknown* (Phase 4's finding, but the fix lands
+    here). Phase 4 needed a way to ask whether a node still owns an unresolved lease, so this
+    phase now carries `submission_id` / `node_id` on the row and exposes
+    `unresolvedLeaseForNode`. Carried rather than joined for, because retention deleting the
+    attempt row must not make the answer wrong - the same argument that keeps this table
+    free of a foreign key. Moving the columns into the earliest phase that must own them,
+    rather than bolting a lookup onto Phase 4, follows the phasing rule.

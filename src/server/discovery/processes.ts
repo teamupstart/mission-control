@@ -193,6 +193,65 @@ function parseStart(raw: string): number {
 }
 
 /**
+ * Every pid in the daemon's own subtree - the processes we spawned, which are therefore
+ * nobody's session.
+ *
+ * A session is somebody ELSE's agent that we found. An agent we started ourselves is an
+ * implementation detail of a card that already exists, and carding it a second time is a
+ * duplicate of that card wearing whatever name its surroundings happen to supply. The
+ * embedded (Agent SDK) runtime is where this bites: the vendor's `query()` owns the spawn,
+ * so the CLI child inherits the daemon's controlling terminal, and a daemon started from a
+ * terminal (`npm run dev`) hands its tty to every embedded session it launches. They then
+ * all land on that one tty, collapse into a single phantom via `chooseAgentRoot`, and it is
+ * named after whatever tab the daemon was started in.
+ *
+ * Both neighbouring spawn paths already defend the same ground from their own side, and
+ * neither could cover this one: `claude-cli.ts` spawns headless runs `detached: true`
+ * precisely "so the session poller never discovers this headless run as a phantom session",
+ * and `sdk-deps.ts` strips `TMUX_PANE`/`WEZTERM_PANE`/`TERM_PROGRAM` so the daemon's pane is
+ * not inherited by the subprocess's HOOKS. This is the third way in - the process table -
+ * and it is answered here, once, for every current and future thing the daemon spawns.
+ *
+ * ANCESTRY, deliberately, rather than the two cheaper keys that would also have worked on
+ * the machine this was found on. Not argv (`--output-format stream-json`): flag order and
+ * spelling belong to the vendor, and `isBackgroundAgent` documents at length why deciding
+ * this from a command line we do not control is how sessions silently vanish. Not "shares
+ * the daemon's tty": that is a coincidence of dev mode, and it would hide a real operator
+ * session that merely landed on the same tty. Descent is the fact we actually mean, and it
+ * is one we own.
+ *
+ * Dispatched sessions are NOT in this set, which is what makes the rule safe: every backend
+ * hands the launch to a mux server or a GUI (`tmux new-session -d`, `wezterm cli spawn`), so
+ * a dispatched agent reparents away from us and is somebody else's child by the time it
+ * matters. The daemon's siblings under a dev supervisor (the Electron shell, the Foreman
+ * worker) are likewise untouched: they are not descendants.
+ *
+ * Walks DOWN from the daemon rather than up from each agent, so it is one pass over the
+ * table regardless of how deep the tree is, and a parent cycle terminates on the visited set
+ * instead of needing a hop cap.
+ */
+export function daemonOwnedPids(procs: Proc[], daemonPid: number = process.pid): Set<number> {
+  const children = new Map<number, number[]>();
+  for (const p of procs) {
+    if (p.pid === p.ppid) continue; // a self-parented row would loop below
+    const kids = children.get(p.ppid);
+    if (kids) kids.push(p.pid);
+    else children.set(p.ppid, [p.pid]);
+  }
+
+  const owned = new Set<number>();
+  const stack = [daemonPid];
+  while (stack.length > 0) {
+    for (const kid of children.get(stack.pop()!) ?? []) {
+      if (kid === daemonPid || owned.has(kid)) continue;
+      owned.add(kid);
+      stack.push(kid);
+    }
+  }
+  return owned;
+}
+
+/**
  * Snapshot every process on the system with pid/ppid/tty/start and full argv.
  *
  * Two `ps` passes because macOS `ps` has no field delimiter: pass A puts the

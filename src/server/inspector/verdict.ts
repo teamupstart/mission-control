@@ -112,7 +112,8 @@ export interface PlanInput {
   newId: () => string;
 }
 
-const SEVERITY_RANK: Record<InspectorSeverity, number> = {
+/** Shared with the prompt builder, which keeps the most severe rows when it must cut. */
+export const SEVERITY_RANK: Record<InspectorSeverity, number> = {
   blocker: 0,
   major: 1,
   minor: 2,

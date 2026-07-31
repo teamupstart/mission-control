@@ -135,11 +135,37 @@ const TURN_DONE = new Set(["end_turn", "stop_sequence"]);
  * a 30-min silence, or every session for the moment after a daemon restart wipes
  * the in-memory overlays - can still be seen as idle and have its queue delivered,
  * because the transcript is on disk and re-derived every poll tick.
+ *
+ * CLIENT-SIDE COMMANDS ARE NOT TURNS. A local slash command (`/reload-skills`,
+ * `/clear`, `/context`) writes a main-chain `user` record that no assistant ever
+ * answers and no `Stop` hook ever follows. Counted as a turn it reads as a live
+ * human prompt, which pins a FINISHED session at `working` for as long as the
+ * transcript stands - the precise failure this passive read exists to prevent, and
+ * one that strands a bound task because `settledIdle` never comes true again.
+ *
+ * Two structural markers disqualify such a record, neither of them a content sniff:
+ *
+ *   - `isMeta`, which the client sets on records it injects itself: the
+ *     `<local-command-caveat>` preamble, and a skill's payload attachment.
+ *   - a `system` record with `subtype: "local_command"`, whose `parentUuid` names
+ *     the `<command-name>` record it ran. Scanning newest-first is what makes this
+ *     usable - the marker is always read BEFORE the record it disqualifies.
+ *
+ * Deliberately NOT keyed on the `<command-name>` tag itself: a prompt-expanding
+ * command like `/no-mistakes` writes that same tag and DOES open a turn, so
+ * skipping on the tag would report a working session as idle - strictly worse than
+ * the bug being fixed, because it invites Foreman to ship mid-turn. The
+ * `local_command` marker is the only thing that separates the two.
  */
 export function computeSessionActivity(lines: string[]): SessionActivityRead | null {
+  /** uuids of `<command-name>` records a `local_command` system record claims. */
+  const localCommands = new Set<string>();
   for (let i = lines.length - 1; i >= 0; i--) {
     const t = lines[i]!.trim();
-    if (!t || t.indexOf('"role"') < 0) continue; // main-chain records carry a role
+    // Main-chain records carry a role. The local_command marker carries neither a role
+    // nor anything else we read off it, but it still has to be PARSED - it is the only
+    // evidence that the record below it was a client-side command.
+    if (!t || (t.indexOf('"role"') < 0 && t.indexOf('"local_command"') < 0)) continue;
     let o: Record<string, unknown>;
     try {
       o = JSON.parse(t) as Record<string, unknown>;
@@ -147,7 +173,13 @@ export function computeSessionActivity(lines: string[]): SessionActivityRead | n
       continue;
     }
     if (o.isSidechain) continue;
+    if (o.type === "system" && o.subtype === "local_command") {
+      if (typeof o.parentUuid === "string") localCommands.add(o.parentUuid);
+      continue;
+    }
     if (o.type !== "user" && o.type !== "assistant") continue;
+    if (o.isMeta === true) continue;
+    if (typeof o.uuid === "string" && localCommands.has(o.uuid)) continue;
     const m = o.message as Record<string, unknown> | undefined;
     if (!m || typeof m !== "object") continue;
     if (m.role !== "user" && m.role !== "assistant") continue;

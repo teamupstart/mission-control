@@ -4421,10 +4421,16 @@ That re-read alone isn't quite enough, because `treehouse status` prints no leas
 id or timestamp: a tree that was returned and then *re-leased* in that window looks
 identical to the stale lease the sweep planned to collect, since both hold as
 `mission-control`. It matters most for a dispatch, which has no process, no session
-and no task record between taking its tree and finishing provisioning. So the daemon
-also remembers which pool paths it has leased and when, and refuses to return one it
-took after it looked. A `treehouse get` from another terminal is still outside that,
-which is why the holder check above stays the thing protecting *your* reservations.
+and no task record between taking its tree and finishing provisioning - and a second
+dispatch that finds the pool dry runs a sweep itself, right into that window.
+
+So the daemon also tracks its own acquisitions, and spares a tree on two counts: one
+it leased after the sweep looked, and one it is still provisioning. The second lasts
+only until the tree is recorded on its task, after which the ordinary rungs decide
+again, and it lapses on its own if that never happens - so a dispatch that dies mid-setup
+delays a reap rather than stranding the slot. A `treehouse get` from another terminal is
+outside all of this, which is why the holder check above stays the thing protecting
+*your* reservations.
 
 Set `MISSION_POOL_REAP_MS=0` to switch the background sweep off entirely; the
 dispatch-time reap stays on, since its only alternative is abandoning the pool

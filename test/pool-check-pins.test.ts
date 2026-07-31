@@ -6,6 +6,8 @@ import { planReap, reapPool, type PoolDeps, type PoolPins, type PoolTree } from 
 import {
   acquireLease,
   checkHolderToken,
+  leasePendingRegistration,
+  settleLease,
   withPoolLock,
   type TreehouseCli,
 } from "../src/server/pool-lease.ts";
@@ -125,9 +127,10 @@ test("reapPool never returns a tree this process re-leased after it looked", asy
 });
 
 test("reapPool still collects a lease taken before the sweep began", async () => {
-  // The other side of the ledger, and the one that keeps it from becoming an off switch: an
-  // OLD lease is exactly the leak the sweep exists to collect, so a path this process leased
-  // at some point in the past must stay reapable once a later sweep judges it idle.
+  // The other side of both guards, and the one that keeps them from becoming an off switch
+  // for the leak collector they protect. This is what an actual leak looks like: a lease
+  // this process took, REGISTERED on its task, and then lost the agent for - so the
+  // acquisition has already handed off, and only the ordinary rungs decide.
   const { clone, wt } = mkIdleTree("harness-pool-release-old-");
   const status = `1     leased       ${wt}  (held by mission-control)`;
   const cli: TreehouseCli = {
@@ -135,8 +138,9 @@ test("reapPool still collects a lease taken before the sweep began", async () =>
     get: async () => stubRun({ stdout: `${wt}\n`, stderr: "", code: 0 }),
     return: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
   };
-  // Leased BEFORE the sweep starts, and never returned - a leak.
+  // Leased BEFORE the sweep starts, provisioned through to registration, never returned.
   await acquireLease(clone, LEASE_HOLDER, cli);
+  settleLease(wt);
 
   const returned: string[] = [];
   const deps: PoolDeps = {
@@ -192,4 +196,63 @@ test("reapPool holds the pool lock across its re-read and the return it authoris
     ["status-1", "status-2", "return", "competitor"],
     "something else in this process was served between the re-read and the return",
   );
+});
+
+test("reapPool spares a lease whose dispatch has not finished registering", async () => {
+  // The window the generation counter alone cannot see. A sweep that STARTS after the
+  // acquisition has a generation that already includes it, so ordering says nothing - and
+  // this is the realistic trigger, because `provisionWorktree` runs a sweep itself whenever
+  // it finds the pool dry, which makes a second concurrent dispatch the thing that fires it.
+  // Meanwhile the tree is idle, unpinned and recorded on no task, because provisioning has
+  // not returned yet.
+  const { clone, wt } = mkIdleTree("harness-pool-provisioning-");
+  const status = `1     leased       ${wt}  (held by mission-control)`;
+  const cli: TreehouseCli = {
+    status: async () => stubRun({ stdout: status, stderr: "", code: 0 }),
+    get: async () => stubRun({ stdout: `${wt}\n`, stderr: "", code: 0 }),
+    return: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
+  };
+
+  // A dispatch takes its tree and is still provisioning: nothing has registered it.
+  await acquireLease(clone, LEASE_HOLDER, cli);
+
+  const returned: string[] = [];
+  const deps: PoolDeps = {
+    status: async () => stubRun({ stdout: status, stderr: "", code: 0 }),
+    returnTree: async (_r, path) => {
+      returned.push(path);
+      return stubRun({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const spared = await reapPool(clone, () => pins(), deps);
+  assert.deepEqual(returned, [], "a tree still being provisioned was force-returned");
+  assert.deepEqual(spared.skipped.map((c) => c.skip), ["this process is still provisioning it"]);
+
+  // And once the dispatch has recorded the worktree, the acquisition stops speaking for it -
+  // otherwise this would be a permanent block rather than a handover, and the tree could
+  // never be collected again.
+  settleLease(wt);
+  const collected = await reapPool(clone, () => pins(), deps);
+  assert.deepEqual(collected.reaped.map((t) => t.name), ["1"]);
+  assert.deepEqual(returned, [wt]);
+});
+
+test("an unsettled lease stops blocking after its window, so a missed handover cannot strand a slot", () => {
+  // The answer to the obvious objection to a pending record: it is a lifetime somebody has
+  // to remember to end, and a forgotten one would cost a pool slot for the life of the
+  // daemon. It cannot - an entry nobody settles simply stops counting, so the worst a missed
+  // `settleLease` can do is delay a reap by the window.
+  const { clone, wt } = mkIdleTree("harness-pool-pending-ttl-");
+  const cli: TreehouseCli = {
+    status: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
+    get: async () => stubRun({ stdout: `${wt}\n`, stderr: "", code: 0 }),
+    return: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
+  };
+  return acquireLease(clone, LEASE_HOLDER, cli).then(() => {
+    const now = Date.now();
+    assert.equal(leasePendingRegistration(wt, now), true, "it protects the tree right now");
+    assert.equal(leasePendingRegistration(wt, now + 299_000), true, "and through the window");
+    assert.equal(leasePendingRegistration(wt, now + 301_000), false, "but never forever");
+  });
 });

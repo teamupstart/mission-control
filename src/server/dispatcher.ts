@@ -27,6 +27,7 @@ import { isTreehouseRepo, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import {
   acquireLease,
   defaultTreehouseCli,
+  settleLease,
   TREEHOUSE_BIN,
   withPoolLock,
   type TreehouseCli,
@@ -180,6 +181,10 @@ export class Dispatcher {
       );
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
+      // The task now names this tree, so `PoolPins.taskWorktrees` speaks for it and the
+      // acquisition no longer has to. Handed over immediately after the record lands, which
+      // is the moment the reaper can see it - see `settleLease`.
+      settleLease(wt.path);
       if (await this.abortIfSettled(taskId)) return;
 
       // Resolved here, not at task creation: a backlogged task launches on the defaults
@@ -742,6 +747,10 @@ export async function provisionWorktree(
           // it is ours and nothing has been launched into it. A return that itself fails is
           // reported alongside the real cause rather than replacing it.
           const returned = await withPoolLock(repoRoot, () => returnLease(path));
+          // Whether or not the return succeeded, this dispatch is done with the tree, so it
+          // must stop claiming to be provisioning it. A return that failed leaves a leaked
+          // lease for the sweep to collect later, which it cannot do while we hold it.
+          settleLease(path);
           const cause = err instanceof Error ? err.message : String(err);
           throw new Error(
             returned.code === 0

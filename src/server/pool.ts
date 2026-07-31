@@ -10,6 +10,7 @@ import {
   defaultPoolDeps,
   leaseGeneration,
   leasedSince,
+  leasePendingRegistration,
   withPoolLock,
   type PoolDeps,
 } from "./pool-lease.ts";
@@ -720,6 +721,12 @@ async function returnIfStillIdle(
   // Only the in-process half. A `make session` or a hand-run `treehouse get` is still
   // outside this, and stays the documented residual - see `pool-lease.ts`.
   if (leasedSince(tree.path, generation)) return "this process re-leased it while we looked";
+  // And the same window seen from a sweep that STARTED inside it, where the check above is
+  // no help: this sweep's generation already includes the acquisition, so ordering says
+  // nothing. `provisionWorktree` runs exactly such a sweep whenever it finds the pool dry,
+  // which makes a second concurrent dispatch the trigger. Elapsed ownership is what answers
+  // it - the lease is spared until its taker has made it visible some other way.
+  if (leasePendingRegistration(tree.path)) return "this process is still provisioning it";
   const r = await deps.returnTree(repoRoot, tree.path);
   if (r.code === 0) return null;
   return `treehouse return failed: ${r.stderr.trim() || "unknown"}`;

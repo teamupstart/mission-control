@@ -6,6 +6,7 @@ import {
   canonicalPath,
   checkHolderToken,
   defaultTreehouseCli,
+  settleLease,
   withPoolLock,
   type TreehouseCli,
 } from "../pool-lease.ts";
@@ -418,6 +419,9 @@ export class CheckLeaseManager {
         // Pinned first and synchronously: from here on the reaper must see this path even
         // though the row below has not been written yet.
         this.justAcquired.add(path);
+        // Our own pin speaks for this tree from here, so the acquisition's provisional
+        // protection can stand down - see `settleLease`.
+        settleLease(path);
         // Whether the row under `attemptId` is OURS. The unwind below may only touch a row
         // this invocation actually wrote: an INSERT can fail because some other row already
         // owns this attempt id or this path, and in that case the row under that key belongs

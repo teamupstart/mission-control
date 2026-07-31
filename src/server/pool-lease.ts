@@ -222,6 +222,50 @@ export function leasedSince(path: string, generation: number): boolean {
 }
 
 /**
+ * Leases this process has taken but not yet made visible to the reaper, and when.
+ *
+ * The generation counter above only answers "did I take this since I looked?", which covers
+ * a sweep that read the pool BEFORE the acquisition. It cannot cover a sweep that STARTS
+ * afterwards: that one's generation already includes the lease, so `leasedSince` is false,
+ * and the tree is still idle, still unpinned, still untracked by any task. And that sweep is
+ * not hypothetical - `provisionWorktree` runs one itself whenever it finds the pool dry, so
+ * a second concurrent dispatch is exactly the thing that triggers it.
+ *
+ * So the acquisition also has to be protected by ELAPSED OWNERSHIP, not just ordering, until
+ * whoever took it has made it visible some other way (a task's `worktreePath`, or the check
+ * lease manager's own pin). `settleLease` is that handover.
+ *
+ * The TTL is the answer to the obvious objection - that this is a lifetime someone has to
+ * remember to end, and a forgotten one costs a pool slot for the life of the daemon. It
+ * cannot: an entry nobody settles stops counting after the window, so the worst a missed
+ * `settleLease` can do is delay a reap. The window is generous against provisioning (a reset
+ * and a clean) rather than tuned, because being early here is the expensive direction.
+ */
+const pendingLeases = new Map<string, number>();
+const PENDING_LEASE_TTL_MS = 300_000;
+
+/** Whether this process is still wiring up its lease of `path`. */
+export function leasePendingRegistration(path: string, now: number = Date.now()): boolean {
+  const key = canonicalPath(path);
+  const takenAt = pendingLeases.get(key);
+  if (takenAt === undefined) return false;
+  if (now - takenAt > PENDING_LEASE_TTL_MS) {
+    pendingLeases.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Hand a freshly acquired lease over to whatever will represent it from now on - a task's
+ * recorded `worktreePath`, or the check lease manager's pin. Call it once ownership is
+ * visible to the reaper, and on every path that gives the tree back instead.
+ */
+export function settleLease(path: string): void {
+  pendingLeases.delete(canonicalPath(path));
+}
+
+/**
  * Ask a pool for a tree under `holder`. Returns its path, or the reason it got nothing
  * (which `provisionWorktree` treats as "maybe leaked", not "no pool").
  *
@@ -250,8 +294,11 @@ export async function acquireLease(
   }
   // Recorded HERE, in the one place every acquisition goes through, so no caller can forget
   // and no caller has to opt in. A dispatch is protected by the same line that protects a
-  // check, from the instant treehouse hands the path over.
-  acquiredAt.set(canonicalPath(path), ++acquisitions);
+  // check, from the instant treehouse hands the path over. The two records answer different
+  // questions - ordering, and elapsed ownership - and a lease needs both until it settles.
+  const key = canonicalPath(path);
+  acquiredAt.set(key, ++acquisitions);
+  pendingLeases.set(key, Date.now());
   return { path };
 }
 

@@ -10565,46 +10565,91 @@ select.ensemble-judge-persona {
   border-radius: 12px;
   background: var(--panel);
 }
-.wf-pipeline-terminus { align-self: center; flex-direction: row; align-items: center; width: 176px; }
-.wf-pipeline-terminus-mark { font-size: 15px; color: var(--working); }
+/* The mark spans every row so the diamond stays centred against the whole card, and the
+   label column is `minmax(0, 1fr)` so a long name wraps inside the card instead of widening
+   it. The status chip takes the label column on its own row rather than sitting beside the
+   label: a run's chip is as wide as "Changes requested" (120px of a 176px card), so there is
+   no beside-the-label to sit in, and a row that tried to fit both crushed the label to zero
+   width and stacked "Session" one letter per line. */
+.wf-pipeline-terminus {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-self: center;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 6px;
+  width: 176px;
+}
+.wf-pipeline-terminus-mark { grid-row: 1 / -1; font-size: 15px; color: var(--working); }
+.wf-pipeline-terminus .wf-pipeline-status { grid-column: 2; justify-self: start; }
 .wf-pipeline-terminus-body,
 .wf-pipeline-reviewer-body,
 .wf-pipeline-stage-title { display: grid; gap: 2px; min-width: 0; }
+/* `break-word`, not `anywhere`: both break a word too long for the line, but `anywhere` also
+   reports a min-content width of one character, which lets any flex sibling shrink the label
+   to nothing. A label should give up its last word before it gives up its last letter. */
 .wf-pipeline-terminus-name,
-.wf-pipeline-stage-name { font-size: 12.5px; font-weight: 700; overflow-wrap: anywhere; }
+.wf-pipeline-stage-name { font-size: 12.5px; font-weight: 700; overflow-wrap: break-word; }
 .wf-pipeline-terminus-sub,
 .wf-pipeline-stage-sub,
-.wf-pipeline-reviewer-meta { font-size: 10px; color: var(--dim); overflow-wrap: anywhere; }
+.wf-pipeline-reviewer-meta { font-size: 10px; color: var(--dim); overflow-wrap: break-word; }
 .wf-pipeline-terminus:focus-visible,
 .wf-pipeline-stage-head:focus-visible,
 .wf-pipeline-reviewer:focus-visible {
   outline: 2px solid var(--working);
   outline-offset: 2px;
 }
-.wf-pipeline-stage-head { display: flex; align-items: center; gap: 8px; border-radius: 8px; }
+/* The third chip site, laid out like the other two. A stage's own chip reaches "Passed, 2 not
+   run", which beside the title left "2 checks · all must pass" folded into three lines while
+   the chip kept its full width - the same trade the terminus refuses. Note that `flex-wrap`
+   would NOT have fixed this: `.wf-pipeline-stage-title` is `flex: 1`, whose `flex-basis: 0`
+   contributes nothing to line-breaking, so the chip always "fits" and the wrap never fires. */
+.wf-pipeline-stage-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 6px;
+  border-radius: 8px;
+}
 .wf-pipeline-stage-head[draggable="true"] { cursor: grab; }
-.wf-pipeline-stage-title { flex: 1; }
+.wf-pipeline-stage-title { grid-column: 1; }
+.wf-pipeline-stage-actions { grid-column: 2; grid-row: 1; }
+.wf-pipeline-stage-head .wf-pipeline-status { grid-column: 1; justify-self: start; }
 .wf-pipeline-stage.is-dragging,
 .wf-pipeline-reviewer.is-dragging { opacity: 0.45; }
 .wf-pipeline-stage.is-drop-target,
 .wf-pipeline-reviewer.is-drop-target { border-color: var(--working); }
 .wf-pipeline-members { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+/* Laid out like the terminus, and for the same reason: the chip is `flex: none`, so beside the
+   name it takes its width out of the name. A member's name is the longest text in the pipeline
+   ("Intent Conformance Judge"), and it broke mid-word next to a wide chip.
+   The chip takes its own row unconditionally rather than only when it will not fit. A run is
+   LIVE, and a member's chip travels "Not started" -> "Running" -> "Changes requested" while the
+   operator watches; sizing the row to whichever phrase is current would re-flow the stage on
+   every transition, and would draw sibling members - same stage, same status - as two different
+   row shapes. Actions stay pinned to the first row so the editor's Remove keeps its corner. */
 .wf-pipeline-reviewer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 7px;
+  column-gap: 7px;
+  row-gap: 6px;
   padding: 8px 9px;
   border: 1px solid var(--border-soft);
   border-radius: 9px;
   background: var(--panel-2);
 }
+.wf-pipeline-reviewer-body { grid-column: 1; }
+.wf-pipeline-reviewer-actions { grid-column: 2; grid-row: 1; }
+.wf-pipeline-reviewer .wf-pipeline-status { grid-column: 1; justify-self: start; }
 .wf-pipeline-reviewer-name {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
   font-weight: 600;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 /* A check is a PEER of a reviewer in a stage, so it keeps the same row shape and differs by
    a chip and a cooler edge. Drawing it as another kind of card would say the two take

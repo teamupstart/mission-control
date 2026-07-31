@@ -84,7 +84,6 @@ const failingRunner: LlmRunner = {
   sandbox: null,
   price: () => null,
   litter: null,
-  price: () => null,
   killLiveRuns() {},
   async run() {
     return JSON.stringify({

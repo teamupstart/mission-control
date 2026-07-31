@@ -99,6 +99,9 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     discovered("prompted"),
     discovered("auto-bound"),
     discovered("unverified-auto"),
+    discovered("disabled-auto"),
+    discovered("dry-run-auto"),
+    discovered("off-list-auto"),
   ]);
   const queues = new QueueManager(registry);
   const personas = new PersonaManager(registry);
@@ -282,6 +285,25 @@ test("completion HTTP claims server-owned identity once and atomically retires t
        1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2
      )`,
   ).run();
+  const insertAuthorizedQueue = db.prepare(
+    `INSERT INTO foreman_queues (
+       note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
+     ) VALUES (?, '/repo', 'feature', NULL, NULL, NULL, 10)`,
+  );
+  const insertAuthorizedItem = db.prepare(
+    `INSERT INTO foreman_queue_items (
+       id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
+       send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
+       proposed_payload, recovered_at, revision, created_at, updated_at, sent_at, completed_at
+     ) VALUES (
+       ?, ?, 0, 'work', 'verified', 1, 'base', 1, '[]',
+       1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2
+     )`,
+  );
+  for (const noteKey of ["disabled-auto", "dry-run-auto", "off-list-auto"]) {
+    insertAuthorizedQueue.run(noteKey);
+    insertAuthorizedItem.run(`${noteKey}-item`, noteKey);
+  }
   const app = buildApp(
     registry,
     new ReviewManager(registry),
@@ -313,6 +335,46 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     reason: "manual_trigger",
   });
   assert.equal(workflows.store.activeBindingForNote("manual")?.id, "manual-binding");
+
+  for (const denied of [
+    {
+      sessionId: "disabled-auto",
+      config: { enabled: false, mode: "live" as const, repoAllowlist: ["/repo"] },
+    },
+    {
+      sessionId: "dry-run-auto",
+      config: { enabled: true, mode: "dry-run" as const, repoAllowlist: ["/repo"] },
+    },
+    {
+      sessionId: "off-list-auto",
+      config: { enabled: true, mode: "live" as const, repoAllowlist: ["/other"] },
+    },
+  ]) {
+    setForemanConfig(denied.config);
+    const response = await request(
+      app,
+      denied.sessionId,
+      "8".repeat(64),
+      "drain",
+      null,
+      "no-mistakes",
+    );
+    assert.equal(response.status, 409);
+    assert.match(
+      (await response.json() as { error: string }).error,
+      /requires Foreman Live mode and an allowlisted repository/,
+    );
+    assert.equal(
+      workflows.store.activeBindingForNote(denied.sessionId),
+      null,
+      `${denied.sessionId} crossed the server-side Foreman authorization boundary`,
+    );
+  }
+  setForemanConfig({
+    enabled: true,
+    mode: "live",
+    repoAllowlist: ["/repo"],
+  });
 
   const bindingCountBeforeRejectedFallback = workflows.store.listBindings().length;
   const rejectedFallback = await request(

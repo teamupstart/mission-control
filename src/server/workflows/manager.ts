@@ -1643,6 +1643,19 @@ export class WorkflowManager {
     let binding = this.store.activeBindingForNote(noteKeyFor(session));
     let fallbackBinding: WorkflowBindingInsert | null = null;
     if (!binding && claim.fallbackWorkflow === "no-mistakes") {
+      // The worker's `foremanMayActLive` check is routing, not authority: this HTTP
+      // boundary must independently prove that Foreman may act in this repository
+      // before it can create and submit a durable workflow binding.
+      const foremanConfig = getForemanConfig();
+      if (
+        !foremanConfig.enabled
+        || foremanConfig.mode !== "live"
+        || !repoAllowlisted(session.cwd, session.repoRoot, foremanConfig.repoAllowlist)
+      ) {
+        throw new Error(
+          "No-Mistakes workflow fallback requires Foreman Live mode and an allowlisted repository",
+        );
+      }
       const workflow = this.get(NO_MISTAKES_REVIEW_WORKFLOW_ID);
       const versionId = workflow?.workflow.currentVersionId ?? null;
       if (!workflow || workflow.workflow.archivedAt !== null || !versionId) {

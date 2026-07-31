@@ -33,6 +33,7 @@ export function WorkflowVersionDetail({
         <div><dt>Trigger</dt><dd>{version.bindingDefaults.triggerMode}</dd></div>
         <div><dt>Delivery</dt><dd>{version.bindingDefaults.deliveryMode}</dd></div>
         <div><dt>Maximum repair rounds</dt><dd>{version.bindingDefaults.maxRepairRounds}</dd></div>
+        <div><dt>Repair resumption</dt><dd>{version.resumptionPolicy}</dd></div>
         <div><dt>Final gate</dt><dd>{version.completionPolicy.kind}</dd></div>
         {version.completionPolicy.kind === "inspector" && (
           <>

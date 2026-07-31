@@ -6,6 +6,7 @@ import {
   type PublishedWorkflowGraph,
   type WorkflowCompletionPolicy,
   type WorkflowDefinition,
+  type WorkflowResumptionPolicy,
   type WorkflowCheckSlot,
   type WorkflowDraftGraph,
   type WorkflowEdge,
@@ -158,6 +159,12 @@ interface BuiltinWorkflowSource {
   versions: readonly {
     pipeline: StagePipeline;
     completionPolicy: WorkflowCompletionPolicy;
+    /**
+     * Stated per version, never defaulted. Same rule as `bindingDefaults` below: a shipped
+     * version is immutable app data, so deriving it from today's application default would
+     * silently change how versions 1-6 behave the next time that default moves.
+     */
+    resumptionPolicy: WorkflowResumptionPolicy;
     bindingDefaults: WorkflowBindingDefaults;
     sourceDraftRevision: number;
   }[];
@@ -175,6 +182,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     sourceDraftRevision: source.versions[index]!.sourceDraftRevision,
     graph: publishBuiltinGraph(graph),
     completionPolicy: source.versions[index]!.completionPolicy,
+    resumptionPolicy: source.versions[index]!.resumptionPolicy,
     bindingDefaults: source.versions[index]!.bindingDefaults,
     // Not published on this machine and carrying no edit history, so there is no instant to
     // report. Surfaces print "Built-in" where they print a row's dates.
@@ -186,6 +194,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     description: source.description,
     draft: graphs[graphs.length - 1]!,
     completionPolicy: current.completionPolicy,
+    resumptionPolicy: current.resumptionPolicy,
     bindingDefaults: current.bindingDefaults,
   };
   const duplicable = CreateWorkflowSchema.safeParse(duplicateSeed);
@@ -202,6 +211,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
       description: source.description,
       draft: graphs[graphs.length - 1]!,
       completionPolicy: current.completionPolicy,
+      resumptionPolicy: current.resumptionPolicy,
       bindingDefaults: current.bindingDefaults,
       draftRevision: current.sourceDraftRevision,
       currentVersionId: current.id,
@@ -363,6 +373,15 @@ const NO_MISTAKES_REVIEW_LIVE_DEFAULTS: WorkflowBindingDefaults = {
   deliveryMode: "live",
 };
 
+/**
+ * The resumption posture every version shipped before the engine could resume itself.
+ *
+ * Written out rather than derived from `LEGACY_WORKFLOW_RESUMPTION_POLICY` for the reason
+ * `LEGACY_WORKFLOW_BINDING_DEFAULTS` states: these six literals are a changelog of what was
+ * shipped, and a shared constant is one edit away from rewriting six frozen versions.
+ */
+const SHIPPED_MANUAL_RESUMPTION = "manual" as const;
+
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
   builtinWorkflow({
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
@@ -380,6 +399,8 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // Inspector again instead of rerunning the already-passed review workflow. Version 5
     // automatically hands a passed, PR-less review back to the session for shipping. Version
     // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
+    // Version 7 turns on engine-owned resumption, so a parked repair round no longer waits on
+    // a human click; versions 1-6 keep the `manual` posture they were published with.
     versions: [
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
@@ -388,6 +409,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
+        resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
         bindingDefaults: LEGACY_WORKFLOW_BINDING_DEFAULTS,
         sourceDraftRevision: 1,
       },
@@ -398,6 +420,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
+        resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
         bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 1,
       },
@@ -408,6 +431,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "restart_workflow",
           missingPrAction: "offer_prepare_pr",
         },
+        resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
         bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 2,
       },
@@ -418,6 +442,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "inspector_only",
           missingPrAction: "offer_prepare_pr",
         },
+        resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
         bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 3,
       },
@@ -428,6 +453,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "inspector_only",
           missingPrAction: "prepare_pr",
         },
+        resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
         bindingDefaults: NO_MISTAKES_REVIEW_LEGACY_LIVE_DEFAULTS,
         sourceDraftRevision: 4,
       },
@@ -438,8 +464,29 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           onFindings: "inspector_only",
           missingPrAction: "prepare_pr",
         },
+        resumptionPolicy: SHIPPED_MANUAL_RESUMPTION,
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 5,
+      },
+      {
+        // Version 7: the version 6 graph and binding posture, with the repair loop closed.
+        //
+        // `resumptionPolicy: "auto"` is the whole change, and it is what makes the rest of
+        // this version's posture mean what it says: Live delivery types the repair packet
+        // into the pane, and the engine now picks the round back up itself once that session
+        // has settled with new work, instead of parking in `waiting_for_session` until a
+        // human clicks Resubmit. `onFindings: "inspector_only"` is unaffected - that policy
+        // parks in `waiting_for_new_head`, which the observer never touches, because an
+        // Inspector repair is resolved by a pushed head the poller observes.
+        pipeline: NO_MISTAKES_REVIEW_V3,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "inspector_only",
+          missingPrAction: "prepare_pr",
+        },
+        resumptionPolicy: "auto",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 6,
       },
     ],
   }),

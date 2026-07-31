@@ -5,6 +5,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
+import { reportBucket, settledIdle } from "@shared/session.ts";
 import type {
   CreateWorkflow,
   CreateWorkflowBinding,
@@ -45,6 +46,7 @@ import type {
   WorkflowCompletionClaimResult,
   WorkflowTriggerSource,
   WorkflowInspectorGateState,
+  WorkflowRunRepeatOffender,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
@@ -79,7 +81,9 @@ import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
   compactWorkflowContext,
+  probeMatchesEvidence,
   readWorkflowContextRaw,
+  readWorkflowEvidenceProbe,
   workflowContextFingerprint,
 } from "./context.ts";
 import { WorkflowEngine, type WorkflowEngineOptions } from "./engine.ts";
@@ -105,6 +109,7 @@ import {
   renderWorkflowFeedback,
 } from "./feedback.ts";
 import { findingFingerprintAudit } from "./finding-audit.ts";
+import { repeatOffenders } from "./repeat-offender.ts";
 import {
   getInspectorPr,
   loadInspectorComments,
@@ -181,6 +186,12 @@ export interface WorkflowManagerOptions {
   engine?: WorkflowEngineOptions;
   readContextRaw?: typeof readWorkflowContextRaw;
   boundaryChanged?: typeof captureBoundaryChanged;
+  /**
+   * The resumption observer's cheap "has anything moved?" read. The same seam as
+   * `readContextRaw`, and for the same reason: it shells out to git in the session's
+   * checkout, and a workflow test must be able to drive the observer without one.
+   */
+  readEvidenceProbe?: typeof readWorkflowEvidenceProbe;
   compactContext?: typeof compactWorkflowContext;
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
@@ -219,7 +230,32 @@ export interface WorkflowManagerOptions {
   runRetention?: typeof runWorkflowRetention;
   /** Required-skill resolver; injectable so workflow tests never touch global skill dirs. */
   requireSkill?: (session: Session, id: string) => RequiredSkillCommand;
+  /** How often the resumption observer looks. Injectable so a test can drive `sweepResumptions` itself. */
+  resumptionIntervalMs?: number;
+  /**
+   * How long the bound session must have been idle before a parked round resumes.
+   *
+   * The daemon passes its OWN window rather than reading Foreman's config: this observer runs
+   * in the daemon, the Foreman runs in its own process, and one subsystem reaching into the
+   * other's environment variable to answer a question it owns is how they end up disagreeing.
+   * `settledIdle` itself is the one shared predicate (`@shared/session.ts`).
+   */
+  resumptionSettleMs?: number;
 }
+
+/**
+ * How often the resumption observer looks, and how settled a session must be before it acts.
+ *
+ * Both are plain constants rather than environment variables on purpose: the sweep is two git
+ * commands per parked run and the settle window is a property of how a TUI reports idleness,
+ * not something an operator tunes per machine. The interval is short relative to the settle
+ * window, so the first tick after a session settles is the one that acts.
+ */
+const WORKFLOW_RESUMPTION_INTERVAL_MS = 15_000;
+const WORKFLOW_RESUMPTION_SETTLE_MS = 10_000;
+
+/** Delivery states that mean the latest packet has not demonstrably reached the agent yet. */
+const UNDELIVERED_DELIVERY_STATES = ["prepared", "sending", "uncertain"] as const;
 
 function runIsTerminal(run: WorkflowRun): boolean {
   return ["completed", "cancelled", "failed"].includes(run.status);
@@ -299,6 +335,19 @@ export class WorkflowManager {
   private readonly schedule: ReviewScheduler;
   private retentionTimer: ReturnType<typeof setInterval> | null = null;
   private retentionRunning = false;
+  private resumptionTimer: ReturnType<typeof setInterval> | null = null;
+  private resumptionRunning = false;
+  /**
+   * Repeat offenders, memoized on the run row's `updatedAt`.
+   *
+   * The away watcher asks every few seconds and the derivation walks every submission and
+   * attempt of a run; the cache turns that into one walk per real transition. Keyed by run id
+   * and pruned by the same sweep, so a deleted run cannot pin its entry.
+   */
+  private readonly repeatOffenderCache = new Map<
+    string,
+    { updatedAt: number; offenders: WorkflowRunRepeatOffender[] }
+  >();
   private lastRecoveryAt: number | null = null;
   private lastRetentionAt: number | null = null;
   private lastRetentionError: string | null = null;
@@ -431,6 +480,8 @@ export class WorkflowManager {
     this.inspectionUnsubscribe = null;
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     this.retentionTimer = null;
+    if (this.resumptionTimer) clearInterval(this.resumptionTimer);
+    this.resumptionTimer = null;
     await this.engine.stop();
     await Promise.allSettled([...this.deliveryTasks]);
   }
@@ -1216,10 +1267,31 @@ export class WorkflowManager {
       if (
         waitReason === "missing_pr"
         && version.completionPolicy.missingPrAction === "prepare_pr"
-        && binding.deliveryMode === "live"
         && binding.sessionId
       ) {
-        this.scheduleAutomaticPr(run.id, submission.id, now);
+        // Automatic PR preparation is Live-only, and stays that way: preparing a pull request
+        // is done by TYPING the pull-request skill into the agent's pane, which is exactly the
+        // terminal write Preview exists to withhold. There is no Preview-shaped version of it -
+        // a "preview" of a handoff is a packet nobody sent.
+        //
+        // What changed is that the skip is now RECORDED. Silently doing nothing left a run
+        // sitting in `waiting_for_pr` with a published policy that says `prepare_pr` and no
+        // trace of why it had not, which reads as a stuck daemon rather than as the consent
+        // boundary working. The operator's remedy is a real one - switch the binding to Live,
+        // or click Prepare PR - so run detail has to be able to say it.
+        if (binding.deliveryMode === "live") {
+          this.scheduleAutomaticPr(run.id, submission.id, now);
+        } else {
+          this.store.appendEvent(run.id, "pr_handoff_automatic_deferred", {
+            submissionId: submission.id,
+            reason: "preview_delivery",
+            message:
+              "This binding delivers in Preview, which never types into the session, "
+              + "so the pull-request handoff was not sent. Switch it to Live or prepare the "
+              + "pull request yourself.",
+          }, now);
+          this.publishRun(run.id);
+        }
       }
     }
     return true;
@@ -3268,6 +3340,16 @@ export class WorkflowManager {
     this.lastRecoveryAt = Date.now();
     workflowLog("info", { event: "recovery_complete", at: this.lastRecoveryAt });
     void this.sweepRetention();
+    if (!this.resumptionTimer) {
+      // Started here, beside retention, for the same reason retention is: both need the first
+      // completed discovery sweep before they mean anything. A resumption observer running
+      // before sessions are known would see every binding as orphaned.
+      this.resumptionTimer = setInterval(
+        () => void this.sweepResumptions(),
+        this.options.resumptionIntervalMs ?? WORKFLOW_RESUMPTION_INTERVAL_MS,
+      );
+      this.resumptionTimer.unref?.();
+    }
     if (this.retentionTimer) return;
     this.retentionTimer = setInterval(
       () => void this.sweepRetention(),
@@ -3312,6 +3394,207 @@ export class WorkflowManager {
     } finally {
       this.retentionRunning = false;
     }
+  }
+
+  /**
+   * One pass of the resumption observer: pick up every parked repair round whose agent has
+   * finished the work, under a version that asked for it.
+   *
+   * This exists because the packet the daemon types into the pane is a DEAD END otherwise.
+   * A run parks in `waiting_for_session` (a Persona failed, a PR handoff was delivered, or
+   * Inspector found something under `restart_workflow`), the repair packet reaches the agent,
+   * the agent repairs - and nothing resubmits, because `claimCompletion` refuses every claim
+   * on a binding that is not `foreman_complete`. The Foreman could never be the general answer
+   * either: it needs a `foreman_queues` row with items to retire, Foreman enabled, and measured
+   * `hooks` + `workQueue` capability, none of which a plain session bound by hand has. So the
+   * engine watches instead of listening.
+   *
+   * Public so a test can drive one pass against an injected clock rather than a timer.
+   *
+   * The order of the gates below is deliberate: every free in-memory question is asked before
+   * the one that spawns git. `waiting_for_session` and NOTHING ELSE is the eligible status -
+   * see `resumableRun` - and the round-limit arm hands the run to the existing `blocked` /
+   * `round_limit` path rather than inventing a second way for a run to run out.
+   */
+  async sweepResumptions(now = Date.now()): Promise<void> {
+    if (this.resumptionRunning) return;
+    this.resumptionRunning = true;
+    try {
+      const sessions = this.registry.snapshot().sessions;
+      for (const run of this.store.listRuns()) {
+        // Cheapest possible first cut, off the rows already in hand. Everything past this
+        // point re-reads the run under `resumableRun`, which is where the real gates live.
+        if (run.status !== "waiting_for_session") continue;
+        try {
+          await this.resumeParkedRun(run.id, sessions, now);
+        } catch (error) {
+          workflowLog("error", {
+            event: "resumption_failed",
+            run: run.id,
+            error: error instanceof Error ? error.name : "unknown",
+          });
+        }
+      }
+    } finally {
+      this.resumptionRunning = false;
+    }
+  }
+
+  /**
+   * Everything that has to be true before a parked round may resume, answered without I/O.
+   *
+   * `waiting_for_new_head` is absent on purpose and must stay absent. That is where
+   * `inspector_only` findings park, and the repair there is resolved by pushing a head the
+   * Inspector poller observes - a resubmission would rerun a review that already passed
+   * against a pull request the Inspector has not looked at again. `waiting_for_pr` is absent
+   * for the mirror-image reason: the run is waiting for a pull request to exist, and no amount
+   * of session activity produces one.
+   */
+  private resumableRun(runId: string, sessions: Session[], now: number): {
+    run: WorkflowRun;
+    binding: WorkflowBinding;
+    session: Session;
+    latest: WorkflowSubmission;
+  } | null {
+    const run = this.store.getRun(runId);
+    if (!run || run.status !== "waiting_for_session") return null;
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    if (version?.resumptionPolicy !== "auto") return null;
+    const binding = this.store.getBinding(run.bindingId);
+    if (!binding || binding.state !== "active" || !binding.sessionId) return null;
+    const session = this.registry.getSession(binding.sessionId);
+    // The same compatibility the capture path insists on: a session that vanished, exited, or
+    // whose conversation was replaced is not the one this packet was typed into.
+    if (!session || session.state === "exited" || binding.noteKey !== noteKeyFor(session)) return null;
+    if (!settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)) {
+      return null;
+    }
+    // Settled-idle answers "has it stopped"; this answers "has it stopped BECAUSE it is stuck
+    // on you". A session parked on a permission prompt reads as idle and is the last thing
+    // that should be handed another round of work.
+    if (reportBucket(session, sessions) === "needs-you") return null;
+    const latest = this.store.latestSubmission(run.id);
+    if (!latest) return null;
+    // An undelivered or uncertain packet means the agent has not been told what to repair.
+    // Resuming there would submit the same evidence back into the same review, which is a
+    // round spent proving nothing - and under Preview delivery, which never types, it would
+    // spend every round in the budget without a single packet ever reaching a human's screen.
+    const inFlight = this.store.listDeliveries(run.id).some((delivery) =>
+      delivery.submissionId === latest.id
+      && (UNDELIVERED_DELIVERY_STATES as readonly string[]).includes(delivery.state));
+    if (inFlight) return null;
+    return { run, binding, session, latest };
+  }
+
+  private async resumeParkedRun(runId: string, sessions: Session[], now: number): Promise<void> {
+    const eligible = this.resumableRun(runId, sessions, now);
+    if (!eligible) return;
+    const { run, binding, latest } = eligible;
+    if (latest.round > run.maxRepairRounds) {
+      // The EXISTING refusal, not a new one. `claimCompletion` and `resolveDelivery` both end
+      // an over-budget run this way, and a third spelling would be a second thing an operator
+      // has to learn to recognise in run detail.
+      this.store.setRunState(run.id, "blocked", "round_limit", {
+        maxRepairRounds: run.maxRepairRounds,
+      }, now);
+      this.publishRun(run.id);
+      return;
+    }
+    const parsed = WorkflowContextSnapshotSchema.safeParse(latest.context);
+    if (!parsed.success) return;
+    // The cheap pre-filter, and the whole reason there is no "capture then discard" mode: an
+    // idle session with unchanged work must leave the run exactly where it is, and re-reading
+    // the diff, the transcript window and the standards on every tick to discover that is not
+    // free. `readWorkflowEvidenceProbe` costs two git commands and reads the REPOSITORY only.
+    // The guarantee it buys is one-directional and that is deliberate: every field it reads is
+    // a fingerprint input, so a probe that DIFFERS cannot lead to `unchanged_evidence`. The
+    // converse is intentionally NOT true - a transcript-only change leaves the probe matching
+    // while the fingerprint has moved, and that run stays parked, because a repair that
+    // changed no code is not a repair. See the probe's own comment: reading the transcript
+    // here spent the entire repair budget resubmitting byte-identical code.
+    const probe = await (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(
+      this.registry,
+      binding,
+    );
+    if (probeMatchesEvidence(probe, parsed.data.evidence)) return;
+    // Re-read after the awaits above: a Foreman claim or a human Resubmit may have moved this
+    // run while git was running, and the round we are about to create was computed from what
+    // it looked like before.
+    const stillEligible = this.resumableRun(runId, sessions, now);
+    if (!stillEligible || stillEligible.latest.id !== latest.id) return;
+    // Idempotent on the FAILED submission's fingerprint, which is the only one that exists
+    // before capture. One auto-resumption per parked round, so two overlapping ticks - or a
+    // daemon restart mid-capture - cannot open two.
+    const triggerKey = `resume:${run.id}:${latest.evidenceFingerprint}`;
+    const created = this.store.createRepairSubmission({
+      id: randomUUID(),
+      runId: run.id,
+      round: latest.round + 1,
+      triggerSource: "session" satisfies WorkflowTriggerSource,
+      triggerKey,
+      context: {},
+      evidence: {},
+      now,
+    });
+    if (created.idempotent) return;
+    this.store.appendEvent(run.id, "resumption_started", {
+      submissionId: created.submission.id,
+      triggerKey,
+      round: created.submission.round,
+      previousFingerprint: latest.evidenceFingerprint,
+    }, now);
+    this.publishRun(run.id);
+    workflowLog("info", {
+      event: "resumption_started",
+      run: run.id,
+      submission: created.submission.id,
+    });
+    await this.captureAndActivate(
+      binding,
+      created.run,
+      created.submission,
+      latest.evidenceFingerprint,
+      false,
+    );
+  }
+
+  /**
+   * Members failing the most recent rounds consecutively, across every live run.
+   *
+   * Read by the away watcher, which folds it into the shared alert engine. It exists because
+   * auto-resumption can now spend a run's whole repair budget with nobody watching: five
+   * rounds of the same Persona rejecting the same work is a loop, not progress, and it used to
+   * be visible only to someone who opened run detail.
+   */
+  repeatOffenderSignals(): WorkflowRunRepeatOffender[] {
+    const live = new Set<string>();
+    const out: WorkflowRunRepeatOffender[] = [];
+    for (const run of this.store.listRuns()) {
+      if (runIsTerminal(run)) continue;
+      live.add(run.id);
+      const cached = this.repeatOffenderCache.get(run.id);
+      if (cached && cached.updatedAt === run.updatedAt) {
+        out.push(...cached.offenders);
+        continue;
+      }
+      const summary = this.store.runSummary(run.id);
+      const submissions = this.store.listSubmissions(run.id);
+      const attempts = submissions.flatMap((submission) => this.store.listAttempts(submission.id));
+      const offenders = repeatOffenders(submissions, attempts).map((offender) => ({
+        ...offender,
+        runId: run.id,
+        workflowName: summary?.workflowName ?? "Workflow",
+        sessionId: summary?.sessionId ?? null,
+        round: summary?.round ?? submissions.length,
+        maxRepairRounds: run.maxRepairRounds,
+      }));
+      this.repeatOffenderCache.set(run.id, { updatedAt: run.updatedAt, offenders });
+      out.push(...offenders);
+    }
+    for (const id of this.repeatOffenderCache.keys()) {
+      if (!live.has(id)) this.repeatOffenderCache.delete(id);
+    }
+    return out;
   }
 
   private async withCaptureLock<T>(noteKey: string, fn: () => Promise<T>): Promise<T> {

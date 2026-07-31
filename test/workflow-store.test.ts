@@ -31,13 +31,13 @@ const draft = {
 
 function seed(guidance = "# Exact\r\n\r\nKeep this.  \r\n") {
   store.insertPersona({ id: "p1", name: "Judge", normalizedName: normalizePersonaName("Judge"), description: "Quality", guidanceMarkdown: guidance, runner: null, model: null, createdAt: 1, updatedAt: 1 });
-  return store.insertWorkflow({ id: "w1", name: "Review", normalizedName: normalizeWorkflowName("Review"), description: "", draft, completionPolicy: { kind: "none" }, bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 }, createdAt: 2, updatedAt: 2 });
+  return store.insertWorkflow({ id: "w1", name: "Review", normalizedName: normalizeWorkflowName("Review"), description: "", draft, completionPolicy: { kind: "none" }, resumptionPolicy: "manual", bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 }, createdAt: 2, updatedAt: 2 });
 }
 
 test("definitions use revision CAS, normalized-name uniqueness, summaries, and soft archive", () => {
   const created = seed();
   assert.equal(created.ok, true);
-  assert.equal(store.insertWorkflow({ id: "w2", name: "ＲＥＶＩＥＷ", normalizedName: normalizeWorkflowName("ＲＥＶＩＥＷ"), description: "", draft, completionPolicy: { kind: "none" }, bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 }, createdAt: 2, updatedAt: 2 }).ok, false);
+  assert.equal(store.insertWorkflow({ id: "w2", name: "ＲＥＶＩＥＷ", normalizedName: normalizeWorkflowName("ＲＥＶＩＥＷ"), description: "", draft, completionPolicy: { kind: "none" }, resumptionPolicy: "manual", bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 }, createdAt: 2, updatedAt: 2 }).ok, false);
   const updated = store.updateWorkflowCas("w1", 1, { description: "Changed" }, 3);
   assert.equal(updated.ok, true);
   if (!updated.ok) return;

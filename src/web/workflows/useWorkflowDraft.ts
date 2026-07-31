@@ -415,6 +415,11 @@ export function useWorkflowDraft(
           description: current.description,
           draft: current.draft,
           completionPolicy: current.completionPolicy,
+          // Carried explicitly, because the create schema's default is `auto` and Duplicate
+          // means "a copy of this one". Omitting it would silently turn a duplicate of a
+          // `manual` workflow - every shipped built-in before version 7 - into one that
+          // resubmits its own repair rounds.
+          resumptionPolicy: current.resumptionPolicy,
           bindingDefaults: current.bindingDefaults,
         }),
       });

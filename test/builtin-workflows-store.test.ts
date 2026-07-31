@@ -76,6 +76,7 @@ const shippedVersion = (version: number): WorkflowVersion => ({
     edges: [...shippedDraft.edges],
   },
   completionPolicy: { kind: "none" },
+  resumptionPolicy: "manual",
   bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
   publishedAt: 0,
 });
@@ -87,6 +88,7 @@ const shippedDefinition: WorkflowDefinition = {
   description: "",
   draft: shippedDraft,
   completionPolicy: { kind: "none" },
+  resumptionPolicy: "manual",
   bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
   draftRevision: 1,
   // Two versions, because the append-only version list is the whole reason the catalog holds
@@ -115,6 +117,7 @@ function insert(store: ReturnType<typeof fixtureStore>, id: string, name: string
     description: "",
     draft: shippedDraft,
     completionPolicy: { kind: "none" },
+    resumptionPolicy: "manual",
     bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
     createdAt: 1,
     updatedAt: 1,

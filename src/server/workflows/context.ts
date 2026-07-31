@@ -468,6 +468,84 @@ export async function readWorkflowContext(
   };
 }
 
+/**
+ * The three facts that answer "has anything moved since that submission?" without capturing.
+ *
+ * Every field here is a fact the evidence fingerprint is ALSO derived from - `headSha` and
+ * `transcriptAnchor` directly, and `workingTreeStatus` through `diffFingerprint`, whose
+ * `statusFingerprint` half is a hash of the same `git status` output this bounds. That
+ * containment is the whole point and it must be preserved by anyone editing either side: it
+ * makes the probe SOUND rather than merely cheap, because a probe that differs implies a
+ * fingerprint that differs, so the resumption observer can never spend a repair round on
+ * evidence that has not changed.
+ *
+ * What it deliberately does NOT do is compute the diff, read the transcript window, load
+ * standards or resolve human decisions. That is what lets the observer look at a parked run
+ * on every tick for the cost of two git commands and one `stat`.
+ */
+/**
+ * The cheap repository reading that decides whether a parked run has new WORK to review.
+ *
+ * Deliberately REPOSITORY-ONLY. The transcript anchor is an input to the evidence
+ * fingerprint, but it is not a fact about the work, and it is the one field that moves for
+ * free: delivering a repair packet is itself a transcript write (the injected prompt lands
+ * as a `UserPromptSubmit`), so the anchor has already moved before the agent has been asked
+ * to do anything. Reading it here made a session whose hooks had lapsed - still reporting
+ * `idle` because nothing reported it working - resubmit byte-identical code into the same
+ * personas, fail identically, and repeat until the repair budget was gone.
+ *
+ * Excluding it costs the containment in only the harmless direction. What the observer needs
+ * is `probe differs => fingerprint differs`, so that a resumption it starts can never land on
+ * `unchanged_evidence`; every field below is still a fingerprint input, so that holds. The
+ * converse now fails - a transcript-only change leaves the probe matching while the
+ * fingerprint has moved - and that is the intended reading: a repair that changed no code is
+ * not a repair, and a human can still Resubmit it by hand.
+ */
+export interface WorkflowEvidenceProbe {
+  headSha: string | null;
+  workingTreeStatus: string[];
+}
+
+export async function readWorkflowEvidenceProbe(
+  registry: Registry,
+  binding: WorkflowBinding,
+): Promise<WorkflowEvidenceProbe> {
+  const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
+  if (!session || !compatibleSession(binding, session)) {
+    throw new Error("The workflow binding is not attached to its durable conversation");
+  }
+  if (!session.cwd) throw new Error("The bound session has no working directory");
+  const head = await run("git", ["-C", session.cwd, "rev-parse", "--short", "HEAD"], {
+    timeoutMs: 15_000,
+  });
+  const status = await run("git", ["-C", session.cwd, "status", "--porcelain=v1"], {
+    timeoutMs: 15_000,
+  });
+  if (status.code !== 0) {
+    throw new Error(`Could not read repository status: ${status.stderr.trim() || "git status failed"}`);
+  }
+  return {
+    // Exactly `computeSessionDiff`'s reading, including its null-on-failure, so the probe and
+    // a real capture describe the same repository in the same words.
+    headSha: head.code === 0 && head.stdout.trim() ? head.stdout.trim() : null,
+    workingTreeStatus: boundedStrings(
+      status.stdout.split("\n").filter(Boolean).map((item) => clip(item, MAX_STATUS_LINE)),
+      MAX_STATUS_BYTES,
+      MAX_STATUS,
+    ),
+  };
+}
+
+/** Whether a probe describes the same work a captured snapshot's evidence already did. */
+export function probeMatchesEvidence(
+  probe: WorkflowEvidenceProbe,
+  evidence: WorkflowContextSnapshot["evidence"],
+): boolean {
+  return probe.headSha === evidence.headSha
+    && probe.workingTreeStatus.length === evidence.workingTreeStatus.length
+    && probe.workingTreeStatus.every((line, index) => line === evidence.workingTreeStatus[index]);
+}
+
 export async function captureBoundaryChanged(
   registry: Registry,
   binding: WorkflowBinding,

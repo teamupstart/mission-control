@@ -14,8 +14,19 @@ import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
 
 const TRUNCATION_NOTICE = "\n\n[Workflow repair packet truncated deterministically.]";
+/**
+ * How every repair packet ends.
+ *
+ * It used to close with "and signal completion normally", which was an instruction the loop
+ * could not honour: the signal it asked for is refused for every binding whose trigger mode
+ * is not `foreman_complete`, so the agent obeyed and the round was thrown away. Resumption
+ * is now the ENGINE's job (see `WORKFLOW_RESUMPTION_POLICIES`), which observes the session
+ * rather than listening for a claim - so the packet asks for the work and nothing else. Do
+ * not put the signal back: an instruction whose effect depends on a binding setting the
+ * model cannot see is one it will follow into silence.
+ */
 const FINAL_INSTRUCTION =
-  "Preserve the user's explicit intent. Make only changes supported by this packet, verify the work, and signal completion normally.";
+  "Preserve the user's explicit intent. Make only changes supported by this packet, then verify the work.";
 const encoder = new TextEncoder();
 
 export interface RenderedWorkflowFeedback {
@@ -216,7 +227,11 @@ export function renderInspectorFeedback(input: InspectorFeedbackInput): Rendered
     || (a.line ?? Number.MAX_SAFE_INTEGER) - (b.line ?? Number.MAX_SAFE_INTEGER)
     || a.fingerprint.localeCompare(b.fingerprint));
   const policyInstruction = input.policy === "restart_workflow"
-    ? "Fix the findings, verify the work, commit and push it, then signal completion so every Persona reruns before Inspector."
+    // `restart_workflow` no longer asks for a signal, for `FINAL_INSTRUCTION`'s reason. The
+    // `inspector_only` arm below still ends in "wait for Inspector to review that new head",
+    // which remains literally true: that policy is resolved by the Inspector poller observing
+    // a pushed head, not by anything the session reports.
+    ? "Fix the findings, verify the work, then commit and push it."
     : "This published policy permits bypassing Personas only for this Inspector repair. Fix the findings, verify the work, commit and push a new head, then wait for Inspector to review that new head.";
   const body = [
     "Inspector reviewed the pinned pull request head and found changes that are required.",
@@ -273,7 +288,7 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     `Run: ${input.runId}`,
   ].join("\n");
   const instruction =
-    "Use the invoked pull-request skill to commit all reviewed work, push it, open the pull request with a reviewer-ready description and concrete proof, then signal completion so the full Persona workflow is submitted again.";
+    "Use the invoked pull-request skill to commit all reviewed work, push it, and open the pull request with a reviewer-ready description and concrete proof.";
   return {
     ...finalizePacket(body, truncated, instruction),
     failedPersonaCount: 0,

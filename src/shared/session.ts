@@ -100,6 +100,41 @@ export function paneDialogReason(dialog: PaneDialog): string {
   return `${dialog.options.length} options to pick from`;
 }
 
+/**
+ * True when a session is genuinely parked and its work has settled.
+ *
+ * Shared rather than Foreman-owned because the daemon asks the identical question: the
+ * Workflow resumption observer only picks a parked repair round back up once the agent it
+ * typed the packet into has actually stopped, and two spellings of "settled" would mean the
+ * Foreman and the daemon disagreeing about whether an agent is still typing.
+ *
+ * The gate is `state === "idle"`, and that is enough on its own because `state` is
+ * only ever `idle` from a REAL source - a fresh hook overlay, or the transcript-
+ * derived passive state. The base rebuild default is `working`, so nothing sets
+ * `idle` without evidence: an `idle` here is always a claim someone made, never an
+ * absence of data. (This is the distinction `reportBucket` can't make, where `idle`
+ * is also its catch-all for an uninstrumented session - so don't be tempted to gate
+ * this on the bucket instead.)
+ *
+ * We used to also require `instrumented` (a fresh hook within 30 min). That was
+ * redundant while hooks were the only source of `idle`, and became WRONG once the
+ * transcript became a second source: it gated out exactly the hook-free idle this
+ * predicate now exists to honour, stranding the queue of any session whose hooks
+ * lapsed or whose daemon had just restarted. `instrumented` stays a real field for
+ * the UI badge and `reportBucket`; it is simply not what settled-idle turns on.
+ *
+ * The `settleMs` age absorbs hook reordering (hooks are independent HTTP posts, so
+ * a PostToolUse can land after a Stop and briefly un-idle the session) and covers
+ * the pause between turns of a multi-turn flow. It stays a PARAMETER: the Foreman's
+ * window is its own config (`FOREMAN_QUEUE_SETTLE_MS`) and every other caller passes
+ * whatever its own subsystem decided, so nothing here has to know about either.
+ */
+export function settledIdle(s: Session, now: number, settleMs: number): boolean {
+  if (s.state !== "idle") return false;
+  const since = s.lastActivity ?? s.firstSeen;
+  return now - since >= settleMs;
+}
+
 /** True while a no-mistakes run is parked at a gate, awaiting the agent's decision. */
 function gatePending(s: Session): boolean {
   return Boolean(s.nomistakes && (s.nomistakes.awaitingAgent || s.nomistakes.gateStep));

@@ -63,6 +63,7 @@ const version: WorkflowVersion = {
     edges: [],
   },
   completionPolicy: { kind: "none" },
+  resumptionPolicy: "manual",
   bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
   publishedAt: 1,
 };

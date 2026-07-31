@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
-import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
+import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "../src/shared/workflow.ts";
 import type { EnsembleSummary } from "../src/shared/ensemble.ts";
 
 // The away watcher's buffer lifecycle: when a window opens, what lands in it, and
@@ -555,4 +555,45 @@ test("stop() halts the loop", () => {
   // No assertion on timers beyond not throwing - the unref'd timeout is cleared, so
   // this test process can exit, which is itself the check.
   assert.ok(true);
+});
+
+test("the daemon's repeat-offender channel reaches the buffer", () => {
+  // The derivation walks a run's submissions and attempts, so it is detail-only and never
+  // travels on the SSE summary - which is why the watcher takes it as an injected reader
+  // rather than off the registry snapshot, the same shape `stalls` has.
+  const reg = fakeRegistry([mkSession({ id: "a", state: "idle" })]);
+  const offenders: WorkflowRunRepeatOffender[] = [];
+  const w = startAwayWatcher(reg.src, () => 1000, {
+    // A fresh array per call, exactly as the daemon's `repeatOffenderSignals()` returns:
+    // handing the watcher the same mutable reference would alias its own baseline.
+    workflowRepeatOffenders: () => offenders.map((offender) => ({ ...offender })),
+  });
+  setAwayConfig({ away: true }, 500);
+  w.tick(); // baseline: no offenders yet
+
+  offenders.push({
+    runId: "run-1",
+    workflowName: "No-Mistakes Review",
+    sessionId: "a",
+    round: 4,
+    maxRepairRounds: 5,
+    nodeId: "nmr-code-risk",
+    personaName: "Code Risk Reviewer",
+    rounds: 3,
+  });
+  w.tick();
+  const events = w.buffer()?.events ?? [];
+  assert.equal(events.filter((event) => event.kind === "workflow-repeat").length, 1);
+  assert.match(
+    events.find((event) => event.kind === "workflow-repeat")?.title ?? "",
+    /failed 3 rounds running/,
+  );
+
+  // Edge-triggered: the same loop on the next pass is not news again.
+  w.tick();
+  assert.equal(
+    (w.buffer()?.events ?? []).filter((event) => event.kind === "workflow-repeat").length,
+    1,
+  );
+  w.stop();
 });

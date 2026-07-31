@@ -278,10 +278,17 @@ a bounded retry, and that is a requirement rather than a nicety.
 export interface CheckProcessRegistry {
   /** Persist supervisor identity BEFORE branch code is allowed to run. */
   record(attemptId: string, pid: number, startTimeTicks: string): void;
+  /** What was recorded, or null when nothing ever was. Sentinel and missing rows both read null. */
+  read(attemptId: string): { pid: number; startTimeTicks: string } | null;
   /** Clear after confirmed group emptiness, never merely leader exit. */
   clear(attemptId: string): void;
 }
 ```
+
+`read` was added while implementing Phase 3 and is recorded in its audit. The seam below hands
+Phase 3 nothing but an attempt id, so without a reader it could not find the pid it had
+persisted except by reaching into `workflow_check_leases` - the one thing it is forbidden to
+do. Additive: `record` and `clear` are unchanged, and Phase 2's implementation of them is too.
 
 Phase 2 defines this interface and implements it against `workflow_check_leases`. Phase 3
 consumes it and must not reach the table directly.

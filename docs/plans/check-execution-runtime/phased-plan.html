@@ -310,9 +310,17 @@
 <pre><code>export interface CheckProcessRegistry {
   /** Persist supervisor identity BEFORE branch code is allowed to run. */
   record(attemptId: string, pid: number, startTimeTicks: string): void;
+  /** What was recorded, or null when nothing ever was. Sentinel and missing rows both read null. */
+  read(attemptId: string): { pid: number; startTimeTicks: string } | null;
   /** Clear after confirmed group emptiness, never merely leader exit. */
   clear(attemptId: string): void;
 }</code></pre>
+<p>
+  <code>read</code> was added while implementing Phase 3 and is recorded in its audit. The seam
+  below hands Phase 3 nothing but an attempt id, so without a reader it could not find the pid it
+  had persisted except by reaching into <code>workflow_check_leases</code> - the one thing it is
+  forbidden to do. Additive: <code>record</code> and <code>clear</code> are unchanged.
+</p>
 <p>
   A <strong>second, opposite-direction seam</strong> joins the same two phases:
   <code>CheckGroupRecovery(attemptId) =&gt; "empty" | "not-empty" | "unknown"</code>. Phase 2's

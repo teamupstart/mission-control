@@ -358,3 +358,83 @@ command.
   could `return --force` a tree whose group was still live. The gap was that Phase 2 can prove
   ownership but not emptiness, so this phase now exports `CheckGroupRecovery` for it. Recorded
   in Phase 2's audit as well; the seam is declared there and implemented here.
+- **2026-07-31, at implementation.** Eight deviations from this document's literal text, each
+  with the reason it was made. Modules shipped: `check-env.ts`, `check-identity.ts`,
+  `check-group.ts`, `check-spawn.ts`, `check-supervisor.ts`; tests
+  `test/workflow-check-{env,spawn,supervisor}.test.ts`.
+
+  1. **Contract P gained a `read`, and the index was updated to match.** This phase must
+     implement `CheckGroupRecovery(attemptId)`, which is handed nothing but an attempt id and
+     has to find the pid it persisted before the daemon died. The published interface had only
+     `record` and `clear`, so there was no way to do that except by reaching into
+     `workflow_check_leases` - the one thing this phase is forbidden to do. Additive: the two
+     existing members and Phase 2's implementation of them are untouched. A missing row and a
+     sentinel row both read `null`, deliberately, because they are different facts with one
+     identical consequence for every caller (nothing ran, so there is nothing to signal).
+  2. **The output ring works in BYTES, not in decoded text**, so `setEncoding("utf8")` is not
+     used on stdout/stderr. Taken under this document's own escape clause about the exactness
+     invariant, and the field stays a number rather than becoming a boolean. A decoded ring can
+     only count the bytes of its OWN decoding, so a build emitting one invalid byte - a binary
+     fixture, a truncated UTF-8 tail - reports a count three times larger than the truth,
+     silently. Counting raw bytes and decoding ONCE at the end keeps both properties the
+     precedents wanted: the count is exact by construction, and a multi-byte character
+     straddling a chunk boundary decodes correctly because the boundary is interior to the
+     retained buffer by then. The only new edge is the FRONT of the tail, where a byte-exact
+     cut can land mid-character; the ring advances past the continuation bytes and counts them
+     as dropped, which they are. Both asserted, including a case where kept + dropped must
+     equal a generator's known byte count.
+  3. **"The group still answers at the bound" reports `not-empty`, not `unknown`.** This
+     document's test list says `unknown`. The two have identical downstream effect - only
+     `empty` authorises a return - so nothing about lease safety changes, but the words are
+     worth keeping distinct: `not-empty` is "we asked and it answered", `unknown` is "we could
+     not ask", which is what an unreadable or mismatched identity produces. The test asserts
+     both the safety property (`!== "empty"`) and the specific value, so it holds under either
+     reading.
+  4. **A mismatched or unreadable identity is still PROBED, though never signalled.** The rule
+     that a mismatch is never signalled is kept exactly. But `kill(-pid, 0)` sends nothing, and
+     `ESRCH` on the group id proves emptiness on its own without any signal. Without this, a
+     daemon that crashed *after* its checks had finished would strand one pool slot per crash
+     forever - the same outcome step 2 of this document rejects when arguing why an unsupported
+     platform must refuse to start rather than hold leases open. The source plan's "neither a
+     missing nor mismatched leader proves the group is empty" is about inferring from the
+     LEADER; this infers from the GROUP, which is the thing the contract is actually about.
+  5. **The command-line half of the identity is stored condensed** (a truncated SHA-256) rather
+     than raw. The supervisor's command line carries the whole `node -e` shim, about 2.6KB, and
+     the identity is written to a durable column on a table whose rows are RETAINED for audit.
+     Equality is the only question ever asked of an identity, and equal command lines digest
+     equally. Contract P is unaffected: it is still one opaque string Phase 2 stores and
+     compares without parsing.
+  6. **`processStartIdentity` permits pid 1; only the signalling path refuses it.** Found by
+     running the real modules on Linux in Docker before opening this, and it was a genuine bug
+     rather than a test artifact: the daemon is pid 1 whenever it runs as a container's
+     entrypoint, the platform preflight probes its own identity, and a `pid <= 1` guard on the
+     READ path reported every containerised Linux daemon as a platform that cannot run checks
+     at all. The wildcard danger (`kill(-0)` hits our own group, `kill(-1)` hits everything the
+     user owns) is real but belongs on the signal path, where `signallableGroup` still enforces
+     `pid > 1` and is consulted first by every caller. **CI would not have caught this** - test
+     pids are always above 1 - which is the argument for having run it on Linux at all.
+  7. **The shim lives in argv (`node -e`), not in a file.** This document asked only that the
+     GATE avoid a temp file; the shim's own home was open. A separate `.mjs` would have to
+     survive `esbuild --bundle` into `dist/`, an Electron package and a `tsx` dev run, and a
+     path that resolves in two of those three fails at the moment a check runs rather than at
+     build time. In argv it is present wherever the daemon is, and it needs no build-step or
+     packaging change. The gate itself is an inherited pipe, as asked: fd 3 carries the release
+     byte and fd 4 the shim's readiness and the command's outcome, two fds rather than one
+     duplex socket so each direction's EOF means exactly one thing.
+  8. **The platform preflight probes the daemon's own identity, not just `process.platform`.**
+     A platform string is a guess that a container with no `/proc` mounted, or an image with no
+     `ps`, answers wrongly. Asking the same question the check will ask, once, is cheap and
+     correct.
+
+  Two limitations were found by measurement and are documented in `checkGroupAnswers` rather
+  than papered over. A descendant that calls `setsid()` leaves the group and cannot be reached
+  by any group signal - group emptiness is the contract, and a deliberate daemoniser is outside
+  it. And a ZOMBIE still answers a group probe, so a daemon that is itself a container's pid 1
+  must reap adopted orphans or emptiness never resolves; measured directly, the Linux run
+  reports `not-empty` forever as a bare container entrypoint and `empty` under
+  `docker run --init`. Both fail in the safe direction: they delay a lease return rather than
+  authorising one early.
+
+  **Confirmed the phase ships unwired**, as required: nothing imports `check-supervisor.ts`,
+  `checkDeps.execute` is still null, and a configured check still reports `unavailable` and
+  passes. Phase 4 remains its only intended consumer.

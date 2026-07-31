@@ -476,9 +476,14 @@ export class ForemanClient implements ForemanActions {
    * must treat that as fatal to the episode: this write is what stops the trigger
    * re-firing, so proceeding to type after it failed is the double-push.
    */
-  async markPromptedWrapup(sessionId: string, goal: string): Promise<void> {
+  async markPromptedWrapup(
+    sessionId: string,
+    goal: string,
+    opts?: { ask?: boolean },
+  ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
       goal,
+      ...(opts?.ask ? { ask: true } : {}),
     });
     if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);
   }

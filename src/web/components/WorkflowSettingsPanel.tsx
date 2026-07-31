@@ -12,7 +12,8 @@ import {
   parseCheckCommand,
 } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
-import { resolveRepo } from "../lib/api.ts";
+import { fetchRepos, resolveRepo } from "../lib/api.ts";
+import { RepoCombobox } from "./RepoCombobox.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import {
   ConsoleCard,
@@ -122,6 +123,28 @@ export function readRetention(
     out[field.key] = value;
   }
   return { ok: true, value: out };
+}
+
+/**
+ * The paths the check row's picker offers: the allowlisted repositories first, then the rest
+ * of the workspace scan, de-duplicated and each listed once.
+ *
+ * Two reasons this is not simply the workspace list the dispatch form offers. A check only
+ * ever RUNS in an allowlisted repository - a slot configured anywhere else passes with a note
+ * - so those are the useful answers and they lead. And the allowlist holds resolved roots
+ * from anywhere on disk, while `/api/repos` scans the workspace roots only, so a repository
+ * allowlisted from outside them is absent from that scan entirely: offered nowhere, the one
+ * repository a check can run in would still have to be typed from memory.
+ *
+ * Order-preserving rather than sorted, because the leading group is the claim being made.
+ * Pure and exported because a static render cannot type into the box, so this is the only
+ * place the ordering is assertable.
+ */
+export function checkRepoOptions(
+  workspaceRepos: readonly string[],
+  allowlist: readonly string[],
+): string[] {
+  return [...new Set([...allowlist, ...workspaceRepos])];
 }
 
 /** Whether the new limits would let the next sweep remove more than the current ones. */
@@ -272,6 +295,7 @@ export function WorkflowSettingsPanel({
   const [checkPath, setCheckPath] = useState("");
   const [checkSlot, setCheckSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
   const [checkCommand, setCheckCommand] = useState("");
+  const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [retention, setRetention] = useState<RetentionDraft>({
@@ -289,6 +313,21 @@ export function WorkflowSettingsPanel({
       setAdopted(true);
     }
   }, [config, adopted]);
+
+  // Index the workspace's repos so the check row's path box can be picked from rather than
+  // typed from memory. The same `fetchRepos` the dispatch form, Trust, Task sources and the
+  // schedule editor use, so every surface asking "which repository?" offers one list; it
+  // never throws, answering [] when the daemon cannot be reached, which degrades the picker
+  // to the free-text box this row already was.
+  useEffect(() => {
+    let alive = true;
+    void fetchRepos().then((list) => {
+      if (alive) setRepos(list);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const liveEnabled = config?.liveEnabled ?? false;
   const allowlist = config?.repoAllowlist ?? [];
@@ -682,13 +721,19 @@ export function WorkflowSettingsPanel({
         )}
         <div className="wf-settings-add wf-settings-check-add">
           <label className="sr-only" htmlFor="workflow-check-path">Repository path</label>
-          <input
+          {/* The shared picker, not a bare box. Every other surface in the app that asks
+              "which repository?" - dispatch, Trust, Task sources, the schedule editor -
+              offers the list rather than asking for a path from memory, and this row asked
+              the same question with none of that help. Free text is preserved BY that
+              component, which is what a subdirectory entry needs: `/repo/packages/web`
+              matches no repository in the list and is still exactly what gets stored. */}
+          <RepoCombobox
             id="workflow-check-path"
-            className="field-input"
+            repos={checkRepoOptions(repos, allowlist)}
             value={checkPath}
+            onChange={setCheckPath}
             disabled={!config || busy}
             placeholder="/path/to/repository (or a subdirectory)"
-            onChange={(event) => setCheckPath(event.target.value)}
           />
           <label className="sr-only" htmlFor="workflow-check-slot">Slot</label>
           <Tooltip label="Which slot a workflow's Check node has to name to run this command">

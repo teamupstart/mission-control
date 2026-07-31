@@ -6003,7 +6003,10 @@ select:not([multiple]) option:focus-visible {
 }
 /* Rendered in a body-level portal with fixed positioning, so the list floats
    above the modal and never clips against a scrollable ancestor's overflow.
-   `top`/`left`/`width`/`max-height` are set inline from the input's rect. */
+   `top`/`left`/`width`/`max-height` are set inline from the input's rect. The width
+   tracks the INPUT, so a field too narrow for a repo path ellipsizes every option at
+   the same character - fix that by giving the field room, not by letting the menu grow
+   past the surface holding it (see `RepoCombobox`). */
 .combobox-list {
   position: fixed;
   z-index: 60;
@@ -7267,10 +7270,20 @@ select:not([multiple]) option:focus-visible {
   padding: 16px;
 }
 
-/* Detail */
+/* Detail
+
+   Text in here is agent-authored or read off a repository, so it may carry a token with no break
+   opportunity in it. Two declarations keep such a token from sizing the layout, and the grids
+   below repeat only the second. `overflow-wrap` is `anywhere` rather than `break-word` because
+   only `anywhere` reduces MIN-CONTENT, which is the number a grid track is sized from; it is
+   declared once here and inherited, so no prose element has to remember it. The single column is
+   floored because an implicit `auto` track is shared by every section: sized to the widest child,
+   it sets the width of all of them. Pinned by `test/ensemble-text-overflow.test.ts`. */
 .ensemble-detail {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
+  overflow-wrap: anywhere;
 }
 
 .ensemble-detail-head {
@@ -7493,12 +7506,15 @@ select:not([multiple]) option:focus-visible {
   color: var(--muted);
 }
 
+/* One card per row, and the row is a share of the section rather than the widest card's longest
+   line - see `.ensemble-detail`. */
 .ensemble-member-list,
 .ensemble-artifact-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -7683,9 +7699,11 @@ select:not([multiple]) option:focus-visible {
   grid-column: 1 / -1;
 }
 
+/* An even split, and the floors are what keep it even: an `auto` minimum lets the longer side's
+   content take the pair's width, and these two halves exist to be read against each other. */
 .ensemble-evidence-split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 10px;
 }
@@ -8367,11 +8385,14 @@ select:not([multiple]) option:focus-visible {
   color: var(--muted);
 }
 
+/* Consensus and Panel vote stack their scorecards in this one column; Best-of-N re-tracks it as
+   `.dossier-cols`. Floored for the same reason the card lists above are. */
 .ensemble-scorecards {
   list-style: none;
   margin: 10px 0 0;
   padding: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -8413,7 +8434,7 @@ select:not([multiple]) option:focus-visible {
 
 .ensemble-scorecard-cols {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 8px;
 }
@@ -8469,9 +8490,16 @@ select:not([multiple]) option:focus-visible {
   margin: 0;
   font-size: 12px;
 }
+/* `min(…, 100%)` around the minimum, the idiom `.ensemble-lane-protocols` uses: the minimum states
+   what a candidate column is worth reading at, and must not become a width the row may exceed. */
 .dossier-cols {
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   align-items: start;
+}
+/* The track is fixed at its 1fr share, so a column that outgrows it neither clips nor scrolls - it
+   draws over the candidate beside it. Nothing inside may size itself. */
+.dossier-col {
+  min-width: 0;
 }
 /* Stacked, not side by side, and NOT the two-column split the Members section makes: measured
    at the real column width (320px on a 1600px window with three candidates), a claims/observed
@@ -8480,12 +8508,12 @@ select:not([multiple]) option:focus-visible {
    strengths/risks pair below is the same measurement and the same answer. */
 .dossier-claims {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   margin-top: 8px;
 }
 .dossier-col .ensemble-scorecard-cols {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 .dossier-claims h6 {
@@ -8894,8 +8922,10 @@ select:not([multiple]) option:focus-visible {
 }
 
 @media (max-width: 760px) {
+  /* Collapsed to one FLOORED column, here and below: a bare `1fr` is `minmax(auto, 1fr)`, which
+     hands the narrow layout's width back to its longest string. */
   .ensemble-pipeline ol {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .ensemble-pipeline-step:not(:last-child)::after {
@@ -8910,7 +8940,7 @@ select:not([multiple]) option:focus-visible {
 
   .ensemble-member-durable-state,
   .ensemble-stage-payload-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -9327,22 +9357,24 @@ select.ensemble-judge-persona {
 /* Narrow viewports: config grids and scorecards collapse to one column. */
 @media (max-width: 720px) {
   .ensemble-runs {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .ensemble-run-list {
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
+  /* One column, and still a floored one - a narrow panel has the least room to absorb a token
+     that will not break. */
   .ensemble-evidence-split,
   .ensemble-scorecard-cols {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .ensemble-lane,
   .ensemble-judge-lane {
     grid-template-columns: 1fr 1fr;
   }
   .ensemble-manual-submit {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -12183,6 +12215,15 @@ select.foreman-model-input {
    unreadable at the panel's width, and the path box is the one that needs room. */
 .wf-settings-check-add { flex-wrap: wrap; }
 .wf-settings-check-add > .field-input { min-width: 180px; flex: 1 1 180px; }
+/* The repository box takes a LINE of its own, which the comment above already argues for:
+   the path is the field that needs room. Sharing the line left it near its 180px floor, and
+   its picker's dropdown is measured from the input - so at that width every repo path
+   ellipsized at the same character, since paths under one workspace root share their first
+   28. The wrapper carries the sizing because the input inside it is `width: 100%`; left to
+   `.wf-settings-add input`'s 440px cap, a full-width wrapper would hold a half-width input
+   and hang a half-width menu under it. */
+.wf-settings-check-add > .combobox { flex: 1 1 100%; }
+.wf-settings-check-add > .combobox > .field-input { max-width: none; }
 .wf-settings-check-add select { flex: 0 0 auto; }
 /* The parsed argv, echoed back. Monospace and tabular so the operator counts arguments
    rather than trusting a split they cannot see. */

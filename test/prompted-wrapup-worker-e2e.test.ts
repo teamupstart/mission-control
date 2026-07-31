@@ -552,7 +552,7 @@ test("a daemon blip on the queue read never double-fires a wrap-up, and never st
   );
 });
 
-test("a verified prompt fires exactly once, retiring the episode BEFORE it types", async () => {
+test("a verified prompt binds the no-mistakes workflow exactly once instead of typing the skill", async () => {
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
   const session = mkSession(repo);
@@ -598,7 +598,14 @@ test("a verified prompt fires exactly once, retiring the episode BEFORE it types
       };
     }
     if (p === "/api/sessions/s1/workflow-completion") {
-      return { status: 200, json: { claimed: false, reason: "no_binding" } };
+      // The real daemon retires the prompted guard in the same transaction that claims
+      // the completion. Mirror that durable effect so later worker ticks see the episode
+      // as spent and prove this path does not request a second run.
+      queue = { ...queue, promptedGoal: GOAL };
+      return {
+        status: 200,
+        json: { claimed: true, runId: "run-no-mistakes", submissionId: "sub-1", state: "started" },
+      };
     }
     if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
@@ -617,23 +624,106 @@ test("a verified prompt fires exactly once, retiring the episode BEFORE it types
   const retires = stub.calls.filter((c) => c.path.endsWith("/wrapup/prompted"));
   const claims = stub.calls.filter((c) => c.path.endsWith("/workflow-completion"));
   assert.equal(claims.length, 1, `expected exactly one workflow claim\n${out}`);
-  assert.equal(injects.length, 1, `expected exactly one fire\n${out}`);
-  assert.equal(retires.length, 1, `expected exactly one retire\n${out}`);
-  assert.deepEqual(injects[0]?.body, { text: "/no-mistakes", origin: "foreman" }, out);
-  assert.deepEqual(retires[0]?.body, { goal: GOAL }, out);
-
-  // THE ORDERING IS THE SAFETY ARGUMENT: `/no-mistakes` pushes and opens a PR, so a
-  // crash between typing and recording must leave the trigger DISARMED. That only
-  // holds if the retire lands first.
-  assert.ok(
-    stub.calls.indexOf(retires[0]!) < stub.calls.indexOf(injects[0]!),
-    `typed before retiring the episode\n${out}`,
+  assert.equal(injects.length, 0, `typed the skill after the workflow claimed completion\n${out}`);
+  assert.equal(retires.length, 0, `retired outside the daemon's claim transaction\n${out}`);
+  assert.equal(
+    (claims[0]?.body as { fallbackWorkflow?: string } | undefined)?.fallbackWorkflow,
+    "no-mistakes",
+    out,
   );
 
-  // The auto-send path deliberately does NOT stamp `wrapupAskedAt` - a Ship it? card
-  // must never offer to send an instruction the agent already has.
+  // The binding request is downstream of Foreman's proof reads and verifier. It is not
+  // an eager setting-side effect on every idle unbound conversation.
+  const transcript = stub.calls.find((c) => c.path === "/api/sessions/s1/transcript");
+  assert.ok(transcript);
+  assert.ok(
+    stub.calls.indexOf(transcript) < stub.calls.indexOf(claims[0]!),
+    `claimed before gathering completion evidence\n${out}`,
+  );
+
+  // The claimed path raises no Ship it? recovery card: the workflow owns this completion.
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
+});
+
+test("a failed Manual-binding card write leaves the prompted completion retryable", async () => {
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  let queue = mkQueue(repo);
+  let promptedWrites = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "no-mistakes" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: now - 120_000 }] };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") {
+      return { status: 200, json: { prompt: GOAL, text: GOAL, updatedAt: 0 } };
+    }
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/up.ts b/up.ts\n+retry();\n",
+          truncated: false,
+          headSha: "abc123",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: {
+          messages: [{ role: "user", text: GOAL, tools: [] }, { role: "assistant", text: "Added a retry.", tools: [] }],
+          truncated: false,
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/workflow-completion") {
+      return { status: 200, json: { claimed: false, reason: "manual_trigger" } };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      promptedWrites += 1;
+      if (promptedWrites === 1) return { status: 500, json: { error: "temporary write failure" } };
+      const body = JSON.parse(raw) as { goal: string; ask?: boolean };
+      assert.equal(body.ask, true, "the guard and Ship it? card must share one write");
+      queue = {
+        ...queue,
+        promptedGoal: body.goal,
+        wrapupAskedAt: Date.now(),
+        wrapupAnswer: null,
+      };
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/asked") {
+      return { status: 500, json: { error: "the split card endpoint must not be used" } };
+    }
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 9000 });
+  await stub.close();
+
+  assert.equal(promptedWrites, 2, `the failed atomic handoff was not retried once\n${out}`);
+  assert.equal(
+    stub.calls.filter((call) => call.path.endsWith("/wrapup/asked")).length,
+    0,
+    `used the non-atomic card endpoint\n${out}`,
+  );
+  assert.equal(queue.promptedGoal, GOAL, `the successful retry did not retire the episode\n${out}`);
+  assert.ok(queue.wrapupAskedAt, `the successful retry did not raise the Ship it? card\n${out}`);
+  assert.equal(claudeCalls(fake.log).length, 2, `the failed handoff did not retry exactly once\n${out}`);
 });
 
 test("a broken verifier gives up after the strike cap, at one strike per unhurried tick", async () => {

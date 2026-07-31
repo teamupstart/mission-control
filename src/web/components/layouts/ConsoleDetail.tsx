@@ -420,6 +420,7 @@ export function ConsoleDetail({
               episodes={episodes}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
+              files={view.files}
               registerLaunchers={view.registerLaunchers}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />

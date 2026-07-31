@@ -39,8 +39,23 @@ export interface SessionFilesState {
 
 export interface SessionFilesController {
   sessions: Record<string, SessionFilesState>;
+  /**
+   * The checkout listing by session, for readers that must answer "is this a real file?"
+   * about many paths at once and synchronously - the transcript's path links. Absent until
+   * something asked; `warmPaths` is that ask, and it shares one request with `probe` (see
+   * `listPaths`), so those two can never hold different answers.
+   *
+   * The Files tab is NOT on that shared request. `ensure` and `refresh` list the checkout
+   * themselves and publish the result here, which converges the ANSWER without sharing the
+   * REQUEST - opening a transcript and then its Files tab costs two listings. That is the
+   * accurate promise, and it is the one worth keeping: what matters is that no two readers
+   * disagree about which files exist, not that the daemon is asked exactly once.
+   */
+  pathIndex: Record<string, ReadonlySet<string>>;
   ensure: (sessionId: string) => void;
   refresh: (sessionId: string) => void;
+  /** Load `pathIndex` for a session. Idempotent, and a no-op once the listing is in. */
+  warmPaths: (sessionId: string) => void;
   probe: (sessionId: string, path: string) => Promise<boolean>;
   select: (sessionId: string, path: string) => void;
   setMode: (sessionId: string, mode: "preview" | "editor") => void;
@@ -164,14 +179,50 @@ export function applyFileLoadSuccess(
 
 export function useSessionFilesStore(connected: boolean): SessionFilesController {
   const [sessions, setSessions] = useState<Record<string, SessionFilesState>>({});
+  const [pathIndex, setPathIndex] = useState<Record<string, ReadonlySet<string>>>({});
   const sessionsRef = useRef(sessions);
+  const pathIndexRef = useRef(pathIndex);
   const connectedRef = useRef(connected);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const inFlight = useRef(new Set<string>());
   const requests = useRef(new LatestFileRequests());
   const probeFiles = useRef(new Map<string, Promise<ReadonlySet<string>>>());
   sessionsRef.current = sessions;
+  pathIndexRef.current = pathIndex;
   connectedRef.current = connected;
+
+  /**
+   * The one listing behind both the ambiguous-link probe and the transcript's path links,
+   * memoized per session. Two callers meant two `git ls-files` runs over the same checkout
+   * and, worse, two answers to "does this file exist" that could disagree while one was in
+   * flight.
+   *
+   * Those two and no more: `ensure` and `refresh` deliberately do not come through here,
+   * because they need the full `SessionFileEntry` rows and the request-ordering guard that
+   * goes with rendering a list, not the set of paths. They publish into `pathIndex`
+   * instead, which is what keeps the answers in step without pretending one request serves
+   * every reader.
+   */
+  const listPaths = useCallback((sessionId: string): Promise<ReadonlySet<string>> => {
+    let pending = probeFiles.current.get(sessionId);
+    if (!pending) {
+      pending = api.listFiles(sessionId).then((result) => (
+        new Set(result.ok ? result.files.map((file) => file.path) : [])
+      ));
+      probeFiles.current.set(sessionId, pending);
+    }
+    return pending;
+  }, []);
+
+  /** A listing the Files tab just fetched answers the transcript's question too. */
+  const publishPaths = useCallback((sessionId: string, files: SessionFileEntry[]) => {
+    const paths: ReadonlySet<string> = new Set(files.map((file) => file.path));
+    setPathIndex((all) => {
+      const next = { ...all, [sessionId]: paths };
+      pathIndexRef.current = next;
+      return next;
+    });
+  }, []);
 
   const update = useCallback((id: string, fn: (s: SessionFilesState) => SessionFilesState) => {
     setSessions((all) => {
@@ -218,6 +269,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
       }
       const retained = sessionsRef.current[sessionId];
       if (!retained) return;
+      publishPaths(sessionId, result.files);
       const selected = retained.selectedPath ?? result.files[0]?.path ?? null;
       updateExisting(sessionId, (s) => ({
         ...s,
@@ -344,15 +396,22 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   const probe = useCallback(async (sessionId: string, filePath: string): Promise<boolean> => {
     const listed = sessionsRef.current[sessionId];
     if (listed?.listState === "ready") return listed.files.some((file) => file.path === filePath);
-    let files = probeFiles.current.get(sessionId);
-    if (!files) {
-      files = api.listFiles(sessionId).then((result) => (
-        new Set(result.ok ? result.files.map((file) => file.path) : [])
-      ));
-      probeFiles.current.set(sessionId, files);
-    }
-    return (await files).has(filePath);
-  }, []);
+    return (await listPaths(sessionId)).has(filePath);
+  }, [listPaths]);
+
+  const warmPaths = useCallback((sessionId: string) => {
+    if (pathIndexRef.current[sessionId]) return;
+    void listPaths(sessionId).then((paths) => {
+      setPathIndex((all) => {
+        // A listing that lost a race to `refresh` must not replace the newer one, and a
+        // session dropped while this was in flight must not be resurrected by it.
+        if (all[sessionId]) return all;
+        const next = { ...all, [sessionId]: paths };
+        pathIndexRef.current = next;
+        return next;
+      });
+    });
+  }, [listPaths]);
 
   const edit = useCallback((sessionId: string, filePath: string, text: string) => {
     update(sessionId, (s) => {
@@ -372,6 +431,10 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, [save]);
 
   const refresh = useCallback((sessionId: string) => {
+    // The promise cache is dropped so the next asker re-lists, but `pathIndex` is left
+    // standing until the new listing lands below: clearing it here would un-link every
+    // path in the open transcript for the length of one `git ls-files`, and leave them
+    // that way if the re-list fails.
     probeFiles.current.delete(sessionId);
     const key = `${sessionId}\0list`;
     const request = requests.current.begin(key);
@@ -379,6 +442,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     void api.listFiles(sessionId).then((result) => {
       if (!requests.current.isCurrent(key, request)) return;
       if (!result.ok) return updateExisting(sessionId, (s) => ({ ...s, listState: "failed", listError: result.error }));
+      publishPaths(sessionId, result.files);
       updateExisting(sessionId, (s) => ({ ...s, files: result.files, listState: "ready", listError: null }));
       const selected = sessionsRef.current[sessionId]?.selectedPath;
       const buffer = selected ? sessionsRef.current[sessionId]?.buffers[selected] : null;
@@ -416,6 +480,13 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   const drop = useCallback((sessionId: string) => {
     requests.current.forgetSession(sessionId);
     probeFiles.current.delete(sessionId);
+    setPathIndex((all) => {
+      if (!all[sessionId]) return all;
+      const next = { ...all };
+      delete next[sessionId];
+      pathIndexRef.current = next;
+      return next;
+    });
     for (const [key, timer] of timers.current) {
       if (key.startsWith(`${sessionId}\0`)) {
         clearTimeout(timer);
@@ -444,6 +515,33 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, []);
 
   return useMemo(() => ({
-    sessions, ensure, refresh, probe, select, setMode, edit, flush, retry, reloadDisk, overwriteDisk, drop,
-  }), [sessions, ensure, refresh, probe, select, setMode, edit, flush, retry, reloadDisk, overwriteDisk, drop]);
+    sessions, pathIndex, ensure, refresh, warmPaths, probe, select, setMode, edit, flush,
+    retry, reloadDisk, overwriteDisk, drop,
+  }), [
+    sessions, pathIndex, ensure, refresh, warmPaths, probe, select, setMode, edit, flush,
+    retry, reloadDisk, overwriteDisk, drop,
+  ]);
+}
+
+/**
+ * The checkout listing behind one session's transcript, asked for only when a transcript
+ * is actually on screen.
+ *
+ * A hook rather than two props because the read and the ask are one decision: a caller
+ * that reads the index without warming it renders dead paths for ever, and one that warms
+ * without reading pays for a listing it never uses. `enabled` is where the cost is
+ * declined - a session with no checkout has nothing to list. The optional controller is
+ * for the render-only tests that stub it away; there is no session-files store in a
+ * `renderToStaticMarkup` tree, and no effects run there either.
+ */
+export function useWorkspacePaths(
+  files: SessionFilesController | undefined,
+  sessionId: string,
+  enabled: boolean,
+): ReadonlySet<string> | null {
+  const warm = files?.warmPaths;
+  useEffect(() => {
+    if (enabled) warm?.(sessionId);
+  }, [enabled, sessionId, warm]);
+  return (enabled ? files?.pathIndex?.[sessionId] : null) ?? null;
 }

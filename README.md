@@ -3806,6 +3806,50 @@ Markdown open in Preview by default, while ordinary text opens in the editor. HT
 remains inert: a bounded set of checkout-local stylesheets is inlined through the contained
 file reader, without granting the sandbox scripts or network access.
 
+**Paths the agent merely typed are links too.** Markdown gives an agent no way to say
+"this word is a file" other than writing a link, and agents don't - they write
+`docs/plans/x/plan.md` bare in a sentence or in backticks, because that is how it reads in
+a terminal. Those open the same Files workspace, on the same click, with the same
+containment rules; a `:line` or `:line:column` suffix rides along, and `./x` resolves like
+`x`. They wear the colour of the text around them and pick up an underline under the
+pointer, so a paragraph naming six files still reads as a paragraph.
+
+A path becomes a link **only if this session's checkout actually has that file**, and that
+membership is the whole test - not what the name looks like. Every file the Files tab
+lists is reachable, with no excluded extension and no excluded shape, so `Makefile`,
+`.env`, `gradlew` and `docs/My Plan.md` link exactly like `src/App.tsx` does, while a word
+that is merely path-shaped does not. The set of files is the same one the Files tab shows
+you (`git ls-files`, tracked plus untracked, capped at 2000 entries), so a path the tab
+cannot show you is never offered as one you can open.
+
+Matching runs on whole words: a name is never linked inside a longer one, and where
+several listed files could match at the same spot the longest wins, so a name is never
+linked as a fragment of the one that was written.
+
+There is no minimum length either, and the consequence is worth knowing before it
+surprises you: in the rare checkout that contains a **one-character** file, the English
+article "a" links too, because it is the relative path to that file. Every one of those
+links is correct - it opens a file that is really there - and the alternative was a file
+the Files tab lists and the conversation beside it cannot reach.
+
+Everything else stays the text the agent wrote: anything outside the checkout, and the
+contents of fenced code blocks - a diff or a file tree is left as a code block rather than
+turned into a wall of links. Paths in a session with no working directory, and in every
+surface with no session behind it (shared plans, Foreman briefs, the Markdown file
+preview), are left alone for the same reason: there is nothing there to open them in.
+
+**How often the checkout gets listed.** The path links and the written-link resolver share
+one listing request per session, so those two can never disagree about what exists. The
+Files tab is not on that shared request: opening it lists the checkout itself and publishes
+the result into the same index, which keeps the answers in step without making it one
+request - open a session's conversation and then its Files tab and the daemon is asked
+twice. Refreshing the file list invalidates the cached listing so the next reader re-lists,
+and the previous one stays in force until the new one lands, rather than un-linking the
+open transcript while it is in flight.
+
+The click flow is captured end to end in
+[`docs/evidence/transcript-path-links/`](docs/evidence/transcript-path-links/README.md).
+
 ## Tooltips
 
 Every control in the dashboard says what it does on hover. Buttons, links, selects,

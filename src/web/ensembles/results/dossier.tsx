@@ -8,7 +8,7 @@ import type { PanelAggregate, PanelVerdict } from "@shared/ensemble-strategies/p
 import { fmtUsd } from "../../lib/format.ts";
 import { Tooltip } from "../../components/Tooltip.tsx";
 import type { EnsembleRunDetailResponse } from "../types.ts";
-import { detectRationalePaths } from "../compare.ts";
+import { detectPathTokens } from "../../lib/workspaceLinks.ts";
 import { agentCostSummary, fmtElapsed, shortSha } from "../format.ts";
 
 /**
@@ -275,7 +275,7 @@ export function RationaleText({
   artifactIds?: string[] | null;
   onOpenCompare?: (artifactIds: string[], path: string) => void;
 }): React.JSX.Element {
-  const paths = detectRationalePaths(rationale);
+  const paths = detectPathTokens(rationale);
   if (!onOpenCompare || !artifactIds || artifactIds.length < 2 || paths.length === 0) {
     return <p className="ensemble-rationale">{rationale}</p>;
   }
@@ -290,7 +290,7 @@ export function RationaleText({
           className="ensemble-rationale-path"
           onClick={() => onOpenCompare(artifactIds, token.path)}
         >
-          {token.path}
+          {token.raw}
         </button>
       </Tooltip>,
     );

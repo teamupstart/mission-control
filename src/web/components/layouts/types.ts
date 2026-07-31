@@ -165,6 +165,9 @@ export function cardProps(p: SessionViewProps, s: Session) {
     onOpenDiff: (commit?: string) => p.onOpenDiff(s.id, commit),
     onOpenFiles: () => p.onOpenFiles(s.id),
     onOpenFile: ((href: string, probe?: boolean) => p.onOpenFile(s.id, href, probe)) satisfies WorkspaceLinkHandler,
+    // Passed by reference, never dereferenced here: a card that is not expanded renders no
+    // transcript and must not pay for - or depend on - the store the transcript reads.
+    files: p.files,
     onReset: () => p.onReset(s.id),
     onComplete: () => p.onComplete(s.id),
     onKill: () => p.onKill(s.id),

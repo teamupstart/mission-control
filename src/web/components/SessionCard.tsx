@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { Session, SessionQueueSummary } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
@@ -17,6 +17,7 @@ import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
 import type { SessionLaunchersHandle } from "./LaunchMenu.tsx";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
+import type { SessionFilesController } from "../lib/sessionFiles.ts";
 import { ForemanNote } from "./ForemanNote.tsx";
 import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
@@ -90,6 +91,7 @@ export function SessionCard({
   onOpenDiff,
   onOpenFiles,
   onOpenFile,
+  files,
   onReset,
   onComplete,
   onKill,
@@ -128,6 +130,8 @@ export function SessionCard({
   onOpenFiles?: () => void;
   /** Open a link in this session's file workspace when it is checkout-contained. */
   onOpenFile?: WorkspaceLinkHandler;
+  /** Forwarded to the transcript, which needs the checkout listing to link bare paths. */
+  files?: SessionFilesController;
   onReset?: () => void;
   /** Open the complete-and-close confirm for this session (app-level modal). */
   onComplete?: () => void;
@@ -466,6 +470,7 @@ export function SessionCard({
               dialogOpen={Boolean(dialog)}
               onReplyBox={setHasReply}
               onOpenFile={onOpenFile}
+              files={files}
               registerLaunchers={registerLaunchers}
               resetNonce={resetNonce}
             />

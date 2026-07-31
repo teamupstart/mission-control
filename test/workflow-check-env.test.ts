@@ -93,6 +93,28 @@ test("the daemon's token is dropped by VALUE, whatever the variable is called", 
   assert.deepEqual(Object.keys(scrubbed), ["KEPT"]);
 });
 
+test("a SHORT token is scrubbed too - there is no length exception", () => {
+  // The regression: a 16-character floor used to mean an unusually short token was not removed
+  // at all, so it reached branch code intact whenever it sat in a variable whose name was not
+  // credential-shaped. "Shorter than expected" must never read as "safe to hand over".
+  const scrubbed = scrubCheckEnv(
+    { PATH: "/usr/bin", INNOCENT: "short-token", QUOTING: "Bearer short-token" },
+    "short-token",
+  );
+  assert.deepEqual(scrubbed, { PATH: "/usr/bin" });
+
+  // Down to a single character, which is where the collateral is worst and the ordering is
+  // most deliberate: dropping a variable beats disclosing a credential.
+  assert.deepEqual(scrubCheckEnv({ PATH: "/usr/bin", A: "a" }, "a"), { PATH: "/usr/bin" });
+});
+
+test("a whitespace-only token scrubs nothing, like an unminted one", () => {
+  // It trims to empty, so it takes the empty-string path rather than matching every value that
+  // happens to contain a space.
+  const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", SPACED: "a b" }, "   ");
+  assert.deepEqual(scrubbed, { PATH: "/usr/bin", SPACED: "a b" });
+});
+
 test("an unminted token scrubs no values, rather than every value", () => {
   // `readToken()` answers "" before the daemon has ever booted. Without the length floor,
   // every value would contain the empty string and the command would run with no environment

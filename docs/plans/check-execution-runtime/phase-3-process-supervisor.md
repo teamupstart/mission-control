@@ -514,6 +514,26 @@ command.
   cancelling live check groups to Phase 4. `SIGKILL` of the daemon defeats every version of
   this, which is why the durable row and identity-verified recovery exist at all.
 
+- **2026-07-31, review round 10 (Code Risk Reviewer).** One real defect in the scrubber, and it
+  is the sharpest kind: a guard that failed toward disclosure.
+
+  `scrubCheckEnv` only applied its value rule when the token was at least 16 characters, on the
+  reasoning that the daemon mints 48 hex characters so anything shorter must be a placeholder.
+  That protected the wrong side. It turned *"this token is unusually short"* into *"this token
+  is not removed at all"*, so a token like `short-token` in a variable whose NAME was not
+  credential-shaped - `INNOCENT=short-token` - travelled intact to branch code. Step 1 of this
+  phase says "removes: the daemon auth token", with no length exception, and the implementation
+  had quietly added one.
+
+  Fixed: any non-empty token is scrubbed. The empty-string exclusion stays and is doing real
+  work rather than restating the same rule - `"".includes` is true of every value, so an
+  unminted token would otherwise scrub the whole environment and leave a build failing for a
+  reason nobody could diagnose. The ordering between those two is now stated in the code: a
+  token short enough to collide with ordinary values is a token that must not leak either, so it
+  errs toward dropping a variable over disclosing a credential. Three cases added - a short
+  token bare and quoted inside a larger value, a single-character token where the collateral is
+  worst, and a whitespace-only token that trims to empty and correctly scrubs nothing.
+
 - **2026-07-31, review round 9 (Documentation Steward).** The round-8 correction below was
   applied in two places out of three: `check-env.ts` and the README were fixed, and
   `check-supervisor.ts`'s module comment was left still claiming the scrubber removes "the

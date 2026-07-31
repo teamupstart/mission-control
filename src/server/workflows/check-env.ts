@@ -88,14 +88,6 @@ const CREDENTIAL_SEGMENTS = new Set([
  */
 const CREDENTIAL_SUFFIX = /(token|secret|password|passwd|passphrase|credentials?|apikey)$/;
 
-/**
- * A token short enough that a substring match against it would be meaningless.
- *
- * The daemon mints 24 random bytes (48 hex characters), so anything at or above this is a
- * real token and anything below it is an empty file, a placeholder, or a test's idea of one.
- * Without the floor an empty token would match every value and scrub the entire environment.
- */
-const MIN_SCRUBBABLE_SECRET = 16;
 
 function nameSegments(name: string): string[] {
   return name
@@ -133,7 +125,19 @@ export function scrubCheckEnv(
   daemonToken: string,
 ): NodeJS.ProcessEnv {
   const secret = daemonToken.trim();
-  const scrubValues = secret.length >= MIN_SCRUBBABLE_SECRET;
+  // ANY non-empty token is scrubbed, with no length exception. There used to be a 16-character
+  // floor here, on the reasoning that the daemon mints 48 hex characters so anything shorter
+  // was a placeholder - but that reasoning protected the wrong side. It turned "the token is
+  // unusually short" into "the token is not removed at all", so a token like `short-token`
+  // sitting in an ordinarily-named variable travelled straight through to branch code.
+  //
+  // The empty string is still excluded, and that exclusion is doing real work rather than
+  // being the same rule restated: `"".includes` is true of every value, so an unminted token
+  // would otherwise scrub the entire environment and leave a build failing for a reason nobody
+  // could diagnose. Between those two, the ordering is deliberate - a token short enough to
+  // collide with ordinary values is a token that must not leak either, so this errs toward
+  // dropping a variable rather than toward disclosing a credential.
+  const scrubValues = secret.length > 0;
   const out: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue;

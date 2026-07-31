@@ -311,6 +311,14 @@
   clear(attemptId: string): void;
 }</code></pre>
 <p>
+  A <strong>second, opposite-direction seam</strong> joins the same two phases:
+  <code>CheckGroupRecovery(attemptId) =&gt; "empty" | "not-empty" | "unknown"</code>. Phase 2's
+  startup reconciliation can prove a leased tree is <em>ours</em> but not that its process group is
+  <em>empty</em>, and only emptiness may authorise a return. Phase 2 declares it with a refusing
+  default, Phase 3 implements it, Phase 4 injects it. Phase 2 hands Phase 3 durability; Phase 3
+  hands Phase 2 proof-of-death.
+</p>
+<p>
   <code>startTimeTicks</code> is opaque to Phase 2 and, since Inspector round 3, a
   <strong>composite</strong>: a start-time field plus the supervisor's command line, which carries
   the attempt id. No shell-reachable start-time field has the resolution to stand alone

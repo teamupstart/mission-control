@@ -284,7 +284,14 @@ export interface CheckProcessRegistry {
 ```
 
 Phase 2 defines this interface and implements it against `workflow_check_leases`. Phase 3
-consumes it and must not reach the table directly. The ordering invariant - persist, then
+consumes it and must not reach the table directly.
+
+There is a **second, opposite-direction seam** between the same two phases, added in round 5:
+`CheckGroupRecovery(attemptId) => "empty" | "not-empty" | "unknown"`. Phase 2's startup
+reconciliation can prove a leased tree is *ours* but not that its process group is *empty*, and
+only emptiness may authorise a return. Phase 2 declares the seam with a refusing default, Phase
+3 implements it, Phase 4 injects it. So Phase 2 hands Phase 3 durability and Phase 3 hands Phase
+2 proof-of-death; neither can answer the other's question alone. The ordering invariant - persist, then
 release the gate - belongs to Phase 3's supervisor; the durability belongs to Phase 2.
 
 `startTimeTicks` is **opaque to Phase 2** and, since round 3, a **composite**: a start-time
@@ -382,3 +389,13 @@ After Phase 1, these hold and no later phase may weaken them:
   #327 took over and what still holds, and it must not be implemented until the operator
   re-decides its scope. Phases 2, 3 and 4 are untouched: #327 changes nothing in the lease,
   supervisor or executor surfaces, and no cross-phase contract moved.
+- **2026-07-30, Inspector rounds 5 and 6 (PR #326):** two majors, both accepted, both about the
+  same seam between ownership and liveness. Round 5: Phase 2's startup reconciliation would have
+  returned a lease on ownership alone, hard-resetting a tree a live check was still writing into
+  - fixed with the `CheckGroupRecovery` seam described under Contract P, spanning all three of
+  Phases 2, 3 and 4. Round 6: round 3's composite identity included the shim's command line while
+  step 4 still had the shim `exec` the configured argv, which replaces that command line - so
+  every later identity read would have mismatched on a live group and stranded its lease. The
+  shim now forks and waits instead of `exec`ing, which also restores the group-leader property
+  step 5 already required. Both were contradictions this plan introduced, not gaps in the source
+  plan; no phase boundary, dependency edge or operator decision moved.

@@ -30,7 +30,7 @@ In scope:
 
 - The `CheckExecutor` implementation, composing Phase 2's lease with Phase 3's supervisor.
 - `WorkflowManagerOptions.checkDeps` - the passthrough that does not exist.
-- Injection in `src/server/index.ts`.
+- Injection in `src/server/index.ts`, for both the executor and Phase 2's group-recovery seam.
 - `WorkflowEngine.stop()` cancelling live check groups before awaiting in-flight attempts.
 - Cleanup-before-retry ordering against `handleInfrastructureFailure`, including the
   unresolved-lease retry gate.
@@ -141,6 +141,12 @@ Rules, each with the failure it prevents:
 - Forward it where `checkScheduler` is forwarded (`manager.ts:340`).
 - `src/server/index.ts:102-109`: construct the executor and pass
   `checkDeps: { execute: … }`.
+- **Inject Phase 3's `CheckGroupRecovery` into Phase 2's `reconcileOnStartup` seam.** Phase 2
+  declared it with a refusing default (`async () => "unknown"`) because Phase 3 merges after it,
+  so until this line exists a daemon restart keeps every non-sentinel lease held rather than
+  returned. That is the fail-closed direction and it is not a leak - the reclamation pass still
+  runs - but it means the seam is dead until wired here. Leaving it unwired is the one way this
+  phase can look finished and quietly retain a pool slot per restart.
 
 Wire it **after** Phase 2's lease reconciliation and therefore also above
 `startPoolReaper(registry)` at `:203`. A check cannot start before the daemon knows which
@@ -202,6 +208,10 @@ render in run detail. Change only what reads wrong.
 - `workingSubpath` is honoured for a nested entry.
 - A null `headSha` is infrastructure and acquires no lease.
 - A lease failure is infrastructure and never a `failed` verdict.
+- **Startup recovery is wired.** Restart with a non-sentinel lease row whose group is gone and
+  assert the tree is returned; with a group still alive, assert it is not. The refusing default
+  passes the first half of that test trivially, so assert the *return* actually happens - that
+  is what proves the injection exists rather than the default.
 - Cleanup completes before an infrastructure result is returned - assert the lease row is gone
   (or deliberately retained on `unknown`) at the moment the result surfaces.
 - **An `unknown` emptiness blocks instead of retrying.** Force the tri-state to `unknown` and
@@ -237,6 +247,8 @@ Manual, required - the phased-plan verification step 3 and 4:
 - Daemon shutdown with a live check completes promptly and leaves no orphan and no leaked
   lease.
 - An unresolved group never produces a second lease - the run blocks and says so.
+- Phase 2's group-recovery seam is injected, proven by a restart test that observes a real
+  return rather than the default refusal.
 - README documents execution, consent, platforms, the non-sandbox, and pool capacity.
 - `phase-2-check-node.md`'s "deliberately null" note is corrected.
 
@@ -283,3 +295,10 @@ lease.
   here, per the rule that a shared decision belongs to the earliest phase that must own it;
   recorded in that phase's audit too. Contract E is unchanged - the fix is in the retry
   policy, not the executor's result type.
+- **2026-07-30, Inspector round 5 (PR #326), consumed here:** the finding landed on Phase 2
+  (startup reconciliation returning a lease whose group may still be live) and its fix spans
+  three phases: Phase 2 declares the `CheckGroupRecovery` seam with a refusing default, Phase 3
+  implements it, and this phase injects it. Added to step 2 and to the exit criteria, with a
+  test that asserts a real return rather than the default refusal - because a missing injection
+  is invisible otherwise: everything still passes, and the daemon just keeps a pool slot per
+  restart.

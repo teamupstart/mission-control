@@ -159,8 +159,8 @@ The ordering invariant, and the reason this is not just a spawn call
 (`phase-2-check-node.md:303-314`):
 
 1. Spawn the supervisor in its own process group (`detached: true`) with the branch command
-   **held**, not running. A tiny trusted shim: the child starts, signals readiness, and waits
-   for one byte before `exec`ing the configured argv.
+   **held**, not running. A tiny trusted shim: it starts, signals readiness, and waits for one
+   byte before launching the configured argv **as a child of itself**.
 2. Read the supervisor's pid and `processStartIdentity(pid)`.
 3. `CheckProcessRegistry.record(attemptId, pid, ticks)` - a synchronous durable write.
 4. **Only then** release the gate so branch code may run.
@@ -172,14 +172,27 @@ recovery knows nothing ran.
 This is what makes "crash between spawn and durable identity" (checklist item 2) unreachable:
 there is no window in which branch code runs without a persisted owner.
 
-The shim is the fiddly part. Prefer a mechanism with no temp file - an inherited pipe fd the
-parent writes one byte to - over anything that writes a script to disk. Whatever is chosen,
-the shim must remain the identifiable group leader for the life of the group; a shim that
-`exec`s itself away and lets the build become the leader breaks step 5.
+The shim is the fiddly part, and two of its properties are load-bearing rather than
+stylistic.
+
+**It forks the command as a child and stays alive; it must NOT `exec`.** An `exec` replaces the
+process image, so the pid survives but its command line becomes the branch command - and step
+2's identity includes that command line. A later identity read would then see a mismatch on a
+group that is very much alive, refuse to signal it (correctly, by its own rule), and leave the
+lease pinned forever with a live process still writing into the tree. The same `exec` also
+hands group leadership to the build, which breaks step 5's emptiness proof independently. So
+the shim spawns the argv as a child, inherits and passes through the stdout/stderr fds so the
+streaming adapter needs no relay, waits for the child, and exits with the child's status.
+It costs one extra process in the group and buys a leader whose identity is stable from spawn
+to teardown.
 
 **The shim's argv must carry the attempt id**, because step 2's identity depends on it for
 uniqueness. It is not decoration and it is not for logging: drop it and the identity falls back
-to a whole-second timestamp that a recycled pid can match.
+to a whole-second timestamp that a recycled pid can match. Note the two requirements are one
+design - the id has to be in the argv, and the argv has to survive, or neither is worth having.
+
+Prefer a gate mechanism with no temp file - an inherited pipe fd the parent writes one byte to -
+over anything that writes a script to disk.
 
 ### 5. Identity-verified teardown
 
@@ -201,7 +214,25 @@ One function, used by live cancellation, timeout, daemon shutdown, and startup r
 Windows has no POSIX process group. Where `process.kill(-pid)` is unavailable the answer is the
 step-2 preflight - checks do not run - so this function may assume POSIX and say so.
 
-### 6. Wire the shutdown path's precedent, not its policy
+### 6. Startup group recovery, which Phase 2 consumes through a seam
+
+Phase 2's `reconcileOnStartup()` can prove a leased tree is still ours (path plus holder token)
+but **cannot prove its process group is empty** - and this phase's own rule is that confirmed
+emptiness, not leader liveness, is the precondition for a return. Export the recovery entry
+point that closes that gap:
+
+```ts
+export type CheckGroupRecovery = (attemptId: string) => Promise<"empty" | "not-empty" | "unknown">;
+```
+
+It reads the persisted pid and identity, applies step 5 unchanged - sentinel means nothing ever
+ran; mismatch is never signalled; a match is signalled, graced, escalated, then proven empty -
+and returns the same tri-state. Phase 2 declared this seam with a default that refuses
+(`"unknown"`, keep the row and the pin); this phase supplies the real implementation, and Phase
+4 injects it. Until it is injected, a non-sentinel row is held rather than returned, which is
+the fail-closed direction.
+
+### 7. Wire the shutdown path's precedent, not its policy
 
 Register a module-level `live` set and an `exit` hook the way `claude-cli.ts:66-86` does, so a
 hard daemon exit still signals the groups. It must call the identity-verified path, not a bare
@@ -243,6 +274,10 @@ mocks:
 - A grandchild ignoring `SIGTERM` is `SIGKILL`ed after the grace.
 - A mismatched start identity is never signalled - the strongest test in the phase; construct
   it by recording a live pid with a deliberately wrong tick value and asserting no signal.
+- **The identity survives the gate release.** Record identity, release the gate, let the child
+  run, then re-read the identity and assert it still matches. This is the regression an `exec`
+  shim would cause, and it is invisible to every other test here because they all read identity
+  before the command starts.
 - **Each half of the composite is load-bearing on its own.** One case where the start-time
   halves match but the command line does not (the recycled-pid-within-the-same-second case the
   composite exists for), and one where the command matches but the start time does not. Both
@@ -271,7 +306,8 @@ that nothing survives.
 ## Downstream handoff
 
 Phase 4 may rely on: the three-variant result; the tri-state emptiness report, where only
-`empty` authorises a lease return; the platform preflight already having decided whether checks
+`empty` authorises a lease return; `CheckGroupRecovery`, to be injected into Phase 2's
+reconciliation seam; the platform preflight already having decided whether checks
 can run here; and identity-verified teardown being safe to call from `WorkflowEngine.stop()`
 concurrently for several attempts.
 
@@ -308,3 +344,17 @@ command.
   identity shape across platforms is easier to reason about than two. Costs no extra spawn on
   macOS (`lstart` and `command` come from one `ps`). Phase 2's Contract P is unchanged - it
   stores an opaque `startTimeTicks` string, and a composite is still one opaque string.
+- **2026-07-30, Inspector round 6 (PR #326):** finding accepted - *"Keep the supervisor identity
+  stable after releasing the gate"*. This was self-inflicted: round 3 made the identity a
+  composite including the shim's command line, and step 4 still said the shim `exec`s the
+  configured argv. An `exec` replaces the command line, so every later identity read would
+  mismatch on a live group, refuse to signal it, and strand its lease - the exact failure the
+  composite was introduced to prevent. Step 4 also contradicted itself, since its own closing
+  paragraph already forbade a shim that "`exec`s itself away". Corrected to fork-and-wait, with
+  the two requirements stated as one design so the next reader cannot satisfy half of it, and a
+  test that re-reads identity *after* the gate is released - a case no existing test covered,
+  because they all read it before the command starts.
+- **2026-07-30, Inspector round 5 (PR #326), consumed here:** Phase 2's startup reconciliation
+  could `return --force` a tree whose group was still live. The gap was that Phase 2 can prove
+  ownership but not emptiness, so this phase now exports `CheckGroupRecovery` for it. Recorded
+  in Phase 2's audit as well; the seam is declared there and implemented here.

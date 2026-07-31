@@ -268,9 +268,29 @@ One module owning the lifecycle. Public surface, roughly:
 - `unresolvedLeaseForNode(submissionId, nodeId)` - is there a row for this node in a state
   other than `returned` or `lost`? **Phase 4 gates its retry on this**, so it must answer from
   the table alone, never from a join that retention can break.
-- `reconcileOnStartup()` - restore rows into the in-memory pin set and resolve each by the
-  same identity rules. Rows carrying the sentinel pid are known never to have run branch code
-  and can be returned once identity matches.
+- `reconcileOnStartup()` - restore rows into the in-memory pin set, then resolve each row by
+  **which of two questions it needs answered**, because they are not the same question:
+  - **Sentinel rows** (`pid = 0`, `ticks = ''`) never released the gate, so no branch code ever
+    ran and there is no group to prove empty. Identity match alone authorises the return.
+  - **Non-sentinel rows may still have a live process group.** Path plus holder token proves the
+    tree is *ours*; it proves nothing about whether anything is still writing in it. Returning
+    on ownership alone would `return --force` a live check - terminating its processes and
+    hard-resetting the tree - which is precisely the "leader exit with live descendants" failure
+    Phase 3 exists to prevent, and it contradicts the rule that **confirmed emptiness, not
+    ownership, is the precondition for a return**. Route these through Phase 3's group recovery
+    and call `releaseForAttempt` only on `empty`; `not-empty` and `unknown` keep the row and the
+    pin for the reclamation pass.
+
+  Phase 3 ships that recovery, and Phase 3 merges after this one, so declare it here as a seam
+  with a **refusing default**:
+
+  ```ts
+  export type CheckGroupRecovery = (attemptId: string) => Promise<"empty" | "not-empty" | "unknown">;
+  ```
+
+  Default: `async () => "unknown"` - keep the row, keep the pin, return nothing. Fail-closed,
+  and inert in practice at this phase because nothing writes the table until Phase 4. Phase 4
+  injects Phase 3's implementation.
 
 **Ordering, and it is not optional:** reconciliation completes **before**
 `startPoolReaper(registry)` at `src/server/index.ts:203`. This is the same shape as
@@ -321,7 +341,11 @@ of the pool lock stated plainly.
 - Return failure keeps the row in `returning`, keeps the pin, and does not permit a second
   lease for the same attempt.
 - Startup reconciliation restores pins before the reaper could run, and resolves a sentinel-pid
-  row.
+  row by identity alone.
+- **Startup reconciliation never returns a non-sentinel row on ownership alone.** With the
+  default refusing seam, a non-sentinel row is kept and pinned rather than returned; with an
+  injected recovery it returns on `empty` and keeps the row on `not-empty` and `unknown`. This
+  is the test that stops a restart from hard-resetting a tree a live check is writing into.
 - Pin/verify failure unwinds the lease and surfaces the return's own outcome in the error.
 - `unresolvedLeaseForNode` answers true for `held` and `returning`, false for `returned` and
   `lost`, and keeps answering correctly after the attempt row is deleted.
@@ -373,14 +397,16 @@ Phase 4 may rely on:
 
 - `acquireForAttempt` / `releaseForAttempt` and their identity rules.
 - `unresolvedLeaseForNode(submissionId, nodeId)`, the retry gate.
+- The `CheckGroupRecovery` seam on `reconcileOnStartup`, which Phase 4 must inject with Phase
+  3's implementation. Left uninjected, startup refuses to return any non-sentinel lease.
 - The pin being live from acquisition through confirmed return, so a check may run for minutes
   without the reaper noticing.
 - Lease or pin failure already being classified as infrastructure, so Phase 4 forwards it to
   `handleInfrastructureFailure` rather than re-deciding.
 
 Nobody may: add the check token to `LEASE_HOLDERS`; give the lease table a foreign key; make
-`checkLeasePaths` optional; collapse the two `return` spellings; or hold a pin in the `lost`
-state.
+`checkLeasePaths` optional; collapse the two `return` spellings; hold a pin in the `lost` state;
+or return a non-sentinel lease on ownership alone.
 
 ## Cross-phase audit record
 
@@ -429,3 +455,13 @@ state.
   `returning`, with the filter stated as the query's `WHERE` and covered by its own test. Worth
   noting as a pattern: retaining a row for audit and treating that same table as a live index
   are different jobs, and the state filter is the seam between them.
+- **2026-07-30, Inspector round 5 (PR #326):** finding accepted - *"Reconcile live check groups
+  before returning their leases"*. `reconcileOnStartup` said to resolve every row "by the same
+  identity rules", but those rules prove *ownership*, not *emptiness*. After Phase 4 a daemon can
+  restart with a supervisor group still writing in its leased tree, and ownership alone would
+  have authorised `return --force` on it - contradicting Phase 3's own precondition that
+  confirmed emptiness is what permits a return. The two row classes need different questions
+  answered, so they are now separated explicitly: sentinel rows never ran branch code and are
+  safe on identity alone; non-sentinel rows go through Phase 3's `CheckGroupRecovery`. Declared
+  here as a seam with a refusing default because Phase 3 merges later, which keeps this phase
+  shippable and fail-closed. Phase 4 owns the injection.

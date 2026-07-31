@@ -1,15 +1,18 @@
+import { randomUUID } from "node:crypto";
 import {
   closeSync,
   fstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { BASE_URL, stateDir } from "@shared/harness-runtime.mjs";
 import { DEFAULT_LLM_RUNNER_ID, isLlmRunnerId } from "@shared/llm.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -160,29 +163,140 @@ function fsErrorCode(err: unknown): string | undefined {
 interface SpendOutboxLock {
   fd: number;
   path: string;
+  token: string;
   dev: number;
   ino: number;
+}
+
+interface SpendOutboxLockObservation {
+  token: string;
+  mtimeMs: number;
+}
+
+function spendLockClaimPath(path: string): string {
+  return `${path}.steal.${Date.now()}.${process.pid}.${randomUUID()}`;
+}
+
+function cleanupSpendLockClaims(path: string): void {
+  const prefix = `${basename(path)}.steal.`;
+  const now = Date.now();
+  try {
+    for (const name of readdirSync(dirname(path))) {
+      if (!name.startsWith(prefix)) continue;
+      const claimedAt = Number(name.slice(prefix.length).split(".", 1)[0]);
+      if (Number.isFinite(claimedAt) && now - claimedAt > SPEND_LOCK_STALE_MS) {
+        try {
+          rmSync(join(dirname(path), name), { force: true });
+        } catch (err) {
+          console.warn("[foreman] could not clean a stale spend lock claim:", err);
+        }
+      }
+    }
+  } catch (err) {
+    if (fsErrorCode(err) !== "ENOENT") {
+      console.warn("[foreman] could not inspect stale spend lock claims:", err);
+    }
+  }
+}
+
+function observeSpendOutboxLock(path: string): SpendOutboxLockObservation {
+  const token = readFileSync(path, "utf8").trim();
+  return { token, mtimeMs: statSync(path).mtimeMs };
+}
+
+function restoreClaimedSpendOutboxLock(path: string, claimPath: string): void {
+  try {
+    linkSync(claimPath, path);
+  } catch (err) {
+    if (fsErrorCode(err) !== "EEXIST") throw err;
+  } finally {
+    rmSync(claimPath, { force: true });
+  }
+}
+
+/**
+ * Atomically move one observed lock instance out of the live pathname.
+ *
+ * `rename` is the claim primitive because only one contender can move the pathname that
+ * named the stale inode. The token check is still required: another worker can replace the
+ * lock after observation but before rename, and that fresh instance must be put back rather
+ * than mistaken for the stale one.
+ */
+function claimObservedSpendOutboxLock(
+  path: string,
+  observed: SpendOutboxLockObservation,
+): boolean {
+  const claimPath = spendLockClaimPath(path);
+  try {
+    renameSync(path, claimPath);
+  } catch (err) {
+    if (fsErrorCode(err) === "ENOENT") return false;
+    throw err;
+  }
+  try {
+    if (readFileSync(claimPath, "utf8").trim() !== observed.token) {
+      restoreClaimedSpendOutboxLock(path, claimPath);
+      return false;
+    }
+    rmSync(claimPath, { force: true });
+    return true;
+  } catch (err) {
+    try { restoreClaimedSpendOutboxLock(path, claimPath); } catch {}
+    throw err;
+  }
+}
+
+function removeOwnedSpendOutboxLock(lock: SpendOutboxLock): void {
+  const claimPath = spendLockClaimPath(lock.path);
+  try {
+    renameSync(lock.path, claimPath);
+  } catch (err) {
+    if (fsErrorCode(err) === "ENOENT") return;
+    throw err;
+  }
+  try {
+    const claimed = statSync(claimPath);
+    const token = readFileSync(claimPath, "utf8").trim();
+    if (claimed.dev !== lock.dev || claimed.ino !== lock.ino || token !== lock.token) {
+      restoreClaimedSpendOutboxLock(lock.path, claimPath);
+      return;
+    }
+    rmSync(claimPath, { force: true });
+  } catch (err) {
+    try { restoreClaimedSpendOutboxLock(lock.path, claimPath); } catch {}
+    throw err;
+  }
 }
 
 function acquireSpendOutboxLock(): SpendOutboxLock {
   const path = spendOutboxLockPath();
   mkdirSync(dirname(path), { recursive: true });
+  cleanupSpendLockClaims(path);
   for (let attempt = 0; attempt < SPEND_LOCK_RETRIES; attempt++) {
     let fd: number | null = null;
+    let lock: SpendOutboxLock | null = null;
     try {
+      const token = `${process.pid}:${randomUUID()}`;
       fd = openSync(path, "wx");
       const identity = fstatSync(fd);
-      writeFileSync(fd, `${process.pid}\n`, "utf8");
-      return { fd, path, dev: identity.dev, ino: identity.ino };
+      lock = { fd, path, token, dev: identity.dev, ino: identity.ino };
+      writeFileSync(fd, `${token}\n`, "utf8");
+      return lock;
     } catch (err) {
       if (fd !== null) {
         try { closeSync(fd); } catch {}
-        try { rmSync(path, { force: true }); } catch {}
+        if (lock) {
+          try { removeOwnedSpendOutboxLock(lock); } catch {}
+        }
       }
       if (fsErrorCode(err) !== "EEXIST") throw err;
       try {
-        if (Date.now() - statSync(path).mtimeMs > SPEND_LOCK_STALE_MS) {
-          rmSync(path, { force: true });
+        const observed = observeSpendOutboxLock(path);
+        if (
+          Date.now() - observed.mtimeMs > SPEND_LOCK_STALE_MS &&
+          claimObservedSpendOutboxLock(path, observed)
+        ) {
+          attempt--;
           continue;
         }
       } catch (statErr) {
@@ -200,7 +314,8 @@ function acquireSpendOutboxLock(): SpendOutboxLock {
 
 function assertSpendOutboxLockOwned(lock: SpendOutboxLock): void {
   const current = statSync(lock.path);
-  if (current.dev !== lock.dev || current.ino !== lock.ino) {
+  const token = readFileSync(lock.path, "utf8").trim();
+  if (current.dev !== lock.dev || current.ino !== lock.ino || token !== lock.token) {
     throw new Error("spend outbox lock ownership changed");
   }
 }
@@ -212,14 +327,18 @@ function releaseSpendOutboxLock(lock: SpendOutboxLock): void {
     console.warn("[foreman] could not close the spend outbox lock:", err);
   }
   try {
-    const current = statSync(lock.path);
-    if (current.dev === lock.dev && current.ino === lock.ino) rmSync(lock.path, { force: true });
+    removeOwnedSpendOutboxLock(lock);
   } catch (err) {
     if (fsErrorCode(err) !== "ENOENT") {
       console.warn("[foreman] could not release the spend outbox lock:", err);
     }
   }
 }
+
+export const spendOutboxLockTest = {
+  claimObserved: claimObservedSpendOutboxLock,
+  observe: observeSpendOutboxLock,
+};
 
 function withSpendOutboxLock<T>(fallback: T, operation: (lock: SpendOutboxLock) => T): T {
   let lock: SpendOutboxLock | null = null;

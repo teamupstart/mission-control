@@ -2,7 +2,15 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server, ServerResponse } from "node:http";
@@ -27,6 +35,7 @@ process.env.MISSION_PORT = String(PORT);
 const home = mkdtempSync(join(tmpdir(), "foreman-spend-"));
 process.env.MISSION_HOME = home;
 const SPOOL = join(home, "foreman-spend-outbox.json");
+const LOCK = join(home, "foreman-spend-outbox.lock");
 
 /** What the fake daemon does to the next request. */
 let mode: "ok" | "down" | "500" | "400" = "ok";
@@ -75,9 +84,13 @@ function stop(): Promise<void> {
 
 await start();
 
-const { ForemanClient, flushPendingSpend, loadSpendOutbox, pendingSpendReports } = await import(
-  "../src/server/foreman/client.ts"
-);
+const {
+  ForemanClient,
+  flushPendingSpend,
+  loadSpendOutbox,
+  pendingSpendReports,
+  spendOutboxLockTest,
+} = await import("../src/server/foreman/client.ts");
 const client = new ForemanClient();
 
 after(async () => {
@@ -285,6 +298,48 @@ test("one worker's acknowledgement cannot erase another worker's pending report"
   assert.deepEqual(spooled.map((item) => item.runId), ["run-shared-pending"]);
 
   assert.equal(loadSpendOutbox(), 1);
+  await flushPendingSpend();
+  assert.equal(existsSync(SPOOL), false);
+});
+
+test("a stale claimant cannot remove the fresh lock that replaced its observation", async () => {
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  writeFileSync(SPOOL, JSON.stringify([report("foreman:review", "run-before-takeover")]), "utf8");
+  writeFileSync(LOCK, "stale-owner:old-token\n", "utf8");
+  const staleAt = new Date(Date.now() - 10_000);
+  utimesSync(LOCK, staleAt, staleAt);
+  const observed = spendOutboxLockTest.observe(LOCK);
+
+  rmSync(LOCK);
+  const freshToken = "fresh-owner:new-token";
+  writeFileSync(LOCK, `${freshToken}\n`, "utf8");
+  assert.equal(
+    spendOutboxLockTest.claimObserved(LOCK, observed),
+    false,
+    "the stale observer did not become a second lock holder",
+  );
+  assert.equal(readFileSync(LOCK, "utf8").trim(), freshToken);
+  assert.deepEqual(
+    readdirSync(home).filter((name) => name.includes(".steal.")),
+    [],
+    "the failed claim left no takeover file behind",
+  );
+  assert.deepEqual(
+    (JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>).map((item) => item.runId),
+    ["run-before-takeover"],
+  );
+
+  rmSync(LOCK);
+  await stop();
+  await client.reportSpend(report("foreman:verify", "run-after-takeover"));
+  const spooled = JSON.parse(readFileSync(SPOOL, "utf8")) as Array<{ runId: string }>;
+  assert.deepEqual(
+    spooled.map((item) => item.runId),
+    ["run-before-takeover", "run-after-takeover"],
+  );
+
+  assert.equal(loadSpendOutbox(), 2);
+  await start();
   await flushPendingSpend();
   assert.equal(existsSync(SPOOL), false);
 });

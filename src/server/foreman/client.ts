@@ -392,6 +392,25 @@ export function quarantinedSpendReports(): number {
  * Two workers may adopt the same dead owner's spool during a handoff, but that can only
  * duplicate delivery: the daemon keys each insert by run id and absorbs the duplicate.
  */
+/**
+ * Complain about one file once, not once per scan.
+ *
+ * The scan became PERIODIC when a running worker started sweeping for dead peers, and that
+ * turned every warning inside it from a one-off at startup into a line every interval,
+ * forever, for a file that will never become readable. A log an operator learns to ignore
+ * is worse than no log; this keeps the first report - the one that names the problem - and
+ * drops the repeats.
+ *
+ * Keyed by path and never cleared: the set is bounded by the number of spool files, and a
+ * path that becomes readable again stops reaching here anyway.
+ */
+const warnedSpoolPaths = new Set<string>();
+function warnOncePerPath(path: string, message: string, err: unknown): void {
+  if (warnedSpoolPaths.has(path)) return;
+  warnedSpoolPaths.add(path);
+  console.warn(message, err);
+}
+
 function scanAndAdoptSpools(): void {
   const ownPath = spendOutboxPath();
   const dir = dirname(ownPath);
@@ -417,7 +436,7 @@ function scanAndAdoptSpools(): void {
     try {
       restored = readSpendOutbox(path);
     } catch (err) {
-      console.warn(`[foreman] leaving unreadable spend outbox ${name} untouched:`, err);
+      warnOncePerPath(path, `[foreman] leaving unreadable spend outbox ${name} untouched:`, err);
       continue;
     }
     if (!restored) continue;
@@ -427,7 +446,7 @@ function scanAndAdoptSpools(): void {
       try {
         restored = readSpendOutbox(path);
       } catch (err) {
-        console.warn(`[foreman] could not re-read dead owner's spend outbox ${name}:`, err);
+        warnOncePerPath(path, `[foreman] could not re-read dead owner's spend outbox ${name}:`, err);
         continue;
       }
       if (

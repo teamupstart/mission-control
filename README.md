@@ -1016,11 +1016,13 @@ The Foreman worker never writes the database, so it reports over
 `POST /api/usage/automation` like everything else it does; the daemon prices what it is
 told and writes it. Because the run is already paid for by the time it is reported, a
 report that cannot be delivered is spend nothing can reconstruct - so undelivered ones are
-spooled to `foreman-spend-outbox.json` in the state dir and retried with backoff, and are
-erased only once the daemon acknowledges them. A worker that crashes or restarts mid-outage
-picks the spool back up on startup. That file is a buffer for requests, not a second
-ledger: it holds no schema, the daemon never reads it, and a duplicate delivery is harmless
-because each row is keyed to the run's own id. Attribution deliberately did **not** take the other available route -
+spooled to per-process `foreman-spend-outbox.<id>.json` files in the state dir, retried with
+backoff, and erased only once the daemon acknowledges them. Each file has exactly one writer
+for its lifetime, so no locking is involved. On startup a worker adopts a spool only when it
+can prove the owning process is gone. It leaves a live worker's file alone, and uncertainty
+means the entries wait rather than being deleted. These files are request buffers, not a
+second ledger: they hold no schema, the daemon never reads them, and duplicate delivery is
+harmless because each row is keyed to the run's own id. Attribution deliberately did **not** take the other available route -
 giving these runs a stable `--session-id` so their OpenTelemetry could be attributed -
 because that is exactly the flag that would hand them a resumable conversation and cost the
 context isolation the Foreman depends on to review many sessions without one bleeding into

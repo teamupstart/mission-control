@@ -2551,6 +2551,12 @@ Four things it deliberately does not do:
 - **It does not touch a run waiting for a new pushed head.** The `inspector_only` findings
   policy already resumes on its own, when the Inspector observes a head that is not the failed
   one, and that remains its business.
+- **It does not fire under Preview delivery.** Preview stores the repair packet and never
+  types it, so the agent has not been told what to fix. Resuming there would spend every round
+  in the budget re-reviewing work nobody asked to be changed, without a single packet reaching
+  a screen. A Preview run still waits for you, which is what Preview means. Auto-resumption is
+  therefore a **Live** behaviour in practice, the same boundary automatic PR preparation sits
+  behind.
 - **It does not become a silent loop.** A reviewer that rejects the same work two rounds
   running raises a **repeat offender** alert - attention-level, so it breaks through even
   while you're [away](#away-mode). It is edge-triggered on the streak *growing*, so it

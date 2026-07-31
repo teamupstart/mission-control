@@ -49,6 +49,16 @@ supervisor, durable lease table, pool pins, environment scrubbing, and startup r
 specified below are the dependency-linked execution-runtime unit. The runtime-specific tests,
 manual checks, and exit criteria below apply to that follow-up rather than to the first unit.
 
+**That follow-up is now decomposed:** `docs/plans/check-execution-runtime/phased-plan.md`
+(rendered page beside it) breaks the runtime unit into four merge-aware phases and records two
+findings this document could not have known. `treehouse return` accepts no holder argument, so
+the "holder-verified idempotent return" specified at lines 291-301 is reached by exclusive
+coordination plus a distinct holder token rather than by asking the CLI. And a distinct holder
+token makes the shared pool reaper refuse a check lease outright, which is a stronger
+protection than the `PoolPins` entry specified at lines 281-289 - both ship, and the
+consequence, that leaked check leases need their own collector, is new work that directory
+owns. The "deliberately null" sentence above stops being true when that unit's Phase 4 merges.
+
 Explicit non-goals:
 
 - **No Pipeline editor support.** `stageExpressible` returns false for a graph containing a

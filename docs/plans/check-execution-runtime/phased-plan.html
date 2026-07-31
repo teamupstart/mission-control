@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased implementation: check execution runtime and the automatic repair loop</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1d21; --muted: #5c6570; --rule: #e3e7ec;
+    --card: #f7f9fb; --accent: #2f6feb; --warn: #b8531b; --good: #1a7f4b;
+    --code-bg: #f2f4f7; --code-fg: #22262b;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --fg: #dfe4ea; --muted: #939ba6; --rule: #262c34;
+      --card: #161b21; --accent: #6c9cf5; --warn: #e0894c; --good: #4cc38a;
+      --code-bg: #171c22; --code-fg: #d3d9e0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 3rem 1.5rem 6rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 var(--sans); -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 62rem; margin: 0 auto; }
+  h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 0.5rem; }
+  h2 {
+    font-size: 1.3rem; letter-spacing: -0.01em; margin: 3rem 0 1rem;
+    padding-bottom: 0.4rem; border-bottom: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.05rem; margin: 2rem 0 0.6rem; }
+  p, li { margin: 0.6rem 0; }
+  ul, ol { padding-left: 1.3rem; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code {
+    font: 0.87em var(--mono); background: var(--code-bg); color: var(--code-fg);
+    padding: 0.12em 0.36em; border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg); color: var(--code-fg); padding: 1rem 1.1rem;
+    border-radius: 8px; overflow-x: auto; font: 0.85rem/1.55 var(--mono);
+    border: 1px solid var(--rule);
+  }
+  pre code { background: none; padding: 0; }
+  .lede { color: var(--muted); font-size: 1.05rem; margin-bottom: 2rem; }
+  .meta {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+    padding: 1rem 1.2rem; margin: 1.5rem 0; font-size: 0.93rem;
+  }
+  .meta div { margin: 0.25rem 0; }
+  .scroll { overflow-x: auto; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.93rem; }
+  th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  tbody tr:last-child td { border-bottom: none; }
+  .callout {
+    border-left: 3px solid var(--warn); background: var(--card);
+    padding: 0.9rem 1.1rem; margin: 1.2rem 0; border-radius: 0 8px 8px 0;
+  }
+  .callout.good { border-left-color: var(--good); }
+  .callout.info { border-left-color: var(--accent); }
+  .callout strong { display: block; margin-bottom: 0.25rem; }
+  figure { margin: 1.8rem 0; }
+  figcaption { color: var(--muted); font-size: 0.85rem; margin-top: 0.6rem; text-align: center; }
+  svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+  .sv-node { fill: var(--card); stroke: var(--rule); stroke-width: 1.5; }
+  .sv-node.hi { stroke: var(--accent); stroke-width: 2; }
+  .sv-node.warn { stroke: var(--warn); stroke-width: 2; }
+  .sv-t { fill: var(--fg); font: 600 13px var(--sans); }
+  .sv-s { fill: var(--muted); font: 11px var(--sans); }
+  .sv-l { fill: var(--muted); font: 11px var(--mono); }
+  .sv-e { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  .sv-e.hi { stroke: var(--accent); }
+  .phases { list-style: none; padding: 0; }
+  .phases li {
+    border: 1px solid var(--rule); border-radius: 10px; padding: 0.9rem 1.1rem;
+    margin: 0.7rem 0; background: var(--card);
+  }
+  .phases .n { color: var(--muted); font: 0.8rem/1 var(--mono); text-transform: uppercase; letter-spacing: 0.06em; }
+  .phases a { font-weight: 600; font-size: 1.02rem; }
+  .phases .d { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
+  footer { margin-top: 4rem; padding-top: 1.2rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.87rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Check execution runtime and the automatic repair loop</h1>
+<p class="lede">A phased implementation plan. Four phases, two of which run concurrently.</p>
+
+<div class="meta">
+  <div><strong>Source plan</strong> - <code>docs/plans/builtin-workflows/phase-2-check-node.md</code>, its dependency-linked execution-runtime unit</div>
+  <div><strong>Index (source of truth)</strong> - <code>docs/plans/check-execution-runtime/phased-plan.md</code></div>
+  <div><strong>Verified against</strong> - <code>b44f7232</code>, re-verified in full against <code>6453445a</code> after a rebase</div>
+</div>
+
+<div class="callout">
+  <strong>The defect this closes</strong>
+  A configured, authorised check currently passes without running. <code>CheckRunDeps.execute</code>
+  is <code>null</code> in production, <code>runCheck</code> returns <code>unavailable</code>, and
+  <code>checkOutcomePasses</code> is <code>status !== "failed"</code>. An operator who configures a
+  test command and turns checks on gets a green gate that ran nothing.
+</div>
+
+<div class="callout">
+  <strong>Phase 1 is superseded in part - PR #327 landed mid-review</strong>
+  <code>feat(workflows): resume a parked repair round automatically</code> reached <code>main</code>
+  while this plan was in review. It solves Phase 1's headline problem by a different mechanism:
+  a daemon-side observer over parked runs, an immutable per-version <code>resumptionPolicy</code>,
+  and built-in v7 carrying <code>auto</code>. Its commit message argues the Foreman route could
+  never have covered resumption at all, which <strong>contradicts operator decision 5 below</strong>.
+  Phase 1 carries a banner naming exactly what #327 took over and what still holds, and should not
+  be implemented until its scope is re-decided. Phases 2, 3 and 4 are unaffected - no lease,
+  supervisor or executor surface changed, and no cross-phase contract moved.
+</div>
+
+<h2>Incorporated human decisions</h2>
+<p>Submitted by the operator on 2026-07-30, before decomposition.</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>#</th><th>Decision</th><th>Consequence</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Personas never fix</td><td>Already true in code. Now a recorded invariant (Contract F) no phase may weaken.</td></tr>
+    <tr><td>2</td><td>The loop is automatic by default</td><td>Resubmission, not <code>git push</code> - confirmed before decomposition. Phase 1.</td></tr>
+    <tr><td>3</td><td>Inspector findings keep <code>inspector_only</code></td><td>No built-in v7. A Persona failure restarts the full graph; an Inspector nit re-checks only Inspector.</td></tr>
+    <tr><td>4</td><td>Consent stays required</td><td><code>liveEnabled</code> flips true; <code>repoAllowlist</code> stays empty and still gates. "Allowlist everything" was offered and declined.</td></tr>
+    <tr><td>5</td><td>One completion detector</td><td>Reuse Foreman rather than growing a second idle detector. Foreman <code>enabled</code> flips true.</td></tr>
+    <tr><td>6</td><td>Option A for isolation</td><td>Pooled treehouse worktree pinned to the captured commit. The throwaway-<code>git worktree</code> variant was declined.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Phases</h2>
+
+<figure>
+<svg viewBox="0 0 720 300" role="img" aria-label="Dependency graph: planning PR releases phases 1 and 2 concurrently; phase 3 depends on 2; phase 4 depends on 2 and 3.">
+  <rect x="280" y="12" width="160" height="38" rx="8" class="sv-node hi"/>
+  <text x="360" y="30" text-anchor="middle" class="sv-t">planning PR</text>
+  <text x="360" y="44" text-anchor="middle" class="sv-s">this change</text>
+
+  <path d="M330 50 L150 92" class="sv-e hi" marker-end="url(#a)"/>
+  <path d="M390 50 L530 92" class="sv-e hi" marker-end="url(#a)"/>
+
+  <rect x="40" y="94" width="220" height="52" rx="8" class="sv-node"/>
+  <text x="60" y="115" class="sv-t">Phase 1 · Automatic repair loop</text>
+  <text x="60" y="133" class="sv-s">group A · M · no dependencies</text>
+
+  <rect x="440" y="94" width="240" height="52" rx="8" class="sv-node"/>
+  <text x="460" y="115" class="sv-t">Phase 2 · Lease foundation</text>
+  <text x="460" y="133" class="sv-s">group A · L · no dependencies</text>
+
+  <path d="M560 146 L560 186" class="sv-e" marker-end="url(#a)"/>
+  <rect x="440" y="188" width="240" height="52" rx="8" class="sv-node"/>
+  <text x="460" y="209" class="sv-t">Phase 3 · Process supervisor</text>
+  <text x="460" y="227" class="sv-s">group B · L · needs 2</text>
+
+  <path d="M560 240 L560 262 L360 262" class="sv-e" marker-end="url(#a)"/>
+  <path d="M440 120 L400 120 L400 262" class="sv-e" marker-end="url(#a)"/>
+
+  <rect x="120" y="240" width="240" height="48" rx="8" class="sv-node warn"/>
+  <text x="140" y="261" class="sv-t">Phase 4 · Executor wiring</text>
+  <text x="140" y="278" class="sv-s">group C · M · needs 2 and 3</text>
+
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="currentColor" style="color: var(--muted)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Phases 1 and 2 may merge in either order. Landing 1 before 4 is a recommendation, not an edge.</figcaption>
+</figure>
+
+<ul class="phases">
+  <li>
+    <div class="n">Phase 1 · group A · no dependencies · M</div>
+    <a href="phase-1-automatic-repair-loop.md">Automatic repair loop</a> <strong>- superseded in part, needs re-scoping</strong>
+    <div class="d">Flip three defaults, close two dead ends, and write the end-to-end repair-cycle test that does not exist. Independent of the check runtime.</div>
+  </li>
+  <li>
+    <div class="n">Phase 2 · group A · no dependencies · L</div>
+    <a href="phase-2-lease-foundation.md">Lease foundation</a>
+    <div class="d">One treehouse adapter, a per-repository pool lock, the durable lease table, the third pin source, the check holder-token scheme, and reclamation.</div>
+  </li>
+  <li>
+    <div class="n">Phase 3 · group B · needs Phase 2 · L</div>
+    <a href="phase-3-process-supervisor.md">Streaming process supervisor</a>
+    <div class="d">Bounded streaming spawn, the gated supervisor that persists identity before branch code runs, identity-verified process-group teardown, and the environment scrubber.</div>
+  </li>
+  <li>
+    <div class="n">Phase 4 · group C · needs Phases 2 and 3 · M</div>
+    <a href="phase-4-executor-wiring.md">Check executor wiring</a>
+    <div class="d">Compose the two, add the missing <code>checkDeps</code> passthrough, cancel live groups on shutdown. The gate stops lying.</div>
+  </li>
+</ul>
+
+<h2>What the investigation changed</h2>
+
+<h3>The automatic loop mostly exists already</h3>
+<p>
+  This was the biggest surprise and it substantially shrank Phase 1. Built-in v6 already ships
+  <code>foreman_complete</code> + <code>live</code>, and <code>confirmDeliverySend</code> already
+  re-arms Foreman's drain guard in the same transaction. The full cycle is implemented and has
+  never run for anybody.
+</p>
+
+<figure>
+<svg viewBox="0 0 720 210" role="img" aria-label="The repair loop: persona fail parks the submission, a live delivery re-arms Foreman's guard, the session fixes, Foreman reclaims, and a new round re-runs the graph from the top.">
+  <rect x="16" y="20" width="126" height="46" rx="8" class="sv-node"/>
+  <text x="79" y="41" text-anchor="middle" class="sv-t">Persona fail</text>
+  <text x="79" y="56" text-anchor="middle" class="sv-s">verdict, never a patch</text>
+
+  <path d="M142 43 L186 43" class="sv-e" marker-end="url(#b)"/>
+  <rect x="188" y="20" width="140" height="46" rx="8" class="sv-node"/>
+  <text x="258" y="41" text-anchor="middle" class="sv-t">waiting_for_session</text>
+  <text x="258" y="56" text-anchor="middle" class="sv-s">siblings cancelled</text>
+
+  <path d="M328 43 L372 43" class="sv-e" marker-end="url(#b)"/>
+  <rect x="374" y="20" width="150" height="46" rx="8" class="sv-node hi"/>
+  <text x="449" y="41" text-anchor="middle" class="sv-t">Live delivery</text>
+  <text x="449" y="56" text-anchor="middle" class="sv-s">re-arms one guard</text>
+
+  <path d="M524 43 L568 43" class="sv-e" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="134" height="46" rx="8" class="sv-node"/>
+  <text x="637" y="41" text-anchor="middle" class="sv-t">Session fixes</text>
+  <text x="637" y="56" text-anchor="middle" class="sv-s">the only writer</text>
+
+  <path d="M637 66 L637 100 L449 100" class="sv-e" marker-end="url(#b)"/>
+  <rect x="300" y="102" width="150" height="46" rx="8" class="sv-node"/>
+  <text x="375" y="123" text-anchor="middle" class="sv-t">Foreman reclaims</text>
+  <text x="375" y="138" text-anchor="middle" class="sv-s">idle + 10s settle</text>
+
+  <path d="M300 125 L204 125" class="sv-e" marker-end="url(#b)"/>
+  <rect x="46" y="102" width="156" height="46" rx="8" class="sv-node hi"/>
+  <text x="124" y="123" text-anchor="middle" class="sv-t">Round N+1</text>
+  <text x="124" y="138" text-anchor="middle" class="sv-s">new submissionId</text>
+
+  <path d="M124 148 L124 174 L79 174 L79 66" class="sv-e hi" marker-end="url(#b)"/>
+  <text x="300" y="178" class="sv-l">graph re-runs from the top - attempts are keyed by submissionId</text>
+
+  <defs>
+    <marker id="b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="currentColor" style="color: var(--muted)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>Verified: attempts and edge receipts are keyed by <code>submissionId</code>, so a new submission means an empty attempt table and a genuine restart.</figcaption>
+</figure>
+
+<p>Four things stop it running by default, and Phase 1 owns all four:</p>
+<ol>
+  <li><code>liveEnabled</code> is <code>false</code>, so nothing is ever delivered.</li>
+  <li>Foreman <code>enabled</code> is <code>false</code>, so <code>foreman_complete</code> is refused at bind time.</li>
+  <li><strong>An <code>unchanged_evidence</code> refusal permanently kills the loop.</strong> The guard is retired inside the claim transaction, <em>before</em> capture runs. If capture then refuses, the guard is spent and no further claim ever arrives. PR #323 split retirement across two sites and added a worse variant: on the fallback path the same transaction also inserts a brand-new No-Mistakes binding, so a refusal there strands a binding nobody asked for on a blocked run.</li>
+  <li><strong>Item-less sessions never re-arm.</strong> The drain re-arm requires queue items to exist, and there is no <code>rearmPromptedCompletionForDelivery</code> anywhere.</li>
+</ol>
+<p>And no test asserts the cycle end to end - the completion test fakes the re-arm with raw SQL, in two places.</p>
+<div class="callout info">
+  <strong>Landed mid-decomposition</strong>
+  PR #323 also gave <code>claimCompletion</code> an auto-bind path that reads <code>liveEnabled</code>
+  to choose its own delivery mode. So Phase 1's default flip does more than switch delivery on:
+  it silently upgrades every auto-created No-Mistakes binding from preview to live on an
+  allowlisted repository. Recorded in Phase 1's findings, and it belongs in that PR's description.
+</div>
+
+<h3>The pool reaper will destroy a check lease</h3>
+<div class="callout">
+  <strong>Currently reachable the moment leases exist</strong>
+  Walk <code>cheapVerdict</code> against an idle check lease held as <code>mission-control</code>:
+  state <code>leased</code> ✓, holder recognised ✓, not busy ✓ (the command has not spawned yet),
+  not a task worktree ✓, not a session cwd ✓, path exists ✓ - verdict <code>null</code>, so it is
+  returned with <code>treehouse return --force</code>, which terminates processes and hard-resets
+  the tree. This is why Phase 2 cannot be split into "table now, pins later".
+</div>
+
+<h3><code>treehouse return</code> has no holder argument</h3>
+<p>
+  Verified against the installed binary: <code>return [path] [--force]</code>, no
+  <code>--holder</code>; <code>status</code> has no flags and no <code>--json</code>. So the source
+  plan's "holder-verified idempotent return" cannot be obtained by asking treehouse, and its own
+  escape clause applies - <em>supply holder-aware semantics or exclusive coordination, or pooled
+  check execution cannot ship</em>.
+</p>
+
+<h2>Cross-phase contracts</h2>
+
+<h3>Contract L - lease safety <span class="sv-s">(Phase 2)</span></h3>
+<ol>
+  <li><strong>Distinct holder token</strong> <code>mission-control-check-&lt;attemptId&gt;</code>. Because <code>cheapVerdict</code> gates on <code>LEASE_HOLDERS.includes(holder)</code>, the shared reaper <em>structurally cannot</em> return a check lease. Primary protection, no new reaper code.</li>
+  <li><strong><code>PoolPins.checkLeasePaths</code></strong> - defence in depth for a token-scheme change or a widened <code>LEASE_HOLDERS</code>.</li>
+  <li><strong>A per-repository pool lock</strong> serialising every <code>get</code> / <code>status</code> / <code>return</code> this process issues.</li>
+</ol>
+<div class="callout">
+  <strong>Stated residual, not a closure</strong>
+  Layer 3 binds only this process. A <code>make session</code> in another terminal is outside it.
+  Layer 1 is what makes that survivable: an out-of-process re-lease gets the bare
+  <code>mission-control</code> holder, never the check token, so the identity comparison fails and
+  the return is refused. A refused return is <strong>terminal, not a hold</strong>: the row survives
+  as <code>lost</code> for audit and the pin is dropped, because holding a pin on a tree we have just
+  proven is not ours would bar the ordinary reaper from that path for the life of the daemon.
+  Because the shared reaper cannot <em>see</em> check leases, Phase 2 also
+  owns collecting its own leaks - that is an obligation, not a nicety.
+</div>
+
+<h3>Contract P - process identity <span class="sv-s">(Phase 2 defines, Phase 3 consumes)</span></h3>
+<pre><code>export interface CheckProcessRegistry {
+  /** Persist supervisor identity BEFORE branch code is allowed to run. */
+  record(attemptId: string, pid: number, startTimeTicks: string): void;
+  /** Clear after confirmed group emptiness, never merely leader exit. */
+  clear(attemptId: string): void;
+}</code></pre>
+<p>
+  A <strong>second, opposite-direction seam</strong> joins the same two phases:
+  <code>CheckGroupRecovery(attemptId) =&gt; "empty" | "not-empty" | "unknown"</code>. Phase 2's
+  startup reconciliation can prove a leased tree is <em>ours</em> but not that its process group is
+  <em>empty</em>, and only emptiness may authorise a return. Phase 2 declares it with a refusing
+  default, Phase 3 implements it, Phase 4 injects it. Phase 2 hands Phase 3 durability; Phase 3
+  hands Phase 2 proof-of-death.
+</p>
+<p>
+  <code>startTimeTicks</code> is opaque to Phase 2 and, since Inspector round 3, a
+  <strong>composite</strong>: a start-time field plus the supervisor's command line, which carries
+  the attempt id. No shell-reachable start-time field has the resolution to stand alone
+  (<code>ps -o lstart=</code> is whole-second), so uniqueness comes from the attempt id in the argv
+  rather than from precision.
+</p>
+
+<h3>Contract R - the retry gate <span class="sv-s">(Phase 2 defines, Phase 4 consumes)</span></h3>
+<p>
+  <code>unresolvedLeaseForNode(submissionId, nodeId)</code> answers whether a check node still owns
+  a lease. Phase 4 consults it <strong>before</strong> a retry is created and blocks the run instead
+  of retrying when the answer is yes. A retry is a <em>new attempt id</em>, so it carries a new
+  holder token and would otherwise lease a second tree while the first group may still be writing.
+</p>
+
+<h3>Contract E - the executor signature <span class="sv-s">(shipped; changed by nobody)</span></h3>
+<p>
+  <code>CheckExecutor</code>, <code>CheckExecutionRequest</code>, <code>CheckExecutionResult</code>
+  are already published and tested. <code>workingSubpath</code> stays <strong>relative</strong>, to be
+  joined onto the leased tree; <code>command</code> stays an argv spawned with
+  <code>shell: false</code>.
+</p>
+
+<h3>Contract F - the repair loop <span class="sv-s">(Phase 1)</span></h3>
+<ul>
+  <li>A Persona or Check <code>fail</code> returns a rendered packet and never a patch.</li>
+  <li>A confirmed live delivery re-arms <strong>exactly one</strong> completion episode, drain or prompted.</li>
+  <li>A claim that cannot produce a round <strong>returns the guard rather than spending it</strong>.</li>
+  <li><code>maxRepairRounds</code> still bounds the loop; reaching it is a visible <code>blocked</code> state a human resolves.</li>
+</ul>
+
+<h2>Decisions already settled in shipped code</h2>
+<div class="callout good">
+  <strong>Not re-opened by any phase</strong>
+  The <code>check</code> <code>EvidenceRef</code> kind shipped - <code>EVIDENCE_REF_KINDS</code>
+  includes it, with a docstring defending it as a real kind rather than a relaxation of the
+  citation rule. And <code>workflow_node_attempts</code> needs no widening; only the durable lease
+  table is new.
+</div>
+
+<h2>Verification for the completed set</h2>
+<ol>
+  <li>The CI matrix - typecheck, test, build, bundle smoke, on Node 24 and 26.</li>
+  <li>Phase 1's repair-cycle test still passes after Phase 4, extended so a real failing check is the trigger. Extended, not forked - the point is that the loop is shared.</li>
+  <li>Manual: a failing <code>typecheck</code> on a real allowlisted repository fails the submission, the packet reaches the session, the session fixes, and round 2 passes.</li>
+  <li>Manual: kill the daemon mid-check. The lease row survives, the group is reconciled by identity, the tree is returned only once emptiness is confirmed, and the reaper never touched it.</li>
+  <li>The suite ends with no leaked lease - the cheapest guard against the worst failure mode.</li>
+</ol>
+
+<footer>
+  Markdown is the source of truth: <code>docs/plans/check-execution-runtime/phased-plan.md</code>.
+  This page is a rendering of it, never a fork. Phase detail lives in the four linked
+  <code>phase-&lt;n&gt;-*.md</code> files.
+</footer>
+
+</main>
+</body>
+</html>

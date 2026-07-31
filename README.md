@@ -4597,13 +4597,22 @@ operating system about it later, and neither Node nor any portable API answers t
 it is read from `/proc` on Linux and from `ps` on macOS. Somewhere it cannot be read, a check
 could be started but never proven finished, so the daemon declines to start one at all.
 
-The recorded identity is a **composite**: an operating-system start time *and* the
-supervisor's own command line, which carries the attempt id. The start time alone is not
+The recorded identity is a **composite**: an operating-system start time *and* a short digest
+of the supervisor's command line, which carries the attempt id. The start time alone is not
 enough, because the finest value either platform will tell us is whole seconds on macOS, and
 process ids get reused - two different processes born in the same second would compare equal,
 and the daemon would signal a stranger's programs believing they were the check's. Pairing it
-with a command line that only one supervisor ever bears turns that from unlikely into
-impossible.
+with a command line that only one supervisor ever bears makes that vanishingly unlikely
+instead: a false match would need the same reused pid, in the same second, running the
+daemon's own supervisor, for an attempt only one supervisor is ever created for.
+
+The command line is stored as a truncated SHA-256 rather than in full, because the raw line
+carries a few kilobytes of the supervisor's own source and this value is written to a durable
+row kept for audit. Only equality is ever asked of it, and equal command lines digest equally,
+so the digest answers the same question in a fraction of the space - at the cost that the
+guarantee is now collision resistance rather than a literal comparison. That is a trade worth
+naming rather than glossing: it is not a proof, it is a very good bet, and the durable lease
+row and startup recovery are what make a wrong bet recoverable rather than silent.
 
 What a check command gets:
 

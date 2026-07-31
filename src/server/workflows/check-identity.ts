@@ -66,8 +66,13 @@ function condense(commandLine: string): string {
  * `(start-time field, command line)`, and the supervisor's shim takes the attempt id as an
  * argument specifically so the second half is unique to one attempt. A false match then
  * requires the same pid, started in the same second, running our shim, for an attempt id only
- * one supervisor is ever created for - which is a structural argument rather than a
- * probabilistic one.
+ * one supervisor is ever created for.
+ *
+ * Stated precisely, because the command-line half is stored as a DIGEST (see `condense`): the
+ * argument is no longer purely structural, it is structural modulo a 128-bit collision. That
+ * is a far better bet than the whole-second timestamp it replaced, and it is still a bet - so
+ * it is the durable lease row and startup recovery, not this comparison, that make a wrong one
+ * recoverable rather than silent.
  *
  * That is also why the supervisor forks the branch command rather than `exec`ing it. An
  * `exec` would replace the command line, every later read would mismatch on a group that is

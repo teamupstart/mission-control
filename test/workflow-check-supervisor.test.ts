@@ -250,6 +250,39 @@ test("SIGTERM to the group reaches a grandchild, and emptiness waits for it", as
   assert.equal(pidAlive(grandchild), false, "emptiness was reported while a descendant still ran");
 });
 
+test("a command that EXITS leaving a background process still has its group torn down", async () => {
+  // The shape a build gets wrong most often, and the one that used to defeat the whole identity
+  // scheme: the command returns 0 immediately while something it started keeps running and
+  // keeps owning the process group. The supervisor must outlive the command here - if it exits
+  // as soon as its child does, the group has no identifiable member left, can never be
+  // verified, is therefore never signalled, and pins its lease forever with a live process
+  // still writing into the leased worktree.
+  const dir = workspace();
+  const pidFile = join(dir, "background.pid");
+  const { registry, cleared } = recordingRegistry();
+
+  const outcome = await runSupervisedCheck(
+    {
+      attemptId: "attempt-background-survivor",
+      command: ["sh", "-c", 'sleep 30 & echo $! > "$1"; exit 0', "sh", pidFile],
+      leasePath: dir,
+      workingSubpath: "",
+    },
+    { registry, daemonToken: "" },
+  );
+
+  // The check itself passed, and that verdict is preserved - this is not an infrastructure
+  // failure, it is a clean exit that happened to leave something behind.
+  assert.equal(outcome.result.kind, "exited");
+  assert.equal(outcome.result.kind === "exited" && outcome.result.exitCode, 0);
+
+  const background = Number(readFileSync(pidFile, "utf8").trim());
+  assert.ok(background > 1, "the command recorded its background process");
+  assert.equal(outcome.emptiness, "empty", "the group must be proven empty before the lease returns");
+  assert.equal(pidAlive(background), false, "the background process outlived its check");
+  assert.deepEqual(cleared, ["attempt-background-survivor"]);
+});
+
 test("a grandchild ignoring SIGTERM is SIGKILLed after the grace", async () => {
   const dir = workspace();
   const pidFile = join(dir, "stubborn.pid");

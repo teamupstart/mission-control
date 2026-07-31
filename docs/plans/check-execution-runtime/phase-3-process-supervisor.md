@@ -511,6 +511,46 @@ command.
   cancelling live check groups to Phase 4. `SIGKILL` of the daemon defeats every version of
   this, which is why the durable row and identity-verified recovery exist at all.
 
+- **2026-07-31, review round 7 (Inspector).** One `major`, accepted, and it invalidated a claim
+  made two rounds earlier in this very record.
+
+  **"Terminate descendants after the supervisor exits."** Round 4 concluded that a group whose
+  leader is gone can never be signalled again, and dismissed it as "rare by construction". It is
+  not rare. `sh -c 'server & exit 0'` is the ordinary shape of a build that starts something in
+  the background: the command returns 0 immediately, the shim's child exits, the shim exits with
+  it - and the background process is left owning a group whose only identifiable member has
+  gone. Every later read returns `unknown`, nothing is ever signalled, and the lease is pinned
+  forever with a live process writing into the leased worktree. The step-4 design said the shim
+  "must remain the identifiable group leader for the life of the group", and this implementation
+  quietly did not.
+
+  Fixed at the root rather than at the symptom: **the shim now reports the command's outcome and
+  stays alive**, holding the group open, and the parent proceeds on that REPORT instead of on the
+  shim's exit. Teardown therefore runs while the supervisor is still alive and still
+  identifiable, so the identity check passes and the whole group - background process included -
+  is signalled. The shim exits when the control channel closes or when the group teardown reaches
+  it. Output draining moved after teardown, bounded, because the pipes now stay open until then.
+
+  Regression test: a command that exits 0 leaving `sleep 30` behind must still report `exited`
+  with code 0 - the verdict is preserved, this is not an infrastructure failure - and must report
+  `empty` with the background process dead. Verified end to end as well, with the Inspector's
+  exact shape: a real HTTP server backgrounded by a command that returns 0 is gone, and its port
+  refuses connections, once the check returns.
+
+  Note this narrows round 4's recorded property rather than contradicting it: a leader-gone group
+  still cannot be signalled, which is why the fix is to stop the leader from going.
+
+  One `minor` in the same round, on `TailRing` accounting, examined and answered with
+  measurement. The example given - a standalone invalid byte at the retained front being counted
+  as dropped - is exact: it is absent from the output, and retained + truncated still equals every
+  byte written (measured: 9 + 51 = 60). But probing it surfaced a real imprecision nearby that
+  the finding did not name, and that this module's own comment overstated: with NO truncation,
+  an invalid byte inside the retained region decodes to U+FFFD, three bytes where one was
+  written, so `byteLength(output) + truncatedBytes` overshoots (measured: 11 bytes written, a
+  13-byte string, `truncatedBytes` correctly 0). That is inherent to representing arbitrary bytes
+  as text. The invariant is now stated precisely - retained bytes plus `truncatedBytes` equals
+  bytes written - the caveat is named, and all three cases are pinned by test.
+
 - **2026-07-31, review round 3.** Two findings, both accepted, neither behavioural.
 
   **Documentation Steward - the README overstated the identity.** It described the recorded

@@ -88,6 +88,15 @@ export interface CheckSpawnOutcome {
 const DEFAULT_READY_MS = 30_000;
 
 /**
+ * How long to wait for the output pipes to close after the group has been torn down.
+ *
+ * Bounded rather than unconditional: if teardown reported `not-empty`, something in the group
+ * still holds the write end open, and waiting on it would hang the check forever on exactly the
+ * case that is already going wrong.
+ */
+const DRAIN_MS = 2_000;
+
+/**
  * The trusted shim, held in argv rather than written to disk.
  *
  * ## What it is for
@@ -136,8 +145,19 @@ let released = false;
 function say(o) {
   try { report.write(JSON.stringify(o) + NL); } catch (e) {}
 }
-function bye(code) {
-  try { report.end(function () { process.exit(code); }); } catch (e) { process.exit(code); }
+// Report the outcome and then STAY ALIVE, holding the group open, until the parent has torn it
+// down - it closes the control channel, or signals the group, and either ends this process.
+//
+// Exiting here instead would break the whole identity scheme for the most ordinary thing a
+// build does wrong: a command like "server & exit 0" returns immediately while its background
+// process keeps running and keeps owning the group. This shim is the group's only identifiable
+// member, so once it is gone that group can never be verified again, never signalled, and its
+// lease is pinned forever with something still writing into the worktree.
+function reportAndWait(o, code) {
+  say(o);
+  var leave = function () { process.exit(code); };
+  report.on("close", leave);
+  report.on("end", leave);
 }
 gate.on("data", function () {
   if (released) return;
@@ -153,17 +173,17 @@ gate.on("data", function () {
       shell: false,
     });
   } catch (e) {
-    say({ spawnError: { code: e && e.code, message: String((e && e.message) || e) } });
-    bye(127);
+    reportAndWait({ spawnError: { code: e && e.code, message: String((e && e.message) || e) } }, 127);
     return;
   }
   child.on("error", function (e) {
-    say({ spawnError: { code: e && e.code, message: String((e && e.message) || e) } });
-    bye(127);
+    reportAndWait({ spawnError: { code: e && e.code, message: String((e && e.message) || e) } }, 127);
   });
   child.on("exit", function (code, signal) {
-    say({ exit: code === undefined ? null : code, signal: signal || null });
-    bye(code === null || code === undefined ? 128 : code);
+    reportAndWait(
+      { exit: code === undefined ? null : code, signal: signal || null },
+      code === null || code === undefined ? 128 : code,
+    );
   });
 });
 // The gate closing without a byte means the owner could not be persisted. Exit without ever
@@ -216,6 +236,21 @@ function shimRuntime(): { command: string; env: NodeJS.ProcessEnv } {
  * only new edge is the FRONT of the retained tail, which a byte-exact cut can land in the
  * middle of a character - handled by advancing past the continuation bytes, and those bytes
  * are then counted as dropped, which they are.
+ *
+ * ## Exactly what "exact" means here, since output is not always valid UTF-8
+ *
+ * The invariant is **retained bytes + `truncatedBytes` = bytes the command wrote**, and it holds
+ * for any byte sequence at all. A leading continuation byte is dropped from the output and
+ * counted as dropped whether it was a cut character's tail or standalone garbage; either way it
+ * could only ever have decoded to a replacement character, so discarding it loses nothing and
+ * keeps the arithmetic true.
+ *
+ * What does NOT hold in general is `Buffer.byteLength(output) + truncatedBytes`, and the reason
+ * is decoding rather than accounting: every invalid byte INSIDE the retained region becomes
+ * U+FFFD, which is three bytes where one was written. A command that writes 11 bytes ending in
+ * a stray `0x80` truncates nothing and still yields a 13-byte string. That is inherent to
+ * representing arbitrary bytes as text - no counting scheme avoids it - so it is stated here
+ * rather than papered over, and all three cases are pinned by test.
  */
 class TailRing {
   private buf = Buffer.alloc(0);
@@ -432,6 +467,10 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     } catch {
       failure ??= infrastructure("the check supervisor sent an unreadable report");
     }
+    // The command has finished, and the supervisor is deliberately still alive holding the
+    // group open. Proceed on the REPORT rather than on the supervisor's exit: waiting for its
+    // exit is what used to leave a background process owning an unidentifiable group.
+    settle();
   }
 
   /**
@@ -493,9 +532,20 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     return { result: failure ?? resultFrom(shimReport, ring), emptiness, supervisor };
   }
 
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
   child.on("close", settle);
   await settledPromise;
-  return finish(await tearDown());
+
+  // Tear the group down while the supervisor is STILL ALIVE, and therefore still identifiable.
+  // This ordering is the fix for a command that returns while leaving a background process
+  // running: the supervisor holds the group open until here, so the identity check can pass and
+  // the whole group - the background process included - can be signalled. Reversed, the
+  // supervisor would exit first and its group would become permanently unverifiable.
+  const emptiness = await tearDown();
+  // The teardown ends the supervisor, which closes the pipes. Wait, bounded, so output written
+  // just before the command finished is in the ring before it is read.
+  await Promise.race([closed, new Promise<void>((r) => setTimeout(r, DRAIN_MS).unref?.())]);
+  return finish(emptiness);
 }
 
 function resultFrom(report: ShimReport | null, ring: TailRing): CheckExecutionResult {

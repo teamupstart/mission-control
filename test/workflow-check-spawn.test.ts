@@ -1,7 +1,15 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,6 +46,9 @@ after(() => {
 });
 
 const NODE = process.execPath;
+/** The argv separator in `/proc/<pid>/cmdline`, built from its code point so that no
+ *  invisible byte ends up sitting in this file. */
+const NUL = String.fromCharCode(0);
 
 async function run(
   command: readonly string[],
@@ -113,6 +124,44 @@ test("a multi-byte character straddling the cut costs its bytes, and is not mang
   assert.equal(result.truncatedBytes, 1_000);
   assert.equal(Buffer.byteLength(result.output) + result.truncatedBytes, 2_000);
   assert.equal(result.output.includes("�"), false, "no replacement character at the cut");
+});
+
+test("truncation accounting stays exact when the output is not valid UTF-8", async () => {
+  // A build emits invalid UTF-8 more often than it sounds: a binary fixture echoed to stdout, a
+  // terminal escape sequence, a log line cut mid-character by another writer.
+
+  // 1. A standalone invalid byte landing exactly at the retained front. It is dropped from the
+  //    output - it could never decode to anything but a replacement character - and counted as
+  //    dropped, so retained + truncated still equals every byte written.
+  const wrote = 50 + 1 + 9;
+  const { result: cut } = await run(
+    [
+      NODE,
+      "-e",
+      'process.stdout.write(Buffer.concat([Buffer.from("z".repeat(50)), Buffer.from([0x80]), Buffer.from("y".repeat(9))]))',
+    ],
+    { maxOutputBytes: 10 },
+  );
+  assert.equal(cut.kind, "exited");
+  if (cut.kind !== "exited") return;
+  assert.equal(cut.output, "y".repeat(9), "the ambiguous byte is not shown");
+  assert.equal(Buffer.byteLength(cut.output) + cut.truncatedBytes, wrote, "and it is counted as dropped");
+  assert.equal(cut.output.includes("�"), false);
+
+  // 2. No truncation at all, one stray byte inside. NOTHING was dropped, and the count says so -
+  //    but the DECODED string is longer than what was written, because U+FFFD is three bytes
+  //    where one was. This is the case where `byteLength(output) + truncatedBytes` overshoots,
+  //    and it is a property of decoding rather than of the accounting.
+  const { result: whole } = await run([
+    NODE,
+    "-e",
+    'process.stdout.write(Buffer.concat([Buffer.from("a".repeat(10)), Buffer.from([0x80])]))',
+  ]);
+  assert.equal(whole.kind, "exited");
+  if (whole.kind !== "exited") return;
+  assert.equal(whole.truncatedBytes, 0, "nothing was dropped, so nothing may be reported as dropped");
+  assert.equal(whole.output, `${"a".repeat(10)}�`);
+  assert.equal(Buffer.byteLength(whole.output), 13, "11 bytes written decode to 13 - the stated caveat");
 });
 
 test("a missing executable is `unavailable`, and nothing else here is", async () => {
@@ -207,10 +256,28 @@ test("stdin is closed, so a command that reads it fails rather than hanging", as
  *
  * The attempt id is in the supervisor's argv so that ITS identity is unique, and that makes it
  * the one reliable way a test can ask "is a supervisor of mine still out there" without being
- * handed a pid. `-ww` because macOS otherwise clips the line, and the id sits after the shim's
- * own source in the argv.
+ * handed a pid.
+ *
+ * Reads `/proc` directly on Linux rather than shelling out, because a slim container image has
+ * no `ps` - the production code has the same split for the same reason, and a test helper that
+ * needed a binary the code under test does not would fail on images where the subject works
+ * perfectly. `-ww` on the macOS side because it otherwise clips the line, and the id sits after
+ * the shim's own source in the argv.
  */
 function processesCarrying(attemptId: string): string[] {
+  if (process.platform === "linux") {
+    const found: string[] = [];
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const cmdline = readFileSync(`/proc/${entry}/cmdline`, "utf8").replaceAll(NUL, " ");
+        if (cmdline.includes(attemptId)) found.push(`${entry} ${cmdline}`);
+      } catch {
+        // the process exited between the listing and the read
+      }
+    }
+    return found;
+  }
   const out = execFileSync("ps", ["-ww", "-eo", "pid=,command="], {
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,

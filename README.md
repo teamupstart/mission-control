@@ -2714,6 +2714,8 @@ it automatically. The latter two use the same deterministic commit, push, and PR
 itself never pushes or opens a pull request. The offered action prepares the packet under Preview
 or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
 When that handoff opens an already-reviewed clean commit, its durable adoption record pins the PR.
+The record must belong to the bound session, match its exact known repository root, and have been
+adopted after gate entry, so an older PR or one from a nested checkout is never claimed.
 After the handoff turn settles, unchanged repository evidence advances the gate to a fresh Inspector
 observation without spending another Persona round. If PR preparation changed the head, the normal
 full resubmission requirement still applies. The durable adoption also preserves the workflow's
@@ -4233,9 +4235,10 @@ landing in the seconds between the decision and the call makes GitHub refuse rat
 merge code nothing has looked at. Squash by default; merge commit and rebase are the other
 two options.
 
-The workflow veto is narrow and can only block. Inspector remains the sole PR poller and the
-sole GitHub merge path. An active published Inspector gate vetoes its adopted or candidate PR;
-completed, cancelled, archived, and no-final-gate workflows do not.
+The workflow veto is narrow and can only block. Inspector remains the sole PR poller, and Shipping
+remains the sole merge executor; Shipping rides the Inspector tick instead of polling independently.
+An active published Inspector gate vetoes its adopted or candidate PR; completed, cancelled,
+archived, and no-final-gate workflows do not.
 
 ### It needs the Inspector, fully on
 

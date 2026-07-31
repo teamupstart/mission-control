@@ -497,7 +497,7 @@ export class WorkflowManager {
     if (this.resumptionTimer) clearInterval(this.resumptionTimer);
     this.resumptionTimer = null;
     await this.engine.stop();
-    await Promise.allSettled([...this.deliveryTasks]);
+    await Promise.allSettled(this.deliveryTasks);
   }
 
   list(includeArchived = false): WorkflowSummary[] {
@@ -3719,9 +3719,11 @@ export class WorkflowManager {
     const parsed = WorkflowContextSnapshotSchema.safeParse(latest.context);
     if (!parsed.success) return;
     // The cheap pre-filter, and the whole reason there is no "capture then discard" mode: an
-    // idle session with unchanged work must leave the run exactly where it is, and re-reading
-    // the diff, the transcript window and the standards on every tick to discover that is not
-    // free. `readWorkflowEvidenceProbe` costs two git commands and reads the REPOSITORY only.
+    // idle repair session with unchanged work must leave the run exactly where it is. A settled
+    // PR handoff is the explicit exception below because unchanged repository evidence proves
+    // it needs a fresh Inspector observation, not another submission. Re-reading the diff, the
+    // transcript window and the standards on every tick to discover unchanged repair work is
+    // not free. `readWorkflowEvidenceProbe` costs two git commands and reads the REPOSITORY only.
     // The guarantee it buys is one-directional and that is deliberate: every field it reads is
     // a fingerprint input, so a probe that DIFFERS cannot lead to `unchanged_evidence`. The
     // converse is intentionally NOT true - a transcript-only change leaves the probe matching

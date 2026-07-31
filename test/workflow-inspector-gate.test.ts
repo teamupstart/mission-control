@@ -310,7 +310,7 @@ test("no final-gate policy keeps the Phase 4 completion path unclaimed", async (
 test("missing and unadopted PR hints wait without creating Inspector provenance", async () => {
   const missing = await seed({ withHint: false, adopted: false });
   assert.equal(missing.store.getRun(missing.ids.run)?.status, "waiting_for_pr");
-  assert.equal((missing.store.getRun(missing.ids.run)?.gateState as { waitReason: string }).waitReason, "missing_pr");
+  assert.equal((missing.store.getRun(missing.ids.run)?.gateState as { waitReason?: string })?.waitReason, "missing_pr");
   const handoff = await missing.manager.preparePr(missing.ids.run, "prepare-request");
   assert.equal(handoff.ok, true);
   if (handoff.ok) {
@@ -325,7 +325,7 @@ test("missing and unadopted PR hints wait without creating Inspector provenance"
 
   const unadopted = await seed({ withHint: true, adopted: false });
   assert.equal(unadopted.store.getRun(unadopted.ids.run)?.status, "waiting_for_pr");
-  assert.equal((unadopted.store.getRun(unadopted.ids.run)?.gateState as { waitReason: string }).waitReason, "unadopted_pr");
+  assert.equal((unadopted.store.getRun(unadopted.ids.run)?.gateState as { waitReason?: string })?.waitReason, "unadopted_pr");
   assert.equal(
     (openDb().prepare(`SELECT COUNT(*) AS n FROM inspector_prs WHERE key = ?`).get(unadopted.key) as { n: number }).n,
     0,
@@ -775,12 +775,16 @@ test("restart recovers an automatic PR handoff that was still parked at its gate
 test("disabled Inspector blocks honestly and a post-entry observation is required", async () => {
   const disabled = await seed({ enabled: false });
   assert.equal(disabled.store.getRun(disabled.ids.run)?.status, "blocked");
-  assert.equal((disabled.store.getRun(disabled.ids.run)?.gateState as { waitReason: string }).waitReason, "inspector_disabled");
+  assert.equal((disabled.store.getRun(disabled.ids.run)?.gateState as { waitReason?: string })?.waitReason, "inspector_disabled");
   await disabled.manager.stop();
 
   const waiting = await seed();
   assert.equal(waiting.store.getRun(waiting.ids.run)?.status, "waiting_for_inspector");
-  assert.equal((waiting.store.getRun(waiting.ids.run)?.gateState as { lastObservedAt: number | null }).lastObservedAt, null);
+  assert.equal(
+    (waiting.store.getRun(waiting.ids.run)?.gateState as { lastObservedAt?: number | null })
+      ?.lastObservedAt,
+    null,
+  );
   await waiting.manager.stop();
 });
 

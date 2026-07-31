@@ -13,9 +13,9 @@ import { discover } from "./correlate.ts";
  * is pure filesystem and explicitly cheap enough to run for every session every poll. One
  * cadence and one reader is what keeps the two runtimes from disagreeing about Git state.
  *
- * Kept out of `applyDiscovery`: that takes what the process sweep found, and widening it to
- * carry sessions no process table can produce is exactly the scope creep its own comments
- * warn off. The registry does the reconciling, this does the reading - the same split
+ * Kept out of `applyDiscovery`: that takes what terminal discovery found, and widening it to
+ * carry sessions the process sweep deliberately excludes is exactly the scope creep its own
+ * comments warn off. The registry does the reconciling, this does the reading - the same split
  * `discover()` / `applyDiscovery()` already makes. `read` is injected so a test can drive
  * the real reconciliation with no repository on disk.
  */
@@ -40,8 +40,9 @@ export async function pollOnce(
     console.error("[poller] sweep failed:", err);
   }
 
-  // Driver-run sessions have no process on a tty, so their filesystem refresh must not
-  // depend on terminal discovery succeeding.
+  // Driver-run sessions are not represented by terminal discovery: any agent subprocesses
+  // they own are excluded with the rest of the daemon's subtree. Their filesystem refresh
+  // therefore must not depend on terminal discovery succeeding.
   try {
     refresh(registry);
   } catch (err) {

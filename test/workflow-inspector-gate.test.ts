@@ -442,9 +442,46 @@ test("the automatic missing-PR policy sends one shipping handoff after a passed 
     );
     assert.equal(automatic.injected.length, 1);
     assert.match(automatic.injected[0]!, /^\/pull-request\n/);
-    assert.match(automatic.injected[0]!, /commit all reviewed work, push it, open the pull request/);
+    assert.match(automatic.injected[0]!, /commit all reviewed work, push it, and open the pull request/);
   } finally {
     await automatic.manager.stop();
+    setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
+  }
+});
+
+test("a Preview binding RECORDS the automatic PR handoff it withheld", async () => {
+  // Automatic PR preparation is Live-only and stays that way: preparing a pull request is
+  // done by TYPING the skill into the pane, which is the terminal write Preview exists to
+  // withhold. Silently doing nothing left a run sitting in `waiting_for_pr` under a published
+  // policy that says `prepare_pr`, with no trace of why - which reads as a wedged daemon
+  // rather than as the consent boundary working.
+  const deferred = await seed({
+    withHint: false,
+    adopted: false,
+    missingPrAction: "prepare_pr",
+    deliveryMode: "preview",
+    startBeforeGate: true,
+  });
+  try {
+    await waitFor(
+      () => deferred.store.listEvents(deferred.ids.run)
+        .some((event) => event.kind === "pr_handoff_automatic_deferred"),
+      "the withheld PR handoff was not recorded",
+    );
+    const event = deferred.store.listEvents(deferred.ids.run)
+      .find((item) => item.kind === "pr_handoff_automatic_deferred");
+    const payload = event?.payload as { reason?: string; message?: string } | null;
+    assert.equal(payload?.reason, "preview_delivery");
+    assert.match(payload?.message ?? "", /Switch it to Live/);
+    assert.equal(deferred.injected.length, 0, "Preview delivery typed into the pane");
+    assert.equal(
+      deferred.store.listDeliveries(deferred.ids.run)
+        .filter((delivery) => delivery.kind === "pr_handoff").length,
+      0,
+    );
+    assert.equal(deferred.store.getRun(deferred.ids.run)?.status, "waiting_for_pr");
+  } finally {
+    await deferred.manager.stop();
     setWorkflowConfig({ liveEnabled: false, repoAllowlist: ["/repo"] });
   }
 });

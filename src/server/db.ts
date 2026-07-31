@@ -383,6 +383,7 @@ export function openDb(): DatabaseSync {
       description            TEXT NOT NULL DEFAULT '',
       draft_graph_json       TEXT NOT NULL,
       completion_policy_json TEXT NOT NULL,
+      resumption_policy      TEXT,
       binding_defaults_json  TEXT NOT NULL,
       draft_revision         INTEGER NOT NULL DEFAULT 1,
       current_version_id     TEXT,
@@ -400,6 +401,7 @@ export function openDb(): DatabaseSync {
       source_draft_revision  INTEGER NOT NULL,
       graph_json             TEXT NOT NULL,
       completion_policy_json TEXT NOT NULL,
+      resumption_policy      TEXT,
       binding_defaults_json  TEXT NOT NULL,
       published_at           INTEGER NOT NULL
     );
@@ -1492,6 +1494,17 @@ function migrate(d: DatabaseSync): void {
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
+
+  // Whether a parked repair round resumes itself. NULLABLE with NO default on purpose: a
+  // NULL is the truthful record of a draft authored, or a version PUBLISHED, by a build
+  // that had no such setting, and the store reads it as `manual` so every already-published
+  // version keeps behaving exactly as it was published (see
+  // `LEGACY_WORKFLOW_RESUMPTION_POLICY`). A `DEFAULT 'auto'` here would have rewritten that
+  // history in place and started resubmitting runs on every machine that upgraded. No index:
+  // the resumption observer sweeps the handful of non-terminal runs it already holds and
+  // never selects on this column.
+  addColumn(d, "workflow_definitions", "resumption_policy", "TEXT");
+  addColumn(d, "workflow_versions", "resumption_policy", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather

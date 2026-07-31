@@ -379,6 +379,37 @@ export type WorkflowCompletionPolicy =
       missingPrAction: WorkflowMissingPrAction;
     };
 
+/**
+ * Whether a parked repair round resumes itself once the agent has done the work.
+ *
+ * APPEND-ONLY: these strings are persisted in `workflows.resumption_policy` and
+ * `workflow_versions.resumption_policy` on operators' machines, so renaming one does not
+ * migrate a published version, it makes it unreadable.
+ *
+ * Deliberately NOT a member of `WorkflowCompletionPolicy`. That union is entirely about the
+ * INSPECTOR final gate - `kind: "none"` means there is no such gate at all - while this
+ * decides whether a run parked in `waiting_for_session` picks itself back up, which is a
+ * question every pipeline has, including one with no Inspector node and no pull request.
+ * Folding it into that union would make a repair loop unreachable for exactly the workflows
+ * that have nothing else to fall back on.
+ */
+export const WORKFLOW_RESUMPTION_POLICIES = ["manual", "auto"] as const;
+export type WorkflowResumptionPolicy = (typeof WORKFLOW_RESUMPTION_POLICIES)[number];
+
+/**
+ * What a NEW draft gets, and what a row written before this column existed READS AS - and the
+ * two are deliberately different values.
+ *
+ * A fresh workflow is authored today, by someone who can see the setting, so it gets the loop
+ * that actually closes (`auto`). A NULL column is a version published by a build that had no
+ * such concept: its operator never chose anything, its packets ended by asking the model to
+ * "signal completion", and something already relies on it standing still. Reading that as
+ * `auto` would silently start resubmitting runs on machines that upgraded, so it reads as
+ * `manual` and every already-published version keeps behaving exactly as it was published.
+ */
+export const DEFAULT_WORKFLOW_RESUMPTION_POLICY: WorkflowResumptionPolicy = "auto";
+export const LEGACY_WORKFLOW_RESUMPTION_POLICY: WorkflowResumptionPolicy = "manual";
+
 export const WORKFLOW_TRIGGER_MODES = ["manual", "foreman_complete"] as const;
 export type WorkflowTriggerMode = (typeof WORKFLOW_TRIGGER_MODES)[number];
 
@@ -517,8 +548,13 @@ export type WorkflowLlmCallState = (typeof WORKFLOW_LLM_CALL_STATES)[number];
  * binding behaviour an operator chose (answer manually, or let Foreman claim a completion);
  * a trigger source records which caller actually produced a given submission, and `ensemble`
  * is a server-owned handoff that starts exactly one initial submission and never recurs.
+ *
+ * `session` is the engine's own resumption observer: a repair round it started because the
+ * bound session went idle with new work under a version whose `resumptionPolicy` is `auto`.
+ * It is its own source rather than `foreman` because the Foreman never saw it - the daemon
+ * did - and a run's history has to say which of the two moved it.
  */
-export const WORKFLOW_TRIGGER_SOURCES = ["manual", "foreman", "ensemble"] as const;
+export const WORKFLOW_TRIGGER_SOURCES = ["manual", "foreman", "ensemble", "session"] as const;
 export type WorkflowTriggerSource = (typeof WORKFLOW_TRIGGER_SOURCES)[number];
 
 /**
@@ -980,6 +1016,8 @@ export interface WorkflowDefinition {
   description: string;
   draft: WorkflowDraftGraph;
   completionPolicy: WorkflowCompletionPolicy;
+  /** Frozen into every version this draft publishes. See `WORKFLOW_RESUMPTION_POLICIES`. */
+  resumptionPolicy: WorkflowResumptionPolicy;
   bindingDefaults: WorkflowBindingDefaults;
   draftRevision: number;
   currentVersionId: WorkflowVersionId | null;
@@ -1003,6 +1041,12 @@ export interface WorkflowVersion {
   sourceDraftRevision: number;
   graph: PublishedWorkflowGraph;
   completionPolicy: WorkflowCompletionPolicy;
+  /**
+   * Immutable for the life of this version, exactly like `completionPolicy`. The resumption
+   * observer reads it off the run's PINNED version, never off the draft, so editing a
+   * workflow can never change how a run already in flight behaves.
+   */
+  resumptionPolicy: WorkflowResumptionPolicy;
   bindingDefaults: WorkflowBindingDefaults;
   publishedAt: number;
 }
@@ -1300,6 +1344,24 @@ export interface WorkflowRepeatOffender {
   personaName: string;
   /** Consecutive most-recent rounds this member failed. Always >= 2. */
   rounds: number;
+}
+
+/**
+ * One repeat offender, named with the run it is burning rounds on.
+ *
+ * Its own type rather than a field on `WorkflowRunSummary` because summaries travel over SSE
+ * for every run in the fleet and must stay compact - the same reason `WorkflowRunDetail`
+ * carries the list. This projection exists for the ALERT engine, which needs the run's
+ * identity beside the member's; it is daemon-computed and reaches `AlertScope` the way
+ * `Stall` does, on its own channel rather than by widening the summary.
+ */
+export interface WorkflowRunRepeatOffender extends WorkflowRepeatOffender {
+  runId: WorkflowRunId;
+  workflowName: string;
+  sessionId: string | null;
+  /** The run's latest round, so an alert can say how much of the budget is gone. */
+  round: number;
+  maxRepairRounds: number;
 }
 
 export interface WorkflowRunSummary {

@@ -6,7 +6,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "@shared/types.ts";
-import { reportBucket } from "@shared/session.ts";
+import { reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
 import { foremanAutomationAuthorized } from "../harness/index.ts";
@@ -94,34 +94,6 @@ export interface QueueTickInput {
   /** Whether Foreman is cleared to SEND for this session (live + allowlisted). */
   mayActLive: boolean;
   now: number;
-}
-
-/**
- * True when a session is genuinely parked and its work has settled.
- *
- * The gate is `state === "idle"`, and that is enough on its own because `state` is
- * only ever `idle` from a REAL source - a fresh hook overlay, or the transcript-
- * derived passive state. The base rebuild default is `working`, so nothing sets
- * `idle` without evidence: an `idle` here is always a claim someone made, never an
- * absence of data. (This is the distinction `reportBucket` can't make, where `idle`
- * is also its catch-all for an uninstrumented session - so don't be tempted to gate
- * this on the bucket instead.)
- *
- * We used to also require `instrumented` (a fresh hook within 30 min). That was
- * redundant while hooks were the only source of `idle`, and became WRONG once the
- * transcript became a second source: it gated out exactly the hook-free idle this
- * predicate now exists to honour, stranding the queue of any session whose hooks
- * lapsed or whose daemon had just restarted. `instrumented` stays a real field for
- * the UI badge and `reportBucket`; it is simply not what settled-idle turns on.
- *
- * The `settleMs` age absorbs hook reordering (hooks are independent HTTP posts, so
- * a PostToolUse can land after a Stop and briefly un-idle the session) and covers
- * the pause between turns of a multi-turn flow.
- */
-export function settledIdle(s: Session, now: number, settleMs: number): boolean {
-  if (s.state !== "idle") return false;
-  const since = s.lastActivity ?? s.firstSeen;
-  return now - since >= settleMs;
 }
 
 /**

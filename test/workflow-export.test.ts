@@ -72,6 +72,7 @@ test("version and run exports are versioned, complete, and preserve immutable sn
       ],
     },
     completionPolicy: { kind: "none" },
+    resumptionPolicy: "manual",
     bindingDefaults: { triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 },
     createdAt: 2,
     updatedAt: 2,

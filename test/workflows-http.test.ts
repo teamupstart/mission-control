@@ -322,7 +322,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
   const shipped = summaries.find((item) => item.id === BUILTIN_ID);
   assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
   assert.equal(shipped.builtin, true);
-  assert.equal(shipped.publishedVersion, 6, "the newest shipped version is the current one");
+  assert.equal(shipped.publishedVersion, 7, "the newest shipped version is the current one");
 
   const detail = await request(`/api/workflows/${BUILTIN_ID}`);
   assert.equal(detail.status, 200);
@@ -331,18 +331,18 @@ test("the shipped workflow is readable through the existing workflow routes", as
     versions: Array<{ version: number }>;
   };
   assert.equal(detailBody.workflow.builtin, true);
-  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@6`);
+  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@7`);
   // Newest first, and prior versions are STILL served: bindings pinned to them resolve
-  // through the same route after the catalog gained version 6.
-  assert.deepEqual(detailBody.versions.map((version) => version.version), [6, 5, 4, 3, 2, 1]);
+  // through the same route after the catalog gained version 7.
+  assert.deepEqual(detailBody.versions.map((version) => version.version), [7, 6, 5, 4, 3, 2, 1]);
 
   const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
   assert.equal(versions.status, 200);
   assert.deepEqual(
     ((await versions.json()) as Array<{ version: number }>).map((version) => version.version),
-    [6, 5, 4, 3, 2, 1],
+    [7, 6, 5, 4, 3, 2, 1],
   );
-  for (const number of [1, 2, 3, 4, 5, 6]) {
+  for (const number of [1, 2, 3, 4, 5, 6, 7]) {
     const version = await request(`/api/workflows/${BUILTIN_ID}/versions/${number}`);
     assert.equal(version.status, 200, `version ${number} is no longer served`);
     const versionBody = await version.json() as {
@@ -370,7 +370,13 @@ test("the shipped workflow is readable through the existing workflow routes", as
       .bindingDefaults.triggerMode,
     "foreman_complete",
   );
-  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/7`)).status, 404);
+  const resumingVersion = await request(`/api/workflows/${BUILTIN_ID}/versions/7`);
+  assert.equal(
+    ((await resumingVersion.json()) as { resumptionPolicy: string }).resumptionPolicy,
+    "auto",
+    "the newest shipped version resumes its own repair rounds",
+  );
+  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/8`)).status, 404);
 });
 
 test("the shipped workflow duplicates through the same create boundary as the dashboard", async () => {

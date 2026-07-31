@@ -14,7 +14,6 @@ import {
   renderFixPrompt,
   sanitizeGapText,
   sanitizeIntentText,
-  settledIdle,
   tickTargets,
 } from "../src/server/foreman/queue-machine.ts";
 import type {
@@ -22,6 +21,7 @@ import type {
   QueueVerdict,
   QueueVerifyPlan,
 } from "../src/server/foreman/queue-machine.ts";
+import { settledIdle } from "../src/shared/session.ts";
 import type { ReportBucket } from "../src/shared/session.ts";
 import type {
   Session,

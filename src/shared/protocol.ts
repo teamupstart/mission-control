@@ -13,6 +13,7 @@ import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   DEFAULT_WORKFLOW_CONFIG,
+  DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   EVIDENCE_REF_KINDS,
   INSPECTOR_FINDINGS_POLICIES,
   WORKFLOW_BINDING_STATES,
@@ -25,6 +26,7 @@ import {
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
   WORKFLOW_NODE_ATTEMPT_STATES,
+  WORKFLOW_RESUMPTION_POLICIES,
   WORKFLOW_RUN_STATUSES,
   WORKFLOW_SOURCE_PORTS,
   WORKFLOW_SUBMISSION_MODES,
@@ -2218,6 +2220,8 @@ export const WorkflowCompletionPolicySchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
+export const WorkflowResumptionPolicySchema = z.enum(WORKFLOW_RESUMPTION_POLICIES);
+
 export const WorkflowBindingDefaultsSchema = z.object({
   triggerMode: z.enum(WORKFLOW_TRIGGER_MODES),
   deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES),
@@ -2377,6 +2381,9 @@ export const CreateWorkflowSchema = z.object({
     edges: [],
   }),
   completionPolicy: WorkflowCompletionPolicySchema.optional().default({ kind: "none" }),
+  // A NEW draft, so `auto` rather than the `manual` a NULL column reads as - see
+  // `WORKFLOW_RESUMPTION_POLICIES`. The two defaults answer different questions.
+  resumptionPolicy: WorkflowResumptionPolicySchema.optional().default(DEFAULT_WORKFLOW_RESUMPTION_POLICY),
   bindingDefaults: WorkflowBindingDefaultsSchema.optional().default(DEFAULT_WORKFLOW_BINDING_DEFAULTS),
 });
 export type CreateWorkflow = z.infer<typeof CreateWorkflowSchema>;
@@ -2386,6 +2393,7 @@ const WORKFLOW_EDIT_FIELDS = [
   "description",
   "draft",
   "completionPolicy",
+  "resumptionPolicy",
   "bindingDefaults",
 ] as const;
 
@@ -2396,6 +2404,7 @@ export const UpdateWorkflowSchema = z
     description: WorkflowDescriptionSchema.optional(),
     draft: WorkflowDraftGraphSchema.optional(),
     completionPolicy: WorkflowCompletionPolicySchema.optional(),
+    resumptionPolicy: WorkflowResumptionPolicySchema.optional(),
     bindingDefaults: WorkflowBindingDefaultsSchema.optional(),
   })
   .refine((value) => WORKFLOW_EDIT_FIELDS.some((field) => field in value), {

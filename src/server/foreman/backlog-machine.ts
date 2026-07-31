@@ -2,7 +2,8 @@ import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/typ
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
 import { cwdAllowlisted, foremanAllowlisted } from "@shared/foreman.ts";
-import { hasPane, settledIdle } from "./queue-machine.ts";
+import { hasPane } from "./queue-machine.ts";
+import { settledIdle } from "@shared/session.ts";
 
 // The backlog autopilot's decision core: given the fleet, the backlog and the stored
 // plan, what should Foreman do THIS tick? Zero I/O, `now` always injected - mirroring

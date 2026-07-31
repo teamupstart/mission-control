@@ -2166,7 +2166,7 @@ your copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 5 are preserved for bindings that already pin them, and version 6 is current. There is
+through 6 are preserved for bindings that already pin them, and version 7 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -2223,12 +2223,14 @@ from you: it always carries the guidance and the graph the build was made from. 
 shipped workflow itself appends a **new version** rather than editing the one you may be bound
 to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
 
-Versions 3 through 6 are that rule in practice. Version 3 added the deterministic check
+Versions 3 through 7 are that rule in practice. Version 3 added the deterministic check
 stage; version 4 preserves that graph and changes only the immutable Inspector-findings
-policy; version 5 automatically prepares a missing pull request; and version 6 makes Foreman
-complete the default trigger. Every earlier version remains in the catalog and still
-resolves, so an existing binding keeps its pinned graph, policies, and binding defaults.
-New bindings take version 6 because it is current. Adopting the newer version on an existing
+policy; version 5 automatically prepares a missing pull request; version 6 makes Foreman
+complete the default trigger; and version 7 changes only the immutable
+[repair-resumption policy](#repair-resumption) to `auto`. Every earlier version remains in the
+catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
+binding defaults - including versions 1 through 6, which stay `manual` and still wait for you.
+New bindings take version 7 because it is current. Adopting the newer version on an existing
 binding means creating a new binding, which is the same gesture adopting any newly published
 version already requires.
 
@@ -2347,7 +2349,12 @@ exact Persona Markdown from the version route.
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
 new workflows. The optional Inspector final gate and its missing-PR and findings policies are
-immutable parts of each published version.
+immutable parts of each published version, and so is the
+[repair-resumption policy](#repair-resumption) below.
+
+The trigger mode answers only **what opens round 1**. What resumes round *N+1* after a repair
+is a separate question with a separate answer, which is why Manual no longer means the run
+stops for ever the first time a Persona asks for changes.
 
 ### Retiring a workflow
 
@@ -2394,7 +2401,8 @@ fail verdicts.
 
 The durable engine records attempts and edge receipts, waits for all inputs at an all-pass
 Join, retries transient infrastructure failures with bounded backoff, and stops at the
-binding's repair-round limit. A failing path back to Session waits for a manual resubmit.
+binding's repair-round limit. A failing path back to Session either resumes itself or waits for
+a manual resubmit, depending on the published [repair-resumption policy](#repair-resumption).
 Resubmission captures fresh evidence and refuses an unchanged snapshot unless the operator
 explicitly confirms it, so an approval from an older round is never reused. Preview performs
 no terminal write, keystroke injection, Foreman action, Inspector action, or message delivery.
@@ -2506,6 +2514,50 @@ being told no.
 Run detail names the feature that started a run, matched on that run's own source, so an
 ordinary manual run on the same session is never labelled as someone else's. Reset removes the
 claim with the rest of the run family.
+
+### Repair resumption
+
+A review that asks for changes is only half a loop. The other half is what happens once the
+session has made them - and until version 7 the answer was *nothing*, unless the binding was
+Foreman-complete. The repair packet was typed into the pane, the agent fixed the work, and the
+run sat in `waiting_for_session` until a human opened the Runs page and clicked resubmit.
+
+**Repair resumption** closes it. It is an immutable part of each published version, `auto` or
+`manual`, and it is `auto` for every workflow you create. Versions published before it existed
+read as `manual`, so nothing you are already bound to changes behaviour under you.
+
+Under `auto` the daemon watches its own parked runs. When the bound session has been idle for
+the settle window, is not waiting on you, has been handed its packet, and the **repository has
+changed**, the run opens the next repair round by itself - fresh evidence, same graph, the
+round counter and `Max repair rounds` budget it always had.
+
+Four things it deliberately does not do:
+
+- **It does not ask the model to signal anything.** The instruction that used to end every
+  repair packet is gone; the loop is closed by the daemon observing work, not by an agent
+  remembering to report it. That is what makes it work for a session with no work queue, a
+  harness with no hooks, and an installation with Foreman switched off - none of which could
+  ever produce a completion claim.
+- **It does not resume on a transcript that merely grew.** Delivering the packet is itself a
+  transcript write, so the anchor moves before the agent has done anything. Resumption is
+  gated on the repository: a repair that changed no code is not a repair, and resubmitting
+  byte-identical work into the same reviewers would spend the whole budget proving nothing.
+- **It does not touch a run waiting for a new pushed head.** The `inspector_only` findings
+  policy already resumes on its own, when the Inspector observes a head that is not the failed
+  one, and that remains its business.
+- **It does not become a silent loop.** A reviewer that rejects the same work two rounds
+  running raises a **repeat offender** alert - attention-level, so it breaks through even
+  while you're [away](#away-mode). It is edge-triggered on the streak *growing*, so it
+  announces once per round it burns rather than every tick, and a third rejection is still
+  news after the second. The daemon computes it, which is the point: a run burning its budget
+  unattended is exactly the case where no tab is open to notice.
+
+`Max repair rounds` is the budget, and exhausting it blocks the run exactly as it always did.
+
+Automatic **pull request** preparation is the same idea one stage later, and it is Live-only
+for a reason that is not a preference: preparing a PR means typing into the session, and
+Preview is defined as performing no keystroke injection at all. A Preview binding that reaches
+the missing-PR gate records why it deferred rather than appearing to do nothing.
 
 ### Live repair delivery and Foreman completion
 

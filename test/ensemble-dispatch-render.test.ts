@@ -275,6 +275,7 @@ test("workflow placement identifies unsupported Live and Foreman modes", () => {
     version: 1,
     sourceDraftRevision: 1,
     completionPolicy: { kind: "none" },
+    resumptionPolicy: "manual",
     bindingDefaults: {
       triggerMode: "manual",
       deliveryMode: "preview",

@@ -34,6 +34,7 @@ const workflow: WorkflowDefinition = {
   id: "w", name: "Release review", normalizedName: "release review", description: "",
   draft: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Approved", position: { x: 300, y: 0 } }], edges: [] },
   completionPolicy: { kind: "inspector", onFindings: "restart_workflow", missingPrAction: "wait" },
+  resumptionPolicy: "manual",
   bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
   draftRevision: 2, currentVersionId: null, archivedAt: null, createdAt: 1, updatedAt: 2,
   builtin: false,
@@ -79,6 +80,7 @@ test("version history names immutable source revisions and never offers update-v
     id: "v", workflowId: "w", version: 1, sourceDraftRevision: 2,
     graph: { nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "end", kind: "end", outcome: "Approved", position: { x: 300, y: 0 } }], edges: [] },
     completionPolicy: { kind: "inspector", onFindings: "inspector_only", missingPrAction: "offer_prepare_pr" },
+    resumptionPolicy: "manual",
     bindingDefaults: workflow.bindingDefaults,
     publishedAt: 3,
   };

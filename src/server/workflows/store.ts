@@ -28,12 +28,15 @@ import {
   WORKFLOW_LIMITS,
   WORKFLOW_LLM_CALL_STATES,
   WORKFLOW_LLM_PURPOSES,
+  WORKFLOW_RESUMPTION_POLICIES,
   WORKFLOW_TRIGGER_MODES,
+  LEGACY_WORKFLOW_RESUMPTION_POLICY,
   personasForDisplay,
   workflowsForDisplay,
   type WorkflowTriggerSource,
   type WorkflowGateSummary,
   type WorkflowInspectorGateState,
+  type WorkflowResumptionPolicy,
 } from "@shared/workflow.ts";
 import type {
   Persona,
@@ -210,6 +213,21 @@ function parseNullableJson<T>(
   return raw === null ? null : parseJson(table, id, column, raw, schema, maxBytes);
 }
 
+/**
+ * A stored resumption policy, or the honest answer for a row that has none.
+ *
+ * NULL means "written before this column existed" and reads as `manual`, which preserves a
+ * published version exactly (see `LEGACY_WORKFLOW_RESUMPTION_POLICY`). A NON-null value this
+ * build cannot read is treated the same way, and deliberately not as a nearest match: the
+ * only thing `auto` does is start work unattended, so the safe reading of "a newer build
+ * wrote something here" is the one that does nothing until a human looks.
+ */
+function readResumptionPolicy(raw: string | null): WorkflowResumptionPolicy {
+  return (WORKFLOW_RESUMPTION_POLICIES as readonly string[]).includes(raw ?? "")
+    ? (raw as WorkflowResumptionPolicy)
+    : LEGACY_WORKFLOW_RESUMPTION_POLICY;
+}
+
 const PersonaRowSchema = z.object({
   id: nonempty,
   name: nonempty.max(WORKFLOW_LIMITS.personaName),
@@ -260,6 +278,9 @@ const WorkflowDefinitionRowSchema = z.object({
   description: text,
   draft_graph_json: nonempty,
   completion_policy_json: nonempty,
+  // Tolerant on READ for the reason `readResumptionPolicy` documents: an absent column on an
+  // upgrading database and an unknown value from a newer build are both answered there.
+  resumption_policy: nullableText.optional().default(null),
   binding_defaults_json: nonempty,
   draft_revision: positive,
   current_version_id: nullableText,
@@ -283,6 +304,7 @@ export function parseWorkflowDefinitionRow(value: unknown): WorkflowDefinition {
       row.completion_policy_json,
       WorkflowCompletionPolicySchema,
     ),
+    resumptionPolicy: readResumptionPolicy(row.resumption_policy ?? null),
     bindingDefaults: parseJson(
       "workflow_definitions",
       row.id,
@@ -307,6 +329,7 @@ const WorkflowVersionRowSchema = z.object({
   source_draft_revision: positive,
   graph_json: nonempty,
   completion_policy_json: nonempty,
+  resumption_policy: nullableText.optional().default(null),
   binding_defaults_json: nonempty,
   published_at: integer,
 });
@@ -326,6 +349,7 @@ export function parseWorkflowVersionRow(value: unknown): WorkflowVersion {
       row.completion_policy_json,
       WorkflowCompletionPolicySchema,
     ),
+    resumptionPolicy: readResumptionPolicy(row.resumption_policy ?? null),
     bindingDefaults: parseJson(
       "workflow_versions",
       row.id,
@@ -353,6 +377,7 @@ export function parseWorkflowVersionMetadataRow(value: unknown): WorkflowVersion
       row.completion_policy_json,
       WorkflowCompletionPolicySchema,
     ),
+    resumptionPolicy: readResumptionPolicy(row.resumption_policy ?? null),
     bindingDefaults: parseJson(
       "workflow_versions",
       row.id,
@@ -1327,9 +1352,9 @@ export class WorkflowStore {
       this.db.prepare(
         `INSERT INTO workflow_definitions (
            id, name, normalized_name, description, draft_graph_json,
-           completion_policy_json, binding_defaults_json, draft_revision,
+           completion_policy_json, resumption_policy, binding_defaults_json, draft_revision,
            current_version_id, archived_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)`,
       ).run(
         input.id,
         input.name,
@@ -1337,6 +1362,7 @@ export class WorkflowStore {
         input.description,
         JSON.stringify(input.draft),
         JSON.stringify(input.completionPolicy),
+        input.resumptionPolicy,
         JSON.stringify(input.bindingDefaults),
         input.createdAt,
         input.updatedAt,
@@ -1381,6 +1407,7 @@ export class WorkflowStore {
       if (patch.description !== undefined) add("description", patch.description);
       if (patch.draft !== undefined) add("draft_graph_json", JSON.stringify(patch.draft));
       if (patch.completionPolicy !== undefined) add("completion_policy_json", JSON.stringify(patch.completionPolicy));
+      if (patch.resumptionPolicy !== undefined) add("resumption_policy", patch.resumptionPolicy);
       if (patch.bindingDefaults !== undefined) add("binding_defaults_json", JSON.stringify(patch.bindingDefaults));
       assignments.push("draft_revision = draft_revision + 1", "updated_at = ?");
       values.push(updatedAt, id, expectedDraftRevision);
@@ -1529,7 +1556,7 @@ export class WorkflowStore {
     if (shipped) return shipped.map(({ graph: _graph, ...metadata }) => metadata);
     const rows = this.db.prepare(
       `SELECT id, workflow_id, version, source_draft_revision,
-              completion_policy_json, binding_defaults_json, published_at
+              completion_policy_json, resumption_policy, binding_defaults_json, published_at
          FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC`,
     ).all(workflowId) as unknown[];
     const out: WorkflowVersionMetadata[] = [];
@@ -1615,8 +1642,8 @@ export class WorkflowStore {
       this.db.prepare(
         `INSERT INTO workflow_versions (
            id, workflow_id, version, source_draft_revision, graph_json,
-           completion_policy_json, binding_defaults_json, published_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           completion_policy_json, resumption_policy, binding_defaults_json, published_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         versionId,
         id,
@@ -1624,6 +1651,9 @@ export class WorkflowStore {
         expectedDraftRevision,
         JSON.stringify(graph),
         JSON.stringify(workflow.completionPolicy),
+        // Frozen from the draft at publish time, exactly like the completion policy: a later
+        // edit to the draft must not change how a version already bound behaves.
+        workflow.resumptionPolicy,
         JSON.stringify(workflow.bindingDefaults),
         publishedAt,
       );

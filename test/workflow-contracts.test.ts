@@ -69,9 +69,17 @@ test("trigger source is an append-only registry and is not a trigger mode", () =
   // recurring binding behaviour an operator chose; a trigger SOURCE records which caller
   // produced one submission. Letting `ensemble` into the mode union would offer an operator
   // a recurring behaviour that nothing implements.
-  assert.deepEqual([...WORKFLOW_TRIGGER_SOURCES], ["manual", "foreman", "ensemble"]);
+  assert.deepEqual([...WORKFLOW_TRIGGER_SOURCES], ["manual", "foreman", "ensemble", "session"]);
   assert.deepEqual([...WORKFLOW_TRIGGER_MODES], ["manual", "foreman_complete"]);
   assert.equal(WorkflowTriggerSourceSchema.parse("ensemble"), "ensemble");
+  // `session` is the engine's resumption observer, and it is a SOURCE and not a mode for the
+  // same reason `ensemble` is: it names the caller that produced one submission, while the
+  // mode union is the recurring behaviour an operator picked when they bound the workflow.
+  assert.equal(WorkflowTriggerSourceSchema.parse("session"), "session");
+  assert.equal(
+    WORKFLOW_TRIGGER_MODES.includes("session" as (typeof WORKFLOW_TRIGGER_MODES)[number]),
+    false,
+  );
   assert.equal(WorkflowTriggerSourceSchema.parse("manual"), "manual");
   assert.equal(WorkflowTriggerSourceSchema.parse("foreman"), "foreman");
   assert.throws(() => WorkflowTriggerSourceSchema.parse("inspector"));

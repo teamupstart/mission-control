@@ -337,10 +337,10 @@ function quarantineSpend(report: SpendReportBody, status: number): boolean {
  * Returns null on failure, and the caller treats that as "do not proceed" rather than
  * pressing on, because proceeding would mean overwriting the very bytes this preserves.
  */
-function preserveUnreadable(path: string): string | null {
+function moveAside(path: string, tag: string): string | null {
   for (let attempt = 0; attempt < 100; attempt++) {
     const suffix = attempt === 0 ? "" : `-${attempt}`;
-    const kept = `${path}.unreadable-${process.pid}-${Date.now()}${suffix}`;
+    const kept = `${path}.${tag}-${process.pid}-${Date.now()}${suffix}`;
     try {
       if (existsSync(kept)) continue;
       renameSync(path, kept);
@@ -351,6 +351,11 @@ function preserveUnreadable(path: string): string | null {
     }
   }
   return null;
+}
+
+/** Keep bytes this build cannot parse, under a name the scan will not pick up again. */
+function preserveUnreadable(path: string): string | null {
+  return moveAside(path, "unreadable");
 }
 
 /** The run id inside a stored quarantine entry, tolerating anything hand-edited. */
@@ -438,9 +443,27 @@ function scanAndAdoptSpools(): void {
       if (!spendOutbox.some((queued) => queued.runId === report.runId)) spendOutbox.push(report);
     }
     if (!persistSpendOutbox()) continue;
-    // A legacy array has no owner proof. Copying recovers it for this process, but retaining
-    // the source prevents an overlapping previous-build worker from losing a later append.
-    if (restored.legacy) continue;
+    if (restored.legacy) {
+      // A legacy array carries no owner pid, so liveness cannot be proven and it must not be
+      // DELETED - a previous-build worker may still be appending to it. But it cannot be
+      // left in place either, now that adoption runs periodically rather than only at
+      // startup: the scan would re-read it, re-queue the same reports, and re-POST them on
+      // every sweep forever. The ledger de-duplicates by run id so no row doubles, but the
+      // traffic and the repeated "delivered" logs are real and unbounded.
+      //
+      // Moving it aside settles both: the reports are already durable in this process's own
+      // spool by the line above, the bytes survive under a name the scan does not match, and
+      // an old worker that appends later simply recreates the path with its own array, which
+      // is then adopted once more and moved aside again. Bounded, rather than perpetual.
+      const moved = moveAside(path, "migrated");
+      if (!moved) {
+        console.warn(
+          `[foreman] adopted the legacy spend outbox ${name} but could not move it aside; ` +
+            `it will be re-read until that succeeds`,
+        );
+      }
+      continue;
+    }
     try {
       rmSync(path, { force: true });
     } catch (err) {

@@ -287,11 +287,43 @@ test("a previous-build array is recovered without deleting an unprovable owner",
 
   assert.equal(loadSpendOutbox(), 1);
   assert.deepEqual(spoolRunIds(SPOOL), ["run-legacy-array"]);
-  assert.equal(existsSync(legacy), true);
+  // Not deleted - a legacy array carries no owner pid, so a previous-build worker might
+  // still be appending to it - but moved aside, so it is preserved rather than re-read.
+  assert.equal(existsSync(legacy), false, "the migrated source is no longer at the scan path");
+  const migrated = readdirSync(home).filter((n) => n.includes(".migrated-"));
+  assert.equal(migrated.length, 1, "its bytes are kept under a name the scan does not match");
 
-  rmSync(legacy);
+  rmSync(join(home, migrated[0]!), { force: true });
   await flushPendingSpend();
   assert.equal(existsSync(SPOOL), false);
+});
+
+test("a recovered legacy spool is delivered once, not on every sweep", async () => {
+  // The loop this closes. Retaining the legacy file was harmless while adoption only ran at
+  // startup; once a living worker sweeps periodically, leaving it in place means re-reading,
+  // re-queueing and re-POSTing the same reports forever. The ledger de-duplicates by run id
+  // so no row doubles, but the traffic and the repeated delivery logs are real and unbounded.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const legacy = orphanPath("legacy-replay");
+  writeFileSync(legacy, JSON.stringify([report("foreman:review", "run-legacy-once")]), "utf8");
+
+  sweepSpendOutbox();
+  await eventually(() => received.some((r) => (r as { runId: string }).runId === "run-legacy-once"));
+  const afterFirst = attempted.filter((id) => id === "run-legacy-once").length;
+
+  // Two more sweeps with an empty queue - the exact condition that used to re-adopt it.
+  sweepSpendOutbox();
+  sweepSpendOutbox();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(
+    attempted.filter((id) => id === "run-legacy-once").length,
+    afterFirst,
+    "no further delivery attempts were made for an already-migrated legacy spool",
+  );
+  assert.equal(pendingSpendReports(), 0);
+  for (const n of readdirSync(home).filter((f) => f.includes(".migrated-"))) {
+    rmSync(join(home, n), { force: true });
+  }
 });
 
 test("spend survives the daemon being down, and lands when it returns", async () => {

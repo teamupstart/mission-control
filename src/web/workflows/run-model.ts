@@ -3,6 +3,7 @@ import type {
   WorkflowCheckOutcome,
   WorkflowCheckStatus,
   WorkflowContextSnapshot,
+  WorkflowDeliveryKind,
   WorkflowDeliveryState,
   WorkflowGateSummary,
   WorkflowEvent,
@@ -439,6 +440,25 @@ const DELIVERY_SENTENCES: Record<WorkflowDeliveryState, { label: string; sentenc
 
 export function deliveryStateView(state: WorkflowDeliveryState): { label: string; sentence: string } {
   return DELIVERY_SENTENCES[state];
+}
+
+/**
+ * What each packet IS, for the header of its card.
+ *
+ * A `Record` over the durable enum rather than `kind.replaceAll("_", " ")`, which this replaced:
+ * that rendered `unchanged evidence nudge` at a reader with no way to tell it apart from a
+ * review, and a fifth kind would have appeared as raw snake_case with nobody noticing. Now a new
+ * kind fails typecheck here until someone says what it means to a human.
+ */
+const DELIVERY_KIND_LABELS: Record<WorkflowDeliveryKind, string> = {
+  persona_feedback: "Review feedback",
+  inspector_feedback: "Inspector findings",
+  pr_handoff: "PR handoff",
+  unchanged_evidence_nudge: "Nothing changed",
+};
+
+export function deliveryKindLabel(kind: WorkflowDeliveryKind): string {
+  return DELIVERY_KIND_LABELS[kind];
 }
 
 const ATTEMPT_STATE_LABELS: Record<WorkflowNodeAttemptState, string> = {

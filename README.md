@@ -2573,13 +2573,24 @@ the missing-PR gate records why it deferred rather than appearing to do nothing.
 
 ### Live repair delivery and Foreman completion
 
-Live workflow delivery is separately off by default. Open **Settings → Workflows**
-(`#/settings/workflows`), enable Live after its explicit warning, and add canonical repository
-roots to the Workflow allowlist. A Live binding can be saved only while its current session is in an allowlisted
-checkout. Removing consent keeps the binding choice visible but refuses the next delivery;
-it is never silently changed to Preview. The same panel holds the second, independent switch
-for [Check nodes](#check-nodes-gating-on-a-command), which shares that allowlist and grants
-something different: running branch-authored code, not typing into a pane.
+Live workflow delivery is **on by default, and authorised nowhere**. Those are two halves of
+one gate, and only the second one is consent: the switch says *this machine may type repair
+packets into panes*, and the **Workflow allowlist** says *in these repositories*. The allowlist
+ships empty, so a fresh install delivers nothing until you name a repository. Open
+**Settings → Workflows** (`#/settings/workflows`) and add canonical repository roots.
+
+It is that way round because two gates that both default closed means the second one never
+gets read. With Live off by default the loop below was dead on arrival for everyone - the
+packet was prepared, never sent, and the run parked forever - while the allowlist was already
+carrying the consent the switch looked like it was carrying. A run that has nowhere to deliver
+says so: the refusal is `live_not_authorized` on the run, not silence.
+
+A Live binding can be saved only while its current session is in an allowlisted checkout.
+Removing consent keeps the binding choice visible but refuses the next delivery; it is never
+silently changed to Preview. The same panel holds the second, independent switch for
+[Check nodes](#check-nodes-gating-on-a-command), which shares that allowlist and is still
+**off** by default, because it grants something different in kind: running branch-authored code
+on your disk, rather than typing text a human can read before it acts.
 
 When a Persona failure returns to Session, the daemon renders one bounded deterministic repair
 packet in published graph order. The packet preserves the original raw goal, identifies the
@@ -2597,9 +2608,41 @@ completion proof. Foreman still runs as a separate HTTP-only worker and never re
 SQLite. The daemon creates or resumes the durable workflow and retires the matching Foreman
 once-only guard in one transaction. A missing or failed claim endpoint fails closed - Foreman
 does not fall through to an unreviewed wrap-up. If no Foreman binding claims the boundary,
-the existing wrap-up behavior is unchanged. After one confirmed Live repair, a queue-backed
-session's drain guard is re-armed once; itemless sessions re-arm naturally when the delivered
-repair becomes the new captured goal.
+the existing wrap-up behavior is unchanged.
+
+#### The repair loop, end to end
+
+One confirmed Live delivery re-arms **exactly one** completion episode - drain when the session
+has queue items, prompted when it does not. Exactly one, because re-arming both would let a
+single repair packet produce two completion claims and therefore two review rounds for one fix.
+So the whole cycle runs without you:
+
+1. A Persona (or a [Check](#check-nodes-gating-on-a-command)) fails. The run parks in
+   `waiting_for_session` and the repair packet is typed into the pane.
+2. Confirming that delivery re-arms one Foreman completion episode.
+3. The session makes the change and goes idle.
+4. Foreman notices, claims the completion, and opens round N+1.
+5. The graph re-runs **from the top** - every reviewer, against fresh evidence. Attempts are
+   keyed by submission, so round N+1 starts with an empty slate rather than resuming round N.
+
+**Expect roughly fourteen seconds of apparent silence at step 4**, and know that it is the
+design rather than a hang. Foreman's loop ticks every four seconds and a session must be
+settled-idle for ten before it counts as finished, so a new round cannot start sooner. Nothing
+is broken during that pause; the run is simply waiting for the session to hold still.
+
+**The loop does not advance without the Foreman worker running.** Foreman is a separate process
+(`npm run foreman`), not part of the daemon, and the completion claim comes from it. Enabled
+with no worker running is enabled and idle - the **Foreman** control in the top bar reports
+whether a worker actually holds the lease. [Repair resumption](#repair-resumption) is the other
+route to round N+1 and needs no worker at all, which is why an `auto` version keeps moving on a
+machine where Foreman was never started.
+
+If a session signals completion having changed **nothing**, the round is refused rather than
+re-reviewed - the same bytes would return the same verdict. The refusal is not silent: the
+session gets a packet saying the evidence fingerprint is identical, naming what the last review
+asked for, and stating that the only two acceptable answers are to make the change or to say why
+it should not be made. That happens at most **twice**. A third consecutive unchanged completion
+blocks the run for you to resolve, and any round that captures a real change resets the count.
 
 ### Inspector final gate
 
@@ -2825,9 +2868,17 @@ Codex hooks are launch-scoped instead: an operator-started Codex menu remains av
 clickable rows for you, but is explicitly excluded from Foreman automation.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
-between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it
-only *drafts* answers onto the card until you trust it. Start the worker - a plain agent in
-a terminal that talks to the daemon over localhost - with:
+between reviews. Foreman ships **enabled but inert**, and the distinction is the whole point:
+it starts in **dry-run**, its repository allowlist starts empty, and its worker is a separate
+process nothing starts for you. So on a fresh install Foreman types nothing, sends nothing and
+runs nothing - it *drafts* answers onto the card until you trust it. `enabled` flipped on
+because it is a prerequisite gate rather than an action: while it shipped off, a **Foreman
+Complete** workflow binding could not be created at all, which left
+[the repair loop](#the-repair-loop-end-to-end) unreachable on a fresh install no matter what
+you configured in Workflow settings. If you have ever switched Foreman off in Settings, that
+answer is persisted and survives - the new default only reaches installs that never answered.
+
+Start the worker - a plain agent in a terminal that talks to the daemon over localhost - with:
 
 ```sh
 npm run foreman
@@ -3135,17 +3186,27 @@ single action to take at whichever one fires.
 
 | Trigger on | Fires when |
 |---|---|
-| **Queue drain** (default) | every item in the session's queue reached a terminal state |
-| **Prompted work complete** | you typed straight into the pane, the agent worked, and it parked - no queue involved |
+| **Queue drain** (on by default) | every item in the session's queue reached a terminal state |
+| **Prompted work complete** (on by default) | you typed straight into the pane, the agent worked, and it parked - no queue involved |
+
+Both ship ticked. Drain alone used to be the default, and it quietly excluded the commonest
+kind of session there is: one you prompted by hand, which has no queue, never drains, and so
+never reached a wrap-up moment at all. For [the repair loop](#the-repair-loop-end-to-end) that
+meant the completion signal simply did not exist for those sessions, and the loop read as broken
+rather than unarmed. What the second trigger costs is bounded by everything below it - **Then**
+still defaults to **Ask**, so a wrap-up moment renders a card rather than typing anything, and
+the automated actions are refused outright unless Foreman is live *and* the repository is
+allowlisted.
 
 The prompted trigger doesn't fire on idleness alone, because idle isn't finished. It runs
 the same verifier queued items get - a fresh tool-less `claude -p` reading the branch diff
 against your captured prompt - and acts only on a **complete** verdict; an empty diff
 decides itself without a model call. A session that still needs you is left alone, and a
 checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
-per prompt: a new prompt from you re-arms it, and an incomplete verdict retires the
-episode rather than sending the agent back - Foreman didn't commission that work. Untick
-both triggers and Foreman never wraps up on its own.
+per prompt: a new prompt from you re-arms it, and so does a confirmed workflow repair packet -
+which is what lets [the repair loop](#the-repair-loop-end-to-end) run for a session that has no
+queue to drain. An incomplete verdict retires the episode rather than sending the agent back -
+Foreman didn't commission that work. Untick both triggers and Foreman never wraps up on its own.
 
 The action is the same whichever trigger fired:
 

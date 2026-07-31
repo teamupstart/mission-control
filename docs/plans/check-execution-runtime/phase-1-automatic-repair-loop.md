@@ -22,12 +22,36 @@ become a self-repairing gate instead of a report the operator has to read and ac
 - **No dependency on Phase 2, 3 or 4.** Shares no file with them. Concurrency group A.
 - Recommended to merge before Phase 4, for the reason in the index. Not an edge in the graph.
 
-## SUPERSEDED IN PART - read before implementing
+## RESOLVED - implemented at original scope
+
+**The operator re-decided on 2026-07-31 and kept this phase's original scope**, with Contract F
+preserved exactly as the index states it. The banner below is retained as the record of what
+#327 took over and what it did not.
+
+The two mechanisms turned out to be **complementary rather than competing**, which is what made
+keeping the scope cheap. Verified against the merged code while implementing:
+
+- They cannot both open round N+1. Whichever moves the run out of `waiting_for_session` first
+  wins - the Foreman claim lands in `claimForemanCompletion`'s `already_claimed` arm and never
+  calls `captureAndActivate`, and the observer's post-await re-read (`manager.ts`,
+  `resumeParkedRun`) sees the run has moved and returns. A unique `(run_id, round)` index is the
+  backstop.
+- The observer only fires for a version pinned to `resumptionPolicy: "auto"`, which is built-in
+  **v7 and nothing else**. Every binding on v1-v6, and every operator-authored version published
+  before #327, still reaches round N+1 only through the Foreman claim this phase repairs.
+- The observer is itself gated on delivery having happened, which is gated on Live. So flipping
+  `liveEnabled` is what switches **both** mechanisms on; without step 5 #327's observer is as
+  unreachable on a fresh install as the Foreman path was.
+
+The one place the observer is strictly better is recorded honestly: its repository-only
+pre-filter means a resumption can never land on `unchanged_evidence` at all, so the nudge in
+step 4 exists for the Foreman path, not for it.
+
+### The original banner, as written during review
 
 **PR #327 (`feat(workflows): resume a parked repair round automatically`) landed on `main`
 while this plan was in review, and it solves this phase's headline problem by a different
-mechanism.** Do not start implementing until the scope below has been re-decided with the
-operator. What follows is recorded as-found rather than rewritten, because the collision
+mechanism.** What follows is recorded as-found rather than rewritten, because the collision
 touches an operator decision and resolving it is not the planner's call.
 
 What #327 shipped, verified against the merged code:
@@ -352,3 +376,26 @@ identically twice is telling the truth.
   decision 5, so rewriting this phase to match would have silently reversed a decision the
   operator made explicitly. Phases 2, 3 and 4 are unaffected - #327 touches the workflow
   resumption path and nothing in the lease, supervisor or executor surfaces.
+- **2026-07-31, at implementation: one finding above is WRONG in substance, and this is the
+  correction the index asks for rather than a quiet work-around.** "Data, API and compatibility"
+  says *"The nudge counter fits the run's existing gate-state JSON."* It does not. Every path
+  that opens a round writes `gate_state_json = NULL` in the same statement that sets
+  `status = 'capturing'` - `createRepairSubmission`, `claimForemanCompletion`'s resubmit arm,
+  and the full restart - so a counter kept there would be cleared by the very event it exists to
+  count, and the bound would never be reached. The counter is therefore **derived from the event
+  log**: `resubmit_refused_unchanged` rows newer than the newest `submission_captured` or
+  `resubmit_unchanged_confirmed`. That keeps the phase's actual constraint - *no schema change* -
+  and makes the reset fall out of the data instead of needing its own write, because
+  `submission_captured` is appended exactly when a capture produced a DIFFERENT fingerprint. The
+  gate state still carries `unchangedRefusals` for display; nothing reads it back.
+- **2026-07-31, one addition beyond the written scope, because omitting it would have shipped a
+  new dead end:** a `prepared` nudge is not recoverable by `recoverWaitingDeliveries`. That loop
+  finds waiting SUBMISSIONS, and a refused submission is `failed`; its prepared-delivery arm
+  handled `inspector_feedback` only. A daemon restart between preparing and sending a nudge -
+  or a pane briefly unreachable - would have left the run parked on a refusal the session was
+  never told about, which is precisely the failure the nudge exists to prevent. The recovery
+  loop now covers the kind.
+- **2026-07-31, one stale doc corrected en route:** `StoredWorkflowConfigSchema`'s comment argued
+  its `.catch()` was safe because the consent booleans default off. After step 5 that argument is
+  false. The safety actually comes from the fallback dropping `repoAllowlist` to empty, which
+  authorises nothing whatever `liveEnabled` reads as; the comment and its test now say so.

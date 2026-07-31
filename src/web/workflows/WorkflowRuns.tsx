@@ -34,6 +34,7 @@ import {
   errorView,
   eventLine,
   eventsByRound,
+  deliveryKindLabel,
   deliveryStateView,
   gateSummaryStatus,
   gateWaitSentence,
@@ -882,7 +883,7 @@ export function WorkflowRunView({
                       {view.label}
                     </span>
                     <strong>Round {roundOfSubmission(delivery.submissionId) ?? "?"}</strong>
-                    <span>{delivery.kind.replaceAll("_", " ")}</span>
+                    <span>{deliveryKindLabel(delivery.kind)}</span>
                   </header>
                   <p className="wf-run-sentence">{view.sentence}</p>
                   <ErrorLine raw={delivery.error} />

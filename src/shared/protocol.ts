@@ -855,7 +855,22 @@ export type SetGoal = z.infer<typeof SetGoalSchema>;
 export const ForemanConfigSchema = z.object({
   /** Provider used for every Foreman model call. */
   runner: z.enum(LLM_RUNNER_IDS).optional(),
-  enabled: z.boolean().default(false),
+  /**
+   * Whether Foreman is switched on at all. On by default, and that authorises far less than
+   * it sounds like.
+   *
+   * `mode` still ships `dry-run`, so Foreman drafts and never sends; `repoAllowlist` still
+   * ships empty, so `mayActLive` is false everywhere; and the worker is a SEPARATE PROCESS
+   * (`npm run foreman`) that nothing here starts. Enabled with no worker running is enabled
+   * and idle.
+   *
+   * It flipped because it had become a gate in front of something else: `bindingModeBlock`
+   * refuses a `foreman_complete` binding outright when this is false, so the automatic repair
+   * loop could not reach its completion trigger on a fresh install no matter what the operator
+   * configured in Workflow settings. An operator who explicitly turned Foreman off has a
+   * persisted `false` and keeps it - this default is only read when nobody ever answered.
+   */
+  enabled: z.boolean().default(true),
   mode: z.enum(["dry-run", "live", "semi-auto"]).default("dry-run"),
   /**
    * Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live.
@@ -920,16 +935,22 @@ export const ForemanConfigSchema = z.object({
    * WHICH moments count as "this session has finished its work" and should wrap up.
    * Independent of `wrapup`, which says what to DO at whichever moment fires.
    *
-   * Defaults to `["drain"]` alone - the shipped behaviour - so an existing install
-   * upgrades without silently arming a second, unattended trigger on every session
-   * it was never watching before. `prompted` is opt-in for exactly that reason.
+   * Both triggers ship armed. `drain` alone was the shipped default and it silently excluded
+   * a whole class of session: `drain` fires when a WORK QUEUE empties, so a session driven by
+   * a human prompt - which is most of them - has no queue, never drains, and never reaches a
+   * wrap-up moment at all. For the automatic repair loop that meant the completion signal
+   * simply did not exist for those sessions, and the loop looked broken rather than unarmed.
+   *
+   * What `prompted` costs is bounded by everything downstream: `wrapup` still defaults to
+   * `ask`, so the moment renders a card rather than typing anything, and the auto paths are
+   * refused outright unless `mode` is live AND the repository is allowlisted.
    *
    * An empty list means "never wrap up automatically" and is honoured as written; it
    * is NOT treated as unset. Someone running the work queue who wants to ship by hand
    * has no other way to say so, and quietly restoring a default here would type into
    * their sessions against an explicit choice.
    */
-  wrapupTriggers: z.array(z.enum(WRAPUP_TRIGGERS)).default(["drain"]),
+  wrapupTriggers: z.array(z.enum(WRAPUP_TRIGGERS)).default(["drain", "prompted"]),
   /**
    * What happens when a wrap-up fires, whichever trigger fired it.
    *
@@ -2582,10 +2603,16 @@ export type WorkflowConfigInput = z.input<typeof WorkflowConfigSchema>;
  * every workflow read, every binding gate and the retention sweep, so a throw there takes
  * all of them down over a preference.
  *
- * It falls back to the COMPLETE default rather than field by field, and that is the honest
- * reading: the two consent fields are what an unreadable config would otherwise be trusted
- * to grant, and defaulting them off is the only safe direction. An operator whose config
- * cannot be read sees the panel showing defaults, which is a state they can fix.
+ * It falls back to the COMPLETE default rather than field by field, and that is what makes it
+ * safe. The falling-back field is `repoAllowlist`, not the consent booleans: the default
+ * allowlist is EMPTY, and `repoAllowlisted(cwd, root, [])` is false for every path, so an
+ * unreadable config authorises nothing in any repository whatever `liveEnabled` reads as.
+ *
+ * Stated that way round deliberately. `liveEnabled` now defaults ON, so an argument resting on
+ * the boolean would already be wrong; the pair is the gate and only the pair. A field-by-field
+ * fallback would be the dangerous one - it could keep a parsed allowlist beside a defaulted
+ * consent flag and grant exactly what neither half was written to allow. An operator whose
+ * config cannot be read sees the panel showing defaults, which is a state they can fix.
  */
 export const StoredWorkflowConfigSchema = WorkflowConfigSchema.catch(DEFAULT_WORKFLOW_CONFIG);
 

@@ -108,7 +108,7 @@ test("resolving an uncertain delivery preserves an orphaned run block", () => {
   );
 
   assert.equal(resolved?.delivery.state, "delivered");
-  assert.equal(resolved?.rearmedDrain, false);
+  assert.equal(resolved?.rearmed, null);
   assert.deepEqual(store.getRun("run-orphaned-resolution"), blocked);
 });
 
@@ -139,8 +139,47 @@ test("resolving an old uncertain delivery preserves a reattached run block", () 
   );
 
   assert.equal(resolved?.delivery.state, "delivered");
-  assert.equal(resolved?.rearmedDrain, false);
+  assert.equal(resolved?.rearmed, null);
   assert.deepEqual(store.getRun("run-reattached-resolution"), blocked);
+});
+
+/**
+ * The other half of the re-arm pair, at its narrowest.
+ *
+ * The two cases above resolve to `rearmed: null` because their bindings are orphaned or
+ * reattached, so neither episode may be touched at all. This one has an ACTIVE binding and no
+ * queue items, which is the shape `rearmDrainCompletionForDelivery` structurally cannot serve -
+ * its `EXISTS (SELECT 1 FROM foreman_queue_items ...)` clause is false - and which therefore
+ * re-armed nothing whatsoever before `rearmPromptedCompletionForDelivery` existed.
+ *
+ * The last assertion is the guard shape, and it is the one worth keeping: an absent queue row
+ * means this session has no wrap-up state to restore, and inserting one here would manufacture
+ * a Foreman episode for a session Foreman was never watching.
+ */
+test("an item-less session re-arms through the prompted episode, and never invents a queue", async () => {
+  const { getQueueRow, upsertQueue } = await import("../src/server/db.ts");
+  const store = seededStore("prompted-rearm");
+  const delivery = prepare(store, "prompted-rearm");
+  store.claimDeliverySend(delivery.id);
+  upsertQueue({
+    noteKey: "note-prompted-rearm",
+    cwd: "/repo",
+    branch: "feature",
+    wrapupAskedAt: null,
+    wrapupAnswer: null,
+    promptedGoal: "Ship the feature",
+    updatedAt: 10,
+  });
+
+  const confirmed = store.confirmDeliverySend(delivery.id, 1, true, 11);
+  assert.equal(confirmed?.rearmed, "prompted");
+  assert.equal(getQueueRow("note-prompted-rearm")?.promptedGoal, null);
+
+  const noRow = seededStore("prompted-absent");
+  const absent = prepare(noRow, "prompted-absent");
+  noRow.claimDeliverySend(absent.id);
+  assert.equal(noRow.confirmDeliverySend(absent.id, 1, true, 11)?.rearmed, null);
+  assert.equal(getQueueRow("note-prompted-absent"), undefined);
 });
 
 test("terminal runs allow acknowledgement-only uncertain delivery resolution", async () => {

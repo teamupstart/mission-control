@@ -19,7 +19,16 @@ const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
+const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
 const { NO_MISTAKES_REVIEW_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");
+
+async function waitFor(check: () => boolean, message: string): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > 5_000) assert.fail(message);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 function discovered(id: string): DiscoveredSession {
   return {
@@ -105,8 +114,23 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   ]);
   const queues = new QueueManager(registry);
   const personas = new PersonaManager(registry);
+  // Everything the `repair` binding's Live nudge needs to actually be typed somewhere. The
+  // other bindings stay Preview, so this changes nothing for them.
+  const injected: string[] = [];
   const workflows = new WorkflowManager(registry, personas.store, {
     queueManager: queues,
+    inject: (async (
+      _session: unknown,
+      payload: string,
+      _deps?: unknown,
+      beforeWrite?: () => string | null,
+    ) => {
+      const blocked = beforeWrite?.();
+      if (blocked) return { ok: false, error: blocked, pasted: false, submitVerified: false };
+      injected.push(payload);
+      return { ok: true, pasted: true, submitVerified: true };
+    }) as never,
+    recordInjection: (() => {}) as never,
     readContextRaw: async (_registry, binding) => {
       const raw = {
         primaryGoal: { rawPrompt: "Original goal", refined: null, sourceNoteKey: binding.noteKey },
@@ -182,7 +206,12 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     sessionCwd: "/repo",
     sessionRepoRoot: "/repo",
     triggerMode: "foreman_complete",
-    deliveryMode: "preview",
+    // LIVE, unlike its siblings, and that is the point of this binding now. An
+    // unchanged-evidence refusal answers with a nudge packet, and it is that packet's confirmed
+    // delivery that re-arms the completion episode. Under Preview nothing is ever typed, so
+    // nothing re-arms - which is the deliberate design, and why the round-limit sequence below
+    // used to need `wrapup_asked_at` cleared with raw SQL to continue.
+    deliveryMode: "live",
     maxRepairRounds: 1,
     now: 1,
   });
@@ -425,6 +454,10 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     workflows.get(NO_MISTAKES_REVIEW_WORKFLOW_ID)?.workflow.currentVersionId,
   );
   assert.equal(autoBinding.triggerMode, "foreman_complete");
+  // Reached with Foreman live AND `/repo` on FOREMAN's allowlist, but with nothing on
+  // Workflows' allowlist - so the two consents are provably separate rather than coincidentally
+  // both off. `liveEnabled` now defaults on, which makes this the assertion that matters: it is
+  // the repository allowlist, not the boolean, that keeps delivery from being granted here.
   assert.equal(
     autoBinding.deliveryMode,
     "preview",
@@ -466,7 +499,9 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   const heldPrompted = await request(app, "prompted", "e".repeat(64), "prompted");
   assert.equal(heldPrompted.status, 409);
   assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
-  db.prepare(`UPDATE foreman_queues SET prompted_goal = NULL WHERE note_key = 'prompted'`).run();
+  // Re-arm the prompted episode through the Registry's own wrap-up writer rather than the
+  // column, so the next case is set up the way the daemon would set it up.
+  registry.setQueueWrapup("prompted", { promptedGoal: null });
   const stalePrompted = await request(
     app,
     "prompted",
@@ -518,11 +553,11 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(workflows.store.listSubmissions(firstBody.runId).length, 1);
 
   assert.equal(workflows.store.getRun(firstBody.runId)?.status, "completed");
-  db.prepare(
-    `UPDATE foreman_queues
-        SET wrapup_asked_at = NULL, wrapup_answer = NULL
-      WHERE note_key = 'claimed'`,
-  ).run();
+  // A SECOND wrap-up episode on the same binding. Re-armed through the QueueManager method
+  // that owns this transition rather than by hand-writing the columns - `SessionQueue.add` is
+  // the other production route to the same place, and it needs an instrumented session this
+  // fixture's raw-seeded queues do not have.
+  queues.rearmWorkflowCompletion("claimed");
   const nextEpisode = await request(app, "claimed", "5".repeat(64));
   assert.equal(nextEpisode.status, 200);
   const nextEpisodeBody = await nextEpisode.json() as {
@@ -535,6 +570,12 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(nextEpisodeBody.state, "started");
   assert.notEqual(nextEpisodeBody.runId, firstBody.runId);
   assert.equal(workflows.store.getRun(nextEpisodeBody.runId)?.bindingId, claimedBinding.id);
+
+  // Workflows Live is a SEPARATE consent from Foreman's, granted only now and only for the
+  // repair sequence below - the auto-bind assertions above depend on it NOT being granted.
+  // `liveEnabled` is left to its default so a revert of that default surfaces here as a failure
+  // rather than being masked by an explicit `true`.
+  setWorkflowConfig({ repoAllowlist: ["/repo"] });
 
   const repairContext = fallbackWorkflowContext({
     primaryGoal: { rawPrompt: "Original goal", refined: null, sourceNoteKey: "repair" },
@@ -589,9 +630,17 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(workflows.store.getSubmission(unchangedBody.submissionId)?.round, 2);
   assert.equal(workflows.store.getRun("repair-run")?.currentPhase, "unchanged_evidence");
 
-  db.prepare(
-    `UPDATE foreman_queues SET wrapup_asked_at = NULL, wrapup_answer = NULL WHERE note_key = 'repair'`,
-  ).run();
+  // No SQL here any more. The refusal above prepared an unchanged-evidence nudge, Live typed it
+  // into the pane, and confirming that delivery re-armed the drain episode - so the next claim
+  // below is one the daemon really would receive rather than one the test manufactured.
+  await waitFor(
+    () => injected.some((payload) => /reported complete, but nothing changed/.test(payload)),
+    "the unchanged-evidence refusal never delivered a nudge",
+  );
+  const rearmedGuard = db.prepare(
+    `SELECT wrapup_asked_at FROM foreman_queues WHERE note_key = 'repair'`,
+  ).get() as { wrapup_asked_at: number | null };
+  assert.equal(rearmedGuard.wrapup_asked_at, null, "the nudge's delivery must re-arm the episode");
   const capped = await request(app, "repair", "4".repeat(64));
   assert.equal(capped.status, 200);
   const cappedBody = await capped.json() as { claimed: boolean; state: string; submissionId: string | null };

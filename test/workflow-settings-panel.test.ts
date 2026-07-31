@@ -84,8 +84,16 @@ function render(over: Partial<WorkflowSettingsState> = {}): string {
   );
 }
 
+// `liveEnabled` is stated rather than inherited. This fixture's job is "the daemon has
+// answered", and it is used by the cases that need an OFF switch to compare against; since the
+// shipped default became `true` those two meanings stopped coinciding, and a fixture that
+// silently followed the default would have flipped the assertions under them.
 const ANSWERED = {
-  config: { ...DEFAULT_WORKFLOW_CONFIG, repoAllowlist: ["/src/mission-control"] },
+  config: {
+    ...DEFAULT_WORKFLOW_CONFIG,
+    liveEnabled: false,
+    repoAllowlist: ["/src/mission-control"],
+  },
   status: STATUS,
 };
 
@@ -221,6 +229,14 @@ test("Live enabled flies the sentence saying what it does", () => {
   assert.match(on, /wf-settings-live-warn/);
   // The apostrophe arrives HTML-escaped, so the phrase is matched around it.
   assert.match(on, /A repair packet is typed into the agent.{0,8}s own composer/);
+
+  // And on a FRESH install, because the default is now on. An operator who never opens this
+  // panel is authorised to have packets typed into any repository they later allowlist, so the
+  // sentence explaining that has to be on screen without anybody switching anything.
+  assert.match(
+    render({ config: DEFAULT_WORKFLOW_CONFIG, status: STATUS }),
+    /wf-settings-live-warn/,
+  );
 });
 
 // The retention boxes are typed text, so the read has to refuse a half-entered number

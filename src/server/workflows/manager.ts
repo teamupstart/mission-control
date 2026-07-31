@@ -106,6 +106,7 @@ import { getWorkflowConfig } from "./config.ts";
 import {
   renderInspectorFeedback,
   renderPrHandoff,
+  renderUnchangedEvidenceNudge,
   renderWorkflowFeedback,
 } from "./feedback.ts";
 import { findingFingerprintAudit } from "./finding-audit.ts";
@@ -256,6 +257,19 @@ const WORKFLOW_RESUMPTION_SETTLE_MS = 10_000;
 
 /** Delivery states that mean the latest packet has not demonstrably reached the agent yet. */
 const UNDELIVERED_DELIVERY_STATES = ["prepared", "sending", "uncertain"] as const;
+
+/**
+ * How many consecutive unchanged-evidence refusals get a nudge before the run blocks.
+ *
+ * Read as a comparison: the run blocks when the count EXCEEDS this, so refusals 1 and 2 each
+ * produce a packet and the third blocks. Two is not arbitrary - the first nudge covers a
+ * session that genuinely lost the packet to a compaction, and the second covers a session that
+ * read it and misjudged what "changed" means. A session that has ignored two explicit,
+ * escalating packets is not going to be fixed by a third, and each one costs a real terminal
+ * write into somebody's pane. Reaching the bound is a visible `blocked` state a human resolves,
+ * which is the safety property, not a limitation to route around.
+ */
+const UNCHANGED_EVIDENCE_NUDGE_LIMIT = 2;
 
 function runIsTerminal(run: WorkflowRun): boolean {
   return ["completed", "cancelled", "failed"].includes(run.status);
@@ -1619,7 +1633,7 @@ export class WorkflowManager {
           const session = this.registry.getSession(delivery.sessionId);
           if (session) this.rememberInjection(session.id, delivery.payload, "workflow");
         }
-        if (resolved.rearmedDrain) this.queues.refresh(delivery.noteKey);
+        if (resolved.rearmed) this.queues.refresh(delivery.noteKey);
         this.publishRun(delivery.runId);
       }
       return {
@@ -2823,17 +2837,30 @@ export class WorkflowManager {
       const run = this.store.getRun(delivery.runId);
       const binding = run ? this.store.getBinding(run.bindingId) : null;
       const latestSubmission = run ? this.store.latestSubmission(run.id) : null;
-      const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
-      const gate = run ? this.gateState(run) : null;
+      if (
+        !run
+        || runIsTerminal(run)
+        || binding?.deliveryMode !== "live"
+        || latestSubmission?.id !== delivery.submissionId
+      ) continue;
+      // An unchanged-evidence nudge is prepared and sent in one turn, so finding one still
+      // `prepared` means the daemon stopped inside that window or the pane was briefly
+      // unreachable. Its submission is `failed` rather than `waiting_for_session`, so the loop
+      // above cannot see it, and without this the run stays parked on a refusal the session was
+      // never told about - which is the exact dead end the nudge exists to prevent.
+      if (delivery.kind === "unchanged_evidence_nudge") {
+        if (run.status === "waiting_for_session" && run.currentPhase === "unchanged_evidence") {
+          this.schedulePreparedDelivery(delivery.id);
+        }
+        continue;
+      }
+      const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+      const gate = this.gateState(run);
       const inspectorOnly =
         version?.completionPolicy.kind === "inspector"
         && version.completionPolicy.onFindings === "inspector_only";
       if (
         delivery.kind !== "inspector_feedback"
-        || !run
-        || runIsTerminal(run)
-        || binding?.deliveryMode !== "live"
-        || latestSubmission?.id !== delivery.submissionId
         || run.status !== (inspectorOnly ? "waiting_for_new_head" : "waiting_for_session")
         || run.currentPhase !== "inspector_findings"
         || gate?.waitReason !== "findings"
@@ -2842,6 +2869,106 @@ export class WorkflowManager {
       ) continue;
       this.schedulePreparedDelivery(delivery.id);
     }
+  }
+
+  /**
+   * Answer an unchanged-evidence refusal with a packet instead of silence.
+   *
+   * Without this the loop dies on the first such refusal and never recovers. The completion
+   * guard is retired inside `claimForemanCompletion`'s transaction, which commits BEFORE
+   * capture runs, so by the time capture refuses the guard is already spent: the run parks in
+   * `waiting_for_session` and no later completion signal from that session can ever claim it.
+   *
+   * Sending a packet is what restarts the clock, and it restarts it through the existing
+   * machinery rather than a special case. The nudge is an ordinary delivery, so a confirmed
+   * send re-arms exactly one completion episode (`confirmDeliverySend`), and the next Foreman
+   * claim is therefore legitimate and gated on a fresh idle plus settle - about fourteen
+   * seconds - rather than firing on the next four-second tick.
+   */
+  private scheduleUnchangedEvidenceNudge(
+    runId: string,
+    submissionId: string,
+    nudge: number,
+  ): void {
+    this.trackDeliveryTask(
+      this.prepareUnchangedEvidenceNudge(runId, submissionId, nudge).catch((error) => {
+        const run = this.store.getRun(runId);
+        if (!run || runIsTerminal(run)) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.store.setRunState(runId, "blocked", "delivery_prepare_error", {
+          submissionId,
+          error: message,
+        });
+        this.store.appendEvent(runId, "delivery_prepare_error", { submissionId, error: message });
+        this.publishRun(runId);
+      }),
+    );
+  }
+
+  private async prepareUnchangedEvidenceNudge(
+    runId: string,
+    submissionId: string,
+    nudge: number,
+  ): Promise<void> {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(submissionId);
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    const version = run ? this.store.getWorkflowVersionById(run.workflowVersionId) : null;
+    const summary = run ? this.store.runSummary(runId) : null;
+    if (
+      !run
+      || runIsTerminal(run)
+      // Re-read rather than trust the caller: a human Resubmit or the resumption observer may
+      // have moved this run out of the refusal between the refusal and this task running, and
+      // nudging a run that is already re-reviewing would type a stale complaint into the pane.
+      || run.status !== "waiting_for_session"
+      || run.currentPhase !== "unchanged_evidence"
+      || !submission
+      || !binding
+      || binding.state !== "active"
+      || !binding.sessionId
+      || !version
+      || !summary
+    ) return;
+    // The packet the session already had, so the nudge can name what was asked rather than
+    // just complaining that nothing happened. Newest first; a pruned payload reads as absent
+    // and the renderer says so instead of shipping an empty quote.
+    const prior = [...this.store.listDeliveries(runId)].reverse().find((delivery) =>
+      delivery.kind === "persona_feedback"
+      && delivery.state === "delivered"
+      && delivery.payload.length > 0);
+    const rendered = renderUnchangedEvidenceNudge({
+      workflowName: summary.workflowName,
+      workflowVersion: version.version,
+      runId,
+      round: submission.round,
+      originalGoal: this.originalGoal(runId),
+      evidenceFingerprint: submission.evidenceFingerprint,
+      priorPacket: prior?.payload ?? null,
+      nudge,
+      nudgeLimit: UNCHANGED_EVIDENCE_NUDGE_LIMIT,
+    });
+    const prepared = this.store.prepareDelivery({
+      id: randomUUID(),
+      runId,
+      submissionId: submission.id,
+      kind: "unchanged_evidence_nudge",
+      sessionId: binding.sessionId,
+      noteKey: binding.noteKey,
+      payload: rendered.payload,
+      payloadSha256: rendered.payloadSha256,
+    });
+    if (!prepared.idempotent) {
+      this.store.appendEvent(runId, "delivery_prepared", {
+        deliveryId: prepared.delivery.id,
+        payloadSha256: rendered.payloadSha256,
+        truncated: rendered.truncated,
+        kind: "unchanged_evidence_nudge",
+        nudge,
+      });
+    }
+    this.publishRun(runId);
+    if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
   private scheduleWaitingDelivery(submissionId: string): void {
@@ -3045,7 +3172,7 @@ export class WorkflowManager {
     );
     if (!confirmed) return;
     this.rememberInjection(session.id, sending.payload, "workflow");
-    if (confirmed.rearmedDrain) this.queues.refresh(sending.noteKey);
+    if (confirmed.rearmed) this.queues.refresh(sending.noteKey);
     this.publishRun(sending.runId);
   }
 
@@ -3241,15 +3368,39 @@ export class WorkflowManager {
         status: "running",
       }, Date.now());
       if (previousFingerprint && fingerprint === previousFingerprint && !allowUnchanged) {
-        this.store.setSubmissionState(submission.id, "failed", Date.now());
-        this.store.setRunState(run.id, "waiting_for_session", "unchanged_evidence", {
-          evidenceFingerprint: fingerprint,
-        }, Date.now());
+        const refusedAt = Date.now();
+        this.store.setSubmissionState(submission.id, "failed", refusedAt);
+        // Append BEFORE counting, so the count includes this refusal and the two reads can
+        // never disagree about whether the current one is in it.
         this.store.appendEvent(run.id, "resubmit_refused_unchanged", {
           triggerKey: submission.triggerKey,
           evidenceFingerprint: fingerprint,
-        }, Date.now());
+        }, refusedAt);
+        const refusals = this.store.consecutiveUnchangedRefusals(run.id);
+        // Stated as a comparison, not an ordinal. Refusals 1 and 2 each get a nudge; the run
+        // blocks when the count EXCEEDS the limit, i.e. on the third. Reading it as "stop after
+        // the second" blocks a round early and silently shortens the repair loop.
+        const exhausted = refusals > UNCHANGED_EVIDENCE_NUDGE_LIMIT;
+        this.store.setRunState(
+          run.id,
+          exhausted ? "blocked" : "waiting_for_session",
+          exhausted ? "unchanged_evidence_exhausted" : "unchanged_evidence",
+          { evidenceFingerprint: fingerprint, unchangedRefusals: refusals },
+          refusedAt,
+        );
+        if (exhausted) {
+          this.store.appendEvent(run.id, "unchanged_evidence_exhausted", {
+            submissionId: submission.id,
+            evidenceFingerprint: fingerprint,
+            refusals,
+          }, refusedAt);
+        }
         this.publishRun(run.id);
+        // Outside the capture lock's critical decision but inside the same turn: the nudge is a
+        // delivery, and a delivery re-arms exactly one completion episode on confirmation. That
+        // is what supplies the NEXT legitimate claim - re-arming the guard here instead would
+        // spin the whole capture every fourteen seconds against a session that is not changing.
+        if (!exhausted) this.scheduleUnchangedEvidenceNudge(run.id, submission.id, refusals);
         return {
           ok: false,
           reason: "unchanged_evidence",

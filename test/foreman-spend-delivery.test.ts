@@ -36,7 +36,7 @@ const home = mkdtempSync(join(tmpdir(), "foreman-spend-"));
 process.env.MISSION_HOME = home;
 
 /** What the fake daemon does to the next request. */
-let mode: "ok" | "down" | "500" | "400" | "404" = "ok";
+let mode: "ok" | "down" | "500" | "400" | "404" | "429" | "418" = "ok";
 const received: Array<Record<string, unknown>> = [];
 const attempted: string[] = [];
 let delayedRunId: string | null = null;
@@ -67,6 +67,16 @@ function start(): Promise<void> {
         // A daemon that predates /api/usage/automation. Not a bad body - a stale peer.
         if (mode === "404") {
           res.writeHead(404).end();
+          return;
+        }
+        // A rate limit from the daemon or something in front of it. Transient by nature.
+        if (mode === "429") {
+          res.writeHead(429).end();
+          return;
+        }
+        // A status this code has never heard of, to prove the DEFAULT is to wait.
+        if (mode === "418") {
+          res.writeHead(418).end();
           return;
         }
         received.push(report);
@@ -529,6 +539,41 @@ test("a peer that dies mid-outage is adopted by a worker that never restarts", a
     false,
     "the adopted spool is removed once its report is acknowledged",
   );
+});
+
+test("a rate limit is waited out, not filed away as a bad report", async () => {
+  // 429 and 408 are transient by definition - from the daemon or anything in front of it -
+  // and the run behind them is already paid for. Quarantining them is a one-way door:
+  // nothing drains that file, so the report would need a human once the limit cleared.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const heldBefore = quarantinedSpendReports();
+  mode = "429";
+  await client.reportSpend(report("foreman:triage", "run-rate-limited"));
+  assert.equal(pendingSpendReports(), 1, "held for a retry");
+  assert.equal(quarantinedSpendReports(), heldBefore, "and not set aside for a human");
+
+  mode = "ok";
+  await flushPendingSpend();
+  assert.equal((received.at(-1) as { runId: string }).runId, "run-rate-limited");
+  assert.equal(pendingSpendReports(), 0);
+});
+
+test("a status this code has never seen waits rather than being quarantined", async () => {
+  // The reason quarantine is an allowlist rather than a fallback. Enumerating retryable
+  // statuses puts everything nobody anticipated on the one-way path - which is exactly how
+  // a transient 429 became permanent. Waiting on an unknown answer is recoverable; filing
+  // it away is not.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const heldBefore = quarantinedSpendReports();
+  mode = "418";
+  await client.reportSpend(report("inspector:reply", "run-unknown-status"));
+  assert.equal(pendingSpendReports(), 1, "an unrecognised status defaults to waiting");
+  assert.equal(quarantinedSpendReports(), heldBefore);
+
+  mode = "ok";
+  await flushPendingSpend();
+  assert.equal((received.at(-1) as { runId: string }).runId, "run-unknown-status");
+  assert.equal(pendingSpendReports(), 0);
 });
 
 test("reports are delivered oldest-first, so the queue cannot reorder history", async () => {

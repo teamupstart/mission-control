@@ -1013,15 +1013,17 @@ buffered durably in the state directory before delivery, retried with backoff, a
 after a worker restart. Because each entry represents spend from a run that already
 finished, the buffer has no retention limit: it trades unbounded growth during a daemon
 outage for never discarding spend, and its small entries drain as soon as the daemon
-acknowledges them. A daemon that has no `/api/usage/automation` at all - one older than the
-worker, mid-rolling-upgrade - answers 404, and that is treated as version skew rather than a
-bad report: the run simply waits and lands by itself once the daemon is upgraded, with
-nobody involved. Waiting costs nothing there, because a daemon with no route is delivering
-nothing else either. A report a route that *does* exist rejects is a different thing, and it
-is not deleted: it moves to a `foreman-spend-quarantine.<id>.json` file so it cannot stall
-the reports behind it, and stays there for you to re-send. Nothing drains that file
-automatically, since re-queueing a body the daemon has already refused would loop forever;
-the worker logs an error naming the file when it puts something there. If that file is ever unreadable - corruption, a
+acknowledges them. **Waiting is the default for every failure**, and only a body the daemon
+has definitively refused - a schema rejection, or a runner it has no pricing for - is set
+aside. A daemon mid-rolling-upgrade that has no `/api/usage/automation` yet, a rate limit, a
+timeout, a status nothing here anticipated: all of those simply hold, and land by themselves
+once the condition clears, with nobody involved. That direction is deliberate, because the
+only unacceptable outcome is losing an already-paid-for run, and holding one costs a stalled
+queue that resolves itself. A definitively rejected report is still not deleted: it moves to
+a `foreman-spend-quarantine.<id>.json` file so it cannot stall the reports behind it, and
+stays there for you to re-send. Nothing drains that file automatically, since re-queueing a
+body the daemon has already refused would loop forever; the worker logs an error naming the
+file when it puts something there. If that file is ever unreadable - corruption, a
 hand-edit - its bytes are moved aside to a `.unreadable-*` name rather than replaced, since
 every entry in it is a run that was already paid for. The daemon holds up the other end of that contract: it
 acknowledges a report only when the row was written or there was genuinely nothing to write,

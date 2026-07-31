@@ -393,17 +393,33 @@ export function quarantinedSpendReports(): number {
  * duplicate delivery: the daemon keys each insert by run id and absorbs the duplicate.
  */
 /**
- * Whether a status means "this daemon has no such route" rather than "your body is wrong".
+ * Statuses that mean THIS BODY will never be accepted, however long we wait.
  *
- * The distinction decides whether an already-paid-for run waits or is set aside for a human,
- * so it is worth being explicit about. A worker newer than its daemon gets 404 (the route
- * does not exist), 405 (the path exists for another method) or 501 (not implemented); every
- * one of those is answered by upgrading the daemon and none of them says anything about the
- * report. A 400 or 422 comes from a route that IS there and has looked at the body.
+ * An allowlist, and the direction is the point. The obvious shape - list what is retryable
+ * and quarantine the rest - puts every status nobody thought of on the one-way path, and
+ * that is exactly how a transient 429 or 408 became a permanent trip to the quarantine.
+ * Inverting it means an unanticipated answer waits, which is recoverable, instead of being
+ * set aside for a human, which is not.
  *
- * Treating the first group as retryable is what stops a rolling upgrade from stranding
- * spend: waiting costs nothing, because a daemon with no route is delivering nothing else
- * either.
+ * These four are what a route that exists returns after looking at the body: the schema
+ * rejected it (400), it is too large (413), the encoding is wrong (415), or the daemon
+ * understood it and cannot record it (422). This daemon only ever emits 400 and 422; the
+ * other two are here because a proxy can produce them about the same request.
+ *
+ * Notably NOT here: 401/403. If the loopback route ever grew auth, that is a configuration
+ * problem an operator fixes, and the run should wait for the fix rather than be filed away.
+ */
+function permanentlyRejected(status: number): boolean {
+  return status === 400 || status === 413 || status === 415 || status === 422;
+}
+
+/**
+ * Whether a status means "this daemon has no such route", for the log line only.
+ *
+ * A worker newer than its daemon gets 404, 405 or 501, and saying so plainly is worth a
+ * branch: "the daemon has no /api/usage/automation" tells an operator to finish the
+ * upgrade, where a bare status does not. It no longer decides anything - retrying is the
+ * default for every non-permanent status.
  */
 function routeUnavailable(status: number): boolean {
   return status === 404 || status === 405 || status === 501;
@@ -617,35 +633,16 @@ async function flushSpend(): Promise<void> {
         spendFailures = 0;
         continue;
       }
-      if (routeUnavailable(res.status)) {
-        // The route is not there. That is version skew, not a bad body: a daemon older than
-        // this worker has no `/api/usage/automation` at all, and it will have one the moment
-        // it is upgraded. So this is RETRYABLE and the report simply waits, exactly as it
-        // would for a daemon that was down.
-        //
-        // Quarantining it instead - which is what this branch used to do - looked safe
-        // because nothing was deleted, but it was a one-way door: nothing drains the
-        // quarantine automatically, so an upgrade that fixed the problem seconds later left
-        // the run needing a human to reconstruct and resend it. Waiting costs nothing here,
-        // because a missing route means nothing else is draining either.
-        console.warn(
-          `[foreman] the daemon has no /api/usage/automation (${res.status}); ` +
-            `holding ${report.role} until it does`,
-        );
-        scheduleSpendRetry();
-        return;
-      }
-      if (res.status >= 400 && res.status < 500) {
-        // A route that EXISTS refused this body, so retrying it in place would fail
-        // identically forever and stall every later report behind it. It must not be
-        // deleted either - the run is already paid for.
+      if (permanentlyRejected(res.status)) {
+        // A route that EXISTS looked at this body and refused it, and will refuse it
+        // identically forever, so retrying in place would stall every later report behind
+        // it. It must not be deleted either - the run is already paid for.
         //
         // So it is QUARANTINED: taken out of the delivery queue, where it can no longer
         // block anything, and written to a separate durable file that nothing drains
         // automatically. Automatic re-delivery is deliberately not attempted - a body this
-        // daemon rejects would loop forever - so recovery is an explicit operator act, which
-        // is the honest shape for "we cannot tell whether this is a bad body or a stale
-        // peer". Nothing is lost in the meantime.
+        // daemon rejects would loop forever - so recovery is an explicit operator act.
+        // Nothing is lost in the meantime.
         //
         // ORDER IS LOAD-BEARING: the quarantine entry is made durable BEFORE the report
         // leaves the outbox. Doing it the other way round leaves a window where a worker
@@ -664,8 +661,22 @@ async function flushSpend(): Promise<void> {
         persistSpendOutbox();
         continue;
       }
-      // 5xx: the daemon is there but unhappy. Hold the report and back off.
-      console.warn(`[foreman] spend not recorded: ${report.role} -> ${res.status}; will retry`);
+      // EVERYTHING ELSE WAITS. 5xx (the daemon is there but unhappy), 404/405/501 (a daemon
+      // older than this worker, mid-upgrade), 408/429 (a timeout or a rate limit, from the
+      // daemon or something in front of it) - and, deliberately, any status not anticipated
+      // here at all.
+      //
+      // Retry-by-default is the safe direction and the reason this is a default rather than
+      // a list: the only thing that must never happen is losing an already-paid-for run, and
+      // holding one costs a stalled queue that resolves itself. Enumerating retryable
+      // statuses instead meant every status nobody had thought of fell into quarantine,
+      // which is how a transient 429 became a permanent one-way trip.
+      console.warn(
+        routeUnavailable(res.status)
+          ? `[foreman] the daemon has no /api/usage/automation (${res.status}); ` +
+            `holding ${report.role} until it does`
+          : `[foreman] spend not recorded: ${report.role} -> ${res.status}; will retry`,
+      );
       scheduleSpendRetry();
       return;
     }

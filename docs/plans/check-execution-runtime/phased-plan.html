@@ -104,6 +104,18 @@
   test command and turns checks on gets a green gate that ran nothing.
 </div>
 
+<div class="callout">
+  <strong>Phase 1 is superseded in part - PR #327 landed mid-review</strong>
+  <code>feat(workflows): resume a parked repair round automatically</code> reached <code>main</code>
+  while this plan was in review. It solves Phase 1's headline problem by a different mechanism:
+  a daemon-side observer over parked runs, an immutable per-version <code>resumptionPolicy</code>,
+  and built-in v7 carrying <code>auto</code>. Its commit message argues the Foreman route could
+  never have covered resumption at all, which <strong>contradicts operator decision 5 below</strong>.
+  Phase 1 carries a banner naming exactly what #327 took over and what still holds, and should not
+  be implemented until its scope is re-decided. Phases 2, 3 and 4 are unaffected - no lease,
+  supervisor or executor surface changed, and no cross-phase contract moved.
+</div>
+
 <h2>Incorporated human decisions</h2>
 <p>Submitted by the operator on 2026-07-30, before decomposition.</p>
 <div class="scroll">
@@ -163,7 +175,7 @@
 <ul class="phases">
   <li>
     <div class="n">Phase 1 · group A · no dependencies · M</div>
-    <a href="phase-1-automatic-repair-loop.md">Automatic repair loop</a>
+    <a href="phase-1-automatic-repair-loop.md">Automatic repair loop</a> <strong>- superseded in part, needs re-scoping</strong>
     <div class="d">Flip three defaults, close two dead ends, and write the end-to-end repair-cycle test that does not exist. Independent of the check runtime.</div>
   </li>
   <li>

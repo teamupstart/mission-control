@@ -22,6 +22,50 @@ become a self-repairing gate instead of a report the operator has to read and ac
 - **No dependency on Phase 2, 3 or 4.** Shares no file with them. Concurrency group A.
 - Recommended to merge before Phase 4, for the reason in the index. Not an edge in the graph.
 
+## SUPERSEDED IN PART - read before implementing
+
+**PR #327 (`feat(workflows): resume a parked repair round automatically`) landed on `main`
+while this plan was in review, and it solves this phase's headline problem by a different
+mechanism.** Do not start implementing until the scope below has been re-decided with the
+operator. What follows is recorded as-found rather than rewritten, because the collision
+touches an operator decision and resolving it is not the planner's call.
+
+What #327 shipped, verified against the merged code:
+
+- **`resumptionPolicy` (`auto` | `manual`)**, immutable per published version
+  (`shared/workflow.ts:1028`, `:1057`). A persisted NULL reads as `manual`, so every
+  already-published version keeps what it shipped with.
+- **A daemon-side observer over parked runs** that opens round N+1 once the bound session is
+  settled-idle, has been handed its packet, is not waiting on a human, and **the repository has
+  changed**. Its pre-filter is deliberately repository-only.
+- **Built-in v7** carrying `auto` (`builtin-workflows.ts:402`); v1-v6 stay pinned to `manual`.
+- **`settledIdle` moved to `@shared/session.ts:132`** so the daemon and Foreman decide idleness
+  identically. This phase cited it at `queue-machine.ts:121-125`.
+
+**It contradicts operator decision 5.** That decision was "reuse Foreman, do not grow a second
+completion detector." #327 argues the Foreman route *could never* have covered resumption -
+`retireDrainGuard` needs a `foreman_queues` row with items, so an item-less session throws
+rather than claims; a `foreman_complete` binding additionally needs Foreman enabled plus
+measured `hooks` and `workQueue`; and `ensureExternalBinding` refuses the mode outright. That
+is a stronger technical objection than the one this plan weighed, and it may simply be right.
+But it is the operator's decision to revisit, not this document's.
+
+What still holds, verified against the merged code:
+
+- `DEFAULT_WORKFLOW_CONFIG.liveEnabled` is still `false` (`shared/workflow.ts:654`).
+- `rearmPromptedCompletionForDelivery` still does not exist anywhere in `src/`. Its
+  *importance* drops, though: the observer now covers resumption, so the re-arm matters only
+  for the Foreman claim path rather than for the loop as a whole.
+- The `unchanged_evidence` dead end is intact (`manager.ts:3245`). #327's repository-only
+  pre-filter makes it much less reachable via the observer - an unchanged tree simply does not
+  fire it, which is a cleaner answer than this plan's nudge - but it remains reachable through
+  a Foreman claim.
+
+The open question for the operator, in one line: **does Phase 1 shrink to "flip the defaults
+and fix the Foreman-path dead ends", with #327 owning resumption - or does it keep its original
+scope and reconcile the two mechanisms?** Everything below assumes the original scope and has
+not been rewritten.
+
 ## Scope
 
 In scope:
@@ -303,3 +347,8 @@ identically twice is telling the truth.
   anything failing. Restated as an explicit comparison - block when the count **exceeds two** -
   and the test now pins the second refusal as a nudge rather than leaving it implied. No change
   to the intended bound or to Contract F; this was ambiguity, not a behaviour change.
+- **2026-07-30, PR #327 landed mid-review:** recorded above as a "superseded in part" banner
+  rather than folded into the body. The mechanism it chose is incompatible with operator
+  decision 5, so rewriting this phase to match would have silently reversed a decision the
+  operator made explicitly. Phases 2, 3 and 4 are unaffected - #327 touches the workflow
+  resumption path and nothing in the lease, supervisor or executor surfaces.

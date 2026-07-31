@@ -186,7 +186,7 @@ Phase 1 owns that test.
 
 | # | Phase | Depends on | Concurrency group | Size |
 |---|---|---|---|---|
-| 1 | [Automatic repair loop](phase-1-automatic-repair-loop.md) | planning PR | A | M |
+| 1 | [Automatic repair loop](phase-1-automatic-repair-loop.md) **- superseded in part by PR #327, needs re-scoping** | planning PR | A | M |
 | 2 | [Lease foundation](phase-2-lease-foundation.md) | planning PR | A | L |
 | 3 | [Streaming process supervisor](phase-3-process-supervisor.md) | 2 | B | L |
 | 4 | [Check executor wiring](phase-4-executor-wiring.md) | 2, 3 | C | M |
@@ -373,3 +373,12 @@ After Phase 1, these hold and no later phase may weaken them:
   is stated as a comparison rather than an ordinal, and process identity became a composite
   because no shell-reachable start-time field has the resolution to stand alone. Contract P's
   wording above was widened to say `startTimeTicks` is opaque and composite.
+- **2026-07-30, PR #327 landed on `main` mid-review** (`feat(workflows): resume a parked repair
+  round automatically`). It implements automatic resumption through a daemon-side observer over
+  parked runs plus an immutable per-version `resumptionPolicy`, and ships built-in v7 carrying
+  `auto`. That is a different mechanism from the one Phase 1 plans, and its commit message
+  argues the Foreman route could never have covered resumption at all - which contradicts
+  **operator decision 5**. Phase 1 now carries a "superseded in part" banner naming exactly what
+  #327 took over and what still holds, and it must not be implemented until the operator
+  re-decides its scope. Phases 2, 3 and 4 are untouched: #327 changes nothing in the lease,
+  supervisor or executor surfaces, and no cross-phase contract moved.

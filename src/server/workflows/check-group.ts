@@ -160,6 +160,16 @@ async function waitForEmpty(pid: number, budgetMs: number, pollMs: number): Prom
  *     `ESRCH` on the group id proves emptiness on its own, without a signal being sent.
  *     That distinction is what lets a daemon that crashed after its checks finished hand
  *     their trees back instead of stranding a pool slot per crash.
+ *
+ *     The consequence worth knowing, because it decides how a stuck lease eventually clears:
+ *     once the LEADER is gone, its identity is unreadable, so a group that still has surviving
+ *     descendants can never be signalled again by a later pass - it answers `unknown` until
+ *     those descendants exit on their own, and only then does a pass prove it `empty`. That is
+ *     the fail-closed direction (the lease is held, never wrongly returned) and it is
+ *     self-healing rather than permanent. It is also rare by construction: the ladder below
+ *     `SIGKILL`s the whole group while the leader is still identifiable, so reaching this state
+ *     needs a descendant that outlives `SIGKILL` or has left the group. Asserted in
+ *     `test/workflow-check-supervisor.test.ts`.
  *  3. A match is signalled: `SIGTERM`, a bounded grace, then `SIGKILL`.
  *  4. Then prove it. Poll the group, bounded, and report what the probe actually said.
  *

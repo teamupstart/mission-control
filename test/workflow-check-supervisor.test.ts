@@ -19,6 +19,7 @@ import {
   runSupervisedCheck,
 } from "../src/server/workflows/check-supervisor.ts";
 import {
+  checkGroupAnswers,
   liveCheckGroupCount,
   terminateCheckGroup,
 } from "../src/server/workflows/check-group.ts";
@@ -585,6 +586,61 @@ test("and Node's DEFAULT signal handling would leak them - which is why the daem
     true,
     "default signal handling unexpectedly reached the exit hook - re-check what this guards",
   );
+});
+
+test("a group that could NOT be proven empty stays watched for the exit hook", async () => {
+  const dir = workspace();
+  const pidFile = join(dir, "lingering.pid");
+  const { registry, cleared } = recordingRegistry();
+
+  // Zero budgets, so the ladder runs but every probe gives up immediately - the deterministic
+  // way to reach "we asked and it was still there" while a descendant is genuinely alive.
+  const outcome = await runSupervisedCheck(
+    {
+      attemptId: "attempt-unproven",
+      command: ["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", pidFile],
+      leasePath: dir,
+      workingSubpath: "",
+      timeoutMs: 300,
+    },
+    { registry, daemonToken: "", teardown: { graceMs: 0, confirmMs: 0, pollMs: 1 } },
+  );
+
+  assert.notEqual(outcome.emptiness, "empty");
+  // The point: something may still be writing into the leased worktree, so an orderly daemon
+  // exit must still know to signal it. Dropping it here would leave nothing to kill on the way
+  // out and nothing to find until a later recovery pass.
+  assert.equal(liveCheckGroupCount(), 1, "an unproven group must stay registered for the exit hook");
+  assert.deepEqual(cleared, [], "and its persisted identity must not be cleared either");
+
+  const pid = outcome.supervisor!.pid;
+  const identity = outcome.supervisor!.identity;
+  const recovery = createCheckGroupRecovery(() => ({ pid, startTimeTicks: identity }), {
+    graceMs: 20,
+    confirmMs: 20,
+    pollMs: 10,
+  });
+
+  // While a descendant outlives the leader, recovery REFUSES to signal, and that is the design
+  // working rather than failing. The shim is gone, so its start identity can no longer be read,
+  // and an unverifiable group is never signalled - the pid may have been recycled. So the
+  // honest answer is `unknown`, which keeps the lease and the tracking.
+  assert.equal(await recovery("attempt-unproven"), "unknown");
+  assert.equal(liveCheckGroupCount(), 1, "an unproven group is still not released");
+
+  // It self-heals when the descendant finally exits, which is what this stands in for. The
+  // group is then provably empty by probe alone - no signal was ever sent to a group we could
+  // not identify - and proving it empty is what releases the tracking.
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+  for (let i = 0; i < 60 && checkGroupAnswers(pid); i += 1) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(await recovery("attempt-unproven"), "empty");
+  assert.equal(liveCheckGroupCount(), 0, "proving it empty is what releases the tracking");
 });
 
 test("nothing stays registered for the exit hook once a check is finished", async () => {

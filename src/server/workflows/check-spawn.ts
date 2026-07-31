@@ -478,7 +478,18 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
    * `null`. Across a function boundary it uses their declared types, which are the true ones.
    */
   function finish(emptiness: CheckGroupEmptiness): CheckSpawnOutcome {
-    if (supervisor) unwatchCheckGroup(supervisor.pid);
+    // Stop tracking ONLY what has been proven gone. `not-empty` and `unknown` mean something
+    // may still be alive in the leased worktree, and that is precisely what the hard-exit hook
+    // exists for - dropping it here would be the one path that quietly gives up on a group
+    // while it is still writing, leaving nothing to signal on an orderly daemon exit and
+    // nothing to find until a later recovery pass.
+    //
+    // Retaining it is safe rather than merely cautious: the hook re-verifies identity before
+    // signalling, so a pid the operating system has since recycled is never touched. This is
+    // the same fail-closed direction the lease row and the reaper pin already take for these
+    // two answers, and it would be strange for the process tracking to be the one place that
+    // let go early.
+    if (supervisor && emptiness === "empty") unwatchCheckGroup(supervisor.pid);
     return { result: failure ?? resultFrom(shimReport, ring), emptiness, supervisor };
   }
 

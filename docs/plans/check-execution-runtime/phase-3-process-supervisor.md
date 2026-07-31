@@ -510,3 +510,42 @@ command.
   out of scope twice over: this phase ships unwired, and the plan assigns `WorkflowEngine.stop()`
   cancelling live check groups to Phase 4. `SIGKILL` of the daemon defeats every version of
   this, which is why the durable row and identity-verified recovery exist at all.
+
+- **2026-07-31, review round 3.** Two findings, both accepted, neither behavioural.
+
+  **Documentation Steward - the README overstated the identity.** It described the recorded
+  identity as containing "the supervisor's own command line" and claimed the pairing turns a
+  false match "from unlikely into impossible". Deviation 5 above had made the command-line half
+  a truncated SHA-256, so the README claimed more data than is kept and a stronger guarantee
+  than a digest can give. Corrected to say it is a short digest, why (the raw line carries
+  kilobytes of the supervisor's own source into a row retained for audit, and only equality is
+  ever asked of it), and what it costs: collision resistance rather than a literal comparison.
+  The same overstatement was in `processStartIdentity`'s own docstring, which called the
+  argument "structural rather than probabilistic" - now "structural modulo a 128-bit collision",
+  so code and README agree.
+
+  **Test Evidence Auditor - no transcript of the new suites actually running.** Fair: the
+  evidence was a suite total, which shows nothing about *which* behaviours ran. The three
+  check-runtime files are now run on their own with `--test-reporter=spec` and the full named
+  output attached to the pull request.
+
+- **2026-07-31, review round 4 (Inspector).** One `major`, accepted and fixed: *"Keep unproven
+  groups watched until they are empty."* `finish()` called `unwatchCheckGroup` unconditionally,
+  so a teardown that returned `not-empty` or `unknown` - meaning something may still be writing
+  into the leased worktree - dropped the group from the hard-exit hook anyway. That was the one
+  place in this design that let go of a resource it had not proven finished, and it contradicted
+  the fail-closed posture the lease row and the reaper pin already take for those same two
+  answers. Now only `empty` unwatches. Retaining is safe rather than merely cautious, because
+  the hook re-verifies identity before signalling.
+
+  The other end of the rule went in with it: `createCheckGroupRecovery` unwatches when it
+  finally proves a retained group gone, so the set cannot grow without bound.
+
+  Writing the test surfaced a property of this design worth recording, because it decides how a
+  stuck lease clears. **Once the leader is gone its identity is unreadable, so a group with
+  surviving descendants can never be signalled again** - it answers `unknown` until those
+  descendants exit on their own, and only then does a pass prove it `empty`. The first draft of
+  the test asserted recovery would kill it and was simply wrong about the code. That is the
+  fail-closed direction and it is self-healing rather than permanent, and it is rare by
+  construction, since the ladder `SIGKILL`s the whole group while the leader is still
+  identifiable. Now asserted in both states and documented on `terminateCheckGroup`.

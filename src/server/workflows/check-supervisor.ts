@@ -4,7 +4,11 @@ import { readToken } from "../../shared/harness-runtime.mjs";
 import type { CheckExecutionResult } from "./checks.ts";
 import { scrubCheckEnv } from "./check-env.ts";
 import { checkRuntimeSupport } from "./check-identity.ts";
-import { terminateCheckGroup, type CheckGroupTeardownOptions } from "./check-group.ts";
+import {
+  terminateCheckGroup,
+  unwatchCheckGroup,
+  type CheckGroupTeardownOptions,
+} from "./check-group.ts";
 import { spawnCheckProcess, type CheckSpawnOutcome } from "./check-spawn.ts";
 import type { CheckGroupRecovery, CheckProcessRegistry } from "./check-lease.ts";
 
@@ -169,7 +173,15 @@ export function createCheckGroupRecovery(
     // Both mean the gate was never released, so no branch code ever ran and there is no group
     // to prove empty.
     if (!owner) return "empty";
-    return terminateCheckGroup(owner.pid, owner.startTimeTicks, teardown);
+    const emptiness = await terminateCheckGroup(owner.pid, owner.startTimeTicks, teardown);
+    // The other end of the rule that keeps an unproven group watched: a live run hands a
+    // `not-empty` or `unknown` group on to the exit hook rather than dropping it, and this is
+    // the pass that eventually proves it gone and stops the tracking. Without it, a daemon that
+    // ran many checks would accumulate entries nothing ever removes - harmless to correctness,
+    // since the hook re-verifies identity before signalling, but an unbounded set is not a
+    // thing to leave lying around.
+    if (emptiness === "empty") unwatchCheckGroup(owner.pid);
+    return emptiness;
   };
 }
 

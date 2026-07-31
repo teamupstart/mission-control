@@ -1005,10 +1005,13 @@ spend rather than billed twice.
 The Foreman worker never writes the database, so it reports over
 `POST /api/usage/automation`; the daemon prices and records the report. Valid reports are
 buffered durably in the state directory before delivery, retried with backoff, and recovered
-after a worker restart. The buffers are not a second ledger, and duplicate delivery is
-harmless because each row is keyed to the run's own id. Attribution deliberately reads the
-fresh run's returned envelope instead of giving runs a reusable session id: the Foreman must
-review many sessions without one conversation's context bleeding into the next.
+after a worker restart. Because each entry represents spend from a run that already
+finished, the buffer has no retention limit: it trades unbounded growth during a daemon
+outage for never discarding spend, and its small entries drain as soon as the daemon
+acknowledges them. The buffers are not a second ledger, and duplicate delivery is harmless
+because each row is keyed to the run's own id. Attribution deliberately reads the fresh
+run's returned envelope instead of giving runs a reusable session id: the Foreman must review
+many sessions without one conversation's context bleeding into the next.
 
 Terminal Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
 (`npm run install-statusline`); embedded Claude SDK sessions repopulate them automatically.

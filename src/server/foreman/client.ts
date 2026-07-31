@@ -87,11 +87,11 @@ const enc = encodeURIComponent;
 
 // ---- headless spend delivery ----
 //
-// A bounded, DURABLE outbox for usage reports, and the reason it exists rather than a bare
-// POST: the run whose cost this carries has ALREADY happened. There is no retryable unit of
-// work behind a failed report - just a number that will never be seen again if it is
-// dropped. A daemon restart is an ordinary event, and the worker deliberately outlives one,
-// so "the daemon was down for four seconds" must not be a way to lose spend.
+// A DURABLE outbox for usage reports, and the reason it exists rather than a bare POST: the
+// run whose cost this carries has ALREADY happened. There is no retryable unit of work
+// behind a failed report - just a number that will never be seen again if it is dropped. A
+// daemon restart is an ordinary event, and the worker deliberately outlives one, so "the
+// daemon was down for four seconds" must not be a way to lose spend.
 //
 // It is a FILE, not the database, and that distinction is the whole of how this respects
 // the worker/daemon boundary. The rule the worker lives under is that the daemon is the
@@ -100,24 +100,21 @@ const enc = encodeURIComponent;
 // participates in no migration; it is a buffer for requests the worker has not managed to
 // make yet. The ledger is still written in exactly one place, by the daemon, off the route.
 //
-// Entries leave the spool only on a daemon ACK. An in-memory queue alone had a real hole:
-// a worker crash, a redeploy, or a Ctrl-C while the daemon happened to be down lost every
-// queued report permanently, and the runs behind them were unrecoverable by construction.
-// Writing before the first delivery attempt and erasing only after a 2xx makes the failure
-// mode "delivered twice", which the daemon already absorbs - `window_end_ns` holds the run
-// id, so its insert is idempotent.
+// Entries leave the spool only on a daemon 2xx acknowledgement or 4xx rejection. An
+// in-memory queue alone had a real hole: a worker crash, a redeploy, or a Ctrl-C while the
+// daemon happened to be down lost every queued report permanently, and the runs behind them
+// were unrecoverable by construction. Writing before the first delivery attempt and erasing
+// only after the daemon speaks makes the failure mode "delivered twice", which the daemon
+// already absorbs - `window_end_ns` holds the run id, so its insert is idempotent.
+//
+// This queue is deliberately unbounded. Each entry is small, but represents tokens already
+// spent on a completed run, so dropping one is unrecoverable loss and no queue-length limit
+// is worth that. The trade is unbounded file growth while the daemon remains unreachable in
+// exchange for never losing spend; the file self-heals as soon as daemon acknowledgements
+// let the worker drain it.
 
 /** Reports awaiting delivery by this process, oldest first. */
 const spendOutbox: SpendReportBody[] = [];
-/**
- * How many reports to hold before shedding.
- *
- * Sized so an outage has to be long AND busy to reach it: the Foreman's four roles produce
- * at most a few reports a minute even under load, so 256 is roughly an hour of sustained
- * failure. A cap is still required - without one, a daemon that never comes back turns
- * this into an unbounded leak in a process designed to run for weeks.
- */
-const SPEND_OUTBOX_MAX = 256;
 const SPEND_RETRY_BASE_MS = 1_000;
 const SPEND_RETRY_MAX_MS = 30_000;
 const SPEND_OUTBOX_PREFIX = "foreman-spend-outbox.";
@@ -285,7 +282,6 @@ export function loadSpendOutbox(): number {
     for (const report of restored.entries) {
       if (!spendOutbox.some((queued) => queued.runId === report.runId)) spendOutbox.push(report);
     }
-    while (spendOutbox.length > SPEND_OUTBOX_MAX) spendOutbox.shift();
     if (!persistSpendOutbox()) continue;
     // A legacy array has no owner proof. Copying recovers it for this process, but retaining
     // the source prevents an overlapping previous-build worker from losing a later append.
@@ -318,14 +314,6 @@ function looksLikeSpendReport(value: unknown): value is SpendReportBody {
 
 function enqueueSpend(report: SpendReportBody): void {
   spendOutbox.push(report);
-  // Shed the OLDEST on overflow. Both ends lose real spend, so the tiebreak is which loss
-  // is more useful to keep: the newest reports describe what the fleet is doing now, which
-  // is what the strip is read for, and the oldest are the likeliest to already be beyond
-  // the window anyone is looking at.
-  while (spendOutbox.length > SPEND_OUTBOX_MAX) {
-    const dropped = spendOutbox.shift();
-    console.warn(`[foreman] spend outbox full; dropped ${dropped?.role} usage undelivered`);
-  }
   // Persisted BEFORE the first delivery attempt, which is the ordering the durability
   // depends on: a crash between the run finishing and the POST landing must still find the
   // report on disk.

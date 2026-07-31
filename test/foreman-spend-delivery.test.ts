@@ -306,6 +306,26 @@ test("spend survives the daemon being down, and lands when it returns", async ()
   assert.equal((received.at(-1) as { runId: string }).runId, "run-2");
 });
 
+test("an extended outage never sheds already-spent usage", async () => {
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  await stop();
+  const expectedRunIds = Array.from({ length: 300 }, (_, index) => `run-unbounded-${index}`);
+  const reports = expectedRunIds.map((runId) => report("foreman:review", runId));
+
+  // A report is money already spent, not optional work waiting to run. Keeping every small
+  // entry makes the outage buffer unbounded, but any capacity limit would turn a long daemon
+  // outage into unrecoverable accounting loss, so durable growth is the correct tradeoff.
+  for (const item of reports) await client.reportSpend(item);
+
+  assert.equal(pendingSpendReports(), reports.length, "none were dropped past the old limit");
+  assert.deepEqual(spoolRunIds(SPOOL), expectedRunIds, "every report remained in the spool");
+
+  await start();
+  await flushPendingSpend();
+  assert.equal(pendingSpendReports(), 0);
+  assert.equal(existsSync(SPOOL), false, "daemon acknowledgements healed the spool");
+});
+
 test("a 5xx holds the report; a 4xx drops it rather than blocking the queue", async () => {
   assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
   mode = "500";

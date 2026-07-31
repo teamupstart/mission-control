@@ -965,7 +965,14 @@ export interface WorkflowAttemptInsert {
 }
 
 export interface ForemanCompletionStoreInput {
-  binding: WorkflowBinding;
+  binding: WorkflowBinding | null;
+  /**
+   * The one manager-resolved fallback binding this claim may create.
+   *
+   * It is inserted only inside `claimForemanCompletion`'s transaction, after that same
+   * transaction has successfully retired the matching Foreman completion guard.
+   */
+  fallbackBinding: WorkflowBindingInsert | null;
   completionKind: "drain" | "prompted";
   marker: string;
   summary: string;
@@ -976,13 +983,29 @@ export interface ForemanCompletionStoreInput {
   now: number;
 }
 
-export interface ForemanCompletionStoreResult {
-  result: Exclude<import("@shared/workflow.ts").WorkflowCompletionClaimResult, { claimed: false }>;
-  run: WorkflowRun;
-  submission: WorkflowSubmission | null;
-  created: boolean;
-  previousFingerprint: string | undefined;
-}
+export type ForemanCompletionStoreResult =
+  | {
+      result: Extract<
+        import("@shared/workflow.ts").WorkflowCompletionClaimResult,
+        { claimed: false }
+      >;
+      binding: WorkflowBinding;
+      run: null;
+      submission: null;
+      created: false;
+      previousFingerprint: undefined;
+    }
+  | {
+      result: Exclude<
+        import("@shared/workflow.ts").WorkflowCompletionClaimResult,
+        { claimed: false }
+      >;
+      binding: WorkflowBinding;
+      run: WorkflowRun;
+      submission: WorkflowSubmission | null;
+      created: boolean;
+      previousFingerprint: string | undefined;
+    };
 
 export class WorkflowStore {
   /**
@@ -2161,30 +2184,28 @@ export class WorkflowStore {
 
   /**
    * Claim one Foreman proof and retire its matching once-only guard atomically.
-   * The worker never supplies durable workflow identity; the manager resolves the binding first.
+   * The worker never supplies durable workflow identity; the manager resolves an existing
+   * binding or the one closed fallback insert this transaction is allowed to make.
    */
   claimForemanCompletion(input: ForemanCompletionStoreInput): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
-      const triggerKey =
-        `foreman:${input.binding.id}:${input.completionKind}:${input.marker}`;
-      const duplicateEvent = this.db.prepare(
-        `SELECT run_id, payload_json FROM workflow_events
-          WHERE event_kind = 'workflow_completion_claimed'
-            AND json_extract(payload_json, '$.triggerKey') = ?
-          ORDER BY id ASC LIMIT 1`,
-      ).get(triggerKey) as { run_id: string; payload_json: string } | undefined;
-      if (duplicateEvent) {
-        const run = this.mustRun(duplicateEvent.run_id);
-        const submission = this.submissionByTrigger(triggerKey);
+      const noteKey = input.binding?.noteKey ?? input.fallbackBinding?.noteKey;
+      if (!noteKey) throw new Error("Foreman completion has no workflow binding");
+
+      // A concurrent fallback claim or operator bind may have won after the manager's
+      // read. Resolve that winner without writing before deciding whether this claim may
+      // create anything.
+      let binding = input.binding ?? this.activeBindingForNote(noteKey);
+      if (
+        !input.binding
+        && binding?.triggerMode !== undefined
+        && binding.triggerMode !== "foreman_complete"
+      ) {
         return {
-          result: {
-            claimed: true,
-            runId: run.id,
-            submissionId: submission?.id ?? null,
-            state: "already_claimed",
-          },
-          run,
-          submission,
+          result: { claimed: false, reason: "manual_trigger" },
+          binding,
+          run: null,
+          submission: null,
           created: false,
           previousFingerprint: undefined,
         };
@@ -2195,9 +2216,38 @@ export class WorkflowStore {
         ? (
             this.db.prepare(
               `SELECT prompt FROM session_goals WHERE note_key = ?`,
-            ).get(input.binding.noteKey) as { prompt: string | null } | undefined
+            ).get(noteKey) as { prompt: string | null } | undefined
           )?.prompt?.trim() || null
         : null;
+
+      if (binding) {
+        const triggerKey =
+          `foreman:${binding.id}:${input.completionKind}:${input.marker}`;
+        const duplicateEvent = this.db.prepare(
+          `SELECT run_id, payload_json FROM workflow_events
+            WHERE event_kind = 'workflow_completion_claimed'
+              AND json_extract(payload_json, '$.triggerKey') = ?
+            ORDER BY id ASC LIMIT 1`,
+        ).get(triggerKey) as { run_id: string; payload_json: string } | undefined;
+        if (duplicateEvent) {
+          const run = this.mustRun(duplicateEvent.run_id);
+          const submission = this.submissionByTrigger(triggerKey);
+          return {
+            result: {
+              claimed: true,
+              runId: run.id,
+              submissionId: submission?.id ?? null,
+              state: "already_claimed",
+            },
+            binding,
+            run,
+            submission,
+            created: false,
+            previousFingerprint: undefined,
+          };
+        }
+      }
+
       if (
         input.completionKind === "prompted"
         && (!expectedGoal || currentGoal !== expectedGoal)
@@ -2205,9 +2255,31 @@ export class WorkflowStore {
         throw new Error("Foreman prompted completion goal is no longer current");
       }
 
-      let run = this.activeRunForBinding(input.binding.id);
+      // For an unbound fallback, retire the durable Foreman guard before inserting the
+      // binding. Both writes remain in this transaction: a later failure rolls the guard
+      // back, while a rejected/stale claim never leaves an armed workflow behind.
+      let guardRetired = false;
+      if (!binding) {
+        if (!input.fallbackBinding) {
+          throw new Error("Foreman completion has no workflow binding");
+        }
+        guardRetired = input.completionKind === "drain"
+          ? this.retireDrainGuard(noteKey, `workflow:${input.runId}`, input.now)
+          : this.retirePromptedGuard(input.fallbackBinding, currentGoal, input.now);
+        if (!guardRetired) {
+          throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
+        }
+        binding = this.insertBinding(input.fallbackBinding);
+      }
+
+      const triggerKey =
+        `foreman:${binding.id}:${input.completionKind}:${input.marker}`;
+      let run = this.activeRunForBinding(binding.id);
       let submission: WorkflowSubmission | null = null;
-      let state: ForemanCompletionStoreResult["result"]["state"] = "blocked";
+      let state: Exclude<
+        import("@shared/workflow.ts").WorkflowCompletionClaimResult,
+        { claimed: false }
+      >["state"] = "blocked";
       let created = false;
       let previousFingerprint: string | undefined;
 
@@ -2220,9 +2292,9 @@ export class WorkflowStore {
            ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)`,
         ).run(
           input.runId,
-          input.binding.id,
-          input.binding.workflowVersionId,
-          input.binding.maxRepairRounds,
+          binding.id,
+          binding.workflowVersionId,
+          binding.maxRepairRounds,
           "foreman" satisfies WorkflowTriggerSource,
           triggerKey,
           input.now,
@@ -2285,11 +2357,13 @@ export class WorkflowStore {
         }, input.now);
       }
 
-      const retired = input.completionKind === "drain"
-        ? this.retireDrainGuard(input.binding.noteKey, `workflow:${run.id}`, input.now)
-        : this.retirePromptedGuard(input.binding, currentGoal, input.now);
-      if (!retired) {
-        throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
+      if (!guardRetired) {
+        const retired = input.completionKind === "drain"
+          ? this.retireDrainGuard(binding.noteKey, `workflow:${run.id}`, input.now)
+          : this.retirePromptedGuard(binding, currentGoal, input.now);
+        if (!retired) {
+          throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
+        }
       }
       this.appendEvent(run.id, "workflow_completion_claimed", {
         triggerKey,
@@ -2307,6 +2381,7 @@ export class WorkflowStore {
           submissionId: submission?.id ?? null,
           state,
         },
+        binding,
         run,
         submission,
         created,
@@ -4153,7 +4228,7 @@ export class WorkflowStore {
   }
 
   private retirePromptedGuard(
-    binding: WorkflowBinding,
+    binding: Pick<WorkflowBinding, "noteKey" | "sessionCwd">,
     currentGoal: string | null,
     now: number,
   ): boolean {

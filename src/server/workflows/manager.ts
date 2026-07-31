@@ -3,6 +3,7 @@ import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
 import type {
   CreateWorkflow,
@@ -91,6 +92,7 @@ import {
 } from "./external-binding.ts";
 import {
   WorkflowStore,
+  type WorkflowBindingInsert,
   type WorkflowDeleteWrite,
   type WorkflowPublishWrite,
   type WorkflowStoreWrite,
@@ -1638,13 +1640,69 @@ export class WorkflowManager {
     if (!session || session.state === "exited") {
       throw new Error("The completion target session is not live");
     }
-    const binding = this.store.activeBindingForNote(noteKeyFor(session));
-    if (!binding) return { claimed: false, reason: "no_binding" };
-    if (binding.triggerMode !== "foreman_complete") {
+    let binding = this.store.activeBindingForNote(noteKeyFor(session));
+    let fallbackBinding: WorkflowBindingInsert | null = null;
+    if (!binding && claim.fallbackWorkflow === "no-mistakes") {
+      // The worker's `foremanMayActLive` check is routing, not authority: this HTTP
+      // boundary must independently prove that Foreman may act in this repository
+      // before it can create and submit a durable workflow binding.
+      const foremanConfig = getForemanConfig();
+      if (
+        !foremanConfig.enabled
+        || foremanConfig.mode !== "live"
+        || !repoAllowlisted(session.cwd, session.repoRoot, foremanConfig.repoAllowlist)
+      ) {
+        throw new Error(
+          "No-Mistakes workflow fallback requires Foreman Live mode and an allowlisted repository",
+        );
+      }
+      const workflow = this.get(NO_MISTAKES_REVIEW_WORKFLOW_ID);
+      const versionId = workflow?.workflow.currentVersionId ?? null;
+      if (!workflow || workflow.workflow.archivedAt !== null || !versionId) {
+        throw new Error("The built-in No-Mistakes Review workflow is unavailable");
+      }
+      const version = this.store.getWorkflowVersionById(versionId);
+      if (!version) {
+        throw new Error("The built-in No-Mistakes Review workflow is unavailable");
+      }
+      const workflowBlock = this.bindingWorkflowBlock(version);
+      if (workflowBlock && !workflowBlock.ok) throw new Error(workflowBlock.message);
+      const workflowConfig = getWorkflowConfig();
+      const liveDeliveryAuthorized = workflowConfig.liveEnabled
+        && repoAllowlisted(session.cwd, session.repoRoot, workflowConfig.repoAllowlist);
+      const deliveryMode = liveDeliveryAuthorized ? "live" : "preview";
+      const prerequisite = this.bindingModeBlock(session, "foreman_complete", deliveryMode);
+      if (prerequisite && !prerequisite.ok) throw new Error(prerequisite.message);
+      const ineligible = this.options.canBindSessionToWorkflow?.(session.id);
+      if (ineligible) throw new Error(ineligible);
+      fallbackBinding = {
+        id: randomUUID(),
+        workflowVersionId: version.id,
+        noteKey: noteKeyFor(session),
+        sessionId: session.id,
+        sessionAgent: session.agent,
+        sessionName: session.name,
+        sessionCwd: session.cwd,
+        sessionRepoRoot: session.repoRoot,
+        // The completion claim is already the verified Foreman boundary. Pin this explicitly
+        // even if a later built-in version changes its ordinary binding default.
+        triggerMode: "foreman_complete",
+        // Foreman's setting authorizes reaching this review boundary, not Workflow repair
+        // prompts. Preserve the built-in's Live default only when Workflows Live separately
+        // authorizes this repository; otherwise the review still runs and any repair is
+        // presented as Preview instead of failing to bind at all.
+        deliveryMode,
+        maxRepairRounds: version.bindingDefaults.maxRepairRounds,
+        now,
+      };
+    }
+    if (!binding && !fallbackBinding) return { claimed: false, reason: "no_binding" };
+    if (binding && binding.triggerMode !== "foreman_complete") {
       return { claimed: false, reason: "manual_trigger" };
     }
     const stored = this.store.claimForemanCompletion({
       binding,
+      fallbackBinding,
       completionKind: claim.completionKind,
       marker: claim.marker,
       summary: claim.summary,
@@ -1654,6 +1712,9 @@ export class WorkflowManager {
       submissionId: randomUUID(),
       now,
     });
+    if (!stored.result.claimed) return stored.result;
+    if (!stored.run) throw new Error("Claimed Foreman completion has no workflow run");
+    binding = stored.binding;
     this.queues.refresh(binding.noteKey);
     this.publishRun(stored.run.id);
     if (!stored.created || !stored.submission) return stored.result;

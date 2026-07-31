@@ -2464,9 +2464,12 @@ export function buildApp(
   });
 
   // The `prompted` trigger's once-per-episode stamp: the goal it last fired (or held)
-  // on. A separate endpoint from the two above because it is a separate guard on a
-  // separate trigger - see `SessionQueue.promptedGoal` for why they must not share a
-  // field. Same `ensureQueue` reasoning: these sessions have no queue by definition.
+  // on. `ask` atomically raises the matching Ship it? card too; splitting those writes
+  // can retire a verified episode and then permanently lose its question on a daemon
+  // error. A separate endpoint from the drain ask because the two triggers still own
+  // separate guards - see `SessionQueue.promptedGoal`.
+  //
+  // Same `ensureQueue` reasoning: these sessions have no queue by definition.
   app.post("/api/sessions/:id/queue/wrapup/prompted", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -2474,7 +2477,18 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
-    registry.setQueueWrapup(key, { promptedGoal: parsed.data.goal });
+    const now = Date.now();
+    registry.setQueueWrapup(
+      key,
+      parsed.data.ask
+        ? {
+            promptedGoal: parsed.data.goal,
+            wrapupAskedAt: now,
+            wrapupAnswer: null,
+          }
+        : { promptedGoal: parsed.data.goal },
+      now,
+    );
     return c.json(queues.get(session.id));
   });
 

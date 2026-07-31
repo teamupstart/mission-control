@@ -1,31 +1,18 @@
 /**
- * What is at stake: every string in an ensemble detail was written by an agent or read off a
- * repository, and the operator reads several of them SIDE BY SIDE - that is the whole point of a
- * decision dossier. So the text must never be allowed to size the column it sits in.
+ * What is at stake: an ensemble detail puts several agent-authored strings SIDE BY SIDE, and a
+ * column that sizes itself to its own content overlaps the candidate next to it - both become
+ * unreadable, which is what an operator reported.
  *
- * When it was, the failure was not a clipped word. Two shipped defects, measured in the browser on
- * a real run, are what this file is holding shut:
+ * Why the declarations below are the ones that prevent that is stated where they live, on
+ * `.ensemble-detail` in `src/web/styles.css`. This file pins that they are still there, which is
+ * all a stylesheet can be held to without rendering it:
  *
- * - One member reported a check containing
- *   `1728/1600/1500/1400/1300/1250/1150/1050/1000/950/900/864/840/830px:`, a single token 551px wide
- *   with nowhere to break. `.dossier-claims` sized its `1fr` track to that min-content, so the
- *   claims block rendered 582px wide inside a 323px candidate column - and because a grid column
- *   neither clips nor scrolls, its lines ran straight through the next candidate's rationale. Both
- *   were unreadable. The same token skewed the Members evidence split to 582px against 374px, so
- *   the two halves it exists to align could not be compared.
- * - One level up, `.ensemble-detail` declared no columns at all, and its implicit `auto` track took
- *   its width from the longest snapshot ref in the Artifacts list. That one column is shared by
- *   every section, so all seven panels rendered 51px past the reader's content edge.
- *
- * Two declarations rule both out, and this file pins both because either one alone leaves a hole:
- *
- * 1. `.ensemble-detail` wraps, inherited by the whole subtree, so no prose element has to
- *    remember it. The value has to be `anywhere` and not `break-word`: only `anywhere` shrinks
- *    MIN-CONTENT, which is the number a grid track is sized from. `break-word` looks identical in
- *    a paragraph with room and leaves every track content-sized again.
- * 2. A dossier grid gives its fr tracks an explicit floor (`minmax(0, …)`, or a px/`min()` width
- *    that content cannot exceed). A bare `1fr` means `minmax(auto, 1fr)`, which is the request to
- *    be as wide as the widest thing inside - and the widest thing inside is a model's prose.
+ * 1. The detail declares exactly one `overflow-wrap: anywhere`, the value the comment there
+ *    requires; `break-word` is the substitution that would satisfy a looser check.
+ * 2. No grid in this feature declares an fr track over a content-sized minimum.
+ * 3. The stacks that hold a run's own strings declare a floored track rather than inheriting an
+ *    implicit one, which assertion 2 cannot see because there is nothing written to inspect.
+ * 4. The lanes exempted from 2 still satisfy the premise that makes exempting them safe.
  *
  * The limit of what this can prove: these assertions read DECLARATIONS. A rule that parses as
  * floored and still renders wrong is outside their reach, because nothing here lays out a column.
@@ -83,16 +70,15 @@ test("the ensemble detail wraps agent text at any character, so nothing can size
   assert.deepEqual(
     detail,
     ["anywhere"],
-    "`.ensemble-detail` must declare exactly one `overflow-wrap: anywhere`. Inherited, it is the " +
-      "one place the fact is stated for every member summary, check, path and rationale below it. " +
-      "`break-word` is not a substitute: it does not reduce min-content, so the grids stay " +
-      "content-sized and a token with no break opportunity still overflows into its neighbour.",
+    "`.ensemble-detail` must declare exactly one `overflow-wrap: anywhere` - one declaration, " +
+      "inherited by the whole subtree. `break-word` is the near-miss this refuses; the comment on " +
+      "the rule in `styles.css` says why it is not a substitute.",
   );
 });
 
 /**
- * Scope is a class PREFIX, not a list of names: neither defect above was about one column, and a
- * prefix covers the next grid added to this feature without anyone remembering this file.
+ * Scope is a class PREFIX, not a list of names, so the next grid added to this feature is covered
+ * without anyone remembering this file.
  */
 const GRID_PREFIX = /^(dossier-|ensemble-)/;
 
@@ -111,9 +97,8 @@ function isScopedGrid(selector: string): boolean {
 }
 
 /**
- * Every `fr` in a track list, paired with whether it carries an explicit minimum. `minmax(0, 1fr)`
- * and `minmax(min(320px, 100%), 1fr)` do; a bare `1fr` (or `minmax(auto, 1fr)`) does not, and
- * means "size me to my content", which here is a sentence a model wrote.
+ * The `fr` tracks in a track list that carry no explicit minimum. `minmax(0, 1fr)` and
+ * `minmax(min(320px, 100%), 1fr)` carry one; a bare `1fr` and `minmax(auto, 1fr)` do not.
  */
 function unflooredFrTracks(value: string): string[] {
   // Scanned rather than matched with one regex: a minimum may itself be a function with a comma
@@ -286,18 +271,15 @@ test("no ensemble grid sizes a track to the text in it", () => {
   assert.deepEqual(
     offenders,
     [],
-    "A bare `1fr` is `minmax(auto, 1fr)`: the track grows to the widest unbreakable thing inside " +
-      "it, which in these grids is agent-authored prose. Give it a floor content cannot raise - " +
-      "`minmax(0, 1fr)` for a share of the row, `minmax(min(320px, 100%), 1fr)` for a column with " +
-      "a readable minimum. Offending rules:\n" + offenders.join("\n"),
+    "Give each fr track a floor content cannot raise - `minmax(0, 1fr)` for a share of the row, " +
+      "`minmax(min(<width>, 100%), 1fr)` for a column with a readable minimum. Offending rules:\n" +
+      offenders.join("\n"),
   );
 });
 
 /**
- * The stacks whose defect was an ABSENT declaration rather than a bare `1fr` - a `display: grid`
- * with no columns takes one implicit `auto` track, the same request to be as wide as its widest
- * child. The floor test above cannot see them: there is nothing to inspect until someone writes a
- * track list, so these are named.
+ * Assertion 3's subjects: grids that declare no columns at all, which the floor test cannot see
+ * because there is nothing written to inspect until someone adds a track list.
  *
  * Named, and not every implicit-column grid in the section: the others (timeline rows, decision
  * choices, dispatch lanes) hold bounded, app-authored content, and the article's inherited wrapping
@@ -323,10 +305,8 @@ test("the stacks that hold a run's own strings declare the floor rather than inh
   assert.deepEqual(
     missing,
     [],
-    "These must each declare `grid-template-columns` with a floored track. A `display: grid` that " +
-      "declares no columns takes one implicit `auto` track, so the longest string in the run sizes " +
-      "the column every sibling shares - the second defect in this file's header. Missing or " +
-      "unfloored: " + missing.join(", "),
+    "These must each declare `grid-template-columns` with a floored track rather than leaving the " +
+      "implicit one a `display: grid` gets. Missing or unfloored: " + missing.join(", "),
   );
 });
 
@@ -349,7 +329,7 @@ test("a candidate column cannot be widened by what is inside it", () => {
   const col = ALL.filter((r) => r.selectors.some((s) => subjectClasses(s).includes("dossier-col")));
   assert.ok(
     col.some((r) => declaration(r, "min-width") === "0"),
-    "`.dossier-col` needs `min-width: 0`. Its track is fixed at its 1fr share, so a column that " +
-      "outgrows it does not scroll or clip - it draws over the candidate beside it.",
+    "`.dossier-col` needs `min-width: 0`; the rule's own comment in `styles.css` says what a " +
+      "column that outgrows its track does instead of clipping.",
   );
 });

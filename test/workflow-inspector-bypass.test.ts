@@ -321,6 +321,7 @@ test("a Foreman completion claim cannot create a full submission during the new-
 
   const claim = store.claimForemanCompletion({
     binding,
+    fallbackBinding: null,
     completionKind: "drain",
     marker: "inspector-new-head-wait",
     summary: "Foreman observed a completed repair.",

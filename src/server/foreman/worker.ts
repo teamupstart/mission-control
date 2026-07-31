@@ -61,6 +61,7 @@ import {
   drainCompletionClaim,
   promptedCompletionClaim,
   tryWorkflowCompletionClaim,
+  withNoMistakesFallback,
 } from "./workflow-claim.ts";
 
 /**
@@ -165,9 +166,10 @@ async function retirePromptedEpisode(
   client: ForemanClient,
   session: Session,
   goal: string,
+  opts?: { ask?: boolean },
 ): Promise<boolean> {
   try {
-    await client.markPromptedWrapup(session.id, goal);
+    await client.markPromptedWrapup(session.id, goal, opts);
     promptedFailures.onRetired(session.id);
     return true;
   } catch (err) {
@@ -962,6 +964,9 @@ async function processTarget(
   }
 
   if (action.kind === "ask-wrapup" || action.kind === "auto-wrapup") {
+    const useNoMistakesFallback = action.kind === "auto-wrapup"
+      && cfg.wrapup === "no-mistakes"
+      && foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot);
     const [diff, transcriptAnchor] = await Promise.all([
       client.diff(fresh.id).catch(() => null),
       client.transcriptSize(fresh.id).catch(() => null),
@@ -969,7 +974,10 @@ async function processTarget(
     const claim = await tryWorkflowCompletionClaim(
       client,
       fresh.id,
-      drainCompletionClaim(action.queue, diff?.ok ? diff.headSha : null, transcriptAnchor),
+      withNoMistakesFallback(
+        drainCompletionClaim(action.queue, diff?.ok ? diff.headSha : null, transcriptAnchor),
+        useNoMistakesFallback,
+      ),
     );
     if (claim.kind === "failed") {
       log(`${fresh.name}: workflow completion claim failed closed (${claim.error})`);
@@ -978,6 +986,27 @@ async function processTarget(
     if (claim.kind === "claimed") {
       log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
       return true;
+    }
+    if (useNoMistakesFallback) {
+      if (claim.result.reason === "no_binding") {
+        // A current daemon creates the built-in binding before it can answer this way.
+        // Treat an older or inconsistent daemon as unavailable rather than falling back
+        // to the legacy skill invocation and launching a second shipping system.
+        log(`${fresh.name}: no-mistakes workflow fallback was not bound; held for retry`);
+        return false;
+      }
+      // A Manual binding is an existing operator choice and must neither be replaced nor
+      // auto-submitted. Degrade to the same Ship it? card dry-run uses; do not also type
+      // the no-mistakes skill beside a workflow the operator deliberately left Manual.
+      const outcome = await applyQueueAction(
+        queueActions(client, cfg),
+        fresh,
+        { kind: "ask-wrapup", queue: action.queue },
+        qcfg,
+        Date.now(),
+      );
+      log(`${fresh.name}: existing workflow is Manual - asked about wrapping up`);
+      return outcome.kind !== "noop";
     }
   }
 
@@ -1169,17 +1198,22 @@ async function processPromptedWrapup(
     result.verdict.complete
     && !result.verdict.gaps.some((gap) => gap.severity === "blocking")
   ) {
+    const useNoMistakesFallback = cfg.wrapup === "no-mistakes"
+      && foremanMayActLive(cfg, session.cwd, session.repoRoot);
     const transcriptAnchor = await client.transcriptSize(session.id).catch(() => null);
     const claim = await tryWorkflowCompletionClaim(
       client,
       session.id,
-      promptedCompletionClaim({
-        noteKey: noteKeyOf(session),
-        goal: candidate.goal,
-        headSha: diff.headSha,
-        transcriptAnchor,
-        summary: result.verdict.summary,
-      }),
+      withNoMistakesFallback(
+        promptedCompletionClaim({
+          noteKey: noteKeyOf(session),
+          goal: candidate.goal,
+          headSha: diff.headSha,
+          transcriptAnchor,
+          summary: result.verdict.summary,
+        }),
+        useNoMistakesFallback,
+      ),
     );
     if (claim.kind === "failed") {
       log(`${session.name}: workflow completion claim failed closed (${claim.error})`);
@@ -1187,6 +1221,28 @@ async function processPromptedWrapup(
     }
     if (claim.kind === "claimed") {
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
+      return true;
+    }
+    if (useNoMistakesFallback && claim.result.reason === "no_binding") {
+      log(`${session.name}: no-mistakes workflow fallback was not bound; held for retry`);
+      return false;
+    }
+    if (useNoMistakesFallback && claim.result.reason === "manual_trigger") {
+      // Preserve the active Manual binding and surface the boundary to the human. Passing
+      // `false` below selects `ask-wrapup`, which retires this verified episode without
+      // typing the no-mistakes skill alongside that binding.
+      const plan = planPromptedWrapup(
+        candidate.goal,
+        result.verdict,
+        pcfg,
+        false,
+        session.agent,
+      );
+      // Retire the verified episode and raise its card in ONE daemon write. If that
+      // write fails, neither marker lands, this returns not-advanced, and a later tick
+      // retries instead of losing the only human-visible completion handoff.
+      if (!(await retirePromptedEpisode(client, session, plan.goal, { ask: true }))) return false;
+      log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
       return true;
     }
   }
@@ -1198,6 +1254,14 @@ async function processPromptedWrapup(
     session.agent,
   );
 
+  if (plan.kind === "ask-wrapup") {
+    // The card and prompted guard are one durable fact: a failure must leave both
+    // absent so this verified boundary remains retryable.
+    if (!(await retirePromptedEpisode(client, session, plan.goal, { ask: true }))) return false;
+    log(`${session.name}: prompted work looks complete - asked about wrapping up`);
+    return true;
+  }
+
   // Retire the episode FIRST - before anything types - for the reason in the header.
   // A failed stamp aborts: proceeding would be typing an instruction that pushes with
   // nothing recording that we did, so the next tick would do it again. It also aborts
@@ -1208,26 +1272,6 @@ async function processPromptedWrapup(
 
   if (plan.kind === "hold") {
     log(`${session.name}: prompted wrap-up held - ${oneLine(plan.why)}`);
-    return true;
-  }
-
-  if (plan.kind === "ask-wrapup") {
-    // Raising the card IS the whole action here, so a failure to raise it is a dropped
-    // question, not a cosmetic miss: the episode is already retired, so nothing will ask
-    // again. Say so at the same volume as a failed send rather than swallowing it.
-    //
-    // `clearAnswer` because the card renders on `wrapupAskedAt !== null && wrapupAnswer
-    // === null`, and this row's answer belongs to a PREVIOUS episode - a prior prompted
-    // auto-send, or a human's earlier drain answer. Left in place it swallows this ask
-    // silently, which is the same dropped question by a quieter route. A new episode is
-    // by definition a new question, so the answer to the old one is stale; it is cleared
-    // in the SAME write that stamps the ask, so no read can see one without the other.
-    try {
-      await client.markWrapupAsked(session.id, { clearAnswer: true });
-      log(`${session.name}: prompted work looks complete - asked about wrapping up`);
-    } catch (err) {
-      log(`${session.name}: prompted work looks complete but the ask could not be raised (${String(err)})`);
-    }
     return true;
   }
 

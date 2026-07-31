@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { planReap, reapPool, type PoolDeps, type PoolPins, type PoolTree } from "../src/server/pool.ts";
-import { checkHolderToken, withPoolLock } from "../src/server/pool-lease.ts";
+import {
+  acquireLease,
+  checkHolderToken,
+  withPoolLock,
+  type TreehouseCli,
+} from "../src/server/pool-lease.ts";
+import { LEASE_HOLDER } from "../src/shared/harness-runtime.mjs";
 import { stubRun } from "../src/server/util/exec.ts";
 import { gitIn, mkLinkedWorktree, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
@@ -72,6 +78,78 @@ test("the check pin covers a tree the check is standing inside, not just its roo
   const { wt } = mkIdleTree("harness-pool-check-nested-");
   const [c] = await planReap([tree(wt)], pins({ checkLeasePaths: [join(wt, "packages", "app")] }));
   assert.equal(c!.skip, "a check is running in it");
+});
+
+test("reapPool never returns a tree this process re-leased after it looked", async () => {
+  // The dispatcher's setup window, which is invisible to every rung the reaper trusts.
+  // `provisionWorktree` takes its tree from the pool and the task does not record
+  // `worktreePath` until provisioning returns - so in between there is no process, no
+  // session and no task pin. And because a dispatch stamps the same `mission-control`
+  // holder, the per-candidate re-read cannot tell that fresh lease apart from the stale one
+  // the sweep planned to collect: same path, same holder, and `treehouse status` prints no
+  // lease id or timestamp to separate them. Force-returning it cleans and hard-resets a
+  // checkout an agent is about to be launched into.
+  const { clone, wt } = mkIdleTree("harness-pool-release-race-");
+  const status = `1     leased       ${wt}  (held by mission-control)`;
+
+  // A pool that hands `wt` straight back, so the "re-lease" goes through the real
+  // `acquireLease` rather than a test poking the ledger directly.
+  const handsBackTheSameTree: TreehouseCli = {
+    status: async () => stubRun({ stdout: status, stderr: "", code: 0 }),
+    get: async () => stubRun({ stdout: `${wt}\n`, stderr: "", code: 0 }),
+    return: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
+  };
+
+  let reads = 0;
+  const returned: string[] = [];
+  const deps: PoolDeps = {
+    status: async () => {
+      reads++;
+      // Between the sweep's snapshot and its re-read, a dispatch takes this very slot.
+      if (reads === 1) await acquireLease(clone, LEASE_HOLDER, handsBackTheSameTree);
+      return stubRun({ stdout: status, stderr: "", code: 0 });
+    },
+    returnTree: async (_r, path) => {
+      returned.push(path);
+      return stubRun({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const r = await reapPool(clone, () => pins(), deps);
+
+  assert.deepEqual(returned, [], "a freshly leased tree was force-returned under its dispatch");
+  assert.deepEqual(
+    r.skipped.map((c) => c.skip),
+    ["this process re-leased it while we looked"],
+  );
+});
+
+test("reapPool still collects a lease taken before the sweep began", async () => {
+  // The other side of the ledger, and the one that keeps it from becoming an off switch: an
+  // OLD lease is exactly the leak the sweep exists to collect, so a path this process leased
+  // at some point in the past must stay reapable once a later sweep judges it idle.
+  const { clone, wt } = mkIdleTree("harness-pool-release-old-");
+  const status = `1     leased       ${wt}  (held by mission-control)`;
+  const cli: TreehouseCli = {
+    status: async () => stubRun({ stdout: status, stderr: "", code: 0 }),
+    get: async () => stubRun({ stdout: `${wt}\n`, stderr: "", code: 0 }),
+    return: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
+  };
+  // Leased BEFORE the sweep starts, and never returned - a leak.
+  await acquireLease(clone, LEASE_HOLDER, cli);
+
+  const returned: string[] = [];
+  const deps: PoolDeps = {
+    status: async () => stubRun({ stdout: status, stderr: "", code: 0 }),
+    returnTree: async (_r, path) => {
+      returned.push(path);
+      return stubRun({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const r = await reapPool(clone, () => pins(), deps);
+  assert.deepEqual(returned, [wt]);
+  assert.deepEqual(r.reaped.map((t) => t.name), ["1"]);
 });
 
 test("reapPool holds the pool lock across its re-read and the return it authorises", async () => {

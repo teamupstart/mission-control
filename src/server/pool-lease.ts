@@ -184,6 +184,44 @@ export type LeaseAttempt =
   | { path: null; failure: LeaseFailure };
 
 /**
+ * When this process last took each pool path, as a monotonic count of acquisitions.
+ *
+ * This exists to close a race the reaper cannot see any other way. `treehouse status` prints
+ * no lease id and no timestamp, so "same path, same holder" is the whole of the identity it
+ * can compare - which means a tree that was RETURNED and then FRESHLY RE-LEASED between the
+ * sweep's snapshot and its per-candidate re-read reads *identical* to the stale lease the
+ * sweep judged. Both hold as `mission-control`, because that is what dispatch and
+ * `new-session.mjs` both stamp.
+ *
+ * That window is not theoretical for a dispatch: `provisionWorktree` gets its tree here, and
+ * the task does not record `worktreePath` until provisioning has returned, so in between
+ * there is no process, no session and no task pin. The reaper would find a tree that looks
+ * exactly like the leak it planned to collect and `return --force` a checkout a dispatch is
+ * about to launch an agent into.
+ *
+ * A counter rather than a pin, deliberately: a pin is a lifetime somebody has to remember to
+ * end, and one leaked pin costs a pool slot for the life of the daemon. This is a fact about
+ * the past that nobody has to clean up - the sweep asks "did I take this since I looked?",
+ * which is answerable without anyone tracking when provisioning finished. Bounded by the
+ * number of distinct pool paths this process has ever leased.
+ */
+const acquiredAt = new Map<string, number>();
+let acquisitions = 0;
+
+/**
+ * The acquisition count as of now. Read by a sweep BEFORE it reads pool status, so anything
+ * it takes afterwards is provably newer than the reading it is about to judge.
+ */
+export function leaseGeneration(): number {
+  return acquisitions;
+}
+
+/** Whether this process has taken `path` since `generation`. */
+export function leasedSince(path: string, generation: number): boolean {
+  return (acquiredAt.get(canonicalPath(path)) ?? 0) > generation;
+}
+
+/**
  * Ask a pool for a tree under `holder`. Returns its path, or the reason it got nothing
  * (which `provisionWorktree` treats as "maybe leaked", not "no pool").
  *
@@ -210,6 +248,10 @@ export async function acquireLease(
       failure: { what: `treehouse get printed a path that does not exist: ${path}`, stderr },
     };
   }
+  // Recorded HERE, in the one place every acquisition goes through, so no caller can forget
+  // and no caller has to opt in. A dispatch is protected by the same line that protects a
+  // check, from the instant treehouse hands the path over.
+  acquiredAt.set(canonicalPath(path), ++acquisitions);
   return { path };
 }
 

@@ -4417,6 +4417,15 @@ re-taken immediately before a tree is handed back, so a tree leased while the
 sweep was fetching is never returned on the strength of a reading from before it
 existed.
 
+That re-read alone isn't quite enough, because `treehouse status` prints no lease
+id or timestamp: a tree that was returned and then *re-leased* in that window looks
+identical to the stale lease the sweep planned to collect, since both hold as
+`mission-control`. It matters most for a dispatch, which has no process, no session
+and no task record between taking its tree and finishing provisioning. So the daemon
+also remembers which pool paths it has leased and when, and refuses to return one it
+took after it looked. A `treehouse get` from another terminal is still outside that,
+which is why the holder check above stays the thing protecting *your* reservations.
+
 Set `MISSION_POOL_REAP_MS=0` to switch the background sweep off entirely; the
 dispatch-time reap stays on, since its only alternative is abandoning the pool
 for a throwaway worktree.

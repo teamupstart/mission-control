@@ -8,6 +8,8 @@ import {
   canonicalPath,
   checkLeasePaths,
   defaultPoolDeps,
+  leaseGeneration,
+  leasedSince,
   withPoolLock,
   type PoolDeps,
 } from "./pool-lease.ts";
@@ -604,6 +606,9 @@ export async function reapPool(
   const empty: ReapResult = { reaped: [], skipped: [] };
   if (!isTreehouseRepo(repoRoot)) return empty;
 
+  // Read BEFORE the status below, so "this process leased that tree after we looked" is
+  // answerable at the moment of each return. See `returnIfStillIdle`.
+  const generation = leaseGeneration();
   const status = await withPoolLock(repoRoot, () => deps.status(repoRoot));
   if (status.code !== 0) return empty;
   const trees = parsePoolStatus(status.stdout);
@@ -661,7 +666,8 @@ export async function reapPool(
   // above and not the lock is what keeps a stranger's lease safe - but it does close
   // the window against ourselves, which is the one we can close.
   for (const tree of candidates) {
-    const outcome = await withPoolLock(repoRoot, () => returnIfStillIdle(repoRoot, tree, pins, deps));
+    const outcome = await withPoolLock(repoRoot, () =>
+      returnIfStillIdle(repoRoot, tree, pins, deps, generation));
     if (outcome === null) result.reaped.push(tree);
     else result.skipped.push({ tree, skip: outcome });
   }
@@ -681,6 +687,8 @@ async function returnIfStillIdle(
   tree: PoolTree,
   pins: () => PoolPins,
   deps: PoolDeps,
+  /** The acquisition count read before the status this candidate was judged against. */
+  generation: number,
 ): Promise<string | null> {
   const fresh = await deps.status(repoRoot);
   // Fail closed, and only for this tree: a re-check we couldn't take is not a
@@ -697,12 +705,21 @@ async function returnIfStillIdle(
   // (the dispatcher's `--lease-holder`, and new-session.mjs's default). That
   // window is covered instead by the rung below, re-derived from the fresh
   // status: a re-leased tree with an agent running in it reads busy. The
-  // uncovered sliver is a re-lease whose agent has yet to start a process -
-  // narrowed, but not closed, by the lock the caller holds: it binds this
-  // process, and `make session` is not this process.
+  // uncovered sliver is a re-lease whose agent has yet to start a process.
   const still = now.find((t) => t.path === tree.path && t.holder === tree.holder);
   const changed = still ? cheapVerdict(still, nowPins) : "its lease changed while we looked";
   if (changed) return changed;
+  // That sliver, closed for the half of it we can actually see. A dispatch takes its tree
+  // and does not record `worktreePath` on the task until provisioning returns, so for the
+  // whole of that window it has no process, no session and no task pin - and because it
+  // stamps the same `mission-control` holder, the re-read above cannot tell it apart from
+  // the stale lease this sweep planned to collect. Force-returning it would clean and reset
+  // a checkout an agent is about to be launched into. The lease ledger answers the one
+  // question status cannot: did WE take this tree after we looked?
+  //
+  // Only the in-process half. A `make session` or a hand-run `treehouse get` is still
+  // outside this, and stays the documented residual - see `pool-lease.ts`.
+  if (leasedSince(tree.path, generation)) return "this process re-leased it while we looked";
   const r = await deps.returnTree(repoRoot, tree.path);
   if (r.code === 0) return null;
   return `treehouse return failed: ${r.stderr.trim() || "unknown"}`;

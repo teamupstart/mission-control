@@ -2660,7 +2660,23 @@ export function buildApp(
   app.post("/api/usage/automation", async (c) => {
     const parsed = await parseBody(c, SpendReportSchema);
     if (!parsed.ok) return parsed.res;
-    if (recordSpendReport(parsed.data)) registry.applyAutomationUsage();
+    const outcome = recordSpendReport(parsed.data);
+    if (outcome.kind === "recorded") {
+      registry.applyAutomationUsage();
+      return c.body(null, 204);
+    }
+    // A report this daemon CANNOT record must not be acknowledged. The worker treats any
+    // 2xx as proof the spend landed and erases its durable copy, so a 204 here would delete
+    // an already-paid-for run that never reached the ledger - and the case is real rather
+    // than theoretical: a worker newer than its daemon can name a runner this build has no
+    // pricing for. 422 puts it in the worker's quarantine instead, where it survives until
+    // the daemon is upgraded.
+    if (outcome.kind === "unsupported") {
+      return c.json({ error: `cannot record this spend report: ${outcome.reason}` }, 422);
+    }
+    // `empty` is genuinely nothing to store - a run that reported no tokens at all.
+    // Acknowledging it is right: there is no spend to lose, and refusing would have the
+    // worker hold a zero-token report for a recovery that has nothing to recover.
     return c.body(null, 204);
   });
 

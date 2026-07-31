@@ -514,6 +514,19 @@ command.
   cancelling live check groups to Phase 4. `SIGKILL` of the daemon defeats every version of
   this, which is why the durable row and identity-verified recovery exist at all.
 
+- **2026-07-31, review round 9 (Documentation Steward).** The round-8 correction below was
+  applied in two places out of three: `check-env.ts` and the README were fixed, and
+  `check-supervisor.ts`'s module comment was left still claiming the scrubber removes "the
+  variables that locate" the credential. So the codebase contradicted itself, with the honest
+  account and the overstated one sitting two files apart. Corrected, and the fix now carries the
+  measurements with it rather than pointing vaguely at another module: `HOME` is preserved
+  deliberately, removing it would not help because `os.homedir()` falls back to `getpwuid` and
+  `os.userInfo().homedir` ignores `$HOME` outright, and the allowlist is the boundary.
+
+  Worth noting as a pattern, since it is the third documentation finding on this branch: every
+  one has been prose claiming more than the code delivers, and this one was a partial fix of an
+  earlier one. A claim worth correcting is worth grepping for.
+
 - **2026-07-31, review round 8 (Inspector).** One `major`, declined on the remedy and accepted on
   the fact: *"Do not pass the daemon HOME to check commands."*
 

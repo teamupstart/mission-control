@@ -25,8 +25,13 @@ import type { CheckGroupRecovery, CheckProcessRegistry } from "./check-lease.ts"
 //
 // ## What this is not
 //
-// **Not a sandbox.** `scrubCheckEnv` removes the daemon's admission credential and the
-// variables that locate it; the command still runs with the daemon's own filesystem authority.
+// **Not a sandbox.** `scrubCheckEnv` removes the daemon's admission credential and the aliases
+// that OVERRIDE where its state directory lives. It does not hide the DEFAULT state directory,
+// which sits in the invoking user's home: `HOME` is deliberately preserved because a build needs
+// it, and removing it would not help anyway - `os.homedir()` falls back to `getpwuid` and
+// `os.userInfo().homedir` ignores `$HOME` outright. The command still runs with the daemon's own
+// filesystem authority, so anything running as that user can find that directory. See
+// `check-env.ts` for the measurements. The allowlist is the boundary, not this.
 // Anything that describes this as isolation is describing something that is not here.
 //
 // **Not a shell.** An argv, always, spawned with `shell: false`. That removes shell injection

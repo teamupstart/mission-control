@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { correlate, type DiscoveryInput } from "../src/server/discovery/correlate.ts";
-import type { Proc } from "../src/server/discovery/processes.ts";
+import { daemonOwnedPids, type Proc } from "../src/server/discovery/processes.ts";
 import type { TerminalEnumeration } from "../src/server/terminal/enumerate.ts";
 import type { EmulatorPane, MultiplexerId, MuxPane } from "../src/server/terminal/types.ts";
 import { emulatorHandle, muxHandle } from "../src/shared/pane.ts";
@@ -109,6 +109,71 @@ test("excludes agent processes with no controlling tty (headless subagents)", ()
     terminals: terminals([], []),
   };
   assert.equal(correlate(input).length, 0);
+});
+
+// ---- what is OURS is not a session ----
+//
+// The other half of "no controlling tty" above. A headless run we spawn is invisible to
+// discovery because it has no tty, which held until the embedded runtime arrived: the vendor
+// SDK owns that spawn, so its CLI child inherits whatever terminal the daemon itself was
+// started from and shows up as an ordinary agent on an ordinary tty. `daemonOwnedPids` is
+// what keeps it off the dashboard, and these pin both directions of that rule.
+
+test("excludes the CLI subprocess of an embedded session we spawned ourselves", () => {
+  // Verbatim from `ps` on the machine this was found on: two Agent SDK sessions whose CLI
+  // children both inherited ttys000 from a daemon started with `npm run dev` in wezterm pane
+  // 0. Each already has its own `sdk:` card. As agent processes on a tty they collapsed into
+  // ONE phantom terminal card (`chooseAgentRoot` keeps the earliest), named after the tab the
+  // DAEMON was started in and carrying the first session's cwd, branch, PR and task - so two
+  // cards claimed one PR, and killing the stray one would have signalled a live session.
+  const sdkArgv =
+    "/Users/me/.local/bin/claude --output-format stream-json --verbose --input-format" +
+    " stream-json --model claude-opus-5 --permission-prompt-tool stdio --resume=f07285ee";
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 66148, ppid: process.pid, tty: "ttys000", command: sdkArgv, startMs: 1000 }),
+      proc({ pid: 66223, ppid: process.pid, tty: "ttys000", command: sdkArgv, startMs: 1001 }),
+    ],
+    terminals: terminals([], [emuPane({ tty: "ttys000", tabTitle: "Investigate Conductor" })]),
+  };
+  assert.deepEqual(correlate(input), []);
+});
+
+test("excludes an agent we spawned through a shim, not just a direct child", () => {
+  // Descent, not parentage: the rule has to survive anything we put between us and the agent.
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 7000, ppid: process.pid, tty: "ttys7", command: "node scripts/shim.mjs", agent: null, agentNative: false }),
+      proc({ pid: 7001, ppid: 7000, tty: "ttys7", command: "claude" }),
+    ],
+    terminals: terminals([], [emuPane({ tty: "ttys7", tabTitle: "make restart" })]),
+  };
+  assert.deepEqual(correlate(input), []);
+});
+
+test("an agent the daemon dispatched into a terminal is still a session", () => {
+  // The safety half, and the reason the rule is descent rather than "we caused it": every
+  // backend hands the launch to a mux server or a GUI (`tmux new-session -d`, `wezterm cli
+  // spawn`), so a dispatched agent is reparented away from us before it ever runs. Excluding
+  // by causation would empty the dashboard of every dispatched session.
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 6263, ppid: 1, tty: null, agent: null, agentNative: false, command: "tmux new-session -d -s Fix the Thing -c /w -- claude" }),
+      proc({ pid: 6301, ppid: 6263, tty: "ttys4", command: "claude" }),
+    ],
+    terminals: terminals([muxPane({ session: "Fix the Thing", tty: "ttys4", paneId: "%2" })], []),
+  };
+  const [s] = correlate(input);
+  assert.equal(s?.pid, 6301);
+  assert.equal(s?.name, "Fix the Thing");
+});
+
+test("daemon ownership is the whole subtree, and only it", () => {
+  const kid = (pid: number, ppid: number): Proc =>
+    proc({ pid, ppid, tty: null, agent: null, agentNative: false, command: "node x" });
+  const owned = daemonOwnedPids([kid(10, process.pid), kid(11, 10), kid(12, 1)], process.pid);
+  assert.deepEqual([...owned].sort((a, b) => a - b), [10, 11]);
+  assert.ok(!owned.has(process.pid), "the daemon is not its own descendant");
 });
 
 test("picks the root agent process on a tty (launcher, not re-exec child)", () => {

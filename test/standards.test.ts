@@ -97,6 +97,66 @@ test("a symlink that stays INSIDE the repo is still read", () => {
   assert.match(out.docs[0]!.text, /the linked contract/);
 });
 
+test("CLAUDE.md symlinked to AGENTS.md is ONE document, not two copies of it", () => {
+  // The shape this repo itself ships, and both names are in ROOT_NAMES - so the bundle
+  // asked for both, resolved both to the same file, and emitted it twice. The
+  // de-duplication was keyed on the REQUESTED path, which cannot see that two names are
+  // one file. A whole second copy of the doc, byte-identical, paid on every Inspector
+  // review and every queue verify - min(fileSize, MAX_FILE_BYTES) of it, so the figure
+  // moves with the root doc. See docs/evidence/inspector-prompt-bytes.md.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# the one contract");
+  symlinkSync(join(root, "AGENTS.md"), join(root, "CLAUDE.md"));
+
+  const out = readStandards(root, ["packages/app/src/a.ts"]);
+  assert.deepEqual(paths(out), ["AGENTS.md"], "one file is one document, whatever it's named");
+  assert.equal(out.docs.length, 1);
+  // ROOT_NAMES order decides the survivor, so the citation is deterministic rather
+  // than whichever name the filesystem happened to hand back first.
+  assert.equal(out.docs[0]!.path, "AGENTS.md");
+  assert.match(out.docs[0]!.text, /the one contract/);
+  assert.equal(out.truncated, false, "nothing was omitted - the duplicate was never a second doc");
+});
+
+test("a nested CLAUDE.md symlinked to its AGENTS.md sibling is also ONE document", () => {
+  // The climb pushes both NESTED_NAMES per directory, so the same defect lives on the
+  // nested path - and a monorepo linking the two in each package pays it per package.
+  const root = mkRepo();
+  writeFileSync(join(root, "packages", "app", "AGENTS.md"), "# the package's own");
+  symlinkSync(join(root, "packages", "app", "AGENTS.md"), join(root, "packages", "app", "CLAUDE.md"));
+
+  const out = readStandards(root, ["packages/app/src/a.ts"]);
+  assert.deepEqual(paths(out), ["packages/app/CLAUDE.md"], "NESTED_NAMES order picks the survivor");
+  assert.equal(out.docs.length, 1);
+});
+
+test("two root docs that are genuinely DIFFERENT files are both still read", () => {
+  // The other side of the same fix, and the reason it keys on the resolved path rather
+  // than on the text: a repo that really does ship two different root docs asserts two
+  // contracts, and dropping one because it shares a name list with the other would lose
+  // half the bar the verifier judges against. Over-dedup fails silently - the prompt
+  // looks well-formed with a document missing.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# the agent contract");
+  writeFileSync(join(root, "CLAUDE.md"), "# a genuinely separate contract");
+
+  const out = readStandards(root, []);
+  assert.deepEqual(paths(out), ["AGENTS.md", "CLAUDE.md"]);
+  assert.equal(out.docs.length, 2);
+});
+
+test("two root docs with IDENTICAL text but separate files are both still read", () => {
+  // Sharpens the line: identity is the file, not the bytes. Two copies someone forgot
+  // to link are two documents the repo asserts, and an editor may change one tomorrow -
+  // de-duplicating on content would make them one and silently drop the divergence.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# byte for byte the same");
+  writeFileSync(join(root, "CLAUDE.md"), "# byte for byte the same");
+
+  const out = readStandards(root, []);
+  assert.deepEqual(paths(out), ["AGENTS.md", "CLAUDE.md"]);
+});
+
 test("a `..` escape in a changed path reads nothing outside the root", () => {
   const root = mkRepo();
   const outside = mkdtempSync(join(tmpdir(), "outside-"));

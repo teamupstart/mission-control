@@ -38,6 +38,27 @@ export function readCapped(path: string, n: number): string {
 export interface RepoDoc {
   /** Repo-relative path, so a caller can cite the file the repo knows it by. */
   path: string;
+  /**
+   * The path this doc was actually read from, after links. IDENTITY, never citation.
+   *
+   * Two names for one file are one document, and only the resolved path can say so: a
+   * repo whose CLAUDE.md is a symlink to its AGENTS.md - which is this one - satisfies
+   * both entries of a caller's name list, and a de-duplication keyed on the REQUESTED
+   * path emits the same bytes twice - a whole second copy of the doc in every Inspector
+   * review and Foreman verify prompt. The waste is `min(fileSize, maxBytes)` per
+   * duplicated doc, so it is not a fixed figure: it tracks whatever the root doc
+   * currently weighs. It was 24,576 bytes per prompt when the defect was found;
+   * `docs/evidence/inspector-prompt-bytes.md` holds the measurement and how to re-run it.
+   *
+   * Reported here rather than recomputed by the caller because the `realpathSync`
+   * below has already paid for it, and - the load-bearing half - because a second
+   * resolution in a caller is one this function's containment check never saw. The
+   * caller would be keying on a path that may point clean out of the repo.
+   *
+   * Cite `path`. This one names wherever the links happen to land, which is not what
+   * the repo knows the file by.
+   */
+  realPath: string;
   text: string;
   /** True when the file was capped for size. */
   truncated: boolean;
@@ -82,6 +103,7 @@ export function readRepoDoc(
     return {
       // Cite the path the repo asked for, not the link target.
       path: relative(root, abs) || abs,
+      realPath: real,
       text: readCapped(real, Math.min(stat.size, maxBytes)),
       truncated: stat.size > maxBytes,
     };

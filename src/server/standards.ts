@@ -122,14 +122,42 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
   }
 
   const docs: StandardsDoc[] = [];
-  const seen = new Set<string>();
+  // Two sets, because "did we already ASK for this path" and "is this the same
+  // DOCUMENT" are different questions and only the second one is about content.
+  //
+  // `requested` is the cheap first pass: the climb pushes the same nested name once
+  // per changed file, and skipping those costs no syscall. It cannot answer the second
+  // question, though, because one file can be reached by more than one name - this
+  // repo ships CLAUDE.md as a symlink to AGENTS.md, and BOTH are in ROOT_NAMES. Keyed
+  // on the requested path alone, that read as two documents and put a whole second copy
+  // of the doc into every Inspector review and Foreman verify prompt. The waste is
+  // min(fileSize, MAX_FILE_BYTES) per duplicated doc, so it tracks whatever the root doc
+  // currently weighs rather than being a fixed figure - it was 24,576 bytes per prompt
+  // when the defect was found. See docs/evidence/inspector-prompt-bytes.md.
+  //
+  // `identity` keys on the path the read RESOLVED to, which `readRepoDoc` already
+  // computed and now reports. Deliberately not a second `realpathSync` here: this
+  // module would then be resolving paths the containment check inside `readRepoDoc`
+  // never saw, which is the check standing between a symlinked AGENTS.md and the
+  // contents of ~/.ssh/id_rsa going into a prompt.
+  //
+  // Whichever name comes first in ROOT_NAMES (then NESTED_NAMES) order wins and is what
+  // the bundle cites, so the surviving name is deterministic rather than filesystem
+  // order.
+  const requested = new Set<string>();
+  const identity = new Set<string>();
   let total = 0;
   let truncated = false;
   for (const abs of wanted) {
-    if (seen.has(abs)) continue;
-    seen.add(abs);
+    if (requested.has(abs)) continue;
+    requested.add(abs);
     const doc = readRepoDoc(root, realRoot, abs, MAX_FILE_BYTES);
     if (!doc) continue;
+    // Marked before the size gate, not after: a second name for a document already
+    // dropped at the cap is still that same document, and re-reporting it as another
+    // omission would say two docs are missing when one is.
+    if (identity.has(doc.realPath)) continue;
+    identity.add(doc.realPath);
     if (total + doc.text.length > MAX_TOTAL_BYTES) {
       truncated = true;
       continue;

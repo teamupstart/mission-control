@@ -3998,7 +3998,10 @@ with the same insistence on a low noise floor - so the Inspector still works on 
 nobody has configured. It's read fresh each round, so editing it changes the next review.
 
 The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the Inspector judges a PR
-against the contract the repo actually asserts.
+against the contract the repo actually asserts. Both names are consulted, at the repo root
+and in any directory the PR touched, but a document is loaded **once**: repos commonly ship
+one of those names as a symlink to the other (this one does), and two names for a single
+file are one contract, not two copies of it in the prompt.
 
 ### On the card
 
@@ -4511,7 +4514,13 @@ npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
 npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
+npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```
+
+`measure-inspector-prompt` prints the review prompt's byte size for the current source and
+for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in
+bytes rather than asserted. It reads the older source out of git and never touches the
+working tree, so it is safe to run on dirty state.
 
 ## Security
 

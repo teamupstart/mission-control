@@ -56,6 +56,13 @@ rebase. PR #323 (Foreman-completion binding) and #322 (check-repository combobox
 the middle of this decomposition; the two substantive consequences are recorded in Phase 1's
 findings and Phase 4's presentation non-goal.
 
+**Read every `file.ts:NNN` below as a snapshot, not an address.** This repository moves fast
+enough that #323 shifted `manager.ts` by +61 lines between this plan being written and being
+opened as a pull request. The **symbol names and the claims about them** are the durable part;
+if a line does not hold, grep the named symbol rather than assuming the claim is stale. A
+phase whose finding turns out to be wrong in substance should say so in its cross-phase audit
+record and adjust, not quietly work around it.
+
 ### The check seam is built and the production executor is null
 
 `CheckExecutor` (`src/server/workflows/checks.ts:80`) and `CheckRunDeps.execute`

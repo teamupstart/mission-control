@@ -4387,6 +4387,18 @@ kbd {
   margin: 0;
   font-size: 13.5px;
 }
+/* The recovery hint sits a step below the primary instruction: same size, dimmer, and
+   set apart so it reads as a fallback rather than a second thing to do. */
+.empty-hint {
+  margin-top: 10px;
+  color: var(--dim);
+}
+/* Raised off the baseline so the keycap's box centers on the sentence's letters
+   rather than hanging a couple of pixels low against them. */
+.empty-hint kbd {
+  margin: 0 1px;
+  vertical-align: 2px;
+}
 .empty code {
   font-family: var(--mono);
   background: var(--panel);

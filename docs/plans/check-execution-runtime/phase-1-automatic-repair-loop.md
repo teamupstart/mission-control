@@ -173,10 +173,14 @@ delivery's confirmation:
 - On the `unchanged_evidence` refusal path (`manager.ts:3171-3186`), prepare that delivery
   instead of only parking. In `live` it sends; its `confirmDeliverySend` re-arms one episode
   through step 3, so the next Foreman claim is legitimate and gated on a fresh idle+settle.
-- **Bound it.** Count consecutive unchanged refusals on the run. After the second, stop
-  preparing the nudge, leave the run `blocked` with a distinct phase (suggested
-  `unchanged_evidence_exhausted`), and let a human resolve it. A session that ignores two
+- **Bound it, and state the bound as a comparison rather than an ordinal.** Count consecutive
+  unchanged refusals on the run. **Refusals 1 and 2 each prepare a nudge; the run blocks when
+  the count exceeds two**, i.e. on the third consecutive refusal, with a distinct phase
+  (suggested `unchanged_evidence_exhausted`) for a human to resolve. A session that ignores two
   explicit nudges is not going to be fixed by a third.
+  The precise wording matters because "after the second, stop" reads two ways - one of which
+  blocks on the second refusal and silently shortens the repair loop by a round. `> 2` is the
+  bound; the tests below pin all three positions so the ambiguity cannot come back.
 - The counter resets on any submission that captures a changed fingerprint.
 
 Keep `allowUnchanged: false` at `manager.ts:1721-1726`. The nudge is the answer to an unchanged
@@ -243,8 +247,9 @@ Extend existing:
   a sibling asserting the prompted path fires when there are no items.
 - `test/workflow-completion-http.test.ts:592-594` **and `:521-524`** - delete both raw-SQL workarounds; the test
   should now traverse the re-arm honestly. If it cannot, the re-arm is wrong.
-- Unchanged-evidence: first refusal prepares a nudge; second refusal prepares a nudge; third
-  blocks with the exhausted phase; a changed fingerprint resets the counter.
+- Unchanged-evidence, all four positions asserted so the off-by-one cannot return: first
+  refusal prepares a nudge; **second refusal prepares a nudge** (not a block); third blocks
+  with the exhausted phase; a changed fingerprint resets the counter to zero.
 - `test/workflow-config.test.ts` and the Foreman config tests - the new defaults, plus the
   upgrade case: a persisted explicit `false` survives.
 
@@ -291,3 +296,10 @@ identically twice is telling the truth.
   index under "Shared-file notice".
 - **Confirmed no built-in catalog change**, so `test/builtin-workflows.test.ts`'s pinned
   version literals are untouched and Phase 4 inherits them unchanged.
+- **2026-07-30, Inspector round 3 (PR #326):** finding accepted - *"State the unchanged-evidence
+  cutoff consistently"*. Step 4 said to stop preparing nudges "after the second" refusal while
+  the test plan required nudges on the first and second and a block on the third. Both readings
+  are defensible from the prose, and the wrong one shortens the repair loop by a round without
+  anything failing. Restated as an explicit comparison - block when the count **exceeds two** -
+  and the test now pins the second refusal as a nudge rather than leaving it implied. No change
+  to the intended bound or to Contract F; this was ambiguity, not a behaviour change.

@@ -287,6 +287,13 @@ Phase 2 defines this interface and implements it against `workflow_check_leases`
 consumes it and must not reach the table directly. The ordering invariant - persist, then
 release the gate - belongs to Phase 3's supervisor; the durability belongs to Phase 2.
 
+`startTimeTicks` is **opaque to Phase 2** and, since round 3, a **composite**: a start-time
+field plus the supervisor's command line, which carries the attempt id. Neither platform
+exposes a start-time with enough resolution to stand alone - `ps -o lstart=` is whole-second -
+so uniqueness comes from the attempt id in the argv rather than from precision. Phase 2 stores
+and compares the string and never parses it, which is what lets Phase 3 change its composition
+without touching the table.
+
 ### Contract R: the retry gate (owned by Phase 2, consumed by Phase 4)
 
 `unresolvedLeaseForNode(submissionId, nodeId)` answers whether a check node still owns a lease
@@ -356,3 +363,13 @@ After Phase 1, these hold and no later phase may weaken them:
   second tree rather than blocking - Contract R is the new gate, with its enabling columns
   placed in Phase 2 rather than looked up from Phase 4. Both phases' audit records carry the
   detail. No operator decision, phase boundary or dependency edge changed.
+- **2026-07-30, Inspector round 3 (PR #326):** three findings, all accepted, none changing a
+  phase boundary or an operator decision. One is worth recording at index level because it was
+  a contradiction *between* rounds rather than a defect in one phase: round 2 made a
+  holder-mismatch row drop its pin, but Phase 2's pin query still read the whole lease table,
+  so the retained audit row would have been re-pinned on the next sweep and the fix would have
+  silently lost. The state filter (`held` / `returning` only) is now the seam that makes
+  "retain the row" and "drop the pin" compatible. The other two: the unchanged-evidence bound
+  is stated as a comparison rather than an ordinal, and process identity became a composite
+  because no shell-reachable start-time field has the resolution to stand alone. Contract P's
+  wording above was widened to say `startTimeTicks` is opaque and composite.

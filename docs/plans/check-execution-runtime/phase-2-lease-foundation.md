@@ -203,6 +203,12 @@ small sibling; either is fine, but only one module writes this table.
 - Populate in `poolPins(registry)` (`:189-197`) from the durable table **union** the lease
   manager's in-memory just-acquired set. The union is the point: a path is pinned from the
   moment acquire returns, synchronously, before the persist yields.
+- **The durable half reads only `held` and `returning` rows.** `returned` and `lost` rows are
+  retained deliberately, for audit, and a query that reads the whole table would re-pin every
+  path this phase has ever leased on the next `poolPins()` call - making a successfully
+  returned tree unreapable forever, and silently undoing step 6's rule that a `lost` row drops
+  its pin. The state filter is the thing that makes "retain the row" and "drop the pin"
+  compatible claims; write it as the query's `WHERE`, not as a comment, and assert it.
 - Add the rung to `cheapVerdict` beside the existing two path checks (`pool.ts:508-509`), with
   a message in the same voice: *"a check is running in it"*.
 - Extend `canonicalPins` (`pool.ts:388`, module-private) so the new paths get the same
@@ -319,6 +325,9 @@ of the pool lock stated plainly.
 - Pin/verify failure unwinds the lease and surfaces the return's own outcome in the error.
 - `unresolvedLeaseForNode` answers true for `held` and `returning`, false for `returned` and
   `lost`, and keeps answering correctly after the attempt row is deleted.
+- **`poolPins()` contributes no path for a `returned` or `lost` row.** Seed one of each, call
+  `poolPins()`, and assert neither path appears - then assert the reaper reclaims both. This is
+  the test that keeps the audit rows from quietly becoming permanent pins.
 
 `test/pool-check-pins.test.ts` (or extend `test/pool.test.ts` if it exists):
 
@@ -349,7 +358,7 @@ Commands: `npm run typecheck`, `npm test`, `npm run build`.
 - `workflow_check_leases` exists, is empty, and nothing writes it yet.
 - Reconciliation is wired above `startPoolReaper` in `src/server/index.ts` with a comment
   saying why.
-- Suite ends with no leaked lease, and no path is left pinned by a `lost` row.
+- Suite ends with no leaked lease, and no path is left pinned by a `returned` or `lost` row.
 
 ## Downstream handoff
 
@@ -411,3 +420,12 @@ state.
     attempt row must not make the answer wrong - the same argument that keeps this table
     free of a foreign key. Moving the columns into the earliest phase that must own them,
     rather than bolting a lookup onto Phase 4, follows the phasing rule.
+- **2026-07-30, Inspector round 3 (PR #326):** finding accepted - *"Exclude terminal leases
+  from check pin paths"*. Step 4 said `checkLeasePaths` is populated "from the durable lease
+  table" without a state filter, which directly contradicted round 2's fix: `lost` drops its
+  pin, but the very next `poolPins()` would read the retained audit row and put it back, and a
+  `returned` row would pin a tree that had already gone home. The two rules were incompatible
+  as written and the more recent one would have lost. Corrected to read only `held` and
+  `returning`, with the filter stated as the query's `WHERE` and covered by its own test. Worth
+  noting as a pattern: retaining a row for audit and treating that same table as a live index
+  are different jobs, and the state filter is the seam between them.

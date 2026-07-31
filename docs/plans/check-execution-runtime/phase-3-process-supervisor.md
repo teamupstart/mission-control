@@ -93,11 +93,26 @@ name-shape rule is the honest match to the threat model - say so.
 `processStartIdentity(pid): string | null` - a stable, opaque, comparable token for "this
 exact process, not a recycled pid".
 
-- Linux: field 22 of `/proc/<pid>/stat` (starttime, in clock ticks since boot). Cheap, no
-  spawn.
-- macOS: `ps -o lstart= -p <pid>`, normalised. Costs a spawn; acceptable, it happens twice per
-  check.
+**It is a COMPOSITE, and it has to be**, because no shell-reachable start-time field on either
+platform has enough resolution to stand alone. `ps -o lstart=` is whole-**second**; Linux's
+`starttime` is clock ticks, typically 10ms. A pid recycled inside that window compares equal,
+and the one thing this check exists to prevent is signalling a stranger's process group.
+
+So the identity is `(start-time field, supervisor command line)`, and step 4's shim **takes the
+attempt id as an argument** specifically so the second half is unique. A false match would then
+require the same pid, started in the same second, running our shim, for the same attempt - and
+only one supervisor is ever created per attempt, so no second process can bear that id. The
+attempt id is already in hand at spawn time; this costs nothing and turns a probabilistic
+argument into a structural one.
+
+- Linux: field 22 of `/proc/<pid>/stat` (starttime, in clock ticks since boot) plus
+  `/proc/<pid>/cmdline`. Two cheap file reads, no spawn.
+- macOS: `ps -o lstart=,command= -p <pid>`, normalised. **One** spawn for both halves, so the
+  composite costs no more than the single field did; it happens twice per check.
 - Anything else: `null`.
+
+If either half is unreadable the whole identity is `null`. A half-identity is the failure mode
+this is guarding against, so it must not be allowed to look like a successful read.
 
 **Where `null` is the answer, checks do not run.** Preflight it once and have the executor
 report `unavailable` with a sentence naming the platform. That routes into the already-tested
@@ -162,6 +177,10 @@ parent writes one byte to - over anything that writes a script to disk. Whatever
 the shim must remain the identifiable group leader for the life of the group; a shim that
 `exec`s itself away and lets the build become the leader breaks step 5.
 
+**The shim's argv must carry the attempt id**, because step 2's identity depends on it for
+uniqueness. It is not decoration and it is not for logging: drop it and the identity falls back
+to a whole-second timestamp that a recycled pid can match.
+
 ### 5. Identity-verified teardown
 
 One function, used by live cancellation, timeout, daemon shutdown, and startup recovery.
@@ -196,7 +215,8 @@ owns the last-resort hook.
   three-variant type.
 - **New platform floor for checks**: Linux and macOS. Everything else reports `unavailable`
   and passes, so no build breaks - it degrades into an already-tested path. README must say
-  which platforms execute checks.
+  which platforms execute checks, and that on both the identity is a composite of a start-time
+  field and the attempt-bearing command line rather than a timestamp alone.
 - **`WORKFLOW_EXECUTION_LIMITS.checkOutput`** is the existing bound; do not add a second one.
 
 ## Tests and verification
@@ -223,6 +243,11 @@ mocks:
 - A grandchild ignoring `SIGTERM` is `SIGKILL`ed after the grace.
 - A mismatched start identity is never signalled - the strongest test in the phase; construct
   it by recording a live pid with a deliberately wrong tick value and asserting no signal.
+- **Each half of the composite is load-bearing on its own.** One case where the start-time
+  halves match but the command line does not (the recycled-pid-within-the-same-second case the
+  composite exists for), and one where the command matches but the start time does not. Both
+  must refuse. A test that only varies the timestamp would pass against a single-field identity
+  and prove nothing about the fix.
 - Emptiness returns `unknown`, not `empty`, when the group still answers at the bound.
 
 `test/workflow-check-env.test.ts`: the scrubber removes the token, all three home aliases and
@@ -271,3 +296,15 @@ command.
 - **Confirmed the phase leaves the repository operable**: the new modules are pure additions
   with no call site, so `checkDeps.execute` stays null and the shipped
   `unavailable`-and-pass behaviour is unchanged until Phase 4.
+- **2026-07-30, Inspector round 3 (PR #326):** finding accepted - *"Use a PID identity with
+  sub-second precision on macOS"*. `ps -o lstart=` is whole-second, so a pid recycled inside
+  that second compares equal and recovery could signal an unrelated group. The suggested
+  fallback (report checks unavailable on macOS) was not needed: there is no finer
+  shell-reachable field without native code, but there is a cheaper answer than precision -
+  make the identity a **composite** with the supervisor's command line, and make that command
+  line unique by putting the attempt id in the shim's argv. A collision then requires a second
+  process bearing an attempt id only one supervisor ever holds, which is structural rather than
+  probabilistic. Applied to Linux too: its 10ms `starttime` was better but not immune, and one
+  identity shape across platforms is easier to reason about than two. Costs no extra spawn on
+  macOS (`lstart` and `command` come from one `ps`). Phase 2's Contract P is unchanged - it
+  stores an opaque `startTimeTicks` string, and a composite is still one opaque string.

@@ -298,6 +298,13 @@
   /** Clear after confirmed group emptiness, never merely leader exit. */
   clear(attemptId: string): void;
 }</code></pre>
+<p>
+  <code>startTimeTicks</code> is opaque to Phase 2 and, since Inspector round 3, a
+  <strong>composite</strong>: a start-time field plus the supervisor's command line, which carries
+  the attempt id. No shell-reachable start-time field has the resolution to stand alone
+  (<code>ps -o lstart=</code> is whole-second), so uniqueness comes from the attempt id in the argv
+  rather than from precision.
+</p>
 
 <h3>Contract R - the retry gate <span class="sv-s">(Phase 2 defines, Phase 4 consumes)</span></h3>
 <p>

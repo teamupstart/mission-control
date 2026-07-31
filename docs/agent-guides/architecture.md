@@ -1,0 +1,94 @@
+# Architecture and lifecycle
+
+This guide expands the architecture rules referenced by the root `AGENTS.md`. Read the relevant section before changing ownership or lifecycle behavior.
+
+## Process boundaries
+
+| Surface | Entry point | Ownership |
+|---|---|---|
+| Daemon | `src/server/index.ts` | Loopback HTTP server on port 7317 and the only SQLite writer |
+| Web dashboard | `src/web/main.tsx` | React UI over HTTP plus one Server-Sent Events connection |
+| Shared contracts | `src/shared/` | Wire types, schemas, and browser-safe shared logic |
+| Electron shell | `src/main/index.ts`, `src/preload/index.ts` | Starts and embeds the daemon |
+| MCP server | `src/mcp/server.ts` | Stdio child that reaches the daemon over HTTP |
+| Foreman | `src/server/foreman/worker.ts` | Separate auto-responder process, HTTP only, never SQLite |
+| Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
+| SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
+| Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
+| Hook bridges | `hooks/` | Small Node processes that post hook events to the daemon |
+
+The live browser channel is SSE only. Do not add browser polling.
+
+## Session ownership
+
+The Registry owns the session map. Terminal discovery and `SdkSupervisor` are its only producers.
+
+Startup order matters:
+
+1. Restore resumable SDK sessions.
+2. Register or evict every restored session.
+3. Start terminal discovery.
+4. Reconcile task, workflow, and review bindings after the first completed observation.
+
+Discovery's unseen-session loop applies only to `runtime === "terminal"`. A missing terminal process says nothing about an SDK session.
+
+## A session going away
+
+Both terminal and SDK sessions leave through `Registry.beginEviction`:
+
+1. Emit `exited`.
+2. Wait through the linger window.
+3. Emit durable `session_remove`.
+4. Let task, workflow, review, draft, and other subscribers reconcile.
+
+Do not add another teardown route. Do not use `state === "exited"` for durable cleanup because a temporarily missed process can be rediscovered before removal.
+
+Each durable `session_remove` subscriber needs a startup twin that reconciles after sessions have been observed. SDK restore completes before that first observation.
+
+An SDK shutdown suspends its session. `taskLiveness` reads persisted rows during startup, before in-memory handles exist. `turn_in_progress` records interrupted work and is cleared only when the turn finishes or a successful context reset establishes an idle replacement.
+
+## Tasks and worktrees
+
+`Task.sessionId` points to the session currently executing the task. It is not task history. Work-episode bindings preserve provenance.
+
+Only one non-terminal task may be bound to a session. Enforce this anywhere the pointer is assigned.
+
+When an agent disappears, settle the task but retain its worktree, branch, and home for explicit operator cleanup. Startup reconciliation may reclaim invisible stale rows; live disappearance must not.
+
+A handoff from SDK to terminal clears the task binding before stopping the driver, waits for the driver pump, starts through the normal unique-spawn path, then rebinds after discovery.
+
+Worktree snapshots use a temporary Git index. Never capture through the real index. Reset helpers use `clean -fd`, never `-fdx`, so ignored warm dependencies survive.
+
+## Dispatch runtime
+
+Runtime selection has one owner: `resolveDispatchRuntime`, composed with `resolveSessionRuntime`.
+
+After provisioning, dispatch branches once:
+
+- Terminal: home, discovery wait, readiness wait, and intent delivery.
+- SDK: no terminal home, no discovery wait, no terminal readiness wait, and the initial prompt is turn one.
+
+An invalid stored runtime falls back to terminal and reports what was dropped. If SDK was requested but no supervisor exists, fail instead of silently changing runtime.
+
+## Harnesses and terminals
+
+Harness capabilities split by purity:
+
+- `HARNESS_CAPABILITIES` in `src/shared/harness-capabilities.ts` is browser-safe.
+- `HARNESSES` in `src/server/harness/index.ts` adds filesystem and process behavior.
+
+Reach behavior through `capabilitiesFor`, `harnessFor`, or the focused accessors. Do not branch on `session.agent`.
+
+Terminal vendors are hidden behind `MULTIPLEXERS`, `EMULATORS`, and `bindPane`. UI and actions branch on capabilities, not vendor IDs. Use:
+
+- `canWriteTo` for a terminal pane operation.
+- `canMessage` for any reachable conversation, including SDK.
+- `paneToken` for pane-scoped maps.
+
+## Inspector and PR provenance
+
+The Inspector stays in the daemon so it is present in packaged Electron builds and its state survives restarts.
+
+Only two signals prove Mission Control opened a PR: a matching `prCreated` hook and `NmRunSummary.prUrl`. A sniffed `prUrl` or `gh pr list` match is not provenance and must never authorize Inspector adoption.
+
+The Inspector comment marker `mission-inspector:v1` is append-only because it already exists on GitHub. Parse a future version alongside it rather than replacing it.

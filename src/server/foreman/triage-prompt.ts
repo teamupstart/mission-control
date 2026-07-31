@@ -1,4 +1,4 @@
-import { formatTranscript, paneSection, promptHarness, requestSection } from "./prompt.ts";
+import { ACTIVITY_CAP, clip, formatTranscript, paneSection, promptHarness, requestSection } from "./prompt.ts";
 import type { PromptHarness } from "./prompt.ts";
 import { fromChild, instructionsSection } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
@@ -81,8 +81,12 @@ export function buildTriagePrompt(input: ReviewInput): string {
     `reply surface: ${surface}`,
     "",
     "## The pending question",
-    // Child-controlled, exactly as in `buildReviewPrompt` - and this tier can dispose.
-    fromChild(question.trim()) ||
+    // Child-controlled, exactly as in `buildReviewPrompt` - and this tier can dispose. On the
+    // terminal surfaces this IS `session.activity`, the one input the child writes unbounded
+    // through `report_status`, so it gets the reviewer's own cap - clipped BEFORE `fromChild`
+    // scans it, because linear work on an unbounded string is still unbounded, and this is
+    // the tier whose whole purpose is being cheap.
+    fromChild(clip(question.trim(), ACTIVITY_CAP)) ||
       "(no explicit question text - read the ask off the terminal screen below)",
     "",
     truncated

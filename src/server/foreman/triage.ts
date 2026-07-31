@@ -31,7 +31,8 @@ import type { CheapAction, Divergence } from "@shared/foreman.ts";
  */
 export const DEFAULT_TRIAGE_MODEL = FOREMAN_MODEL_SPECS.triage.fallback;
 /**
- * The RECENT turns Tier 1 works from - a smaller window than the full reviewer's 48.
+ * The RECENT turns Tier 1 works from - a smaller window than the full reviewer's 60
+ * (`TRANSCRIPT_HEAD_TURNS` plus the default tail - see `client.transcript`).
  *
  * The endpoint aims its tail reader at this many turns, but a small file still comes back
  * whole and every large response also carries its opening turns. Apply the exact recent
@@ -590,7 +591,10 @@ export async function triageSession(
    * off-limits - on the most frequent path in the system, which is precisely the one they
    * wrote the file to govern. A preferences doc only the expensive tier honours is not a
    * preferences doc, it is a coin flip on which tier happens to pick the ask up. The extra
-   * tokens are real but small against that: the doc is capped at 16KB, this tier is Haiku.
+   * tokens are real: the doc is schema-capped at 64,000 characters
+   * (`ForemanInstructionsSchema.text`) and its rendered section adds about 2.4KB of framing,
+   * so a filled-in box rides along on every triage, review and verify prompt. Worth it
+   * against the coin flip, and this tier is Haiku.
    */
   captured: CapturedInputs,
 ): Promise<TriageOutcome> {

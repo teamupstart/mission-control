@@ -128,8 +128,8 @@ const BETWEEN_MS = 400;
 const EVAL_DEBOUNCE_MS = Number(process.env.FOREMAN_EVAL_DEBOUNCE_MS || 60_000);
 /**
  * The Tier 1 router's own wall-clock cap, well under the full reviewer's 120s: this is Haiku
- * emitting one small object over a trimmed window, not Opus reading 48 turns with the whole
- * POLICY. The budgets must differ because `on` mode runs the two SERIALLY (the router, then the
+ * emitting one small object over a trimmed window, not Opus reading a 60-turn window (head
+ * plus tail - see `client.transcript`) with the whole POLICY. The budgets must differ because `on` mode runs the two SERIALLY (the router, then the
  * full review on route-up), so sharing Tier 2's cap would let a degraded API double the serial
  * queue's worst case rather than fail fast. A timeout is just a spawn failure to `triageSession`,
  * which routes up - i.e. degrades to exactly the pre-triage cost.
@@ -1868,8 +1868,9 @@ async function cheapTierDecides(
 }
 
 /**
- * The full Tier 2 review: a fresh `claude -p` on the wide (48-turn) window with the
- * whole POLICY. Returns the verdict, or null when a transient failure was handled -
+ * The full Tier 2 review: a fresh `claude -p` on the wide window (60 turns: a
+ * `TRANSCRIPT_HEAD_TURNS` head the route always adds, plus the default 48-turn tail
+ * `client.transcript` asks for) with the whole POLICY. Returns the verdict, or null when a transient failure was handled -
  * either a retry (nothing written, left queued) or, after repeated strikes, a
  * marker-stamped give-up skip so a persistently-broken reviewer stops re-spawning.
  */

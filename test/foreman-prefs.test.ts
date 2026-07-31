@@ -406,6 +406,21 @@ test("the child's self-reported activity cannot grow without bound", () => {
   assert.match(p, /activity: x+…/);
 });
 
+test("the router's prompt is bounded against the same unbounded activity", () => {
+  // The same field reaches Tier 1 by a different door: `classifyPending` sets `question` to
+  // `s.activity` on the terminal surfaces, and the router renders the question where the
+  // reviewer renders its capped `activity:` line. Uncapped, a chatty `report_status` inflates
+  // the prompt of exactly the tier whose purpose is being cheap. A 50KB activity must render
+  // no larger than one already at the cap.
+  const atCap = buildTriagePrompt(reviewInput({ question: "x".repeat(2_000) }));
+  const huge = buildTriagePrompt(reviewInput({ question: "x".repeat(50_000) }));
+  assert.ok(
+    huge.length <= atCap.length + 1,
+    `question was not capped - ${huge.length} vs ${atCap.length} at the cap`,
+  );
+  assert.match(huge, /x+…/);
+});
+
 test("a huge transcript cannot outgrow the verify prompt", () => {
   // Restoring real tool rendering restored real size: the deleted renderer printed every call
   // as `[object Object]`, so this block could not grow no matter what the agent ran.

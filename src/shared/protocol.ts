@@ -219,6 +219,20 @@ export const StatusLineIngestSchema = z.object({
 });
 export type StatusLineIngest = z.infer<typeof StatusLineIngestSchema>;
 
+/**
+ * The transcript route's window shape, named here because its two halves live in different
+ * processes and used to drift apart in prose: the daemon's `/api/sessions/:id/transcript`
+ * route adds this fixed opening head to EVERY windowed read (so the goal the user set is
+ * always present), while the tail count is the caller's - the Foreman worker's
+ * `client.transcript` asks for `TRANSCRIPT_DEFAULT_TAIL_TURNS` explicitly, and the route
+ * falls back to the same value when no `turns` param arrives. A default windowed read is
+ * therefore head + tail = 60 turns; any comment counting only the tail undercounts by this
+ * head.
+ */
+export const TRANSCRIPT_HEAD_TURNS = 12;
+/** The tail half of the same window - see `TRANSCRIPT_HEAD_TURNS` for how the two compose. */
+export const TRANSCRIPT_DEFAULT_TAIL_TURNS = 48;
+
 /** A message the user sends into a session from the dashboard. */
 export const SendTextSchema = z.object({
   text: z.string().min(1),

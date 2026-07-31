@@ -57,7 +57,8 @@ export function resolveTranscriptPath(
  * round: `Write` inputs run to a 3.8KB median (a whole file body - worth truncating and
  * no loss, the path leads), while `AskUserQuestion` runs to a 1.4KB median and IS the
  * pending decision. A tighter cap would clip the very asks this exists to surface; on a
- * real 48-turn window this one costs ~3k extra tokens against a ~1.5k baseline, which is
+ * real 48-turn window (the reviewer's default tail - the route adds a 12-turn head on top)
+ * this one costs ~3k extra tokens against a ~1.5k baseline, which is
  * nothing next to the Opus call it lets Foreman answer instead of escalate.
  *
  * Truncation is lossy but safe by construction: it can only ever hide a *later* part of

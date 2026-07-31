@@ -1997,6 +1997,10 @@ export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
  */
 export const PromptedWrapupSchema = z.object({
   goal: z.string().min(1).max(INTENT_MAX),
+  // The human-decision path must retire the prompted episode and raise its Ship it?
+  // card in one durable write. If that write fails, neither marker lands and the
+  // worker can retry the whole verified boundary on its next unhurried tick.
+  ask: z.boolean().optional().default(false),
 });
 export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 

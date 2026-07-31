@@ -166,9 +166,10 @@ async function retirePromptedEpisode(
   client: ForemanClient,
   session: Session,
   goal: string,
+  opts?: { ask?: boolean },
 ): Promise<boolean> {
   try {
-    await client.markPromptedWrapup(session.id, goal);
+    await client.markPromptedWrapup(session.id, goal, opts);
     promptedFailures.onRetired(session.id);
     return true;
   } catch (err) {
@@ -1237,13 +1238,11 @@ async function processPromptedWrapup(
         false,
         session.agent,
       );
-      if (!(await retirePromptedEpisode(client, session, plan.goal))) return false;
-      try {
-        await client.markWrapupAsked(session.id, { clearAnswer: true });
-        log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
-      } catch (err) {
-        log(`${session.name}: prompted work looks complete but the ask could not be raised (${String(err)})`);
-      }
+      // Retire the verified episode and raise its card in ONE daemon write. If that
+      // write fails, neither marker lands, this returns not-advanced, and a later tick
+      // retries instead of losing the only human-visible completion handoff.
+      if (!(await retirePromptedEpisode(client, session, plan.goal, { ask: true }))) return false;
+      log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
       return true;
     }
   }
@@ -1255,6 +1254,14 @@ async function processPromptedWrapup(
     session.agent,
   );
 
+  if (plan.kind === "ask-wrapup") {
+    // The card and prompted guard are one durable fact: a failure must leave both
+    // absent so this verified boundary remains retryable.
+    if (!(await retirePromptedEpisode(client, session, plan.goal, { ask: true }))) return false;
+    log(`${session.name}: prompted work looks complete - asked about wrapping up`);
+    return true;
+  }
+
   // Retire the episode FIRST - before anything types - for the reason in the header.
   // A failed stamp aborts: proceeding would be typing an instruction that pushes with
   // nothing recording that we did, so the next tick would do it again. It also aborts
@@ -1265,26 +1272,6 @@ async function processPromptedWrapup(
 
   if (plan.kind === "hold") {
     log(`${session.name}: prompted wrap-up held - ${oneLine(plan.why)}`);
-    return true;
-  }
-
-  if (plan.kind === "ask-wrapup") {
-    // Raising the card IS the whole action here, so a failure to raise it is a dropped
-    // question, not a cosmetic miss: the episode is already retired, so nothing will ask
-    // again. Say so at the same volume as a failed send rather than swallowing it.
-    //
-    // `clearAnswer` because the card renders on `wrapupAskedAt !== null && wrapupAnswer
-    // === null`, and this row's answer belongs to a PREVIOUS episode - a prior prompted
-    // auto-send, or a human's earlier drain answer. Left in place it swallows this ask
-    // silently, which is the same dropped question by a quieter route. A new episode is
-    // by definition a new question, so the answer to the old one is stale; it is cleared
-    // in the SAME write that stamps the ask, so no read can see one without the other.
-    try {
-      await client.markWrapupAsked(session.id, { clearAnswer: true });
-      log(`${session.name}: prompted work looks complete - asked about wrapping up`);
-    } catch (err) {
-      log(`${session.name}: prompted work looks complete but the ask could not be raised (${String(err)})`);
-    }
     return true;
   }
 

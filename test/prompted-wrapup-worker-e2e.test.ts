@@ -646,6 +646,86 @@ test("a verified prompt binds the no-mistakes workflow exactly once instead of t
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
 });
 
+test("a failed Manual-binding card write leaves the prompted completion retryable", async () => {
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  let queue = mkQueue(repo);
+  let promptedWrites = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "no-mistakes" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      const now = Date.now();
+      return { status: 200, json: [{ ...session, lastSeen: now, lastActivity: now - 120_000 }] };
+    }
+    if (p === "/api/reviews") return { status: 200, json: [] };
+    if (p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") {
+      return { status: 200, json: { prompt: GOAL, text: GOAL, updatedAt: 0 } };
+    }
+    if (p === "/api/sessions/s1/diff") {
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          patch: "diff --git a/up.ts b/up.ts\n+retry();\n",
+          truncated: false,
+          headSha: "abc123",
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: {
+          messages: [{ role: "user", text: GOAL, tools: [] }, { role: "assistant", text: "Added a retry.", tools: [] }],
+          truncated: false,
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/workflow-completion") {
+      return { status: 200, json: { claimed: false, reason: "manual_trigger" } };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      promptedWrites += 1;
+      if (promptedWrites === 1) return { status: 500, json: { error: "temporary write failure" } };
+      const body = JSON.parse(raw) as { goal: string; ask?: boolean };
+      assert.equal(body.ask, true, "the guard and Ship it? card must share one write");
+      queue = {
+        ...queue,
+        promptedGoal: body.goal,
+        wrapupAskedAt: Date.now(),
+        wrapupAnswer: null,
+      };
+      return { status: 200, json: queue };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/asked") {
+      return { status: 500, json: { error: "the split card endpoint must not be used" } };
+    }
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 9000 });
+  await stub.close();
+
+  assert.equal(promptedWrites, 2, `the failed atomic handoff was not retried once\n${out}`);
+  assert.equal(
+    stub.calls.filter((call) => call.path.endsWith("/wrapup/asked")).length,
+    0,
+    `used the non-atomic card endpoint\n${out}`,
+  );
+  assert.equal(queue.promptedGoal, GOAL, `the successful retry did not retire the episode\n${out}`);
+  assert.ok(queue.wrapupAskedAt, `the successful retry did not raise the Ship it? card\n${out}`);
+  assert.equal(claudeCalls(fake.log).length, 2, `the failed handoff did not retry exactly once\n${out}`);
+});
+
 test("a broken verifier gives up after the strike cap, at one strike per unhurried tick", async () => {
   // Two regressions in one run, because they are the same mistake seen from both ends:
   //

@@ -1013,8 +1013,14 @@ buffered durably in the state directory before delivery, retried with backoff, a
 after a worker restart. Because each entry represents spend from a run that already
 finished, the buffer has no retention limit: it trades unbounded growth during a daemon
 outage for never discarding spend, and its small entries drain as soon as the daemon
-acknowledges them. The buffers are not a second ledger, and duplicate delivery is harmless
-because each row is keyed to the run's own id. Attribution deliberately reads the fresh
+acknowledges them. A report the daemon *rejects* is not deleted either: it moves to a
+`foreman-spend-quarantine.<id>.json` file so it cannot stall the reports behind it, and stays
+there for you to re-send. That is deliberate rather than lazy, because a 4xx does not only
+mean a bad body - it is also what a daemon too old for the route answers during a rolling
+upgrade, and those runs are already paid for. Nothing drains that file automatically, since
+re-queueing a genuinely invalid body would loop forever; the worker logs an error naming the
+file when it puts something there. The buffers are not a second ledger, and duplicate
+delivery is harmless because each row is keyed to the run's own id. Attribution deliberately reads the fresh
 run's returned envelope instead of giving runs a reusable session id: the Foreman must review
 many sessions without one conversation's context bleeding into the next.
 

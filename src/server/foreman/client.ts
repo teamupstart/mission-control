@@ -120,6 +120,7 @@ const SPEND_RETRY_MAX_MS = 30_000;
 const SPEND_OUTBOX_PREFIX = "foreman-spend-outbox.";
 const SPEND_OUTBOX_SUFFIX = ".json";
 const LEGACY_SPEND_OUTBOX_NAME = "foreman-spend-outbox.json";
+const SPEND_QUARANTINE_PREFIX = "foreman-spend-quarantine.";
 const spendOutboxId = randomUUID();
 let spendRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let spendFailures = 0;
@@ -218,6 +219,75 @@ function persistSpendOutbox(): boolean {
 }
 
 /**
+ * Where a report the daemon REJECTED goes, instead of being deleted.
+ *
+ * Separate from the delivery spool on purpose, and never drained automatically. A 4xx body
+ * would be rejected again on every retry, so re-queueing it would spin forever; but a 4xx is
+ * also what an out-of-date daemon answers mid-rolling-upgrade, when the route is absent
+ * (404) or its schema has moved (422), and that resolves by itself. Those two are
+ * indistinguishable from here, so the code refuses to decide: it keeps the run rather than
+ * discarding it, and leaves re-delivery to a human who can see which case it was.
+ *
+ * Per-process, like the outbox, so it inherits the same single-writer property and needs no
+ * locking. Appends rather than replaces, since a rejected report is a permanent record until
+ * somebody clears it.
+ */
+function spendQuarantinePath(): string {
+  return join(stateDir(), `${SPEND_QUARANTINE_PREFIX}${spendOutboxId}${SPEND_OUTBOX_SUFFIX}`);
+}
+
+/**
+ * Preserve a rejected report and say so loudly.
+ *
+ * `error` rather than `warn`: this is the one path where a completed, already-paid-for run
+ * stops moving toward the ledger, so it needs to be visible in a log an operator scans
+ * rather than filed with the routine retry chatter. The message names the file, because the
+ * only way this spend ever lands is somebody acting on it.
+ */
+function quarantineSpend(report: SpendReportBody, status: number): void {
+  const path = spendQuarantinePath();
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    let entries: unknown[] = [];
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+      if (Array.isArray(parsed)) entries = parsed;
+    } catch (err) {
+      // A missing file is the ordinary case; an unreadable one must not cost us the report
+      // we are trying to save, so it is replaced rather than treated as fatal.
+      if (fsErrorCode(err) !== "ENOENT") {
+        console.warn("[foreman] replacing an unreadable spend quarantine file:", err);
+      }
+    }
+    entries.push({ status, quarantinedAt: Date.now(), report });
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(entries), "utf8");
+    renameSync(tmp, path);
+    console.error(
+      `[foreman] spend rejected: ${report.role} run ${report.runId} -> ${status}; ` +
+        `quarantined in ${path} (${entries.length} held). It is NOT retried automatically - ` +
+        `if this was a daemon too old for /api/usage/automation, re-send the file once it is upgraded.`,
+    );
+  } catch (err) {
+    console.error(
+      `[foreman] spend rejected: ${report.role} run ${report.runId} -> ${status}, ` +
+        `and it could not be quarantined - this run's usage is lost:`,
+      err,
+    );
+  }
+}
+
+/** How many rejected reports are held for explicit recovery. For the shutdown log and tests. */
+export function quarantinedSpendReports(): number {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(spendQuarantinePath(), "utf8"));
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Restore reports a previous worker never managed to deliver. Call once, at startup.
  *
  * Returns how many were recovered so the worker can say so - a silent restore would make
@@ -295,7 +365,7 @@ export function loadSpendOutbox(): number {
   return spendOutbox.length;
 }
 
-export const spendOutboxTest = { path: spendOutboxPath };
+export const spendOutboxTest = { path: spendOutboxPath, quarantinePath: spendQuarantinePath };
 
 /** The shape check the restore path applies. Deliberately structural, not a zod import. */
 function looksLikeSpendReport(value: unknown): value is SpendReportBody {
@@ -357,16 +427,24 @@ async function flushSpend(): Promise<void> {
         continue;
       }
       if (res.status >= 400 && res.status < 500) {
-        // A 4xx will never succeed: the body did not validate, or names a role this daemon
-        // does not have (a worker newer than the daemon it is talking to). Retrying it
-        // forever would block every later report behind it, so it is dropped loudly - the
-        // one failure mode where losing the row is better than stalling the queue. It
-        // leaves the spool too, or the next restart would replay it into the same 4xx.
+        // A 4xx cannot be retried in place: this daemon will keep rejecting this body, and
+        // leaving it at the head would stall every later report behind it. But it must not
+        // be DELETED either, and that is the correction here. A 4xx does not only mean "the
+        // body is wrong forever" - it is also what a daemon OLDER than this worker returns
+        // during a rolling upgrade, when `/api/usage/automation` does not exist yet (404) or
+        // the schema has moved (422). Those resolve on their own the moment the daemon
+        // catches up, and the runs behind them are already paid for, so discarding them
+        // would lose real spend to a version skew that lasts seconds.
+        //
+        // So it is QUARANTINED: taken out of the delivery queue, where it can no longer
+        // block anything, and written to a separate durable file that nothing drains
+        // automatically. Automatic re-delivery is deliberately not attempted - a body this
+        // daemon rejects would loop forever - so recovery is an explicit operator act, which
+        // is the honest shape for "we cannot tell whether this is a bad body or a stale
+        // peer". Nothing is lost in the meantime.
         spendOutbox.shift();
         persistSpendOutbox();
-        console.warn(
-          `[foreman] spend rejected as unprocessable: ${report.role} -> ${res.status}; dropped`,
-        );
+        quarantineSpend(report, res.status);
         continue;
       }
       // 5xx: the daemon is there but unhappy. Hold the report and back off.

@@ -36,7 +36,7 @@ const home = mkdtempSync(join(tmpdir(), "foreman-spend-"));
 process.env.MISSION_HOME = home;
 
 /** What the fake daemon does to the next request. */
-let mode: "ok" | "down" | "500" | "400" = "ok";
+let mode: "ok" | "down" | "500" | "400" | "404" = "ok";
 const received: Array<Record<string, unknown>> = [];
 const attempted: string[] = [];
 let delayedRunId: string | null = null;
@@ -64,6 +64,11 @@ function start(): Promise<void> {
           res.writeHead(422).end();
           return;
         }
+        // A daemon that predates /api/usage/automation. Not a bad body - a stale peer.
+        if (mode === "404") {
+          res.writeHead(404).end();
+          return;
+        }
         received.push(report);
         res.writeHead(204).end();
       });
@@ -87,6 +92,7 @@ const {
   flushPendingSpend,
   loadSpendOutbox,
   pendingSpendReports,
+  quarantinedSpendReports,
   spendOutboxTest,
 } = await import("../src/server/foreman/client.ts");
 const client = new ForemanClient();
@@ -326,17 +332,29 @@ test("an extended outage never sheds already-spent usage", async () => {
   assert.equal(existsSync(SPOOL), false, "daemon acknowledgements healed the spool");
 });
 
-test("a 5xx holds the report; a 4xx drops it rather than blocking the queue", async () => {
+test("a 5xx holds the report; a 4xx quarantines it rather than blocking the queue", async () => {
   assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const heldBefore = quarantinedSpendReports();
   mode = "500";
   await client.reportSpend(report("inspector:review", "run-3"));
   assert.equal(pendingSpendReports(), 1, "a daemon-side error is transient, so it is kept");
 
-  // A 422 means this body will never validate - a worker newer than its daemon, say.
-  // Retrying it forever would wedge every later report behind it, so it is dropped loudly.
+  // A 422 cannot be retried in place - this daemon will reject the same body forever, and
+  // leaving it at the head would stall every later report. But it must not be DELETED: a
+  // 4xx is also what a daemon too old for the route answers during a rolling upgrade, and
+  // that run is already paid for. So it leaves the queue and is preserved instead.
   mode = "400";
   await flushPendingSpend();
   assert.equal(pendingSpendReports(), 0, "the unprocessable report did not stall the queue");
+  assert.equal(
+    quarantinedSpendReports(),
+    heldBefore + 1,
+    "and it was retained for recovery rather than discarded",
+  );
+  const held = JSON.parse(readFileSync(spendOutboxTest.quarantinePath(), "utf8")) as
+    Array<{ status: number; report: { runId: string } }>;
+  assert.equal(held.at(-1)?.report.runId, "run-3");
+  assert.equal(held.at(-1)?.status, 422, "the rejecting status is kept so the cause is legible");
 
   mode = "ok";
   await client.reportSpend(report("inspector:reply", "run-4"));
@@ -344,6 +362,27 @@ test("a 5xx holds the report; a 4xx drops it rather than blocking the queue", as
     (received.at(-1) as { runId: string }).runId,
     "run-4",
     "and later reports still get through",
+  );
+});
+
+test("a daemon too old for the route keeps the run, and later reports still drain", async () => {
+  // The rolling-upgrade case: the worker is newer than the daemon, so /api/usage/automation
+  // does not exist yet and every report 404s. Nothing about those runs is wrong - the daemon
+  // will have the route in a minute - so deleting them would lose spend to a version skew
+  // that heals itself. They are held, and crucially they do not wedge the queue behind them.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  const heldBefore = quarantinedSpendReports();
+  mode = "404";
+  await client.reportSpend(report("foreman:backlog", "run-rolling-upgrade"));
+  assert.equal(pendingSpendReports(), 0, "it did not stay at the head blocking everything");
+  assert.equal(quarantinedSpendReports(), heldBefore + 1, "and it was retained, not discarded");
+
+  mode = "ok";
+  await client.reportSpend(report("foreman:review", "run-after-upgrade"));
+  assert.equal(
+    (received.at(-1) as { runId: string }).runId,
+    "run-after-upgrade",
+    "the upgraded daemon still receives everything that follows",
   );
 });
 

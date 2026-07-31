@@ -20,6 +20,7 @@
 // called"; a role answers "which model". Two questions, and only the first one is this
 // file's.
 
+import type { LlmSpendModelUsage, LlmSpendPrice, LlmSpendRole } from "./llm-spend.ts";
 import type { ModelSource } from "./model-choice.ts";
 
 /**
@@ -164,6 +165,18 @@ export interface LlmRunOptions {
    * widening it for the one caller that argued for it must not widen it for the rest.
    */
   grant?: LlmToolGrant | null;
+  /**
+   * Who is spending, when the spender is not a card. Omit for a run nobody is accounting
+   * for yet.
+   *
+   * Set it and the runner reports the run's own usage under that key the moment it
+   * finishes - see `src/server/llm/spend.ts`. It is an option on the RUN rather than an
+   * argument to a reporting call the caller makes afterwards, because two of the six
+   * headless call sites bypass `runStructured` entirely and would have been missed by a
+   * hook anywhere above this interface. Here there is exactly one place a run can start
+   * from, so "we forgot to account for that one" stops being reachable.
+   */
+  role?: LlmSpendRole;
 }
 
 /**
@@ -260,6 +273,22 @@ export interface LlmRunner {
    * `claude -p` the shape is `--session-id <uuid>` then `--resume`.
    */
   runInThread: ((threadKey: string, prompt: string, opts?: LlmRunOptions) => Promise<string>) | null;
+
+  /**
+   * Value one model's usage from a finished headless run, or `null` when this runner
+   * cannot.
+   *
+   * Required rather than optional, and on the runner rather than in the ledger, because
+   * "what did that cost" has a different answer per provider and only the provider's
+   * adapter knows it: `claude -p` returns a figure it calculated itself, while a Codex run
+   * returns tokens that Mission Control has to value against its own price snapshot. A
+   * ledger that branched on the runner id would be the concrete-agent branch this codebase
+   * exists to avoid; a `Record<LlmRunnerId, LlmRunner>` with this method on it means the
+   * next provider cannot ship without stating its answer, including "I don't know".
+   *
+   * `null` is that honest answer and is not a failure - see `LlmSpendPrice`.
+   */
+  price(usage: LlmSpendModelUsage): LlmSpendPrice | null;
 
   /** What this runner will accept in `LlmRunOptions.grant`, or `null` if it accepts none. */
   sandbox: LlmSandboxSpec | null;

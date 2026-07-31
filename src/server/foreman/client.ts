@@ -1,4 +1,6 @@
-import { BASE_URL } from "@shared/harness-runtime.mjs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { BASE_URL, stateDir } from "@shared/harness-runtime.mjs";
 import { DEFAULT_LLM_RUNNER_ID, isLlmRunnerId } from "@shared/llm.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { ForemanConfigSchema, TRANSCRIPT_DEFAULT_TAIL_TURNS } from "@shared/protocol.ts";
@@ -9,6 +11,7 @@ import type {
   RecordEpisode,
   SetNote,
   SetWorkItemState,
+  SpendReportBody,
   SubmitOptions,
 } from "@shared/protocol.ts";
 import type {
@@ -73,6 +76,249 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
 }
 
 const enc = encodeURIComponent;
+
+// ---- headless spend delivery ----
+//
+// A bounded, DURABLE outbox for usage reports, and the reason it exists rather than a bare
+// POST: the run whose cost this carries has ALREADY happened. There is no retryable unit of
+// work behind a failed report - just a number that will never be seen again if it is
+// dropped. A daemon restart is an ordinary event, and the worker deliberately outlives one,
+// so "the daemon was down for four seconds" must not be a way to lose spend.
+//
+// It is a FILE, not the database, and that distinction is the whole of how this respects
+// the worker/daemon boundary. The rule the worker lives under is that the daemon is the
+// only process that opens SQLite - not that the worker may never write a byte. A spool file
+// beside the token in `stateDir()` owns nothing the daemon reads, defines no schema, and
+// participates in no migration; it is a buffer for requests the worker has not managed to
+// make yet. The ledger is still written in exactly one place, by the daemon, off the route.
+//
+// Entries leave the spool only on a daemon ACK. An in-memory queue alone had a real hole:
+// a worker crash, a redeploy, or a Ctrl-C while the daemon happened to be down lost every
+// queued report permanently, and the runs behind them were unrecoverable by construction.
+// Writing before the first delivery attempt and erasing only after a 2xx makes the failure
+// mode "delivered twice", which the daemon already absorbs - `window_end_ns` holds the run
+// id, so its insert is idempotent.
+
+/** Reports awaiting delivery, oldest first. Mirrored to `spendOutboxPath()` on every change. */
+const spendOutbox: SpendReportBody[] = [];
+/**
+ * How many reports to hold before shedding.
+ *
+ * Sized so an outage has to be long AND busy to reach it: the Foreman's four roles produce
+ * at most a few reports a minute even under load, so 256 is roughly an hour of sustained
+ * failure. A cap is still required - without one, a daemon that never comes back turns
+ * this into an unbounded leak in a process designed to run for weeks.
+ */
+const SPEND_OUTBOX_MAX = 256;
+const SPEND_RETRY_BASE_MS = 1_000;
+const SPEND_RETRY_MAX_MS = 30_000;
+let spendRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let spendFailures = 0;
+let flushing = false;
+
+/**
+ * Where undelivered reports wait out a daemon outage.
+ *
+ * `stateDir()` rather than a path of this module's own, so the spool follows `MISSION_HOME`
+ * exactly as the token and the database do. That is what keeps an isolated daemon/worker
+ * pair (a test, an E2E) from inheriting the real install's pending reports, and it is
+ * resolved per call rather than cached because a test sets the override after import.
+ *
+ * One shared path rather than one per worker id: the id is minted fresh per process, so a
+ * per-worker file would be orphaned by the very restart this exists to survive. Two live
+ * workers both draining it is possible in principle and harmless in practice - the lease
+ * means only the leader spends, and a duplicate delivery is idempotent at the daemon.
+ */
+function spendOutboxPath(): string {
+  return join(stateDir(), "foreman-spend-outbox.json");
+}
+
+/**
+ * Mirror the queue to disk. Never throws - a spool that cannot be written must not take
+ * down a worker, it just costs the durability this function is here to add.
+ *
+ * Written whole and renamed into place rather than appended, because a torn write is worse
+ * than a slow one: `rename` is atomic within a filesystem, so a crash mid-write leaves the
+ * previous complete spool rather than half a JSON document that would fail to parse and
+ * lose everything. The queue is capped at a few hundred small objects, so rewriting it is
+ * cheaper than the compaction an append-only log would eventually need.
+ *
+ * An empty queue REMOVES the file instead of writing `[]`, so "nothing is pending" is the
+ * absence of a spool rather than a state that has to be parsed to discover.
+ */
+function persistSpendOutbox(): void {
+  const path = spendOutboxPath();
+  try {
+    if (spendOutbox.length === 0) {
+      rmSync(path, { force: true });
+      return;
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp`;
+    writeFileSync(tmp, JSON.stringify(spendOutbox), "utf8");
+    renameSync(tmp, path);
+  } catch (err) {
+    console.warn("[foreman] could not persist the spend outbox:", err);
+  }
+}
+
+/**
+ * Restore reports a previous worker never managed to deliver. Call once, at startup.
+ *
+ * Returns how many were recovered so the worker can say so - a silent restore would make
+ * the one moment this feature earns its keep invisible.
+ *
+ * A malformed spool is discarded rather than repaired. It can only come from a partial
+ * write this module did not make or a hand-edit, and the alternative - feeding unvalidated
+ * shapes to the route - trades a lost row for a queue that 4xxs forever.
+ */
+export function loadSpendOutbox(): number {
+  let raw: string;
+  try {
+    raw = readFileSync(spendOutboxPath(), "utf8");
+  } catch {
+    return 0; // no spool: the ordinary case
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.warn("[foreman] discarding an unreadable spend outbox");
+    try { rmSync(spendOutboxPath(), { force: true }); } catch {}
+    return 0;
+  }
+  if (!Array.isArray(parsed)) return 0;
+  const restored = parsed.filter(looksLikeSpendReport);
+  if (restored.length === 0) {
+    try { rmSync(spendOutboxPath(), { force: true }); } catch {}
+    return 0;
+  }
+  spendOutbox.push(...restored.slice(-SPEND_OUTBOX_MAX));
+  return spendOutbox.length;
+}
+
+/** The shape check the restore path applies. Deliberately structural, not a zod import. */
+function looksLikeSpendReport(value: unknown): value is SpendReportBody {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  return (
+    typeof r.role === "string" &&
+    typeof r.runner === "string" &&
+    typeof r.runId === "string" &&
+    r.runId.length > 0 &&
+    typeof r.ts === "number" &&
+    Array.isArray(r.models) &&
+    r.models.length > 0
+  );
+}
+
+function enqueueSpend(report: SpendReportBody): void {
+  spendOutbox.push(report);
+  // Shed the OLDEST on overflow. Both ends lose real spend, so the tiebreak is which loss
+  // is more useful to keep: the newest reports describe what the fleet is doing now, which
+  // is what the strip is read for, and the oldest are the likeliest to already be beyond
+  // the window anyone is looking at.
+  while (spendOutbox.length > SPEND_OUTBOX_MAX) {
+    const dropped = spendOutbox.shift();
+    console.warn(`[foreman] spend outbox full; dropped ${dropped?.role} usage undelivered`);
+  }
+  // Persisted BEFORE the first delivery attempt, which is the ordering the durability
+  // depends on: a crash between the run finishing and the POST landing must still find the
+  // report on disk.
+  persistSpendOutbox();
+}
+
+/**
+ * Drain the outbox, stopping at the first report that could not be delivered.
+ *
+ * IN ORDER and one at a time, so a transient failure leaves the queue intact rather than
+ * half-sent. Re-entrancy is guarded because reports arrive from an unawaited sink while an
+ * earlier flush may still be in flight; two concurrent drains would interleave their
+ * shifts and could send the same report twice. (Double delivery is not a correctness
+ * problem downstream - the run id makes the daemon's insert idempotent - but it is still
+ * a needless round trip, and relying on the far side to clean up after this one would be
+ * the wrong place for the argument.)
+ */
+async function flushSpend(): Promise<void> {
+  if (flushing) return;
+  flushing = true;
+  try {
+    while (spendOutbox.length > 0) {
+      const report = spendOutbox[0]!;
+      let res: Response;
+      try {
+        res = await send("POST", "/api/usage/automation", report);
+      } catch (err) {
+        // The daemon is unreachable - restarting, or not up yet. Keep the report and back
+        // off; this is the exact case the outbox exists for.
+        console.warn(`[foreman] spend delivery deferred (${String(err)})`);
+        scheduleSpendRetry();
+        return;
+      }
+      if (res.ok) {
+        // Removed only now, on the daemon's ACK. Erasing it any earlier would reopen the
+        // exact hole the spool closes - the report would be gone from disk while still
+        // only maybe recorded.
+        spendOutbox.shift();
+        persistSpendOutbox();
+        spendFailures = 0;
+        continue;
+      }
+      if (res.status >= 400 && res.status < 500) {
+        // A 4xx will never succeed: the body did not validate, or names a role this daemon
+        // does not have (a worker newer than the daemon it is talking to). Retrying it
+        // forever would block every later report behind it, so it is dropped loudly - the
+        // one failure mode where losing the row is better than stalling the queue. It
+        // leaves the spool too, or the next restart would replay it into the same 4xx.
+        spendOutbox.shift();
+        persistSpendOutbox();
+        console.warn(
+          `[foreman] spend rejected as unprocessable: ${report.role} -> ${res.status}; dropped`,
+        );
+        continue;
+      }
+      // 5xx: the daemon is there but unhappy. Hold the report and back off.
+      console.warn(`[foreman] spend not recorded: ${report.role} -> ${res.status}; will retry`);
+      scheduleSpendRetry();
+      return;
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
+/**
+ * Arm one exponentially-backed-off retry.
+ *
+ * `unref` so a queue that cannot drain never holds the process open - a worker being shut
+ * down should exit, not linger trying to deliver accounting for runs that are over. Only
+ * ever one timer: a second report arriving during a backoff joins the same drain rather
+ * than starting a competing one.
+ */
+function scheduleSpendRetry(): void {
+  if (spendRetryTimer) return;
+  const delay = Math.min(SPEND_RETRY_BASE_MS * 2 ** spendFailures, SPEND_RETRY_MAX_MS);
+  spendFailures++;
+  spendRetryTimer = setTimeout(() => {
+    spendRetryTimer = null;
+    void flushSpend();
+  }, delay);
+  spendRetryTimer.unref?.();
+}
+
+/** Queue depth, for the worker's shutdown log and for tests. */
+export function pendingSpendReports(): number {
+  return spendOutbox.length;
+}
+
+/** Deliver whatever is queued right now. The shutdown path's last best effort. */
+export function flushPendingSpend(): Promise<void> {
+  if (spendRetryTimer) {
+    clearTimeout(spendRetryTimer);
+    spendRetryTimer = null;
+  }
+  return flushSpend();
+}
 
 export interface TranscriptWindowResponse {
   messages: TranscriptMessage[];
@@ -574,6 +820,27 @@ export class ForemanClient implements ForemanActions {
     } catch (err) {
       console.error("[foreman] could not record the episode:", err);
     }
+  }
+
+  /**
+   * Report what a headless run cost, so the daemon can put it in the ledger.
+   *
+   * QUEUED, not fire-and-forget, because the failure this has to survive is routine rather
+   * than exotic: the daemon restarts, and the Foreman worker does not. A single POST that
+   * merely logged its own failure would discard tokens that were genuinely spent - the run
+   * is finished and paid for by the time this is called, so a dropped report is not a
+   * retryable unit of work being skipped, it is money that silently never appears. The
+   * whole point of this feature is that such spend stops being invisible.
+   *
+   * Never throws, on `recordEpisode`'s precedent: accounting is strictly downstream of a
+   * review that already succeeded, so nothing here may turn a delivered verdict into a
+   * failure. The sink does not await it either, which is why the failure path has to be a
+   * log rather than a rejection - an unawaited promise that rejected would be an unhandled
+   * rejection, and that takes the worker down.
+   */
+  async reportSpend(report: SpendReportBody): Promise<void> {
+    enqueueSpend(report);
+    await flushSpend();
   }
 
   async logGateReply(id: string, gate: GateRef, text: string): Promise<unknown> {

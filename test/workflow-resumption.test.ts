@@ -103,6 +103,7 @@ const failingRunner: LlmRunner = {
   label: "fake",
   runInThread: null,
   sandbox: null,
+  price: () => null,
   litter: null,
   killLiveRuns() {},
   async run() {

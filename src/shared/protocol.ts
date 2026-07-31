@@ -5,6 +5,7 @@ import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
+import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, THINKING_LEVELS } from "./types.ts";
@@ -1814,6 +1815,43 @@ export const OtlpMetricsSchema = z.object({
     .default([]),
 });
 export type OtlpMetrics = z.infer<typeof OtlpMetricsSchema>;
+
+/**
+ * One finished headless run, as the Foreman worker reports it to the daemon.
+ *
+ * The worker is a separate process and never opens the database, so its share of the app's
+ * own token spend reaches the ledger the way everything else it does reaches it: over a
+ * route. The daemon's own Inspector runs skip the wire and call the same writer directly.
+ *
+ * TOKENS ONLY - there is deliberately no cost field. The daemon prices what it is told,
+ * because a worker that priced its own runs would be a second place the versioned rate
+ * snapshot is applied, and the two would disagree the moment one process was restarted and
+ * the other was not. `role` is validated against the shipped tuple rather than accepted as
+ * free text: these strings become note keys, and a typo would mint a seventh bucket that
+ * looks like a role and answers to nothing.
+ *
+ * Every count is capped at a number no honest run reaches. The bound is not about a hostile
+ * caller - the route is loopback-only - but about a parse bug on either side turning into a
+ * ledger row that swamps a day's fleet total and cannot be told from real spend afterwards.
+ */
+export const SpendModelUsageSchema = z.object({
+  modelId: z.string().max(200),
+  input: z.number().int().min(0).max(1_000_000_000),
+  output: z.number().int().min(0).max(1_000_000_000),
+  reasoningOutput: z.number().int().min(0).max(1_000_000_000),
+  cacheRead: z.number().int().min(0).max(1_000_000_000),
+  cacheWrite: z.number().int().min(0).max(1_000_000_000),
+  reportedCostUsd: z.number().min(0).max(100_000).nullable(),
+});
+
+export const SpendReportSchema = z.object({
+  role: z.enum(LLM_SPEND_ROLES),
+  runner: z.string().min(1).max(64),
+  runId: z.string().min(1).max(200),
+  ts: z.number().int().positive(),
+  models: z.array(SpendModelUsageSchema).min(1).max(32),
+});
+export type SpendReportBody = z.infer<typeof SpendReportSchema>;
 
 // ---- Foreman session work queues ----
 

@@ -548,4 +548,16 @@ command.
   the test asserted recovery would kill it and was simply wrong about the code. That is the
   fail-closed direction and it is self-healing rather than permanent, and it is rare by
   construction, since the ladder `SIGKILL`s the whole group while the leader is still
-  identifiable. Now asserted in both states and documented on `terminateCheckGroup`.
+  identifiable. Now documented on `terminateCheckGroup`.
+
+  **And that test then flaked on CI, which is worth recording as its own lesson.** The second
+  draft asserted `unknown` from a recovery call made just after the teardown had already
+  `SIGKILL`ed the group - so it was racing a signal the test itself had sent. It passed locally
+  and failed on the Linux runner, where the kill had landed first (`'empty' !== 'unknown'`).
+  The fix was to delete the racing assertion rather than to widen it or retry it: the
+  watch-retention case now waits for the group to be provably gone before asserting the
+  release, and the leader-gone property gets its own case built so that nothing races - a leader
+  that exits on its own with a descendant still in its group, where no signal is ever sent, so
+  the descendant's survival is not a matter of timing. Re-verified on Linux in Docker, three
+  consecutive runs, 23/23, since a local-only re-run would have proven nothing about the
+  platform that failed.

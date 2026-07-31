@@ -50,6 +50,18 @@ function workspace(): string {
   return dir;
 }
 
+/** Wait, bounded, for a process group to actually be gone. */
+async function waitForGroupGone(pid: number): Promise<void> {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+  for (let i = 0; i < 100 && checkGroupAnswers(pid); i += 1) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -613,34 +625,54 @@ test("a group that could NOT be proven empty stays watched for the exit hook", a
   assert.equal(liveCheckGroupCount(), 1, "an unproven group must stay registered for the exit hook");
   assert.deepEqual(cleared, [], "and its persisted identity must not be cleared either");
 
+  // The other end of the rule, once the group really is gone. Deliberately NOT asserting what
+  // recovery says while the group is still dying: the teardown above already SIGKILLed it, so
+  // "is it still there a moment later" is a race against our own signal - which is exactly how
+  // the first version of this test flaked on CI while passing locally. The leader-gone
+  // behaviour it was trying to cover is asserted deterministically in the next case instead.
   const pid = outcome.supervisor!.pid;
   const identity = outcome.supervisor!.identity;
-  const recovery = createCheckGroupRecovery(() => ({ pid, startTimeTicks: identity }), {
-    graceMs: 20,
-    confirmMs: 20,
-    pollMs: 10,
-  });
-
-  // While a descendant outlives the leader, recovery REFUSES to signal, and that is the design
-  // working rather than failing. The shim is gone, so its start identity can no longer be read,
-  // and an unverifiable group is never signalled - the pid may have been recycled. So the
-  // honest answer is `unknown`, which keeps the lease and the tracking.
-  assert.equal(await recovery("attempt-unproven"), "unknown");
-  assert.equal(liveCheckGroupCount(), 1, "an unproven group is still not released");
-
-  // It self-heals when the descendant finally exits, which is what this stands in for. The
-  // group is then provably empty by probe alone - no signal was ever sent to a group we could
-  // not identify - and proving it empty is what releases the tracking.
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    // already gone
-  }
-  for (let i = 0; i < 60 && checkGroupAnswers(pid); i += 1) {
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  await waitForGroupGone(pid);
+  const recovery = createCheckGroupRecovery(() => ({ pid, startTimeTicks: identity }));
   assert.equal(await recovery("attempt-unproven"), "empty");
   assert.equal(liveCheckGroupCount(), 0, "proving it empty is what releases the tracking");
+});
+
+test("a surviving descendant whose LEADER is gone is never signalled", async () => {
+  // The property the flaky assertion was reaching for, built so nothing races: the leader exits
+  // on its own and nobody signals anything, so the descendant's survival is not a matter of
+  // timing.
+  const leader = spawn(
+    NODE,
+    [
+      "-e",
+      // A child in the same process group, then the leader leaves. Not detached, so `sleep`
+      // stays in the group and is merely reparented when its parent goes.
+      "require('node:child_process').spawn('sleep', ['30'], { stdio: 'ignore' });" +
+        "setTimeout(() => process.exit(0), 200);",
+    ],
+    { detached: true, stdio: "ignore" },
+  );
+  const pid = leader.pid!;
+  raw.push(pid);
+  // Captured while the leader is alive - the only moment it can be read.
+  const identity = processStartIdentity(pid)!;
+  assert.notEqual(identity, null);
+  await new Promise<void>((r) => leader.once("exit", () => r()));
+  for (let i = 0; i < 60 && processStartIdentity(pid) !== null; i += 1) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  assert.equal(processStartIdentity(pid), null, "the leader is gone, so its identity is unreadable");
+  assert.equal(checkGroupAnswers(pid), true, "but its group still has a live descendant");
+  // Unverifiable, so never signalled - the pid could have been recycled. `unknown` keeps the
+  // lease rather than returning a tree something is still writing into, and it self-heals when
+  // the descendant exits.
+  assert.equal(
+    await terminateCheckGroup(pid, identity, { graceMs: 20, confirmMs: 20, pollMs: 10 }),
+    "unknown",
+  );
+  assert.equal(checkGroupAnswers(pid), true, "and nothing was signalled");
 });
 
 test("nothing stays registered for the exit hook once a check is finished", async () => {

@@ -21,6 +21,8 @@ import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
 import type {
   PersonaId,
   PersonaView,
+  SessionAction,
+  SessionActionId,
   WorkflowId,
   WorkflowRunId,
   WorkflowRunSummary,
@@ -2214,6 +2216,12 @@ export type ServerEvent =
       reviews: ReviewItem[];
       tasks: Task[];
       personas: PersonaView[];
+      /**
+       * The bounded SessionAction catalog, archived rows included so a draft or version can
+       * always name its source. Carries the full record - prompt Markdown and all - the way
+       * `personas` carries guidance; see `Registry.sessionActions` for why that is bounded.
+       */
+      sessionActions: SessionAction[];
       workflowSummaries: WorkflowSummary[];
       workflowRunSummaries: WorkflowRunSummary[];
       /**
@@ -2249,6 +2257,9 @@ export type ServerEvent =
   | { type: "task_remove"; id: string }
   | { type: "persona_upsert"; persona: PersonaView }
   | { type: "persona_remove"; id: PersonaId }
+  /** Archive emits UPSERT, not remove: the entity stays addressable by every draft naming it. */
+  | { type: "session_action_upsert"; action: SessionAction }
+  | { type: "session_action_remove"; id: SessionActionId }
   | { type: "workflow_upsert"; workflow: WorkflowSummary }
   | { type: "workflow_remove"; id: WorkflowId }
   | { type: "workflow_run_upsert"; run: WorkflowRunSummary }

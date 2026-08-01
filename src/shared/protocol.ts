@@ -2268,6 +2268,100 @@ export const PersonaSnapshotSchema = z.object({
   model: ModelIdSchema.nullable(),
 });
 
+// ---- SessionActions ----
+
+const SessionActionNameSchema = z.string().trim().min(1).max(WORKFLOW_LIMITS.sessionActionName);
+const SessionActionDescriptionSchema = z.string().max(WORKFLOW_LIMITS.sessionActionDescription);
+
+/**
+ * Exact Markdown: validation observes it but never transforms it.
+ *
+ * `.trim()` is deliberately absent where `PersonaNameSchema` has one. This string is TYPED
+ * INTO a session verbatim, so a boundary that silently stripped its leading blank line would
+ * deliver a packet different from the one the operator authored and the version snapshotted.
+ */
+export const SessionActionPromptSchema = z
+  .string()
+  .refine((value) => value.trim().length > 0, { message: "Session action prompt cannot be empty" })
+  .refine((value) => utf8AtMost(value, WORKFLOW_LIMITS.sessionActionPromptBytes), {
+    message: `Session action prompt exceeds ${WORKFLOW_LIMITS.sessionActionPromptBytes} UTF-8 bytes`,
+  });
+
+/**
+ * A skill CAPABILITY id, bounded like the data it is.
+ *
+ * The character class is the load-bearing part, not the length: this value reaches the code
+ * that resolves a harness-native invocation, so anything that could carry whitespace, a
+ * shell metacharacter or a path separator has to be refused at the boundary rather than
+ * relied on to be harmless later. A catalog id is a slug, and a slug is all this admits.
+ */
+export const SessionActionSkillIdSchema = z
+  .string()
+  .max(WORKFLOW_LIMITS.sessionActionSkillId)
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, "A required skill is a catalog id, not a command");
+
+/**
+ * The closed, server-owned completion registry.
+ *
+ * Spelled arm by arm rather than as `z.object({ kind: z.enum(SESSION_ACTION_COMPLETION_KINDS) })`
+ * so the parsed type is the discriminated union the shared contract declares, and so an
+ * adapter that later carries a parameter gains it on one arm instead of all of them.
+ * `session-action-contracts.test.ts` pins this against the tuple so the two cannot drift.
+ */
+export const SessionActionCompletionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("session_turn") }),
+  z.object({ kind: z.literal("pull_request") }),
+]);
+
+export const CreateSessionActionSchema = z.object({
+  name: SessionActionNameSchema,
+  description: SessionActionDescriptionSchema.optional().default(""),
+  promptMarkdown: SessionActionPromptSchema,
+  requiredSkillId: SessionActionSkillIdSchema.nullable().optional().default(null),
+  // `session_turn` is the default because it is the only completion a freshly authored
+  // action can honestly promise. `pull_request` proves something about a repository, and an
+  // operator opts into that proof rather than inheriting it.
+  completion: SessionActionCompletionSchema.optional().default({ kind: "session_turn" }),
+});
+export type CreateSessionAction = z.infer<typeof CreateSessionActionSchema>;
+
+const SESSION_ACTION_EDIT_FIELDS = [
+  "name",
+  "description",
+  "promptMarkdown",
+  "requiredSkillId",
+  "completion",
+] as const;
+
+export const UpdateSessionActionSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    name: SessionActionNameSchema.optional(),
+    description: SessionActionDescriptionSchema.optional(),
+    promptMarkdown: SessionActionPromptSchema.optional(),
+    requiredSkillId: SessionActionSkillIdSchema.nullable().optional(),
+    completion: SessionActionCompletionSchema.optional(),
+  })
+  .refine((value) => SESSION_ACTION_EDIT_FIELDS.some((field) => field in value), {
+    message: "Session action update has no editable fields",
+  });
+export type UpdateSessionAction = z.infer<typeof UpdateSessionActionSchema>;
+
+export const ArchiveSessionActionSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+});
+export type ArchiveSessionAction = z.infer<typeof ArchiveSessionActionSchema>;
+
+export const SessionActionSnapshotSchema = z.object({
+  sourceSessionActionId: WorkflowIdSchema,
+  sourceRevision: z.number().int().positive(),
+  name: SessionActionNameSchema,
+  description: SessionActionDescriptionSchema,
+  promptMarkdown: SessionActionPromptSchema,
+  requiredSkillId: SessionActionSkillIdSchema.nullable(),
+  completion: SessionActionCompletionSchema,
+});
+
 export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("session"), position: WorkflowPointSchema }),
   z.object({
@@ -2281,6 +2375,12 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     id: WorkflowNodeIdSchema,
     kind: z.literal("check"),
     slot: z.enum(WORKFLOW_CHECK_SLOTS),
+    position: WorkflowPointSchema,
+  }),
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("session_action"),
+    sessionActionId: WorkflowIdSchema,
     position: WorkflowPointSchema,
   }),
   z.object({
@@ -2306,6 +2406,15 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     id: WorkflowNodeIdSchema,
     kind: z.literal("check"),
     slot: z.enum(WORKFLOW_CHECK_SLOTS),
+    position: WorkflowPointSchema,
+  }),
+  // Unlike a Check, an action's published form DIFFERS from its draft: the exact text a run
+  // types has to be frozen into the version, or an edit to the library would change what an
+  // in-flight run says. `sessionActionId` alone is refused here for that reason.
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("session_action"),
+    action: SessionActionSnapshotSchema,
     position: WorkflowPointSchema,
   }),
   z.object({

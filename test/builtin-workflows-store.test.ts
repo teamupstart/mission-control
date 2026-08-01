@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  PublishedWorkflowNode,
   WorkflowDefinition,
   WorkflowDraftGraph,
   WorkflowVersion,
@@ -57,7 +58,7 @@ const shippedVersion = (version: number): WorkflowVersion => ({
   version,
   sourceDraftRevision: 1,
   graph: {
-    nodes: shippedDraft.nodes.map((node) => node.kind === "persona"
+    nodes: shippedDraft.nodes.map((node): PublishedWorkflowNode => node.kind === "persona"
       ? {
           id: node.id,
           kind: "persona" as const,
@@ -72,7 +73,9 @@ const shippedVersion = (version: number): WorkflowVersion => ({
             model: null,
           },
         }
-      : node),
+      // This fixture draft holds no action node, so the union's remaining arms carry
+      // through unchanged. The annotation is what makes that a compile-time claim.
+      : node as PublishedWorkflowNode),
     edges: [...shippedDraft.edges],
   },
   completionPolicy: { kind: "none" },

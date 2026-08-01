@@ -5,6 +5,7 @@ import {
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_LIMITS,
   type PersonaView,
+  type SessionAction,
   type WorkflowCheckSlot,
   type WorkflowDraftNode,
   type WorkflowEdge,
@@ -198,6 +199,7 @@ export function WorkflowStateNotice({
 export function WorkflowLibrary({
   summaries,
   personas,
+  sessionActions = [],
   hasSnapshot,
   onDirtyChange,
   onBindVersion = () => {},
@@ -205,6 +207,12 @@ export function WorkflowLibrary({
 }: {
   summaries: WorkflowSummary[];
   personas: PersonaView[];
+  /**
+   * The SessionAction catalog, for NAMING only. This build ships no palette entry, no
+   * picker and no properties editor for an action node, because nothing can execute one yet -
+   * but a draft that already carries one has to name it rather than show an id.
+   */
+  sessionActions?: SessionAction[];
   hasSnapshot: boolean;
   onDirtyChange: (dirty: boolean) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
@@ -241,10 +249,11 @@ export function WorkflowLibrary({
       ? validateWorkflowGraph({
           graph: workflow.draft,
           personas,
+          sessionActions,
           completionPolicy: workflow.completionPolicy,
         })
       : null,
-    [personas, workflow?.completionPolicy, workflow?.draft],
+    [personas, sessionActions, workflow?.completionPolicy, workflow?.draft],
   );
   const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
   // The same rule the daemon enforces in `deleteWorkflowCas`, and BOTH halves of it for the
@@ -269,8 +278,8 @@ export function WorkflowLibrary({
   // the Pipeline can draw this graph at all. Passing the live Personas is what keeps a draft
   // reviewer's blocker from reading "Missing persona".
   const blockers = useMemo(
-    () => workflow ? stageBlockers(workflow.draft, personas) : [],
-    [personas, workflow?.draft],
+    () => workflow ? stageBlockers(workflow.draft, personas, sessionActions) : [],
+    [personas, sessionActions, workflow?.draft],
   );
   const pipeline = useMemo(
     () => workflow ? projectStages(workflow.draft) : null,
@@ -364,8 +373,9 @@ export function WorkflowLibrary({
   // canvas's own comments describe as ending in "Maximum update depth exceeded".
   const graphRef = workflow?.draft ?? null;
   const labelFor = useCallback(
-    (node: StageNode): string => graphRef ? nodeLabel(graphRef, node, personas) : node.kind,
-    [graphRef, personas],
+    (node: StageNode): string =>
+      graphRef ? nodeLabel(graphRef, node, personas, sessionActions) : node.kind,
+    [graphRef, personas, sessionActions],
   );
 
   const runTransition = async (work: () => Promise<void>): Promise<void> => {
@@ -483,7 +493,7 @@ export function WorkflowLibrary({
     draft.update({ draft: { ...workflow.draft, nodes: [...workflow.draft.nodes, node] } });
     setSelection({ kind: "node", id });
     setAnnouncement(
-      `${nodeLabel({ ...workflow.draft, nodes: [...workflow.draft.nodes, node] }, node, personas)} node added at the viewport center`,
+      `${nodeLabel({ ...workflow.draft, nodes: [...workflow.draft.nodes, node] }, node, personas, sessionActions)} node added at the viewport center`,
     );
   };
 
@@ -492,6 +502,18 @@ export function WorkflowLibrary({
     : selection?.kind === "node"
       ? [selection.id]
       : [];
+  /**
+   * The selected nodes Duplicate can actually copy.
+   *
+   * The control is gated on THIS rather than on "something is selected", because the two
+   * differ for exactly the kinds it refuses - Session, of which a graph has one, and a
+   * session action, which this build offers no way to create. A button that lit up and then
+   * did nothing would be indistinguishable from a bug.
+   */
+  const duplicableIds = selectedIds.filter((id) => {
+    const kind = workflow?.draft.nodes.find((node) => node.id === id)?.kind;
+    return kind !== undefined && kind !== "session" && kind !== "session_action";
+  });
 
   const removeCanvasSelection = (nodeIds: string[], edgeIds: string[]): void => {
     if (!workflow || readOnly) return;
@@ -530,8 +552,10 @@ export function WorkflowLibrary({
 
   const duplicateNodes = (): void => {
     if (!workflow || readOnly) return;
-    const originals = workflow.draft.nodes.filter((node) =>
-      selectedIds.includes(node.id) && node.kind !== "session");
+    // Session is excluded because a graph has exactly one. A session action is excluded
+    // because duplicating one is an ADD control by another name, and this build ships no way
+    // to create an action node - nothing can execute the result yet.
+    const originals = workflow.draft.nodes.filter((node) => duplicableIds.includes(node.id));
     if (originals.length === 0) return;
     const ids = new Map(originals.map((node) => [node.id, crypto.randomUUID()]));
     const copies = originals.map((node) => ({
@@ -772,8 +796,8 @@ export function WorkflowLibrary({
                 </Tooltip>
                 {mode === "graph" && (
                   <>
-                    <Tooltip label={selectedIds.length > 0 ? "Duplicate selected Persona, All-pass Join, Check, or End nodes" : "Select a Persona, All-pass Join, Check, or End node first"}>
-                      <button className="btn btn-ghost" disabled={selectedIds.length === 0} onClick={duplicateNodes}>
+                    <Tooltip label={duplicableIds.length > 0 ? "Duplicate selected Persona, All-pass Join, Check, or End nodes" : "Select a Persona, All-pass Join, Check, or End node first"}>
+                      <button className="btn btn-ghost" disabled={duplicableIds.length === 0} onClick={duplicateNodes}>
                         Duplicate nodes
                       </button>
                     </Tooltip>
@@ -996,6 +1020,7 @@ export function WorkflowLibrary({
                 key={workflow.id}
                 graph={workflow.draft}
                 personas={personas}
+                sessionActions={sessionActions}
                 readOnly={transitioning || readOnly}
                 onChange={(graph) => draft.update({ draft: graph })}
                 onConfirm={setConfirm}
@@ -1007,6 +1032,7 @@ export function WorkflowLibrary({
                 ref={canvasRef}
                 graph={workflow.draft}
                 personas={personas}
+                sessionActions={sessionActions}
                 labelFor={labelFor}
                 readOnly={transitioning || readOnly}
                 onChange={(graph) => draft.update({ draft: graph })}
@@ -1037,6 +1063,7 @@ export function WorkflowLibrary({
             <WorkflowProperties
               workflow={workflow}
               personas={personas}
+              sessionActions={sessionActions}
               diagnostics={validation.diagnostics}
               selection={selection}
               readOnly={transitioning || readOnly}
@@ -1048,6 +1075,7 @@ export function WorkflowLibrary({
             workflowId={workflow.id}
             versions={draft.versions}
             personas={personas}
+            sessionActions={sessionActions}
             builtin={workflow.builtin}
             onBindVersion={workflow.archivedAt === null ? onBindVersion : undefined}
           />

@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { CreatePersona, CreateWorkflow, UpdatePersona, UpdateWorkflow } from "@shared/protocol.ts";
+import type {
+  CreatePersona,
+  CreateSessionAction,
+  CreateWorkflow,
+  UpdatePersona,
+  UpdateSessionAction,
+  UpdateWorkflow,
+} from "@shared/protocol.ts";
 import {
   PersonaSnapshotSchema,
+  SessionActionSkillIdSchema,
   PublishedWorkflowGraphSchema,
   WorkflowBindingDefaultsSchema,
   WorkflowCompletionPolicySchema,
@@ -31,7 +39,11 @@ import {
   WORKFLOW_RESUMPTION_POLICIES,
   WORKFLOW_TRIGGER_MODES,
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
+  SESSION_ACTION_COMPLETION_KINDS,
+  personaSnapshotOf,
   personasForDisplay,
+  sessionActionSnapshotOf,
+  sessionActionsForDisplay,
   workflowsForDisplay,
   type WorkflowTriggerSource,
   type WorkflowCompletionKind,
@@ -42,6 +54,7 @@ import {
 } from "@shared/workflow.ts";
 import type {
   Persona,
+  SessionAction,
   WorkflowBinding,
   WorkflowBindingClaim,
   WorkflowCaptureExpectation,
@@ -66,14 +79,16 @@ import type {
   WorkflowVersionMetadata,
   WorkflowSummary,
   WorkflowDiagnostic,
+  WorkflowValidationResult,
 } from "@shared/workflow.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { SessionIntentGuard } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
+import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
-import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
+import { SESSION_ACTION_RUNTIME_AVAILABLE, validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { priorFindingFingerprintAudit } from "./finding-audit.ts";
 import { workflowLog } from "./log.ts";
@@ -138,6 +153,7 @@ function compactGate(run: WorkflowRun, gate: WorkflowInspectorGateState | null):
 
 export const WORKFLOW_TABLES = [
   "personas",
+  "session_actions",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
@@ -265,6 +281,56 @@ export function parsePersonaRow(value: unknown): Persona {
     // runner union; Persona resolution is the tolerant boundary that reports the fallback.
     runner: row.runner_id as LlmRunnerId | null,
     model: row.model_id,
+    revision: row.revision,
+    archivedAt: row.archived_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    // A row is operator data by construction: built-ins are never written to this table.
+    builtin: false,
+  };
+}
+
+const SessionActionRowSchema = z.object({
+  id: nonempty,
+  name: nonempty.max(WORKFLOW_LIMITS.sessionActionName),
+  normalized_name: nonempty,
+  description: text.max(WORKFLOW_LIMITS.sessionActionDescription),
+  prompt_md: text,
+  required_skill_id: nullableText,
+  /**
+   * STRICT on read, unlike `personas.runner_id` beside it, and the asymmetry is the point.
+   * An unreadable runner degrades to the app-wide default and reports the fallback - the
+   * review still happens, just on another model. An unreadable completion kind has no safe
+   * fallback: reading a newer build's stricter adapter as `session_turn` would let an action
+   * complete on a settled idle turn when the version it belongs to demanded durable proof.
+   */
+  completion_kind: z.enum(SESSION_ACTION_COMPLETION_KINDS),
+  revision: positive,
+  archived_at: nullableInteger,
+  created_at: integer,
+  updated_at: integer,
+});
+
+export function parseSessionActionRow(value: unknown): SessionAction {
+  const row = parseShape("session_actions", SessionActionRowSchema, value);
+  if (utf8.encode(row.prompt_md).byteLength > WORKFLOW_LIMITS.sessionActionPromptBytes) {
+    throw new WorkflowRowError("session_actions", row.id, "prompt_md exceeds the prompt byte limit");
+  }
+  if (row.prompt_md.trim().length === 0) {
+    throw new WorkflowRowError("session_actions", row.id, "prompt_md is empty");
+  }
+  const skill = row.required_skill_id;
+  if (skill !== null && !SessionActionSkillIdSchema.safeParse(skill).success) {
+    throw new WorkflowRowError("session_actions", row.id, "required_skill_id is not a catalog id");
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    normalizedName: row.normalized_name,
+    description: row.description,
+    promptMarkdown: row.prompt_md,
+    requiredSkillId: skill,
+    completion: { kind: row.completion_kind },
     revision: row.revision,
     archivedAt: row.archived_at,
     createdAt: row.created_at,
@@ -876,6 +942,33 @@ export type PersonaStoreWrite =
       current: Persona | null;
     };
 
+export interface SessionActionInsert extends CreateSessionAction {
+  id: string;
+  normalizedName: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type SessionActionPatch =
+  Omit<UpdateSessionAction, "expectedRevision" | "name"> & {
+    name?: string;
+    normalizedName?: string;
+  };
+
+/**
+ * Deliberately the same refusal vocabulary as `PersonaStoreWrite`, not a wider one. The two
+ * catalogs answer to the same CAS, name-reservation and built-in rules, and a route that had
+ * to translate two error sets would be the place they quietly diverged.
+ */
+export type SessionActionStoreWrite =
+  | { ok: true; action: SessionAction }
+  | {
+      ok: false;
+      /** `builtin` is "this action ships with the app", the one refusal a retry cannot clear. */
+      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived" | "builtin";
+      current: SessionAction | null;
+    };
+
 export interface WorkflowInsert extends CreateWorkflow {
   id: string;
   normalizedName: string;
@@ -1079,7 +1172,34 @@ export class WorkflowStore {
     /** Injectable for the same reason `builtins` is: the merge rules are provable on a
      * fabricated catalog, so they do not depend on what the shipped graph happens to say. */
     private readonly builtinWorkflows: readonly BuiltinWorkflow[] = BUILTIN_WORKFLOWS,
+    private readonly builtinActions: readonly SessionAction[] = BUILTIN_SESSION_ACTIONS,
+    /**
+     * Whether this build can EXECUTE an action node. Injectable for the reason the two
+     * catalogs above are: the publish transaction's snapshot and atomicity rules have to be
+     * provable without depending on which phase happens to be shipping.
+     */
+    private readonly sessionActionRuntime: boolean = SESSION_ACTION_RUNTIME_AVAILABLE,
   ) {}
+
+  /**
+   * The one draft validation, so the library card, the diagnostics route and Publish cannot
+   * answer differently about the same draft.
+   *
+   * `catalogs` is optional only so Publish can pass the lists it already read INSIDE its own
+   * transaction; every other caller reads them here.
+   */
+  validateDraft(
+    workflow: Pick<WorkflowDefinition, "draft" | "completionPolicy">,
+    catalogs?: { personas: readonly Persona[]; sessionActions: readonly SessionAction[] },
+  ): WorkflowValidationResult {
+    return validateWorkflowGraph({
+      graph: workflow.draft,
+      personas: catalogs?.personas ?? this.personaCatalog(),
+      sessionActions: catalogs?.sessionActions ?? this.sessionActionCatalog(),
+      completionPolicy: workflow.completionPolicy,
+      sessionActionRuntimeAvailable: this.sessionActionRuntime,
+    });
+  }
 
   /**
    * Merge the shipped Personas into a set of rows.
@@ -1301,6 +1421,232 @@ export class WorkflowStore {
     const persona = this.getPersonaInTransaction(id);
     if (!persona) throw new Error(`Persona ${id} disappeared during a workflow transaction`);
     return persona;
+  }
+
+  // ---- SessionActions ----
+  //
+  // The same five rules as Personas above, stated again rather than shared through a generic
+  // helper. The two tables have different columns, different limits and a different strictness
+  // on read (`completion_kind` fails the row where `runner_id` degrades), so a shared
+  // implementation would be a parameter list longer than either method and would put the one
+  // asymmetry that matters behind a flag.
+
+  private sortSessionActions(actions: SessionAction[]): SessionAction[] {
+    return actions.sort((a, b) =>
+      a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
+  }
+
+  private withBuiltinActions(rows: SessionAction[]): SessionAction[] {
+    return this.sortSessionActions(sessionActionsForDisplay(rows.concat(this.builtinActions)));
+  }
+
+  private withAddressableBuiltinActions(rows: SessionAction[]): SessionAction[] {
+    return this.sortSessionActions(rows.concat(this.builtinActions));
+  }
+
+  private builtinSessionAction(id: string): SessionAction | null {
+    return this.builtinActions.find((action) => action.id === id) ?? null;
+  }
+
+  private builtinSessionActionNamed(normalizedName: string): SessionAction | null {
+    return this.builtinActions.find((action) => action.normalizedName === normalizedName) ?? null;
+  }
+
+  listSessionActions(includeArchived = false): SessionAction[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM session_actions
+          ${includeArchived ? "" : "WHERE archived_at IS NULL"}
+         ORDER BY normalized_name ASC, id ASC`,
+      )
+      .all() as unknown[];
+    const out: SessionAction[] = [];
+    for (const row of rows) {
+      try {
+        out.push(parseSessionActionRow(row));
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    // Built-ins are never archived, so they belong in both listings.
+    return this.withBuiltinActions(out);
+  }
+
+  /**
+   * Every SessionAction a durable draft may address.
+   *
+   * Unlike `listSessionActions`, this catalog never applies live-row name shadowing.
+   * Shadowing is only a display rule, while validation and Publish must continue resolving
+   * every built-in id that may already be stored in a draft.
+   */
+  sessionActionCatalog(): SessionAction[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM session_actions ORDER BY normalized_name ASC, id ASC`)
+      .all() as unknown[];
+    const out: SessionAction[] = [];
+    for (const row of rows) {
+      try {
+        out.push(parseSessionActionRow(row));
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    return this.withAddressableBuiltinActions(out);
+  }
+
+  getSessionAction(id: string): SessionAction | null {
+    const row = this.db.prepare(`SELECT * FROM session_actions WHERE id = ?`).get(id);
+    if (!row) return this.builtinSessionAction(id);
+    try {
+      return parseSessionActionRow(row);
+    } catch (error) {
+      diagnose(error);
+      return null;
+    }
+  }
+
+  insertSessionAction(input: SessionActionInsert): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const shipped = this.builtinSessionAction(input.id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      const named = this.builtinSessionActionNamed(input.normalizedName);
+      if (named) return { ok: false, reason: "name_conflict", current: named };
+      const conflict = this.db
+        .prepare(`SELECT * FROM session_actions WHERE normalized_name = ?`)
+        .get(input.normalizedName);
+      if (conflict) {
+        let current: SessionAction | null = null;
+        try {
+          current = parseSessionActionRow(conflict);
+        } catch (error) {
+          diagnose(error);
+        }
+        return { ok: false, reason: "name_conflict", current };
+      }
+      this.db
+        .prepare(
+          `INSERT INTO session_actions (
+             id, name, normalized_name, description, prompt_md, required_skill_id,
+             completion_kind, revision, archived_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)`,
+        )
+        .run(
+          input.id,
+          input.name,
+          input.normalizedName,
+          input.description,
+          input.promptMarkdown,
+          input.requiredSkillId,
+          input.completion.kind,
+          input.createdAt,
+          input.updatedAt,
+        );
+      return { ok: true, action: this.mustSessionAction(input.id) };
+    });
+  }
+
+  updateSessionActionCas(
+    id: string,
+    expectedRevision: number,
+    patch: SessionActionPatch,
+    updatedAt = Date.now(),
+  ): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const shipped = this.builtinSessionAction(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      const current = this.getSessionActionInTransaction(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
+      if (current.revision !== expectedRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      if (patch.normalizedName !== undefined) {
+        const named = this.builtinSessionActionNamed(patch.normalizedName);
+        if (named && named.normalizedName !== current.normalizedName) {
+          return { ok: false, reason: "name_conflict", current: named };
+        }
+        const conflict = this.db
+          .prepare(`SELECT id FROM session_actions WHERE normalized_name = ? AND id <> ?`)
+          .get(patch.normalizedName, id);
+        if (conflict) return { ok: false, reason: "name_conflict", current };
+      }
+
+      const assignments: string[] = [];
+      const values: Array<string | number | null> = [];
+      const add = (column: string, value: string | number | null): void => {
+        assignments.push(`${column} = ?`);
+        values.push(value);
+      };
+      if (patch.name !== undefined) add("name", patch.name);
+      if (patch.normalizedName !== undefined) add("normalized_name", patch.normalizedName);
+      if (patch.description !== undefined) add("description", patch.description);
+      if (patch.promptMarkdown !== undefined) add("prompt_md", patch.promptMarkdown);
+      if ("requiredSkillId" in patch) add("required_skill_id", patch.requiredSkillId ?? null);
+      if (patch.completion !== undefined) add("completion_kind", patch.completion.kind);
+      assignments.push("revision = revision + 1", "updated_at = ?");
+      values.push(updatedAt, id, expectedRevision);
+      const result = this.db
+        .prepare(
+          `UPDATE session_actions SET ${assignments.join(", ")}
+            WHERE id = ? AND revision = ? AND archived_at IS NULL`,
+        )
+        .run(...values);
+      if (Number(result.changes) !== 1) {
+        const latest = this.getSessionActionInTransaction(id);
+        return { ok: false, reason: "revision_conflict", current: latest };
+      }
+      return { ok: true, action: this.mustSessionAction(id) };
+    });
+  }
+
+  /**
+   * Soft archive. The row STAYS, and keeps its name reserved.
+   *
+   * Both halves are load-bearing here in a way they are not for a reviewer: a draft or a
+   * published version may name this action, and history has to keep resolving the id it
+   * snapshotted. Releasing the name would let a second action claim the identity an
+   * operator's version reports as its source.
+   */
+  archiveSessionActionCas(
+    id: string,
+    expectedRevision: number,
+    archivedAt = Date.now(),
+  ): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const shipped = this.builtinSessionAction(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      const current = this.getSessionActionInTransaction(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
+      if (current.revision !== expectedRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      const result = this.db
+        .prepare(
+          `UPDATE session_actions
+              SET archived_at = ?, updated_at = ?, revision = revision + 1
+            WHERE id = ? AND revision = ? AND archived_at IS NULL`,
+        )
+        .run(archivedAt, archivedAt, id, expectedRevision);
+      if (Number(result.changes) !== 1) {
+        const latest = this.getSessionActionInTransaction(id);
+        return { ok: false, reason: "revision_conflict", current: latest };
+      }
+      return { ok: true, action: this.mustSessionAction(id) };
+    });
+  }
+
+  private getSessionActionInTransaction(id: string): SessionAction | null {
+    const row = this.db.prepare(`SELECT * FROM session_actions WHERE id = ?`).get(id);
+    return row ? parseSessionActionRow(row) : null;
+  }
+
+  private mustSessionAction(id: string): SessionAction {
+    const action = this.getSessionActionInTransaction(id);
+    if (!action) {
+      throw new Error(`Session action ${id} disappeared during a workflow transaction`);
+    }
+    return action;
   }
 
   /**
@@ -1658,18 +2004,34 @@ export class WorkflowStore {
       if (workflow.draftRevision !== expectedDraftRevision) {
         return { ok: false, reason: "revision_conflict", current: workflow };
       }
+      // BOTH catalogs read inside this transaction, and the snapshots below are taken from
+      // these exact lists. Re-reading either after validation would open the window this
+      // whole method exists to close: an action archived between the two reads would pass
+      // validation and then be frozen into an immutable version as a live source.
       const personas = this.listPersonasInTransaction();
-      const validation = validateWorkflowGraph({
-        graph: workflow.draft,
-        personas,
-        completionPolicy: workflow.completionPolicy,
-      });
+      const sessionActions = this.listSessionActionsInTransaction();
+      const validation = this.validateDraft(workflow, { personas, sessionActions });
       if (!validation.valid) {
         return { ok: false, reason: "validation", current: workflow, diagnostics: validation.diagnostics };
       }
       const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
+      const actionMap = new Map(sessionActions.map((action) => [action.id, action]));
       const graph = {
         nodes: workflow.draft.nodes.map((node) => {
+          if (node.kind === "session_action") {
+            const action = actionMap.get(node.sessionActionId);
+            if (!action || action.archivedAt !== null) {
+              throw new Error(
+                `validated session action ${node.sessionActionId} disappeared during Publish`,
+              );
+            }
+            return {
+              id: node.id,
+              kind: "session_action" as const,
+              position: node.position,
+              action: sessionActionSnapshotOf(action),
+            };
+          }
           if (node.kind !== "persona") return node;
           const persona = personaMap.get(node.personaId);
           if (!persona || persona.archivedAt !== null) {
@@ -1679,15 +2041,7 @@ export class WorkflowStore {
             id: node.id,
             kind: "persona" as const,
             position: node.position,
-            persona: {
-              sourcePersonaId: persona.id,
-              sourceRevision: persona.revision,
-              name: persona.name,
-              description: persona.description,
-              guidanceMarkdown: persona.guidanceMarkdown,
-              runner: persona.runner,
-              model: persona.model,
-            },
+            persona: personaSnapshotOf(persona),
           };
         }),
         edges: workflow.draft.edges,
@@ -1726,11 +2080,7 @@ export class WorkflowStore {
   }
 
   summary(workflow: WorkflowDefinition): WorkflowSummary {
-    const validation = validateWorkflowGraph({
-      graph: workflow.draft,
-      personas: this.personaCatalog(),
-      completionPolicy: workflow.completionPolicy,
-    });
+    const validation = this.validateDraft(workflow);
     // A built-in owns no version rows, so the row lookup below would report it unpublished -
     // which reads on the card as a shipped workflow nobody can bind.
     const current = workflow.currentVersionId === null
@@ -4501,6 +4851,14 @@ export class WorkflowStore {
       `SELECT * FROM personas ORDER BY normalized_name ASC, id ASC`,
     ).all() as unknown[];
     return this.withAddressableBuiltins(rows.map((row) => parsePersonaRow(row)));
+  }
+
+  /** The SessionAction half of the same catalog, for the same reason. */
+  private listSessionActionsInTransaction(): SessionAction[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM session_actions ORDER BY normalized_name ASC, id ASC`,
+    ).all() as unknown[];
+    return this.withAddressableBuiltinActions(rows.map((row) => parseSessionActionRow(row)));
   }
 
   private getWorkflowInTransaction(id: string): WorkflowDefinition | null {

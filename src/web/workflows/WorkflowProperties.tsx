@@ -1,5 +1,6 @@
 import type {
   PersonaView,
+  SessionAction,
   WorkflowCheckSlot,
   WorkflowDefinition,
   WorkflowDiagnostic,
@@ -12,6 +13,27 @@ import {
   personaChoicesForDisplay,
 } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
+
+/**
+ * What the rail says about the action a node names: the skill it needs and the proof it
+ * waits for. Both are facts the runtime enforces, so the panel states them rather than
+ * leaving an operator to open the library to find out what the node will do.
+ */
+function selectedActionSummary(
+  sessionActionId: string,
+  sessionActions: readonly SessionAction[],
+): string {
+  const action = sessionActions.find((candidate) => candidate.id === sessionActionId);
+  if (!action) return "This session action no longer exists, so this node cannot be published.";
+  return [
+    action.requiredSkillId
+      ? `Requires the ${action.requiredSkillId} skill.`
+      : "Requires no skill.",
+    action.completion.kind === "pull_request"
+      ? "Completes only once a matching pull request is open and verified."
+      : "Completes once the session's turn finishes.",
+  ].join(" ");
+}
 import type { WorkflowSelection } from "./WorkflowCanvas.tsx";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -176,6 +198,7 @@ export function WorkflowPipelineProperties({
 export function WorkflowProperties({
   workflow,
   personas,
+  sessionActions = [],
   diagnostics,
   selection,
   readOnly,
@@ -184,6 +207,8 @@ export function WorkflowProperties({
 }: {
   workflow: WorkflowDefinition;
   personas: PersonaView[];
+  /** For naming and describing a selected action node. There is no picker to populate. */
+  sessionActions?: SessionAction[];
   diagnostics: WorkflowDiagnostic[];
   selection: WorkflowSelection;
   readOnly: boolean;
@@ -199,7 +224,9 @@ export function WorkflowProperties({
   );
   const labelOf = (id: string): string => {
     const node = workflow.draft.nodes.find((candidate) => candidate.id === id);
-    return node ? nodeLabel(workflow.draft, node, personas) : "a node that no longer exists";
+    return node
+      ? nodeLabel(workflow.draft, node, personas, sessionActions)
+      : "a node that no longer exists";
   };
   const replaceNode = (next: WorkflowDraftGraph["nodes"][number]): void => onUpdate({
     draft: { ...workflow.draft, nodes: workflow.draft.nodes.map((node) => node.id === next.id ? next : node) },
@@ -261,7 +288,7 @@ export function WorkflowProperties({
       {selectedNode ? (
         <section>
           <p className="workflow-eyebrow">Selected node</p>
-          <h3>{nodeLabel(workflow.draft, selectedNode, personas)}</h3>
+          <h3>{nodeLabel(workflow.draft, selectedNode, personas, sessionActions)}</h3>
           {selectedNode.kind === "persona" && (
             <label>Persona
               <Tooltip label="Which reviewer Persona this node runs">
@@ -304,6 +331,21 @@ export function WorkflowProperties({
           )}
           {selectedNode.kind === "session" && <p>Session is the one submission and repair boundary. It cannot be deleted.</p>}
           {selectedNode.kind === "all_pass" && <p>Waits for one pass/fail receipt from every predecessor.</p>}
+          {/* READ-ONLY, with no picker, on purpose. This build has no runtime that can
+              deliver an action turn, wait for it and recapture evidence, so offering a
+              control here would let an operator author a node that can never be published.
+              The validation list below carries the refusal in the same panel. */}
+          {selectedNode.kind === "session_action" && (
+            <>
+              <p>
+                Sends this action's exact instruction to the bound session and waits for it to
+                finish. Every stage after it reviews evidence captured once it has.
+              </p>
+              <p>
+                {selectedActionSummary(selectedNode.sessionActionId, sessionActions)}
+              </p>
+            </>
+          )}
           {!readOnly && selectedNode.kind !== "session" && (
             <Tooltip label="Remove this node and every route touching it">
               <button className="btn btn-danger" onClick={removeSelection}>Delete node</button>

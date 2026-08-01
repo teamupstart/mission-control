@@ -121,6 +121,7 @@ export function App(): React.JSX.Element {
     reviews,
     tasks,
     personas,
+    sessionActions,
     workflowSummaries,
     workflowRunSummaries: workflowRuns,
     ensembleSummaries,
@@ -1670,6 +1671,7 @@ export function App(): React.JSX.Element {
             <WorkflowPage
               tab={route.page === "workflows" ? route.tab : "workflows"}
               personas={personas}
+              sessionActions={sessionActions}
               workflowSummaries={workflowSummaries}
               workflowRuns={workflowRuns}
               selectedRunId={

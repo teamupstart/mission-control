@@ -64,6 +64,7 @@ const TWO_STAGE: StagePipeline = {
   endOutcome: "Complete",
   stages: [
     {
+      kind: "evaluation",
       joinId: "bbbbbbbb-0000-4000-8000-000000000001",
       members: [
         { nodeId: "cccccccc-0000-4000-8000-000000000001", kind: "persona", personaId: personas[0]!.id },
@@ -71,6 +72,7 @@ const TWO_STAGE: StagePipeline = {
       ],
     },
     {
+      kind: "evaluation",
       joinId: null,
       members: [{ nodeId: "cccccccc-0000-4000-8000-000000000003", kind: "persona", personaId: personas[2]!.id }],
     },
@@ -191,6 +193,7 @@ const GATED: StagePipeline = {
   endOutcome: "Complete",
   stages: [
     {
+      kind: "evaluation",
       joinId: "bbbbbbbb-0000-4000-8000-000000000002",
       members: [
         { nodeId: "dddddddd-0000-4000-8000-000000000001", kind: "check", slot: "typecheck" },
@@ -198,6 +201,7 @@ const GATED: StagePipeline = {
       ],
     },
     {
+      kind: "evaluation",
       joinId: null,
       members: [{ nodeId: "cccccccc-0000-4000-8000-000000000003", kind: "persona", personaId: personas[2]!.id }],
     },

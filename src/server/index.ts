@@ -48,6 +48,7 @@ import { ScheduleManager } from "./schedules/manager.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
+import { SessionActionManager } from "./workflows/session-actions.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
 import { EnsembleManager } from "./ensembles/manager.ts";
 import { TaskManagerGateway } from "./ensembles/member-launch.ts";
@@ -86,6 +87,9 @@ const sdkSessions = new SdkSupervisor(registry);
 const tasks = new TaskManager(registry, undefined, sdkSessions);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
+// Shares the Persona manager's store handle, so both catalogs and the workflow family are
+// read through one connection and one transaction boundary.
+const sessionActions = new SessionActionManager(registry, personas.store);
 // One ceiling on tool-less review work for the whole daemon, constructed here and injected,
 // never reached for as a module global. Workflow Persona attempts and context compaction
 // share it today. The Foreman is a separate process and unrelated background jobs keep
@@ -273,6 +277,7 @@ let stopSchedules = () => {};
 
 const app = buildApp(
   registry, reviews, tasks, queues, away, personas, workflows, schedules, ensembles, sdkSessions,
+  undefined, undefined, sessionActions,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and

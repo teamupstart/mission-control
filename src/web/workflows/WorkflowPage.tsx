@@ -1,5 +1,6 @@
 import type {
   PersonaView,
+  SessionAction,
   WorkflowRunSummary,
   WorkflowSummary,
   WorkflowVersion,
@@ -24,6 +25,7 @@ const WORKFLOW_TABS = [
 export function WorkflowPage({
   tab,
   personas,
+  sessionActions = [],
   workflowSummaries = [],
   workflowRuns = [],
   selectedRunId = null,
@@ -50,6 +52,12 @@ export function WorkflowPage({
 }: {
   tab: WorkflowTab;
   personas: PersonaView[];
+  /**
+   * The SessionAction catalog. Threaded for NAMING only in this build: there is no actions
+   * tab and no picker, but a draft that already contains an action node has to be able to
+   * say which action it is.
+   */
+  sessionActions?: SessionAction[];
   workflowSummaries?: WorkflowSummary[];
   workflowRuns?: WorkflowRunSummary[];
   selectedRunId?: string | null;
@@ -176,6 +184,7 @@ export function WorkflowPage({
           <WorkflowLibrary
             summaries={workflowSummaries}
             personas={personas}
+            sessionActions={sessionActions}
             hasSnapshot={hasSnapshot}
             onDirtyChange={onDirtyChange}
             onBindVersion={onBindVersion}

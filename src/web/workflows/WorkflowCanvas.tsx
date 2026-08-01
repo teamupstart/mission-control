@@ -30,6 +30,7 @@ import type {
   PersonaView,
   PublishedWorkflowNode,
   PublishedWorkflowGraph,
+  SessionAction,
   WorkflowDraftGraph,
   WorkflowDraftNode,
   WorkflowEdge,
@@ -53,6 +54,8 @@ export interface WorkflowCanvasHandle {
 }
 
 const EMPTY_NODE_STATUSES: Readonly<Record<string, string>> = {};
+/** Module-level so the default does not remint the `projectedNodes` memo on every render. */
+const EMPTY_SESSION_ACTIONS: SessionAction[] = [];
 const GRID_SIZE = 18;
 const ALIGNMENT_TOLERANCE = 6;
 
@@ -153,18 +156,27 @@ const NODE_KIND_WORDS: Record<WorkflowDraftNode["kind"], string> = {
   persona: "Reviewer",
   all_pass: "All-pass join",
   check: "Check",
+  session_action: "Session action",
   end: "End",
 };
+
+function isPublishedSessionAction(
+  node: WorkflowDraftNode | PublishedWorkflowNode,
+): node is Extract<PublishedWorkflowNode, { kind: "session_action" }> {
+  return node.kind === "session_action" && "action" in node;
+}
 
 function canvasNodes(
   graph: WorkflowDraftGraph | PublishedWorkflowGraph,
   personas: readonly PersonaView[],
+  sessionActions: readonly SessionAction[],
   readOnly: boolean,
   nodeStatuses: Readonly<Record<string, string>>,
   focusNodeId: string | null,
   labelFor: ((node: WorkflowDraftNode | PublishedWorkflowNode) => string) | null,
 ): WorkflowCanvasNode[] {
   const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
+  const actionMap = new Map(sessionActions.map((action) => [action.id, action]));
   const incoming = new Map<string, Set<string>>();
   const outgoing = new Map<string, Set<string>>();
   for (const edge of graph.edges) {
@@ -198,6 +210,22 @@ function canvasNodes(
       // a canvas that also draws published versions, where it is not part of the version.
       fallbackLabel = checkLabel(node.slot);
       subtitle = "Configured in Settings › Workflows";
+    } else if (node.kind === "session_action") {
+      const snapshot = isPublishedSessionAction(node) ? node.action : null;
+      const live = snapshot
+        ? null
+        : actionMap.get((node as Extract<WorkflowDraftNode, { kind: "session_action" }>).sessionActionId);
+      fallbackLabel = snapshot?.name ?? live?.name ?? "Missing session action";
+      // The subtitle says what this node WRITES and what proves it finished, which is the
+      // only thing about it a reader of the canvas cannot infer from its shape. The prompt
+      // itself is deliberately not here: it is a document, not a caption.
+      subtitle = snapshot
+        ? `Snapshot revision ${snapshot.sourceRevision}`
+        : live
+          ? live.completion.kind === "pull_request"
+            ? "Waits for a verified pull request"
+            : "Waits for the session turn to finish"
+          : "Select an active session action";
     } else if (node.kind === "end") {
       fallbackLabel = node.outcome;
       subtitle = "Terminal outcome";
@@ -234,8 +262,18 @@ const canvasEdges = (edges: readonly WorkflowEdge[], readOnly: boolean): Edge[] 
   targetHandle: edge.targetPort,
   deletable: !readOnly,
   label: edge.sourcePort,
-  className: edge.sourcePort === "fail" ? "workflow-edge-fail" : "workflow-edge-pass",
+  // A lookup, not a two-way ternary. That ternary read every non-fail port as a pass, so
+  // `complete` would have been drawn in the pass colour - saying that everything after an
+  // action reviews the same evidence, which is the one thing it does not do.
+  className: EDGE_CLASSES[edge.sourcePort],
 }));
+
+const EDGE_CLASSES: Record<WorkflowSourcePort, string> = {
+  submitted: "workflow-edge-pass",
+  pass: "workflow-edge-pass",
+  fail: "workflow-edge-fail",
+  complete: "workflow-edge-complete",
+};
 
 export function reconcileCanvasNodes(
   current: readonly WorkflowCanvasNode[],
@@ -312,6 +350,8 @@ export function autoLayoutWorkflow(graph: WorkflowDraftGraph): WorkflowDraftGrap
 export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
   graph: WorkflowDraftGraph | PublishedWorkflowGraph;
   personas: PersonaView[];
+  /** For naming a DRAFT action node; a published one carries its own snapshot. */
+  sessionActions?: SessionAction[];
   readOnly?: boolean;
   onChange?: (graph: WorkflowDraftGraph) => void;
   onSelection?: (selection: WorkflowSelection) => void;
@@ -329,6 +369,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
 }>(function WorkflowCanvas({
   graph,
   personas,
+  sessionActions = EMPTY_SESSION_ACTIONS,
   readOnly = false,
   onChange,
   onSelection,
@@ -341,8 +382,8 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
 }, forwardedRef): React.JSX.Element {
   const [focusNodeId, setFocusNodeId] = useState<string | null>(graph.nodes[0]?.id ?? null);
   const projectedNodes = useMemo(
-    () => canvasNodes(graph, personas, readOnly, nodeStatuses, focusNodeId, labelFor ?? null),
-    [graph, personas, readOnly, nodeStatuses, focusNodeId, labelFor],
+    () => canvasNodes(graph, personas, sessionActions, readOnly, nodeStatuses, focusNodeId, labelFor ?? null),
+    [graph, personas, sessionActions, readOnly, nodeStatuses, focusNodeId, labelFor],
   );
   const [nodes, setNodes] = useState(projectedNodes);
   const projectedEdges = useMemo(() => canvasEdges(graph.edges, readOnly), [graph.edges, readOnly]);

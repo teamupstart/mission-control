@@ -10396,6 +10396,9 @@ select.ensemble-judge-persona {
 }
 .workflow-canvas .workflow-edge-fail path { stroke: var(--danger); stroke-dasharray: 7 4; }
 .workflow-canvas .workflow-edge-pass path { stroke: var(--working); }
+/* Its own hue, because a complete is not a pass: everything downstream of it reviews
+   evidence captured after the action ran, and colouring the two alike hides that seam. */
+.workflow-canvas .workflow-edge-complete path { stroke: #a878ff; }
 .workflow-node {
   position: relative;
   display: flex;
@@ -10421,6 +10424,14 @@ select.ensemble-judge-persona {
 .workflow-node-check {
   border-style: dashed;
   border-color: color-mix(in oklab, var(--attention) 55%, var(--border));
+}
+/* Its OWN hue, and solid. An action is neither a judge nor a gate, so drawing it like
+   either would say it produces a verdict - and borrowing Session's blue would make the two
+   nodes that write to the conversation indistinguishable at a glance, which is the one
+   confusion this node can actually cause. */
+.workflow-node-session_action {
+  border-color: color-mix(in oklab, #a878ff 65%, var(--border));
+  background: color-mix(in oklab, #a878ff 7%, var(--panel));
 }
 .workflow-node-end { border-color: color-mix(in oklab, #42c977 65%, var(--border)); }
 .workflow-node-kind {
@@ -10485,7 +10496,10 @@ select.ensemble-judge-persona {
 .workflow-port-pass { top: 27%; }
 .workflow-port-fail { top: 62%; }
 .workflow-port-input { right: auto; left: 8px; top: 46%; transform: translateY(-50%); }
-.workflow-port-submitted { top: 46%; transform: translateY(-50%); }
+/* Both are a node's SINGLE source port, so both sit where one handle belongs: centred,
+   rather than at the pass port's height, which would read as the top half of a missing pair. */
+.workflow-port-submitted,
+.workflow-port-complete { top: 46%; transform: translateY(-50%); }
 .workflow-properties,
 .workflow-version-history { padding: 13px; border-bottom: 1px solid var(--border-soft); }
 .workflow-properties > section,
@@ -10701,7 +10715,15 @@ select.ensemble-judge-persona {
    a chip and a cooler edge. Drawing it as another kind of card would say the two take
    different routes, which is exactly what the compiler guarantees they do not. */
 .wf-pipeline-reviewer.is-check { border-style: dashed; }
-.wf-pipeline-check-mark {
+/* A session action is NOT a peer of a reviewer: it writes to the session rather than judging
+   it, and it runs alone. It carries the same hue its graph node does, and keeps its own
+   badge, so neither surface relies on colour alone to say what the row is. */
+.wf-pipeline-reviewer.is-session_action {
+  border-color: color-mix(in oklab, #a878ff 55%, var(--border));
+  background: color-mix(in oklab, #a878ff 6%, transparent);
+}
+.wf-pipeline-check-mark,
+.wf-pipeline-action-mark {
   padding: 1px 5px;
   font-size: 9px;
   font-weight: 700;
@@ -10710,6 +10732,10 @@ select.ensemble-judge-persona {
   color: var(--dim);
   border: 1px solid var(--border);
   border-radius: 5px;
+}
+.wf-pipeline-action-mark {
+  color: color-mix(in oklab, #a878ff 72%, var(--fg));
+  border-color: color-mix(in oklab, #a878ff 45%, var(--border));
 }
 .wf-pipeline-reviewer-actions button,
 .wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }

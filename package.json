@@ -38,6 +38,7 @@
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
     "init": "node scripts/init.mjs",
     "personas": "tsx scripts/builtin-personas.ts",
+    "session-actions": "tsx scripts/builtin-session-actions.ts",
     "session": "node scripts/new-session.mjs",
     "worktree-setup": "node scripts/worktree-setup.mjs",
     "setup": "npm run build && npm run install-hooks",

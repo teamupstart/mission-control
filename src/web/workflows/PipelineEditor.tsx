@@ -3,6 +3,7 @@ import { personasForDisplay, WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
 import type {
   PersonaId,
   PersonaView,
+  SessionAction,
   WorkflowCheckSlot,
   WorkflowDraftGraph,
 } from "@shared/workflow.ts";
@@ -11,8 +12,11 @@ import {
   compileStages,
   projectStages,
   stageContents,
+  stageMembers,
   stageName,
+  stageSeamGate,
   stageSummary,
+  type EvaluationStage,
   type Stage,
   type StageMember,
   type StagePipeline,
@@ -69,6 +73,24 @@ const withStages = (pipeline: StagePipeline, stages: Stage[]): StagePipeline =>
   ({ ...pipeline, stages });
 
 /**
+ * The stage at `index`, but only if it is one this editor may change.
+ *
+ * Every structural edit below goes through this, and the reason is that a session action
+ * stage is NOT authorable in this build: the runtime that would execute it does not exist
+ * yet, so the builder offers no way to add, remove, reorder or drag one. A graph that
+ * contains one can only have arrived through the raw draft API, and the honest answer is to
+ * render it and refuse to touch it - not to grow half an authoring surface for a node
+ * nothing can run.
+ *
+ * Returning `null` rather than throwing keeps every edit a no-op on a shape it does not
+ * understand, which is the same thing these functions already do for an out-of-range index.
+ */
+function editableStage(pipeline: StagePipeline, index: number): EvaluationStage | null {
+  const stage = pipeline.stages[index];
+  return stage?.kind === "evaluation" ? stage : null;
+}
+
+/**
  * The structural edits, as pure functions over a pipeline.
  *
  * Every surviving identity is carried verbatim so `compileStages` reuses it; only genuinely
@@ -85,9 +107,10 @@ export function addMember(
   stageIndex: number,
   seed: StageMemberSeed,
 ): StagePipeline {
-  if (!pipeline.stages[stageIndex]) return pipeline;
+  const target = editableStage(pipeline, stageIndex);
+  if (!target) return pipeline;
   return withStages(pipeline, pipeline.stages.map((stage, index) => index === stageIndex
-    ? { ...stage, members: [...stage.members, seeded(seed)] }
+    ? { ...target, members: [...target.members, seeded(seed)] }
     : stage));
 }
 
@@ -98,27 +121,28 @@ export function insertStage(
 ): StagePipeline {
   const stages = [...pipeline.stages];
   const index = Math.max(0, Math.min(stages.length, at));
-  stages.splice(index, 0, { joinId: null, members: [seeded(seed)] });
+  stages.splice(index, 0, { kind: "evaluation", joinId: null, members: [seeded(seed)] });
   return withStages(pipeline, stages);
 }
 
 export function removeMember(pipeline: StagePipeline, ref: MemberRef): StagePipeline {
-  if (!pipeline.stages[ref.stage]?.members[ref.member]) return pipeline;
+  const target = editableStage(pipeline, ref.stage);
+  if (!target?.members[ref.member]) return pipeline;
   return withStages(pipeline, pipeline.stages.flatMap((stage, index) => {
     if (index !== ref.stage) return [stage];
-    const members = stage.members.filter((_, member) => member !== ref.member);
-    return members.length === 0 ? [] : [{ ...stage, members }];
+    const members = target.members.filter((_, member) => member !== ref.member);
+    return members.length === 0 ? [] : [{ ...target, members }];
   }));
 }
 
 export function removeStage(pipeline: StagePipeline, stageIndex: number): StagePipeline {
-  if (!pipeline.stages[stageIndex]) return pipeline;
+  if (!editableStage(pipeline, stageIndex)) return pipeline;
   return withStages(pipeline, pipeline.stages.filter((_, index) => index !== stageIndex));
 }
 
 export function moveStage(pipeline: StagePipeline, from: number, to: number): StagePipeline {
   const stages = [...pipeline.stages];
-  const moved = stages[from];
+  const moved = editableStage(pipeline, from);
   if (!moved || to < 0 || to >= stages.length || from === to) return pipeline;
   stages.splice(from, 1);
   stages.splice(to, 0, moved);
@@ -131,9 +155,11 @@ export function moveMember(
   from: MemberRef,
   to: MemberRef,
 ): StagePipeline {
-  const source = pipeline.stages[from.stage];
+  const source = editableStage(pipeline, from.stage);
   const moved = source?.members[from.member];
-  const target = pipeline.stages[to.stage];
+  // BOTH ends have to be editable. A member dropped into a session action stage would make
+  // a mixed stage the runtime cannot execute, and one dragged out of it does not exist.
+  const target = editableStage(pipeline, to.stage);
   if (!source || !moved || !target) return pipeline;
   if (from.stage === to.stage) {
     if (to.member < 0 || to.member >= source.members.length || to.member === from.member) {
@@ -143,21 +169,24 @@ export function moveMember(
     members.splice(from.member, 1);
     members.splice(to.member, 0, moved);
     return withStages(pipeline, pipeline.stages.map((stage, index) => index === from.stage
-      ? { ...stage, members }
+      ? { ...source, members }
       : stage));
   }
-  const stages = pipeline.stages.map((stage, index) => {
+  const stages: Stage[] = pipeline.stages.map((stage, index) => {
     if (index === from.stage) {
-      return { ...stage, members: stage.members.filter((_, member) => member !== from.member) };
+      return { ...source, members: source.members.filter((_, member) => member !== from.member) };
     }
     if (index === to.stage) {
-      const members = [...stage.members];
+      const members = [...target.members];
       members.splice(Math.max(0, Math.min(members.length, to.member)), 0, moved);
-      return { ...stage, members };
+      return { ...target, members };
     }
     return stage;
   });
-  return withStages(pipeline, stages.filter((stage) => stage.members.length > 0));
+  return withStages(
+    pipeline,
+    stages.filter((stage) => stage.kind !== "evaluation" || stage.members.length > 0),
+  );
 }
 
 /**
@@ -170,16 +199,25 @@ export function pipelineFocusOrder(pipeline: StagePipeline): string[] {
     "session",
     ...pipeline.stages.flatMap((stage, index) => [
       `stage:${index}`,
-      ...stage.members.map((_, member) => `member:${index}:${member}`),
+      // A session action stage contributes its CARD and no member stop. Its one member
+      // cannot be removed, reordered or dragged in this build, so a focus stop on it would
+      // be a tab stop that answers no key.
+      ...(stage.kind === "evaluation"
+        ? stage.members.map((_, member) => `member:${index}:${member}`)
+        : []),
     ]),
     "end",
   ];
 }
 
-/** What a stage seam says about the gate its predecessor has to clear. */
+/**
+ * What a stage seam says about the gate its predecessor has to clear.
+ *
+ * The word itself comes from `stageSeamGate`, which the run monitor reads too; this wrapper
+ * only adds the editor's "no stage here" answer.
+ */
 export function seamGate(stage: Stage | undefined): string | null {
-  if (!stage) return null;
-  return stage.members.length > 1 ? "all pass" : "pass";
+  return stage ? stageSeamGate(stage) : null;
 }
 
 /**
@@ -196,13 +234,12 @@ export function landedStageIndex(
   from: MemberRef,
   to: MemberRef,
 ): number {
+  const source = pipeline.stages[from.stage];
   const emptiesSource = from.stage !== to.stage
-    && pipeline.stages[from.stage]?.members.length === 1;
+    && source !== undefined
+    && stageMembers(source).length === 1;
   return emptiesSource && to.stage > from.stage ? to.stage - 1 : to.stage;
 }
-
-const plural = (count: number, word: string): string =>
-  `${count} ${word}${count === 1 ? "" : "s"}`;
 
 /**
  * How a member reaches the add pickers and comes back, since a `<select>` carries one string.
@@ -228,6 +265,7 @@ export function parseMemberOption(value: string): StageMemberSeed | null {
 export function PipelineEditor({
   graph,
   personas,
+  sessionActions = [],
   readOnly = false,
   onChange,
   onConfirm,
@@ -235,6 +273,12 @@ export function PipelineEditor({
 }: {
   graph: WorkflowDraftGraph;
   personas: PersonaView[];
+  /**
+   * The action catalog, for NAMING only. This build offers no way to author one, so it has
+   * no picker to populate - but a graph that already contains an action node has to be able
+   * to say which action it is rather than showing an id or "missing".
+   */
+  sessionActions?: SessionAction[];
   readOnly?: boolean;
   onChange: (graph: WorkflowDraftGraph) => void;
   onConfirm: (request: WorkflowConfirmRequest) => void;
@@ -271,9 +315,26 @@ export function PipelineEditor({
   /** What a member IS, for the sentences that need the noun rather than the name. */
   const nounOfMember = (member: StageMember): string =>
     member.kind === "check" ? "check" : "reviewer";
+  const actionById = new Map(sessionActions.map((action) => [action.id, action]));
+  /**
+   * What an action row says about itself: what it needs, and what proves it finished.
+   *
+   * The completion is spelled as the thing the runtime PROVES rather than as its adapter
+   * id, so a reader learns what has to happen instead of a server-side spelling.
+   */
+  const metaOfAction = (sessionActionId: string): string => {
+    const action = actionById.get(sessionActionId);
+    if (!action) return "This session action no longer exists";
+    return [
+      action.requiredSkillId ? `Skill · ${action.requiredSkillId}` : "No required skill",
+      action.completion.kind === "pull_request"
+        ? "Completes when a pull request is opened and verified"
+        : "Completes when the session turn finishes",
+    ].join(" · ");
+  };
   /** The stage's derived NAME, which is what its card is titled. */
   const labelOfStage = (index: number): string =>
-    stageName(pipeline.stages[index]!, index, personas);
+    stageName(pipeline.stages[index]!, index, personas, sessionActions);
   /**
    * How a stage is REFERRED TO in a sentence about it or about its members. Positional,
    * always, because the derived name of a one-reviewer stage IS that reviewer: "remove
@@ -315,7 +376,7 @@ export function PipelineEditor({
   };
 
   const confirmRemoveMember = (ref: MemberRef): void => {
-    const stage = pipeline.stages[ref.stage];
+    const stage = editableStage(pipeline, ref.stage);
     const member = stage?.members[ref.member];
     if (!stage || !member) return;
     const label = labelOfMember(member);
@@ -337,7 +398,7 @@ export function PipelineEditor({
   };
 
   const confirmRemoveStage = (index: number): void => {
-    const stage = pipeline.stages[index];
+    const stage = editableStage(pipeline, index);
     if (!stage) return;
     const stageRef = refOfStage(index);
     const names = stage.members.map(labelOfMember).join(", ");
@@ -374,7 +435,7 @@ export function PipelineEditor({
   };
 
   const reorderMember = (ref: MemberRef, delta: number): void => {
-    const stage = pipeline.stages[ref.stage];
+    const stage = editableStage(pipeline, ref.stage);
     const member = stage?.members[ref.member];
     if (!stage || !member) return;
     const to = ref.member + delta;
@@ -419,7 +480,7 @@ export function PipelineEditor({
     event.preventDefault();
     event.stopPropagation();
     if (!dragging || dragging.kind !== "member") return endDrag();
-    const moved = pipeline.stages[dragging.ref.stage]?.members[dragging.ref.member];
+    const moved = editableStage(pipeline, dragging.ref.stage)?.members[dragging.ref.member];
     if (moved) {
       apply(
         moveMember(pipeline, dragging.ref, to),
@@ -433,8 +494,8 @@ export function PipelineEditor({
     event.preventDefault();
     if (!dragging) return endDrag();
     if (dragging.kind === "member") {
-      const moved = pipeline.stages[dragging.ref.stage]?.members[dragging.ref.member];
-      const to = { stage: stageIndex, member: pipeline.stages[stageIndex]?.members.length ?? 0 };
+      const moved = editableStage(pipeline, dragging.ref.stage)?.members[dragging.ref.member];
+      const to = { stage: stageIndex, member: editableStage(pipeline, stageIndex)?.members.length ?? 0 };
       if (moved && dragging.ref.stage !== stageIndex) {
         apply(
           moveMember(pipeline, dragging.ref, to),
@@ -607,6 +668,11 @@ export function PipelineEditor({
           const stageLabel = labelOfStage(index);
           const stageRef = refOfStage(index);
           const subtitle = stageSummary(stage);
+          // A session action stage is READ-ONLY in this build, whatever the workflow's own
+          // read-only state is: nothing here can add, remove, reorder or drag it, because
+          // there is no runtime that could execute the result. `editableStage` refuses the
+          // same edits at the model layer; this is the affordance saying so.
+          const locked = readOnly || stage.kind === "session_action";
           return (
             <div className="wf-pipeline-slot" key={stageKey}>
               <StageCard
@@ -619,7 +685,7 @@ export function PipelineEditor({
                   tabIndex: current === stageKey ? 0 : -1,
                   focusKey: stageKey,
                   ariaLabel: `${stageLabel}, ${stageRef} of ${pipeline.stages.length}, ${subtitle}`,
-                  draggable: !readOnly,
+                  draggable: !locked,
                   onFocus: () => setFocusKey(stageKey),
                   onDragStart: (event) => {
                     beginDrag(event, "stage");
@@ -628,7 +694,7 @@ export function PipelineEditor({
                   onDragEnd: endDrag,
                   onKeyDown: (event) => {
                     if (navigate(event)) return;
-                    if (readOnly) return;
+                    if (locked) return;
                     if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
                       event.preventDefault();
                       reorderStage(index, event.key === "ArrowLeft" ? -1 : 1);
@@ -641,7 +707,7 @@ export function PipelineEditor({
                   },
                 }}
                 frame={{ onDragOver: acceptDrop(stageKey), onDrop: dropOnStage(index) }}
-                actions={!readOnly && (
+                actions={!locked && (
                   <Tooltip label={`Remove ${stageRef} and every reviewer in it`}>
                     <button
                       type="button"
@@ -655,7 +721,20 @@ export function PipelineEditor({
                 )}
               >
                 <ul className="wf-pipeline-members">
-                  {stage.members.map((member, memberIndex) => {
+                  {stage.kind === "session_action" && (
+                    <ReviewerRow
+                      kind="session_action"
+                      name={stageLabel}
+                      meta={metaOfAction(stage.member.sessionActionId)}
+                      state="idle"
+                      item={{
+                        tabIndex: -1,
+                        focusKey: `${stageKey}:action`,
+                        ariaLabel: `${stageLabel}, session action in ${stageRef}`,
+                      }}
+                    />
+                  )}
+                  {stage.kind === "evaluation" && stage.members.map((member, memberIndex) => {
                     const key = `member:${index}:${memberIndex}`;
                     const ref = { stage: index, member: memberIndex };
                     const label = labelOfMember(member);
@@ -721,7 +800,12 @@ export function PipelineEditor({
                     );
                   })}
                 </ul>
-                <div className="wf-pipeline-stage-foot">{addPicker(index, stageRef)}</div>
+                {/* A session action runs ALONE, so there is nothing to add to its stage.
+                    The picker is omitted rather than disabled: a control that lists four
+                    reviewers and refuses every one of them reads as a bug, not as a rule. */}
+                {stage.kind === "evaluation" && (
+                  <div className="wf-pipeline-stage-foot">{addPicker(index, stageRef)}</div>
+                )}
               </StageCard>
 
               <div

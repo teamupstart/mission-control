@@ -48,13 +48,18 @@ test("the pipeline editor roves by name and announces in names", () => {
     endOutcome: "Complete",
     stages: [
       {
+        kind: "evaluation",
         joinId: "join",
         members: [
           { nodeId: "a", kind: "persona", personaId: "pa" },
           { nodeId: "b", kind: "check", slot: "typecheck" },
         ],
       },
-      { joinId: null, members: [{ nodeId: "c", kind: "persona", personaId: "pc" }] },
+      {
+        kind: "evaluation",
+        joinId: null,
+        members: [{ nodeId: "c", kind: "persona", personaId: "pc" }],
+      },
     ],
   };
   // Reading order: the two termini bracket every stage header and its members. A check is a

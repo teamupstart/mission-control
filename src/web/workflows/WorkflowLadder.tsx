@@ -3,6 +3,8 @@ import type { WorkflowRunDetail, WorkflowRunSummary } from "@shared/workflow.ts"
 import {
   nodeLabel,
   projectStages,
+  stageMemberKey,
+  stageMembers,
   stageName,
   stageSummary,
 } from "@shared/workflow-stages.ts";
@@ -202,6 +204,10 @@ export function WorkflowLadder({
     node.kind === "persona" && "persona" in node
       ? [{ id: node.persona.sourcePersonaId, name: node.persona.name }]
       : []);
+  const actionNames = graph.nodes.flatMap((node) =>
+    node.kind === "session_action" && "action" in node
+      ? [{ id: node.action.sourceSessionActionId, name: node.action.name }]
+      : []);
   const calls = detail.llmCalls ?? [];
   const changesRequested = [...attempts.values()]
     .some((attempt) => verdictOf(attempt)?.verdict === "fail");
@@ -238,21 +244,31 @@ export function WorkflowLadder({
         <Rung name="Session" status={session} terminal />
 
         {pipeline.stages.map((stage, index) => {
-          const members = stage.members.map((member) => {
+          const members = stageMembers(stage).map((member) => {
             const nodeId = member.nodeId;
             const node = nodeId ? nodes.get(nodeId) : undefined;
             const attempt = nodeId ? attempts.get(nodeId) : undefined;
             const outcome = attempt ? checkOutcomeOf(attempt) : null;
             // The runs monitor's override, read-only here and under the same boundary: a
             // switched-off gate the round has not reached reads Disabled, while an outcome
-            // this round already recorded keeps its real chip on the session tile too.
-            const status = disabledStatusFor(detail.run.disabledNodeIds, nodeId, attempt)
+            // this round already recorded keeps its real chip on the session tile too. An
+            // action is never in that set - the feature is scoped to `isVerdictNode` - so
+            // asking is skipped rather than relying on it to answer null.
+            //
+            // A session action then reads the reviewer's LIFECYCLE view, never the check's:
+            // it has no pass/fail outcome to colour, and `checkStatus` would print "Passed"
+            // for a node that judged nothing.
+            const status = (member.kind === "session_action"
+              ? null
+              : disabledStatusFor(detail.run.disabledNodeIds, nodeId, attempt))
               ?? (member.kind === "check"
                 ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
                 : reviewerStatus(nodeId ? statuses[nodeId] : undefined));
             const name = node
-              ? nodeLabel(graph, node, personaNames)
-              : member.kind === "check" ? `Check · ${member.slot}` : "Missing persona";
+              ? nodeLabel(graph, node, personaNames, actionNames)
+              : member.kind === "check"
+                ? `Check · ${member.slot}`
+                : member.kind === "session_action" ? "Missing session action" : "Missing persona";
             const verdict = attempt ? verdictOf(attempt) : null;
             const meta = attempt ? verdictMeta(attempt, calls) : null;
             return { member, name, attempt, outcome, status, verdict, meta };
@@ -264,13 +280,15 @@ export function WorkflowLadder({
           const objection = members.find((member) => member.verdict?.verdict === "fail");
           const repeatOffenders = status.tone === "failed"
             ? (detail.repeatOffenders ?? []).filter((offender) =>
-                stage.members.some((member) => member.nodeId === offender.nodeId))
+                stageMembers(stage).some((member) => member.nodeId === offender.nodeId))
             : [];
 
           return (
             <Rung
-              key={stage.joinId ?? `stage:${index}`}
-              name={stageName(stage, index, personaNames)}
+              key={stage.kind === "evaluation" && stage.joinId !== null
+                ? stage.joinId
+                : `stage:${index}`}
+              name={stageName(stage, index, personaNames, actionNames)}
               sub={stageSummary(stage)}
               status={status}
             >
@@ -297,10 +315,7 @@ export function WorkflowLadder({
                     return (
                       <li
                         className={`wf-ladder-member workflow-${member.status.tone}`}
-                        key={member.member.nodeId
-                          ?? `${index}:${member.member.kind === "check"
-                            ? member.member.slot
-                            : member.member.personaId}`}
+                        key={member.member.nodeId ?? `${index}:${stageMemberKey(member.member)}`}
                       >
                         <span className="wf-ladder-member-row">
                           <span className="wf-ladder-member-mark" aria-hidden>

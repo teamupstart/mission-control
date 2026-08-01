@@ -4961,6 +4961,7 @@ npm run install-statusline # + wrap the status line (terminal model / thinking /
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
 npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
+npm run session-actions # recompile the built-in session actions from docs/session-actions/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```

@@ -48,6 +48,11 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Schedule enum values
 - Ensemble strategy, driver, artifact, source, run, and member values
 - Inspector marker versions
+- Workflow graph node kinds, source and target ports, and SessionAction completion kinds
+  (`SESSION_ACTION_COMPLETION_KINDS`) - these reach draft graphs, immutable published
+  versions, and `session_actions.completion_kind`, and a completion kind is read STRICTLY:
+  an unknown value fails its row rather than degrading, so renaming one makes history
+  unreadable instead of migrating it
 
 Search for the owning constant and its contract tests before extending a tuple.
 
@@ -162,6 +167,10 @@ Update README in the same change:
 - New command: Commands
 - New shortcut: Keyboard table
 
-Built-in personas are generated from `docs/personas/*.md`. Edit the Markdown and run the generator instead of editing `builtin-personas.generated.ts`.
+Built-in personas are generated from `docs/personas/*.md`, and built-in session actions from
+`docs/session-actions/*.md`. Edit the Markdown and run the generator (`npm run personas`,
+`npm run session-actions`) instead of editing the `.generated.ts` module. Both share the
+reader and renderer in `scripts/builtin-markdown.ts`, and both have a drift test that
+imports the generator rather than re-implementing it.
 
 Plans live at `docs/plans/<name>/plan.md` with a self-contained HTML companion when the planning workflow requires it.

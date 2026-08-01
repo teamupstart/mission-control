@@ -2,6 +2,7 @@ import type { WorkflowRunDetail, WorkflowRunSummary } from "@shared/workflow.ts"
 import {
   nodeLabel,
   projectStages,
+  stageMembers,
   stageName,
   stageSummary,
 } from "@shared/workflow-stages.ts";
@@ -110,6 +111,10 @@ export function workflowLadderPeekView(
     node.kind === "persona" && "persona" in node
       ? [{ id: node.persona.sourcePersonaId, name: node.persona.name }]
       : []);
+  const actionNames = graph.nodes.flatMap((node) =>
+    node.kind === "session_action" && "action" in node
+      ? [{ id: node.action.sourceSessionActionId, name: node.action.name }]
+      : []);
   const attempts = latestAttemptsFor(detail, submission.id);
   const statuses = nodeStatusesForSubmission(detail, submission.id);
   const changesRequested = [...attempts.values()]
@@ -128,7 +133,7 @@ export function workflowLadderPeekView(
   const stages: StagePeek[] = pipeline.stages.map((stage, index) => {
     let sentence: string | null = null;
     let degradedSentence: string | null = null;
-    const members = stage.members.map((member, memberIndex) => {
+    const members = stageMembers(stage).map((member, memberIndex) => {
       const nodeId = member.nodeId;
       const node = nodeId ? nodes.get(nodeId) : undefined;
       const attempt = nodeId ? attempts.get(nodeId) : undefined;
@@ -137,8 +142,10 @@ export function workflowLadderPeekView(
         ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
         : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
       const name = node
-        ? nodeLabel(graph, node, personaNames)
-        : member.kind === "check" ? `Check · ${member.slot}` : "Missing persona";
+        ? nodeLabel(graph, node, personaNames, actionNames)
+        : member.kind === "check"
+          ? `Check · ${member.slot}`
+          : member.kind === "session_action" ? "Missing session action" : "Missing persona";
       const verdict = attempt ? verdictOf(attempt) : null;
       if (sentence === null && verdict?.verdict === "fail") {
         sentence = `${name}: ${verdict.summary}`;
@@ -154,7 +161,7 @@ export function workflowLadderPeekView(
     });
     return {
       index,
-      name: stageName(stage, index, personaNames),
+      name: stageName(stage, index, personaNames, actionNames),
       sub: stageSummary(stage),
       status: stageStatus(members.map((member) => member.status)),
       members,

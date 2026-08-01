@@ -18,6 +18,8 @@ import type {
   NmFixReplySource,
   NoteDisposition,
   PaneDialogSummary,
+  PendingTurn,
+  PendingTurnState,
   PlanDecision,
   ReviewItem,
   ReviewKind,
@@ -793,6 +795,27 @@ export function openDb(): DatabaseSync {
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL
     );
+
+    -- Human turns the daemon still owns. Unlike a harness's internal queue, rows here have
+    -- not been accepted by Claude or Codex and can therefore be recalled into the composer.
+    -- note_key follows session notes and work queues so a transient pane replacement does
+    -- not strand the outbox. A claimed row remains durable until delivery is acknowledged.
+    CREATE TABLE IF NOT EXISTS pending_turns (
+      id          TEXT PRIMARY KEY NOT NULL,
+      note_key    TEXT NOT NULL,
+      seq         INTEGER NOT NULL,
+      text        TEXT NOT NULL,
+      state       TEXT NOT NULL,
+      revision    INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      claimed_at  INTEGER,
+      last_error  TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_order
+      ON pending_turns(note_key, seq);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_sending
+      ON pending_turns(note_key) WHERE state = 'sending';
 
     CREATE TABLE IF NOT EXISTS foreman_queues (
       note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
@@ -3877,6 +3900,307 @@ export function pruneUsageLedger(cutoff: number): number {
 /** Cursor retention is independent of event retention and deliberately age-only. */
 export function pruneUsageSources(cutoff: number): number {
   return Number(openDb().prepare(`DELETE FROM usage_sources WHERE updated_at < ?`).run(cutoff).changes);
+}
+
+// ---- Editable pending conversation turns ----
+
+interface PendingTurnRow {
+  id: string;
+  note_key: string;
+  seq: number;
+  text: string;
+  state: string;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+  claimed_at: number | null;
+  last_error: string | null;
+}
+
+const PENDING_TURN_STATE_SET = new Set<PendingTurnState>(["queued", "sending", "uncertain"]);
+
+function rowToPendingTurn(row: PendingTurnRow): PendingTurn {
+  const state = PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
+    ? (row.state as PendingTurnState)
+    : "uncertain";
+  return {
+    id: row.id,
+    noteKey: row.note_key,
+    seq: row.seq,
+    text: row.text,
+    state,
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    claimedAt: row.claimed_at,
+    lastError:
+      state === "uncertain" && !PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
+        ? `unrecognized pending-turn state: ${row.state}`
+        : row.last_error,
+  };
+}
+
+export function listPendingTurns(noteKey: string): PendingTurn[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM pending_turns WHERE note_key = ? ORDER BY seq ASC`)
+    .all(noteKey) as unknown as PendingTurnRow[];
+  return rows.map(rowToPendingTurn);
+}
+
+export function createPendingTurn(input: {
+  id: string;
+  noteKey: string;
+  text: string;
+  now: number;
+}): PendingTurn {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(input.noteKey) as unknown as { seq: number };
+    d.prepare(
+      `INSERT INTO pending_turns
+         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
+    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now);
+    d.exec("COMMIT");
+    return {
+      id: input.id,
+      noteKey: input.noteKey,
+      seq: row.seq,
+      text: input.text,
+      state: "queued",
+      revision: 0,
+      createdAt: input.now,
+      updatedAt: input.now,
+      claimedAt: null,
+      lastError: null,
+    };
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** Claim only the FIFO head, and only while no delivery for this conversation is unresolved. */
+export function claimNextPendingTurn(noteKey: string, now: number): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const unresolved = d
+      .prepare(
+        `SELECT 1 AS present FROM pending_turns
+          WHERE note_key = ? AND state <> 'queued' LIMIT 1`,
+      )
+      .get(noteKey) as unknown as { present: number } | undefined;
+    if (unresolved) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const row = d
+      .prepare(
+        `SELECT * FROM pending_turns
+          WHERE note_key = ? AND state = 'queued' ORDER BY seq ASC LIMIT 1`,
+      )
+      .get(noteKey) as unknown as PendingTurnRow | undefined;
+    if (!row) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const changed = d
+      .prepare(
+        `UPDATE pending_turns
+            SET state = 'sending', revision = revision + 1, updated_at = ?,
+                claimed_at = ?, last_error = NULL
+          WHERE id = ? AND state = 'queued' AND revision = ?`,
+      )
+      .run(now, now, row.id, row.revision).changes;
+    if (changed !== 1) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    d.exec("COMMIT");
+    return {
+      ...rowToPendingTurn(row),
+      state: "sending",
+      revision: row.revision + 1,
+      updatedAt: now,
+      claimedAt: now,
+      lastError: null,
+    };
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** Move the newest still-editable row back to the composer. */
+export function recallPendingTurn(
+  noteKey: string,
+  id: string,
+  revision: number,
+): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const newest = d
+      .prepare(
+        `SELECT * FROM pending_turns
+          WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1`,
+      )
+      .get(noteKey) as unknown as PendingTurnRow | undefined;
+    if (!newest || newest.id !== id || newest.revision !== revision) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const changed = d
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND revision = ?`)
+      .run(id, revision).changes;
+    if (changed !== 1) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    d.exec("COMMIT");
+    return rowToPendingTurn(newest);
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+function transitionPendingTurn(
+  id: string,
+  revision: number,
+  from: PendingTurnState,
+  to: PendingTurnState,
+  now: number,
+  lastError: string | null,
+): PendingTurn | null {
+  const d = openDb();
+  const changed = d
+    .prepare(
+      `UPDATE pending_turns
+          SET state = ?, revision = revision + 1, updated_at = ?,
+              claimed_at = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_at END,
+              last_error = ?
+        WHERE id = ? AND state = ? AND revision = ?`,
+    )
+    .run(to, now, to, lastError, id, from, revision).changes;
+  if (changed !== 1) return null;
+  const row = d.prepare(`SELECT * FROM pending_turns WHERE id = ?`).get(id) as
+    | unknown as PendingTurnRow
+    | undefined;
+  return row ? rowToPendingTurn(row) : null;
+}
+
+export function releasePendingTurn(
+  id: string,
+  revision: number,
+  error: string,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "sending", "queued", now, error);
+}
+
+export function markPendingTurnUncertain(
+  id: string,
+  revision: number,
+  error: string,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "sending", "uncertain", now, error);
+}
+
+export function retryPendingTurn(
+  id: string,
+  revision: number,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "uncertain", "queued", now, null);
+}
+
+export function deleteClaimedPendingTurn(id: string, revision: number): boolean {
+  return (
+    openDb()
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'sending' AND revision = ?`)
+      .run(id, revision).changes === 1
+  );
+}
+
+export function resolveUncertainPendingTurn(id: string, revision: number): boolean {
+  return (
+    openDb()
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'uncertain' AND revision = ?`)
+      .run(id, revision).changes === 1
+  );
+}
+
+export function clearPendingTurns(noteKey: string): number {
+  return Number(
+    openDb().prepare(`DELETE FROM pending_turns WHERE note_key = ?`).run(noteKey).changes,
+  );
+}
+
+/** Carry pre-binding outbox rows from a synthetic session id onto the real conversation. */
+export function rekeyPendingTurns(fromKey: string, toKey: string, now: number): boolean {
+  if (fromKey === toKey) return true;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const source = d
+      .prepare(`SELECT COUNT(*) AS n FROM pending_turns WHERE note_key = ?`)
+      .get(fromKey) as unknown as { n: number };
+    if (source.n === 0) {
+      d.exec("COMMIT");
+      return true;
+    }
+    const sending = d
+      .prepare(
+        `SELECT note_key FROM pending_turns
+          WHERE note_key IN (?, ?) AND state = 'sending' GROUP BY note_key`,
+      )
+      .all(fromKey, toKey) as unknown as Array<{ note_key: string }>;
+    if (sending.length > 1) {
+      d.exec("COMMIT");
+      return false;
+    }
+    const target = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(toKey) as unknown as { seq: number };
+    d.prepare(
+      `UPDATE pending_turns
+          SET note_key = ?, seq = seq + ?, updated_at = ?
+        WHERE note_key = ?`,
+    ).run(toKey, target.seq, now, fromKey);
+    d.exec("COMMIT");
+    return true;
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** A daemon crash can leave delivery possible but unacknowledged, so never auto-resend it. */
+export function recoverSendingPendingTurns(now: number): number {
+  return Number(
+    openDb()
+      .prepare(
+        `UPDATE pending_turns
+            SET state = 'uncertain', revision = revision + 1, updated_at = ?,
+                last_error = 'Mission Control restarted during delivery; confirm before retrying.'
+          WHERE state = 'sending'`,
+      )
+      .run(now).changes,
+  );
 }
 
 // ---- Foreman session work queues ----

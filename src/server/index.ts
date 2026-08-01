@@ -23,6 +23,7 @@ import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
+import { PendingTurnManager } from "./pending-turns.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
@@ -81,6 +82,7 @@ const reviews = new ReviewManager(registry);
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
 const sdkSessions = new SdkSupervisor(registry);
+const pendingTurns = new PendingTurnManager(registry, sdkSessions);
 const tasks = new TaskManager(registry, undefined, sdkSessions);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
@@ -263,7 +265,19 @@ const schedules = new ScheduleManager({
 let stopSchedules = () => {};
 
 const app = buildApp(
-  registry, reviews, tasks, queues, away, personas, workflows, schedules, ensembles, sdkSessions,
+  registry,
+  reviews,
+  tasks,
+  queues,
+  away,
+  personas,
+  workflows,
+  schedules,
+  ensembles,
+  sdkSessions,
+  undefined,
+  undefined,
+  pendingTurns,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -283,6 +297,9 @@ if (hasDist) {
 }
 
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
+  // Startup recovery changes durable rows, so it starts only after this process wins the
+  // loopback port and is therefore the daemon's sole SQLite writer.
+  pendingTurns.start();
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
@@ -316,6 +333,7 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  pendingTurns.stop();
   await sdkSessions.stopAll();
   await workflows.stop();
   ensembles.stop();

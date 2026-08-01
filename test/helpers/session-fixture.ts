@@ -135,6 +135,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     cost: null,
     goal: { text: "Ensure all worktree changes are in main", source: "model", updatedAt: 0 },
     queue: null,
+    pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
     paneDialog: null,

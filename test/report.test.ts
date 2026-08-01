@@ -45,6 +45,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     effortBaselineReady: false,
     note: null, cost: null, goal: null,
     queue: null,
+    pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
     paneDialog: null,

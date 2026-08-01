@@ -227,6 +227,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
     cost: null,
     goal: { text: "Add retry handling.", source: "model", updatedAt: now },
     queue: null,
+    pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
     paneDialog: null,

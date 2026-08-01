@@ -328,11 +328,30 @@ through a pane. That is a session's **runtime**, and there are two.
   is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
   `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
-  There is no pane. A submitted message is *acknowledged* as a new turn, added to Codex's
-  current turn, or queued behind Claude's current turn. Both the conversation reply box and
-  the compact Send box show that disposition, so accepted input does not disappear while an
-  agent is busy. A permission prompt or an approval arrives as data - what is being asked,
-  and the exact rows to offer - which the card renders directly.
+  There is no pane. A permission prompt or an approval arrives as data, including what is
+  being asked and the exact rows to offer, which the card renders directly.
+
+Human messages from either conversation composer first enter Mission Control's **editable
+outbox**, on both runtimes. The full message appears as a `You · queued` turn instead of a
+count or a hidden driver queue. Press <kbd>↑</kbd> in an empty composer, or choose **Edit**,
+to remove the newest queued message atomically and put its exact text back in the box. Other
+queued messages stay in FIFO order.
+
+Delivery begins only after the session positively reports idle and no question is covering
+its input. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
+Codex message never becomes an implicit steer and a Claude message never enters Claude's
+private follow-up FIFO while it is still shown as editable. A terminal session uses the
+same Stop and task-complete lifecycle signals, plus passive transcript or rollout state,
+then waits for prompt-pickup evidence after pasting. A refusal before any terminal text was
+written returns the row to `queued`. If text may have landed but pickup cannot be proved,
+the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
+risking a duplicate.
+
+The outbox is stored in SQLite under the stable conversation id. It survives browser and
+daemon restarts. A row that was being delivered when the daemon stopped recovers as
+`delivery uncertain` and is never resent automatically. Reset clears pending messages along
+with the conversation drafts and work they described. Work Queue automation and its explicit
+wrap-up send retain their existing direct acknowledged delivery path.
 
 For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
@@ -3467,14 +3486,21 @@ card, and **Cancel** / <kbd>Esc</kbd> on the send box. Glance at the grid mid-se
 come back - your text is still there, exactly as the [dispatch form](#dispatch-an-agent)
 treats a half-written task.
 
-A draft is forgotten on **successful delivery**: a send that lands for the reply and
-send boxes, an **Add** that lands for the queue box. **Resetting the session** also forgets
+A draft is forgotten on **successful submission**: a send that creates a durable pending
+turn for the reply and send boxes, or an **Add** that lands for the queue box. **Resetting
+the session** also forgets
 the reply and send drafts - a reset discards the task those boxes were replying to, so their
 half-written text goes with it, and an open reply box empties on the spot rather than keeping
 stale text behind the closing modal. The **queue add box is kept** through a reset, since it
 composes new work rather than a reply to the discarded task. A send that *fails* deliberately
 keeps your text - it's all you have and you're about to retry it. Drafts are per session and
 never bleed from one card into another.
+
+Once **Send** succeeds, the composer draft becomes a durable queued turn. The full text stays
+visible beneath the conversation and in the compact send surface while Mission Control owns
+it. Recalling it with <kbd>↑</kbd> moves the text back into the same draft system with the
+caret at the end. Recalled attachment uploads return as their already-inserted file paths;
+the thumbnail strip is not reconstructed.
 
 Two things worth knowing:
 
@@ -3995,6 +4021,7 @@ shortcut works in every layout:
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
+| <kbd>↑</kbd> | Recall the newest editable queued message into the box, with the caret at the end. The box must be empty and have no attachments | Empty message composer |
 | <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. If its conversation is not visible, reveals it first, then opens the terminal chooser | Selected session |
 | <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or reveal the conversation and choose a terminal in which to resume it | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |

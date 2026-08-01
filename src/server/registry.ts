@@ -10,6 +10,7 @@ import type {
   FleetCost,
   OrphanedQueueHint,
   PaneDialog,
+  PendingTurn,
   PermissionMode,
   RateLimits,
   RateLimitWindow,
@@ -76,6 +77,7 @@ import type { HookSpec } from "./harness/types.ts";
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
 import { clampPrompt } from "./util/prompt-text.ts";
 import {
+  clearPendingTurns as clearPendingTurnsDb,
   clearQueue as clearQueueDb,
   deleteQueueItem,
   deleteTask as dbDeleteTask,
@@ -85,6 +87,7 @@ import {
   getSessionNote,
   listQueueItems,
   listQueueRows,
+  listPendingTurns,
   loadActiveTasks,
   loadResourceHoldingTerminalTasks,
   loadPrPendingTerminalTasks,
@@ -609,6 +612,11 @@ export class Registry extends EventEmitter {
     return this.sessions.get(id);
   }
 
+  /** Resolve a durable conversation key back to its current live session. */
+  sessionForNoteKey(noteKey: string): Session | undefined {
+    return [...this.sessions.values()].find((session) => noteKeyFor(session) === noteKey);
+  }
+
   beginSessionReset(id: string): void {
     this.resettingSessionIds.add(id);
   }
@@ -1060,6 +1068,7 @@ export class Registry extends EventEmitter {
       note: null,
       goal: null,
       queue: null,
+      pendingTurns: prev?.pendingTurns ?? [],
       orphanedQueue: null,
     };
     const overlay = this.overlayFor(base);
@@ -1115,6 +1124,7 @@ export class Registry extends EventEmitter {
     base.cost =
       prev && noteKeyFor(prev) === noteKeyFor(base) ? prev.cost : sessionCostFor(noteKeyFor(base));
     base.queue = this.queueSummaryFor(base);
+    base.pendingTurns = this.pendingTurnsFor(base);
     base.inspector = this.inspectorSummaryFor(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about every session ("no live session holds that key"), and this
@@ -1226,6 +1236,7 @@ export class Registry extends EventEmitter {
       note: null,
       goal: null,
       queue: null,
+      pendingTurns: [],
       orphanedQueue: null,
       inspector: null,
       paneDialog: null,
@@ -1235,6 +1246,7 @@ export class Registry extends EventEmitter {
     s.goal = this.goalSummaryFor(s);
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
+    s.pendingTurns = this.pendingTurnsFor(s);
     s.inspector = this.inspectorSummaryFor(s);
     this.sessions.set(s.id, s);
     this.emitSession(s);
@@ -1399,6 +1411,7 @@ export class Registry extends EventEmitter {
     next.goal = this.goalSummaryFor(next);
     if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
+    next.pendingTurns = this.pendingTurnsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
     next.inspector = this.inspectorSummaryFor(next);
     this.sessions.set(next.id, next);
@@ -1627,6 +1640,7 @@ export class Registry extends EventEmitter {
       // through `syncSessionsForCost`.
       if (noteKeyFor(next) !== noteKeyFor(target)) next.cost = sessionCostFor(noteKeyFor(next));
       next.queue = this.queueSummaryFor(next);
+      next.pendingTurns = this.pendingTurnsFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
       // A hook is how a PR url first reaches a card, and the summary is keyed on it -
       // so resolving here is what makes the chip appear on the same event that
@@ -1748,6 +1762,7 @@ export class Registry extends EventEmitter {
     next.goal = this.goalSummaryFor(next);
     next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
+    next.pendingTurns = this.pendingTurnsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
     this.rememberAgentSession(next, s.agentSessionId);
     this.ensureWorkEpisode(next);
@@ -4794,6 +4809,18 @@ export class Registry extends EventEmitter {
 
   // ---- Foreman work queues ----
 
+  /** Re-read pending turns after the outbox manager commits a lifecycle transition. */
+  refreshPendingTurns(key: string): void {
+    this.syncSessionsForPendingTurns(key);
+  }
+
+  /** Reset cleanup for human turns authored against discarded conversation state. */
+  clearPendingTurns(key: string): boolean {
+    const changed = clearPendingTurnsDb(key) > 0;
+    if (changed) this.syncSessionsForPendingTurns(key);
+    return changed;
+  }
+
   /** The compact queue view denormalized onto a session card. */
   private queueSummaryFor(s: Session): SessionQueueSummary | null {
     const key = noteKeyFor(s);
@@ -4805,6 +4832,11 @@ export class Registry extends EventEmitter {
       { askedAt: row?.wrapupAskedAt ?? null, answer: row?.wrapupAnswer ?? null },
       row?.updatedAt ?? 0,
     );
+  }
+
+  /** The complete editable outbox projection for one conversation. */
+  private pendingTurnsFor(s: Session): PendingTurn[] {
+    return listPendingTurns(noteKeyFor(s));
   }
 
   /**
@@ -5230,6 +5262,17 @@ export class Registry extends EventEmitter {
     }
   }
 
+  private syncSessionsForPendingTurns(key: string): void {
+    const pendingTurns = listPendingTurns(key);
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      if (JSON.stringify(s.pendingTurns) === JSON.stringify(pendingTurns)) continue;
+      const next = { ...s, pendingTurns };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
   /** Re-resolve every card's orphan hint (after a re-attach changes who's orphaned). */
   private syncAllOrphanHints(): void {
     for (const [id, s] of this.sessions) {
@@ -5614,6 +5657,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // in any way of its own - an idle sibling is equal by every other field, stays
   // quiet, and never surfaces the stranded batch.
   queue: byJson,
+  pendingTurns: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp

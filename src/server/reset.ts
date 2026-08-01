@@ -109,6 +109,7 @@ export async function resetSession(
               await registry.waitForWorkEpisodeReady(session.id, episode.episodeId, 5000)))
         );
         registry.clearObservedSessionEffort(session.id);
+        registry.clearPendingTurns(noteKeyFor(session));
         registry.clearQueue(noteKeyFor(session));
         registry.clearWorkflowState(noteKeyFor(session));
       }

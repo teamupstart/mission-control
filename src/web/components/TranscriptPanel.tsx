@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import type {
   ForemanEpisode,
+  PendingTurn,
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
@@ -11,6 +12,11 @@ import { withAttachments } from "@shared/attachments.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
+import {
+  latestEditablePendingTurn,
+  pendingTurnStatus,
+  shouldRecallPendingTurn,
+} from "../lib/pending-turns.ts";
 import {
   appendLive,
   backAnchor,
@@ -209,6 +215,7 @@ export function TranscriptPanel({
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   /**
@@ -523,7 +530,7 @@ export function TranscriptPanel({
       return;
     }
     if (atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [messages, session.pendingTurns]);
 
   // Deliberately don't grab focus when the panel opens. Focus mode is opened with
   // `e` and closed with `e`, and the grid's global keys (including that toggle)
@@ -577,6 +584,44 @@ export function TranscriptPanel({
       showFlash({ text: r.error ?? "send failed", ok: false }, 3500);
     }
   }
+
+  async function recall(turn: PendingTurn): Promise<void> {
+    const input = inputRef.current;
+    if (!input || pendingAction) return;
+    if (input.value.length > 0 || attachments.length > 0) {
+      showFlash({ text: "Clear the current reply before editing a queued message.", ok: false }, 3500);
+      return;
+    }
+    setPendingAction(turn.id);
+    const result = await api.recallPendingTurn(sessionId, turn.id, turn.revision);
+    setPendingAction(null);
+    if (!result.ok || result.text === undefined) {
+      showFlash({ text: result.error ?? "That message is no longer editable.", ok: false }, 3500);
+      return;
+    }
+    input.value = result.text;
+    writeDraft(sessionId, "reply", result.text);
+    input.focus();
+    input.setSelectionRange(result.text.length, result.text.length);
+  }
+
+  async function retry(turn: PendingTurn): Promise<void> {
+    if (pendingAction) return;
+    setPendingAction(turn.id);
+    const result = await api.retryPendingTurn(sessionId, turn.id, turn.revision);
+    setPendingAction(null);
+    if (!result.ok) showFlash({ text: result.error ?? "Retry failed.", ok: false }, 3500);
+  }
+
+  async function markSent(turn: PendingTurn): Promise<void> {
+    if (pendingAction) return;
+    setPendingAction(turn.id);
+    const result = await api.resolvePendingTurn(sessionId, turn.id, turn.revision);
+    setPendingAction(null);
+    if (!result.ok) showFlash({ text: result.error ?? "Could not resolve message.", ok: false }, 3500);
+  }
+
+  const latestEditable = latestEditablePendingTurn(session.pendingTurns);
 
   return (
     // Stop clicks inside the panel from re-selecting / collapsing the card. The accent
@@ -663,6 +708,17 @@ export function TranscriptPanel({
                 />
               ),
         )}
+        {session.pendingTurns.map((turn) => (
+          <PendingTurnView
+            key={turn.id}
+            turn={turn}
+            editable={latestEditable?.id === turn.id}
+            busy={pendingAction === turn.id}
+            onEdit={() => void recall(turn)}
+            onRetry={() => void retry(turn)}
+            onMarkSent={() => void markSent(turn)}
+          />
+        ))}
           </div>
         </div>
         {/* Sibling of the log wrapper, not a child of it: `.find-split` is the flex row
@@ -710,6 +766,23 @@ export function TranscriptPanel({
             onChange={(e) => writeDraft(sessionId, "reply", e.currentTarget.value)}
             onPaste={drop.onPaste}
             onKeyDown={(e) => {
+              if (
+                latestEditable &&
+                shouldRecallPendingTurn({
+                  key: e.key,
+                  value: e.currentTarget.value,
+                  selectionStart: e.currentTarget.selectionStart,
+                  selectionEnd: e.currentTarget.selectionEnd,
+                  composing: e.nativeEvent.isComposing,
+                  modified: e.altKey || e.ctrlKey || e.metaKey || e.shiftKey,
+                  busy: sending || pendingAction !== null,
+                  hasAttachments: attachments.length > 0,
+                })
+              ) {
+                e.preventDefault();
+                void recall(latestEditable);
+                return;
+              }
               // The Enter that commits an IME candidate (Japanese/Chinese/Korean) is
               // the same keystroke as the one that sends, and the browser tells them
               // apart only by `isComposing`. Without this, picking a candidate fires
@@ -826,6 +899,61 @@ function Highlighted({
         );
       })}
     </>
+  );
+}
+
+export function PendingTurnView({
+  turn,
+  editable,
+  busy = false,
+  onEdit,
+  onRetry,
+  onMarkSent,
+}: {
+  turn: PendingTurn;
+  editable: boolean;
+  busy?: boolean;
+  onEdit?: () => void;
+  onRetry?: () => void;
+  onMarkSent?: () => void;
+}): React.JSX.Element {
+  return (
+    <div className={`turn turn-user pending-turn is-${turn.state}`} data-pending-state={turn.state}>
+      <div className="turn-role pending-turn-role">
+        <span>You</span>
+        <span className="pending-turn-state" role="status">
+          {pendingTurnStatus(turn)}
+        </span>
+      </div>
+      <div className="turn-text">{turn.text}</div>
+      <div className="pending-turn-actions">
+        {turn.state === "queued" && editable && (
+          <Tooltip label="Move this queued message back into the reply box">
+            <button type="button" className="pending-turn-action" disabled={busy} onClick={onEdit}>
+              Edit
+            </button>
+          </Tooltip>
+        )}
+        {turn.state === "uncertain" && (
+          <>
+            <Tooltip label="Queue this message again because it was not delivered">
+              <button type="button" className="pending-turn-action" disabled={busy} onClick={onRetry}>
+                Retry
+              </button>
+            </Tooltip>
+            <Tooltip label="Remove this warning because the agent already received the message">
+              <button type="button" className="pending-turn-action" disabled={busy} onClick={onMarkSent}>
+                Mark sent
+              </button>
+            </Tooltip>
+          </>
+        )}
+        {turn.state === "queued" && editable && (
+          <span className="pending-turn-hint">Up Arrow in an empty reply box</span>
+        )}
+        {turn.lastError && <span className="pending-turn-error">{turn.lastError}</span>}
+      </div>
+    </div>
   );
 }
 

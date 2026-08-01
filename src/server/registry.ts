@@ -614,7 +614,13 @@ export class Registry extends EventEmitter {
 
   /** Resolve a durable conversation key back to its current live session. */
   sessionForNoteKey(noteKey: string): Session | undefined {
-    return [...this.sessions.values()].find((session) => noteKeyFor(session) === noteKey);
+    let owner: Session | undefined;
+    for (const session of this.sessions.values()) {
+      if (session.state === "exited" || noteKeyFor(session) !== noteKey) continue;
+      if (owner) return undefined;
+      owner = session;
+    }
+    return owner;
   }
 
   beginSessionReset(id: string): void {

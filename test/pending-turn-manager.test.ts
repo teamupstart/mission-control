@@ -148,6 +148,65 @@ test("busy SDK sessions retain editable text until confirmed idle", async () => 
   f.manager.stop();
 });
 
+test("SDK-to-terminal handoff waits for one live owner and wakes after eviction", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const registry = new Registry();
+  const key = "agent:handoff-target";
+  const sourceId = "sdk:handoff-source";
+  const targetId = "terminal:handoff-target";
+  registry.registerSdkSession({
+    id: sourceId,
+    agent: "claude",
+    name: "handoff-source",
+    cwd: "/repo/handoff-owner",
+    agentSessionId: key,
+  });
+  const sends: string[] = [];
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      sendWhenIdle: async () => {
+        throw new Error("the exited SDK owner must not receive the pending turn");
+      },
+    },
+    {
+      idleSettleMs: 0,
+      inject: async (session, _text, _deps, beforeWrite) => {
+        const blocker = beforeWrite?.();
+        if (blocker) {
+          return { ok: false, error: blocker, pasted: false, submitVerified: false };
+        }
+        sends.push(session.id);
+        return { ok: true, pasted: true, submitVerified: true };
+      },
+    },
+  );
+  manager.start();
+  working(registry, sourceId);
+  manager.submit(sourceId, "deliver through the surviving owner");
+
+  registry.applyDiscovery([{ ...discovered("handoff-target"), agentSessionId: key }]);
+  stopHook(registry, "handoff-target");
+  assert.equal(registry.sessionForNoteKey(key), undefined);
+  assert.deepEqual(sends, []);
+
+  registry.applyDriverEvent(sourceId, {
+    kind: "exited",
+    reason: "continued in terminal",
+    resumable: false,
+  });
+  assert.equal(registry.sessionForNoteKey(key)?.id, targetId);
+  assert.deepEqual(sends, []);
+
+  t.mock.timers.tick(9_000);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+
+  assert.deepEqual(sends, [targetId]);
+  assert.deepEqual(registry.getSession(targetId)?.pendingTurns, []);
+  manager.stop();
+  clearPendingTurns(key);
+});
+
 test("manager startup projects an interrupted delivery as uncertain without sending", () => {
   const registry = new Registry();
   const id = "sdk:startup-recovery";

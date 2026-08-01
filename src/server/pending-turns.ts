@@ -242,7 +242,12 @@ export class PendingTurnManager {
 
   private observe(event: ServerEvent): void {
     if (event.type === "session_remove") {
+      const key = this.knownKeys.get(event.id);
       this.knownKeys.delete(event.id);
+      if (key) {
+        const owner = this.registry.sessionForNoteKey(key);
+        if (owner) this.observeSession(owner);
+      }
       return;
     }
     if (event.type === "session_upsert") this.observeSession(event.session);

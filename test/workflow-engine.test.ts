@@ -1196,3 +1196,177 @@ test("the shipped v3 gate passes untouched on a machine that configured no comma
   }
   assert.equal(store.getRun("run-nmr-unconfigured")?.status, "completed");
 });
+
+// --- Operator-disabled nodes: the per-run auto-pass toggle ---
+
+/** Two reviewers where the second is authored to FAIL: if a disable does not hold, the
+ *  round returns to Session instead of completing, so these tests cannot pass by accident. */
+function disableGraph(): PublishedWorkflowGraph {
+  return {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p1", kind: "persona", persona: persona("p1", "Honest reviewer", "claude", "PASS_PERSONA"), position: { x: 100, y: 0 } },
+      { id: "p2", kind: "persona", persona: persona("p2", "Blocking reviewer", "codex", "FAIL_PERSONA"), position: { x: 100, y: 170 } },
+      { id: "join", kind: "all_pass", position: { x: 200, y: 85 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 85 } },
+    ],
+    edges: [
+      { id: "s-p1", source: "session", sourcePort: "submitted", target: "p1", targetPort: "activate" },
+      { id: "s-p2", source: "session", sourcePort: "submitted", target: "p2", targetPort: "activate" },
+      { id: "p1-pass", source: "p1", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "p1-fail", source: "p1", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "p2-pass", source: "p2", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "p2-fail", source: "p2", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+}
+
+/** A runner that records who was asked and fails any Persona whose guidance says so. */
+function verdictRunner(reviewed: string[]) {
+  return (id: LlmRunnerId): LlmRunner => ({
+    ...passingRunner(id),
+    async run(prompt: string) {
+      reviewed.push(prompt.includes("FAIL_PERSONA") ? "blocking" : "honest");
+      return prompt.includes("FAIL_PERSONA")
+        ? JSON.stringify({
+            verdict: "fail",
+            summary: "Needs repair",
+            requestedChanges: [{
+              title: "Fix it",
+              rationale: "Intent is not met",
+              evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
+            }],
+            confidence: 0.8,
+          })
+        : JSON.stringify({
+            verdict: "pass",
+            summary: "Approved",
+            approvalDetails: { reason: "Intent is met", evidence: [] },
+            confidence: 0.9,
+          });
+    },
+  });
+}
+
+test("a disabled reviewer auto-passes at claim time without a provider call", async () => {
+  const store = seedSubmission("disable-claim", disableGraph());
+  store.setRunDisabledNodes("run-disable-claim", ["p2"], [], 4);
+  const reviewed: string[] = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: verdictRunner(reviewed),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-disable-claim");
+  await waitFor(() => store.getRun("run-disable-claim")?.status === "completed");
+  await engine.stop();
+
+  // The failing reviewer was never asked; the honest one still ran.
+  assert.deepEqual(reviewed, ["honest"]);
+  const attempts = store.listAttempts("submission-disable-claim");
+  const skipped = attempts.find((attempt) => attempt.nodeId === "p2")!;
+  assert.equal(skipped.state, "completed");
+  // No provider is stamped onto a call that never happened.
+  assert.equal(skipped.runner, null);
+  assert.equal(skipped.model, null);
+  assert.equal((skipped.verdict as { verdict: string }).verdict, "pass");
+  // The verdict says plainly that nothing ran, and output carries the machine-readable flag.
+  assert.match(JSON.stringify(skipped.verdict), /disabled/i);
+  assert.deepEqual(skipped.output, { outcome: "pass", disabled: true });
+  assert.ok(store.listEvents("run-disable-claim").some((event) =>
+    event.kind === "disabled_node_auto_passed"
+    && !Array.isArray(event.payload)
+    && typeof event.payload === "object"
+    && event.payload?.nodeId === "p2"));
+});
+
+test("disabling a reviewer after a failed round makes the repair round auto-pass it", async () => {
+  const store = seedSubmission("disable-rerun", disableGraph());
+  const reviewed: string[] = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: verdictRunner(reviewed),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-disable-rerun");
+  await waitFor(() => store.getRun("run-disable-rerun")?.status === "waiting_for_session");
+
+  // Round 1 genuinely failed on the blocking reviewer. The operator disables it and
+  // resubmits; round 2 must complete without asking that reviewer again.
+  assert.deepEqual([...reviewed].sort(), ["blocking", "honest"]);
+  store.setRunDisabledNodes("run-disable-rerun", ["p2"], [], 20);
+  const repair = store.createRepairSubmission({
+    id: "submission-disable-rerun-2",
+    runId: "run-disable-rerun",
+    round: 2,
+    triggerSource: "manual",
+    triggerKey: "manual:disable-rerun:round-2",
+    context: {},
+    evidence: {},
+    now: 21,
+  });
+  store.updateSubmissionCapture(repair.submission.id, {
+    context: workflowJson(context),
+    evidence: workflowJson(context.evidence),
+    fingerprint: "fingerprint-disable-rerun-2",
+    status: "running",
+  }, 22);
+  engine.activateSubmission("submission-disable-rerun-2");
+  await waitFor(() => store.getRun("run-disable-rerun")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual([...reviewed].sort(), ["blocking", "honest", "honest"]);
+  const skipped = store.listAttempts("submission-disable-rerun-2")
+    .find((attempt) => attempt.nodeId === "p2")!;
+  assert.equal(skipped.state, "completed");
+  assert.equal((skipped.verdict as { verdict: string }).verdict, "pass");
+  assert.deepEqual(skipped.output, { outcome: "pass", disabled: true });
+  // Round 1's honest fail is history and stays exactly as it ran.
+  const original = store.listAttempts("submission-disable-rerun")
+    .find((attempt) => attempt.nodeId === "p2")!;
+  assert.equal((original.verdict as { verdict: string }).verdict, "fail");
+});
+
+test("a disabled check auto-passes without reaching the execution runtime", async () => {
+  const disabledCheckGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "gate", kind: "check", slot: "test", position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 0 } },
+    ],
+    edges: [
+      { id: "s-gate", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+      { id: "gate-pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "gate-fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("disable-check", disabledCheckGraph);
+  store.setRunDisabledNodes("run-disable-check", ["gate"], [], 4);
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowConfig: () => checkConfig(),
+    checkDeps: {
+      execute: async () => {
+        throw new Error("a disabled check must never reach the execution runtime");
+      },
+    },
+  });
+  engine.start();
+  engine.activateSubmission("submission-disable-check");
+  await waitFor(() => store.getRun("run-disable-check")?.status === "completed");
+  await engine.stop();
+
+  const gate = store.listAttempts("submission-disable-check")
+    .find((attempt) => attempt.nodeId === "gate")!;
+  assert.equal(gate.state, "completed");
+  assert.deepEqual(gate.output, { outcome: "pass", disabled: true });
+});

@@ -81,13 +81,53 @@ if (process.argv.includes("-p")) {
   const chunks = [];
   process.stdin.on("data", (c) => chunks.push(c));
   process.stdin.on("end", () => {
-    // A fixed title, so the card's name is deterministic and a spec can assert on it
-    // instead of on whatever the titler's fallback happens to title-case the task into.
-    process.stdout.write(JSON.stringify({ result: "E2E Mock Session" }));
+    const prompt = Buffer.concat(chunks).toString("utf8");
+    process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
     process.exit(0);
   });
 } else {
   runSession();
+}
+
+/**
+ * One deterministic answer per kind of headless call.
+ *
+ * A workflow Persona review arrives on this same `-p` protocol, and its prompt embeds the
+ * published Persona guidance verbatim ("# Published Persona guidance"). That gives a spec a
+ * clean steering channel with no new wiring: plant a marker in the guidance of the Persona
+ * it creates, and this fake answers that reviewer - and only that reviewer - with a fixed,
+ * schema-valid verdict. A FAIL is what makes workflow specs deterministic: it parks the run
+ * in `waiting_for_session`, a stable state, instead of completing it or bouncing through
+ * parse-failure retries.
+ *
+ * Everything else (the titler, the goal refiner) keeps the fixed title reply below.
+ */
+function headlessAnswer(prompt) {
+  if (prompt.includes("E2E_FAIL_VERDICT")) {
+    return JSON.stringify({
+      verdict: "fail",
+      summary: "Deterministic e2e objection",
+      requestedChanges: [
+        {
+          title: "E2E requested change",
+          rationale: "This reviewer is scripted to ask for changes",
+          evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
+        },
+      ],
+      confidence: 0.9,
+    });
+  }
+  if (prompt.includes("E2E_PASS_VERDICT")) {
+    return JSON.stringify({
+      verdict: "pass",
+      summary: "Deterministic e2e approval",
+      approvalDetails: { reason: "This reviewer is scripted to approve", evidence: [] },
+      confidence: 0.9,
+    });
+  }
+  // A fixed title, so the card's name is deterministic and a spec can assert on it
+  // instead of on whatever the titler's fallback happens to title-case the task into.
+  return "E2E Mock Session";
 }
 
 function runSession() {

@@ -445,7 +445,11 @@ const WorkflowRunRowSchema = z.object({
   updated_at: integer,
   completed_at: nullableInteger,
   evidence_pruned_at: nullableInteger.optional().default(null),
+  disabled_nodes_json: nullableText.optional().default(null),
 });
+
+/** Node ids an operator disabled for one run. Bounded by the graph's own node ceiling. */
+const DisabledNodesSchema = z.array(nonempty.max(200)).max(WORKFLOW_LIMITS.graphNodes);
 
 export function parseWorkflowRunRow(value: unknown): WorkflowRun {
   const row = parseShape("workflow_runs", WorkflowRunRowSchema, value);
@@ -468,6 +472,13 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
       WorkflowJsonSchema,
       WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
     ),
+    disabledNodeIds: parseNullableJson(
+      "workflow_runs",
+      row.id,
+      "disabled_nodes_json",
+      row.disabled_nodes_json ?? null,
+      DisabledNodesSchema,
+    ) ?? [],
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -2507,6 +2518,40 @@ export class WorkflowStore {
         WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
     return this.mustRun(id);
+  }
+
+  /**
+   * Replace one run's operator-disabled verdict node set and append its audit events, in
+   * one transaction - or report `null` when the run had already finished.
+   *
+   * A dedicated UPDATE rather than a parameter on `setRunState`, because `setRunState`
+   * overwrites `gate_state_json` unconditionally on every call and a disabled set stored
+   * there would be erased by the next ordinary state transition.
+   *
+   * The guarded UPDATE is the authority on the terminal race, not a status read before
+   * it: a run can finish between a caller's check and this write, and a toggle reported
+   * as applied when the row refused it would tell the operator a gate was disabled while
+   * the finished run's history says nothing of the kind. Zero changed rows means nothing
+   * is written - the events ride the same transaction precisely so a refused toggle
+   * cannot leave a `node_disabled` line on a run it never changed. The caller resolves
+   * "no such run" separately; here an absent row and a finished one earn the same `null`.
+   */
+  setRunDisabledNodes(
+    id: string,
+    nodeIds: readonly string[],
+    events: ReadonlyArray<{ kind: string; payload: WorkflowJson }> = [],
+    now = Date.now(),
+  ): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const result = this.db.prepare(
+        `UPDATE workflow_runs
+            SET disabled_nodes_json = ?, updated_at = ?
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+      ).run(nodeIds.length === 0 ? null : JSON.stringify(nodeIds), now, id);
+      if (Number(result.changes) !== 1) return null;
+      for (const event of events) this.appendEvent(id, event.kind, event.payload, now);
+      return this.mustRun(id);
+    });
   }
 
   enterInspectorGate(input: {

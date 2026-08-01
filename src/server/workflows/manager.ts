@@ -15,6 +15,7 @@ import type {
   RetryWorkflowDelivery,
   RetryWorkflowRun,
   RestartFullWorkflow,
+  SetWorkflowNodesDisabled,
   SubmitWorkflow,
   UpdateWorkflow,
   UpdateWorkflowBinding,
@@ -1220,6 +1221,99 @@ export class WorkflowManager {
     const cancelled = this.store.cancelRun(run.id, `cancelled:${requestId}`, now) ?? run;
     this.publishRun(run.id);
     return { ok: true, value: cancelled, idempotent: run.status === "cancelled" };
+  }
+
+  /**
+   * Toggle the operator-disabled (auto-pass) flag on verdict nodes of one run.
+   *
+   * Scoped strictly to this run: the set lives on the run row, and the pinned immutable
+   * version is only READ, to refuse ids that are not Persona or Check nodes there. The
+   * engine consumes the set at attempt claim time, so the toggle changes rounds that have
+   * not reached the node yet - the current one included - and never rewrites an outcome
+   * that already happened. One audit event is appended per node so the timeline names
+   * each gate the operator switched, not a count.
+   */
+  setNodesDisabled(
+    runId: string,
+    input: SetWorkflowNodesDisabled,
+    now = Date.now(),
+  ): WorkflowRuntimeMutation<WorkflowRun> {
+    const run = this.store.getRun(runId);
+    if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    const replay = this.store.listEvents(run.id).some((event) =>
+      (event.kind === "node_disabled" || event.kind === "node_enabled")
+      && event.payload
+      && !Array.isArray(event.payload)
+      && typeof event.payload === "object"
+      && event.payload.requestId === input.requestId);
+    if (replay) return { ok: true, value: run, idempotent: true };
+    if (["completed", "cancelled", "failed"].includes(run.status)) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This run has finished, so disabling a reviewer or check can no longer change it",
+      };
+    }
+    const version = this.store.getWorkflowVersionById(run.workflowVersionId);
+    if (!version) {
+      return {
+        ok: false,
+        reason: "not_found",
+        message: "The immutable workflow version is missing or corrupt",
+      };
+    }
+    const verdictNodes = new Map(
+      version.graph.nodes.filter(isVerdictNode).map((node) => [node.id, node]),
+    );
+    const unknown = input.nodeIds.find((nodeId) => !verdictNodes.has(nodeId));
+    if (unknown !== undefined) {
+      return {
+        ok: false,
+        reason: "not_found",
+        message: "Only a Persona or Check node of this run's pinned workflow version can be disabled",
+      };
+    }
+    // The schema refuses duplicates, and this dedupes again anyway: the list below drives
+    // one audit event per named gate, so a repeated id surviving any future schema change
+    // would put the same toggle on the timeline twice.
+    const requested = [...new Set(input.nodeIds)];
+    const next = new Set(run.disabledNodeIds ?? []);
+    for (const nodeId of requested) {
+      if (input.disabled) next.add(nodeId);
+      else next.delete(nodeId);
+    }
+    // Persisted in the graph's own node order so the stored set is deterministic and two
+    // toggles that produce the same membership produce the same bytes. The audit events
+    // ride the store's transaction, so a toggle and its timeline lines commit together.
+    const updated = this.store.setRunDisabledNodes(
+      run.id,
+      version.graph.nodes.filter(isVerdictNode).map((node) => node.id)
+        .filter((nodeId) => next.has(nodeId)),
+      requested.map((nodeId) => ({
+        kind: input.disabled ? "node_disabled" : "node_enabled",
+        payload: {
+          nodeId,
+          persona: verdictAuthor(verdictNodes.get(nodeId)!),
+          requestId: input.requestId,
+        },
+      })),
+      now,
+    );
+    // The guarded UPDATE, not the status read above, decides the terminal race: a run
+    // that finished between the two refuses the write, and reporting success anyway
+    // would hand the operator a toggle that never happened.
+    if (!updated) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This run finished before the toggle applied, so disabling a reviewer or check can no longer change it",
+      };
+    }
+    this.publishRun(run.id);
+    // A disabled node whose attempt is already queued auto-passes at claim time; wake the
+    // engine so that claim happens now rather than on the next scheduled pump.
+    this.engine.wake();
+    return { ok: true, value: updated };
   }
 
   /**

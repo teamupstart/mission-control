@@ -2613,6 +2613,25 @@ export const RestartFullWorkflowSchema = WorkflowRunActionSchema.extend({
 });
 export type RestartFullWorkflow = z.infer<typeof RestartFullWorkflowSchema>;
 
+/**
+ * Toggle the operator-disabled (auto-pass) flag on verdict nodes of ONE run.
+ *
+ * An array rather than a single id so disabling a whole stage is one atomic request:
+ * a stage half-disabled by a failed second POST would pass some of its members and run
+ * the rest, which is neither of the states the operator asked for.
+ *
+ * Duplicate ids are refused rather than tolerated: the request drives one audit event
+ * per named gate, and a repeated id would put the same toggle on the timeline twice.
+ */
+export const SetWorkflowNodesDisabledSchema = WorkflowRunActionSchema.extend({
+  nodeIds: z.array(WorkflowIdSchema).min(1).max(WORKFLOW_LIMITS.graphNodes)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "nodeIds must not repeat",
+    }),
+  disabled: z.boolean(),
+});
+export type SetWorkflowNodesDisabled = z.infer<typeof SetWorkflowNodesDisabledSchema>;
+
 export const WorkflowInspectorGateStateSchema = z.object({
   prKey: z.string().min(1).max(1_000).nullable(),
   prUrl: z.string().url().max(4_000).nullable(),

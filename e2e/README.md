@@ -70,6 +70,18 @@ It is behind that flag rather than captured on every run because the card carrie
 timestamp and a fresh worktree uuid, so an unconditional capture would rewrite a binary on
 every run for no added signal.
 
+## Steering a workflow reviewer
+
+`specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and
+its precondition is a run that FAILED review deterministically. Workflow Personas reach the
+model over the same `claude -p` protocol the titler uses, and their prompt embeds the
+published Persona guidance verbatim - so the fake answers any prompt carrying
+`E2E_FAIL_VERDICT` (or `E2E_PASS_VERDICT`) in that guidance with a fixed, schema-valid
+verdict. A spec that needs a reviewer with a known opinion plants the marker in the Persona
+it creates and gets a stable `waiting_for_session` run to act on, with no mid-review races
+to wait out. The spec's server-side seeding failures are surfaced through
+`daemon.readLog()`, because the daemon's home - and any log file in it - is deleted on stop.
+
 ## What this layer is for
 
 The repository already tests UI three other ways, and none of them can reach this seam:

@@ -30,6 +30,7 @@ import {
   attemptStateLabel,
   checkOutcomeOf,
   checkStatusView,
+  disabledStatusFor,
   endStatus,
   errorView,
   eventLine,
@@ -307,6 +308,7 @@ export function WorkflowRunView({
   onResolveDelivery = async () => {},
   onLoadEvents = async () => {},
   onLoadCalls = async () => {},
+  onToggleNodesDisabled,
   isActionPending = () => false,
 }: {
   detail: WorkflowRunDetail;
@@ -332,6 +334,12 @@ export function WorkflowRunView({
   ) => Promise<void>;
   onLoadEvents?: () => Promise<void>;
   onLoadCalls?: () => Promise<void>;
+  /**
+   * Toggle the per-run auto-pass on verdict nodes. Optional so read-only hosts render the
+   * disabled set without offering the switch; the view itself withholds it once the run is
+   * terminal, because a finished run can no longer be affected.
+   */
+  onToggleNodesDisabled?: (nodeIds: string[], disabled: boolean) => void;
   isActionPending?: (id: RunActionId) => boolean;
 }): React.JSX.Element {
   const version = detail.version;
@@ -702,6 +710,15 @@ export function WorkflowRunView({
           repair={detail.summary.maxRepairRounds > 0
             ? "Any fail returns the submission to Session for repair, then the whole pipeline runs again."
             : null}
+          disabledNodeIds={detail.run.disabledNodeIds ?? []}
+          disabledChipFor={(nodeId) =>
+            // Scoped to the VIEWED round via `latestAttemptByNode`: scrubbing to an
+            // earlier round shows that round's real outcomes under the red row treatment.
+            disabledStatusFor(detail.run.disabledNodeIds, nodeId, latestAttemptByNode.get(nodeId))}
+          onToggleNodes={onToggleNodesDisabled
+            && !["completed", "cancelled", "failed"].includes(detail.run.status)
+            ? onToggleNodesDisabled
+            : undefined}
         />
       ) : (
         <p className="wf-run-error" role="alert">
@@ -1641,6 +1658,21 @@ export function WorkflowRuns({
                       : {}),
                   }),
                 }));
+            }}
+            onToggleNodesDisabled={(nodeIds, disabled) => {
+              // One action id per target set AND direction. The action store retains a
+              // request id across a failed response so a retry of the SAME intent replays
+              // idempotently - but disable and enable are different intents, and a shared
+              // key would replay the old request id, which the daemon would then correctly
+              // ignore as already applied.
+              actionController.run(
+                `set-nodes-disabled:${disabled}:${nodeIds.join(",")}`,
+                (requestId) =>
+                  workflowRequest(`/api/workflow-runs/${detail.run.id}/set-nodes-disabled`, {
+                    method: "POST",
+                    body: JSON.stringify({ requestId, nodeIds, disabled }),
+                  }),
+              );
             }}
             isActionPending={actionController.isPending}
             onOpenSession={() => {

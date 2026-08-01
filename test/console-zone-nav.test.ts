@@ -62,6 +62,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     foremanAllowlist: [],
     inputReviewBySession: new Map<string, string>(),
     pendingReviewIds: new Set<string>(),
+    reviews: [],
     ...over,
   };
 }

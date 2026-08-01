@@ -862,6 +862,9 @@ export function App(): React.JSX.Element {
     foremanAllowlist,
     inputReviewBySession,
     pendingReviewIds,
+    // The whole list, unnarrowed - the conversation replays RESOLVED reviews, which every
+    // other consumer here filters out. See `SessionViewProps.reviews`.
+    reviews,
     onEditTask: openTaskEditor,
     workflowRunBySession,
     onOpenWorkflowRun: (runId) => navigate({ page: "workflows", tab: "runs", runId }),

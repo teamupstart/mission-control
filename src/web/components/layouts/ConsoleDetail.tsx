@@ -30,6 +30,7 @@ import {
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
+import { useTimelineReviews } from "../../lib/timelineReviews.ts";
 import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
@@ -158,6 +159,7 @@ export function ConsoleDetail({
   const paneRef = useRef<HTMLDivElement>(null);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
   const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
+  const timelineReviews = useTimelineReviews(session.id, view.reviews);
   // Set when the send shortcut arrives on another tab: the reply box exists, it's just
   // not mounted yet, so the focus has to wait for the conversation to come back.
   const focusPending = useRef(false);
@@ -435,6 +437,7 @@ export function ConsoleDetail({
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               episodes={episodes}
+              reviews={timelineReviews}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               files={view.files}

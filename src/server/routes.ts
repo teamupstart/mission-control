@@ -163,6 +163,7 @@ import {
   dropGateReply,
   forgetTaskSourceSeen,
   getSkillsAcks,
+  loadHumanResolvedReviews,
   loadInspectorInspections,
   logGateReply,
   recentEpisodes,
@@ -1800,7 +1801,13 @@ export function buildApp(
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
     try {
-      const updated = reviews.resolve(c.req.param("id"), parsed.data.action, parsed.data.response);
+      const updated = reviews.resolve(
+        c.req.param("id"),
+        parsed.data.action,
+        parsed.data.response,
+        parsed.data.by,
+        parsed.data.selections,
+      );
       if (!updated) return c.json({ error: "no such review" }, 404);
       return c.json(updated);
     } catch (error) {
@@ -2337,6 +2344,22 @@ export function buildApp(
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     return c.json(registry.listEpisodes(session.id));
+  });
+
+  /**
+   * The answers this session's human gave, for the conversation to replay.
+   *
+   * Read from SQLite rather than from the registry's review map, which is the live one the
+   * SSE stream publishes. That map holds a resolved review only until the daemon restarts -
+   * `loadPendingReviews` restores exactly the pending rows at boot, by design - so serving
+   * the conversation from it would quietly empty every answer out of the log on restart,
+   * while the transcript beside them survived. The dashboard folds the live reviews in on
+   * top of this for immediacy; this is the half that is still there tomorrow.
+   */
+  app.get("/api/sessions/:id/resolved-reviews", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(loadHumanResolvedReviews(session.id));
   });
 
   // --- Foreman session work queues (localhost only) ---

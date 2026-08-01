@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { PlanDecision, ReviewItem, ReviewKind, ReviewStatus } from "@shared/types.ts";
+import type {
+  PlanDecision,
+  PlanDecisionAnswer,
+  ReviewActor,
+  ReviewItem,
+  ReviewKind,
+  ReviewStatus,
+} from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { insertReview, updateReviewStatus } from "./db.ts";
 import { unref } from "./util/timers.ts";
@@ -58,6 +65,8 @@ export class ReviewManager {
       status: "pending",
       response: null,
       decisions,
+      selections: null,
+      resolvedBy: null,
       createdAt: Date.now(),
       resolvedAt: null,
     };
@@ -96,7 +105,21 @@ export class ReviewManager {
     });
   }
 
-  resolve(id: string, action: ReviewAction, response: string | null): ReviewItem | null {
+  /**
+   * A decision arriving from outside: the dashboard's, or the Foreman worker's.
+   *
+   * `by` is carried rather than assumed because both arrive on the same route, and only the
+   * human's answers belong in the session's conversation (`isHumanResolvedReview`).
+   * `selections` is the structured form behind an `answer`, kept so that conversation can
+   * replay the question - the `response` string beside it names only what was chosen.
+   */
+  resolve(
+    id: string,
+    action: ReviewAction,
+    response: string | null,
+    by: ReviewActor = "human",
+    selections: PlanDecisionAnswer[] | null = null,
+  ): ReviewItem | null {
     const cur = this.registry.getReview(id);
     if (!cur) return null;
     if (
@@ -117,7 +140,11 @@ export class ReviewManager {
             ? "dismissed"
             : "answered";
     const storedResponse = action === "dismiss" ? null : response;
-    return this.settle(cur, status, storedResponse);
+    // Selections describe a form that was filled in, so only an `answer` can carry them.
+    // The schema already clears them on a dismiss; this covers the approve/reject actions
+    // it does not, and holds whether or not the request came through that schema.
+    const storedSelections = action === "answer" ? selections : null;
+    return this.settle(cur, status, storedResponse, by, storedSelections);
   }
 
   /**
@@ -150,10 +177,20 @@ export class ReviewManager {
    * waking the waiters is what unblocks an agent long-polling on an answer instead of
    * leaving it to discover the timeout.
    */
-  private settle(cur: ReviewItem, status: ReviewStatus, response: string | null): ReviewItem {
+  private settle(
+    cur: ReviewItem,
+    status: ReviewStatus,
+    response: string | null,
+    /**
+     * Null for the two orphan paths below, which are the daemon tidying up after a session
+     * that went away - not a decision anyone made, and so not a voice in the conversation.
+     */
+    resolvedBy: ReviewActor | null = null,
+    selections: PlanDecisionAnswer[] | null = null,
+  ): ReviewItem {
     const resolvedAt = Date.now();
-    updateReviewStatus(cur.id, status, response, resolvedAt);
-    const updated: ReviewItem = { ...cur, status, response, resolvedAt };
+    updateReviewStatus(cur.id, status, response, resolvedAt, selections, resolvedBy);
+    const updated: ReviewItem = { ...cur, status, response, resolvedAt, resolvedBy, selections };
     this.registry.upsertReview(updated);
 
     const set = this.waiters.get(cur.id);

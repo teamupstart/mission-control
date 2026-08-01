@@ -817,6 +817,15 @@ tool calls shows when that run began. Inline Foreman entries use the same absolu
 while the Foreman history drawer keeps its relative age. See the
 [runtime capture](docs/evidence/conversation-timestamps/README.md) for the rendered layout.
 
+Four voices share the log, told apart by colour rather than by label alone: the agent's turns
+in its own harness accent, your typed replies in blue, Foreman's entries in purple, and - in
+gold - the [answers you gave its review questions](#review-channel-mcp). The gold entries are
+not transcript turns; like Foreman's, they happened beside the conversation and are placed by
+when they happened, so an agent that blocked on a question for an hour shows your answer
+after the hour of work, not before it. See the
+[runtime capture](docs/evidence/review-answers-in-conversation/README.md) for how the four
+read against each other.
+
 Scroll to the top of the log and the page above loads automatically, then the page above
 that, back to the session's first turn. **Load older messages** does the same on click,
 for when you would rather not scroll. Nothing appears once you reach the beginning: a
@@ -860,7 +869,9 @@ rather than disappearing. Closed, find costs a conversation nothing at all.
 The query is literal, not a pattern: `foo(bar)` finds those seven characters.
 
 Tool chips are searched too, because that is where the file paths are. Role bylines are
-not - otherwise `you` would match the label above every message you ever sent.
+not - otherwise `you` would match the label above every message you ever sent. Foreman's
+entries and your review answers are not searched either: they are cards rather than turns,
+and a match inside one has no single string whose offsets a highlight could name.
 
 One caveat the bar states rather than hides: the log holds the session's recent turns, not
 the whole file (above), so find counts what is **loaded**. When there is more to load the
@@ -1160,6 +1171,36 @@ Each option-based question or plan decision set is an independent review. Dismis
 only that review, persists without a fabricated answer, and releases its blocked tool call.
 These reviews keep the session under **Needs you** while any set remains pending; submitting
 or dismissing the final set clears that review-based signal.
+
+**Your answer stays in the conversation.** Submitting a review writes a gold entry into that
+session's conversation, at the point in time you answered. What the entry shows depends on
+how you were asked:
+
+| You answered | The entry shows |
+|---|---|
+| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** |
+| **A direct-text question** (`request_input` with no options) | the text you submitted |
+| **A diff or plan** (`request_review`, `share_plan`) | what you did - approved, or requested changes - and the note you left, if any |
+| **A dismissal** | that you closed it without choosing, and nothing more |
+
+It is a record, not a control: nothing on it can be clicked, and a resolved review cannot be
+answered twice. See the
+[runtime capture](docs/evidence/review-answers-in-conversation/README.md) for both shapes
+rendered in a conversation, beside an ordinary user turn and a Foreman one.
+
+This exists because the answer had nowhere else to go. It reaches the agent as an MCP tool
+result, and a transcript turn that is purely a tool result is dropped by every harness parser
+as machine noise - so the log used to show the agent's question as a grey tool chip, then a
+silence, then the agent carrying on as though something had been decided. Where there were
+options, the entry is rendered from the choices as stored rather than from the answer string
+sent to the agent, because that string names only what you picked and cannot say what you
+picked it from. Where there were none, that string *is* the whole answer, so it is shown as
+you wrote it.
+
+Only **your** resolutions appear there. Foreman resolves reviews through the same channel,
+and its answers are already in the conversation as [its own entry](#foreman-auto-responder),
+so they are not also shown as yours. Answers recorded before this shipped carry no actor and
+are left out rather than credited to you on the strength of their status.
 
 A review is bound to the session that asked it, so **the agent going away settles it too**.
 When a session is evicted - killed, its terminal closed, or simply gone by the time the

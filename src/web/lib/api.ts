@@ -10,7 +10,9 @@ import type {
   LlmStatus,
   NmFixDetail,
   PermissionMode,
+  PlanDecisionAnswer,
   ResetPreview,
+  ReviewItem,
   SessionDiff,
   SessionGoal,
   SessionFileDocument,
@@ -837,12 +839,19 @@ export const api = {
     id: string,
   ): Promise<ActionResult & { homeName?: string; sessionId?: string | null }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
+  /**
+   * `selections` rides along only when a decision form was filled in. It is what the
+   * conversation replays afterwards - `response` is the flattened string the agent reads,
+   * which cannot say which options went untaken. The route attributes this to the human;
+   * only the Foreman worker declares otherwise.
+   */
   resolveReview: (
     id: string,
     action: "approve" | "reject" | "answer" | "dismiss",
     response?: string | null,
+    selections?: PlanDecisionAnswer[] | null,
   ) =>
-    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response }),
+    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
   nomistakesRespond: (
     id: string,
     action: "approve" | "fix" | "skip",
@@ -964,6 +973,15 @@ export const api = {
   /** Full resolved intent for the Foreman drawer; the session snapshot carries only its summary. */
   goal: (id: string) =>
     fetchJson<SessionGoal>(`/api/sessions/${encodeURIComponent(id)}/goal`),
+
+  /**
+   * The answers this session's human gave, oldest first - the durable half of the
+   * conversation's review entries. Served from SQLite, so a reopened dashboard or a
+   * restarted daemon still shows what was decided; the live SSE reviews are folded in on
+   * top of these for immediacy (see `useTimelineReviews`).
+   */
+  resolvedReviews: (id: string) =>
+    fetchJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>

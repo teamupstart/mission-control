@@ -529,6 +529,7 @@ test("card and console detail agree on every shared leaf", () => {
         foremanAllowlist: [],
         inputReviewBySession: new Map<string, string>(),
         pendingReviewIds: new Set<string>(),
+        reviews: [],
       },
     }),
   );
@@ -670,6 +671,7 @@ function scheduledView(session: Session): SessionViewProps {
     foremanAllowlist: [],
     inputReviewBySession: new Map<string, string>(),
     pendingReviewIds: new Set<string>(),
+    reviews: [],
     onOpenSchedule: () => {},
     scheduleNameById: SCHEDULE_NAMES,
   };

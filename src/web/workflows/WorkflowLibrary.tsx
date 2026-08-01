@@ -532,18 +532,29 @@ export function WorkflowLibrary({
   /**
    * The selected nodes Duplicate can actually copy.
    *
-   * The control is gated on THIS rather than on "something is selected", because the two
-   * differ for the one kind it refuses: Session, of which a graph has exactly one. A button
-   * that lit up and then did nothing would be indistinguishable from a bug.
+   * The control is gated on THIS rather than on "something is selected", because a button that
+   * lit up and then did nothing would be indistinguishable from a bug. Two kinds are refused,
+   * for two different reasons.
    *
-   * A session action is duplicable now that it is authorable. The copy is a second node
-   * naming the same catalog row, which is a legitimate pipeline - two actions in one repair
-   * round each capture their own evidence segment - and it arrives unrouted, exactly like a
-   * duplicated Persona.
+   * Session, because a graph has exactly one.
+   *
+   * And a session action whose source this daemon cannot currently offer. Duplicating a node
+   * is an ADD control by another name - it is the third way to put one in a graph, beside the
+   * palette button and the drop handler - so it has to answer the same question they do, and
+   * `addableActions` is that question. Without this, a draft that already names an archived or
+   * unavailable action (one can arrive through the raw draft API, and Phase 4's Pull Request
+   * is unavailable by design) became a way to mint a SECOND unpublishable stage from inside a
+   * builder whose every other add control refuses it.
+   *
+   * An addable action duplicates freely. Two actions in one repair round is a legitimate
+   * pipeline - each captures its own evidence segment - and the copy arrives unrouted, exactly
+   * like a duplicated Persona.
    */
   const duplicableIds = selectedIds.filter((id) => {
-    const kind = workflow?.draft.nodes.find((node) => node.id === id)?.kind;
-    return kind !== undefined && kind !== "session";
+    const node = workflow?.draft.nodes.find((candidate) => candidate.id === id);
+    if (!node || node.kind === "session") return false;
+    if (node.kind !== "session_action") return true;
+    return addableActions.some((action) => action.id === node.sessionActionId);
   });
 
   const removeCanvasSelection = (nodeIds: string[], edgeIds: string[]): void => {

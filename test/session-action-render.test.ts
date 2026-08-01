@@ -373,8 +373,13 @@ test("the Graph palette can create an action node, and a drop payload is read as
   assert.match(source, /＋ Session action/);
   assert.match(source, /addableActions\.length > 0 && \(/);
   assert.match(source, /!addableActions\.some\(\(action\) => action\.id === spec\.sessionActionId\)\) return/);
-  // Duplicate now copies one, so the gate is Session alone.
-  assert.match(source, /return kind !== undefined && kind !== "session";/);
+  // Duplicate copies one, but only when the palette would also offer it: node duplication is
+  // the THIRD add control, so it asks `addableActions` exactly as the other two do rather than
+  // becoming a side door onto an archived or unavailable action.
+  assert.match(
+    source,
+    /return addableActions\.some\(\(action\) => action\.id === node\.sessionActionId\);/,
+  );
 });
 
 test("the Graph rail lets a selected action be repointed and removed", () => {

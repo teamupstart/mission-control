@@ -466,6 +466,65 @@ test("the unavailable built-in is not addable, and a graph naming it will not pu
   ]);
 });
 
+test("an unavailable action node cannot be duplicated into a second unpublishable stage", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Duplicating a node is the THIRD way to put one in a graph, beside the palette button and
+  // the drop handler. Both of those consult `addableActions`; while this one did not, a draft
+  // that already named an unavailable action - which is exactly the shape below, and the one
+  // the raw draft API can still produce - was a side door onto minting another.
+  const NODE = { action: "action-node", session: "session-node", end: "end-node" };
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E duplicate guard",
+  });
+  await api(daemon, `/api/workflows/${created.workflow.id}`, {
+    expectedDraftRevision: 1,
+    draft: {
+      nodes: [
+        { id: NODE.session, kind: "session", position: { x: 60, y: 60 } },
+        {
+          id: NODE.action,
+          kind: "session_action",
+          sessionActionId: "builtin:pull-request",
+          position: { x: 340, y: 60 },
+        },
+        { id: NODE.end, kind: "end", outcome: "Complete", position: { x: 620, y: 60 } },
+      ],
+      edges: [
+        { id: "e-submit", source: NODE.session, sourcePort: "submitted", target: NODE.action, targetPort: "activate" },
+        { id: "e-complete", source: NODE.action, sourcePort: "complete", target: NODE.end, targetPort: "terminal" },
+      ],
+    },
+  }, "PATCH");
+
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: /E2E duplicate guard/ }).click();
+  await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
+
+  const node = dashboard.locator('[data-node-kind="session_action"]');
+  await expect(node).toHaveCount(1);
+  await node.click();
+  // Selected, and Duplicate stays off - a lit button that then refused would be worse.
+  await expect(dashboard.getByRole("button", { name: "Duplicate nodes" })).toBeDisabled();
+
+  // Still one action node, and the draft the daemon holds still has one. Asserted against the
+  // route, because "the button looked off" is not the claim - "no second node exists" is.
+  await expect(dashboard.locator('[data-node-kind="session_action"]')).toHaveCount(1);
+  const detail = await api<{ workflow: { draft: { nodes: Array<{ kind: string }> } } }>(
+    daemon,
+    `/api/workflows/${created.workflow.id}`,
+  );
+  expect(
+    detail.workflow.draft.nodes.filter((item) => item.kind === "session_action"),
+  ).toHaveLength(1);
+
+  // The control case: a Persona node in the same graph duplicates, so the refusal above is the
+  // action's unavailability and not a Duplicate button that never worked.
+  await dashboard.locator('[data-node-kind="end"]').click();
+  await expect(dashboard.getByRole("button", { name: "Duplicate nodes" })).toBeEnabled();
+});
+
 test("a draft naming the unavailable built-in renders, and the daemon refuses to publish it", async ({
   dashboard,
   daemon,

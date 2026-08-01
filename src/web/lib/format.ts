@@ -15,6 +15,73 @@ export function relativeTime(ms: number | null, now = Date.now()): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * A conversation turn's compact local timestamp.
+ *
+ * The transcript stores an instant, not a display zone. Mission Control is local software,
+ * so the browser's locale and timezone are the useful default: the operator reads the time
+ * in the same clock as the terminal beside it. Locale and zone stay injectable for tests.
+ */
+const CONVERSATION_TIMESTAMP_OPTIONS: Intl.DateTimeFormatOptions = {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+};
+
+const CONVERSATION_TIMESTAMP_LONG_OPTIONS: Intl.DateTimeFormatOptions = {
+  weekday: "long",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+  timeZoneName: "short",
+};
+
+// The defaults are the production path and a transcript may hold hundreds of turns.
+// Construct these once rather than rebuilding two ICU formatters for every row and frame.
+const conversationTimestampFormatter = new Intl.DateTimeFormat(
+  undefined,
+  CONVERSATION_TIMESTAMP_OPTIONS,
+);
+const conversationTimestampLongFormatter = new Intl.DateTimeFormat(
+  undefined,
+  CONVERSATION_TIMESTAMP_LONG_OPTIONS,
+);
+
+export function formatConversationTimestamp(
+  at: number,
+  locales?: Intl.LocalesArgument,
+  timeZone?: string,
+): string {
+  const formatter =
+    locales === undefined && timeZone === undefined
+      ? conversationTimestampFormatter
+      : new Intl.DateTimeFormat(locales, {
+          ...CONVERSATION_TIMESTAMP_OPTIONS,
+          ...(timeZone ? { timeZone } : {}),
+        });
+  return formatter.format(at);
+}
+
+/** The complete local instant exposed when a compact conversation timestamp is inspected. */
+export function formatConversationTimestampLong(
+  at: number,
+  locales?: Intl.LocalesArgument,
+  timeZone?: string,
+): string {
+  const formatter =
+    locales === undefined && timeZone === undefined
+      ? conversationTimestampLongFormatter
+      : new Intl.DateTimeFormat(locales, {
+          ...CONVERSATION_TIMESTAMP_LONG_OPTIONS,
+          ...(timeZone ? { timeZone } : {}),
+        });
+  return formatter.format(at);
+}
+
 /** Compact elapsed-since duration, e.g. "up 2h", "up 3m", "up 12s". */
 export function uptime(startedAt: number | null): string {
   if (!startedAt) return "";

@@ -4702,6 +4702,9 @@ kbd {
   gap: 4px;
 }
 .turn-role {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
   font: 600 10px/1 var(--sans);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -4713,6 +4716,21 @@ kbd {
    had anyway, never to one particular vendor's terracotta. */
 .turn-assistant .turn-role {
   color: color-mix(in oklab, var(--agent-accent, var(--muted)) 70%, var(--muted));
+}
+/* Transcript time is provenance rather than another status badge. It follows the voice
+   label in the utility face and yields visually to whichever speaker colour is active. */
+.turn-role .turn-time {
+  color: var(--dim);
+  font: 500 9.5px/1 var(--mono);
+  letter-spacing: 0.01em;
+  text-transform: none;
+  white-space: nowrap;
+}
+.turn-role .turn-time::before {
+  content: "·";
+  margin: 0 5px;
+  color: var(--dim);
+  font-family: var(--sans);
 }
 .turn-text {
   white-space: pre-wrap;

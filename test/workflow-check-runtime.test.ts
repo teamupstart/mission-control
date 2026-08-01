@@ -391,29 +391,86 @@ test("a revision expression is refused rather than resolved", { skip: !SUPPORTED
 });
 
 /**
- * The hazard the hex-prefix rule does NOT close, measured rather than assumed: git prefers a
- * REFNAME over an object id of the same spelling. A branch literally named `04a6ee7` wins over
- * the commit whose id starts with `04a6ee7` - git warns on stderr and answers anyway.
+ * The hazard a hex-prefix rule does NOT close, measured rather than assumed: git prefers a
+ * REFNAME over an abbreviated object id of the same spelling. A branch literally named `04a6ee7`
+ * wins over the commit whose id starts with `04a6ee7` - git warns on stderr and answers anyway.
  *
  * Reachable in practice, because branch names in this product are generated: a `harness/<slug>`
- * scheme that ever emitted a short hex slug would do it. The guard is that the resolved id must
- * start with the prefix that asked for it.
+ * scheme that ever emitted a short hex slug would do it.
+ *
+ * The assertion is that resolution does not consult refs AT ALL, which is stronger than
+ * catching the cases where a ref points somewhere obviously wrong - and it has to be, because a
+ * ref pointing at a different commit that happens to share the prefix would defeat any
+ * after-the-fact comparison. So this asserts the leased worktree stands on the OBJECT the
+ * prefix names, while a ref of that exact spelling points somewhere else entirely.
  */
-test("a ref that shadows a commit id is refused, not followed", { skip: !SUPPORTED }, async () => {
+test("a ref cannot decide which commit an abbreviation pins", { skip: !SUPPORTED }, async () => {
   const f = fixture();
   const git = (...args: string[]): string =>
     execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe" }).toString();
-  // A second commit, so there are two objects to confuse. The branch is named after the SECOND
-  // commit's prefix but points at the FIRST, which is what makes the wrong answer detectable.
+  // A second commit, so there are two to confuse. The branch is named after the SECOND commit's
+  // prefix but points at the FIRST, which is what makes a wrong answer detectable.
   const first = f.headSha;
   writeFileSync(join(f.repoRoot, "second.txt"), "second\n");
   git("add", "-A");
   git("commit", "-qm", "second");
   const second = git("rev-parse", "HEAD").trim();
   const prefix = second.slice(0, 7);
-  git("branch", prefix, first);
-  // The premise, asserted rather than trusted: git really does hand back the branch's commit.
+  git("update-ref", `refs/heads/${prefix}`, first);
+  // The premise, asserted rather than trusted: plain `rev-parse` really does hand back the
+  // BRANCH's commit here. Everything below is about not going through that door.
   assert.equal(git("rev-parse", "--verify", "--quiet", `${prefix}^{commit}`).trim(), first);
+
+  const ref = attemptRef();
+  const outcome = await f.runtime.executorFor(ref)({
+    slot: "typecheck",
+    command: [process.execPath, "-e", "console.log(require('node:child_process').execSync('git rev-parse HEAD').toString().trim())"],
+    repoRoot: f.repoRoot,
+    workingSubpath: "",
+    headSha: prefix,
+  });
+
+  assert.equal(outcome.kind, "exited");
+  assert.equal(
+    outcome.kind === "exited" ? outcome.output.trim() : "",
+    second,
+    "the check ran against the ref's commit instead of the object the abbreviation names",
+  );
+  assert.notEqual(outcome.kind === "exited" ? outcome.output.trim() : "", first);
+});
+
+/**
+ * An abbreviation that names more than one commit is refused rather than guessed at.
+ *
+ * The fixture is deterministic rather than brute-forced: with the author and committer identity
+ * and date pinned, `commit-tree` output is a pure function of its inputs, so these two messages
+ * over the empty tree collide on `186c` on any machine. Searching for the pair took 672 commits
+ * and 15 seconds once; reproducing it takes two calls.
+ */
+test("an ambiguous abbreviated commit is refused rather than guessed", { skip: !SUPPORTED }, async () => {
+  const f = fixture();
+  const fixedIdentity = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@e",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@e",
+    GIT_AUTHOR_DATE: "100000000 +0000",
+    GIT_COMMITTER_DATE: "100000000 +0000",
+  };
+  const git = (args: string[]): string =>
+    execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe", env: fixedIdentity }).toString().trim();
+  // The empty tree, whose id is the same in every git repository there has ever been.
+  const emptyTree = execFileSync("git", ["-C", f.repoRoot, "hash-object", "-t", "tree", "-w", "--stdin"], {
+    input: "",
+    stdio: ["pipe", "pipe", "pipe"],
+  }).toString().trim();
+  assert.equal(emptyTree, "4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+  const a = git(["commit-tree", emptyTree, "-m", "collide-166"]);
+  const b = git(["commit-tree", emptyTree, "-m", "collide-291"]);
+  assert.equal(a.slice(0, 4), "186c", "the pinned-identity collision fixture no longer reproduces");
+  assert.equal(b.slice(0, 4), "186c", "the pinned-identity collision fixture no longer reproduces");
+  assert.notEqual(a, b);
 
   const ref = attemptRef();
   const outcome = await f.runtime.executorFor(ref)({
@@ -421,12 +478,12 @@ test("a ref that shadows a commit id is refused, not followed", { skip: !SUPPORT
     command: PASSES,
     repoRoot: f.repoRoot,
     workingSubpath: "",
-    headSha: prefix,
+    headSha: "186c",
   });
 
-  assert.equal(outcome.kind, "infrastructure", "a shadowed commit id was followed to the wrong commit");
-  assert.match(outcome.kind === "infrastructure" ? outcome.reason : "", /shadowed the commit id/);
-  assert.equal(leaseRows.get(ref.attemptId), null);
+  assert.equal(outcome.kind, "infrastructure", "an ambiguous abbreviation picked a commit anyway");
+  assert.match(outcome.kind === "infrastructure" ? outcome.reason : "", /ambiguous/);
+  assert.equal(leaseRows.get(ref.attemptId), null, "an unidentifiable commit must cost no pool slot");
 });
 
 /**

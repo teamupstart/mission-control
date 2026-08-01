@@ -409,6 +409,36 @@ lease.
   unidentifiable commit costs no slot. Two tests, each of which fails against the unfixed code,
   and the shadowing one asserts git's behaviour first rather than assuming it.
 
+- **2026-07-31, Inspector round 3 (PR #352).** One `major`, accepted, and it found that round
+  1's own fix was too weak - the third time this one line has been wrong, which is worth
+  recording as a pattern rather than as three separate corrections.
+
+  *"Reject ambiguous abbreviated commit prefixes."* Round 1's guard required the resolved id to
+  START WITH the prefix that asked for it, on the reasoning that a shadowing ref would point
+  somewhere else and be caught. It only catches the case where the ref's target does not share
+  the prefix. A ref named like the abbreviation and pointing at a *different commit that shares
+  it* passes the comparison, and the check pins the wrong tree.
+
+  The pattern behind all three rounds: every fix so far tried to check `rev-parse`'s ANSWER,
+  and `rev-parse`'s job is to resolve revision expressions - refs included - so each guard was
+  an after-the-fact filter on a decision refs had already taken part in. The fix is to stop
+  asking that question. `rev-parse --disambiguate=<prefix>` enumerates the object database by
+  prefix and consults no ref at any point; the candidates are then filtered to commits by asking
+  about each FULL id, which cannot be shadowed. Exactly one commit resolves; zero is a commit
+  this repository does not have; more than one is an abbreviation nothing here is entitled to
+  guess at. That is "proven unique independently of ref resolution" as a mechanism rather than
+  as a check.
+
+  Both new tests fail against round 1's logic. The shadowing case now asserts the *correct*
+  outcome rather than a refusal - the check runs, against the object the abbreviation names,
+  while a ref of that exact spelling points elsewhere - which is a stronger claim than the
+  refusal it replaces. The ambiguity case needed a real 4-hex collision between two commits:
+  brute-forcing one takes 672 commits and 15 seconds, but with the author and committer identity
+  and date pinned `commit-tree` is a pure function of its inputs, so the colliding pair is
+  hardcoded and reproduces in two calls on any machine. The fixture asserts its own premise, so
+  it reports "the collision fixture no longer reproduces" rather than silently passing if git's
+  hashing ever changes.
+
 - **2026-07-31, Inspector round 2 (PR #352).** One `major`, **declined with measurement**, and
   the measurement is now a test rather than a claim.
 

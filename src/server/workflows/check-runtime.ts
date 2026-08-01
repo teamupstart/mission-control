@@ -125,25 +125,36 @@ const ABBREVIATED_SHA = /^[0-9a-f]{4,40}$/;
  *
  * A full id short-circuits, which is the shape `submission.prHeadSha` already arrives in.
  *
- * ## Two ways `git rev-parse` will answer a question you did not ask
+ * ## Why this does not use `rev-parse <prefix>`, which is the obvious way
  *
- * `rev-parse` resolves REVISION EXPRESSIONS, not just object ids, and both of its extra powers
- * are wrong here in the same way: they return a real commit that is not the one the submission
- * captured, so the check runs against the wrong tree and reports the answer as if it were about
- * this submission. Measured, both of them, rather than assumed:
+ * `rev-parse` resolves REVISION EXPRESSIONS, and every extra thing it can resolve is wrong here
+ * in the same way: it returns a real commit that is not the one the submission captured, so the
+ * check runs against the wrong tree and reports the answer as if it were about this submission.
+ * Two distinct hazards, both measured rather than assumed:
  *
- *  - **An expression resolves.** `HEAD~1^{commit}` is a valid argument and answers with
- *    whatever HEAD's parent is *at check time*. So is a branch name, a tag, `@{yesterday}`.
- *    Closed by requiring the input to be a hex object-id prefix before git is asked at all.
- *  - **A ref SHADOWS an object id.** This is the one that survives the first guard: a branch
- *    literally named `04a6ee7` wins over the object whose id starts with `04a6ee7`, silently -
- *    git prefers the refname and resolves to the branch's commit. Measured directly; git warns
- *    about the ambiguity on stderr and still answers. Closed by requiring the resolved id to
- *    START WITH the prefix that asked for it, which is the only thing that proves git handed
- *    back the object we named rather than something that happened to share its spelling.
+ *  - **An expression resolves.** `HEAD~1^{commit}` is a valid argument and answers with whatever
+ *    HEAD's parent is *at check time*. So is a branch name, a tag, `@{yesterday}`. Closed by
+ *    requiring the input to be a hex object-id prefix before git is asked anything at all.
+ *  - **A ref SHADOWS an abbreviated object id.** A branch literally named `04a6ee7` beats the
+ *    object whose id starts with `04a6ee7`: git prefers the refname, warns on stderr, and
+ *    answers with the branch's commit. Requiring the answer to merely START WITH the prefix is
+ *    NOT enough to close this - it only catches the case where the ref points somewhere that
+ *    does not share the prefix, and a ref pointing at a *different commit with the same prefix*
+ *    would sail through. That was this function's first fix and it was too weak.
  *
- * Both refusals are infrastructure, never a verdict: a commit we cannot identify is a gate we
- * cannot run, not a statement about the change under review.
+ * So refs are taken out of the decision entirely. `rev-parse --disambiguate=<prefix>` enumerates
+ * the OBJECT DATABASE by prefix and consults no ref at any point, which is what "proven unique
+ * independently of ref resolution" actually requires. Exactly one commit among the candidates is
+ * the captured commit; zero is a commit this repository does not have; more than one is an
+ * ambiguous abbreviation that nothing here is entitled to guess at.
+ *
+ * A full id short-circuits, which is the shape `submission.prHeadSha` already arrives in - and
+ * it is safe to short-circuit because git ignores a ref that is 40 hex characters long, by
+ * construction and by its own warning. That asymmetry is why the two lengths are treated
+ * differently, and it is pinned by test.
+ *
+ * Every refusal here is infrastructure, never a verdict: a commit we cannot identify is a gate
+ * we could not run, not a statement about the change under review.
  */
 async function resolveCapturedCommit(repoRoot: string, headSha: string): Promise<string> {
   if (FULL_SHA.test(headSha)) return headSha;
@@ -154,22 +165,31 @@ async function resolveCapturedCommit(repoRoot: string, headSha: string): Promise
         + "whatever it happens to name when the check runs",
     );
   }
-  const r = await run("git", ["-C", repoRoot, "rev-parse", "--verify", "--quiet", `${headSha}^{commit}`]);
-  const full = r.stdout.trim();
-  if (r.code !== 0 || !FULL_SHA.test(full)) {
+  const listed = await run("git", ["-C", repoRoot, "rev-parse", `--disambiguate=${headSha}`]);
+  const candidates = listed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => FULL_SHA.test(line));
+  // Which candidates are COMMITS. Asked per full id, which cannot be shadowed by a ref, and
+  // required to answer with the id itself - that keeps commits while dropping blobs, trees, and
+  // an annotated tag that would peel to some other commit.
+  const commits: string[] = [];
+  for (const id of candidates) {
+    const r = await run("git", ["-C", repoRoot, "rev-parse", "--verify", "--quiet", `${id}^{commit}`]);
+    if (r.code === 0 && r.stdout.trim() === id) commits.push(id);
+  }
+  if (commits.length === 1) return commits[0]!;
+  if (commits.length === 0) {
     throw new Error(
-      `the captured commit ${headSha} could not be resolved to a single commit in ${repoRoot}` +
-        (r.stderr.trim() ? ` - git said: ${r.stderr.trim()}` : ""),
+      `the captured commit ${headSha} names no commit in ${repoRoot}` +
+        (listed.stderr.trim() ? ` - git said: ${listed.stderr.trim()}` : ""),
     );
   }
-  if (!full.startsWith(headSha)) {
-    throw new Error(
-      `the captured commit ${headSha} resolved to ${full} in ${repoRoot}, which is a different `
-        + "object - a ref of that name shadowed the commit id, so what the check would have run "
-        + "against is not what the submission captured",
-    );
-  }
-  return full;
+  throw new Error(
+    `the captured commit ${headSha} is ambiguous in ${repoRoot}: it names ${commits.length} `
+      + `commits (${commits.map((id) => id.slice(0, 12)).join(", ")}), so which one this `
+      + "submission captured cannot be established",
+  );
 }
 
 /**

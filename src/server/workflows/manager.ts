@@ -3956,6 +3956,20 @@ export class WorkflowManager {
     );
   }
 
+  /**
+   * Which skill this packet's first line has to still resolve to, or null when it names none.
+   *
+   * The two kinds answer from different places on purpose. A `pr_handoff` was produced by the
+   * completion policy, which knows only one skill, so the id is the constant. A `session_action`
+   * carries whatever its published snapshot named - including nothing, which is the ordinary
+   * case for an operator's own action.
+   */
+  private deliverySkillId(delivery: WorkflowDelivery): string | null {
+    if (delivery.kind === "pr_handoff") return PULL_REQUEST_SKILL;
+    if (delivery.kind !== "session_action" || !delivery.nodeAttemptId) return null;
+    return this.store.getAttempt(delivery.nodeAttemptId)?.sessionAction?.requiredSkillId ?? null;
+  }
+
   private deliveryBlock(delivery: WorkflowDelivery, expectedPane?: string | null): string | null {
     const run = this.store.getRun(delivery.runId);
     if (!run || runIsTerminal(run)) return "run_terminal";
@@ -3966,31 +3980,28 @@ export class WorkflowManager {
     const session = this.registry.getSession(delivery.sessionId);
     if (!session || session.state === "exited") return "session_unavailable";
     if (noteKeyFor(session) !== delivery.noteKey) return "conversation_changed";
-    if (delivery.kind === "pr_handoff") {
-      const required = this.requireSkill(session, PULL_REQUEST_SKILL);
-      if (!required.ok) return "required_skill_unavailable";
-      if (!delivery.payload.startsWith(`${required.command}\n`)) {
-        return "required_skill_invocation_stale";
-      }
-    }
     // The SECOND required-skill gate, and the reason there are two: the packet was rendered
-    // when the attempt started waiting, and a skill can be switched off, uninstalled or
-    // re-linked between then and the write. Re-resolving here and comparing the prefix is
-    // what stops a prepared packet invoking a command that no longer means what it did.
-    // Read from the ATTEMPT's frozen snapshot, never the live library, so an edit to the
-    // action cannot change what this run demands.
+    // when it was prepared, and a skill can be switched off, uninstalled or re-linked between
+    // then and the write. Re-resolving here and comparing the prefix is what stops a prepared
+    // packet invoking a command that no longer means what it did.
+    //
+    // ONE check over both delivery kinds, because the rule is one rule. Where the required
+    // skill comes FROM differs and that is the whole difference: a legacy PR handoff is
+    // hard-wired to the pull-request skill by the completion policy that produced it, while an
+    // action reads its ATTEMPT's frozen snapshot - never the live library, so an edit to the
+    // action cannot change what an in-flight run demands.
     if (delivery.kind === "session_action") {
       const attempt = delivery.nodeAttemptId ? this.store.getAttempt(delivery.nodeAttemptId) : null;
       if (!attempt || attempt.state !== "waiting" || !attempt.sessionAction) {
         return "session_action_not_waiting";
       }
-      const skillId = attempt.sessionAction.requiredSkillId;
-      if (skillId) {
-        const required = this.requireSkill(session, skillId);
-        if (!required.ok) return "required_skill_unavailable";
-        if (!delivery.payload.startsWith(`${required.command}\n`)) {
-          return "required_skill_invocation_stale";
-        }
+    }
+    const requiredSkillId = this.deliverySkillId(delivery);
+    if (requiredSkillId) {
+      const required = this.requireSkill(session, requiredSkillId);
+      if (!required.ok) return "required_skill_unavailable";
+      if (!delivery.payload.startsWith(`${required.command}\n`)) {
+        return "required_skill_invocation_stale";
       }
     }
     if (expectedPane !== undefined && paneToken(session) !== expectedPane) return "pane_recreated";

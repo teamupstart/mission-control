@@ -409,6 +409,33 @@ After Phase 1, these hold and no later phase may weaken them:
   run's gate state, because every path that opens a round nulls `gate_state_json`. It is derived
   from the event log instead, which keeps the no-schema-change constraint intact. No phase
   boundary, dependency edge or cross-phase contract moved.
+- **2026-07-31, Phase 4 implemented; the unit is complete and the headline defect is closed.**
+  A configured, authorised check now leases a pooled worktree pinned to the captured commit,
+  runs the operator's argv in it, and **fails the submission on a non-zero exit** - verified end
+  to end on a real repository with a real pool and a real session, not by inspection. Phase 4's
+  own audit record carries the detail; two items belong at index level because they are about
+  the plan rather than about one phase.
+
+  **One finding contradicts nothing in this plan but was invisible to all of it.** Evidence
+  capture records an ABBREVIATED head sha (`diff.ts`), and a pin requires a full 40-hex id. Every
+  phase's contracts were honoured and the two halves still did not fit, because each was tested
+  against the shape the other was assumed to produce - and every automated test passed, because
+  every one of them supplied a full sha. The first real submission failed three times as
+  infrastructure and blocked, with the gate still never running. Fixed in Phase 4 by resolving
+  the abbreviation through `git rev-parse --verify` before the lease, never by relaxing the pin.
+  This is the concrete vindication of the instruction that a phase may not be reported done on
+  the strength of its diff.
+
+  **Contract E survived, but not in the shape Phase 4 described.** `CheckExecutionRequest`
+  describes a command and carries no attempt identity, while the runtime's resources are keyed
+  by attempt id and Contract R needs the submission and node ids. Phase 4's literal instruction -
+  a plain `checkDeps?: CheckRunDeps` - is therefore unimplementable. Resolved by BINDING the
+  identity (`checkDeps` is now `(attempt) => CheckRunDeps`) rather than by widening the published
+  request, so all three of Contract E's types are byte-identical and no existing caller of
+  `runCheck` changed. Contracts L, P and R were consumed exactly as published; two small additive
+  members were added to Phases 2 and 3's modules, each one already promised by that module's own
+  comments (`handOffForReclaim`, `terminateLiveCheckGroups`).
+
 - **2026-07-30, Inspector rounds 5 and 6 (PR #326):** two majors, both accepted, both about the
   same seam between ownership and liveness. Round 5: Phase 2's startup reconciliation would have
   returned a lease on ownership alone, hard-resetting a tree a live check was still writing into

@@ -295,6 +295,97 @@ lease.
   here, per the rule that a shared decision belongs to the earliest phase that must own it;
   recorded in that phase's audit too. Contract E is unchanged - the fix is in the retry
   policy, not the executor's result type.
+- **2026-07-31, at implementation.** Modules shipped: `check-runtime.ts` and
+  `test/workflow-check-runtime.test.ts`; `WorkflowEngine.stop()`, the retry gate, the manager
+  passthrough, the `src/server/index.ts` wiring, README and this document's source plan.
+  Seven deviations from this document's literal text, each with the reason.
+
+  1. **The one defect that mattered was found by running it, not by reading it, and this
+     document did not anticipate it.** Evidence capture records `git rev-parse --short HEAD`
+     (`src/server/diff.ts:165`), so `WorkflowContextSnapshot.evidence.headSha` on every real
+     submission is a **seven-character abbreviation** - while `verifyPinnedBase` refuses
+     anything that is not a full 40-hex id, deliberately, because `requireSha` will not
+     hard-reset a worktree onto a name it cannot pin exactly. Wired exactly as specified, the
+     first end-to-end run produced *"pinned base "cd8ad06" is not a full 40-character commit
+     id"* three times and blocked: **the gate still never ran.** Every automated test in the
+     phase passed, because every one of them supplied a full sha.
+
+     Fixed by resolving the capture's identifier through `git rev-parse --verify` before the
+     lease, in `check-runtime.ts`. That direction rather than the other one: an abbreviation
+     only names a commit if the repository says which one, and `--verify` refuses an ambiguous
+     prefix, so this narrows to exactly one commit or fails - whereas relaxing `requireSha`
+     would have let an ambiguous prefix decide which commit somebody's build ran against. A
+     full id short-circuits, which is the shape `submission.prHeadSha` already arrives in.
+     Regression test: *"an abbreviated captured commit still pins the worktree"*, which runs
+     `git rev-parse HEAD` inside the leased tree and asserts it equals the full commit.
+
+     Worth recording as a pattern, since this document's own instruction was not to report the
+     phase done on the strength of the diff: the seam contracts were all honoured, and the two
+     halves still did not fit, because each half was tested against the shape the OTHER half
+     was assumed to produce.
+  2. **`checkDeps` is a factory, `(attempt) => CheckRunDeps`, not a `CheckRunDeps`.** Step 2 of
+     this document says to add `checkDeps?: CheckRunDeps` and pass `{ execute: … }`. That
+     cannot work: a `CheckExecutor` receives a `CheckExecutionRequest`, which describes a
+     COMMAND - slot, argv, repository, commit - and carries no attempt identity, while step 1's
+     own rule is that the attempt id is the lease key and Contract R needs the submission and
+     node ids to gate a retry. One of the two had to give. Contract E is explicitly owned by
+     nobody and changed by nobody, so the identity is BOUND rather than added to the request:
+     `CheckAttemptRef` and `CheckRunDepsFor` are new vocabulary in `checks.ts` beside the seam,
+     the three published types are byte-identical, and no existing caller of `runCheck` had to
+     learn anything. The alternative - widening `CheckExecutionRequest` and `runCheck`'s input -
+     would have edited the one contract this phase was told not to touch.
+  3. **`unresolvedCheckLease` is its own engine option** rather than riding on `checkDeps`. It
+     is consulted where a retry is created, a path the executor never reaches, and the two are
+     wired together in `index.ts` from one `CheckRuntime` so neither can be injected without the
+     other. Also applied in `recover()`, which this document did not name: a daemon that died
+     mid-check rolls its interrupted attempt over on restart, and that is the likeliest place of
+     all for a second tree to be leased behind a group that outlived us.
+  4. **Two small additions to earlier phases' modules, both of which their own comments already
+     promised.** `CheckLeaseManager.handOffForReclaim` exists because `releaseForAttempt` drops
+     the in-memory ownership claim in its `finally` *and* issues the return - so a check whose
+     group could not be proven empty had no exit at all: not returning kept it in `owned`, and
+     `reclaimLeaked` skips owned rows, so the lease would have been collected by nothing until a
+     restart. And `terminateLiveCheckGroups` in `check-group.ts` is the orderly plural teardown
+     that module's own `killLiveCheckGroups` comment already named `WorkflowEngine.stop()` as a
+     caller of. Both are additive, neither changes a published contract.
+  5. **`verifyPinnedBase` is not called separately** (step 1's item 3). `acquireForAttempt`
+     already calls it as its first act, before anything is leased, which is exactly the ordering
+     that item wanted; calling it twice would be a second git process per check for no answer.
+  6. **The `CheckRuntime` construction moved ABOVE the `WorkflowManager`** in
+     `src/server/index.ts`, not merely above `startPoolReaper`. Step 2 states the reaper
+     ordering; the stronger constraint is `workflows.start()`, which recovers runs and can
+     schedule a check attempt immediately - a check must not be able to lease before
+     reconciliation has said which trees we already hold. The reclamation pass also gets the
+     group-recovery seam, which this document mentioned only for `reconcileOnStartup`;
+     uninjected there it would have kept every non-sentinel lease forever.
+  7. **No presentation change was needed.** `run-model.ts`'s four sentences and
+     `CHECK_OUTCOME_STATUSES` read correctly against real `passed` and `failed` outcomes -
+     `passed`/`failed` fall through to the ordinary verdict mapping and only the two
+     did-not-run statuses are marked degraded, which is right now that the other two occur. Two
+     broken README anchors (`#check-nodes-gating-on-a-command`, which matches no heading) were
+     fixed in passing.
+
+  **Manual verification, both required scenarios, on a real repository with a real treehouse
+  pool and a real `claude` session in a tmux pane:**
+
+  - *The headline.* A `typecheck` command that fails: the check ran, exited 2, **failed the
+    submission**, and the repair packet reached the pane carrying the command's own output
+    (`src/thing.js(1,1): error TS2345: …`). The session fixed the file and committed. Round 2
+    re-ran the check against the new commit, it exited 0 and **passed**, and the run completed.
+    The lease was returned in both rounds and `treehouse status` ended `available`.
+  - *Crash recovery.* `kill -9` of the daemon mid-check, with a command that had left a
+    background process in its group. The group survived (reparented to init) and the lease row
+    survived as `held` carrying its non-sentinel composite identity, with the tree still leased
+    under `mission-control-check-<attemptId>`. On restart, reconciliation matched that identity,
+    tore the group down, proved it empty, and only then returned the tree.
+  - *The reaper never touched it.* Proven directly rather than by waiting: `reapPool` was run
+    against that pool with **all three pin sources empty**, and refused - *"it is leased to
+    mission-control-check-…; we only return our own leases"*. That is Contract L layer 1 with
+    the defence-in-depth pin deliberately removed.
+  - *Shutdown with a live check.* `SIGINT` to the daemon while a 300-second command was running:
+    **0.43 seconds**, no orphan process, the pooled worktree back in the pool, every lease row
+    terminal.
+
 - **2026-07-30, Inspector round 5 (PR #326), consumed here:** the finding landed on Phase 2
   (startup reconciliation returning a lease whose group may still be live) and its fix spans
   three phases: Phase 2 declares the `CheckGroupRecovery` seam with a refusing default, Phase 3

@@ -232,6 +232,32 @@ export function liveCheckGroupCount(): number {
 }
 
 /**
+ * The ORDERLY counterpart to `killLiveCheckGroups`, for a shutdown that can still await.
+ *
+ * `WorkflowEngine.stop()` awaits every in-flight attempt, and a check attempt is a build that
+ * may have minutes of its timeout left - so without this a daemon restart waits out somebody's
+ * test suite. Cancelling first turns that into the seconds the ladder actually needs.
+ *
+ * It gets the full ladder rather than the exit hook's bare `SIGKILL` precisely because there
+ * IS time here: a test runner gets its grace to flush and unlink, and the group is then proven
+ * empty, which is what authorises the leased worktree going back to the pool on the way out.
+ * Groups are torn down concurrently, so shutdown costs one ladder rather than one per check.
+ *
+ * A group this cannot prove empty stays watched, for the same reason `finish()` keeps one: the
+ * hard-exit hook is the last thing that will ever see it, and it re-verifies identity before
+ * signalling anything.
+ */
+export async function terminateLiveCheckGroups(
+  options: CheckGroupTeardownOptions = {},
+): Promise<void> {
+  await Promise.all(
+    [...live].map(async ([pid, identity]) => {
+      if ((await terminateCheckGroup(pid, identity, options)) === "empty") live.delete(pid);
+    }),
+  );
+}
+
+/**
  * The last-resort teardown, on daemon exit.
  *
  * `SIGKILL` with no grace, and that is not this module forgetting its own rule: an `exit`

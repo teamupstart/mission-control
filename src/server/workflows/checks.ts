@@ -80,6 +80,38 @@ export type CheckExecutionResult =
 export type CheckExecutor = (request: CheckExecutionRequest) => Promise<CheckExecutionResult>;
 
 /**
+ * Which attempt a check executor is running for.
+ *
+ * NOT part of `CheckExecutionRequest`, deliberately. That type is what the LADDER hands the
+ * runtime and it describes a command: a slot, an argv, a repository, a commit. Attempt
+ * identity is not something the ladder knows or should learn - it is what the runtime's
+ * resources are keyed by, and it reaches the executor by BINDING one rather than by widening
+ * the published request every caller of `runCheck` would then have to supply.
+ *
+ * The runtime needs all three and each answers a different question. `attemptId` is the lease
+ * key, the process-registry key, and what makes the pooled worktree's holder token unique to
+ * one attempt. `submissionId` and `nodeId` are what let the engine ask, before it creates a
+ * retry, whether this node still owns a lease that has not resolved - a retry carries a NEW
+ * attempt id, so nothing about the retry itself would collide with the lease it must not
+ * outrun.
+ */
+export interface CheckAttemptRef {
+  attemptId: string;
+  submissionId: string;
+  nodeId: string;
+}
+
+/**
+ * How the engine obtains the deps for ONE check attempt.
+ *
+ * A factory rather than a value because the execution runtime is bound to an attempt (see
+ * `CheckAttemptRef`) while `checkoutSubpath` and the null-runtime default are not. A build
+ * with no runtime returns `{}` and every check reports `unavailable` and passes, which is the
+ * shipped behaviour this seam preserves.
+ */
+export type CheckRunDepsFor = (attempt: CheckAttemptRef) => CheckRunDeps;
+
+/**
  * Where the session's directory sits inside its own checkout, or null when git cannot say.
  *
  * A dependency rather than a direct call because it is the one part of resolution that

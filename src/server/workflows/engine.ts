@@ -40,13 +40,26 @@ import {
   createCheckScheduler,
   runCheck,
   tailBounded,
-  type CheckRunDeps,
+  type CheckRunDepsFor,
   type CheckScheduler,
 } from "./checks.ts";
+import { terminateLiveCheckGroups } from "./check-group.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
 const PERSONA_TIMEOUT_MS = 120_000;
 const RETRY_BASE_MS = 1_000;
+
+/**
+ * The phase a run blocks in when a check node cannot be retried because its lease is still
+ * unresolved.
+ *
+ * Distinct from `infrastructure_error` on purpose: that phase says "we tried three times and
+ * gave up", and this one says "we did not try, because trying would have taken a second pooled
+ * worktree while something may still be writing into the first". The operator's next move
+ * differs too - this one clears itself once reclamation proves the group gone, and the run is
+ * resubmitted rather than debugged.
+ */
+export const CHECK_CLEANUP_UNRESOLVED_PHASE = "check_cleanup_unresolved";
 
 export interface WorkflowEngineOptions {
   /**
@@ -82,8 +95,31 @@ export interface WorkflowEngineOptions {
   checkSchedule?: CheckScheduler;
   /** Only consulted when no check scheduler is injected. */
   checkConcurrency?: number;
-  /** The execution runtime a Check reaches, absent in a build that ships none. */
-  checkDeps?: CheckRunDeps;
+  /**
+   * The execution runtime a Check reaches, bound to the attempt it will run for.
+   *
+   * A factory rather than a value because a check's resources - its pooled worktree lease and
+   * its supervisor's durable identity - are keyed by attempt id, and Contract E's
+   * `CheckExecutionRequest` describes a COMMAND rather than an attempt. Binding at the call
+   * site keeps the published request unchanged and keeps every other caller of `runCheck` from
+   * having to supply an identity it has no reason to know.
+   *
+   * Absent in a build that ships no runtime, which is the shipped default: every configured
+   * check then reports `unavailable` and passes with a note saying so.
+   */
+  checkDeps?: CheckRunDepsFor;
+  /**
+   * Contract R: does this check node still own a lease that has not resolved?
+   *
+   * Consulted before a retry is CREATED, not afterwards. A retry is a fresh attempt id, so it
+   * carries a fresh holder token and would happily lease a DIFFERENT pooled worktree while the
+   * first attempt's process group may still be writing into the first - there is no natural
+   * collision to rely on, which is why this gate has to be explicit.
+   *
+   * Defaults to "no lease", which is correct for every build with no execution runtime and for
+   * every persona node in every build.
+   */
+  unresolvedCheckLease?: (submissionId: string, nodeId: string) => boolean;
   /** Read per attempt, never cached, so a Settings edit lands on the next check. */
   workflowConfig?: () => WorkflowConfig;
 }
@@ -222,7 +258,8 @@ export class WorkflowEngine {
     NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private readonly checkLimit: CheckScheduler;
-  private readonly checkDeps: CheckRunDeps;
+  private readonly checkDeps: CheckRunDepsFor;
+  private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowConfig: () => WorkflowConfig;
   private stopped = true;
   private pumping = false;
@@ -246,7 +283,8 @@ export class WorkflowEngine {
     this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
     this.checkLimit = options.checkSchedule
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
-    this.checkDeps = options.checkDeps ?? {};
+    this.checkDeps = options.checkDeps ?? (() => ({}));
+    this.unresolvedCheckLease = options.unresolvedCheckLease ?? (() => false);
     this.workflowConfig = options.workflowConfig ?? getWorkflowConfig;
   }
 
@@ -261,6 +299,20 @@ export class WorkflowEngine {
     this.stopped = true;
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.wakeTimer = null;
+    // Cancel live check groups BEFORE awaiting the attempts that own them. A check attempt is
+    // a build, and `allSettled` on its own would wait out the command's whole timeout - up to
+    // ten minutes of daemon shutdown for one test suite somebody left running. Cancelling
+    // first turns that into the seconds the SIGTERM-grace-SIGKILL ladder needs, and the
+    // attempt then settles on its own through the ordinary path: the group is proven empty,
+    // its pooled worktree goes back, and the attempt reports an infrastructure failure rather
+    // than a verdict about a command that never finished.
+    //
+    // Inert in every build with no execution runtime, and in every daemon with no check
+    // running: the watched set is empty and this resolves immediately.
+    //
+    // `src/server/index.ts` calls this from `shutdown()` BEFORE it stops the pool reaper, so
+    // the returns issued here still run under a live reaper and its lock. Do not reorder that.
+    await terminateLiveCheckGroups();
     await Promise.allSettled([...this.inFlight]);
   }
 
@@ -944,7 +996,13 @@ export class WorkflowEngine {
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,
-      }, this.checkDeps);
+        // Bound to THIS attempt: the execution runtime keys its pooled lease and its
+        // supervisor's durable identity by attempt id, and `claimed.id` is that id.
+      }, this.checkDeps({
+        attemptId: claimed.id,
+        submissionId: submission.id,
+        nodeId: node.id,
+      }));
     } catch (error) {
       // A throw out of the runner is infrastructure by definition: nothing about the change
       // under review can be concluded from a gate that could not be asked.
@@ -1022,6 +1080,7 @@ export class WorkflowEngine {
       state: "error",
       error: reason,
     }, this.now());
+    if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
     if (attempt.attempt < MAX_INFRA_ATTEMPTS) {
       const retryAt = this.now() + this.retryBaseMs * 4 ** (attempt.attempt - 1);
       this.store.insertAttempt({
@@ -1059,6 +1118,41 @@ export class WorkflowEngine {
       error: reason,
     }, this.now());
     this.onRunChanged(runId);
+  }
+
+  /**
+   * Contract R's gate: refuse to retry a check node that still owns an unresolved lease.
+   *
+   * Placed where the RETRY is created rather than inside the execution runtime, because the
+   * runtime's published result type has three variants and none of them is "do not retry me" -
+   * and inventing a fourth would put a retry policy inside an executor. The rule it enforces
+   * is not conservative housekeeping: a retry is a fresh attempt id, therefore a fresh holder
+   * token, therefore a lease on a DIFFERENT pooled worktree - so nothing about the pool would
+   * stop the second attempt building while the first attempt's process group is still writing
+   * into the first tree. Two writers, two trees, and a verdict from whichever finished last.
+   *
+   * Blocking is visible and self-clearing rather than terminal: the reclamation pass keeps
+   * asking whether that group has gone, hands the tree back when it can prove it, and the run
+   * is resubmitted. Answering "no lease" is the whole of the cost in every build with no
+   * execution runtime and for every persona node in every build.
+   */
+  private blockedByUnresolvedLease(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    reason: string,
+  ): boolean {
+    if (!this.unresolvedCheckLease(attempt.submissionId, attempt.nodeId)) return false;
+    const now = this.now();
+    const detail = {
+      nodeId: attempt.nodeId,
+      attempts: attempt.attempt,
+      error: reason,
+    };
+    this.store.setSubmissionState(attempt.submissionId, "failed", now);
+    this.store.setRunState(runId, "blocked", CHECK_CLEANUP_UNRESOLVED_PHASE, detail, now);
+    this.store.appendEvent(runId, "check_cleanup_unresolved", detail, now);
+    this.onRunChanged(runId);
+    return true;
   }
 
   private blockSubmission(submission: WorkflowSubmission, phase: string, error: string): void {
@@ -1101,6 +1195,13 @@ export class WorkflowEngine {
             state: "error",
             error: "Interrupted by daemon restart",
           }, this.now());
+          // The same gate as the live path, and this is where it matters most: a daemon that
+          // died mid-check leaves a lease its startup reconciliation could not prove empty,
+          // and rolling the attempt over here is exactly how a second tree would be leased
+          // behind a build that outlived us.
+          if (this.blockedByUnresolvedLease(attempt, run.id, "Interrupted by daemon restart")) {
+            continue;
+          }
           if (attempt.attempt < MAX_INFRA_ATTEMPTS) {
             this.store.insertAttempt({
               id: randomUUID(),
@@ -1149,6 +1250,9 @@ export class WorkflowEngine {
           continue;
         }
         for (const attempt of errored) {
+          if (this.blockedByUnresolvedLease(attempt, run.id, attempt.error ?? "Recovered infrastructure failure")) {
+            break;
+          }
           const now = this.now();
           this.store.insertAttempt({
             id: randomUUID(),

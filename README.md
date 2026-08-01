@@ -2339,16 +2339,17 @@ nothing to author and nothing to import - it is in the Workflows tab of a fresh 
 already published, and can be bound to a session immediately.
 
 Stage 1 is a deterministic gate: the [`typecheck` and `test` checks](#check-nodes), placed
-ahead of every reviewer so that, once command execution is supplied, a change which does not
-compile costs no model calls at all. Under that execution contract both are evaluated on the
-same submission and both must pass at their All-pass Join before anything behind them starts,
-so one failing gate returns the submission to the session with the command's own output and
-**no Persona runs**.
+ahead of every reviewer so that a change which does not compile costs no model calls at all.
+Both are evaluated on the same submission and both must pass at their All-pass Join before
+anything behind them starts, so one failing gate returns the submission to the session with the
+command's own output and **no Persona runs**.
 
-The [Check nodes](#check-nodes) section owns the current execution status and the rules for
-configured, unconfigured and unauthorized slots. In this build those rules make versions 3
-through 6 follow the same Persona review path as version 2 while preserving the deterministic
-stage in the graph.
+Those checks are live from version 3 onward, on a machine where you have switched checks on and
+configured a command - the graph did not change, the runtime behind it arrived. Where you have
+not, the gates report Not run and pass, and versions 3 through 6 follow the same Persona review
+path version 2 does while preserving the deterministic stage in the graph. The
+[Check nodes](#check-nodes) section owns the rules for configured, unconfigured and unauthorized
+slots.
 
 Behind it are the four built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending three deeper reviews
@@ -2451,21 +2452,22 @@ you configure here.
 
 ### Check nodes
 
-A **Check** represents a deterministic command gate instead of a model review. This build
-ships the graph node, configuration, validation, and run-detail contract, but not the
-crash-safe execution runtime: **it does not spawn configured check commands yet**. An
-authorized, configured Check is recorded as **Not run** and passes with a note explaining
-that the runtime is unavailable. Command execution is a separate implementation unit because
-it must run against a pooled worktree pinned to the captured commit and recover its process
-and lease safely after a daemon crash.
+A **Check** represents a deterministic command gate instead of a model review. **A configured,
+authorized check now runs its command, and a non-zero exit fails the submission** - the failing
+output comes back to the session as a repair packet, exactly the way a Persona's requested
+changes do. It runs in a [pooled worktree of its own](#check-leases), pinned to the commit the
+run captured, under a [supervisor](#running-a-check-command) that can prove afterwards that the
+command and everything it spawned is gone.
 
-The two halves of that runtime are now built and tested, and nothing calls them yet: the
-[worktree it leases](#check-leases) and the [supervisor that runs the
-command](#running-a-check-command). Connecting them to the Check node is the change after
-this one, so the behaviour above is unchanged - a configured check still passes without
-running. The supervisor does set a platform floor worth knowing in advance: **check commands
-will run on Linux and macOS only**, and everywhere else a check reports Not run and passes,
-which is the same already-shipped path it takes today.
+> **If you already had checks switched on, this changes your results.** Earlier builds shipped
+> the node without an execution runtime, so a configured check recorded **Not run** and passed.
+> Those same commands now run and can fail. That is the fix rather than a regression, but a
+> gate that has been quietly green may go red on the first run after upgrading, and the first
+> thing to check is whether the command actually passes on the captured commit.
+
+**Check commands run on Linux and macOS.** Everywhere else a check reports Not run and passes,
+which is the same already-shipped path an unconfigured slot takes - see [Running a check
+command](#running-a-check-command) for why the platform floor exists.
 
 **A Check names a slot, never a command.** The slots are `test`, `lint`, `typecheck` and
 `build`. The command assigned to each slot is configured per repository under **Settings →
@@ -2494,22 +2496,35 @@ checkout's `packages/web` resolves the command configured for the repository's
 `packages/web`.
 
 **An unrun gate passes, with a note saying why.** A slot with no command configured for this
-repository is *skipped*; a repository that has not been authorized is *not run*. Both pass,
+repository is *skipped*; a repository that has not been authorized is *not run*; a platform that
+cannot run checks, or an executable that is not there, is *not run* too. All of them pass,
 because a workflow that failed on every unconfigured machine would be broken by default, and
-both say which of the two happened so it is never mistaken for a gate that ran. In this build,
-the missing execution runtime is a third *not run* outcome that also passes with its own note.
+each says which of them happened so it is never mistaken for a gate that ran. Only a command
+that ran and exited non-zero fails.
+
+An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
+give: none of them is a statement about the change under review, so they retry and then block
+the run visibly rather than reporting a verdict.
 
 **Checks are consent-gated twice**, and are off by default. **Settings → Workflows**
 (`#/settings/workflows`) carries both controls: **Enable workflow check commands**, the switch,
 and **Check commands**, the table of repository root, slot and argv. The switch alone is not
-enough - the repository must also be on the same Workflow allowlist Live delivery uses.
-Enabling it authorizes running code the reviewed branch supplies - its scripts, dependencies
-and build steps - with the daemon's own filesystem authority. This is not a sandbox. Checks run
-through their own small attempt budget, separate from the review budget; enabling consent does
-not override this build's missing execution runtime.
+enough - the repository must also be on the same Workflow allowlist Live delivery uses, and
+neither is granted by default. Enabling both authorizes running code the reviewed branch
+supplies - its scripts, dependencies and build steps - with the daemon's own filesystem
+authority. **This is not a sandbox**, and the allowlist rather than anything in the runtime is
+what bounds it.
 
-Run detail draws a check as its own card. In this build it shows the slot, configured argv,
-and the reason the command was skipped or not run.
+**Checks share the treehouse pool with dispatch.** Two check commands run at once, and each one
+holds a pooled worktree for as long as it runs - drawn from the same `max_trees` a dispatched
+session draws from (`treehouse.toml` in the repository; this one sets 16). On a repository with
+a small pool, a long test suite gating a review is a slot a dispatch is waiting for. Raise
+`max_trees` there if dispatch starts queuing behind checks. Checks also run through their own
+small attempt budget, separate from the review budget, so a build never spends a Persona's slot.
+
+Run detail draws a check as its own card: the slot, the configured argv, the exit code, and the
+last few kilobytes of output with a count of anything dropped - or, for a gate that did not run,
+the sentence saying which of the reasons above applied.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
@@ -2781,7 +2796,7 @@ says so: the refusal is `live_not_authorized` on the run, not silence.
 A Live binding can be saved only while its current session is in an allowlisted checkout.
 Removing consent keeps the binding choice visible but refuses the next delivery; it is never
 silently changed to Preview. The same panel holds the second, independent switch for
-[Check nodes](#check-nodes-gating-on-a-command), which shares that allowlist and is still
+[Check nodes](#check-nodes), which shares that allowlist and is still
 **off** by default, because it grants something different in kind: running branch-authored code
 on your disk, rather than typing text a human can read before it acts.
 
@@ -2810,7 +2825,7 @@ has queue items, prompted when it does not. Exactly one, because re-arming both 
 single repair packet produce two completion claims and therefore two review rounds for one fix.
 So the whole cycle runs without you:
 
-1. A Persona (or a [Check](#check-nodes-gating-on-a-command)) fails. The run parks in
+1. A Persona (or a [Check](#check-nodes)) fails. The run parks in
    `waiting_for_session` and the repair packet is typed into the pane.
 2. Confirming that delivery re-arms one Foreman completion episode.
 3. The session makes the change and goes idle.
@@ -4766,13 +4781,19 @@ label, never a check token, so the daemon sees the mismatch and refuses to touch
 (`treehouse return` accepts a path and no holder, and `--lease-holder` is a label
 treehouse records and never checks, so this is a rule the harness imposes on itself.)
 
+**A check lease costs a pool slot for as long as the command runs.** Two checks run at once, so
+in the worst case two of a repository's `max_trees` are held by builds rather than by sessions,
+and a dispatch that finds the pool dry waits. If that starts happening, raise `max_trees` in
+that repository's `treehouse.toml` - the number is per repository, and the one in this
+repository is 16.
+
 If you ever see an idle `mission-control-check-…` lease that outlives its daemon, it is
 safe to hand back by hand: `treehouse return <path>`.
 
 ### Running a check command
 
-Nothing calls this yet - see [Check nodes](#check-nodes) - but the runtime that will is
-built, and what it does with your machine is worth stating plainly before it is switched on.
+This is what a [Check node](#check-nodes) does once you switch checks on and allowlist the
+repository, and what it does with your machine is worth stating plainly before you do.
 
 **Check commands run on Linux and macOS.** On any other platform a check reports Not run and
 passes. That is not an oversight: the daemon has to be able to prove afterwards that a
@@ -4804,7 +4825,10 @@ What a check command gets:
 - **An argv, never a shell.** `&&`, `|`, `;` and `$(…)` reach the command as ordinary
   arguments, so there is no string for a repository's configured command to break out of.
 - **The captured commit, in a pooled worktree**, not your own working copy - so a check never
-  sees, and can never disturb, whatever you have open.
+  sees, and can never disturb, whatever you have open. The tree is `reset --hard` to that exact
+  commit and cleaned with `clean -fd`, never `-fdx`, which is what preserves the pool's warm
+  ignored dependencies: your `node_modules` survives, so a check is a build rather than an
+  install. A subdirectory command runs in that subdirectory *of the leased tree*.
 - **A trimmed environment.** The daemon's auth token is removed, along with any variable that
   overrides where its state directory lives and anything whose name reads like a credential
   (`…_TOKEN`, `…_SECRET`, `…_PASSWORD`, `…_KEY`, `…_CREDENTIALS`). `PATH`, `HOME`, `SHELL`, the
@@ -4829,6 +4853,11 @@ is actually empty before returning the worktree, because a build that leaves a s
 behind it is common and the leader exiting proves nothing about its children. A group it cannot
 prove is empty keeps its lease rather than handing back a tree something may still be writing
 into.
+
+A daemon shutdown cancels live check groups first and then waits, so stopping Mission Control
+mid-build takes the seconds that ladder needs rather than the remainder of the command's
+timeout. And a check whose lease has not resolved is never retried onto a second worktree - the
+run blocks and says so, and clears itself once the leaked group is proven gone.
 
 ## Configuration
 

@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ import { writeFakeAgents } from "./fake-agents.ts";
  * suite free to run.
  */
 export interface DaemonHandle {
-  /** Origin the dashboard is served from, e.g. `http://127.0.0.1:7531`. */
+  /** Origin the dashboard is served from, on an OS-assigned loopback port. */
   baseURL: string;
   /** The throwaway `MISSION_HOME`, holding the DB, the token, and the daemon log. */
   home: string;
@@ -33,15 +34,34 @@ const BOOT_TIMEOUT_MS = 30_000;
 const POLL_MS = 100;
 
 /**
- * Ports are assigned per worker rather than fixed.
+ * A port the OS has just confirmed is free on loopback.
  *
- * 7317 is the operator's real daemon and must never be touched; a fixed test port would
- * also make two Playwright workers fight over one database. `TEST_WORKER_INDEX` is
- * Playwright's own per-worker counter, so each worker gets its own daemon, its own
- * `MISSION_HOME`, and its own port by construction.
+ * NOT a fixed port derived from the worker index, which is what this was and which had a
+ * bad failure mode: if anything already held the port - a concurrent `test:e2e`, a daemon
+ * left behind by a killed run, an unrelated local service - the child would fail to bind
+ * while `/api/health` kept answering, because the SQUATTER answered it. When the squatter is
+ * itself a Mission Control daemon, the service check passes, and the fixture then rewrites
+ * that daemon's harness config and dispatches sessions into it. A test suite quietly driving
+ * someone else's daemon is the same class of hazard `MISSION_POLL_MS=0` exists to close.
+ *
+ * Binding port 0 makes the kernel pick, so two workers cannot collide by construction. There
+ * is still a window between closing this probe and the daemon binding, which is why the boot
+ * check below verifies the daemon's identity rather than trusting the port.
  */
-function portForWorker(): number {
-  return 7530 + Number(process.env.TEST_WORKER_INDEX ?? 0);
+async function freeLoopbackPort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      if (typeof address !== "object" || address === null) {
+        probe.close(() => reject(new Error("could not read the probe socket's assigned port")));
+        return;
+      }
+      const { port } = address;
+      probe.close(() => resolve(port));
+    });
+  });
 }
 
 /**
@@ -83,7 +103,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // conversation would silently never be found.
   const home = realpathSync(mkdtempSync(join(tmpdir(), "mc-e2e-")));
   const workspace = join(home, "workspace");
-  const port = portForWorker();
+  const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
@@ -156,10 +176,25 @@ export async function startDaemon(): Promise<DaemonHandle> {
     }
     const res = await fetch(`${baseURL}/api/health`).catch(() => null);
     if (res?.ok) {
-      const body = (await res.json().catch(() => ({}))) as { service?: string };
+      const body = (await res.json().catch(() => ({}))) as { service?: string; pid?: number };
       if (body.service !== "mission-control") {
         await stop();
         throw new Error(`/api/health answered as ${JSON.stringify(body.service)}`);
+      }
+      // The daemon answering has to be the one we just spawned, not merely A daemon.
+      //
+      // `service` alone cannot tell those apart: a Mission Control daemon already holding
+      // this port answers it perfectly, and everything after this point - the harness config
+      // write, every dispatch - would land on that daemon's real database instead of the
+      // throwaway one. `/api/health` reports `pid`, so identity is checkable rather than
+      // assumed, and a lost race fails loudly here instead of silently driving someone
+      // else's fleet.
+      if (body.pid !== child.pid) {
+        await stop();
+        throw new Error(
+          `port ${port} is held by a different Mission Control daemon (pid ${body.pid}, ` +
+            `expected the spawned child's pid ${child.pid}). Refusing to run against it.`,
+        );
       }
       break;
     }

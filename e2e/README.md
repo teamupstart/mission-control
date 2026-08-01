@@ -34,11 +34,11 @@ $ npx playwright test --config e2e/playwright.config.ts e2e/specs/dispatch-and-c
 
 Running 3 tests using 3 workers
 
-  ✓  3 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:61:1 › dispatching an agent puts a live session on the fleet (3.5s)
-  ✓  2 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:142:1 › the dispatched agent was launched headless, without the daemon's terminal identity (4.1s)
-  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:84:1 › typing into the conversation gets a reply back from the agent (7.0s)
+  ✓  2 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:142:1 › the dispatched agent was launched headless, without the daemon's terminal identity (2.9s)
+  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:61:1 › dispatching an agent puts a live session on the fleet (3.2s)
+  ✓  3 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:84:1 › typing into the conversation gets a reply back from the agent (6.5s)
 
-  3 passed (7.6s)
+  3 passed (7.4s)
 ```
 
 Reproduce it with that command, or `npm run test:e2e` for the whole suite. Both need a
@@ -128,9 +128,19 @@ on the fake so that regression is caught rather than invoiced.
 Those last two matter most and are the least obvious. Without `MISSION_POLL_MS=0` a daemon
 booted on a developer's laptop adopts their real running sessions: the fleet count is
 non-deterministic against CI where there are none, and the dashboard's Kill and Reset
-controls act on live work. `startDaemon()` also asserts the database landed under the temp
-home before any test runs, because `openDb`'s own isolation guard keys on
-`NODE_TEST_CONTEXT`, which the `node:test` runner sets and Playwright does not.
+controls act on live work.
+
+`startDaemon()` then verifies two things before any test runs, because the whole isolation
+story is worthless if the daemon under test is not the one it thinks it is:
+
+- **The daemon answering is the child we spawned**, checked by comparing the `pid` in
+  `/api/health` against `child.pid`. The port is OS-assigned rather than fixed, but a port
+  can still be taken in the window before the daemon binds - and when the squatter is itself
+  a Mission Control daemon, `service: "mission-control"` matches, the fixture rewrites *that*
+  daemon's harness config, and every dispatch lands in its real database. Identity is
+  checkable, so it is checked.
+- **The database landed under the temp home**, because `openDb`'s own isolation guard keys on
+  `NODE_TEST_CONTEXT`, which the `node:test` runner sets and Playwright does not.
 
 ## Writing specs
 

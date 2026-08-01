@@ -99,6 +99,11 @@ export interface CheckRuntimeDeps {
 }
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
+/**
+ * An abbreviated object id and nothing else. Four is git's own floor for an abbreviation, and
+ * lowercase-only keeps ONE spelling rule across this file and `verifyPinnedBase`.
+ */
+const ABBREVIATED_SHA = /^[0-9a-f]{4,40}$/;
 
 /**
  * Turn the capture's commit identifier into the full 40-character id a pin requires.
@@ -119,15 +124,49 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
  * against.
  *
  * A full id short-circuits, which is the shape `submission.prHeadSha` already arrives in.
+ *
+ * ## Two ways `git rev-parse` will answer a question you did not ask
+ *
+ * `rev-parse` resolves REVISION EXPRESSIONS, not just object ids, and both of its extra powers
+ * are wrong here in the same way: they return a real commit that is not the one the submission
+ * captured, so the check runs against the wrong tree and reports the answer as if it were about
+ * this submission. Measured, both of them, rather than assumed:
+ *
+ *  - **An expression resolves.** `HEAD~1^{commit}` is a valid argument and answers with
+ *    whatever HEAD's parent is *at check time*. So is a branch name, a tag, `@{yesterday}`.
+ *    Closed by requiring the input to be a hex object-id prefix before git is asked at all.
+ *  - **A ref SHADOWS an object id.** This is the one that survives the first guard: a branch
+ *    literally named `04a6ee7` wins over the object whose id starts with `04a6ee7`, silently -
+ *    git prefers the refname and resolves to the branch's commit. Measured directly; git warns
+ *    about the ambiguity on stderr and still answers. Closed by requiring the resolved id to
+ *    START WITH the prefix that asked for it, which is the only thing that proves git handed
+ *    back the object we named rather than something that happened to share its spelling.
+ *
+ * Both refusals are infrastructure, never a verdict: a commit we cannot identify is a gate we
+ * cannot run, not a statement about the change under review.
  */
 async function resolveCapturedCommit(repoRoot: string, headSha: string): Promise<string> {
   if (FULL_SHA.test(headSha)) return headSha;
+  if (!ABBREVIATED_SHA.test(headSha)) {
+    throw new Error(
+      `the captured commit ${JSON.stringify(headSha)} is not a commit id - a check is pinned to `
+        + "the exact commit a submission captured, and a revision expression would resolve to "
+        + "whatever it happens to name when the check runs",
+    );
+  }
   const r = await run("git", ["-C", repoRoot, "rev-parse", "--verify", "--quiet", `${headSha}^{commit}`]);
   const full = r.stdout.trim();
   if (r.code !== 0 || !FULL_SHA.test(full)) {
     throw new Error(
       `the captured commit ${headSha} could not be resolved to a single commit in ${repoRoot}` +
         (r.stderr.trim() ? ` - git said: ${r.stderr.trim()}` : ""),
+    );
+  }
+  if (!full.startsWith(headSha)) {
+    throw new Error(
+      `the captured commit ${headSha} resolved to ${full} in ${repoRoot}, which is a different `
+        + "object - a ref of that name shadowed the commit id, so what the check would have run "
+        + "against is not what the submission captured",
     );
   }
   return full;

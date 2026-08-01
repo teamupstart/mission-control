@@ -362,6 +362,73 @@ test("an abbreviated captured commit still pins the worktree", { skip: !SUPPORTE
   assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
 });
 
+/**
+ * `git rev-parse` resolves REVISION EXPRESSIONS, not just object ids, and the resolve step
+ * added above shells out to it. So a captured `headSha` of `HEAD~1`, or a branch name, would
+ * answer with a real commit - just not the one the submission captured - and the check would
+ * run against the wrong tree and report the answer as if it were about this submission. That is
+ * the wrong-verdict-rather-than-a-crash failure this whole unit exists to avoid, arriving
+ * through the door opened to fix a different one.
+ */
+test("a revision expression is refused rather than resolved", { skip: !SUPPORTED }, async () => {
+  for (const expression of ["HEAD", "HEAD~1", "main", "@{yesterday}", "refs/heads/main"]) {
+    const f = fixture();
+    const ref = attemptRef();
+    const outcome = await f.runtime.executorFor(ref)({
+      slot: "typecheck",
+      command: PASSES,
+      repoRoot: f.repoRoot,
+      workingSubpath: "",
+      headSha: expression,
+    });
+
+    assert.equal(outcome.kind, "infrastructure", `${expression} was accepted as a commit`);
+    assert.match(outcome.kind === "infrastructure" ? outcome.reason : "", /is not a commit id/);
+    // And it is refused BEFORE the pool is asked: an unidentifiable commit costs no slot.
+    assert.deepEqual(f.pool.calls, [], `${expression} reached the pool`);
+    assert.equal(leaseRows.get(ref.attemptId), null);
+  }
+});
+
+/**
+ * The hazard the hex-prefix rule does NOT close, measured rather than assumed: git prefers a
+ * REFNAME over an object id of the same spelling. A branch literally named `04a6ee7` wins over
+ * the commit whose id starts with `04a6ee7` - git warns on stderr and answers anyway.
+ *
+ * Reachable in practice, because branch names in this product are generated: a `harness/<slug>`
+ * scheme that ever emitted a short hex slug would do it. The guard is that the resolved id must
+ * start with the prefix that asked for it.
+ */
+test("a ref that shadows a commit id is refused, not followed", { skip: !SUPPORTED }, async () => {
+  const f = fixture();
+  const git = (...args: string[]): string =>
+    execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe" }).toString();
+  // A second commit, so there are two objects to confuse. The branch is named after the SECOND
+  // commit's prefix but points at the FIRST, which is what makes the wrong answer detectable.
+  const first = f.headSha;
+  writeFileSync(join(f.repoRoot, "second.txt"), "second\n");
+  git("add", "-A");
+  git("commit", "-qm", "second");
+  const second = git("rev-parse", "HEAD").trim();
+  const prefix = second.slice(0, 7);
+  git("branch", prefix, first);
+  // The premise, asserted rather than trusted: git really does hand back the branch's commit.
+  assert.equal(git("rev-parse", "--verify", "--quiet", `${prefix}^{commit}`).trim(), first);
+
+  const ref = attemptRef();
+  const outcome = await f.runtime.executorFor(ref)({
+    slot: "typecheck",
+    command: PASSES,
+    repoRoot: f.repoRoot,
+    workingSubpath: "",
+    headSha: prefix,
+  });
+
+  assert.equal(outcome.kind, "infrastructure", "a shadowed commit id was followed to the wrong commit");
+  assert.match(outcome.kind === "infrastructure" ? outcome.reason : "", /shadowed the commit id/);
+  assert.equal(leaseRows.get(ref.attemptId), null);
+});
+
 test("a commit this repository does not have is infrastructure, and costs no pool slot", async () => {
   const f = fixture();
   const { ref, result } = run(f, { headSha: "b".repeat(40) });

@@ -383,6 +383,32 @@ lease.
      broken README anchors (`#check-nodes-gating-on-a-command`, which matches no heading) were
      fixed in passing.
 
+- **2026-07-31, Inspector round 1 (PR #352).** One `major`, accepted, and it was a defect
+  introduced by the fix for deviation 1 - the door opened to resolve an abbreviated commit was
+  wider than the thing it was opened for.
+
+  *"Restrict captured commits to SHA identifiers."* `resolveCapturedCommit` passed any
+  non-40-character `headSha` straight to `git rev-parse --verify`, which resolves REVISION
+  EXPRESSIONS and not just object ids. So `HEAD~1`, a branch name, a tag or `@{yesterday}` would
+  all answer with a real commit - just not the one the submission captured - and the check would
+  run against that tree and report the answer as if it were about this submission. That is
+  exactly the wrong-verdict-rather-than-a-crash failure the working-directory containment check
+  already names as the worst shape available here, arriving through a different door.
+
+  Probing it surfaced a **second** hazard the finding did not name, and it is the one that
+  survives the obvious fix: **a ref shadows an object id of the same spelling.** Measured
+  directly - a branch literally named `04a6ee7` beats the commit whose id starts with `04a6ee7`,
+  and git resolves to the branch's commit with only a warning on stderr. A hex-prefix regex
+  alone would have passed that straight through. Reachable rather than theoretical, since branch
+  names here are generated.
+
+  Fixed with both guards: the input must be a lowercase hex object-id prefix (four characters is
+  git's own floor) before git is asked at all, and the resolved id must START WITH the prefix
+  that asked for it, which is the only thing that proves git handed back the object we named.
+  Both refusals are infrastructure, and both refuse before the pool is asked, so an
+  unidentifiable commit costs no slot. Two tests, each of which fails against the unfixed code,
+  and the shadowing one asserts git's behaviour first rather than assuming it.
+
 - **2026-07-31, review round 1 (Intent Conformance Judge).** Two findings, both accepted; one
   was a real defect this phase's own tests had not been shaped to catch.
 

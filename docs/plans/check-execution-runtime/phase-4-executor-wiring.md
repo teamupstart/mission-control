@@ -409,6 +409,34 @@ lease.
   unidentifiable commit costs no slot. Two tests, each of which fails against the unfixed code,
   and the shadowing one asserts git's behaviour first rather than assuming it.
 
+- **2026-07-31, Inspector round 2 (PR #352).** One `major`, **declined with measurement**, and
+  the measurement is now a test rather than a claim.
+
+  *"Reject full-SHA ref shadowing."* The premise was that a repository can hold a ref named
+  exactly like a full 40-character sha but pointing elsewhere, and that git's revision parser
+  might select the ref for the later pin or reset. Read against round 1's finding it looks like
+  the same defect one size up, which is why it was worth measuring rather than reasoning about.
+
+  It does not hold, and git says so itself. A full 40-hex string is interpreted as an object id
+  unconditionally; a ref of that name is IGNORED, and git's own warning explains exactly this -
+  *"Git normally never creates a ref that ends with 40 hex characters because it will be ignored
+  when you just specify 40-hex."* Measured through the whole path with such a ref constructed
+  and pointing at a different commit: `rev-parse --verify` answered with the object, the
+  `reset --hard` inside a linked worktree landed on the object, and `verifyPinnedBase` returned
+  the object. That asymmetry against the abbreviated case is precisely why the two lengths are
+  treated differently, and it is the whole argument for short-circuiting a full id rather than
+  round-tripping it.
+
+  Two independent guards would catch it even if a future git changed its mind, and both run
+  before any command does: `verifyPinnedBase` refuses unless `resolved === baseSha`, and
+  `verifyHeadIs` refuses unless the worktree's HEAD equals the sha after the reset. So the
+  failure mode would be a blocked run, never a verdict about the wrong tree.
+
+  Declined on the code and accepted on the principle: the asymmetry was load-bearing and
+  nothing executed it, which is the shape of an argument that quietly stops being true. It is
+  now pinned by *"a ref named like a full commit id cannot shadow it"*, which constructs the
+  shadowing ref and asserts the leased worktree stands on the captured commit.
+
 - **2026-07-31, review round 1 (Intent Conformance Judge).** Two findings, both accepted; one
   was a real defect this phase's own tests had not been shaped to catch.
 

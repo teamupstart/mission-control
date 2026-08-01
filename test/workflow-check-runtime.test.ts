@@ -429,6 +429,53 @@ test("a ref that shadows a commit id is refused, not followed", { skip: !SUPPORT
   assert.equal(leaseRows.get(ref.attemptId), null);
 });
 
+/**
+ * The mirror of the case above, and it comes out the OTHER way - which is why the resolve step
+ * short-circuits a full id instead of round-tripping it through git.
+ *
+ * A ref can shadow an ABBREVIATED object id (proven above). It cannot shadow a full 40-character
+ * one: git ignores such a ref by construction and says so in its own warning - *"Git normally
+ * never creates a ref that ends with 40 hex characters because it will be ignored when you just
+ * specify 40-hex."* Measured through the whole path rather than read: `rev-parse`, the
+ * `reset --hard` inside the leased worktree, and `verifyPinnedBase` all answer with the object.
+ *
+ * This test exists because that asymmetry is the entire argument for treating the two lengths
+ * differently, and an argument nothing executes is an argument that quietly stops being true.
+ * If a future git ever let a 40-hex ref win, this fails - and `verifyPinnedBase`'s
+ * `resolved !== baseSha` and `verifyHeadIs` would each still refuse the pin before any command
+ * ran, so the failure would be a blocked run rather than a verdict about the wrong tree.
+ */
+test("a ref named like a full commit id cannot shadow it", { skip: !SUPPORTED }, async () => {
+  const f = fixture();
+  const git = (...args: string[]): string =>
+    execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe" }).toString();
+  const first = f.headSha;
+  writeFileSync(join(f.repoRoot, "second.txt"), "second\n");
+  git("add", "-A");
+  git("commit", "-qm", "second");
+  const second = git("rev-parse", "HEAD").trim();
+  // A ref named EXACTLY the second commit's full id, pointing at the first.
+  git("update-ref", `refs/heads/${second}`, first);
+
+  const ref = attemptRef();
+  const outcome = await f.runtime.executorFor(ref)({
+    slot: "typecheck",
+    command: [process.execPath, "-e", "console.log(require('node:child_process').execSync('git rev-parse HEAD').toString().trim())"],
+    repoRoot: f.repoRoot,
+    workingSubpath: "",
+    headSha: second,
+  });
+
+  assert.equal(outcome.kind, "exited");
+  assert.equal(
+    outcome.kind === "exited" ? outcome.output.trim() : "",
+    second,
+    "the leased worktree stood on the ref's commit instead of the captured one",
+  );
+  assert.notEqual(outcome.kind === "exited" ? outcome.output.trim() : "", first);
+  assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
+});
+
 test("a commit this repository does not have is infrastructure, and costs no pool slot", async () => {
   const f = fixture();
   const { ref, result } = run(f, { headSha: "b".repeat(40) });

@@ -24,7 +24,14 @@ import {
   type PipelineStatus,
 } from "./pipeline-bits.tsx";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
-import { checkStatus, reviewerStatus, sessionActionStatus, stageStatus } from "./run-model.ts";
+import {
+  canShowInspectorOnlySkip,
+  checkStatus,
+  inspectorOnlySkipStatus,
+  reviewerStatus,
+  sessionActionStatus,
+  stageStatus,
+} from "./run-model.ts";
 
 /**
  * The run, drawn on the pipeline its author drew.
@@ -47,6 +54,8 @@ export function RunPipeline({
   end,
   metaFor,
   checkOutcomeFor,
+  inspectorOnly = false,
+  priorPassedNodeIds,
   actionWaitFor,
   inspectorDetail = null,
   inspectorStatus = null,
@@ -69,8 +78,12 @@ export function RunPipeline({
    * chip would report "Passed" for a command that was never spawned. Optional so the canvas
    * fallback and older callers keep compiling; a caller that omits it simply loses the
    * distinction rather than asserting the wrong half of it.
-   */
+  */
   checkOutcomeFor?: (nodeId: string) => WorkflowCheckStatus | null;
+  /** This round bypassed stages that passed before an Inspector-requested repair. */
+  inspectorOnly?: boolean;
+  /** Nodes with an earned pass in the preceding full-workflow round. */
+  priorPassedNodeIds?: readonly string[];
   /**
    * What a session action node is waiting FOR, when it is waiting.
    *
@@ -120,6 +133,10 @@ export function RunPipeline({
   const disabledSet = useMemo(
     () => new Set(disabledNodeIds ?? []),
     [disabledNodeIds],
+  );
+  const priorPassedSet = useMemo(
+    () => new Set(priorPassedNodeIds ?? []),
+    [priorPassedNodeIds],
   );
 
   if (!pipeline) {
@@ -186,28 +203,36 @@ export function RunPipeline({
             togglable,
             disabled,
             meta: member.nodeId ? metaFor(member.nodeId) : null,
-            // The chip is the viewed round's history: Disabled only when the auto-pass
-            // will convert (or synthesized) this node's attempt, never over an outcome the
-            // round already reached - a recorded failure painted as Disabled would claim
-            // the toggle rewrote it. The row's red treatment carries the control's state.
-            //
-            // An action reports LIFECYCLE, never a verdict, and gets its OWN status table
-            // rather than borrowing either evaluator's. A "Passed" chip on a node that judged
-            // nothing is the failure this third branch avoids, and routing it through
-            // `reviewerStatus` would also flatten every stage of a waiting turn into the one
-            // word "Waiting".
-            status: (togglable && member.nodeId ? disabledChipFor?.(member.nodeId) ?? null : null)
-              ?? (member.kind === "session_action"
-                ? sessionActionStatus(
-                    member.nodeId ? statuses[member.nodeId] : undefined,
-                    member.nodeId ? actionWaitFor?.(member.nodeId) ?? null : null,
-                  )
-                : member.kind === "check"
-                  ? checkStatus(
+            status: canShowInspectorOnlySkip(
+              inspectorOnly,
+              member.nodeId,
+              node !== undefined,
+              member.nodeId !== null && statuses[member.nodeId] !== undefined,
+              member.nodeId !== null && priorPassedSet.has(member.nodeId),
+            )
+              ? inspectorOnlySkipStatus()
+              // The chip is the viewed round's history: Disabled only when the auto-pass
+              // will convert (or synthesized) this node's attempt, never over an outcome the
+              // round already reached - a recorded failure painted as Disabled would claim
+              // the toggle rewrote it. The row's red treatment carries the control's state.
+              //
+              // An action reports LIFECYCLE, never a verdict, and gets its OWN status table
+              // rather than borrowing either evaluator's. A "Passed" chip on a node that judged
+              // nothing is the failure this third branch avoids, and routing it through
+              // `reviewerStatus` would also flatten every stage of a waiting turn into the one
+              // word "Waiting".
+              : (togglable && member.nodeId ? disabledChipFor?.(member.nodeId) ?? null : null)
+                ?? (member.kind === "session_action"
+                  ? sessionActionStatus(
                       member.nodeId ? statuses[member.nodeId] : undefined,
-                      member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
+                      member.nodeId ? actionWaitFor?.(member.nodeId) ?? null : null,
                     )
-                  : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined)),
+                  : member.kind === "check"
+                    ? checkStatus(
+                        member.nodeId ? statuses[member.nodeId] : undefined,
+                        member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
+                      )
+                    : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined)),
           };
         });
         // The stage toggle needs every member addressable AND switchable; a projection member
@@ -222,7 +247,11 @@ export function RunPipeline({
             <StageCard
               name={stageTitle}
               subtitle={stageSummary(stage)}
-              status={stageStatus(members.map((member) => member.status), stage.kind)}
+              status={inspectorOnly
+                && members.length > 0
+                && members.every((member) => member.status.skipKind === "inspector_repair")
+                ? inspectorOnlySkipStatus()
+                : stageStatus(members.map((member) => member.status), stage.kind)}
               disabled={stageDisabled}
               onToggleDisabled={onToggleNodes && stageNodeIds.length === members.length
                 ? () => onToggleNodes(stageNodeIds, !stageDisabled)

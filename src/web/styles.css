@@ -115,6 +115,18 @@
 .workflow-failed { color: var(--danger); }
 .workflow-passed { color: var(--idle); }
 
+/* Statuses with a reason are hoverable and keyboard-focusable without reading as actions. */
+.wf-status-explained {
+  cursor: help;
+  text-decoration: underline dotted color-mix(in srgb, currentColor 58%, transparent);
+  text-underline-offset: 3px;
+}
+.wf-status-explained:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 .rail-workflow {
   cursor: pointer;
   font-weight: 800;
@@ -10916,9 +10928,9 @@ select.ensemble-judge-persona {
   outline: 2px solid var(--working);
   outline-offset: 2px;
 }
-/* The third chip site, laid out like the other two. A stage's own chip reaches "Passed, 2 not
-   run", which beside the title left "2 checks · all must pass" folded into three lines while
-   the chip kept its full width - the same trade the terminus refuses. Note that `flex-wrap`
+/* The third chip site, laid out like the other two. A stage's own chip reaches "Passed, 2
+   skipped", which beside the title left "2 checks · all must pass" folded into three lines
+   while the chip kept its full width - the same trade the terminus refuses. Note that `flex-wrap`
    would NOT have fixed this: `.wf-pipeline-stage-title` is `flex: 1`, whose `flex-basis: 0`
    contributes nothing to line-breaking, so the chip always "fits" and the wrap never fires. */
 .wf-pipeline-stage-head {

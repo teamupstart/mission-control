@@ -165,6 +165,31 @@ export function latestAttemptsFor(
   return newest;
 }
 
+/** The newest full-workflow submission before the round being viewed, by node id. */
+export function previousFullWorkflowAttempts(
+  detail: WorkflowRunDetail,
+  submission: WorkflowSubmission | null,
+): Map<string, WorkflowNodeAttempt> {
+  if (!submission) return new Map();
+  const ordered = orderedSubmissions(detail);
+  const index = ordered.findIndex((candidate) => candidate.id === submission.id);
+  if (index < 1) return new Map();
+  const previous = ordered.slice(0, index).reverse()
+    .find((candidate) => candidate.mode === "full_workflow");
+  return latestAttemptsFor(detail, previous?.id ?? null);
+}
+
+/** Whether a prior attempt earned the green Inspector-repair bypass treatment. */
+export function priorAttemptPassed(
+  kind: "persona" | "check" | "session_action",
+  attempt: WorkflowNodeAttempt | undefined,
+): boolean {
+  if (!attempt) return false;
+  if (kind === "check") return checkOutcomeOf(attempt)?.status === "passed";
+  if (kind === "session_action") return sessionActionProgress(attempt)?.complete === true;
+  return verdictOf(attempt)?.verdict === "pass";
+}
+
 export function verdictOf(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
   return attempt.verdict as unknown as PersonaVerdict | null;
 }
@@ -328,6 +353,41 @@ export function inspectorOnlyRoundSentence(): string {
   return "Persona review bypassed for Inspector repair.";
 }
 
+const INSPECTOR_ONLY_SKIP_TOOLTIP =
+  "Skipped because this stage passed in the prior full workflow round. This Inspector repair round only rechecks Inspector.";
+
+/** A previously-passed stage intentionally bypassed by an Inspector-only repair round. */
+export function inspectorOnlySkipStatus(): PipelineStatus {
+  return {
+    tone: "passed",
+    label: "Skipped",
+    tooltip: INSPECTOR_ONLY_SKIP_TOOLTIP,
+    skipKind: "inspector_repair",
+  };
+}
+
+/**
+ * Whether one authored pipeline member can inherit the prior-pass treatment in an
+ * Inspector-only round.
+ *
+ * The Inspector-only policy proves why a valid, attempt-free node was bypassed. It says
+ * nothing about a malformed pipeline member, so a missing id or a stale id that resolves to
+ * no graph node must keep the ordinary waiting status instead of borrowing a green skip.
+ */
+export function canShowInspectorOnlySkip(
+  inspectorOnly: boolean,
+  memberNodeId: string | null,
+  nodeExists: boolean,
+  hasCurrentAttempt: boolean,
+  passedPriorFullRound: boolean,
+): boolean {
+  return inspectorOnly
+    && memberNodeId !== null
+    && nodeExists
+    && !hasCurrentAttempt
+    && passedPriorFullRound;
+}
+
 const REVIEWER_STATUSES: Record<
   WorkflowNodeAttemptState | PersonaVerdict["verdict"],
   PipelineStatus
@@ -392,8 +452,20 @@ const CHECK_OUTCOME_STATUSES: Record<WorkflowCheckStatus, PipelineStatus | null>
   // Ran and succeeded: the ordinary verdict mapping already says it correctly.
   passed: null,
   failed: null,
-  skipped: { tone: "waiting", label: "Skipped", degraded: true },
-  unavailable: { tone: "waiting", label: "Not run", degraded: true },
+  skipped: {
+    tone: "waiting",
+    label: "Skipped",
+    tooltip: "Skipped because no command is configured for this check.",
+    skipKind: "unconfigured_check",
+    degraded: true,
+  },
+  unavailable: {
+    tone: "waiting",
+    label: "Not run",
+    tooltip: "This check could not run. Open the run details for its recorded reason.",
+    skipKind: "unavailable_check",
+    degraded: true,
+  },
 };
 
 /**
@@ -500,9 +572,26 @@ export function stageStatus(
     if (notRun === 0) {
       return { tone: "passed", label: members.length > 1 ? "All passed" : "Passed" };
     }
+    const skipped = members.filter((status) =>
+      status.skipKind === "unconfigured_check").length;
+    const allSkipped = skipped === members.length;
+    const tooltip = allSkipped
+      ? "Skipped because no command is configured for the checks in this stage."
+      : "One or more checks in this stage did not run. Hover each check for its reason.";
     return notRun === members.length
-      ? { tone: "waiting", label: notRun > 1 ? "None ran" : "Did not run", degraded: true }
-      : { tone: "waiting", label: `Passed, ${notRun} not run`, degraded: true };
+      ? {
+          tone: "waiting",
+          label: allSkipped ? "Skipped" : notRun > 1 ? "None ran" : "Did not run",
+          tooltip,
+          ...(allSkipped ? { skipKind: "unconfigured_check" as const } : {}),
+          degraded: true,
+        }
+      : {
+          tone: "waiting",
+          label: `Passed, ${notRun} ${skipped === notRun ? "skipped" : "not run"}`,
+          tooltip,
+          degraded: true,
+        };
   }
   return { tone: "waiting", label: "Waiting" };
 }

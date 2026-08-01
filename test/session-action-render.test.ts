@@ -9,7 +9,7 @@ import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx"
 import { WorkflowVersionDetail } from "../src/web/workflows/WorkflowVersionHistory.tsx";
 import { compileStages } from "../src/shared/workflow-stages.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
-import type { StagePipeline } from "../src/shared/workflow-stages.ts";
+import type { Stage, StagePipeline } from "../src/shared/workflow-stages.ts";
 import type {
   PublishedWorkflowNode,
   SessionAction,
@@ -124,6 +124,53 @@ test("an action stage offers no authoring control this build cannot honour", () 
   // list four reviewers and refuse every one of them - which reads as a bug, not a rule.
   // Found by driving the real builder; the browser showed it before this pinned it.
   assert.doesNotMatch(html, /Add a reviewer or check to Stage 1/);
+});
+
+test("an action stage is a reorder barrier, not merely an unmovable card", async () => {
+  // The Inspector's finding: checking only the SOURCE let an evaluation stage be dragged
+  // past an action, which splices the action to a new index and makes `compileStages`
+  // rewrite the routes on both sides of a node the whole surface calls read-only.
+  const { moveStage, stageReorderAllowed } =
+    await import("../src/web/workflows/PipelineEditor.tsx");
+
+  const evaluation = (id: string): Stage => ({
+    kind: "evaluation",
+    joinId: null,
+    members: [{ nodeId: id, kind: "persona", personaId: id }],
+  });
+  const act: Stage = {
+    kind: "session_action",
+    member: { nodeId: "act", kind: "session_action", sessionActionId: action.id },
+  };
+  // [A, action, B]
+  const withAction: StagePipeline = {
+    sessionId: SESSION_ID,
+    endId: END_ID,
+    endOutcome: "Complete",
+    stages: [evaluation("a"), act, evaluation("b")],
+  };
+
+  // Crossing it, in either direction, and landing ON it.
+  for (const [from, to] of [[0, 2], [2, 0], [0, 1], [2, 1]] as const) {
+    assert.equal(stageReorderAllowed(withAction, from, to), false, `${from}->${to} crosses the action`);
+    assert.deepEqual(moveStage(withAction, from, to), withAction, `${from}->${to} must be a no-op`);
+  }
+  // The action can never be the thing moved either.
+  assert.equal(stageReorderAllowed(withAction, 1, 0), false);
+  assert.equal(stageReorderAllowed(withAction, 1, 2), false);
+
+  // And an ordinary reorder that touches no action still works, so the barrier is the
+  // action's and not a blanket freeze on any pipeline that contains one.
+  const evaluationsOnly: StagePipeline = {
+    ...withAction,
+    stages: [evaluation("a"), evaluation("b"), act],
+  };
+  assert.equal(stageReorderAllowed(evaluationsOnly, 0, 1), true);
+  assert.deepEqual(
+    moveStage(evaluationsOnly, 0, 1).stages.map((stage) =>
+      stage.kind === "evaluation" ? stage.members[0]!.nodeId : "action"),
+    ["b", "a", "action"],
+  );
 });
 
 test("Duplicate is gated on what can actually be copied, not on any selection", () => {

@@ -140,12 +140,36 @@ export function removeStage(pipeline: StagePipeline, stageIndex: number): StageP
   return withStages(pipeline, pipeline.stages.filter((_, index) => index !== stageIndex));
 }
 
+/**
+ * Whether a stage may travel from one position to another.
+ *
+ * A session action is a REORDER BARRIER, not merely an unmovable card. Checking the source
+ * alone is not enough: `splice` out of `from` and into `to` shifts every position between
+ * them, so dragging an evaluation stage past an action moves the ACTION relative to its
+ * neighbours and makes `compileStages` rewrite the routes on either side of it - a node the
+ * whole surface presents as read-only, edited indirectly.
+ *
+ * The crossed range is inclusive of the destination in both directions, so landing ON an
+ * action and stepping OVER one are the same refusal.
+ *
+ * Exported because it is the rule, and the reorder handlers have to ask BEFORE they announce
+ * a move that a silent no-op would otherwise have them claim happened.
+ */
+export function stageReorderAllowed(pipeline: StagePipeline, from: number, to: number): boolean {
+  if (!editableStage(pipeline, from)) return false;
+  if (to < 0 || to >= pipeline.stages.length || from === to) return false;
+  const [first, last] = from < to ? [from + 1, to] : [to, from - 1];
+  for (let index = first; index <= last; index += 1) {
+    if (pipeline.stages[index]?.kind === "session_action") return false;
+  }
+  return true;
+}
+
 export function moveStage(pipeline: StagePipeline, from: number, to: number): StagePipeline {
+  if (!stageReorderAllowed(pipeline, from, to)) return pipeline;
   const stages = [...pipeline.stages];
-  const moved = editableStage(pipeline, from);
-  if (!moved || to < 0 || to >= stages.length || from === to) return pipeline;
-  stages.splice(from, 1);
-  stages.splice(to, 0, moved);
+  const [moved] = stages.splice(from, 1);
+  stages.splice(to, 0, moved!);
   return withStages(pipeline, stages);
 }
 
@@ -449,7 +473,10 @@ export function PipelineEditor({
 
   const reorderStage = (index: number, delta: number): void => {
     const to = index + delta;
-    if (to < 0 || to >= pipeline.stages.length) return;
+    // Asked BEFORE announcing. `moveStage` returning the pipeline unchanged is a silent
+    // no-op, and the announcement below would still have told a screen-reader user the
+    // stage had moved - and moved focus to a card that never went anywhere.
+    if (!stageReorderAllowed(pipeline, index, to)) return;
     apply(
       moveStage(pipeline, index, to),
       `Moved ${refOfStage(index)} to position ${to + 1} of ${pipeline.stages.length}`,
@@ -506,11 +533,23 @@ export function PipelineEditor({
     endDrag();
   };
 
+  /** The landing index a drop on the seam BEFORE `at` means, once the drag is spliced out. */
+  const seamLanding = (at: number, from: number): number => (at > from ? at - 1 : at);
+
+  /**
+   * Whether a stage drag may be dropped on this seam. Consulted by the drop target itself,
+   * so a seam beyond a session action never lights up - a highlighted target that then
+   * refuses the drop is worse than one that was never offered.
+   */
+  const seamAcceptsDrag = (at: number): boolean =>
+    dragging?.kind === "stage"
+    && stageReorderAllowed(pipeline, dragging.index, seamLanding(at, dragging.index));
+
   const dropOnSeam = (at: number) => (event: React.DragEvent<HTMLElement>): void => {
     event.preventDefault();
     if (!dragging || dragging.kind !== "stage") return endDrag();
     // Removing the stage first shifts every later position down by one.
-    const to = at > dragging.index ? at - 1 : at;
+    const to = seamLanding(at, dragging.index);
     if (to !== dragging.index) reorderStage(dragging.index, to - dragging.index);
     endDrag();
   };
@@ -810,7 +849,7 @@ export function PipelineEditor({
 
               <div
                 className="wf-pipeline-seam-slot"
-                onDragOver={acceptDrop(`seam:${index + 1}`)}
+                onDragOver={seamAcceptsDrag(index + 1) ? acceptDrop(`seam:${index + 1}`) : undefined}
                 onDrop={dropOnSeam(index + 1)}
               >
                 <StageSeam gate={seamGate(stage)}>

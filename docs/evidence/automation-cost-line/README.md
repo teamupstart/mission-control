@@ -1,5 +1,9 @@
 # Automation cost line - runtime evidence
 
+See [`focused-test-run.md`](focused-test-run.md) for the verbatim focused test run proving a
+headless report is accepted through the route, recorded under its role key, and read back per
+role. The screenshots below are the operator-facing half of the same claim.
+
 The Fleet Strip showing what the app spent on itself, captured from a running dashboard
 rather than from static markup.
 

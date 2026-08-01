@@ -1008,9 +1008,14 @@ Claude run's OpenTelemetry twin is recognised by that same id and excluded from 
 spend rather than billed twice.
 
 The Foreman worker never writes the database, so it reports over
-`POST /api/usage/automation`; the daemon prices and records the report. Valid reports are
-buffered durably in the state directory before delivery, retried with backoff, and recovered
-after a worker restart. Because each entry represents spend from a run that already
+`POST /api/usage/automation`; the daemon prices and records the report. A valid report is
+written to a buffer in the state directory *before* its first delivery attempt, retried with
+backoff, and recovered after a worker restart. If that write fails - a full disk, an
+unwritable state directory - delivery still proceeds, but the report is then held only in
+memory and a crash would lose it; the worker says so at `error` level and re-attempts the
+write on every later delivery attempt until it succeeds, reporting when the window closed.
+So durability is attempted before delivery rather than guaranteed by it. Because each entry
+represents spend from a run that already
 finished, the buffer has no retention limit: it trades unbounded growth during a daemon
 outage for never discarding spend, and its small entries drain as soon as the daemon
 acknowledges them. **Waiting is the default for every failure**, and only a body the daemon

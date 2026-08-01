@@ -97,6 +97,10 @@ function inspectorPr(key: string, url: string, sessionId: string, now: number): 
     lastAttemptSha: null,
     mergedAt: null,
     mergeBlock: null,
+    observedHeadSha: null,
+    observedState: null,
+    observedAt: null,
+    headRefName: null,
     adoptedAt: now,
     updatedAt: now,
   };

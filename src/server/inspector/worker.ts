@@ -407,6 +407,12 @@ export function adoptPr(
     lastAttemptSha: null,
     mergedAt: null,
     mergeBlock: null,
+    // Nothing has been polled yet, and adoption is not an observation. The first tick fills
+    // all four; until then every reader treats them as "unknown" rather than "unchanged".
+    observedHeadSha: null,
+    observedState: null,
+    observedAt: null,
+    headRefName: null,
     adoptedAt: now,
     updatedAt: now,
   });
@@ -533,6 +539,24 @@ async function processPr(
     return noteFailure(pr, snap.error ?? "could not read the pull request", now, tick);
   }
   const s = snap.value;
+  // Write the sighting down BEFORE anything decides what to do about it.
+  //
+  // `onObserved` is a wakeup - transient, and only for whoever happens to be subscribed when
+  // this tick runs. The ledger is what survives a restart, and it is what a `pull_request`
+  // session action reads to prove its commit reached the pull request. Recording it here,
+  // beside the fetch that produced it, means every path below - retire the row, take the
+  // backoff, run a review, sit the tick out - has already told the truth about what GitHub
+  // said, rather than only the paths that happen to run to completion.
+  updateInspectorPr(
+    pr.key,
+    {
+      observedHeadSha: s.headSha || null,
+      observedState: s.state,
+      observedAt: now,
+      headRefName: s.headRefName || null,
+    },
+    now,
+  );
   onObserved?.(s, now);
 
   // Merged and closed-unmerged are both "done". Retiring the row rather than deleting it

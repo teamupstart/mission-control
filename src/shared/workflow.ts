@@ -504,13 +504,9 @@ export const SESSION_ACTION_COMPLETION_CAPABILITIES: Record<
   },
   pull_request: {
     kind: "pull_request",
-    available: false,
+    available: true,
     label: "Pull request is opened and verified",
-    // A stable refusal rather than a placeholder that returns success. Completing a
-    // `pull_request` action on the generic turn boundary alone would claim durable PR
-    // provenance nobody checked, which is the one guarantee this adapter exists to make.
-    unavailableReason:
-      "This build cannot verify a pull request yet, so a workflow using this action cannot be published.",
+    unavailableReason: null,
   },
 };
 
@@ -537,6 +533,17 @@ export const SESSION_ACTION_WAIT_REASONS = [
   "awaiting_proof",
   /** The adapter completed and the continuation segment is being captured. */
   "capturing",
+  /**
+   * Settled, and no adopted pull request yet names this repository and branch.
+   *
+   * Its own reason rather than `awaiting_proof` because the two point at different work. This
+   * one means the turn produced no pull request Mission Control can see, and the operator's
+   * remedy is about the session or the PR itself; `awaiting_pushed_head` below means the pull
+   * request exists and the commit has not reached it.
+   */
+  "awaiting_pull_request",
+  /** A matching pull request exists and its observed remote head is not the local head yet. */
+  "awaiting_pushed_head",
 ] as const;
 export type SessionActionWaitReason = (typeof SESSION_ACTION_WAIT_REASONS)[number];
 
@@ -557,6 +564,16 @@ export const SESSION_ACTION_BLOCK_CODES = [
   "delivery_uncertain",
   "capture_failed",
   "expectation_unmet",
+  /**
+   * The pull request this action's work belongs to is closed or merged.
+   *
+   * A BLOCK rather than a wait, and the only one the pull request adapter raises. Every other
+   * way a PR can fail to match - not opened yet, opened on another branch, head not pushed,
+   * `gh` unreachable for a tick - is a state that a later observation can change on its own,
+   * so those wait. A closed pull request is a durable contradiction: nothing the daemon waits
+   * for will reopen it, and a human has to decide whether to reopen, replace or abandon it.
+   */
+  "pull_request_closed",
 ] as const;
 export type SessionActionBlockCode = (typeof SESSION_ACTION_BLOCK_CODES)[number];
 
@@ -570,7 +587,34 @@ export type SessionActionBlockCode = (typeof SESSION_ACTION_BLOCK_CODES)[number]
  */
 export type SessionActionContinuationExpectation =
   | { kind: "none" }
-  | { kind: "head"; headSha: string };
+  /**
+   * The pull request adapter's proof, carried forward so the capture can be held to it.
+   *
+   * Every field is something the adapter VERIFIED before it said complete, written down so a
+   * capture that happens later - possibly after a daemon restart, possibly after the checkout
+   * moved - can be checked against the same facts rather than against whatever is true by
+   * then. `expectedHeadOid` is the load-bearing one: the adapter proved this exact commit is
+   * the pull request's remote head, so a child segment captured at any other commit is
+   * evidence of work the pull request does not contain.
+   *
+   * Bounded and provider-neutral on purpose. No credentials, no `gh` output, no diff: this is
+   * durable attempt state that run detail renders and export carries.
+   */
+  | {
+      kind: "pull_request";
+      /** `owner/repo#number`, the same identity the adoption ledger is keyed by. */
+      pullRequestKey: string;
+      pullRequestUrl: string;
+      pullRequestNumber: number;
+      /** The local repository root the adoption was matched against. */
+      repositoryRoot: string;
+      /** The head branch the pull request was observed to be opened from. */
+      branch: string;
+      /** The commit the pull request's remote head was observed at. */
+      expectedHeadOid: string;
+      /** When that observation was made, so provenance can say how fresh the proof was. */
+      observedAt: number;
+    };
 
 /**
  * One adapter's answer once the generic observer has proven pickup and a settled turn.

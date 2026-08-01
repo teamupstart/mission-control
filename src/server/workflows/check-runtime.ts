@@ -13,6 +13,7 @@ import {
 } from "./check-lease.ts";
 import type { CheckGroupEmptiness, CheckGroupTeardownOptions } from "./check-group.ts";
 import { checkRuntimeSupport, type CheckRuntimeSupport } from "./check-identity.ts";
+import { resolveCapturedCommit } from "./commit-id.ts";
 import {
   createCheckGroupRecovery,
   runSupervisedCheck,
@@ -96,100 +97,6 @@ export interface CheckRuntimeDeps {
   db?: DatabaseSync;
   /** Defaults to asking git. See `resolveCapturedCommit`. */
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
-}
-
-const FULL_SHA = /^[0-9a-f]{40}$/;
-/**
- * An abbreviated object id and nothing else. Four is git's own floor for an abbreviation, and
- * lowercase-only keeps ONE spelling rule across this file and `verifyPinnedBase`.
- */
-const ABBREVIATED_SHA = /^[0-9a-f]{4,40}$/;
-
-/**
- * Turn the capture's commit identifier into the full 40-character id a pin requires.
- *
- * **Found by running this end to end, and invisible from the code alone.** Evidence capture
- * records `git rev-parse --short HEAD` (`src/server/diff.ts`), so `headSha` on a real
- * submission is an ABBREVIATION - while `verifyPinnedBase` refuses anything that is not a full
- * 40-hex id, deliberately, because `requireSha` will not hard-reset a worktree onto a name it
- * cannot pin exactly. Wired without this step, every check on every real submission failed as
- * infrastructure before it ever leased a tree: the gate still never ran, which is the headline
- * defect wearing a different hat.
- *
- * Resolved through git rather than by relaxing the pin's rule, and that direction is the point.
- * An abbreviation only names a commit if this repository says which one, and `rev-parse
- * --verify` refuses an ambiguous abbreviation outright - so this narrows to exactly one commit
- * or it fails, and what reaches the pin is still a full id held to its own standard. Relaxing
- * `requireSha` instead would have let an ambiguous prefix decide which commit a build ran
- * against.
- *
- * A full id short-circuits, which is the shape `submission.prHeadSha` already arrives in.
- *
- * ## Why this does not use `rev-parse <prefix>`, which is the obvious way
- *
- * `rev-parse` resolves REVISION EXPRESSIONS, and every extra thing it can resolve is wrong here
- * in the same way: it returns a real commit that is not the one the submission captured, so the
- * check runs against the wrong tree and reports the answer as if it were about this submission.
- * Two distinct hazards, both measured rather than assumed:
- *
- *  - **An expression resolves.** `HEAD~1^{commit}` is a valid argument and answers with whatever
- *    HEAD's parent is *at check time*. So is a branch name, a tag, `@{yesterday}`. Closed by
- *    requiring the input to be a hex object-id prefix before git is asked anything at all.
- *  - **A ref SHADOWS an abbreviated object id.** A branch literally named `04a6ee7` beats the
- *    object whose id starts with `04a6ee7`: git prefers the refname, warns on stderr, and
- *    answers with the branch's commit. Requiring the answer to merely START WITH the prefix is
- *    NOT enough to close this - it only catches the case where the ref points somewhere that
- *    does not share the prefix, and a ref pointing at a *different commit with the same prefix*
- *    would sail through. That was this function's first fix and it was too weak.
- *
- * So refs are taken out of the decision entirely. `rev-parse --disambiguate=<prefix>` enumerates
- * the OBJECT DATABASE by prefix and consults no ref at any point, which is what "proven unique
- * independently of ref resolution" actually requires. Exactly one commit among the candidates is
- * the captured commit; zero is a commit this repository does not have; more than one is an
- * ambiguous abbreviation that nothing here is entitled to guess at.
- *
- * A full id short-circuits, which is the shape `submission.prHeadSha` already arrives in - and
- * it is safe to short-circuit because git ignores a ref that is 40 hex characters long, by
- * construction and by its own warning. That asymmetry is why the two lengths are treated
- * differently, and it is pinned by test.
- *
- * Every refusal here is infrastructure, never a verdict: a commit we cannot identify is a gate
- * we could not run, not a statement about the change under review.
- */
-async function resolveCapturedCommit(repoRoot: string, headSha: string): Promise<string> {
-  if (FULL_SHA.test(headSha)) return headSha;
-  if (!ABBREVIATED_SHA.test(headSha)) {
-    throw new Error(
-      `the captured commit ${JSON.stringify(headSha)} is not a commit id - a check is pinned to `
-        + "the exact commit a submission captured, and a revision expression would resolve to "
-        + "whatever it happens to name when the check runs",
-    );
-  }
-  const listed = await run("git", ["-C", repoRoot, "rev-parse", `--disambiguate=${headSha}`]);
-  const candidates = listed.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => FULL_SHA.test(line));
-  // Which candidates are COMMITS. Asked per full id, which cannot be shadowed by a ref, and
-  // required to answer with the id itself - that keeps commits while dropping blobs, trees, and
-  // an annotated tag that would peel to some other commit.
-  const commits: string[] = [];
-  for (const id of candidates) {
-    const r = await run("git", ["-C", repoRoot, "rev-parse", "--verify", "--quiet", `${id}^{commit}`]);
-    if (r.code === 0 && r.stdout.trim() === id) commits.push(id);
-  }
-  if (commits.length === 1) return commits[0]!;
-  if (commits.length === 0) {
-    throw new Error(
-      `the captured commit ${headSha} names no commit in ${repoRoot}` +
-        (listed.stderr.trim() ? ` - git said: ${listed.stderr.trim()}` : ""),
-    );
-  }
-  throw new Error(
-    `the captured commit ${headSha} is ambiguous in ${repoRoot}: it names ${commits.length} `
-      + `commits (${commits.map((id) => id.slice(0, 12)).join(", ")}), so which one this `
-      + "submission captured cannot be established",
-  );
 }
 
 /**

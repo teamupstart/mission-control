@@ -755,6 +755,10 @@ const ACTION_WAIT_SENTENCES: Record<SessionActionWaitReason, string> = {
   needs_operator: "The session is waiting on an answer from you before it can continue.",
   awaiting_proof: "The turn finished. Waiting for the proof this action requires.",
   capturing: "Capturing fresh evidence before the downstream stages run.",
+  awaiting_pull_request:
+    "The turn finished. Waiting for a pull request on this branch that Mission Control opened.",
+  awaiting_pushed_head:
+    "The pull request is open. Waiting for the reviewed commit to reach it.",
 };
 
 export function actionWaitSentence(reason: SessionActionWaitReason): string {
@@ -784,6 +788,13 @@ const ACTION_WAIT_STATUSES: Record<SessionActionWaitReason, PipelineStatus> = {
   needs_operator: { tone: "waiting", label: "Needs you" },
   awaiting_proof: { tone: "running", label: "Verifying" },
   capturing: { tone: "running", label: "Capturing evidence" },
+  // Both are `awaiting_proof` with the pull request's own vocabulary, and both stay in the
+  // running tone: neither is a gate a human has to clear. The split exists because the two
+  // point at different work - one is "no pull request yet", the other is "the commit has not
+  // reached the pull request" - and a single "Verifying" chip left an operator with no way to
+  // tell a session that never ran the skill from one whose push had not landed.
+  awaiting_pull_request: { tone: "running", label: "Awaiting PR" },
+  awaiting_pushed_head: { tone: "running", label: "Awaiting push" },
 };
 
 /**
@@ -832,6 +843,9 @@ const ACTION_BLOCK_SENTENCES: Record<SessionActionBlockCode, string> = {
   delivery_uncertain: "The write may or may not have landed. Check the pane, then resolve it below.",
   capture_failed: "The turn finished, but fresh evidence could not be captured afterwards.",
   expectation_unmet: "The turn finished without the proof this action's completion requires.",
+  pull_request_closed:
+    "The pull request for this branch is closed or already merged, so this action cannot "
+    + "finish against it.",
 };
 
 export function actionBlockSentence(code: SessionActionBlockCode): string {

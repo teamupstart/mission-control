@@ -976,6 +976,16 @@ export function openDb(): DatabaseSync {
       last_attempt_sha TEXT,             -- the head the backoff was earned on
       merged_at        INTEGER,          -- when YOLO mode landed it; null = we did not
       merge_block      TEXT,             -- why it has not merged itself (see shipping.ts)
+      -- What the LAST poll saw on GitHub, as opposed to what the last completed REVIEW was
+      -- about. head_sha above only advances when a review finishes, so it cannot answer
+      -- "has the branch reached the PR yet" - which is exactly the question a pull_request
+      -- session action has to answer before it lets downstream stages read fresh evidence.
+      -- Written every tick from the snapshot fetchPr already pays for, so this is the
+      -- durable form of a signal that was otherwise transient, not a second poller.
+      observed_head_sha  TEXT,
+      observed_state     TEXT,           -- OPEN | CLOSED | MERGED
+      observed_at        INTEGER,
+      head_ref_name      TEXT,           -- the branch the PR is opened FROM
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -1765,6 +1775,18 @@ function migrate(d: DatabaseSync): void {
   // fail-closed for rows written by older builds: their reviewed head must be run again
   // before it can authorize a merge.
   addColumn(d, "inspector_prs", "review_posture", "TEXT");
+  // What the last poll SAW, as against what the last review was about.
+  //
+  // All four nullable with no default, and NULL reads as "this build has not looked at this
+  // pull request since the columns existed" - which is the only truthful answer for a row
+  // written before them. It is also the fail-closed one for the reader that needs them: a
+  // `pull_request` session action waits when it cannot name the pull request's remote head,
+  // so an unobserved legacy row makes it wait for the next tick rather than completing on
+  // an assumption. The tick fills all four within one poll interval of the daemon starting.
+  addColumn(d, "inspector_prs", "observed_head_sha", "TEXT");
+  addColumn(d, "inspector_prs", "observed_state", "TEXT");
+  addColumn(d, "inspector_prs", "observed_at", "INTEGER");
+  addColumn(d, "inspector_prs", "head_ref_name", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -5212,6 +5234,10 @@ interface InspectorPrRow {
   last_attempt_sha: string | null;
   merged_at: number | null;
   merge_block: string | null;
+  observed_head_sha: string | null;
+  observed_state: string | null;
+  observed_at: number | null;
+  head_ref_name: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -5239,6 +5265,10 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     lastAttemptSha: r.last_attempt_sha,
     mergedAt: r.merged_at,
     mergeBlock: r.merge_block,
+    observedHeadSha: r.observed_head_sha,
+    observedState: (r.observed_state as InspectorPr["observedState"]) ?? null,
+    observedAt: r.observed_at,
+    headRefName: r.head_ref_name,
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -5259,8 +5289,9 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
           head_sha, review_posture, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
-          next_attempt_at, last_attempt_sha, merged_at, merge_block, adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          next_attempt_at, last_attempt_sha, merged_at, merge_block,
+          observed_head_sha, observed_state, observed_at, head_ref_name, adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -5285,6 +5316,10 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.lastAttemptSha,
       pr.mergedAt,
       pr.mergeBlock,
+      pr.observedHeadSha,
+      pr.observedState,
+      pr.observedAt,
+      pr.headRefName,
       pr.adoptedAt,
       pr.updatedAt,
     );
@@ -5317,6 +5352,10 @@ export function updateInspectorPr(
     lastAttemptSha?: string | null;
     mergedAt?: number | null;
     mergeBlock?: string | null;
+    observedHeadSha?: string | null;
+    observedState?: InspectorPr["observedState"];
+    observedAt?: number | null;
+    headRefName?: string | null;
   },
   now: number,
 ): void {
@@ -5329,7 +5368,9 @@ export function updateInspectorPr(
           SET state = ?, head_sha = ?, review_posture = ?, round = ?,
               last_reviewed_at = ?, last_error = ?, fail_count = ?, last_fail_kind = ?,
               next_attempt_at = ?, last_attempt_sha = ?,
-              merged_at = ?, merge_block = ?, updated_at = ?
+              merged_at = ?, merge_block = ?,
+              observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
+              updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -5345,6 +5386,10 @@ export function updateInspectorPr(
       next.lastAttemptSha,
       next.mergedAt,
       next.mergeBlock,
+      next.observedHeadSha,
+      next.observedState,
+      next.observedAt,
+      next.headRefName,
       now,
       key,
     );

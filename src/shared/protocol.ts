@@ -2373,16 +2373,33 @@ export const SessionActionSnapshotSchema = z.object({
   completion: SessionActionCompletionSchema,
 });
 
+/** A git object id, in either width this repository's tooling produces. */
+const CommitOidSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+
 /**
  * What an adapter may require of a continuation capture, as a CLOSED discriminated union.
  *
  * This value is persisted on a waiting attempt and re-validated against a capture that may
  * happen after a daemon restart, so an `unknown` escape hatch would be a durable field
- * nothing can read back safely. Phase 4's PR adapter adds its arm here.
+ * nothing can read back safely.
+ *
+ * The `pull_request` arm replaced a placeholder `head` arm that no adapter ever produced: the
+ * only completion kind that could have written one refused before deciding, because its
+ * capability shipped `available: false`. Nothing stored names it, so the union stays closed
+ * over exactly the two shapes that are written.
  */
 export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("none") }),
-  z.object({ kind: z.literal("head"), headSha: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/) }),
+  z.object({
+    kind: z.literal("pull_request"),
+    pullRequestKey: z.string().min(1).max(400),
+    pullRequestUrl: z.string().min(1).max(2_000),
+    pullRequestNumber: z.number().int().positive(),
+    repositoryRoot: z.string().min(1).max(4_000),
+    branch: z.string().min(1).max(400),
+    expectedHeadOid: CommitOidSchema,
+    observedAt: z.number().int(),
+  }),
 ]);
 
 export const SessionActionDeliveryAnchorSchema = z.object({

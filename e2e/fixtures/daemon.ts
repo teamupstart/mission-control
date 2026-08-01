@@ -26,6 +26,12 @@ export interface DaemonHandle {
   workspace: string;
   /** Absolute path of the seeded git repository a dispatch can branch from. */
   repo: string;
+  /**
+   * Everything the daemon has written to stdout/stderr so far. The daemon's structured
+   * `[workflow]`/`[llm]` lines are the only view of a server-side failure a spec has -
+   * the home dir is deleted on stop, so without this a seeding failure is undebuggable.
+   */
+  readLog(): string;
   stop(): Promise<void>;
 }
 
@@ -256,5 +262,5 @@ export async function startDaemon(): Promise<DaemonHandle> {
     throw new Error(`could not switch claude to the sdk runtime: ${configured.status} ${await configured.text()}`);
   }
 
-  return { baseURL, home, recordDir, workspace, repo, stop };
+  return { baseURL, home, recordDir, workspace, repo, readLog: () => log, stop };
 }

@@ -103,6 +103,19 @@ npm install
 npm run dev        # daemon + Vite, open http://127.0.0.1:5173
 ```
 
+Vite serves within a moment; the daemon takes a few seconds longer, and requests the
+dashboard makes in that window have nowhere to go. That is expected, and it prints one
+line rather than a stack per request:
+
+```
+8:15:10 AM [vite] daemon at http://127.0.0.1:7317 is not answering - proxied requests fail until it is up (further failures are summarized)
+8:15:14 AM [vite] daemon at http://127.0.0.1:7317 is answering again - 17 requests failed while it was down
+```
+
+The same pair appears whenever a server edit restarts the daemon under `tsx watch`. Any
+proxy failure other than a refused connection while the daemon is not listening still prints
+in full.
+
 Discovery works immediately - your live sessions show up with coarse grey
 "running" status. To light up precise **working / idle / needs-input** states
 (blue / green / amber) and the review channel, add the two optional integrations

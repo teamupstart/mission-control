@@ -193,4 +193,134 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
   await dashboard.getByRole("button", { name: "Show full workflow" }).click();
   await expect(dashboard.locator(".wf-ladder-rung.is-fixed")).toBeVisible();
   await shoot(dashboard, "06-board-ladder");
+
+  // 6. The published snapshot, after the live action has moved on AND been retired. This is
+  //    the surface that proves immutability, and it can only be photographed by making the
+  //    catalog disagree with the version first: edit the action, then archive it, then read
+  //    back a version that still holds neither change.
+  await api(daemon, `/api/session-actions/${action.id}`, {
+    expectedRevision: 2,
+    promptMarkdown: "# Tidy the workspace\n\nRewritten AFTER the version was published.\n",
+  }, "PATCH");
+  await api(daemon, `/api/session-actions/${action.id}`, { expectedRevision: 3 }, "DELETE");
+
+  // Back off the Board, so the builder rail is on screen rather than the tile columns.
+  await api(daemon, "/api/ui/config", { layout: "grid" }, "PUT");
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: /Ship it/ }).click();
+  await dashboard.getByRole("button", { name: /Version 1/ }).click();
+  const snapshot = dashboard.locator("details.workflow-version-persona")
+    .filter({ hasText: "Tidy the workspace" });
+  await snapshot.locator("summary").click();
+  // Both indicators at once: the source's text moved on, and the source is gone from the
+  // catalog. Neither reached the version.
+  await expect(snapshot).toContainText("outdated");
+  await expect(snapshot).toContainText("archived source");
+  await expect(snapshot.locator("pre")).toContainText("Remove the stray scratch file and say so.");
+  await snapshot.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "07-published-snapshot-outdated");
+});
+
+/**
+ * A run that actually FINISHED its action, which the capture above cannot be.
+ *
+ * That one binds Preview on purpose, so it parks at `awaiting_send` and holds still long
+ * enough to photograph the wait vocabulary. The price is that it can never show the other
+ * half of the model: a completed turn, the fresh evidence it captured, and the second segment
+ * living inside the same repair round. This is a Live binding, driven to completion.
+ *
+ * Its own test rather than more steps on the one above, because each test gets its own daemon
+ * and this one needs a session that is free to pick an instruction up rather than one already
+ * parked on a Preview packet.
+ */
+test("capture a completed continuation", async ({ dashboard, daemon }) => {
+  test.skip(!process.env.MC_E2E_EVIDENCE, "set MC_E2E_EVIDENCE=1 to regenerate the screenshots");
+  test.setTimeout(180_000);
+
+  // Live delivery is two gates and both are real: the machine-wide switch, and this exact
+  // repository being named.
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true,
+    repoAllowlist: [daemon.repo],
+  }, "PUT");
+
+  const action = await api<{ id: string }>(daemon, "/api/session-actions", {
+    name: "Tidy the workspace",
+    description: "Remove the stray scratch files before review",
+    promptMarkdown: PROMPT,
+    completion: { kind: "session_turn" },
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("hold a session for the continuation");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  // IDLE, not merely alive: evidence capture aborts if the transcript moves under it, and the
+  // dispatch's own seeded turn is still being answered right after the card appears.
+  let sessionId = "";
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
+    const live = sessions.find((session) => session.state !== "exited");
+    sessionId = live?.id ?? "";
+    return live?.state ?? "";
+  }, { timeout: 60_000 }).toBe("idle");
+
+  // A downstream Check, so the frame shows what the continuation is FOR: a stage that runs
+  // against the evidence captured after the action, not the evidence above it.
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "Tidy then check",
+    draft: {
+      nodes: [
+        { id: "s", kind: "session", position: { x: 0, y: 0 } },
+        { id: "a", kind: "session_action", sessionActionId: action.id, position: { x: 240, y: 0 } },
+        { id: "c", kind: "check", slot: "test", position: { x: 480, y: 0 } },
+        { id: "e", kind: "end", outcome: "Approved", position: { x: 720, y: 0 } },
+      ],
+      edges: [
+        { id: "e1", source: "s", sourcePort: "submitted", target: "a", targetPort: "activate" },
+        { id: "e2", source: "a", sourcePort: "complete", target: "c", targetPort: "activate" },
+        { id: "e3", source: "c", sourcePort: "pass", target: "e", targetPort: "terminal" },
+        { id: "e4", source: "c", sourcePort: "fail", target: "s", targetPort: "return_for_changes" },
+      ],
+    },
+  });
+  const version = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: version.version.id,
+    sessionId,
+    deliveryMode: "live",
+  });
+  const run = await api<{ run: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${binding.id}/submit`,
+    { requestId: "evidence-continuation" },
+  );
+
+  // Polled on the action attempt CLOSING rather than on the child row appearing: the
+  // continuation reserves its segment before it captures, so a poll on `submissions.length`
+  // wins the moment the row is reserved and photographs the run mid-capture.
+  await expect.poll(async () => {
+    const detail = await api<{ attempts: Array<{ nodeId: string; state: string }> }>(
+      daemon,
+      `/api/workflow-runs/${run.run.id}`,
+    );
+    return detail.attempts.find((attempt) => attempt.nodeId === "a")?.state;
+  }, { timeout: 90_000 }).toBe("completed");
+
+  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${run.run.id}`);
+  // Two entries under ONE repair round, and the sentence saying the second cost no round.
+  await expect(dashboard.getByRole("group", { name: "Select a round" }).locator(".wf-run-round-name"))
+    .toHaveText(["Round 1 · evidence 1", "Round 1 · evidence 2"]);
+  await expect(dashboard.locator(".wf-run-notice"))
+    .toContainText("does not spend a repair round");
+  await shoot(dashboard, "08-completed-continuation");
 });

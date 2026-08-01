@@ -4864,9 +4864,10 @@ npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow
 npm run build          # build web + MCP bundle
 npm test               # full test suite, including real Electron GUI geometry checks
 npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
+npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
 npm run smoke          # boot the built bundles and check they actually run (after build)
 npm run typecheck      # tsc --noEmit
-npm run lint           # oxlint over src, hooks, test, scripts (also: make lint)
+npm run lint           # oxlint over src, hooks, test, scripts, e2e (also: make lint)
 npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (terminal model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
@@ -4875,6 +4876,13 @@ npm run personas       # recompile the built-in Personas from docs/personas/*.md
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```
+
+`npm run test:e2e` is the browser layer: it boots the built daemon against a throwaway state
+dir, loads the built dashboard in Chromium, and drives real flows - dispatching an agent,
+typing into a conversation - end to end. It spends no model tokens, because every agent
+binary is redirected at a local fake through the `MISSION_*_BIN` chain that the daemon
+already resolves for operators. See [e2e/README.md](e2e/README.md) for the isolation
+contract and for what to do (and not do) when adding a spec.
 
 `measure-inspector-prompt` prints the review prompt's byte size for the current source and
 for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in

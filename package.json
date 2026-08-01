@@ -32,9 +32,10 @@
     "start": "tsx src/server/index.ts",
     "foreman": "tsx src/server/foreman/worker.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint src hooks test scripts",
+    "lint": "oxlint src hooks test scripts e2e",
     "test": "node --test --test-concurrency=2 --import tsx 'test/**/*.test.ts'",
     "test:electron": "node --test --import tsx 'test/*-electron.test.ts'",
+    "test:e2e": "playwright test --config e2e/playwright.config.ts",
     "init": "node scripts/init.mjs",
     "personas": "tsx scripts/builtin-personas.ts",
     "session": "node scripts/new-session.mjs",
@@ -66,6 +67,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

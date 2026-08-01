@@ -6,7 +6,7 @@ import { hasPane } from "../foreman/queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
 import { injectPrompt } from "../actions.ts";
 import type { InjectResult } from "../actions.ts";
-import { POLL_INTERVAL_MS, envVar } from "../config.ts";
+import { pollIntervalMs, envVar } from "../config.ts";
 import { getSkillsAcks, setSkillsAck } from "../db.ts";
 import { readPaneModeLine } from "../discovery/pane-mode.ts";
 import { recordInjection } from "../injections.ts";
@@ -318,6 +318,12 @@ export function startSkillsReloader(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  // Shares the passive-polling switch with discovery: this sweep only ever has work to do
+  // for sessions discovery found, so leaving it running with discovery off would be a timer
+  // walking an empty list forever.
+  const interval = pollIntervalMs();
+  if (interval === null) return () => {};
+
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
@@ -347,7 +353,7 @@ export function startSkillsReloader(registry: Registry): () => void {
       console.error("[skills] reload sweep failed:", err);
     }
     if (stopped) return;
-    timer = unref(setTimeout(tick, POLL_INTERVAL_MS));
+    timer = unref(setTimeout(tick, interval));
   };
 
   void tick();

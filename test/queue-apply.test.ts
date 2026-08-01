@@ -802,7 +802,23 @@ test("ask-wrapup stamps the ask and types nothing", async () => {
 
 async function autoWrapup(fake: Fake, payload = "/no-mistakes") {
   const queue = await fake.queue("s1");
-  return applyQueueAction(fake, mkSession(), { kind: "auto-wrapup", queue: queue!, payload }, CFG, NOW);
+  return applyQueueAction(
+    fake,
+    mkSession(),
+    {
+      kind: "auto-wrapup",
+      queue: queue!,
+      payload,
+      intentGuard: {
+        objective: "Ship the feature",
+        objectiveVersion: 1,
+        promptRevision: 1,
+        episodeKey: "intent:1:1",
+      },
+    },
+    CFG,
+    NOW,
+  );
 }
 
 test("auto-wrapup retires the drain BEFORE typing, then records what it sent", async () => {

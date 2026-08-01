@@ -172,7 +172,7 @@ function readSpendOutbox(path: string): StoredSpendOutbox | null {
   }
   const parsed: unknown = JSON.parse(raw);
   if (Array.isArray(parsed)) {
-    return { ownerPid: null, entries: parsed.filter(looksLikeSpendReport), legacy: true };
+    return { ownerPid: null, entries: everyEntryOrThrow(parsed), legacy: true };
   }
   if (!parsed || typeof parsed !== "object") throw new Error("spend outbox is not an object");
   const stored = parsed as Record<string, unknown>;
@@ -182,9 +182,36 @@ function readSpendOutbox(path: string): StoredSpendOutbox | null {
   if (!Array.isArray(stored.entries)) throw new Error("spend outbox entries are not an array");
   return {
     ownerPid: stored.ownerPid as number,
-    entries: stored.entries.filter(looksLikeSpendReport),
+    entries: everyEntryOrThrow(stored.entries),
     legacy: false,
   };
+}
+
+/**
+ * All the entries, or none of them.
+ *
+ * This used to `filter` - which silently discarded anything that did not match the shape,
+ * and was the most dangerous line in the file, because adoption then persisted the
+ * survivors and DELETED the source. One malformed entry from a partial hand edit, a schema
+ * change, or corruption that leaves the JSON syntactically valid, and that run was gone
+ * with nothing to recover it from.
+ *
+ * Throwing instead routes the whole file into the existing "leave an unreadable spool
+ * untouched" path: nothing is adopted, nothing is deleted, the warning fires once, and a
+ * human still has every byte. That does mean the file's VALID entries wait too, which is
+ * the right trade - undelivered is recoverable, discarded is not - and the alternative
+ * (adopt the good ones but keep the file) would re-adopt and re-deliver them on every sweep
+ * forever, which is the replay loop this code has already been bitten by once.
+ */
+function everyEntryOrThrow(entries: unknown[]): SpendReportBody[] {
+  const out: SpendReportBody[] = [];
+  for (const entry of entries) {
+    if (!looksLikeSpendReport(entry)) {
+      throw new Error("spend outbox holds an entry that is not a spend report");
+    }
+    out.push(entry);
+  }
+  return out;
 }
 
 function spendOutboxOwnerLiveness(pid: number): "alive" | "dead" | "unknown" {
@@ -215,17 +242,66 @@ function persistSpendOutbox(): boolean {
   try {
     if (spendOutbox.length === 0) {
       rmSync(path, { force: true });
-      return true;
+      return noteSpoolDurability(true);
     }
     mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify({ ownerPid: process.pid, entries: spendOutbox }), "utf8");
     renameSync(tmp, path);
-    return true;
+    return noteSpoolDurability(true);
   } catch (err) {
     console.warn("[foreman] could not persist the spend outbox:", err);
-    return false;
+    return noteSpoolDurability(false);
   }
+}
+
+/**
+ * Track whether the queue is actually on disk, and say so when it stops being.
+ *
+ * A failed write used to be logged and shrugged off, which quietly downgraded the whole
+ * feature: with an unwritable state directory the queue is just an in-memory list again, and
+ * if the daemon is also unreachable, a crash loses runs that were already paid for. That is
+ * the exact failure the spool exists to prevent, so it must not be a silent state.
+ *
+ * `error` rather than `warn` on the way down, because it is a durability guarantee going
+ * away rather than a routine retry, and once rather than per report so a full disk does not
+ * bury the message it needs to deliver. The recovery line matters just as much: an operator
+ * who saw the first message needs to know the window closed.
+ */
+let spoolUndurableSince = 0;
+function noteSpoolDurability(ok: boolean): boolean {
+  if (ok) {
+    if (spoolUndurableSince) {
+      console.warn(
+        `[foreman] the spend outbox is writable again after ` +
+          `${Math.round((Date.now() - spoolUndurableSince) / 1000)}s; queued reports are durable`,
+      );
+      spoolUndurableSince = 0;
+    }
+    return true;
+  }
+  if (!spoolUndurableSince) {
+    spoolUndurableSince = Date.now();
+    console.error(
+      "[foreman] the spend outbox could NOT be written, so queued reports are held only in " +
+        "memory and a crash would lose them. Every delivery attempt retries the write.",
+    );
+  }
+  return false;
+}
+
+/**
+ * Re-attempt a spool write that previously failed, before relying on the queue in memory.
+ *
+ * Called at the top of every drain, which is the one place guaranteed to run again while
+ * anything is pending: a delivery failure arms the retry timer, so as long as reports are
+ * undelivered this keeps trying to make them durable. Nothing else would - `enqueueSpend`
+ * fires once per run, and the disk being full at that moment says nothing about a minute
+ * later.
+ */
+function retrySpoolPersistIfNeeded(): void {
+  if (!spoolUndurableSince || spendOutbox.length === 0) return;
+  persistSpendOutbox();
 }
 
 /**
@@ -647,6 +723,10 @@ async function flushSpend(): Promise<void> {
     // peer's reports should ride along rather than waiting for someone to restart. Throttled
     // internally, so a busy drain does not re-scan the directory per report.
     adoptOrphanSpools();
+    // And make the queue durable again if a previous write failed. This runs before any
+    // delivery because the in-memory queue is the thing at risk: while the spool is
+    // unwritable, a crash here loses runs that have already been paid for.
+    retrySpoolPersistIfNeeded();
     while (spendOutbox.length > 0) {
       const report = spendOutbox[0]!;
       let res: Response;

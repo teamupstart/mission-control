@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -282,6 +283,33 @@ test("an unreadable or ownerless spool is left untouched", () => {
   assert.equal(loadSpendOutbox(), 0);
   assert.equal(existsSync(invalid), true);
   rmSync(invalid);
+});
+
+test("one malformed entry does not cost the whole spool its valid ones", () => {
+  // The file parses as JSON and names a dead owner, so it looks adoptable - but one entry is
+  // not a spend report. Filtering it away and then deleting the source, which is what this
+  // used to do, discarded an already-paid-for run with nothing left to recover it from. A
+  // partial hand edit or a schema change is enough to produce this.
+  const path = orphanPath("partly-malformed");
+  writeFileSync(
+    path,
+    storedSpool(DEAD_OWNER_PID, [
+      report("foreman:review", "run-valid-neighbour"),
+      { role: "foreman:review", runner: "codex", runId: "run-half-written" }, // no ts, no models
+    ]),
+    "utf8",
+  );
+
+  const queuedBefore = pendingSpendReports();
+  assert.equal(loadSpendOutbox(), queuedBefore, "nothing was adopted from it");
+  assert.equal(existsSync(path), true, "and the file is still there, in full");
+  const stored = JSON.parse(readFileSync(path, "utf8")) as { entries: Array<{ runId: string }> };
+  assert.deepEqual(
+    stored.entries.map((e) => e.runId),
+    ["run-valid-neighbour", "run-half-written"],
+    "both the valid and the malformed entry survive for a human to sort out",
+  );
+  rmSync(path, { force: true });
 });
 
 test("a live owner's spool is not adopted or changed", () => {
@@ -626,6 +654,39 @@ test("an acknowledged report is removed by identity, not by position", async () 
   );
   assert.equal(existsSync(SPOOL), false, "nothing is left queued");
   rmSync(orphanPath("dead-peer-older"), { force: true });
+});
+
+test("an unwritable spool is retried, not silently downgraded to memory", async () => {
+  // With the state directory unwritable AND the daemon unreachable, the queue is just an
+  // in-memory list again - a crash there loses a run that has already been paid for. So a
+  // failed write must not be shrugged off: every later drain re-attempts it, which is the
+  // only thing that closes the window without waiting for a restart.
+  assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
+  await stop();
+  rmSync(SPOOL, { force: true });
+  // A directory where the spool file belongs: the tmp write succeeds, the rename onto it
+  // fails, standing in for a full disk or an unwritable state directory.
+  mkdirSync(SPOOL, { recursive: true });
+
+  await client.reportSpend(report("foreman:review", "run-undurable"));
+  assert.equal(pendingSpendReports(), 1, "the report is queued");
+  assert.equal(statSync(SPOOL).isDirectory(), true, "and it is genuinely not on disk yet");
+
+  // The disk recovers. No new report arrives and no restart happens - the next drain is the
+  // only chance to become durable, and it has to take it.
+  rmSync(SPOOL, { recursive: true, force: true });
+  await flushPendingSpend();
+  assert.equal(
+    statSync(SPOOL).isFile(),
+    true,
+    "the retry wrote the spool without needing another report or a restart",
+  );
+  assert.deepEqual(spoolRunIds(SPOOL), ["run-undurable"]);
+
+  await start();
+  await flushPendingSpend();
+  assert.equal((received.at(-1) as { runId: string }).runId, "run-undurable");
+  assert.equal(pendingSpendReports(), 0);
 });
 
 test("a rate limit is waited out, not filed away as a bad report", async () => {

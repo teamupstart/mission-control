@@ -2496,11 +2496,10 @@ export function buildApp(
     return c.json(queues.get(session.id));
   });
 
-  // The full goal record, including the verbatim prompt the refiner derived from.
+  // The full intent record, including its durable objective and latest human prompt.
   // Loopback-only like the rest of the worker's surface: `SessionGoal.prompt` is
   // deliberately never denormalized onto a card (it can be 4KB of someone's paste),
-  // so this is the only way the out-of-process worker can read the ask it needs to
-  // verify work against.
+  // so this is how the worker and intent drawer inspect the full completion contract.
   app.get("/api/sessions/:id/goal", (c) => {
     const goal = registry.getGoal(c.req.param("id"));
     if (!goal) return c.json({ error: "no goal for this session" }, 404);

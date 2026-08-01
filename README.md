@@ -904,24 +904,40 @@ backed by days of data rather than one sample.
 
 ### Goal
 
-Every card carries a one-sentence **Goal**: what that session is currently trying to
-solve. It sits under the title, on the collapsed card - you should never have to click
-to remember what a session is for.
+Every instrumented card with a captured prompt carries a one-sentence **Goal** under its
+title, visible even while the card is collapsed. The Goal is the session's durable completion
+objective, not a copy of the newest prompt or the step the agent happens to be working on.
 
-It lands in two tiers, both in the daemon:
+The first substantive instruction establishes an immediate provisional objective with no
+model call. Every substantive instruction, including that first one, enters a durable queue;
+later instructions also update the tactical focus immediately. The daemon then reconciles the
+queue in capture order, one instruction at a time, using the prompt and a small conversation
+window. Rapid prompts are never coalesced, so an objective change cannot disappear behind later
+steering.
 
-1. **Instantly, with no model.** The `UserPromptSubmit` hook already carries your prompt,
-   so the moment you send one the card shows your own words, shortened to a line. Free,
-   and the card is never blank waiting on anything.
-2. **Refined, a few seconds later.** One headless model call rewrites it into one
-   sentence, reading your prompt plus a small window of the conversation. Which provider
-   and which model is **Settings → [Models](#models-what-the-apps-own-model-work-runs-on)**;
-   out of the box that is the **local `claude` CLI, not the Anthropic API** - there's no
-   API key, and it bills through whatever your CLI is logged in as.
+Each reconciliation records one of five relationships:
 
-The goal refreshes as you steer the session, at most once a minute per session. If the
-provider is missing, logged out, or slow, the card quietly keeps your own words - nothing
-breaks, you just get a rougher sentence.
+- **initial** establishes the first objective;
+- **steer** changes the method, priority, sequence, or next step without shrinking the
+  objective;
+- **amend** extends the existing completion contract;
+- **replace** supersedes the old outcome; and
+- **unclear** keeps the existing objective while completion remains ambiguous.
+
+No command or special vocabulary is required. The model infers the relationship from the
+instruction and conversation. An amendment is accepted only when its proposed contract
+explicitly retains the existing objective as its prefix; a narrower amendment stays
+unresolved. An effective amendment or replacement updates the Goal and advances its objective
+version, while steering changes only the latest focus.
+
+The reconciliation call is rate-limited to at most once a minute per session. Its provider
+and model are selected in **Settings → [Models](#models-what-the-apps-own-model-work-runs-on)**;
+out of the box it uses the **local `claude` CLI, not the Anthropic API**, with no API key in
+Mission Control. If the provider is missing, logged out, slow, or returns an unsafe amendment,
+the last durable objective stays visible and the unresolved instruction remains ahead of later
+ones. Prompted automatic wrap-up stays paused until every instruction has a resolved,
+unambiguous relationship. The same fail-closed rule covers migrated state whose missing prompt
+text cannot be recovered.
 
 What it deliberately isn't:
 
@@ -2906,7 +2922,7 @@ drawers.
 ## Models (what the app's own model work runs on)
 
 Mission Control does a little model work of its own - naming an untitled
-[dispatch](#dispatch-an-agent), rewriting a prompt into the [Goal](#goal) on a card, narrating the
+[dispatch](#dispatch-an-agent), reconciling prompts with the [Goal](#goal) on a card, narrating the
 [away digest](#away-mode), compacting Workflow evidence, and evaluating Ensemble submissions. None
 of it is the agent in a card, and none of it should have to be: **Settings → Models** is where you
 say which provider does that work and which model each job uses.
@@ -2925,7 +2941,7 @@ model boxes below it, because a `claude` model id is not something `codex` can r
 | Job | Default | Env | What it does |
 |---|---|---|---|
 | Task title | `claude-haiku-4-5` | `MISSION_TASK_TITLE_MODEL` | Names a dispatched task whose Title was left blank, for the card and the branch |
-| Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Rewrites each session's raw prompt into the sentence its card shows |
+| Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Reconciles each instruction with the durable objective and derives the card sentence and tactical focus |
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
 | Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence without replacing its preserved raw goal, decisions, and rationale |
 | Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, mines a Consensus run's divergences, or scores one Panel-vote ballot per judge, all tool-less. A judging Persona's own model wins over this |
@@ -3043,6 +3059,9 @@ session carries a `✓ Foreman answered: …` audit line. An escalation also fir
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
 
+Foreman's completion checks use the card's [durable Goal](#goal), while its latest tactical
+focus remains separate.
+
 In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
 arranged differently, because a permanent conversation gives it somewhere better to sit:
 Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
@@ -3068,6 +3087,12 @@ exists, per the transcript gap above. The **Foreman · N** rail at the end of th
 row opens that history: rows lead with the *ask* rather than the verdict, and opening one
 shows the ask verbatim beside Foreman's reasoning and the resolution, credited to whoever
 actually made the call. Records age out after a retention window.
+
+That drawer also starts with **Current intent**, even when Foreman has made no decisions yet.
+It shows the completion objective and version, the latest tactical focus, the latest
+relationship or reconciliation state, and Foreman's rationale. This is the inspectable source
+for what Foreman currently believes the session is trying to finish; the rows below it remain
+the decision history.
 
 Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
 process acquires no **lease** and idles as a standby, taking over automatically if the
@@ -3327,10 +3352,11 @@ allowlisted.
 
 The prompted trigger doesn't fire on idleness alone, because idle isn't finished. It runs
 the same verifier queued items get - a fresh tool-less `claude -p` reading the branch diff
-against your captured prompt - and acts only on a **complete** verdict; an empty diff
+against the reconciled durable objective - and acts only on a **complete** verdict; an empty diff
 decides itself without a model call. A session that still needs you is left alone, and a
 checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
-per prompt: a new prompt from you re-arms it, and so does a confirmed workflow repair packet -
+per resolved instruction: a new prompt from you re-arms it after intent reconciliation, and
+so does a confirmed workflow repair packet -
 which is what lets [the repair loop](#the-repair-loop-end-to-end) run for a session that has no
 queue to drain. An incomplete verdict retires the episode rather than sending the agent back -
 Foreman didn't commission that work. Untick both triggers and Foreman never wraps up on its own.
@@ -4803,7 +4829,7 @@ into.
 | `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
 | `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
 | `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step, the PR follow-up, and the backlog autopilot's "is this agent free?" test |
-| `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence. **Settings → Models → Goal** wins where it is set, then this, then the shipped default |
+| `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that reconciles each instruction with the durable objective. **Settings → Models → Goal** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |
 | `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative. **Settings → Models → Away digest** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |

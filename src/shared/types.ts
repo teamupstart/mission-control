@@ -688,13 +688,17 @@ export type NoteDisposition = "answered" | "pending" | "escalated" | "skipped";
  *  - heuristic: the human's own filtered prompt, written instantly by the daemon on
  *    `UserPromptSubmit`. Free, always available, but reads like a prompt rather than a
  *    summary - and says nothing at all for a session driven by a slash command.
- *  - model: a `claude -p` pass rewrote it into one sentence.
+ *  - model: a headless model pass reconciled an instruction with the durable objective
+ *    and derived the compact card sentence.
  *
- * Stored rather than inferred because the refiner needs to know what it is upgrading, and
- * because "this is still the raw prompt" is a real distinction when a refinement silently
- * fails (see the Q3 fallback: a failed refine leaves the heuristic goal standing).
+ * Stored rather than inferred because legacy rows use it to distinguish an already-refined
+ * prompt, and because "this is still the initial raw prompt" remains visible while its first
+ * reconciliation is pending.
  */
 export type GoalSource = "heuristic" | "model";
+
+/** How the latest human instruction relates to the session's durable objective. */
+export type IntentRelationship = "initial" | "steer" | "amend" | "replace" | "unclear";
 
 /**
  * The durable Foreman record for one session, keyed on `agentSessionId` when
@@ -843,8 +847,9 @@ export interface PaneDialogSummary {
 }
 
 /**
- * A session's Goal: one sentence saying what it is currently attempting to solve, written
- * by the DAEMON on every instrumented Claude session whether or not Foreman ever runs.
+ * A session's durable objective, compact card sentence, and ordered intent-reconciliation
+ * state, written by the daemon for every harness that reports substantive human prompts.
+ * Foreman may never run, but the daemon still owns and persists this record.
  *
  * Keyed on the same `noteKeyFor` as SessionNote - so it survives a daemon restart and
  * orphans on a `/clear` exactly as a note does - but stored in its own row, NOT as columns
@@ -858,11 +863,13 @@ export interface PaneDialogSummary {
  */
 export interface SessionGoal {
   noteKey: string;
-  /** The sentence itself. Null while only the raw prompt has been captured. */
+  /** The compact form of the durable objective shown on session cards. */
   text: string | null;
   source: GoalSource | null;
+  /** The completion contract Foreman verifies before it offers or performs wrap-up. */
+  objective: string | null;
   /**
-   * The filtered prompt `text` was derived from.
+   * The latest filtered human prompt awaiting or represented by `relationship`.
    *
    * Persisted rather than re-read because the refiner runs debounced, well after the hook
    * that captured it: without this it would have to race the transcript for text it was
@@ -870,7 +877,44 @@ export interface SessionGoal {
    * a pasted log can't put a megabyte in a row. Server-side only - never shipped to a card.
    */
   prompt: string | null;
+  /** Compact rendering of `prompt`, kept separate from the durable objective. */
+  focus: string | null;
+  /**
+   * The most recently reconciled relationship. A revision gap, rather than this field alone,
+   * says whether a newer instruction is still pending.
+   */
+  relationship: IntentRelationship | null;
+  /** Short explanation of the relationship, shown in the Foreman drawer. */
+  rationale: string | null;
+  /** Starts at one and advances when an amendment or replacement changes the objective. */
+  objectiveVersion: number;
+  /** Increments for every substantive human prompt. */
+  promptRevision: number;
+  /** The newest prompt revision the intent reconciler has classified. */
+  resolvedPromptRevision: number;
+  /**
+   * Every captured instruction not yet incorporated into the effective objective, oldest
+   * first. This is durable so a rapid amendment followed by tactical steering cannot collapse
+   * into the steering prompt across a debounce window or daemon restart.
+   *
+   * Server-side reconciliation state. It is returned only by the loopback full-goal endpoint,
+   * never denormalized onto session cards.
+   */
+  pendingPrompts: GoalPromptRevision[];
   updatedAt: number;
+}
+
+export interface SessionIntentGuard {
+  objective: string;
+  objectiveVersion: number;
+  promptRevision: number;
+  episodeKey: string;
+}
+
+export interface GoalPromptRevision {
+  revision: number;
+  /** Null only for a legacy unresolved revision whose text was already lost before migration. */
+  prompt: string | null;
 }
 
 // ---- Foreman session work queues ----
@@ -1002,14 +1046,12 @@ export interface SessionQueue {
   wrapupAskedAt: number | null;
   wrapupAnswer: string | null;
   /**
-   * The session goal the `prompted` wrap-up trigger last fired on, or null if it never
-   * has. The trigger's once-per-episode guard: it fires only when the CURRENT goal
-   * differs from this, so a new human prompt re-arms it and an idle session that has
-   * already been wrapped up stays quiet.
+   * The resolved intent episode the `prompted` wrap-up trigger last handled, or null if
+   * it never has. Encoded as `intent:<objectiveVersion>:<promptRevision>`, so a newly
+   * reconciled human instruction re-arms it and an unchanged idle session stays quiet.
    *
-   * Stored as the goal text verbatim rather than a hash - it is capped at 4000 chars
-   * upstream (`clampPrompt`), so there is nothing to gain by hashing and a collision
-   * here would silently skip a wrap-up nobody could then explain.
+   * The historical field name is persisted and must not be renamed casually; its value
+   * is now an opaque episode key rather than goal text.
    *
    * Deliberately separate from `wrapupAskedAt`, which stays the DRAIN trigger's guard.
    * One field for both would mean a prompted wrap-up consumed the drain ask (or the
@@ -1089,10 +1131,16 @@ export interface OrphanedQueueHint {
  * render nothing.
  */
 export interface SessionGoalSummary {
-  /** The sentence shown under the card title. */
+  /** The current resolved objective shown under the card title. */
   text: string | null;
-  /** Lets the card tell a raw prompt from a refined sentence. */
+  /** Lets the card tell an initial raw objective from a refined one. */
   source: GoalSource | null;
+  /** The current tactical focus, bounded to the same one-line size as the objective. */
+  focus?: string | null;
+  relationship?: IntentRelationship | null;
+  objectiveVersion?: number;
+  promptRevision?: number;
+  resolvedPromptRevision?: number;
   updatedAt: number;
 }
 

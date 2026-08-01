@@ -892,15 +892,20 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
     );
   }
   if (!session.goal?.text) return null;
+  const resolving =
+    (session.goal.resolvedPromptRevision ?? 0) < (session.goal.promptRevision ?? 0);
+  const unclear = session.goal.relationship === "unclear";
+  const stateClass = resolving ? "resolving" : unclear ? "unclear" : session.goal.source ?? "heuristic";
+  const detail = resolving
+    ? `${session.goal.text} (reconciling the latest instruction with this objective)`
+    : unclear
+      ? `${session.goal.text} (latest instruction may change this objective; automatic wrap-up is paused)`
+      : session.goal.source === "heuristic"
+        ? `${session.goal.text} (initial objective, being refined)`
+        : session.goal.text;
   return (
-    <Tooltip
-      label={
-        session.goal.source === "heuristic"
-          ? `${session.goal.text} (your prompt, verbatim - being summarised)`
-          : session.goal.text
-      }
-    >
-      <p className={`goal goal-${session.goal.source ?? "heuristic"}`}>{session.goal.text}</p>
+    <Tooltip label={detail}>
+      <p className={`goal goal-${stateClass}`}>{session.goal.text}</p>
     </Tooltip>
   );
 }

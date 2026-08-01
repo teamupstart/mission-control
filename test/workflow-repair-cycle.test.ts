@@ -425,13 +425,26 @@ test("an item-less session repairs itself through the prompted episode", async (
     h.registry.upsertGoal(h.sessionId, {
       prompt: goal,
       text: goal,
+      objective: goal,
+      focus: goal,
+      relationship: "initial",
+      rationale: "Initial objective",
+      objectiveVersion: 1,
+      promptRevision: 1,
+      resolvedPromptRevision: 1,
+      pendingPrompts: [],
       source: "heuristic",
     }, 5);
     h.head.sha = "head-2";
 
     const claim = promptedCompletionClaim({
       noteKey: h.noteKey,
-      goal,
+      intent: {
+        objective: goal,
+        objectiveVersion: 1,
+        promptRevision: 1,
+        episodeKey: "intent:1:1",
+      },
       headSha: h.head.sha,
       transcriptAnchor: 100,
       summary: "complete",

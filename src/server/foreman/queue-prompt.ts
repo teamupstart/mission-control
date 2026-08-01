@@ -26,6 +26,8 @@ export interface VerifyInput {
   session: { name: string; cwd: string | null; gitBranch: string | null };
   /** What the human asked for - the axis that actually decides completion. */
   intent: string;
+  /** Latest tactical instruction for prompted work. It never replaces `intent`. */
+  focus?: string | null;
   round: number;
   /** Unified diff for this item (scoped by the base sha recorded at delivery). */
   diff: string;
@@ -75,6 +77,11 @@ Respond with ONLY a single JSON object - no prose, no markdown fences - of this 
 
 THE PRIMARY AXIS IS INTENT-SATISFACTION. Ask: if the human read this diff, would they say "yes, that
 is what I asked for, and it is finished"? Everything else is secondary.
+
+When a latest tactical focus is shown, it is a steering instruction inside the durable objective.
+It must be respected, but completing that smaller instruction alone does NOT make the objective
+complete. If the transcript reveals that the human materially replaced or amended the objective
+after the stored contract, return complete=false rather than shipping against stale intent.
 
 SEVERITY - this is the most consequential field you set, so read it carefully:
 - "blocking" means the work is genuinely NOT DONE and the agent must go back: the intent isn't
@@ -145,6 +152,14 @@ export function buildVerifyPrompt(input: VerifyInput): string {
     fromChild(input.intent.trim()),
     "",
   ];
+
+  if (input.focus?.trim()) {
+    lines.push(
+      "## Latest tactical focus (must be respected; NOT sufficient for completion)",
+      fromChild(input.focus.trim()),
+      "",
+    );
+  }
 
   if (input.round > 0) {
     lines.push(

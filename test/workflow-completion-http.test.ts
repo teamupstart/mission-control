@@ -4,6 +4,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { SessionIntentGuard } from "../src/shared/types.ts";
+
+const PROMPTED_INTENT: SessionIntentGuard = {
+  objective: "Finish the prompted workflow",
+  objectiveVersion: 1,
+  promptRevision: 1,
+  episodeKey: "intent:1:1",
+};
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-completion-http-"));
 process.env.MISSION_HOME = home;
@@ -53,8 +61,8 @@ function request(
   sessionId: string,
   marker: string,
   completionKind: "drain" | "prompted" = "drain",
-  expectedGoal: string | null = completionKind === "prompted"
-    ? "Finish the prompted workflow"
+  expectedIntent: SessionIntentGuard | null = completionKind === "prompted"
+    ? PROMPTED_INTENT
     : null,
   fallbackWorkflow: "no-mistakes" | null = null,
 ) {
@@ -66,7 +74,7 @@ function request(
       marker,
       summary: "Foreman proved the queue complete.",
       evidenceFingerprint: "evidence",
-      expectedGoal,
+      expectedIntent,
       fallbackWorkflow,
     }),
   });
@@ -246,6 +254,14 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   registry.upsertGoal("prompted", {
     prompt: "Finish the prompted workflow",
     text: "Finish the prompted workflow",
+    objective: "Finish the prompted workflow",
+    focus: "Finish the prompted workflow",
+    relationship: "initial",
+    rationale: "Initial objective",
+    objectiveVersion: 1,
+    promptRevision: 1,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
     source: "heuristic",
   }, 5);
   const db = openDb();
@@ -267,7 +283,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   db.prepare(
     `INSERT INTO foreman_queues (
        note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
-     ) VALUES ('prompted', '/repo', 'feature', NULL, NULL, 'Finish the prompted workflow', 10)`,
+     ) VALUES ('prompted', '/repo', 'feature', NULL, NULL, 'intent:1:1', 10)`,
   ).run();
   db.prepare(
     `INSERT INTO foreman_queues (
@@ -507,9 +523,18 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     "prompted",
     "d".repeat(64),
     "prompted",
-    "The prompt the verifier actually judged",
+    { ...PROMPTED_INTENT, objective: "The prompt the verifier actually judged" },
   );
   assert.equal(stalePrompted.status, 409);
+  assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
+  const staleRevision = await request(
+    app,
+    "prompted",
+    "c".repeat(64),
+    "prompted",
+    { ...PROMPTED_INTENT, promptRevision: 2, episodeKey: "intent:1:2" },
+  );
+  assert.equal(staleRevision.status, 409);
   assert.equal(workflows.store.latestRunForBinding(promptedBinding.id), null);
   const stalePromptedGuard = db.prepare(
     `SELECT prompted_goal FROM foreman_queues WHERE note_key = 'prompted'`,
@@ -524,7 +549,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   const promptedGuard = db.prepare(
     `SELECT prompted_goal FROM foreman_queues WHERE note_key = 'prompted'`,
   ).get() as { prompted_goal: string | null };
-  assert.equal(promptedGuard.prompted_goal, "Finish the prompted workflow");
+  assert.equal(promptedGuard.prompted_goal, "intent:1:1");
 
   const first = await request(app, "claimed", "2".repeat(64));
   assert.equal(first.status, 200);

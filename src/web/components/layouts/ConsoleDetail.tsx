@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ForemanEpisode, Session } from "@shared/types.ts";
+import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -77,6 +77,44 @@ function useEpisodes(sessionId: string, noteStamp: number): ForemanEpisode[] {
 }
 
 /**
+ * SSE-visible goal fields that move when a prompt is captured and again when its
+ * reconciliation becomes the effective completion contract.
+ */
+export function intentRefreshStamp(goal: Session["goal"]): string {
+  return [
+    goal?.promptRevision ?? 0,
+    goal?.resolvedPromptRevision ?? 0,
+    goal?.objectiveVersion ?? 0,
+  ].join(":");
+}
+
+/** Load the full completion contract only for the drawer that can render it. */
+function useIntent(
+  sessionId: string,
+  refreshStamp: string,
+  open: boolean,
+): SessionGoal | null {
+  const [intent, setIntent] = useState<SessionGoal | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    setIntent(null);
+    void api
+      .goal(sessionId)
+      .then((goal) => {
+        if (live) setIntent(goal);
+      })
+      .catch(() => {
+        if (live) setIntent(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [sessionId, refreshStamp, open]);
+  return intent;
+}
+
+/**
  * The console's detail pane: a bespoke, tabbed reading of ONE session - not the grid's
  * card dropped into a column.
  *
@@ -119,6 +157,7 @@ export function ConsoleDetail({
   const filesRef = useRef<FileWorkspaceHandle>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
+  const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   // Set when the send shortcut arrives on another tab: the reply box exists, it's just
   // not mounted yet, so the focus has to wait for the conversation to come back.
   const focusPending = useRef(false);
@@ -315,6 +354,7 @@ export function ConsoleDetail({
 
       <ForemanDrawer
         episodes={episodes}
+        intent={intent}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
@@ -349,17 +389,17 @@ export function ConsoleDetail({
         {/* In the tab row but NOT a tab - no `role="tab"`, and pushed to the far end
             past a flexible gap. Work queue, Gate and Diff are things this session
             HAS; Foreman is an observer talking about it, so it opens a surface rather
-            than switching the body. Hidden when Foreman has never spoken here: an
-            empty archive isn't worth a permanent control. */}
-        {episodes.length > 0 && (
-          <Tooltip label={drawerOpen ? "Close Foreman's notes" : `Read Foreman's ${episodes.length} note${episodes.length === 1 ? "" : "s"} on this session`}>
+            than switching the body. A captured objective also makes the surface useful,
+            even before Foreman has made its first decision. */}
+        {(episodes.length > 0 || session.goal) && (
+          <Tooltip label={drawerOpen ? "Close Foreman's session reading" : "Inspect Foreman's objective and decision history"}>
             <button
               className="foreman-rail"
               aria-expanded={drawerOpen}
               onClick={() => setDrawerOpen((v) => !v)}
             >
               {openCount > 0 && <span className="fr-dot" aria-hidden="true" />}
-              Foreman · {episodes.length}
+              {episodes.length > 0 ? `Foreman · ${episodes.length}` : "Foreman intent"}
             </button>
           </Tooltip>
         )}

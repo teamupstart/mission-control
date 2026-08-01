@@ -344,11 +344,19 @@ export function openDb(): DatabaseSync {
     -- in its own row: the note has one disposition and one updated_at that mean "what
     -- Foreman decided, and when", and a second writer sharing them would corrupt both.
     CREATE TABLE IF NOT EXISTS session_goals (
-      note_key   TEXT PRIMARY KEY,
-      text       TEXT,              -- the sentence; null while only a prompt is captured
-      source     TEXT,              -- 'heuristic' (the raw prompt) | 'model' (refined)
-      prompt     TEXT,              -- the filtered prompt it came from; the refiner's input
-      updated_at INTEGER NOT NULL
+      note_key                TEXT PRIMARY KEY,
+      text                    TEXT,              -- compact durable objective for the card
+      source                  TEXT,              -- 'heuristic' (initial raw ask) | 'model'
+      objective               TEXT,              -- durable completion contract
+      prompt                  TEXT,              -- latest filtered human instruction
+      focus                   TEXT,              -- compact latest instruction
+      relationship            TEXT,              -- initial | steer | amend | replace | unclear
+      rationale               TEXT,              -- why the latest relationship was chosen
+      objective_version       INTEGER NOT NULL DEFAULT 0,
+      prompt_revision         INTEGER NOT NULL DEFAULT 0,
+      resolved_prompt_revision INTEGER NOT NULL DEFAULT 0,
+      pending_prompts         TEXT NOT NULL DEFAULT '[]', -- unresolved revisions, oldest first
+      updated_at              INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS app_config (
@@ -1462,8 +1470,9 @@ function migrate(d: DatabaseSync): void {
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
 
-  // `prompted_goal`: the session goal the `prompted` wrap-up trigger last fired on -
-  // its once-per-episode guard, and what re-arms it when a genuinely new prompt lands.
+  // `prompted_goal`: the resolved intent episode the `prompted` wrap-up trigger last
+  // handled. The historical column name remains, but new writes store an opaque
+  // `intent:<objectiveVersion>:<promptRevision>` guard rather than goal text.
   // Same exposure as the two ALTERs above: added to the CREATE TABLE after
   // `foreman_queues` shipped, and CREATE TABLE IF NOT EXISTS will not add a column to
   // an existing table, so without this every queue write on an upgraded db would fail.
@@ -1618,12 +1627,17 @@ function migrate(d: DatabaseSync): void {
   // every INSERT names its columns, so a leftover one is inert.
   d.exec(`DROP INDEX IF EXISTS idx_inspector_comments_pr;`);
 
-  // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
-  // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
-  // goals until its sessions take their next prompt, which is the truthful answer for a
-  // session whose prompts were all seen before goals existed. (This is the payoff of a
-  // separate table over columns on `session_notes`: no ALTER, and no row written before
-  // this build that has to be reasoned about.)
+  // Goal intent was originally one sentence plus the latest prompt. Keep the existing row as
+  // the best recoverable objective and let the next prompt reconcile it. Numeric defaults make
+  // legacy rows explicitly pre-versioned rather than inventing a prompt history they never had.
+  addColumn(d, "session_goals", "objective", "TEXT");
+  addColumn(d, "session_goals", "focus", "TEXT");
+  addColumn(d, "session_goals", "relationship", "TEXT");
+  addColumn(d, "session_goals", "rationale", "TEXT");
+  addColumn(d, "session_goals", "objective_version", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_goals", "prompt_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_goals", "resolved_prompt_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_goals", "pending_prompts", "TEXT NOT NULL DEFAULT '[]'");
   //
   // `usage_sources` is new; its defensive cursor-state migrations above also make
   // intermediate development databases safe to reopen. `usage_ledger` does need a user
@@ -3512,8 +3526,55 @@ interface SessionGoalRow {
   note_key: string;
   text: string | null;
   source: string | null;
+  objective: string | null;
   prompt: string | null;
+  focus: string | null;
+  relationship: string | null;
+  rationale: string | null;
+  objective_version: number;
+  prompt_revision: number;
+  resolved_prompt_revision: number;
+  pending_prompts: string;
   updated_at: number;
+}
+
+function pendingGoalPrompts(r: SessionGoalRow): SessionGoal["pendingPrompts"] {
+  const promptRevision = r.prompt_revision || (r.prompt ? 1 : 0);
+  const resolvedRevision =
+    r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0);
+  try {
+    const parsed = JSON.parse(r.pending_prompts || "[]") as unknown;
+    if (Array.isArray(parsed)) {
+      const valid = parsed.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") return [];
+        const revision = (entry as { revision?: unknown }).revision;
+        const prompt = (entry as { prompt?: unknown }).prompt;
+        return Number.isInteger(revision) && Number(revision) > 0 &&
+          (typeof prompt === "string" || prompt === null)
+          ? [{ revision: Number(revision), prompt }]
+          : [];
+      });
+      const unresolved = valid
+        .filter((entry) => entry.revision > resolvedRevision && entry.revision <= promptRevision)
+        .sort((a, b) => a.revision - b.revision)
+        .filter((entry, index, entries) => index === 0 || entry.revision !== entries[index - 1]!.revision);
+      if (unresolved.length > 0) return unresolved;
+    }
+  } catch {
+    // Fall through to the conservative legacy reconstruction below.
+  }
+
+  if (promptRevision <= resolvedRevision) return [];
+  if (promptRevision === resolvedRevision + 1) {
+    return [{ revision: promptRevision, prompt: r.prompt }];
+  }
+  // Older builds retained only the latest prompt. The missing earlier instruction cannot be
+  // reconstructed safely, so preserve an unresolved barrier instead of allowing the latest
+  // prompt to mark the whole gap complete against a potentially stale objective.
+  return [
+    { revision: resolvedRevision + 1, prompt: null },
+    ...(r.prompt ? [{ revision: promptRevision, prompt: r.prompt }] : []),
+  ];
 }
 
 function rowToGoal(r: SessionGoalRow): SessionGoal {
@@ -3524,7 +3585,21 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
     // a source this build doesn't know, and typing it as one we do would put an unrenderable
     // value on a card. An unknown source reads as "no source", which the UI handles already.
     source: r.source === "heuristic" || r.source === "model" ? r.source : null,
+    objective: r.objective ?? r.text ?? r.prompt,
     prompt: r.prompt,
+    focus: r.focus,
+    relationship:
+      r.relationship === "initial" || r.relationship === "steer" ||
+        r.relationship === "amend" || r.relationship === "replace" ||
+        r.relationship === "unclear"
+        ? r.relationship
+        : null,
+    rationale: r.rationale,
+    objectiveVersion: r.objective_version || (r.text || r.prompt ? 1 : 0),
+    promptRevision: r.prompt_revision || (r.prompt ? 1 : 0),
+    resolvedPromptRevision:
+      r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0),
+    pendingPrompts: pendingGoalPrompts(r),
     updatedAt: r.updated_at,
   };
 }
@@ -3532,13 +3607,24 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
 export function upsertSessionGoal(g: SessionGoal): void {
   openDb()
     .prepare(
-      `INSERT INTO session_goals (note_key, text, source, prompt, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO session_goals
+         (note_key, text, source, objective, prompt, focus, relationship, rationale,
+          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
-         text=excluded.text, source=excluded.source, prompt=excluded.prompt,
+         text=excluded.text, source=excluded.source, objective=excluded.objective,
+         prompt=excluded.prompt, focus=excluded.focus, relationship=excluded.relationship,
+         rationale=excluded.rationale, objective_version=excluded.objective_version,
+         prompt_revision=excluded.prompt_revision,
+         resolved_prompt_revision=excluded.resolved_prompt_revision,
+         pending_prompts=excluded.pending_prompts,
          updated_at=excluded.updated_at`,
     )
-    .run(g.noteKey, g.text, g.source, g.prompt, g.updatedAt);
+    .run(
+      g.noteKey, g.text, g.source, g.objective, g.prompt, g.focus, g.relationship,
+      g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
+      JSON.stringify(g.pendingPrompts), g.updatedAt,
+    );
 }
 
 export function getSessionGoal(noteKey: string): SessionGoal | undefined {

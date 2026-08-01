@@ -24,7 +24,7 @@ import { unref } from "../util/timers.ts";
 //
 // Rejected: pointing CLAUDE_CONFIG_DIR at a throwaway dir, which would isolate these
 // perfectly. It relocates auth along with everything else, so the runs could silently fail to
-// authenticate - trading a disk-space problem for a "the goal never refreshes and nobody
+// authenticate - trading a disk-space problem for an "intent never reconciles and nobody
 // knows why" problem.
 
 /** How often to sweep. Hourly: this is disk hygiene, not a deadline. */

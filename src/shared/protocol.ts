@@ -853,7 +853,22 @@ export const SetGoalSchema = z
   .object({
     text: z.string().nullable().optional(),
     source: z.enum(["heuristic", "model"]).nullable().optional(),
+    objective: z.string().nullable().optional(),
     prompt: z.string().nullable().optional(),
+    focus: z.string().nullable().optional(),
+    relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]).nullable().optional(),
+    rationale: z.string().nullable().optional(),
+    objectiveVersion: z.number().int().nonnegative().optional(),
+    promptRevision: z.number().int().nonnegative().optional(),
+    resolvedPromptRevision: z.number().int().nonnegative().optional(),
+    pendingPrompts: z
+      .array(
+        z.object({
+          revision: z.number().int().positive(),
+          prompt: z.string().nullable(),
+        }),
+      )
+      .optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty goal update" });
 export type SetGoal = z.infer<typeof SetGoalSchema>;
@@ -2687,9 +2702,16 @@ export const WorkflowCompletionClaimSchema = z.object({
   // Closed to the built-in fallback the Foreman option names. The daemon resolves its
   // immutable version; the worker never gets to choose an arbitrary workflow id.
   fallbackWorkflow: z.literal("no-mistakes").nullable().optional().default(null),
-  // Optional on the wire only for drain-claim compatibility with an older worker.
-  // A prompted claim without it is refused by the daemon rather than trusted.
-  expectedGoal: z.string().min(1).max(INTENT_MAX).nullable().optional().default(null),
+  expectedIntent: z.object({
+    objective: z.string().trim().min(1).max(INTENT_MAX),
+    objectiveVersion: z.number().int().min(1),
+    promptRevision: z.number().int().min(1),
+    episodeKey: z.string().min(1).max(200),
+  }).refine(
+    (intent) =>
+      intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
+    { message: "Intent episode key does not match its revisions" },
+  ).nullable().optional().default(null),
 });
 export type WorkflowCompletionClaimInput = z.infer<typeof WorkflowCompletionClaimSchema>;
 

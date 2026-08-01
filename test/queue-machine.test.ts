@@ -25,6 +25,7 @@ import { settledIdle } from "../src/shared/session.ts";
 import type { ReportBucket } from "../src/shared/session.ts";
 import type {
   Session,
+  SessionGoal,
   SessionQueue,
   SessionQueueSummary,
   TrackedGap,
@@ -150,11 +151,31 @@ function mkQueue(items: WorkItem[], over: Partial<SessionQueue> = {}): SessionQu
   };
 }
 
+function mkIntent(over: Partial<SessionGoal> = {}): SessionGoal {
+  return {
+    noteKey: "agent-1",
+    text: "Ship the feature",
+    source: "model",
+    objective: "Ship the feature",
+    prompt: "Ship the feature",
+    focus: "Ship the feature",
+    relationship: "initial",
+    rationale: "Initial objective",
+    objectiveVersion: 1,
+    promptRevision: 1,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
+    updatedAt: NOW,
+    ...over,
+  };
+}
+
 function tick(over: {
   session?: Partial<Session>;
   bucket?: ReportBucket;
   items?: WorkItem[];
   queue?: Partial<SessionQueue>;
+  intent?: Partial<SessionGoal> | null;
   cfg?: Partial<QueueConfig>;
   mayActLive?: boolean;
   now?: number;
@@ -163,6 +184,7 @@ function tick(over: {
     session: mkSession(over.session),
     bucket: over.bucket ?? "idle",
     queue: mkQueue(over.items ?? [], over.queue),
+    intent: over.intent === null ? null : mkIntent(over.intent),
     cfg: { ...CFG, ...over.cfg },
     mayActLive: over.mayActLive ?? true,
     now: over.now ?? NOW,
@@ -490,6 +512,7 @@ function exitedTick(items: WorkItem[]) {
     session: mkSession({ state: "exited" }),
     bucket: "exited",
     queue: mkQueue(items),
+    intent: mkIntent(),
     cfg: CFG,
     mayActLive: true,
     now: NOW,
@@ -658,6 +681,29 @@ test("5. wrapup=no-mistakes types it when live, instrumented, settled and paned"
   const a = tick({ items: DRAINED(), cfg: { wrapup: "no-mistakes" } });
   assert.equal(a.kind, "auto-wrapup");
   assert.equal(a.kind === "auto-wrapup" && a.payload, "/no-mistakes");
+  assert.deepEqual(a.kind === "auto-wrapup" && a.intentGuard, {
+    objective: "Ship the feature",
+    objectiveVersion: 1,
+    promptRevision: 1,
+    episodeKey: "intent:1:1",
+  });
+});
+
+test("5. automatic wrap-up waits while the latest intent is unresolved", () => {
+  for (const wrapup of ["no-mistakes", "pr"] as const) {
+    assert.equal(
+      tick({
+        items: DRAINED(),
+        cfg: { wrapup },
+        intent: { promptRevision: 2, resolvedPromptRevision: 1, relationship: null },
+      }).kind,
+      "none",
+    );
+    assert.equal(
+      tick({ items: DRAINED(), cfg: { wrapup }, intent: { relationship: "unclear" } }).kind,
+      "none",
+    );
+  }
 });
 
 test("5. the drain payload is spelled for THIS session's harness, not for Claude", () => {

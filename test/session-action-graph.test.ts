@@ -77,8 +77,8 @@ test("an action activates, emits complete, and needs no pass or fail route", () 
   const found = validate(graph()).diagnostics;
   assert.deepEqual(
     found.map((item) => item.code),
-    ["session_action_runtime_unavailable"],
-    "the only complaint about a well-formed action graph is that this build cannot run it",
+    [],
+    "a well-formed action graph this build can run draws no complaint at all",
   );
 });
 
@@ -210,27 +210,35 @@ test("an action participates in reachability and cycle rules like any other node
 });
 
 test("the publish gate is per ADAPTER, and says why on the node", () => {
-  // The gate asks about the PROOF an action selected, not about the runtime as a whole. A
-  // `session_turn` graph publishes and runs in this build while a `pull_request` graph is
-  // still refused, and one boolean could not have expressed both. It stays a DIAGNOSTIC
-  // rather than a store-only refusal so the Publish control is disabled where the operator
-  // can read the reason, instead of becoming a 409 on a button that looked enabled.
-  assert.equal(SESSION_ACTION_COMPLETION_CAPABILITIES.pull_request.available, false);
+  // The gate asks about the PROOF an action selected, not about the runtime as a whole, and
+  // one boolean could not have expressed that. It stays a DIAGNOSTIC rather than a store-only
+  // refusal so the Publish control is disabled where the operator can read the reason, instead
+  // of becoming a 409 on a button that looked enabled.
+  //
+  // Both shipped adapters run now, so the unavailable half is stated through the injected
+  // capability map rather than through whichever adapter happens to be unfinished. That is
+  // deliberate: the gate has to keep working for the NEXT completion kind, which arrives
+  // registered - so a version naming it stays readable - and refused.
+  assert.equal(SESSION_ACTION_COMPLETION_CAPABILITIES.pull_request.available, true);
   assert.equal(SESSION_ACTION_COMPLETION_CAPABILITIES.session_turn.available, true);
-  const result = validate(graph());
+  const result = validateWorkflowGraph({
+    graph: graph(),
+    personas,
+    sessionActions: actions,
+    completionPolicy: { kind: "none" },
+    sessionActionCompletionCapabilities: {
+      session_turn: { available: true, unavailableReason: null },
+      pull_request: { available: false, unavailableReason: "This build cannot be published." },
+    },
+  });
   assert.equal(result.valid, false);
   const gate = result.diagnostics.find((item) => item.code === "session_action_runtime_unavailable");
   assert.ok(gate);
   assert.equal(gate.nodeId, "act");
   assert.match(gate.message, /cannot be published/);
 
-  // The same graph pointing at a `session_turn` action carries no gate at all.
-  const turnOnly = validateWorkflowGraph({
-    graph: graph(),
-    personas,
-    sessionActions: actions.map((action) => ({ ...action, completion: { kind: "session_turn" } })),
-    completionPolicy: { kind: "none" },
-  });
+  // This build's own answer carries no gate for the very same graph.
+  const turnOnly = validate(graph());
   assert.equal(turnOnly.valid, true);
   assert.deepEqual(
     turnOnly.diagnostics.filter((item) => item.code === "session_action_runtime_unavailable"),

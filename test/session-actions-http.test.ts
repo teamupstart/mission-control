@@ -224,16 +224,19 @@ test("the capabilities route serves the daemon's OWN registry, before the id rou
   if (!parsed.success) return;
   // The client never invents support: whatever this says is what the runtime will do, and a
   // published version naming an unavailable adapter is refused at Publish for the same reason.
+  // Both adapters ship now, and the shape that carries a refusal is still here rather than
+  // deleted - it is what a future adapter arrives unavailable through.
   assert.deepEqual(
     parsed.data.completions.map((item) => [item.kind, item.available]),
-    [["session_turn", true], ["pull_request", false]],
+    [["session_turn", true], ["pull_request", true]],
   );
-  const pr = parsed.data.completions.find((item) => item.kind === "pull_request")!;
-  assert.ok(pr.unavailableReason, "an unavailable adapter must say why");
-  assert.equal(
-    parsed.data.completions.find((item) => item.kind === "session_turn")!.unavailableReason,
-    null,
-  );
+  for (const completion of parsed.data.completions) {
+    assert.equal(
+      completion.unavailableReason,
+      null,
+      `${completion.kind} is available, so it states no refusal`,
+    );
+  }
 });
 
 test("the routes answer honestly when the daemon supplied no manager", async () => {

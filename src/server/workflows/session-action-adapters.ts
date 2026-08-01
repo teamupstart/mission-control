@@ -29,6 +29,85 @@ export interface SessionActionAdapterContext {
   pickedUpAt: number;
   settledAt: number;
   now: number;
+  /**
+   * The bound checkout's own facts, or null when they could not be read this pass.
+   *
+   * Supplied rather than fetched, so an adapter stays a pure decision over stated evidence
+   * and every git call lives where the rest of them do. Null is "we could not look", which
+   * every adapter must treat as a reason to wait rather than as an answer.
+   */
+  repository: SessionActionRepositoryFacts | null;
+  /**
+   * Every pull request Mission Control has ADOPTED, as the ledger currently records it.
+   *
+   * A read of durable local state, never a provider call: the Inspector poller remains the
+   * only thing that talks to GitHub, and this is what it wrote down. An adapter that wanted
+   * fresher facts than these has to wait for the next poll, which is the whole reason
+   * "waiting" is an arm of the decision.
+   */
+  adoptedPullRequests: readonly SessionActionAdoptedPullRequest[];
+  /**
+   * The head a continuation segment has ALREADY captured, or null when none has been.
+   *
+   * Present only on the re-check after a capture whose expectation was not met, and it is
+   * what makes that re-check converge. The captured evidence is immutable, so re-deciding
+   * against whatever the checkout has moved on to since would set an expectation the child
+   * can never satisfy, and the action would wait forever while the head kept moving. Asked
+   * this way, the question becomes "has the pull request caught up with what we captured",
+   * which a push can answer.
+   */
+  capturedHeadOid: string | null;
+}
+
+/** What the bound session's checkout says about itself, resolved before the adapter runs. */
+export interface SessionActionRepositoryFacts {
+  /** `git rev-parse --show-toplevel` for the bound session's working directory. */
+  root: string;
+  /** The checked-out branch, or null on a detached HEAD. */
+  branch: string | null;
+  /** HEAD as a FULL object id, or null on an unborn branch. Never an abbreviation. */
+  headOid: string | null;
+}
+
+/**
+ * One row of the adoption ledger, narrowed to what a completion proof may consider.
+ *
+ * Deliberately smaller than `InspectorPr`. Review rounds, backoff ladders, failure kinds and
+ * merge blocks are the Inspector's business; an adapter that could read them would start
+ * making decisions about a review it does not own.
+ */
+export interface SessionActionAdoptedPullRequest {
+  /** `owner/repo#number`. */
+  key: string;
+  url: string;
+  number: number;
+  /** Where the pull request was adopted from, or null on a row that predates the field. */
+  repositoryRoot: string | null;
+  /** The branch the pull request is opened FROM, or null until the first poll. */
+  branch: string | null;
+  /** The remote head the last poll SAW, as a full object id, or null until the first poll. */
+  observedHeadOid: string | null;
+  /** What that poll saw the pull request's state to be, or null until the first poll. */
+  observedState: "OPEN" | "CLOSED" | "MERGED" | null;
+  /** When that poll happened, or null until the first one. */
+  observedAt: number | null;
+}
+
+/**
+ * What a capture has to be checked against, with the abbreviation already resolved.
+ *
+ * `context.evidence.headSha` is `git rev-parse --short HEAD` and a pull request's head is a
+ * full object id, so the two are not comparable as written. Resolving the abbreviation is a
+ * git question, and the answer is handed in here for the same reason `repository` is: the
+ * adapter decides, and the manager is what talks to git.
+ */
+export interface SessionActionCaptureFacts {
+  context: WorkflowContextSnapshot;
+  /**
+   * The captured head as a full object id, or null when the abbreviation could not be
+   * resolved to exactly one commit in this repository.
+   */
+  capturedHeadOid: string | null;
 }
 
 /**
@@ -54,7 +133,7 @@ export interface SessionActionAdapter extends SessionActionCompletionCapability 
    */
   validateCapture(
     expectation: SessionActionContinuationExpectation,
-    context: WorkflowContextSnapshot,
+    capture: SessionActionCaptureFacts,
   ): string | null;
 }
 
@@ -80,25 +159,162 @@ const sessionTurn: SessionActionAdapter = {
 };
 
 /**
- * Registered, addressable, and explicitly UNAVAILABLE until its durable proof exists.
+ * Whether an adapter's decision can change without the session doing anything more.
  *
- * A registered refusal rather than an absent entry or a placeholder that returns success.
- * Absent, the registry lookup would throw somewhere unhelpful and a published version naming
- * it would be unreadable rather than refused. Succeeding, a `pull_request` action would
- * complete on the generic turn boundary alone - claiming a pull request was opened, adopted
- * and matched against the captured head when none of those were checked, which is the whole
- * of the guarantee this adapter exists to make.
+ * The observer sweeps every waiting attempt on a timer, but a `pull_request` action settles
+ * long before its proof arrives - the poller looks every ninety seconds - so it also has to
+ * be woken when the adoption ledger moves. This says which attempts that wakeup is for, so
+ * an inspection update does not re-sweep every action in the fleet.
+ */
+export function completionWatchesPullRequests(kind: SessionActionCompletionKind): boolean {
+  return kind === "pull_request";
+}
+
+/**
+ * Whether one adopted row is a pull request for THIS work.
+ *
+ * Three facts, and each one closes a way the wrong pull request could be adopted as proof:
+ *
+ *  - the same repository root, so a session that has several checkouts open cannot satisfy
+ *    one repository's action with another repository's pull request;
+ *  - the same head branch, so a pull request that merely CONTAINS this commit - a stacked
+ *    branch, a release branch someone cherry-picked onto - is not mistaken for the pull
+ *    request this branch's work belongs to;
+ *  - the exact head object id, which is what makes the whole thing a proof rather than a
+ *    guess. A commit id is not something a session can be mistaken about.
+ *
+ * The row's `sessionId` is deliberately NOT required to be the bound session. Adoption is
+ * already Mission Control's own record of "we opened this", and the plan's already-open case
+ * is exactly a pull request some earlier session opened for this branch: refusing it would
+ * mean opening a second pull request for work that already has one.
+ */
+function matchesActionWork(
+  pr: SessionActionAdoptedPullRequest,
+  repositoryRoot: string,
+  branch: string,
+  headOid: string,
+): boolean {
+  return pr.repositoryRoot === repositoryRoot
+    && pr.branch === branch
+    && pr.observedHeadOid === headOid;
+}
+
+/** Whether an adopted row is on this branch at all, whatever its head has reached. */
+function belongsToBranch(
+  pr: SessionActionAdoptedPullRequest,
+  repositoryRoot: string,
+  branch: string,
+): boolean {
+  return pr.repositoryRoot === repositoryRoot && pr.branch === branch;
+}
+
+/**
+ * The completion that requires a real, open, adopted pull request at the reviewed commit.
+ *
+ * The generic observer has already proven the turn ran and settled. That is the easy half and
+ * it is emphatically not the guarantee: an agent can finish a turn having failed to push,
+ * having opened the pull request against the wrong base, or having said it opened one and not.
+ * So the turn boundary buys nothing here on its own, and every arm below is written to prefer
+ * WAITING over completing.
+ *
+ * What it never does:
+ *
+ *  - read `Session.prUrl`. It is a live convenience that disappears across an SDK restart and
+ *    proves nothing about what is on the remote;
+ *  - talk to GitHub. The Inspector poller is the only thing that does, and this reads what it
+ *    durably wrote down. A second poll loop would double the API cost of every open pull
+ *    request to answer a question the first one already answers;
+ *  - infer success from a pull request merely EXISTING, from the branch name, or from the
+ *    agent's own account of what it did.
  */
 const pullRequest: SessionActionAdapter = {
   ...SESSION_ACTION_COMPLETION_CAPABILITIES.pull_request,
-  validateSnapshot: () => SESSION_ACTION_COMPLETION_CAPABILITIES.pull_request.unavailableReason,
-  decide: () => ({
-    kind: "blocked",
-    code: "adapter_unavailable",
-    detail: SESSION_ACTION_COMPLETION_CAPABILITIES.pull_request.unavailableReason
-      ?? "This completion adapter is not available in this build.",
-  }),
-  validateCapture: () => "This completion adapter is not available in this build.",
+  // Any snapshot is executable. The required skill is checked by the generic delivery path,
+  // twice, and demanding a particular skill id here would be a second source of truth about
+  // what the action needs - one that a duplicated-and-customized action would fail for a
+  // reason that has nothing to do with whether its pull request can be proven.
+  validateSnapshot: () => null,
+
+  decide: (context) => {
+    const repository = context.repository;
+    // Cannot look is not an answer. A checkout that has gone away, a git call that failed, a
+    // detached HEAD with no branch to match a pull request against: none of them is evidence
+    // about a pull request, so none of them may complete or block the action.
+    if (!repository || !repository.branch) {
+      return { kind: "waiting", reason: "awaiting_proof" };
+    }
+    // The head a capture already fixed wins over whatever the checkout has moved on to. See
+    // `capturedHeadOid`: re-deciding against a moving HEAD never converges.
+    const target = context.capturedHeadOid ?? repository.headOid;
+    if (!target) return { kind: "waiting", reason: "awaiting_proof" };
+
+    const onBranch = context.adoptedPullRequests.filter(
+      (pr) => belongsToBranch(pr, repository.root, repository.branch!),
+    );
+    const matching = onBranch.filter(
+      (pr) => matchesActionWork(pr, repository.root, repository.branch!, target),
+    );
+    const open = matching.filter((pr) => pr.observedState === "OPEN");
+    if (open.length > 0) {
+      // Deterministic when a branch somehow carries two matching open pull requests: the
+      // lowest number is the one that was opened first, and the one an operator would call
+      // "the" pull request for this branch.
+      const chosen = open.reduce((best, pr) => (pr.number < best.number ? pr : best));
+      return {
+        kind: "complete",
+        continuationExpectation: {
+          kind: "pull_request",
+          pullRequestKey: chosen.key,
+          pullRequestUrl: chosen.url,
+          pullRequestNumber: chosen.number,
+          repositoryRoot: repository.root,
+          branch: repository.branch,
+          expectedHeadOid: target,
+          observedAt: chosen.observedAt ?? context.now,
+        },
+      };
+    }
+    // A pull request at the right commit that is closed or merged is the one durable
+    // contradiction here: waiting cannot reopen it, and completing would hand downstream
+    // stages a pull request nobody can review. Everything else below waits.
+    if (matching.length > 0) {
+      const closed = matching[0]!;
+      return {
+        kind: "blocked",
+        code: "pull_request_closed",
+        detail:
+          `${closed.url} is at the reviewed commit but is ${
+            closed.observedState === "MERGED" ? "already merged" : "closed"
+          }. Reopen it, or start a new pull request for this branch, and retry this action.`,
+      };
+    }
+    // On this branch but not at this commit. The remedy is a push, and saying so is the whole
+    // reason this is its own wait reason rather than a generic "verifying".
+    if (onBranch.some((pr) => pr.observedState === "OPEN")) {
+      return { kind: "waiting", reason: "awaiting_pushed_head" };
+    }
+    // Nothing adopted for this branch at all - including the ordinary case where the pull
+    // request was opened moments ago and the poller has not looked yet.
+    return { kind: "waiting", reason: "awaiting_pull_request" };
+  },
+
+  validateCapture: (expectation, capture) => {
+    if (expectation.kind !== "pull_request") {
+      return "A pull request action requires a pull request continuation expectation";
+    }
+    if (!capture.capturedHeadOid) {
+      return "The commit this continuation captured could not be identified in the repository";
+    }
+    // The one check this whole adapter exists to make survive a restart. The pull request was
+    // proven to be at `expectedHeadOid`; if the capture is at any other commit then the
+    // evidence downstream stages would read is work the pull request does not contain.
+    if (capture.capturedHeadOid !== expectation.expectedHeadOid) {
+      return `The captured commit ${capture.capturedHeadOid.slice(0, 12)} is not the commit `
+        + `${expectation.expectedHeadOid.slice(0, 12)} that ${expectation.pullRequestUrl} was `
+        + "proven to be at";
+    }
+    return null;
+  },
 };
 
 export const SESSION_ACTION_ADAPTERS: Record<SessionActionCompletionKind, SessionActionAdapter> = {

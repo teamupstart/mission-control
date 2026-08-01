@@ -73,7 +73,7 @@ test("every durable tuple this phase touches is APPENDED, never reordered", () =
 
 // ---- the completion adapter registry ------------------------------------------------------
 
-test("the registry answers for every completion kind, and pull_request is UNAVAILABLE", () => {
+test("the registry answers for every completion kind, and both are available", () => {
   const capabilities = sessionActionCapabilities();
   assert.deepEqual(capabilities.map((item) => item.kind), ["session_turn", "pull_request"]);
 
@@ -82,24 +82,13 @@ test("the registry answers for every completion kind, and pull_request is UNAVAI
   assert.equal(turn.validateSnapshot({} as SessionActionSnapshot), null);
 
   const pr = sessionActionAdapter("pull_request");
-  assert.equal(pr.available, false);
-  assert.ok(pr.unavailableReason, "an unavailable adapter must say why, in a sentence");
-  // A registered REFUSAL, not an absent entry and not a placeholder that returns success.
-  // Succeeding here would complete a `pull_request` action on the generic turn boundary
-  // alone, claiming PR provenance nobody checked.
-  const decision = pr.decide({
-    snapshot: {} as SessionActionSnapshot,
-    session: {} as never,
-    anchorTranscriptBytes: null,
-    deliveredAt: 1,
-    pickedUpAt: 2,
-    settledAt: 3,
-    now: 4,
-  });
-  assert.equal(decision.kind, "blocked");
-  if (decision.kind !== "blocked") return;
-  assert.equal(decision.code, "adapter_unavailable");
-  assert.ok(SESSION_ACTION_BLOCK_CODES.includes(decision.code));
+  assert.equal(pr.available, true);
+  assert.equal(pr.unavailableReason, null, "an available adapter states no refusal");
+  // Any snapshot is executable: the required skill is the generic delivery path's business,
+  // twice, and a second demand here would refuse a duplicated-and-customized action for a
+  // reason that has nothing to do with whether its pull request can be proven.
+  assert.equal(pr.validateSnapshot({} as SessionActionSnapshot), null);
+  assert.ok(SESSION_ACTION_BLOCK_CODES.includes("pull_request_closed"));
 });
 
 test("the shared capability table and the server registry are one answer, not two", () => {
@@ -126,6 +115,11 @@ test("a session_turn action completes on the turn boundary and constrains nothin
     pickedUpAt: 2,
     settledAt: 3,
     now: 4,
+    // Supplied and pointedly IGNORED. A session turn completes on the turn, so a repository
+    // it could have read and a pull request it could have matched change nothing here.
+    repository: { root: "/repo", branch: "feature", headOid: "a".repeat(40) },
+    adoptedPullRequests: [],
+    capturedHeadOid: null,
   });
   assert.deepEqual(decision, { kind: "complete", continuationExpectation: { kind: "none" } });
   // An action may legitimately change only remote or conversation state, so an unchanged
@@ -569,7 +563,7 @@ test("blocking an action is a run state, never a verdict or a spent repair round
 test("every wait reason is a WAIT, and every block code is closed", () => {
   // The two vocabularies are separate because they reach different readers: a wait is
   // something the runtime is still doing, a block is something a human has to resolve.
-  assert.equal(SESSION_ACTION_WAIT_REASONS.length, 7);
+  assert.equal(SESSION_ACTION_WAIT_REASONS.length, 9);
   assert.equal(new Set(SESSION_ACTION_WAIT_REASONS).size, SESSION_ACTION_WAIT_REASONS.length);
   assert.equal(new Set(SESSION_ACTION_BLOCK_CODES).size, SESSION_ACTION_BLOCK_CODES.length);
   for (const reason of SESSION_ACTION_WAIT_REASONS) {

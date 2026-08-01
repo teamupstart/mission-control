@@ -522,6 +522,58 @@ export function probeMatchesEvidence(
     && probe.diffFingerprint === evidence.diffFingerprint;
 }
 
+/**
+ * The bound checkout's identity and current commit, without capturing evidence.
+ *
+ * Three `rev-parse` calls, which is what makes this affordable on the action observer's
+ * fifteen-second sweep. `readWorkflowEvidenceProbe` above answers a different question - "has
+ * the work moved?" - and pays for a whole diff to answer it; a `pull_request` action asks only
+ * "which repository, which branch, which commit", and asking it the expensive way would put a
+ * full diff of every bound repository on a timer.
+ *
+ * `HEAD^{commit}` is asked for in FULL, deliberately. Evidence capture stores
+ * `rev-parse --short HEAD`, and a pull request's head arrives from GitHub as a 40-character
+ * object id, so an abbreviation here would make the one comparison this feature turns on into
+ * a prefix match. `HEAD` is a symbolic ref rather than an abbreviation, so unlike a captured
+ * head it needs no disambiguation - see `resolveCapturedCommit` for the side that does.
+ *
+ * Every field is null-safe rather than throwing: a reaped worktree, a directory that is not a
+ * repository, an unborn branch and a detached HEAD are all states a bound session can really
+ * be in, and the caller's answer to all of them is to keep waiting.
+ */
+export interface WorkflowRepositoryHead {
+  root: string;
+  branch: string | null;
+  headOid: string | null;
+}
+
+export async function readWorkflowRepositoryHead(
+  cwd: string | null,
+): Promise<WorkflowRepositoryHead | null> {
+  if (!cwd) return null;
+  const top = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 15_000 });
+  const root = top.code === 0 ? top.stdout.trim() : "";
+  if (!root) return null;
+  const branchResult = await run(
+    "git",
+    ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+    { timeoutMs: 15_000 },
+  );
+  const branchName = branchResult.code === 0 ? branchResult.stdout.trim() : "";
+  // "HEAD" is what `--abbrev-ref` answers on a detached HEAD, and it is not a branch. Reported
+  // as null so a caller cannot match a pull request against the literal string.
+  const branch = branchName && branchName !== "HEAD" ? branchName : null;
+  const headResult = await run(
+    "git",
+    ["-C", cwd, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    { timeoutMs: 15_000 },
+  );
+  const headOid = headResult.code === 0 && /^[0-9a-f]{40}$/.test(headResult.stdout.trim())
+    ? headResult.stdout.trim()
+    : null;
+  return { root, branch, headOid };
+}
+
 export async function captureBoundaryChanged(
   registry: Registry,
   binding: WorkflowBinding,

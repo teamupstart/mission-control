@@ -53,8 +53,15 @@ interface PickupCandidate {
   boundaryAt: number;
   injectionSucceeded: boolean;
   pickupObserved: boolean;
+  pickupObservedAt: number | null;
   ownershipUncertain: boolean;
   timer: ReturnType<typeof setTimeout> | null;
+}
+
+interface TerminalDrainBoundary {
+  sessionId: string;
+  writeBoundaryAt: number;
+  activityObservedAt: number | null;
 }
 
 interface SdkHandoff {
@@ -78,6 +85,7 @@ export class PendingTurnManager {
   private readonly draining = new Set<string>();
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pickup = new Map<string, PickupCandidate>();
+  private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
   private readonly sdkHandoffs = new Map<string, SdkHandoff>();
   private readonly activeDeliveries = new Map<string, Promise<void>>();
   private readonly resetPreserve = new Map<string, Set<string>>();
@@ -123,6 +131,7 @@ export class PendingTurnManager {
     }
     this.idleTimers.clear();
     this.pickup.clear();
+    this.terminalDrainBoundaries.clear();
     this.sdkHandoffs.clear();
   }
 
@@ -143,6 +152,7 @@ export class PendingTurnManager {
     }
     this.resetPreserve.set(sessionId, preserve);
     this.cancelIdleTimer(key);
+    this.terminalDrainBoundaries.delete(key);
 
     const active = this.activeDeliveries.get(sessionId);
     if (active) {
@@ -155,6 +165,9 @@ export class PendingTurnManager {
     }
 
     const current = this.registry.getSession(sessionId);
+    // An accepted turn may have installed this boundary just before the reset marker became
+    // visible. Reset owns all later work, so an old turn must not hold its new outbox closed.
+    this.terminalDrainBoundaries.delete(key);
     for (const turn of current?.pendingTurns ?? []) {
       if (turn.state === "uncertain") preserve.add(turn.id);
     }
@@ -283,6 +296,9 @@ export class PendingTurnManager {
       const key = this.knownKeys.get(event.id);
       this.knownKeys.delete(event.id);
       if (key) {
+        if (this.terminalDrainBoundaries.get(key)?.sessionId === event.id) {
+          this.terminalDrainBoundaries.delete(key);
+        }
         const owner = this.registry.sessionForNoteKey(key);
         if (owner) this.observeSession(owner);
       }
@@ -302,6 +318,34 @@ export class PendingTurnManager {
     if (sdkHandoff && sdkHandoff.sessionId !== session.id && session.state !== "exited") {
       sdkHandoff.ownershipUncertain = true;
     }
+    const drainBoundary = this.terminalDrainBoundaries.get(key);
+    if (drainBoundary) {
+      if (drainBoundary.sessionId !== session.id || session.state === "exited") {
+        this.terminalDrainBoundaries.delete(key);
+      } else if (
+        session.stateConfirmed &&
+        session.state === "working" &&
+        (session.lastActivity ?? 0) >= drainBoundary.writeBoundaryAt
+      ) {
+        const observedAt = session.lastActivity ?? this.deps.now();
+        drainBoundary.activityObservedAt = Math.max(
+          drainBoundary.activityObservedAt ?? drainBoundary.writeBoundaryAt,
+          observedAt,
+        );
+        this.cancelIdleTimer(key);
+        return;
+      } else if (
+        drainBoundary.activityObservedAt !== null &&
+        session.stateConfirmed &&
+        session.state === "idle" &&
+        (session.lastActivity ?? 0) >= drainBoundary.activityObservedAt
+      ) {
+        this.terminalDrainBoundaries.delete(key);
+      } else {
+        this.cancelIdleTimer(key);
+        return;
+      }
+    }
     const candidate = this.pickup.get(key);
     if (candidate && candidate.sessionId !== session.id && session.state !== "exited") {
       candidate.ownershipUncertain = true;
@@ -315,6 +359,11 @@ export class PendingTurnManager {
       (session.lastActivity ?? 0) >= candidate.boundaryAt
     ) {
       candidate.pickupObserved = true;
+      const observedAt = session.lastActivity ?? this.deps.now();
+      candidate.pickupObservedAt = Math.max(
+        candidate.pickupObservedAt ?? candidate.boundaryAt,
+        observedAt,
+      );
       // A reset owns the session now. Evidence that arrives while injection is settling is
       // provisional until deliverTerminal records the reset-safe uncertain transition.
       if (
@@ -333,6 +382,7 @@ export class PendingTurnManager {
     this.cancelIdleTimer(fromKey);
     const candidate = this.pickup.get(fromKey);
     const sdkHandoff = this.sdkHandoffs.get(fromKey);
+    const drainBoundary = this.terminalDrainBoundaries.get(fromKey);
     if (
       (candidate && candidate.sessionId !== sessionId) ||
       (sdkHandoff && sdkHandoff.sessionId !== sessionId)
@@ -341,7 +391,12 @@ export class PendingTurnManager {
       if (sdkHandoff) sdkHandoff.ownershipUncertain = true;
       return;
     }
-    if (!rekeyPendingTurns(fromKey, toKey, this.deps.now())) return;
+    if (!rekeyPendingTurns(fromKey, toKey, this.deps.now())) {
+      if (drainBoundary?.sessionId === sessionId) {
+        this.terminalDrainBoundaries.delete(fromKey);
+      }
+      return;
+    }
     if (candidate) {
       this.pickup.delete(fromKey);
       candidate.turn.noteKey = toKey;
@@ -352,12 +407,18 @@ export class PendingTurnManager {
       sdkHandoff.turn.noteKey = toKey;
       this.sdkHandoffs.set(toKey, sdkHandoff);
     }
+    if (drainBoundary?.sessionId === sessionId) {
+      this.terminalDrainBoundaries.delete(fromKey);
+      this.terminalDrainBoundaries.set(toKey, drainBoundary);
+    }
     this.registry.refreshPendingTurns(fromKey);
     this.registry.refreshPendingTurns(toKey);
   }
 
   private readyToDrain(session: Session): boolean {
+    const drainBoundary = this.terminalDrainBoundaries.get(noteKeyFor(session));
     return (
+      drainBoundary?.sessionId !== session.id &&
       session.stateConfirmed &&
       session.paneDialog === null &&
       !this.registry.sessionResetInProgress(session.id) &&
@@ -372,6 +433,7 @@ export class PendingTurnManager {
     }
     const session = this.registry.sessionForNoteKey(key);
     if (!session || !session.stateConfirmed || session.state !== "idle" || session.paneDialog) return;
+    if (this.terminalDrainBoundaries.get(key)?.sessionId === session.id) return;
     const idleSince = session.lastActivity ?? session.firstSeen;
     const delay = Math.max(0, idleSince + this.deps.idleSettleMs - this.deps.now());
     const timer = unref(
@@ -529,6 +591,7 @@ export class PendingTurnManager {
           boundaryAt: this.deps.now(),
           injectionSucceeded: false,
           pickupObserved: false,
+          pickupObservedAt: null,
           ownershipUncertain: false,
           timer: null,
         });
@@ -696,6 +759,16 @@ export class PendingTurnManager {
       candidate.ownershipUncertain
     ) return;
     if (candidate.timer) clearTimeout(candidate.timer);
+    // A verified paste proves this row crossed the terminal boundary, but the registry may
+    // still contain the idle observation from BEFORE Enter. Keep the FIFO closed until work
+    // is observed and a later idle transition proves that work finished. When a hook or
+    // passive read already supplied pickup evidence, carry that evidence into the boundary
+    // so only the corresponding idle transition remains.
+    this.terminalDrainBoundaries.set(turn.noteKey, {
+      sessionId,
+      writeBoundaryAt: candidate.boundaryAt,
+      activityObservedAt: candidate.pickupObservedAt,
+    });
     this.pickup.delete(turn.noteKey);
     deleteClaimedPendingTurn(turn.id, turn.revision);
     this.registry.refreshPendingTurns(turn.noteKey);

@@ -474,6 +474,38 @@ test("a verified terminal submit completes without waiting for a second lifecycl
   f.manager.stop();
 });
 
+test("a verified terminal submit waits for fresh activity and idle before draining the next row", async () => {
+  const f = terminalFixture("verified-fifo-boundary", async () => ({
+    ok: true,
+    pasted: true,
+    submitVerified: true,
+  }));
+  f.manager.submit(f.id, "first terminal turn");
+  f.manager.submit(f.id, "second terminal turn");
+  await tick();
+
+  assert.deepEqual(f.injected, ["first terminal turn"]);
+  assert.deepEqual(
+    f.registry.getSession(f.id)?.pendingTurns.map((turn) => turn.text),
+    ["second terminal turn"],
+  );
+
+  // Repeating the stale idle observation from before the paste is not completion evidence.
+  stopHook(f.registry, "verified-fifo-boundary");
+  await tick();
+  assert.deepEqual(f.injected, ["first terminal turn"]);
+
+  userPromptHook(f.registry, "verified-fifo-boundary");
+  await tick();
+  assert.deepEqual(f.injected, ["first terminal turn"]);
+
+  stopHook(f.registry, "verified-fifo-boundary");
+  await tick();
+  assert.deepEqual(f.injected, ["first terminal turn", "second terminal turn"]);
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
+  f.manager.stop();
+});
+
 test("a terminal refusal before paste returns to queued", async () => {
   const f = terminalFixture("refusal", async () => ({
     ok: false,

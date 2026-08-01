@@ -318,6 +318,54 @@ export function checkStatus(
 }
 
 /**
+ * The chip for a member the operator disabled for this run.
+ *
+ * The red tone is deliberate and is NOT "failed": red is the colour of a gate an operator
+ * has to notice, and a review switched off is exactly that. `degraded` keeps the claim
+ * honest downstream - the stage fold counts a disabled member with the not-run gates
+ * rather than calling the stage failed or laundering it into "All passed".
+ */
+export function disabledMemberStatus(): PipelineStatus {
+  return { tone: "failed", label: "Disabled", degraded: true };
+}
+
+/**
+ * The chip override for an operator-disabled node in ONE viewed round, or `null` when the
+ * round's real outcome must show.
+ *
+ * The disable's promise is scoped to work that has not happened yet, so the chip follows
+ * the SAME boundary the engine enforces at claim time. A node the auto-pass will convert -
+ * no attempt, a queued or retrying attempt, or one cancelled before any verdict - reads
+ * Disabled. A node that already ran this round - completed with a real verdict, still
+ * running, or errored - keeps its real chip: painting a recorded failure as Disabled would
+ * claim the toggle rewrote an outcome, which is exactly what it never does. The one
+ * completed attempt that DOES read Disabled is the engine's own synthetic auto-pass, which
+ * marks itself in `output.disabled` so this never has to guess from a verdict's prose.
+ * The ROW's red treatment stays either way; only the chip is the round's history.
+ */
+export function disabledStatusFor(
+  disabledNodeIds: readonly string[] | undefined,
+  nodeId: string | null | undefined,
+  attempt: Pick<WorkflowNodeAttempt, "state" | "verdict" | "output"> | undefined,
+): PipelineStatus | null {
+  if (!nodeId || !(disabledNodeIds ?? []).includes(nodeId)) return null;
+  if (
+    !attempt
+    || attempt.state === "queued"
+    || attempt.state === "retry_wait"
+    || (attempt.state === "cancelled" && attempt.verdict === null)
+  ) {
+    return disabledMemberStatus();
+  }
+  const output = attempt.output;
+  const autoPassed = output !== null
+    && typeof output === "object"
+    && !Array.isArray(output)
+    && output.disabled === true;
+  return autoPassed ? disabledMemberStatus() : null;
+}
+
+/**
  * A stage's own chip, folded from its members: the worst thing that happened wins, then
  * whatever is still moving, and "passed" only once every member of the stage passed - which
  * is exactly the all-pass rule the stage is compiled from.
@@ -326,10 +374,14 @@ export function checkStatus(
  * "Waiting" would read as still in flight, and calling it "All passed" would launder the very
  * claim the member chip refuses to make. It gets its own sentence, and the count is what an
  * operator needs to know how much of the gate was real.
+ *
+ * A degraded red chip - a disabled member - is excluded from the failed fold on purpose:
+ * disabling is how an operator forces the stage PAST a member, and a stage that still read
+ * "Failed" afterwards would say the toggle did nothing.
  */
 export function stageStatus(members: readonly PipelineStatus[]): PipelineStatus {
   if (members.length === 0) return { tone: "waiting", label: "No members" };
-  if (members.some((status) => status.tone === "failed")) {
+  if (members.some((status) => status.tone === "failed" && !status.degraded)) {
     return { tone: "failed", label: "Failed" };
   }
   if (members.some((status) => status.tone === "running")) {

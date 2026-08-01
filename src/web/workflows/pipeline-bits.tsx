@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Tooltip } from "../components/Tooltip.tsx";
 
 /**
  * The presentational leaves every stage surface is drawn from - the role `session-bits.tsx`
@@ -90,6 +91,12 @@ export function PipelineStatusChip({ status }: { status: PipelineStatus }): Reac
  * a different row: the two are peers in a stage - same routes, same join, same reorder - and
  * drawing them as two shapes would say they behave differently. A check's `name` is its bare
  * slot, so the chip supplies the noun that "test" alone next to a Persona's name does not.
+ *
+ * `disabled` and `onToggleDisabled` are the runs monitor's per-run auto-pass affordance.
+ * Optional and defaulting off so the editor renders byte-identically: disabling belongs to
+ * ONE run, so the affordance must not exist where a draft or a version is being read. When
+ * a toggle is supplied the row's body becomes a real `<button>` - the whole row is the
+ * click target - and `actions` stays outside it so the two can never nest.
  */
 export function ReviewerRow({
   name,
@@ -99,6 +106,9 @@ export function ReviewerRow({
   state = "idle",
   actions = null,
   item = {},
+  disabled = false,
+  onToggleDisabled = null,
+  toggleLabel = null,
 }: {
   name: string;
   kind?: "persona" | "check";
@@ -107,17 +117,40 @@ export function ReviewerRow({
   state?: PipelineItemState;
   actions?: ReactNode;
   item?: PipelineItemProps;
+  disabled?: boolean;
+  onToggleDisabled?: (() => void) | null;
+  toggleLabel?: string | null;
 }): React.JSX.Element {
-  return (
-    <li className={`wf-pipeline-reviewer is-${kind}${stateClass(state)}`} {...itemAttributes(item)}>
+  const content = (
+    <>
       <span className="wf-pipeline-reviewer-body">
         <span className="wf-pipeline-reviewer-name">
+          {disabled && <span className="wf-pipeline-disabled-mark" aria-hidden>⊘</span>}
           {kind === "check" && <span className="wf-pipeline-check-mark">Check</span>}
           {name}
         </span>
         {meta && <span className="wf-pipeline-reviewer-meta">{meta}</span>}
       </span>
       {status && <PipelineStatusChip status={status} />}
+    </>
+  );
+  return (
+    <li
+      className={`wf-pipeline-reviewer is-${kind}${stateClass(state)}${disabled ? " is-disabled" : ""}`}
+      {...itemAttributes(item)}
+    >
+      {onToggleDisabled ? (
+        <Tooltip label={toggleLabel ?? ""}>
+          <button
+            type="button"
+            className="wf-pipeline-toggle wf-pipeline-reviewer-hit"
+            aria-pressed={disabled}
+            onClick={onToggleDisabled}
+          >
+            {content}
+          </button>
+        </Tooltip>
+      ) : content}
       {actions && <span className="wf-pipeline-reviewer-actions">{actions}</span>}
     </li>
   );
@@ -128,6 +161,11 @@ export function ReviewerRow({
  *
  * `header` wires the stage's own roving stop and drag handle; `frame` takes drops for the
  * card as a whole, so a member can be moved onto a stage without aiming at a row.
+ *
+ * `disabled`/`onToggleDisabled` mirror `ReviewerRow`'s per-run auto-pass affordance at
+ * stage grain: one click switches every member of the gate, which is the "force this
+ * phase to pass" the runs monitor offers. Optional, so the editor's header - which owns
+ * these same slots for focus and drag - is untouched.
  */
 export function StageCard({
   name,
@@ -137,6 +175,9 @@ export function StageCard({
   actions = null,
   header = {},
   frame = {},
+  disabled = false,
+  onToggleDisabled = null,
+  toggleLabel = null,
   children,
 }: {
   name: string;
@@ -146,20 +187,42 @@ export function StageCard({
   actions?: ReactNode;
   header?: PipelineItemProps;
   frame?: Pick<PipelineItemProps, "onDragOver" | "onDrop">;
+  disabled?: boolean;
+  onToggleDisabled?: (() => void) | null;
+  toggleLabel?: string | null;
   children: ReactNode;
 }): React.JSX.Element {
+  const title = (
+    <>
+      <span className="wf-pipeline-stage-title">
+        <span className="wf-pipeline-stage-name">
+          {disabled && <span className="wf-pipeline-disabled-mark" aria-hidden>⊘</span>}
+          {name}
+        </span>
+        {subtitle && <span className="wf-pipeline-stage-sub">{subtitle}</span>}
+      </span>
+      {status && <PipelineStatusChip status={status} />}
+    </>
+  );
   return (
     <section
-      className={`wf-pipeline-stage${stateClass(state)}`}
+      className={`wf-pipeline-stage${stateClass(state)}${disabled ? " is-disabled" : ""}`}
       onDragOver={frame.onDragOver}
       onDrop={frame.onDrop}
     >
       <header className="wf-pipeline-stage-head" {...itemAttributes(header)}>
-        <span className="wf-pipeline-stage-title">
-          <span className="wf-pipeline-stage-name">{name}</span>
-          {subtitle && <span className="wf-pipeline-stage-sub">{subtitle}</span>}
-        </span>
-        {status && <PipelineStatusChip status={status} />}
+        {onToggleDisabled ? (
+          <Tooltip label={toggleLabel ?? ""}>
+            <button
+              type="button"
+              className="wf-pipeline-toggle wf-pipeline-stage-hit"
+              aria-pressed={disabled}
+              onClick={onToggleDisabled}
+            >
+              {title}
+            </button>
+          </Tooltip>
+        ) : title}
         {actions && <span className="wf-pipeline-stage-actions">{actions}</span>}
       </header>
       {children}

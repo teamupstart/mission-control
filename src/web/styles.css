@@ -10707,6 +10707,50 @@ select.ensemble-judge-persona {
 }
 .wf-pipeline-reviewer-actions button,
 .wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }
+/* The runs monitor's per-run disable toggle: the whole row (or the stage header's title
+   block) is a real <button>. It occupies the parent grid's first column and reproduces the
+   same single-column, two-row internal layout, so a clickable row and the editor's plain
+   row are pixel-identical - the affordance is the cursor, the focus ring, and the title. */
+.wf-pipeline-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  justify-items: start;
+  row-gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wf-pipeline-reviewer-hit,
+.wf-pipeline-stage-hit { grid-column: 1; }
+.wf-pipeline-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+/* Disabled-for-this-run: red is the ask - a switched-off gate must be impossible to read
+   as a healthy one - and the ⊘ mark plus the red "Disabled" chip carry the claim for
+   readers who do not get the colour. */
+.wf-pipeline-reviewer.is-disabled {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border-soft));
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel-2));
+}
+.wf-pipeline-stage.is-disabled {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--panel));
+}
+.wf-pipeline-reviewer.is-disabled .wf-pipeline-reviewer-name,
+.wf-pipeline-stage.is-disabled .wf-pipeline-stage-name { color: var(--danger); }
+.wf-pipeline-disabled-mark { color: var(--danger); font-weight: 700; }
+/* The reviewer name is a flex row with its own gap; the stage name is plain text, so the
+   mark carries the same 6px itself or the two read as different marks. */
+.wf-pipeline-stage-name .wf-pipeline-disabled-mark { margin-right: 6px; }
 .wf-pipeline-empty {
   padding: 9px;
   font-size: 10.5px;

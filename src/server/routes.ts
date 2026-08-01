@@ -85,6 +85,7 @@ import {
   RetryWorkflowRunSchema,
   RetryWorkflowDeliverySchema,
   ResolveWorkflowDeliverySchema,
+  SetWorkflowNodesDisabledSchema,
   WorkflowCompletionClaimSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
@@ -1055,6 +1056,16 @@ export function buildApp(
     const parsed = await parseBody(c, WorkflowRunActionSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
+    return result.ok
+      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/set-nodes-disabled", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, SetWorkflowNodesDisabledSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.setNodesDisabled(c.req.param("id"), parsed.data);
     return result.ok
       ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);

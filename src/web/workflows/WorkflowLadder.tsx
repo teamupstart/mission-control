@@ -19,6 +19,7 @@ import {
   checkStatus,
   checkStatusView,
   deliveryStateView,
+  disabledStatusFor,
   endStatus,
   gateSummaryStatus,
   gateWaitSentence,
@@ -242,9 +243,13 @@ export function WorkflowLadder({
             const node = nodeId ? nodes.get(nodeId) : undefined;
             const attempt = nodeId ? attempts.get(nodeId) : undefined;
             const outcome = attempt ? checkOutcomeOf(attempt) : null;
-            const status = member.kind === "check"
-              ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
-              : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
+            // The runs monitor's override, read-only here and under the same boundary: a
+            // switched-off gate the round has not reached reads Disabled, while an outcome
+            // this round already recorded keeps its real chip on the session tile too.
+            const status = disabledStatusFor(detail.run.disabledNodeIds, nodeId, attempt)
+              ?? (member.kind === "check"
+                ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
+                : reviewerStatus(nodeId ? statuses[nodeId] : undefined));
             const name = node
               ? nodeLabel(graph, node, personaNames)
               : member.kind === "check" ? `Check · ${member.slot}` : "Missing persona";

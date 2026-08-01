@@ -2591,6 +2591,22 @@ latest round is selected by default. The Inspector gate, completion claims, deli
 every recovery action always reflect the live run whatever round is on screen, and a note
 says so while an earlier one is selected.
 
+On a run that has not finished, **clicking a reviewer or check disables it for that run** -
+the row turns red with a ⊘ mark - and clicking it again re-enables it. Clicking a stage
+header switches every member of the stage at once. A disabled gate auto-passes instead of
+running: any round that has not reached it yet, the current one included, records a pass
+verdict that says plainly the gate was disabled, stamps no provider, and appears in the
+timeline as `Disabled node auto passed`. A gate already running or already finished this
+round keeps its real outcome - the red row treatment says the gate is switched off going
+forward, while the member's chip stays the viewed round's history: **Disabled** only for
+a gate the round has not reached (or the auto-pass itself), the recorded verdict
+otherwise, so a failure that already happened never reads as skipped. The switch is
+scoped to that one run - the published version, other runs of the same workflow, and the
+workflow editor are untouched - and it is how you force a phase to pass on the next
+resubmission when a reviewer keeps blocking for reasons outside the work. A **Disabled**
+chip never folds its stage to **Failed**; the stage counts it with the not-run gates
+("Passed, 1 not run"), and the session tile's compact ladder shows the same boundary.
+
 Verdicts are cards: the outcome, the reviewer, its summary, its approval rationale or
 requested changes with evidence references, and the runner, model, duration and cost that
 actually ran. Inspector gate state, Foreman completion claims and repair deliveries are the

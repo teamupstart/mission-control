@@ -17,6 +17,7 @@ import type {
   WorkflowCheckOutcome,
   WorkflowConfig,
 } from "@shared/workflow.ts";
+import type { WorkflowVerdictNode } from "@shared/workflow.ts";
 import {
   WORKFLOW_EXECUTION_LIMITS,
   checkOutcomePasses,
@@ -156,6 +157,35 @@ function checkVerdict(outcome: WorkflowCheckOutcome): PersonaVerdict | null {
     }],
     confidence: 1,
   });
+}
+
+/**
+ * The synthetic pass an operator-disabled node records instead of running.
+ *
+ * A real `PersonaVerdict`, for the reason `checkVerdict` is one: the Join reads outcomes,
+ * the repair packet reads requested changes, and run detail reads both, so a disabled gate
+ * that advanced through any other shape would need all three taught about it. The summary
+ * says plainly that nothing ran - the verdict must never read as an earned approval - and
+ * `confidence: 1` is honest here too: there is no doubt about what a disabled gate did.
+ *
+ * Routed through `normalizePersonaVerdict` like every other verdict so the strict schema
+ * is the single door; with fixed prose the normalization cannot refuse, but the null arm
+ * is still handled by every caller rather than asserted away.
+ */
+function disabledVerdict(node: WorkflowVerdictNode): PersonaVerdict | null {
+  const summary =
+    `${verdictAuthor(node)} is disabled for this run, so this gate auto-passed without running.`;
+  return normalizePersonaVerdict({
+    verdict: "pass",
+    summary,
+    approvalDetails: { reason: summary, evidence: [] },
+    confidence: 1,
+  });
+}
+
+/** The operator-disabled set, tolerant of rows written before the column existed. */
+function disabledNodes(run: WorkflowRun): readonly string[] {
+  return run.disabledNodeIds ?? [];
 }
 
 export class WorkflowEngine {
@@ -556,6 +586,19 @@ export class WorkflowEngine {
     const resolved = this.resolveAttempt(initial);
     if (!resolved) return;
     const { submission, run, version, node } = resolved;
+    // The operator disabled this node for this run: auto-pass instead of running it.
+    // Checked HERE, at claim time, rather than at attempt creation, so ONE synthesis site
+    // covers both halves of the promise - a node disabled before a round starts and a node
+    // disabled while its attempt is already queued. `resolveAttempt` re-read the run just
+    // now, so the set is current; an attempt that already started keeps its real outcome,
+    // which is exactly the "has not reached that phase yet" boundary.
+    if (isVerdictNode(node) && disabledNodes(run).includes(node.id)) {
+      const verdict = disabledVerdict(node);
+      if (verdict) {
+        this.runDisabledAttempt(initial, submission, run, version, node, verdict);
+        return;
+      }
+    }
     if (isCheck(node)) {
       await this.runCheckAttempt(initial, submission, run, version, node);
       return;
@@ -669,6 +712,60 @@ export class WorkflowEngine {
       nodeId: node.id,
       persona: node.persona.name,
       verdict: verdict.verdict,
+    }, this.now());
+    this.advanceStructure(submission, version);
+    this.onRunChanged(run.id);
+  }
+
+  /**
+   * Record the auto-pass for an operator-disabled node without running anything.
+   *
+   * The same claim -> stopped-submission guard -> atomic verdict-plus-receipts sequence a
+   * real attempt follows, so recovery, the round scrubber, and the repair packet read a
+   * disabled gate exactly the way they read every other finished attempt. `output_json`
+   * carries `disabled: true` beside the outcome so run detail can say why this "pass"
+   * exists without parsing the verdict's prose back apart.
+   */
+  private runDisabledAttempt(
+    initial: WorkflowNodeAttempt,
+    submission: WorkflowSubmission,
+    run: WorkflowRun,
+    version: WorkflowVersion,
+    node: WorkflowVerdictNode,
+    verdict: PersonaVerdict,
+  ): void {
+    // Null runner and model, as a Check records: no provider was ever asked.
+    const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
+    if (!claimed) return;
+    const author = verdictAuthor(node);
+    const latestRun = this.store.getRun(run.id);
+    const latestSubmission = this.store.getSubmission(submission.id);
+    if (latestRun?.status !== "running" || latestSubmission?.status !== "running") {
+      this.store.finishAttempt(claimed.id, {
+        state: "cancelled",
+        verdict: jsonValue(verdict),
+        error: "Audit-only result after the submission stopped",
+      }, this.now());
+      this.onRunChanged(run.id);
+      return;
+    }
+    const receiptPayload = jsonValue({
+      outcome: verdict.verdict,
+      persona: author,
+      verdict,
+    });
+    this.store.finishAttemptWithReceipts(claimed.id, {
+      verdict: jsonValue(verdict),
+      output: jsonValue({ outcome: verdict.verdict, disabled: true }),
+      receipts: edgesFrom(version.graph, node.id, verdict.verdict).map((edge) => ({
+        edgeId: edge.id,
+        payload: receiptPayload,
+      })),
+    }, this.now());
+    this.store.appendEvent(run.id, "disabled_node_auto_passed", {
+      nodeId: node.id,
+      persona: author,
+      submissionId: submission.id,
     }, this.now());
     this.advanceStructure(submission, version);
     this.onRunChanged(run.id);

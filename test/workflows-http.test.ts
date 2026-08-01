@@ -455,3 +455,89 @@ test("every mutating workflow route 409s on the shipped workflow and names Dupli
     201,
   );
 });
+
+test("per-run node disable validates ids, replays idempotently, and refuses finished runs", async () => {
+  const { request, store } = fixture();
+  const valid = await seedValid(request);
+  const publishedResponse = await request(`/api/workflows/${valid.workflow.id}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDraftRevision: 1 }),
+  });
+  const published = await publishedResponse.json() as { version: { id: string } };
+  const binding = store.insertBinding({
+    id: "toggle-binding",
+    workflowVersionId: published.version.id,
+    noteKey: "toggle-note",
+    sessionId: "toggle-session",
+    sessionAgent: "codex",
+    sessionName: "Toggle worker",
+    sessionCwd: "/repo",
+    sessionRepoRoot: "/repo",
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  store.createInitialSubmission({
+    id: "toggle-run",
+    binding,
+    triggerSource: "manual",
+    triggerKey: "toggle-run-trigger",
+    now: 2,
+  }, {
+    id: "toggle-submission",
+    triggerSource: "manual",
+    triggerKey: "toggle-submission-trigger",
+    context: {},
+    evidence: {},
+    now: 2,
+  });
+  const toggle = (body: object) => request("/api/workflow-runs/toggle-run/set-nodes-disabled", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+  // Shared parseBody schema, unknown run, and non-verdict node all refuse cleanly.
+  assert.equal((await toggle({})).status, 400);
+  assert.equal((await request("/api/workflow-runs/missing/set-nodes-disabled", {
+    method: "POST",
+    body: JSON.stringify({ requestId: "r-0", nodeIds: ["judge"], disabled: true }),
+  })).status, 404);
+  const session = await toggle({ requestId: "r-1", nodeIds: ["session"], disabled: true });
+  assert.equal(session.status, 404);
+  assert.match((await session.json() as { error: string }).error, /Persona or Check/);
+
+  // Disable, and the run row carries the set.
+  const disabled = await toggle({ requestId: "r-2", nodeIds: ["judge"], disabled: true });
+  assert.equal(disabled.status, 200);
+  const disabledBody = await disabled.json() as {
+    run: { disabledNodeIds: string[] };
+    idempotent: boolean;
+  };
+  assert.deepEqual(disabledBody.run.disabledNodeIds, ["judge"]);
+  assert.equal(disabledBody.idempotent, false);
+
+  // Run detail serves the same set, and the timeline names the gate that was switched.
+  const detail = await request("/api/workflow-runs/toggle-run");
+  const detailBody = await detail.json() as {
+    run: { disabledNodeIds: string[] };
+    events: Array<{ kind: string }>;
+  };
+  assert.deepEqual(detailBody.run.disabledNodeIds, ["judge"]);
+  assert.ok(detailBody.events.some((event) => event.kind === "node_disabled"));
+
+  // A replayed request id is acknowledged without a second write.
+  const replay = await toggle({ requestId: "r-2", nodeIds: ["judge"], disabled: true });
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json() as { idempotent: boolean }).idempotent, true);
+
+  // Enable restores the node with its own request identity.
+  const enabled = await toggle({ requestId: "r-3", nodeIds: ["judge"], disabled: false });
+  assert.deepEqual((await enabled.json() as { run: { disabledNodeIds: string[] } }).run.disabledNodeIds, []);
+
+  // A finished run can no longer be affected, so the toggle refuses rather than pretending.
+  store.cancelRun("toggle-run", "test_cleanup", 30);
+  const terminal = await toggle({ requestId: "r-4", nodeIds: ["judge"], disabled: true });
+  assert.equal(terminal.status, 409);
+  assert.equal((await terminal.json() as { code: string }).code, "workflow_conflict");
+});

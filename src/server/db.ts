@@ -446,7 +446,8 @@ export function openDb(): DatabaseSync {
       started_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL,
       completed_at          INTEGER,
-      evidence_pruned_at    INTEGER
+      evidence_pruned_at    INTEGER,
+      disabled_nodes_json   TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
       ON workflow_runs(trigger_key);
@@ -1347,6 +1348,11 @@ function migrate(d: DatabaseSync): void {
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
+  // Per-run operator-disabled verdict nodes (auto-pass). Nullable with no default: a run
+  // written before the column existed genuinely had nothing disabled, and NULL is exactly
+  // that. It lives on the run rather than the immutable version because the disable is
+  // scoped to one run and must never leak into other runs of the same published workflow.
+  addColumn(d, "workflow_runs", "disabled_nodes_json", "TEXT");
   // The optional post-selection Workflow handoff snapshot. Editing the CREATE TABLE block above
   // is not enough - it is IF NOT EXISTS, so an operator upgrading from a Phase 3-5 build keeps
   // the ensemble_runs they already have, and every run write would fail on a column that never

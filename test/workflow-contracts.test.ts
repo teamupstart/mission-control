@@ -8,6 +8,7 @@ import {
   PublishedWorkflowGraphSchema,
   ReattachWorkflowBindingSchema,
   RestartFullWorkflowSchema,
+  SetWorkflowNodesDisabledSchema,
   UpdatePersonaSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowCompletionPolicySchema,
@@ -305,6 +306,33 @@ test("Inspector run actions require parsed request identity and bound restart co
   });
   assert.throws(() => WorkflowRunActionSchema.parse({ requestId: "" }));
   assert.throws(() => RestartFullWorkflowSchema.parse({}));
+});
+
+test("the per-run node disable toggle names its nodes, its direction, and its request", () => {
+  assert.deepEqual(SetWorkflowNodesDisabledSchema.parse({
+    requestId: "toggle-1",
+    nodeIds: ["judge-node"],
+    disabled: true,
+  }), {
+    requestId: "toggle-1",
+    nodeIds: ["judge-node"],
+    disabled: true,
+  });
+  // Both halves of the toggle are explicit; there is no "flip whatever it was" request,
+  // which would race a second operator's click.
+  assert.equal(SetWorkflowNodesDisabledSchema.parse({
+    requestId: "toggle-2",
+    nodeIds: ["a", "b"],
+    disabled: false,
+  }).disabled, false);
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ requestId: "toggle-3", nodeIds: [], disabled: true }));
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ requestId: "toggle-4", nodeIds: ["a"] }));
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ nodeIds: ["a"], disabled: true }));
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({
+    requestId: "toggle-5",
+    nodeIds: Array.from({ length: WORKFLOW_LIMITS.graphNodes + 1 }, (_, index) => `node-${index}`),
+    disabled: true,
+  }));
 });
 
 test("Persona model role names the working environment variable and balanced fallback", () => {

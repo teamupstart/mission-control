@@ -1145,6 +1145,16 @@ export interface WorkflowRun {
   inspectorPrKey: string | null;
   inspectorHeadSha: string | null;
   gateState: WorkflowJson | null;
+  /**
+   * Verdict node ids (Persona or Check) the operator disabled FOR THIS RUN ONLY.
+   *
+   * A disabled node auto-passes instead of running - the operator's way of forcing a gate
+   * past a reviewer that keeps failing for reasons outside the work under review. It lives
+   * on the run rather than the version because the version is immutable and shared: other
+   * runs of the same workflow must keep running the gate. Optional so a detail payload
+   * written by an older daemon still parses; absent reads as "nothing disabled".
+   */
+  disabledNodeIds?: string[];
   startedAt: number;
   updatedAt: number;
   completedAt: number | null;

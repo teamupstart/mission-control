@@ -2613,13 +2613,28 @@ object database rather than prefix-matched.
 thing that talks to a provider, and the action reads what it wrote down - which is also why a
 freshly opened pull request can take up to one poll interval to be seen.
 
-While it waits, the run says which of two things it is waiting for, because the remedies
+While it waits, the run says which of four things it is waiting for, because the remedies
 differ:
 
 | State | What it means |
 |---|---|
 | **Awaiting PR** | The turn finished and no adopted pull request names this repository and branch yet. |
 | **Awaiting push** | The pull request is open, and the reviewed commit has not reached it. |
+| **PR on another repo** | This turn opened a pull request, and it is against a different repository. |
+| **PR on another branch** | This turn opened a pull request on this repository, from a different branch. |
+
+The last two are the ones worth having separately. "No pull request yet" and "a pull request
+was opened somewhere else" look identical from the outside and are opposite problems - one is
+work that has not finished, the other is work that finished and landed off target - so an
+operator told only "awaiting" would keep watching for something that already exists where they
+are not looking. Both are still waits rather than blocks: a turn that opened a stray pull
+request first and the right one second recovers on its own, with nothing retyped.
+
+Mission Control claims a stray only when it can prove one: the pull request has to have been
+adopted from the bound session after this action's instruction was delivered, and its
+repository or branch has to be **known and different**. A pull request the poller has not
+looked at yet has neither recorded, and that reads as *Awaiting PR* - the ordinary case for one
+opened seconds ago - rather than as your session's mistake.
 
 If the checkout moves between the proof and the capture - an agent that pushed and then kept
 working - the captured segment is held to the commit it actually holds, and the action waits
@@ -2853,6 +2868,8 @@ because it judged nothing:
 | Verifying | Settled, and the completion this action asks for wants evidence it does not have yet. |
 | Awaiting PR | Settled, and no adopted pull request names this repository and branch yet. |
 | Awaiting push | The pull request is open, and the reviewed commit has not reached it. |
+| PR on another repo | This turn opened a pull request against a different repository. |
+| PR on another branch | This turn opened a pull request from a different branch. |
 | Capturing evidence | The completion is satisfied and the fresh evidence is being captured. |
 | Complete | The turn finished and the downstream evidence exists. |
 

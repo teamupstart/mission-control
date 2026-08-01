@@ -409,6 +409,11 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       observedHeadOid: full(atHead ?? head.sha),
       observedState: "OPEN",
       observedAt: 1,
+      // Attributable to the bound session and adopted after any packet this file delivers, so
+      // a test that moves the row off-branch reproduces the stray case rather than the
+      // unattributable one.
+      sessionId,
+      adoptedAt: Number.MAX_SAFE_INTEGER,
       ...rest,
     });
   };
@@ -1165,7 +1170,7 @@ test("a pull request action waits after its turn until a matching pull request i
   }
 });
 
-test("a pull request on another branch or repository never satisfies the action", async () => {
+test("a pull request on another branch never satisfies the action, and says which mistake it was", async () => {
   const h = await harness("pr-wrong", { pullRequest: true });
   try {
     const runId = await runToAction(h);
@@ -1175,13 +1180,29 @@ test("a pull request on another branch or repository never satisfies the action"
     );
     h.runActionTurn();
 
-    // Same commit, wrong branch - a stacked branch, or a release branch cherry-picked onto.
+    // Same commit, wrong branch - a stacked branch, or one that was never switched.
     h.adoptPr({ branch: "some-other-branch" });
-    // Same commit and branch, another checkout entirely.
-    h.adoptPr({ key: "owner/other#1", number: 1, repositoryRoot: "/elsewhere" });
     for (let tick = 0; tick < 3; tick += 1) await h.manager.sweepSessionActions(SETTLED());
-    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+    // Reported as its own state and NOT as `awaiting_pull_request`: an operator watching for a
+    // pull request that has already been opened somewhere else is the failure this separates.
+    assert.equal(h.store.runSummary(runId)?.actionWait, "pull_request_wrong_branch");
     assert.equal(h.store.listSubmissions(runId).length, 1);
+    assert.equal(h.injected.length, 1);
+
+    // Same commit and branch, another checkout entirely: the larger mistake wins.
+    h.adoptPr({ key: "owner/other#1", number: 1, repositoryRoot: "/elsewhere" });
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.runSummary(runId)?.actionWait, "pull_request_wrong_repository");
+
+    // A WAIT throughout, never a block: the turn may still open the right pull request, and
+    // when it does the run advances without anything being retyped.
+    assert.equal(waitingAttempt(h, runId)?.state, "waiting");
+    h.adoptPr();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.listSubmissions(runId).length === 2,
+      "the right pull request never rescued a run that had reported a stray one",
+    );
     assert.equal(h.injected.length, 1);
   } finally {
     await h.stop();

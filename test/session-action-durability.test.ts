@@ -563,7 +563,7 @@ test("blocking an action is a run state, never a verdict or a spent repair round
 test("every wait reason is a WAIT, and every block code is closed", () => {
   // The two vocabularies are separate because they reach different readers: a wait is
   // something the runtime is still doing, a block is something a human has to resolve.
-  assert.equal(SESSION_ACTION_WAIT_REASONS.length, 9);
+  assert.equal(SESSION_ACTION_WAIT_REASONS.length, 11);
   assert.equal(new Set(SESSION_ACTION_WAIT_REASONS).size, SESSION_ACTION_WAIT_REASONS.length);
   assert.equal(new Set(SESSION_ACTION_BLOCK_CODES).size, SESSION_ACTION_BLOCK_CODES.length);
   for (const reason of SESSION_ACTION_WAIT_REASONS) {

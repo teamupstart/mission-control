@@ -544,6 +544,25 @@ export const SESSION_ACTION_WAIT_REASONS = [
   "awaiting_pull_request",
   /** A matching pull request exists and its observed remote head is not the local head yet. */
   "awaiting_pushed_head",
+  /**
+   * This action's own turn opened a pull request, and it is against a DIFFERENT repository.
+   *
+   * Its own reason rather than `awaiting_pull_request`, because the two are opposite problems
+   * wearing the same words. "No pull request yet" is something waiting can fix; this is the
+   * turn having produced one and sent it somewhere else - a second checkout of another
+   * repository, usually - and no amount of waiting moves it. A single "awaiting" state left an
+   * operator watching for a pull request that had already been opened where they were not
+   * looking.
+   */
+  "pull_request_wrong_repository",
+  /**
+   * This action's own turn opened a pull request on this repository, from another BRANCH.
+   *
+   * Distinct from the repository case because the remedy is: the work is in the right project
+   * and the pull request is off the wrong head - a branch that was never switched, or one
+   * pushed before the last checkout.
+   */
+  "pull_request_wrong_branch",
 ] as const;
 export type SessionActionWaitReason = (typeof SESSION_ACTION_WAIT_REASONS)[number];
 

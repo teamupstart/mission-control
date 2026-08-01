@@ -760,6 +760,12 @@ const ACTION_WAIT_SENTENCES: Record<SessionActionWaitReason, string> = {
     "The turn finished. Waiting for a pull request on this branch that Mission Control opened.",
   awaiting_pushed_head:
     "The pull request is open. Waiting for the reviewed commit to reach it.",
+  pull_request_wrong_repository:
+    "This turn opened a pull request in a different repository, so it is not the one this "
+    + "action is for. Open one on this repository, or reset the run.",
+  pull_request_wrong_branch:
+    "This turn opened a pull request from a different branch, so it does not carry the "
+    + "reviewed commit. Open one from this branch, or reset the run.",
 };
 
 export function actionWaitSentence(reason: SessionActionWaitReason): string {
@@ -796,6 +802,13 @@ const ACTION_WAIT_STATUSES: Record<SessionActionWaitReason, PipelineStatus> = {
   // tell a session that never ran the skill from one whose push had not landed.
   awaiting_pull_request: { tone: "running", label: "Awaiting PR" },
   awaiting_pushed_head: { tone: "running", label: "Awaiting push" },
+  // The one pair here that is NOT the running tone. Everything else in this table is the
+  // runtime working and needing nothing; these two are a turn that finished and put its pull
+  // request somewhere else, which no amount of waiting corrects on its own. Amber-as-attention
+  // is the tone the fleet already uses for that - and deliberately not "failed", because
+  // nothing has judged the work and a later adoption can still resolve it.
+  pull_request_wrong_repository: { tone: "waiting", label: "PR on another repo" },
+  pull_request_wrong_branch: { tone: "waiting", label: "PR on another branch" },
 };
 
 /**

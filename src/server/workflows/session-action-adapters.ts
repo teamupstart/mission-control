@@ -91,6 +91,17 @@ export interface SessionActionAdoptedPullRequest {
   observedState: "OPEN" | "CLOSED" | "MERGED" | null;
   /** When that poll happened, or null until the first one. */
   observedAt: number | null;
+  /**
+   * The session that opened it, or null - a pull request outlives the session, deliberately.
+   *
+   * Read for ONE purpose: telling "this turn produced no pull request" apart from "this turn
+   * produced one somewhere else". It is never part of the positive proof - see
+   * `matchesActionWork` for why an earlier session's pull request on this branch is still
+   * this branch's pull request.
+   */
+  sessionId: string | null;
+  /** When Mission Control adopted it. Bounds a mismatch to THIS action's turn. */
+  adoptedAt: number;
 }
 
 /**
@@ -209,6 +220,26 @@ function belongsToBranch(
 }
 
 /**
+ * Whether this action's own turn is what produced a pull request.
+ *
+ * Both halves are load-bearing, and they are what make a mismatch a FACT rather than an
+ * inference from absence. The bound session is the only one this action typed into, and the
+ * delivery instant is what separates the pull request this turn opened from one the same
+ * session opened for earlier work - which is still on the branch it belonged to and is not
+ * evidence of anything going wrong here.
+ *
+ * A row whose session link is null fails it, and that is the right way round: an adoption
+ * nobody can attribute must not be reported to an operator as their session's mistake.
+ */
+function openedByThisTurn(
+  pr: SessionActionAdoptedPullRequest,
+  sessionId: string,
+  deliveredAt: number,
+): boolean {
+  return pr.sessionId === sessionId && pr.adoptedAt >= deliveredAt;
+}
+
+/**
  * The completion that requires a real, open, adopted pull request at the reviewed commit.
  *
  * The generic observer has already proven the turn ran and settled. That is the easy half and
@@ -292,6 +323,28 @@ const pullRequest: SessionActionAdapter = {
     // reason this is its own wait reason rather than a generic "verifying".
     if (onBranch.some((pr) => pr.observedState === "OPEN")) {
       return { kind: "waiting", reason: "awaiting_pushed_head" };
+    }
+    // Nothing on this branch. Before reporting that as "no pull request yet", ask whether this
+    // turn opened one SOMEWHERE ELSE, because those two states look identical from here and
+    // are opposite problems: one is waiting for work that has not finished, the other is work
+    // that finished and landed off target. Reported as a wait rather than a block because a
+    // later adoption can still put the right pull request on this branch - a block would end
+    // the run for a turn that opened a stray pull request first and the right one second.
+    const strays = context.adoptedPullRequests.filter(
+      (pr) => openedByThisTurn(pr, context.session.id, context.deliveredAt),
+    );
+    // Repository first: a pull request in another repository is the larger mistake, and a
+    // branch comparison across two repositories would be meaningless anyway.
+    //
+    // Both tests demand a KNOWN value that DIFFERS, never merely one that fails to match.
+    // A row the poller has not reached yet carries a null branch and a null head, and reading
+    // that as "not this branch" would report a pull request opened seconds ago - the ordinary
+    // case - as an operator's mistake. Unknown is unknown, and unknown waits.
+    if (strays.some((pr) => pr.repositoryRoot !== null && pr.repositoryRoot !== repository.root)) {
+      return { kind: "waiting", reason: "pull_request_wrong_repository" };
+    }
+    if (strays.some((pr) => pr.branch !== null && pr.branch !== repository.branch)) {
+      return { kind: "waiting", reason: "pull_request_wrong_branch" };
     }
     // Nothing adopted for this branch at all - including the ordinary case where the pull
     // request was opened moments ago and the poller has not looked yet.

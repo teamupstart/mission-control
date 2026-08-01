@@ -144,6 +144,13 @@ A SessionAction is a durable side effect, not an evaluator:
   head keeps moving.
 - Only a closed or merged pull request AT the reviewed commit blocks. Everything else waits,
   including a provider that could not be reached: waiting is recoverable and a block is not.
+- A stray pull request is a NAMED state, not the absence of one. `pull_request_wrong_repository`
+  and `pull_request_wrong_branch` separate "this turn produced nothing yet" from "this turn
+  produced one somewhere else", which look identical from the ledger and are opposite problems.
+  Both require positive proof: adopted from the bound session at or after the delivery instant,
+  with a repository root or branch that is KNOWN and differs. A row the poller has not reached
+  carries neither, and unknown must read as waiting - reporting an unobserved adoption as a
+  mismatch accuses an operator's session of a mistake it did not make.
 - Refusal, lost authorization, an exited session or an infrastructure failure BLOCK the run with
   an action-specific code. They never become a Persona verdict, a repair packet, or a spent
   repair round. A REFUSED packet blocks (`delivery_refused`) because nothing was typed and

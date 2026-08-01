@@ -25,6 +25,7 @@ const REPO = "/repo";
 const BRANCH = "feature/x";
 const HEAD = "a".repeat(40);
 const OTHER_HEAD = "b".repeat(40);
+const SESSION = "sess-1";
 
 const pr = (
   patch: Partial<SessionActionAdoptedPullRequest> = {},
@@ -37,6 +38,11 @@ const pr = (
   observedHeadOid: HEAD,
   observedState: "OPEN",
   observedAt: 1_000,
+  // Adopted by the bound session, after the packet landed: the default row is one this turn
+  // produced, so a test that moves it off-branch reproduces the stray case rather than the
+  // unattributable one.
+  sessionId: SESSION,
+  adoptedAt: 20,
   ...patch,
 });
 
@@ -46,9 +52,9 @@ const decide = (
 ) =>
   ADAPTER.decide({
     snapshot: {} as SessionActionSnapshot,
-    session: {} as never,
+    session: { id: SESSION } as never,
     anchorTranscriptBytes: 10,
-    deliveredAt: 1,
+    deliveredAt: 10,
     pickedUpAt: 2,
     settledAt: 3,
     now: 5_000,
@@ -109,16 +115,58 @@ test("no adopted pull request at all waits for one", () => {
   assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
 });
 
-test("an adopted pull request on another branch is not this action's", () => {
-  // A stacked branch, or a release branch someone cherry-picked onto, can carry this exact
-  // commit. Matching on the commit alone would let either of them satisfy the action.
+test("a pull request THIS TURN opened on another branch says so, and is not mistaken for none", () => {
+  // The state an operator most needs told apart from "no pull request yet": the turn finished
+  // and put its pull request on a branch this action is not about. A stacked branch, or one
+  // that was never switched, can carry this exact commit - so matching on the commit alone
+  // would have let it satisfy the action, and reporting it as "awaiting" would have left
+  // somebody watching for a pull request that already existed where they were not looking.
   const decision = decide([pr({ branch: "other-branch" })]);
-  assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
+  assert.deepEqual(decision, { kind: "waiting", reason: "pull_request_wrong_branch" });
 });
 
-test("an adopted pull request in another repository is not this action's", () => {
+test("a pull request THIS TURN opened in another repository says which mistake it was", () => {
+  // Reported separately from the branch case because the remedy differs: the work is in the
+  // wrong project rather than off the wrong head, and a branch comparison across two
+  // repositories would be meaningless anyway.
   const decision = decide([pr({ repositoryRoot: "/somewhere/else" })]);
-  assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
+  assert.deepEqual(decision, { kind: "waiting", reason: "pull_request_wrong_repository" });
+});
+
+test("the repository mismatch is reported ahead of a branch mismatch beside it", () => {
+  const decision = decide([
+    pr({ key: "owner/repo#8", number: 8, branch: "other-branch" }),
+    pr({ key: "owner/other#1", number: 1, repositoryRoot: "/somewhere/else" }),
+  ]);
+  assert.deepEqual(decision, { kind: "waiting", reason: "pull_request_wrong_repository" });
+});
+
+test("a stray pull request nobody can attribute is never reported as this session's mistake", () => {
+  // Two ways a row fails attribution, and both must fall back to the honest "nothing yet"
+  // rather than accusing an operator's session of opening something it did not.
+  //
+  // A null session link is a pull request that outlived the session that opened it. An
+  // adoption OLDER than this action's delivery is the same session's earlier work - still on
+  // the branch it belonged to, and no evidence at all about this turn.
+  assert.deepEqual(
+    decide([pr({ branch: "other-branch", sessionId: null })]),
+    { kind: "waiting", reason: "awaiting_pull_request" },
+  );
+  assert.deepEqual(
+    decide([pr({ branch: "other-branch", sessionId: "some-other-session" })]),
+    { kind: "waiting", reason: "awaiting_pull_request" },
+  );
+  assert.deepEqual(
+    decide([pr({ branch: "other-branch", adoptedAt: 9 })]),
+    { kind: "waiting", reason: "awaiting_pull_request" },
+  );
+});
+
+test("a correct pull request on this branch always wins over a stray beside it", () => {
+  // A turn that opened a stray first and the right one second must complete, not sit reporting
+  // the stray. The mismatch arms are reached only when nothing is on this branch at all.
+  const decision = decide([pr({ key: "owner/other#1", number: 1, repositoryRoot: "/elsewhere" }), pr()]);
+  assert.equal(decision.kind, "complete");
 });
 
 test("an open pull request on this branch at an older head waits for the push", () => {
@@ -137,6 +185,23 @@ test("an adopted pull request the poller has never looked at waits", () => {
     branch: null,
   })]);
   assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
+});
+
+test("an unpolled pull request is UNKNOWN, never reported as being on the wrong branch", () => {
+  // The distinction the mismatch arms turn on, stated on its own because it is the one that
+  // false-accuses if it is got wrong. A row adopted seconds ago by this very turn has a null
+  // branch and a null repository root because the poller has not reached it - which is the
+  // ORDINARY case, not a mistake. Only a known value that DIFFERS is a mismatch.
+  assert.deepEqual(
+    decide([pr({ branch: null, repositoryRoot: null, observedHeadOid: null, observedState: null })]),
+    { kind: "waiting", reason: "awaiting_pull_request" },
+  );
+  // And a row whose repository is known and correct but whose branch is not yet observed is
+  // still just unobserved.
+  assert.deepEqual(
+    decide([pr({ branch: null, observedHeadOid: null, observedState: null })]),
+    { kind: "waiting", reason: "awaiting_pull_request" },
+  );
 });
 
 test("a repository that could not be read waits rather than deciding anything", () => {

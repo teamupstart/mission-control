@@ -3721,6 +3721,8 @@ export class WorkflowManager {
       observedHeadOid: pr.observedHeadSha,
       observedState: pr.observedState,
       observedAt: pr.observedAt,
+      sessionId: pr.sessionId,
+      adoptedAt: pr.adoptedAt,
     }));
   }
 

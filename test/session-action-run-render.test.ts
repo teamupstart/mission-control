@@ -351,6 +351,31 @@ test("the two pull request waits explain different work, and neither is a verdic
   assert.equal(sessionActionStatus("waiting", "awaiting_pushed_head").tone, "running");
 });
 
+test("a stray pull request reads as attention, and never as the absence of one", () => {
+  // The two states that separate "the turn produced nothing yet" from "the turn produced one
+  // somewhere else". They are the pair an operator most needs told apart, so they must not
+  // share a sentence or a chip with `awaiting_pull_request` - which is what collapsing them
+  // into it did.
+  const missing = actionWaitSentence("awaiting_pull_request");
+  for (const reason of ["pull_request_wrong_repository", "pull_request_wrong_branch"] as const) {
+    const sentence = actionWaitSentence(reason);
+    assert.notEqual(sentence, missing);
+    assert.match(sentence, /pull request/i);
+    // Each names its own remedy, because the two mistakes are fixed differently.
+    assert.match(sentence, /reset the run/i);
+    // Attention rather than "the runtime is working", and still not a failure: nothing has
+    // judged the work, and a later adoption can still resolve it.
+    assert.equal(sessionActionStatus("waiting", reason).tone, "waiting");
+    assert.doesNotMatch(sessionActionStatus("waiting", reason).label, /^Passed$|^Failed$/);
+  }
+  assert.match(actionWaitSentence("pull_request_wrong_repository"), /repositor/i);
+  assert.match(actionWaitSentence("pull_request_wrong_branch"), /branch/i);
+  assert.notDeepEqual(
+    sessionActionStatus("waiting", "pull_request_wrong_repository"),
+    sessionActionStatus("waiting", "pull_request_wrong_branch"),
+  );
+});
+
 test("an unknown completion kind names itself instead of taking the panel down", () => {
   // The kinds are append-only and reach the browser unvalidated over SSE, so a daemon one
   // version ahead must not turn every row that names one into a TypeError.

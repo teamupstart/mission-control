@@ -482,7 +482,7 @@
 </div>
 
 <div class="call warn">
-  <div class="ct"><span class="dot" style="background:var(--warn)"></span>Two consequences of "runner: codex"</div>
+  <div class="ct"><span class="dot" style="background:var(--warn)"></span>One current consequence of "runner: codex"</div>
   <p>
     <strong>1. The Inspector gets no tools.</strong> <code>codexRunner.sandbox</code> is
     <code>null</code>, so <code>inspectorRunOptions</code> omits the tool grant entirely
@@ -493,11 +493,9 @@
     on Claude it would be closer to an order of magnitude more.
   </p>
   <p>
-    <strong>2. Neither subsystem's spend reaches Mission Control's own cost ledger.</strong> The
-    only writer of <code>usage_ledger</code> is <code>applyOtelMetrics</code>
-    (<span class="src">registry.ts:3608</span>), fed by the OTLP route from Claude Code sessions.
-    Headless runs spawn as <code>codex exec --ephemeral --ignore-user-config</code>, which exports
-    nothing. <strong>The fleet cost figure on the dashboard excludes both loops entirely.</strong>
+    The spend-visibility consequence measured in this snapshot has since been fixed. See
+    <a href="#waste">defect 5</a> below and the current
+    <a href="../README.md#cost-telemetry">cost telemetry contract</a>.
   </p>
 </div>
 
@@ -1099,15 +1097,14 @@
   </p>
 </div>
 
-<div class="call bad">
-  <div class="ct"><span class="dot" style="background:var(--critical)"></span>5. This spend is invisible to the cost dashboard</div>
+<div class="call good">
+  <div class="ct"><span class="dot" style="background:var(--good)"></span>5. This spend was invisible to the cost dashboard (fixed)</div>
   <p>
-    <code>usage_ledger</code> has exactly one writer, <code>applyOtelMetrics</code>, fed by the
-    OTLP route that Claude Code sessions push to. Foreman and Inspector runs on the codex runner
-    spawn with <code>--ignore-user-config</code> and export nothing. Even on the Claude runner they
-    would land under a fresh <code>session.id</code> per run, orphaned from any card, and
-    <code>foremanStatus</code> scopes its counts to live sessions. <strong>The fleet cost number
-    you are looking at excludes both loops.</strong>
+    Mission Control now records the Foreman's and Inspector's returned run usage as a separate
+    automation line with a per-role breakdown. The current behavior is owned by the
+    <a href="../README.md#what-the-app-spends-on-itself">Cost telemetry documentation</a> and
+    guarded by <code>test/automation-usage.test.ts</code> and
+    <code>test/foreman-spend-delivery.test.ts</code>.
   </p>
 </div>
 

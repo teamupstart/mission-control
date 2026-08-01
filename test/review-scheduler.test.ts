@@ -170,6 +170,7 @@ test("context compaction and Persona attempts spend one injected daemon budget",
     label: id,
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     run: async () => enter(async () => {

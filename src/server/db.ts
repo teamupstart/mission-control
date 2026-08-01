@@ -727,6 +727,19 @@ export function openDb(): DatabaseSync {
       -- row with the newer running total). SUM over rows is correct in both cases.
       window_end_ns TEXT NOT NULL,
       ts            INTEGER NOT NULL,        -- window end in epoch ms, for range queries
+      -- Who the spend belongs to: 'session' for work a human asked a card to do,
+      -- 'automation' for a headless run one of the autonomous loops made on its own.
+      --
+      -- A column rather than a prefix test on note_key, because four separate aggregate
+      -- queries need the distinction and 'note_key LIKE ''foreman:%'' OR ...' repeated in
+      -- each is a convention enforced nowhere - the fifth query would silently omit a role.
+      -- The DEFAULT is what makes the migration correct on an existing database: every row
+      -- written before this column existed came from a session's OTel or rollout stream.
+      --
+      -- An automation row keys window_end_ns to the RUN's own id (claude's session_id,
+      -- codex's thread_id) rather than an export window, which is what makes a retried
+      -- report idempotent and what lets SESSION_SPEND_ONLY find a claude run's OTel twin.
+      spend_kind    TEXT NOT NULL DEFAULT 'session',
       cost_usd      REAL NOT NULL DEFAULT 0,
       cost_basis    TEXT NOT NULL DEFAULT 'reported',
       cost_known    INTEGER NOT NULL DEFAULT 1,
@@ -740,6 +753,9 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_ledger_key ON usage_ledger(note_key, ts);
     CREATE INDEX IF NOT EXISTS idx_ledger_ts  ON usage_ledger(ts);
+    -- The index on spend_kind is NOT here: this block runs before migrate() adds that
+    -- column, so an existing database would fail to open on a CREATE naming it. See the
+    -- addColumn beside it.
 
     -- Durable byte cursors for harness-owned append-only usage sources. The event rows
     -- and cursor move in one transaction, so a crash can replay but cannot skip usage.
@@ -1416,6 +1432,17 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "usage_ledger", "cost_known", "INTEGER NOT NULL DEFAULT 1");
   addColumn(d, "usage_ledger", "pricing_version", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "usage_ledger", "reasoning_output", "INTEGER NOT NULL DEFAULT 0");
+  // Every row that predates headless spend accounting came from a session's own stream, so
+  // 'session' is the truthful backfill rather than an unknown bucket. The one population it
+  // gets wrong is the orphan OTel rows a `claude -p` Foreman run left behind before this
+  // existed; those stay counted as session spend, because relabelling them would mean
+  // guessing which uuid was a headless run from the shape of its rows.
+  addColumn(d, "usage_ledger", "spend_kind", "TEXT NOT NULL DEFAULT 'session'");
+  // Created HERE, not in the CREATE TABLE block, because that block runs first and an
+  // upgraded database has no spend_kind column until the line above. Automation rows are a
+  // small minority of the table, but every fleet read now filters on them - twice, since
+  // the session total also has to exclude their OTel twins.
+  d.exec("CREATE INDEX IF NOT EXISTS idx_ledger_kind ON usage_ledger(spend_kind, ts)");
   addColumn(d, "usage_sources", "discard_partial", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "usage_sources", "file_id", "TEXT NOT NULL DEFAULT ''");
 
@@ -3747,6 +3774,154 @@ export function commitUsageRead(input: {
   }
 }
 
+/** One model's usage from a headless run, already valued by its runner. */
+export interface AutomationUsageRow {
+  modelId: string;
+  input: number;
+  output: number;
+  reasoningOutput: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** Null when the runner declined to value it; stored as cost_known = 0. */
+  costUsd: number | null;
+  basis: string;
+  pricingVersion: string;
+}
+
+/**
+ * Record one finished headless run: a row per model, keyed to the ROLE that spent it.
+ *
+ * `note_key` is the role rather than a session, which is the whole point - these runs have
+ * no card, and until they had a key of their own their spend was either absent from the
+ * ledger (Codex, which exports nothing from an ephemeral run) or present under a uuid
+ * belonging to nothing (Claude, whose headless runs still export OTel under a fresh session
+ * id). Either way it was unanswerable. A stable key per role makes "what does the Inspector
+ * cost" a query.
+ *
+ * `session_id` is NULL by construction. The column is provenance - which live card we
+ * believed the key belonged to - and asserting one here would be inventing the very link
+ * this whole path exists because it does not exist.
+ *
+ * ON CONFLICT DO NOTHING, unlike `upsertUsageCell`'s replace and `commitUsageRead`'s
+ * provenance fill. The conflict target is (note_key, model_id, query_source, window_end_ns)
+ * and `window_end_ns` holds the RUN's own id, so a conflict means precisely "this exact run
+ * was already recorded" - which happens when the Foreman worker retries a POST it never saw
+ * the response to. The row is immutable economic history and the retry carries identical
+ * numbers, so the correct action is to keep the first and add nothing.
+ */
+export function recordAutomationUsage(input: {
+  role: string;
+  agent: string;
+  runId: string;
+  ts: number;
+  models: AutomationUsageRow[];
+}): void {
+  const d = openDb();
+  const insert = d.prepare(
+    `INSERT INTO usage_ledger
+       (note_key, session_id, agent, model_id, query_source, window_end_ns, ts,
+        cost_usd, cost_basis, cost_known, pricing_version, input, output,
+        reasoning_output, cache_read, cache_write, spend_kind)
+     VALUES (?, NULL, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'automation')
+     ON CONFLICT(note_key, model_id, query_source, window_end_ns) DO NOTHING`,
+  );
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    for (const m of input.models) {
+      insert.run(
+        input.role,
+        input.agent,
+        m.modelId,
+        input.runId,
+        input.ts,
+        m.costUsd ?? 0,
+        m.costUsd === null ? "unpriced" : m.basis,
+        m.costUsd === null ? 0 : 1,
+        m.pricingVersion,
+        m.input,
+        m.output,
+        m.reasoningOutput,
+        m.cacheRead,
+        m.cacheWrite,
+      );
+    }
+    d.exec("COMMIT;");
+  } catch (err) {
+    try { d.exec("ROLLBACK;"); } catch {}
+    throw err;
+  }
+}
+
+/**
+ * The SQL predicate for "this row is a card's spend, not the app's own".
+ *
+ * Two clauses, and the second is the subtle one. Excluding automation rows is obvious. The
+ * subquery excludes their TWINS: a headless `claude -p` run is Claude Code, so it exports
+ * OTel exactly as a human's session does, under the fresh session id it minted for itself.
+ * Those datapoints arrive with a real `session.id`, so `applyOtelMetrics` accepts them - as
+ * it should, it cannot tell - and they land as ordinary session rows under a note key that
+ * matches no card and never will. They were being counted as fleet session spend before
+ * this existed; now that the same run is recorded properly under its role, counting them
+ * too would bill it twice.
+ *
+ * Matching on `window_end_ns` is what makes this exact rather than a heuristic: an
+ * automation row stores the run's own id there, and that id IS the note key its OTel twin
+ * arrived under. No prefix guessing, no timing assumption - the twin can arrive before or
+ * after the report, since this is resolved at read time.
+ *
+ * `sessionCostFor` applies the first clause only. A card cannot hold a role as its note key,
+ * so the filter is belt-and-braces rather than load-bearing - but it makes "automation
+ * spend never appears on a card" a property of the query instead of a property of what
+ * callers happen to pass. The twin subquery is deliberately NOT added there: that is a
+ * per-card read on a hot path, and a twin's note key is a uuid no session ever holds.
+ */
+const SESSION_SPEND_ONLY =
+  `spend_kind = 'session'
+     AND note_key NOT IN (SELECT window_end_ns FROM usage_ledger WHERE spend_kind = 'automation')`;
+
+/** One role's headless spend over a window. */
+export interface AutomationRoleSpend {
+  role: string;
+  costUsd: number | null;
+  tokens: number;
+  runs: number;
+}
+
+/**
+ * What each role spent since `tsMs`, newest-heaviest first.
+ *
+ * Grouped by role rather than returned as one figure because the roles are the answerable
+ * unit: "the loops cost $9 today" prompts no action, while "Foreman verify cost $6 of it"
+ * points at the 106 KB prompt that did it. `runs` counts DISTINCT run ids rather than rows,
+ * since a run that used two models writes two.
+ *
+ * Cost is null for a role whose window contains an unpriced row, on exactly the rule
+ * `fleetEstimatedCostSince` uses: a subtotal of the priced rows would read as a total.
+ */
+export function automationSpendSince(tsMs: number): AutomationRoleSpend[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT note_key AS role,
+              SUM(CASE WHEN cost_known = 1 THEN cost_usd ELSE 0 END) AS cost,
+              SUM(CASE WHEN cost_known = 0 THEN 1 ELSE 0 END) AS unknown,
+              SUM(input + output + cache_read + cache_write) AS tokens,
+              COUNT(DISTINCT window_end_ns) AS runs
+         FROM usage_ledger
+        WHERE spend_kind = 'automation' AND ts >= ?
+        GROUP BY note_key
+        ORDER BY cost DESC, tokens DESC`,
+    )
+    .all(tsMs) as unknown as Array<{
+      role: string; cost: number | null; unknown: number | null; tokens: number | null; runs: number;
+    }>;
+  return rows.map((r) => ({
+    role: r.role,
+    costUsd: (r.unknown ?? 0) > 0 ? null : (r.cost ?? 0),
+    tokens: r.tokens ?? 0,
+    runs: r.runs,
+  }));
+}
+
 /**
  * One session's estimated API-equivalent cost, or null when the ledger has never heard
  * of its key.
@@ -3765,7 +3940,7 @@ export function sessionCostFor(noteKey: string): SessionCost | null {
     .prepare(
       `SELECT cost_basis, cost_known, cost_usd, input, output, reasoning_output,
               cache_read, cache_write, model_id, pricing_version, ts
-         FROM usage_ledger WHERE note_key = ?`,
+         FROM usage_ledger WHERE note_key = ? AND spend_kind = 'session'`,
     )
     .all(noteKey) as unknown as Array<{
       cost_basis: string; cost_known: number; cost_usd: number; input: number; output: number;
@@ -3799,17 +3974,54 @@ export function sessionCostFor(noteKey: string): SessionCost | null {
  *
  * Null when even one row is unpriced: returning the sum of known rows would present a
  * partial subtotal as the fleet's total. Zero remains the truthful answer for no rows.
+ *
+ * SESSION spend only. The autonomous loops' own runs are reported separately by
+ * `automationSpendSince` and deliberately not folded in here: session cost is work an
+ * operator asked for, and the loops are overhead they did not. Adding the two into one
+ * headline would make the number that answers "what is my fleet costing me" move when
+ * nobody asked for anything, and there would be no way to see which half had moved.
  */
 export function fleetEstimatedCostSince(tsMs: number): number | null {
   const r = openDb()
     .prepare(
       `SELECT SUM(CASE WHEN cost_known = 1 THEN cost_usd ELSE 0 END) c,
               SUM(CASE WHEN cost_known = 0 THEN 1 ELSE 0 END) unknown
-         FROM usage_ledger WHERE ts >= ?`,
+         FROM usage_ledger WHERE ts >= ? AND ${SESSION_SPEND_ONLY}`,
     )
     .get(tsMs) as { c: number | null; unknown: number | null } | undefined;
   if ((r?.unknown ?? 0) > 0) return null;
   return r?.c ?? 0;
+}
+
+/**
+ * The same estimate over automation rows, as one figure for the strip's headline.
+ *
+ * Separate from the per-role breakdown because the strip asks a different question of it -
+ * one number beside the fleet's - and because summing the breakdown in TypeScript would
+ * have to re-derive the unpriced rule, which is the sort of duplication that eventually
+ * disagrees.
+ */
+export function automationEstimatedCostSince(tsMs: number): number | null {
+  const r = openDb()
+    .prepare(
+      `SELECT SUM(CASE WHEN cost_known = 1 THEN cost_usd ELSE 0 END) c,
+              SUM(CASE WHEN cost_known = 0 THEN 1 ELSE 0 END) unknown
+         FROM usage_ledger WHERE ts >= ? AND spend_kind = 'automation'`,
+    )
+    .get(tsMs) as { c: number | null; unknown: number | null } | undefined;
+  if ((r?.unknown ?? 0) > 0) return null;
+  return r?.c ?? 0;
+}
+
+/** Automation tokens since `tsMs`, every tier summed. The token twin of the figure above. */
+export function automationTokensSince(tsMs: number): number {
+  const r = openDb()
+    .prepare(
+      `SELECT SUM(input + output + cache_read + cache_write) t
+         FROM usage_ledger WHERE ts >= ? AND spend_kind = 'automation'`,
+    )
+    .get(tsMs) as { t: number | null } | undefined;
+  return r?.t ?? 0;
 }
 
 /**
@@ -3823,7 +4035,8 @@ export function fleetEstimatedCostSince(tsMs: number): number | null {
 export function fleetTokensSince(tsMs: number): number {
   const r = openDb()
     .prepare(
-      `SELECT SUM(input + output + cache_read + cache_write) t FROM usage_ledger WHERE ts >= ?`,
+      `SELECT SUM(input + output + cache_read + cache_write) t
+         FROM usage_ledger WHERE ts >= ? AND ${SESSION_SPEND_ONLY}`,
     )
     .get(tsMs) as { t: number | null } | undefined;
   return r?.t ?? 0;
@@ -3853,10 +4066,13 @@ export function usageLedgerHasRows(): boolean {
   return Boolean(r);
 }
 
-/** True only after Claude's reported telemetry has arrived; Codex rows are automatic. */
+/** True only after Claude's reported session telemetry has arrived; Codex rows are automatic. */
 export function reportedUsageLedgerHasRows(): boolean {
   const r = openDb()
-    .prepare(`SELECT 1 AS x FROM usage_ledger WHERE cost_basis = 'reported' LIMIT 1`)
+    .prepare(
+      `SELECT 1 AS x FROM usage_ledger
+        WHERE cost_basis = 'reported' AND spend_kind = 'session' LIMIT 1`,
+    )
     .get() as { x: number } | undefined;
   return Boolean(r);
 }

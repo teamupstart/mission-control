@@ -3723,13 +3723,12 @@ export class WorkflowManager {
     // PR handoff is the explicit exception below because unchanged repository evidence proves
     // it needs a fresh Inspector observation, not another submission. Re-reading the diff, the
     // transcript window and the standards on every tick to discover unchanged repair work is
-    // not free. `readWorkflowEvidenceProbe` costs two git commands and reads the REPOSITORY only.
-    // The guarantee it buys is one-directional and that is deliberate: every field it reads is
-    // a fingerprint input, so a probe that DIFFERS cannot lead to `unchanged_evidence`. The
-    // converse is intentionally NOT true - a transcript-only change leaves the probe matching
-    // while the fingerprint has moved, and that run stays parked, because a repair that
-    // changed no code is not a repair. See the probe's own comment: reading the transcript
-    // here spent the entire repair budget resubmitting byte-identical code.
+    // not free. `readWorkflowEvidenceProbe` costs two git commands and reads the repository only.
+    // Every field it reads is a fingerprint input, so a differing probe cannot lead to
+    // `unchanged_evidence`. Its content-sensitive diff fingerprint also detects edits inside a
+    // path that was already dirty in the failed round. The converse is deliberately not true:
+    // a transcript-only change leaves the probe matching while the full fingerprint has moved,
+    // and the run stays parked because a repair that changed no code is not a repair.
     const probe = await (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(
       this.registry,
       binding,

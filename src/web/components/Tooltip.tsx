@@ -47,6 +47,13 @@ type TipState = {
   placement: Placement;
   /** Horizontal correction that keeps the bubble on screen; `undefined` until measured. */
   shift?: number;
+  /**
+   * The trigger's own top and bottom, kept so the measure pass can still flip the bubble
+   * under it. Without them the correction below could detect an overflow off the top of
+   * the viewport but have no way to say where "below the trigger" is.
+   */
+  triggerTop: number;
+  triggerBottom: number;
 };
 
 /** Below this many px from the viewport top, flip the bubble under the trigger. */
@@ -102,6 +109,8 @@ export function Tooltip({
       x: r.left + r.width / 2,
       y: placement === "above" ? r.top : r.bottom,
       placement,
+      triggerTop: r.top,
+      triggerBottom: r.bottom,
     });
   }, []);
   const hide = useCallback(() => setTip(null), []);
@@ -117,7 +126,18 @@ export function Tooltip({
       const overLeft = EDGE_MARGIN - r.left;
       const overRight = r.right - (window.innerWidth - EDGE_MARGIN);
       const shift = overLeft > 0 ? overLeft : overRight > 0 ? -overRight : 0;
-      return { ...prev, shift };
+      // Flip under the trigger when the bubble does not actually FIT above it. The
+      // threshold in `show` cannot answer this: it runs before the bubble exists, so it
+      // can only ask whether the trigger sits near the top of the viewport, not whether
+      // this particular bubble is taller than the gap above it. A short tooltip on a
+      // topbar control is fine either way; a tall one - the automation stat lists a line
+      // per role - is clipped off the top of the screen, which is how this was found.
+      // Measured here because this is the one moment the real height is known, and it is
+      // the same pass that already corrects horizontally.
+      const flip = prev.placement === "above" && r.height > prev.triggerTop - EDGE_MARGIN;
+      return flip
+        ? { ...prev, shift, placement: "below", y: prev.triggerBottom }
+        : { ...prev, shift };
     });
   }, []);
 

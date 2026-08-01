@@ -206,6 +206,7 @@ test("concurrent provider-neutral Personas share one snapshot and Join aggregate
     label: id,
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     async run(prompt, options) {
@@ -335,6 +336,7 @@ test("each structured provider attempt has its own durable LLM call receipt", as
     label: "parse retry",
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     async run() {
@@ -393,6 +395,7 @@ test("infrastructure failures retry durably, exhaust without fail receipts, and 
     label: "failure",
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     async run() {
@@ -656,6 +659,7 @@ test("cancelling a running Persona makes its later verdict audit-only", async ()
     label: "deferred",
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     async run() {
@@ -724,6 +728,7 @@ test("cancelling during an invalid Persona reply prevents a fresh parse-retry ca
     label: "deferred invalid reply",
     runInThread: null,
     sandbox: null,
+    price: () => null,
     litter: null,
     killLiveRuns() {},
     async run() {
@@ -794,6 +799,7 @@ const passingRunner = (id: LlmRunnerId): LlmRunner => ({
   label: id,
   runInThread: null,
   sandbox: null,
+  price: () => null,
   litter: null,
   killLiveRuns() {},
   async run() {
@@ -1079,6 +1085,7 @@ const forbiddenRunner = (id: LlmRunnerId): LlmRunner => ({
   label: id,
   runInThread: null,
   sandbox: null,
+  price: () => null,
   litter: null,
   killLiveRuns() {},
   async run() {

@@ -44,6 +44,9 @@ function fleet(over: Partial<FleetCost> = {}): FleetCost {
     tokensToday: 21_400_000,
     prsToday: 6,
     rateLimits: null,
+    // The default is a fleet whose loops have not spent today, so every existing case here
+    // keeps asserting about session figures alone. The automation line has its own cases.
+    automation: { estimatedCostToday: 0, tokensToday: 0, roles: [] },
     updatedAt: NOW,
     ...over,
   };
@@ -113,6 +116,86 @@ test("no telemetry at all draws no strip - not a fleet that cost nothing", () =>
   assert.equal(fleetStripHasContent(empty), false);
   assert.equal(fleetStripHasContent(null), false);
   assert.equal(render(empty), "");
+});
+
+test("the loops' own spend draws the strip even when no session has cost anything", () => {
+  // The case that matters most for this figure: nobody is working, and the Inspector has
+  // been reviewing a PR all night. Before it was attributed, the one number that had moved
+  // was the one nothing could show.
+  const f = fleet({
+    estimatedCostToday: 0,
+    estimatedBurnPerHour: 0,
+    tokensToday: 0,
+    prsToday: 0,
+    automation: {
+      estimatedCostToday: 2.4,
+      tokensToday: 1_200_000,
+      roles: [{ role: "inspector:review", costUsd: 2.4, tokens: 1_200_000, runs: 6 }],
+    },
+  });
+  const html = render(f);
+  assert.equal(fleetStripHasContent(f), true);
+  assert.ok(html.includes("automation today"));
+  assert.ok(html.includes("$2.40"));
+  // Named by role in the tooltip, so "which loop" is answerable without leaving the strip.
+  assert.ok(html.includes("Inspector review"));
+  assert.ok(html.includes("6 runs"));
+});
+
+test("automation spend is never folded into the fleet's own figures", () => {
+  // The product decision, asserted: two lines, each independently true. A reader adding
+  // them gets the total; a reader looking at "estimated cost today" gets only the work
+  // they asked for.
+  const html = render(fleet({
+    estimatedCostToday: 10,
+    automation: {
+      estimatedCostToday: 4,
+      tokensToday: 900,
+      roles: [{ role: "foreman:review", costUsd: 4, tokens: 900, runs: 2 }],
+    },
+  }));
+  assert.ok(html.includes("$10.00"), "the fleet figure is the session figure alone");
+  assert.ok(html.includes("$4.00"), "and the overhead is stated beside it");
+  assert.ok(!html.includes("$14.00"));
+});
+
+test("a fleet whose only spend is the app's own draws no zeroed session figures", () => {
+  // The regression the runtime capture caught: once automation could hold the strip open
+  // by itself, the rate stat printed a confident "$0.00/hr" next to it for a fleet that had
+  // simply done nothing. Zero spent is not a rate worth stating.
+  const html = render(fleet({
+    estimatedCostToday: 0,
+    estimatedBurnPerHour: 0,
+    tokensToday: 0,
+    prsToday: 0,
+    automation: {
+      estimatedCostToday: 9.7,
+      tokensToday: 2_089_000,
+      roles: [{ role: "inspector:review", costUsd: 5.56, tokens: 1_125_000, runs: 1 }],
+    },
+  }));
+  assert.ok(html.includes("automation today"));
+  assert.ok(!html.includes("estimated rate"));
+  assert.ok(!html.includes("$0.00"));
+});
+
+test("a loop that has not run today adds nothing to the strip", () => {
+  // Silence rather than a confident zero, the same rule the rest of the strip follows.
+  const html = render(fleet({ automation: { estimatedCostToday: 0, tokensToday: 0, roles: [] } }));
+  assert.ok(!html.includes("automation today"));
+});
+
+test("an unpriced automation model reads as partial rather than as cheap", () => {
+  const html = render(fleet({
+    automation: {
+      estimatedCostToday: null,
+      tokensToday: 5_000,
+      roles: [{ role: "foreman:triage", costUsd: null, tokens: 5_000, runs: 1 }],
+    },
+  }));
+  assert.ok(html.includes("automation today"));
+  assert.ok(html.includes("partial"));
+  assert.ok(html.includes("unpriced"));
 });
 
 test("rate limits alone are enough to draw the strip, with no dollar figures on it", () => {

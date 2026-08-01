@@ -60,6 +60,7 @@ import {
   WrapupAskedSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
+  SpendReportSchema,
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
@@ -166,6 +167,7 @@ import {
   logGateReply,
   recentEpisodes,
 } from "./db.ts";
+import { recordSpendReport } from "./spend-ledger.ts";
 import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
 import {
   cyclePermissionMode,
@@ -2640,6 +2642,41 @@ export function buildApp(
     const parsed = await parseBody(c, ForemanHeartbeatSchema);
     if (!parsed.ok) return parsed.res;
     releaseForemanLease(parsed.data.workerId);
+    return c.body(null, 204);
+  });
+
+  /**
+   * The Foreman worker reporting what one of its headless runs cost.
+   *
+   * Loopback-only like every other `/api/*` route, and unlike `/v1/metrics` above there is
+   * no token check: this is the worker talking to its own daemon over 127.0.0.1, the same
+   * trust boundary its lease and its work-queue writes already sit on. The OTLP route needs
+   * a token because it is reached by every Claude Code process on the machine.
+   *
+   * 204, with nothing to say. The worker cannot act on the outcome - the run already
+   * happened and the tokens are already spent - so a body would only invite it to branch on
+   * something that must never fail a review.
+   */
+  app.post("/api/usage/automation", async (c) => {
+    const parsed = await parseBody(c, SpendReportSchema);
+    if (!parsed.ok) return parsed.res;
+    const outcome = recordSpendReport(parsed.data);
+    if (outcome.kind === "recorded") {
+      registry.applyAutomationUsage();
+      return c.body(null, 204);
+    }
+    // A report this daemon CANNOT record must not be acknowledged. The worker treats any
+    // 2xx as proof the spend landed and erases its durable copy, so a 204 here would delete
+    // an already-paid-for run that never reached the ledger - and the case is real rather
+    // than theoretical: a worker newer than its daemon can name a runner this build has no
+    // pricing for. 422 puts it in the worker's quarantine instead, where it survives until
+    // the daemon is upgraded.
+    if (outcome.kind === "unsupported") {
+      return c.json({ error: `cannot record this spend report: ${outcome.reason}` }, 422);
+    }
+    // `empty` is genuinely nothing to store - a run that reported no tokens at all.
+    // Acknowledging it is right: there is no spend to lose, and refusing would have the
+    // worker hold a zero-token report for a recovery that has nothing to recover.
     return c.body(null, 204);
   });
 

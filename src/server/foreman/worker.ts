@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import type { AgentType, ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { activePaneDialog, reportBucket } from "@shared/session.ts";
-import { ForemanClient } from "./client.ts";
+import {
+  ForemanClient,
+  flushPendingSpend,
+  loadSpendOutbox,
+  pendingSpendReports,
+  sweepSpendOutbox,
+} from "./client.ts";
+import { setLlmSpendSink } from "../llm/spend.ts";
 import { reviewModel, reviewSession } from "./review.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
@@ -120,6 +127,16 @@ const IDLE_MS = 4000;
 /** Small breather between processing two sessions. */
 const BETWEEN_MS = 400;
 /**
+ * How often to look for spend reports abandoned by an exited peer.
+ *
+ * A recovery interval, not a poll of anything live: what it finds belongs to runs that have
+ * already finished and been paid for, so arriving half a minute late costs nothing, while
+ * scanning on every pass of a loop that can spin at `BETWEEN_MS` would read the state
+ * directory dozens of times a minute for no benefit.
+ */
+const SPEND_SWEEP_MS = 30_000;
+let lastSpendSweepAt = 0;
+/**
  * Minimum wall-clock gap between two full reviews of the *same* session. The marker
  * idempotency check already skips an unchanged episode for free; this floor stops a
  * session whose marker flaps (e.g. a terminal keyed on a moving `lastActivity`) from
@@ -233,18 +250,55 @@ function installShutdown(client: ForemanClient): void {
       // Every runner, not just `claude -p`: the cheap tier spawns through whichever one
       // is configured, and these children are detached so they outlive this process.
       killLiveLlmRuns();
-      void client.releaseLease(WORKER_ID).finally(() => process.exit(0));
+      // One last attempt to deliver accounting for runs that already happened. Best-effort
+      // rather than load-bearing now that the outbox is durable: anything this does not
+      // manage to send stays on disk and the next worker picks it up. It still runs first,
+      // because delivering now is better than delivering after the next restart.
+      if (pendingSpendReports() > 0) log(`flushing ${pendingSpendReports()} spend report(s)…`);
+      void flushPendingSpend()
+        .catch(() => {})
+        .then(() => client.releaseLease(WORKER_ID))
+        .finally(() => process.exit(0));
     });
   }
 }
 
 async function main(): Promise<void> {
   const client = new ForemanClient();
+  // This process's half of usage accounting, installed before anything can spend. The
+  // worker never opens the database, so its runs reach the ledger the way everything else
+  // it does reaches it - over a route. `void` rather than await: the runner reports on the
+  // way out of a call that has already produced its answer, and blocking a review on an
+  // accounting POST would let a slow daemon slow the loop down.
+  setLlmSpendSink((report) => void client.reportSpend(report));
+  // Anything a previous worker spent but never managed to report - it crashed, or was
+  // restarted while the daemon was down. This is the moment that spend either reaches the
+  // ledger or is lost for good, so it happens before the loop rather than on the first
+  // report of this process's own.
+  const recovered = loadSpendOutbox();
+  if (recovered > 0) {
+    log(`recovered ${recovered} undelivered spend report(s) from a previous run`);
+    void flushPendingSpend();
+  }
   installShutdown(client);
   startLeaseRenewal(client);
   log(`Foreman worker started (${WORKER_ID}); watching the needs-you queue + session work queues.`);
 
   for (;;) {
+    // Recovery for a peer that died while THIS worker kept running. Startup adoption cannot
+    // cover that: the abandoned spool would sit unreported until some future process
+    // happened to boot, which on a machine whose worker simply stays up is never.
+    //
+    // The cadence is the worker's rather than the client's, because this loop spins as fast
+    // as BETWEEN_MS when it is busy and a scan on every pass would read the state directory
+    // dozens of times a minute for reports that are in no hurry - they belong to runs that
+    // already finished. Placed before the config read so it still runs while the daemon is
+    // unreachable, and not gated on leadership: a standby that outlives the leader is
+    // exactly who should be carrying the leader's last reports.
+    if (Date.now() - lastSpendSweepAt >= SPEND_SWEEP_MS) {
+      lastSpendSweepAt = Date.now();
+      sweepSpendOutbox();
+    }
     let cfg;
     try {
       cfg = await client.getConfig();
@@ -1987,7 +2041,11 @@ function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
     runModel: (prompt, model) =>
-      llmRunner(triageRunnerId).run(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
+      llmRunner(triageRunnerId).run(prompt, {
+        model,
+        timeoutMs: TRIAGE_TIMEOUT_MS,
+        role: "foreman:triage",
+      }),
   };
 }
 

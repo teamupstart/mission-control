@@ -256,7 +256,7 @@ export function sessionActionCapabilityBlock(input: {
   capabilities: readonly SessionActionCompletionCapability[];
   /** The capability read is still in flight. */
   loading: boolean;
-  /** The completion comes from an existing row rather than from a choice made here. */
+  /** See `sessionActionCompletionInherited` - the completion was carried, not chosen. */
   inherited: boolean;
 }): string | null {
   const { completionKind, capabilities, loading, inherited } = input;
@@ -270,6 +270,31 @@ export function sessionActionCapabilityBlock(input: {
   if (capability?.available) return null;
   return capability?.unavailableReason
     ?? "This build cannot prove the completion this session action names.";
+}
+
+/**
+ * Whether the completion a save would write was CARRIED from a real row rather than chosen
+ * here - the one input `sessionActionCapabilityBlock` turns on.
+ *
+ * Two facts, and the first pass shipped only half of the first. `action !== null` looked like
+ * the whole question and is not: **Duplicate opens a new editor**, seeded from the source and
+ * holding no `action`, so a copy of the shipped Pull Request action read as somebody freshly
+ * choosing `pull_request` and could never be saved. That is the advertised "Duplicate it to
+ * make a copy you own" path, dead until the adapter ships.
+ *
+ * So the question is asked of the DRAFT's own history instead:
+ *
+ *  - `baselineInherited` - the draft started from an existing row (loaded, or duplicated),
+ *    rather than from the blank New seed whose `session_turn` default nobody picked;
+ *  - the completion still equals that starting value. Change it and the operator has made a
+ *    choice, which has to prove itself however the draft began.
+ */
+export function sessionActionCompletionInherited(input: {
+  baselineInherited: boolean;
+  baselineCompletionKind: SessionActionCompletionKind;
+  completionKind: SessionActionCompletionKind;
+}): boolean {
+  return input.baselineInherited && input.completionKind === input.baselineCompletionKind;
 }
 
 /** A file name for the prompt editor's toolbar, derived the way the Persona editor derives its own. */
@@ -417,6 +442,7 @@ export function SessionActionEditorStatus({
 export function SessionActionEditor({
   action,
   seed,
+  seedInherited = false,
   capabilities,
   capabilitiesLoading = false,
   capabilityError = null,
@@ -429,6 +455,14 @@ export function SessionActionEditor({
 }: {
   action: SessionAction | null;
   seed?: SessionActionDraftSeed;
+  /**
+   * The `seed` was copied from an existing action rather than started blank.
+   *
+   * Only Duplicate sets it. It is what lets a copy of the shipped Pull Request action keep the
+   * `pull_request` adapter it was duplicated FOR, while a blank New draft still has to prove
+   * its `session_turn` default against what the daemon reported.
+   */
+  seedInherited?: boolean;
   /** What the DAEMON reported it can prove. Empty means nothing may be selected. */
   capabilities: readonly SessionActionCompletionCapability[];
   /** The capability read is still in flight, so silence is not a refusal. */
@@ -454,6 +488,8 @@ export function SessionActionEditor({
    * the prop holds the other tab's state rather than the one this draft diverged from.
    */
   const baselineRef = useRef(draft);
+  /** Whether `baselineRef` came from a real row - a loaded action, or a duplicated source. */
+  const baselineInheritedRef = useRef(action !== null || seedInherited);
   const editGeneration = useRef(0);
   const [loadedRevision, setLoadedRevisionState] = useState(action?.revision ?? null);
   const [dirty, setDirtyState] = useState(false);
@@ -504,6 +540,7 @@ export function SessionActionEditor({
     const next = sessionActionSeed(action);
     draftRef.current = next;
     baselineRef.current = next;
+    baselineInheritedRef.current = true;
     setDraft(next);
     setLoadedRevision(action.revision);
     setConflict(null);
@@ -522,7 +559,11 @@ export function SessionActionEditor({
     completionKind: draft.completionKind,
     capabilities,
     loading: capabilitiesLoading,
-    inherited: action !== null,
+    inherited: sessionActionCompletionInherited({
+      baselineInherited: baselineInheritedRef.current,
+      baselineCompletionKind: baselineRef.current.completionKind,
+      completionKind: draft.completionKind,
+    }),
   });
   const choices = completionChoices(capabilities, draft.completionKind, capabilitiesLoading);
   const retainedCompletion = choices.find(
@@ -547,6 +588,7 @@ export function SessionActionEditor({
     const next = sessionActionSeed(row);
     draftRef.current = next;
     baselineRef.current = next;
+    baselineInheritedRef.current = true;
     setDraft(next);
     setLoadedRevision(row.revision);
     setDirty(false);
@@ -590,7 +632,11 @@ export function SessionActionEditor({
       completionKind: submitted.completionKind,
       capabilities,
       loading: capabilitiesLoading,
-      inherited: mode !== "save" || action !== null,
+      inherited: sessionActionCompletionInherited({
+        baselineInherited: baselineInheritedRef.current,
+        baselineCompletionKind: baselineRef.current.completionKind,
+        completionKind: submitted.completionKind,
+      }),
     });
     if (refused) {
       setError(refused);
@@ -641,6 +687,7 @@ export function SessionActionEditor({
       );
       draftRef.current = reconciled.draft;
       baselineRef.current = sessionActionSeed(saved);
+      baselineInheritedRef.current = true;
       setDraft(reconciled.draft);
       setLoadedRevision(saved.revision);
       setDirty(reconciled.dirty);

@@ -23,6 +23,7 @@ import {
   SessionActionEditor,
   SessionActionEditorStatus,
   sessionActionCapabilityBlock,
+  sessionActionCompletionInherited,
   sessionActionCreateBody,
   sessionActionDraftProblem,
   sessionActionPatchFrom,
@@ -509,6 +510,61 @@ test("a new action cannot be saved against a completion the daemon has not bless
   assert.equal(pick({ completionKind: "pull_request", inherited: true }), null);
   assert.equal(pick({ capabilities: [], inherited: true }), null);
   assert.equal(pick({ loading: true, inherited: true }), null);
+});
+
+test("a completion is inherited when it was CARRIED, not merely when a row exists", () => {
+  // The first pass asked `action !== null`, which looked like the whole question and was not:
+  // Duplicate opens a NEW editor seeded from the source and holding no `action`, so a copy of
+  // the shipped Pull Request action read as somebody freshly choosing `pull_request` and could
+  // never be saved - killing the advertised "Duplicate it to make a copy you own" path.
+  const carried = (
+    over: Partial<Parameters<typeof sessionActionCompletionInherited>[0]> = {},
+  ): boolean => sessionActionCompletionInherited({
+    baselineInherited: true,
+    baselineCompletionKind: "pull_request",
+    completionKind: "pull_request",
+    ...over,
+  });
+
+  // A duplicate of the built-in: no `action`, but the completion came from the source.
+  assert.equal(carried(), true);
+  // A loaded row, untouched.
+  assert.equal(carried({ baselineCompletionKind: "session_turn", completionKind: "session_turn" }), true);
+  // A blank New draft: `session_turn` is a default nobody picked, so it still has to prove
+  // itself. This is the round-1 finding, and it stays fixed.
+  assert.equal(carried({ baselineInherited: false, baselineCompletionKind: "session_turn", completionKind: "session_turn" }), false);
+  // Changed away from what the draft started with: that IS a choice, however it began.
+  assert.equal(carried({ completionKind: "session_turn" }), false);
+});
+
+test("a duplicate of an unavailable-adapter action can still be saved", () => {
+  // The end-to-end consequence of the rule above, at the surface: the editor a Duplicate
+  // opens offers Save even though `pull_request` is not available here.
+  const duplicated: SessionActionDraftSeed = {
+    name: "Pull Request copy",
+    description: "",
+    promptMarkdown: "# Pull Request\n",
+    requiredSkillId: "pull-request",
+    completionKind: "pull_request",
+  };
+  const render = (seedInherited: boolean): string =>
+    renderToStaticMarkup(createElement(SessionActionEditor, {
+      action: null,
+      seed: duplicated,
+      seedInherited,
+      capabilities: CAPABILITIES,
+      skills: [],
+      isOverlayOpen: () => false,
+      onDirtyChange: () => {},
+      onSaved: () => {},
+      onDuplicate: () => {},
+      onArchive: () => {},
+    }));
+
+  assert.doesNotMatch(render(true), /<button class="btn" disabled=""[^>]*>Save<\/button>/);
+  // And the control: the identical draft, if it had NOT been duplicated, is refused - so the
+  // pass above is the inheritance and not a hole in the gate.
+  assert.match(render(false), /<button class="btn" disabled=""[^>]*>Save<\/button>/);
 });
 
 test("the Save button is off, and says why, while the capability answer is unknown", () => {

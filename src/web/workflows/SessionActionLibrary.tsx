@@ -93,6 +93,15 @@ export function SessionActionLibrary({
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(() => active[0]?.id ?? null);
   const [seed, setSeed] = useState<SessionActionDraftSeed | null>(null);
+  /**
+   * Whether `seed` was COPIED from an existing action rather than started blank.
+   *
+   * The editor cannot tell on its own - a duplicate opens with no `action`, exactly like a
+   * New - and the difference decides whether the seed's completion has to prove itself
+   * against the daemon's capability answer. A copy of the shipped Pull Request action keeps
+   * the adapter it was duplicated for; a blank draft's default does not get that pass.
+   */
+  const [seedInherited, setSeedInherited] = useState(false);
   const [localAction, setLocalAction] = useState<SessionAction | null>(null);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -162,12 +171,13 @@ export function SessionActionLibrary({
     });
   }
 
-  function start(seedValue: SessionActionDraftSeed): void {
+  function start(seedValue: SessionActionDraftSeed, inherited: boolean): void {
     guardDiscard(
       seedValue.name ? `Duplicating ${seedValue.name}` : "Starting a new session action",
       () => {
         setSelectedId(null);
         setSeed(seedValue);
+        setSeedInherited(inherited);
         setEditorKey((key) => key + 1);
         setDirty(false);
         setError(null);
@@ -198,7 +208,7 @@ export function SessionActionLibrary({
             <p>{active.length} active</p>
           </div>
           <Tooltip label="Author a new instruction a workflow can send to its bound session">
-            <button className="btn" onClick={() => start(EMPTY_SESSION_ACTION_SEED)}>New</button>
+            <button className="btn" onClick={() => start(EMPTY_SESSION_ACTION_SEED, false)}>New</button>
           </Tooltip>
         </div>
         <div className="wf-action-filter-row">
@@ -279,6 +289,7 @@ export function SessionActionLibrary({
             key={editorKey}
             action={selected}
             seed={seed ?? undefined}
+            seedInherited={seedInherited}
             capabilities={capabilities.completions}
             capabilitiesLoading={capabilities.loading}
             capabilityError={capabilities.error}
@@ -291,7 +302,7 @@ export function SessionActionLibrary({
               setSeed(null);
               setError(null);
             }}
-            onDuplicate={(draft) => start(draft)}
+            onDuplicate={(draft) => start(draft, true)}
             onArchive={(action) => {
               setConfirm({
                 title: `Archive ${action.name}`,

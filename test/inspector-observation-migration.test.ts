@@ -74,8 +74,14 @@ function seedPreObservationDb(): void {
 
 seedPreObservationDb();
 
-const { openDb, getInspectorPr, adoptInspectorPr, updateInspectorPr, loadOpenInspectorPrs } =
-  await import("../src/server/db.ts");
+const {
+  openDb,
+  getInspectorPr,
+  adoptInspectorPr,
+  updateInspectorPr,
+  loadOpenInspectorPrs,
+  loadAdoptedInspectorPrsSince,
+} = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -173,4 +179,54 @@ test("opening twice is idempotent, as every start of the daemon is", () => {
     assert.equal(columns.filter((name) => name === column).length, 1, `${column} was added twice`);
   }
   assert.equal(getInspectorPr(KEY)?.observedHeadSha, "f".repeat(40));
+});
+
+// ---- the retire race a Pull Request action has to survive --------------------------------------
+
+test("a pull request retired after an action was delivered stays visible to it", () => {
+  // The one-tick race, reproduced in the poller's exact order. `processPr` records what it saw
+  // - including a CLOSED state - and then, in the very next statement, sets `state = 'closed'`
+  // to retire the row. Read through `loadOpenInspectorPrs`, the row is gone on the same tick
+  // that first observed the closure, so a `pull_request` action can never reach the state it
+  // is supposed to BLOCK on: it reports an ordinary "no pull request yet" wait for a durable
+  // contradiction that needs a human, and waits for ever.
+  //
+  // This is the seam a unit test on the adapter cannot cover, because that test hands the row
+  // in directly. The defect lived in the projection, not the decision.
+  const delivered = 5_000;
+  updateInspectorPr(KEY, {
+    observedHeadSha: "c".repeat(40),
+    observedState: "CLOSED",
+    observedAt: delivered + 10,
+    headRefName: "feature/x",
+  }, delivered + 10);
+  updateInspectorPr(KEY, { state: "closed" }, delivered + 10);
+
+  assert.equal(
+    loadOpenInspectorPrs().some((pr) => pr.key === KEY),
+    false,
+    "the fixture must reproduce the retirement, or this proves nothing",
+  );
+  const visible = loadAdoptedInspectorPrsSince(delivered);
+  const row = visible.find((pr) => pr.key === KEY);
+  assert.ok(row, "a pull request retired while an action waited must remain decidable");
+  assert.equal(row.observedState, "CLOSED");
+  assert.equal(row.headRefName, "feature/x");
+});
+
+test("a pull request retired BEFORE the action was delivered is history, not a contradiction", () => {
+  // The bound is what keeps this affordable: the caller resolves a repository identity per
+  // distinct root, and that is a git subprocess. A machine with years of closed pull requests
+  // must not pay for all of them on every fifteen-second sweep - and a pull request closed
+  // before this turn began is not evidence about this turn anyway.
+  assert.equal(
+    loadAdoptedInspectorPrsSince(9_000).some((pr) => pr.key === KEY),
+    false,
+  );
+  // And an open row is returned whatever the bound says, because the bound is only about
+  // which RETIRED rows still matter.
+  assert.equal(
+    loadAdoptedInspectorPrsSince(Number.MAX_SAFE_INTEGER).some((pr) => pr.key === "owner/repo#42"),
+    true,
+  );
 });

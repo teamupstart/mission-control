@@ -138,8 +138,8 @@ import { repeatOffenders } from "./repeat-offender.ts";
 import {
   getInspectorPr,
   loadInspectorComments,
+  loadAdoptedInspectorPrsSince,
   loadInspectorInspections,
-  loadOpenInspectorPrs,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
 import { parsePrUrl } from "../inspector/github.ts";
@@ -3671,7 +3671,7 @@ export class WorkflowManager {
       settledAt: now,
       now,
       repository,
-      adoptedPullRequests: await this.adoptedPullRequestsForAction(),
+      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
       capturedHeadOid,
     });
     if (decision.kind === "blocked") {
@@ -3722,10 +3722,19 @@ export class WorkflowManager {
    *
    * Read fresh on every decision rather than cached: the poller writes to it from its own
    * timer, and a cached copy is exactly how an action would keep waiting for a head that had
-   * already arrived. Bounded by the number of open pull requests on this machine, which is
-   * the same set the Inspector already sweeps every ninety seconds.
+   * already arrived.
+   *
+   * `observedSince` is this action's delivery instant, and it is what makes a CLOSED pull
+   * request reachable at all. The poller retires a closed row in the statement after the one
+   * that records the closure, so the open set loses it on the very tick the adapter needed to
+   * see it - and a durable contradiction that should block would report as an ordinary missing
+   * pull request and wait for ever. Anything retired before this action was even delivered
+   * stays out, so the extra set is approximately zero rows and the cost stays the open set's:
+   * one repository-identity resolution per DISTINCT root, which is a git subprocess.
    */
-  private async adoptedPullRequestsForAction(): Promise<readonly SessionActionAdoptedPullRequest[]> {
+  private async adoptedPullRequestsForAction(
+    observedSince: number,
+  ): Promise<readonly SessionActionAdoptedPullRequest[]> {
     if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
     // One git call per DISTINCT root, not per pull request: several open pull requests on one
     // repository are the ordinary case, and this runs on the settle path of every waiting
@@ -3738,7 +3747,10 @@ export class WorkflowManager {
       }
       return identities.get(root) ?? null;
     };
-    const rows = loadOpenInspectorPrs();
+    // Open adoptions PLUS any retired since this action's packet was delivered. The poller
+    // retires a closed pull request on the same tick it first observes the closure, so without
+    // the second half the adapter could never reach the one state it is meant to block on.
+    const rows = loadAdoptedInspectorPrsSince(observedSince);
     const resolved = await Promise.all(rows.map((pr) => identify(pr.repoRoot)));
     return rows.map((pr, index) => ({
       key: pr.key,

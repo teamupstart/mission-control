@@ -144,6 +144,13 @@ A SessionAction is a durable side effect, not an evaluator:
   head keeps moving.
 - Only a closed or merged pull request AT the reviewed commit blocks. Everything else waits,
   including a provider that could not be reached: waiting is recoverable and a block is not.
+- The adapter's view of the ledger is NOT `loadOpenInspectorPrs()`. The poller records a closure
+  and retires the row in the next statement, so the open set loses a pull request on the very
+  tick the adapter needed to see it closed - and the one state that blocks becomes unreachable,
+  leaving a durable contradiction reported as an ordinary missing-PR wait for ever. Read through
+  `loadAdoptedInspectorPrsSince(deliveredAt)`, which keeps retired rows visible for exactly the
+  window this action has been waiting. Widening that bound is not free: the caller resolves a
+  repository identity per distinct root, and each one is a git subprocess.
 - A stray pull request is a NAMED state, not the absence of one. `pull_request_wrong_repository`
   and `pull_request_wrong_branch` separate "this turn produced nothing yet" from "this turn
   produced one somewhere else", which look identical from the ledger and are opposite problems.

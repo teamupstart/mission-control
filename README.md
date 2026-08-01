@@ -2642,7 +2642,8 @@ for the pull request to catch up with *that*. It never sends a second instructio
 
 One state blocks instead of waiting: a pull request at the reviewed commit that is **closed or
 merged**. Nothing the daemon waits for reopens it, so the run stops for you to reopen it,
-replace it, or reset the run. Everything else - a provider that could not be reached, a
+replace it, or reset the run. That holds for a pull request closed *while the action was
+waiting*, which is the ordinary way it happens. Everything else - a provider that could not be reached, a
 checkout that could not be read, a pull request on the wrong branch - waits, because a later
 observation can still change the answer.
 

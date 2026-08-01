@@ -5410,6 +5410,38 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
   return rows.map(rowToInspectorPr);
 }
 
+/**
+ * Every open adoption, plus the ones RETIRED since a given instant.
+ *
+ * The open set alone cannot answer a `pull_request` session action, and the reason is a
+ * one-tick race in the poller: it records what it saw - including `observed_state = 'CLOSED'` -
+ * and then, in the very next statement, sets `state = 'closed'` to retire the row. So a pull
+ * request closed while an action was waiting for it leaves the open set on the same tick that
+ * first observed the closure, and the adapter never sees the state it is supposed to BLOCK on.
+ * It would report an ordinary "no pull request yet" wait for a durable contradiction that
+ * needs a human, and wait for ever.
+ *
+ * Bounded by the caller's own instant rather than by a window constant, because there is a
+ * principled one available: an action asks about pull requests observed since its instruction
+ * was delivered. That keeps the extra set at approximately zero rows in the ordinary case,
+ * which matters - the caller resolves a repository identity per distinct root, and that is a
+ * git subprocess.
+ *
+ * Retired rows OLDER than the bound stay out. A pull request closed last year is history, not
+ * a contradiction this turn produced, and the branch's next pull request is a new row.
+ */
+export function loadAdoptedInspectorPrsSince(observedSince: number): InspectorPr[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE state = 'open'
+           OR (observed_at IS NOT NULL AND observed_at >= ?)
+        ORDER BY adopted_at ASC`,
+    )
+    .all(observedSince) as unknown as InspectorPrRow[];
+  return rows.map(rowToInspectorPr);
+}
+
 interface InspectorCommentRow {
   id: string;
   pr_key: string;

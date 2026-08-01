@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Logger, LogErrorOptions } from "vite";
+import { fileURLToPath } from "node:url";
+import { resolveConfig, type Logger, type LogErrorOptions } from "vite";
 
 import {
   DaemonReporter,
   createDaemonProxy,
-  isDaemonUnreachable,
+  isDaemonNotListening,
   isSuppressedProxyLog,
   quietProxyLogger,
 } from "../scripts/vite-daemon-proxy.ts";
@@ -31,18 +32,27 @@ function reporter(reminderMs = 15_000) {
   return { r, lines, tick: (ms: number) => (clock += ms) };
 }
 
-test("a connect failure to the daemon is not a proxy fault", () => {
-  assert.equal(isDaemonUnreachable(refused()), true);
-  assert.equal(isDaemonUnreachable(Object.assign(new Error("reset"), { code: "ECONNRESET" })), true);
-  assert.equal(isDaemonUnreachable(Object.assign(new Error("nope"), { code: "EACCES" })), false);
-  assert.equal(isDaemonUnreachable(new Error("no code at all")), false);
-  assert.equal(isDaemonUnreachable(null), false);
-  assert.equal(isDaemonUnreachable("ECONNREFUSED"), false);
+test("only a refused daemon connection is treated as startup unavailability", () => {
+  assert.equal(isDaemonNotListening(refused()), true);
+  assert.equal(
+    isDaemonNotListening(Object.assign(new Error("reset"), { code: "ECONNRESET" })),
+    false,
+  );
+  assert.equal(isDaemonNotListening(Object.assign(new Error("nope"), { code: "EACCES" })), false);
+  assert.equal(isDaemonNotListening(new Error("no code at all")), false);
+  assert.equal(isDaemonNotListening(null), false);
+  assert.equal(isDaemonNotListening("ECONNREFUSED"), false);
 });
 
 test("only Vite's proxy log for an unreachable daemon is suppressed", () => {
   const opts: LogErrorOptions = { error: refused() };
   assert.equal(isSuppressedProxyLog("http proxy error: /api/away", opts), true);
+  assert.equal(
+    isSuppressedProxyLog("http proxy error: /api/away", {
+      error: Object.assign(new Error("reset"), { code: "ECONNRESET" }),
+    }),
+    false,
+  );
   // A real proxy fault keeps its stack.
   assert.equal(
     isSuppressedProxyLog("http proxy error: /api/away", {
@@ -145,9 +155,10 @@ test("the wrapped logger drops the daemon's connect errors and keeps the rest", 
   assert.deepEqual(errors, ["Internal server error", "http proxy error: /api/away"]);
 });
 
-test("the wrapped logger reports the base's hasWarned rather than a stale copy", () => {
+test("the logger filter keeps Vite's resolved logger state", () => {
   const { logger, raw } = baseLogger();
   const quiet = quietProxyLogger(logger);
+  assert.equal(quiet, logger);
   assert.equal(quiet.hasWarned, false);
 
   quiet.warn("something worth saying");
@@ -159,6 +170,22 @@ test("the wrapped logger reports the base's hasWarned rather than a stale copy",
   assert.equal(quiet.hasWarned, false);
   quiet.hasWarned = true;
   assert.equal(raw.hasWarned, true);
+});
+
+test("the configured logger honors Vite's resolved silent log level", async () => {
+  const config = await resolveConfig(
+    { configFile: fileURLToPath(new URL("../vite.config.ts", import.meta.url)), logLevel: "silent" },
+    "serve",
+  );
+  const lines: unknown[][] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => lines.push(args);
+  try {
+    config.logger.info("this must stay silent");
+  } finally {
+    console.log = original;
+  }
+  assert.deepEqual(lines, []);
 });
 
 /** The minimum `http-proxy` surface `configure` touches. */
@@ -207,7 +234,8 @@ function fakeRes() {
 
 test("an unreachable daemon answers 503 with a retry hint, not a bare 500", () => {
   const { logger, infos, errors } = baseLogger();
-  const daemon = createDaemonProxy(BACKEND, logger);
+  const daemon = createDaemonProxy(BACKEND);
+  daemon.installLogger(logger);
   const { proxy, fail, respond } = fakeProxy();
   daemon.configure(proxy as never);
 
@@ -220,7 +248,7 @@ test("an unreachable daemon answers 503 with a retry hint, not a bare 500", () =
   assert.match(infos[0]!, /^daemon at .*is not answering/);
 
   // Vite's own log for that same failure is dropped; the reporter already covered it.
-  daemon.logger.error("http proxy error: /api/away", { error: refused() });
+  logger.error("http proxy error: /api/away", { error: refused() });
   assert.deepEqual(errors, []);
 
   respond();
@@ -229,7 +257,8 @@ test("an unreachable daemon answers 503 with a retry hint, not a bare 500", () =
 
 test("a real proxy fault is left entirely to Vite", () => {
   const { logger, infos } = baseLogger();
-  const daemon = createDaemonProxy(BACKEND, logger);
+  const daemon = createDaemonProxy(BACKEND);
+  daemon.installLogger(logger);
   const { proxy, fail } = fakeProxy();
   daemon.configure(proxy as never);
 
@@ -241,7 +270,8 @@ test("a real proxy fault is left entirely to Vite", () => {
 
 test("a response that already went out is not written twice", () => {
   const { logger } = baseLogger();
-  const daemon = createDaemonProxy(BACKEND, logger);
+  const daemon = createDaemonProxy(BACKEND);
+  daemon.installLogger(logger);
   const { proxy, fail } = fakeProxy();
   daemon.configure(proxy as never);
 

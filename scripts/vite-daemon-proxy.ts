@@ -19,7 +19,7 @@
 // per request. So this module turns the repetition back into the state change it describes:
 // one line when the daemon stops answering, a reminder with a count while it stays down (so
 // a daemon that never comes up is still obvious), and one line when it answers again.
-// Errors that are not "the connection to the daemon failed" keep Vite's full loud stack.
+// Errors other than "the daemon refused the connection" keep Vite's full loud stack.
 //
 // Two halves, because Vite splits them:
 //   - `configure` runs BEFORE Vite attaches its own `error` listener, so the handler here
@@ -36,26 +36,21 @@ import type { Logger, LogErrorOptions, ProxyOptions } from "vite";
 type ProxyServer = Parameters<NonNullable<ProxyOptions["configure"]>>[0];
 
 /**
- * Transport-level failures that mean "the daemon did not serve this", as opposed to a
- * daemon that served an error.
+ * The startup failure that means nothing is bound to the daemon port yet.
  *
- * `ECONNREFUSED` is the startup race: nothing is bound to the port yet. `ECONNRESET` is the
- * same event from the other side of a restart - `tsx watch` tears the listener down with
- * requests in flight. Neither says anything about the request itself, and a daemon that
- * crashes reports it in its own pane, so collapsing both loses nothing the operator has no
- * other way to see. Anything else - a proxy misconfiguration, a hung socket - is a real
- * error and stays loud.
+ * `ECONNRESET` is deliberately excluded. It can come from an established connection that
+ * the daemon aborted while remaining reachable, so Vite must keep that diagnostic loud.
  */
-const UNREACHABLE_CODES = new Set(["ECONNREFUSED", "ECONNRESET"]);
+const DAEMON_NOT_LISTENING_CODE = "ECONNREFUSED";
 
 /** The message prefix Vite logs for a failed proxied request. */
 const PROXY_ERROR_PREFIX = "http proxy error";
 
 /** True when this error is the daemon not answering rather than a real proxy fault. */
-export function isDaemonUnreachable(err: unknown): boolean {
+export function isDaemonNotListening(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const code = (err as { code?: unknown }).code;
-  return typeof code === "string" && UNREACHABLE_CODES.has(code);
+  return code === DAEMON_NOT_LISTENING_CODE;
 }
 
 /**
@@ -67,7 +62,7 @@ export function isDaemonUnreachable(err: unknown): boolean {
  * every proxy error that is NOT a connect failure loud with its stack.
  */
 export function isSuppressedProxyLog(msg: string, opts?: LogErrorOptions): boolean {
-  return msg.includes(PROXY_ERROR_PREFIX) && isDaemonUnreachable(opts?.error);
+  return msg.includes(PROXY_ERROR_PREFIX) && isDaemonNotListening(opts?.error);
 }
 
 export interface DaemonReporterOptions {
@@ -161,54 +156,44 @@ function plural(n: number, word: string): string {
 }
 
 /**
- * Wrap a Vite logger so proxy errors the reporter already owns stop printing, and
- * everything else passes through untouched.
+ * Install a filter on Vite's resolved logger so proxy errors the reporter already owns stop
+ * printing, and everything else passes through untouched.
  *
  * `hasErrorLogged` is deliberately not fed by the dropped calls: a daemon that has not
  * finished booting is not an error state Vite should remember.
- *
- * `hasWarned` is forwarded rather than copied. Vite's logger sets it on ITSELF from inside
- * `warn`/`error`, while the rest of Vite reads it off `config.logger` - which is this
- * wrapper. A spread would snapshot `false` here and never move again, quietly telling Vite
- * nothing has been warned about after something has.
  */
 export function quietProxyLogger(base: Logger): Logger {
-  return {
-    ...base,
-    error(msg: string, opts?: LogErrorOptions) {
-      if (isSuppressedProxyLog(msg, opts)) return;
-      base.error(msg, opts);
-    },
-    get hasWarned() {
-      return base.hasWarned;
-    },
-    set hasWarned(value: boolean) {
-      base.hasWarned = value;
-    },
+  const error = base.error;
+  base.error = function quietProxyError(msg: string, opts?: LogErrorOptions) {
+    if (isSuppressedProxyLog(msg, opts)) return;
+    error.call(base, msg, opts);
   };
+  return base;
 }
 
 /**
  * Everything `vite.config.ts` needs: the `configure` hook to hand each proxied route, and
- * the logger to install as `customLogger`.
+ * an installer that filters the logger after Vite has applied `logLevel` and CLI options.
  */
-export function createDaemonProxy(backend: string, base: Logger): {
+export function createDaemonProxy(backend: string): {
   configure: (proxy: ProxyServer) => void;
-  logger: Logger;
+  installLogger: (logger: Logger) => void;
 } {
-  const logger = quietProxyLogger(base);
+  let logger: Logger | undefined;
   const reporter = new DaemonReporter({
     backend,
     // Vite's own `[vite]` tag prefixes this, so the line reads
     // "8:15:10 AM [vite] daemon at http://127.0.0.1:7317 is not answering - ...".
-    log: (line) => logger.info(line, { timestamp: true }),
+    log: (line) => logger?.info(line, { timestamp: true }),
   });
 
   return {
-    logger,
+    installLogger(base) {
+      logger = quietProxyLogger(base);
+    },
     configure(proxy) {
       proxy.on("error", (err, _req, res) => {
-        if (!isDaemonUnreachable(err)) return;
+        if (!isDaemonNotListening(err)) return;
         reporter.recordFailure();
         // Answer the browser ourselves so it gets an accurate 503 with a retry hint rather
         // than the bare 500 Vite's handler would write. Vite's handler skips a response

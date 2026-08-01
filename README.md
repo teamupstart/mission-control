@@ -113,7 +113,8 @@ line rather than a stack per request:
 ```
 
 The same pair appears whenever a server edit restarts the daemon under `tsx watch`. Any
-proxy failure that is *not* the daemon being unreachable still prints in full.
+proxy failure other than a refused connection while the daemon is not listening still prints
+in full.
 
 Discovery works immediately - your live sessions show up with coarse grey
 "running" status. To light up precise **working / idle / needs-input** states

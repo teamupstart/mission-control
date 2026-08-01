@@ -358,3 +358,308 @@ command.
   could `return --force` a tree whose group was still live. The gap was that Phase 2 can prove
   ownership but not emptiness, so this phase now exports `CheckGroupRecovery` for it. Recorded
   in Phase 2's audit as well; the seam is declared there and implemented here.
+- **2026-07-31, at implementation.** Eight deviations from this document's literal text, each
+  with the reason it was made. Modules shipped: `check-env.ts`, `check-identity.ts`,
+  `check-group.ts`, `check-spawn.ts`, `check-supervisor.ts`; tests
+  `test/workflow-check-{env,spawn,supervisor}.test.ts`.
+
+  1. **Contract P is consumed exactly as published, and `check-lease.ts` is untouched.** This
+     phase must implement `CheckGroupRecovery(attemptId)`, which is handed nothing but an
+     attempt id and has to find the pid it persisted before the daemon died - and Contract P
+     offers no reader. The first implementation added a `read` member to
+     `CheckProcessRegistry` and implemented it in `CheckLeaseManager`. **That was wrong and has
+     been reverted**, on review: Phase 2 has merged, it owns and publishes that interface, and
+     widening it to serve a later phase's consumer turns a consumer's need into an owner's
+     obligation. Additive is not the same as in-bounds.
+
+     The capability is now supplied the way every other seam in this design is - the consumer
+     names the narrow function it needs and its composer supplies one. `CheckSupervisorLookup`
+     is declared in `check-supervisor.ts`, and Phase 4, which already composes the lease
+     manager with the supervisor, provides it from an accessor it holds. `runSupervisedCheck`
+     calls only `record` and `clear`. As a bonus the sentinel comparison stopped being anyone's
+     obligation: a supplier may return `null` for "nothing recorded" or hand the raw sentinel
+     columns straight through, because `terminateCheckGroup` already refuses a non-signallable
+     pid or an empty identity. Both routes reach `empty`, and both are asserted.
+  2. **The output ring works in BYTES, not in decoded text**, so `setEncoding("utf8")` is not
+     used on stdout/stderr. Taken under this document's own escape clause about the exactness
+     invariant, and the field stays a number rather than becoming a boolean. A decoded ring can
+     only count the bytes of its OWN decoding, so a build emitting one invalid byte - a binary
+     fixture, a truncated UTF-8 tail - reports a count three times larger than the truth,
+     silently. Counting raw bytes and decoding ONCE at the end keeps both properties the
+     precedents wanted: the count is exact by construction, and a multi-byte character
+     straddling a chunk boundary decodes correctly because the boundary is interior to the
+     retained buffer by then. The only new edge is the FRONT of the tail, where a byte-exact
+     cut can land mid-character; the ring advances past the continuation bytes and counts them
+     as dropped, which they are. Both asserted, including a case where kept + dropped must
+     equal a generator's known byte count.
+  3. **"The group still answers at the bound" reports `not-empty`, not `unknown`.** This
+     document's test list says `unknown`. The two have identical downstream effect - only
+     `empty` authorises a return - so nothing about lease safety changes, but the words are
+     worth keeping distinct: `not-empty` is "we asked and it answered", `unknown` is "we could
+     not ask", which is what an unreadable or mismatched identity produces. The test asserts
+     both the safety property (`!== "empty"`) and the specific value, so it holds under either
+     reading.
+  4. **A mismatched or unreadable identity is still PROBED, though never signalled.** The rule
+     that a mismatch is never signalled is kept exactly. But `kill(-pid, 0)` sends nothing, and
+     `ESRCH` on the group id proves emptiness on its own without any signal. Without this, a
+     daemon that crashed *after* its checks had finished would strand one pool slot per crash
+     forever - the same outcome step 2 of this document rejects when arguing why an unsupported
+     platform must refuse to start rather than hold leases open. The source plan's "neither a
+     missing nor mismatched leader proves the group is empty" is about inferring from the
+     LEADER; this infers from the GROUP, which is the thing the contract is actually about.
+  5. **The command-line half of the identity is stored condensed** (a truncated SHA-256) rather
+     than raw. The supervisor's command line carries the whole `node -e` shim, about 2.6KB, and
+     the identity is written to a durable column on a table whose rows are RETAINED for audit.
+     Equality is the only question ever asked of an identity, and equal command lines digest
+     equally. Contract P is unaffected: it is still one opaque string Phase 2 stores and
+     compares without parsing.
+  6. **`processStartIdentity` permits pid 1; only the signalling path refuses it.** Found by
+     running the real modules on Linux in Docker before opening this, and it was a genuine bug
+     rather than a test artifact: the daemon is pid 1 whenever it runs as a container's
+     entrypoint, the platform preflight probes its own identity, and a `pid <= 1` guard on the
+     READ path reported every containerised Linux daemon as a platform that cannot run checks
+     at all. The wildcard danger (`kill(-0)` hits our own group, `kill(-1)` hits everything the
+     user owns) is real but belongs on the signal path, where `signallableGroup` still enforces
+     `pid > 1` and is consulted first by every caller. **CI would not have caught this** - test
+     pids are always above 1 - which is the argument for having run it on Linux at all.
+  7. **The shim lives in argv (`node -e`), not in a file.** This document asked only that the
+     GATE avoid a temp file; the shim's own home was open. A separate `.mjs` would have to
+     survive `esbuild --bundle` into `dist/`, an Electron package and a `tsx` dev run, and a
+     path that resolves in two of those three fails at the moment a check runs rather than at
+     build time. In argv it is present wherever the daemon is, and it needs no build-step or
+     packaging change. The gate itself is an inherited pipe, as asked: fd 3 carries the release
+     byte and fd 4 the shim's readiness and the command's outcome, two fds rather than one
+     duplex socket so each direction's EOF means exactly one thing.
+  8. **The platform preflight probes the daemon's own identity, not just `process.platform`.**
+     A platform string is a guess that a container with no `/proc` mounted, or an image with no
+     `ps`, answers wrongly. Asking the same question the check will ask, once, is cheap and
+     correct.
+
+  Two limitations were found by measurement and are documented in `checkGroupAnswers` rather
+  than papered over. A descendant that calls `setsid()` leaves the group and cannot be reached
+  by any group signal - group emptiness is the contract, and a deliberate daemoniser is outside
+  it. And a ZOMBIE still answers a group probe, so a daemon that is itself a container's pid 1
+  must reap adopted orphans or emptiness never resolves; measured directly, the Linux run
+  reports `not-empty` forever as a bare container entrypoint and `empty` under
+  `docker run --init`. Both fail in the safe direction: they delay a lease return rather than
+  authorising one early.
+
+  **Confirmed the phase ships unwired**, as required: **no production code imports
+  `check-supervisor.ts`** - verified as `grep -rn` over `src/`, whose only hits are the new
+  modules importing each other - so `checkDeps.execute` is still null and a configured check
+  still reports `unavailable` and passes. Its TESTS import it, obviously and deliberately: this
+  phase ships tested-but-unwired, and a module with no test importing it would be the other
+  failure. Phase 4 remains its only intended *runtime* consumer. **No file owned by another
+  phase is modified**: the diff outside the five new modules and their tests is README prose and
+  these planning documents.
+
+- **2026-07-31, review round 1 (Inspector).** One `major`, accepted and fixed: *"Abort an
+  unreleased supervisor when the run timer fires."* A `timeoutMs` shorter than the supervisor's
+  own start-up - a small configured value, or a loaded machine - fired the run timer while the
+  gate was still HELD. `tearDown()` then answered `empty`, truthfully (nothing had been
+  released, so there was no group), and settled the call **without closing the gate or killing
+  the shim**. The result was a detached supervisor waiting on its gate forever, recorded in no
+  durable row and registered with neither the `live` set nor the exit hook - the one process in
+  this design that nothing would ever come back for.
+
+  Fixed by branching the run timer on whether the gate was released: unreleased goes to
+  `abortBeforeRelease`, and group teardown is used only after release. A second, adjacent hole
+  was found while fixing it and closed in the same change: killing the shim does not retract a
+  readiness byte the kernel has already delivered, so `onReady` could still run afterwards and
+  persist the identity of a process just killed. `abortBeforeRelease` now latches, and
+  `onReady` refuses once it has.
+
+  The regression test is `"a timeout before the supervisor is ready leaves no held shim
+  behind"`. It asserts the leak directly rather than by proxy, by scanning `ps` for the attempt
+  id the shim carries in its argv - which is that argument's own purpose, used here to identify
+  a process the caller was never handed a pid for. Against the unfixed code the test does not
+  merely fail, it HANGS: the orphaned shim's inherited handles keep the test file's event loop
+  alive, which is the same mechanism that would have kept the daemon's alive.
+
+- **2026-07-31, review round 2 (Inspector).** Two `major` findings. One accepted and fixed, one
+  declined with measurement.
+
+  **Accepted - "Resolve symlinks before accepting the working subpath".** The containment check
+  was lexical, and the subpath is only half operator-authored: the STRING comes from settings,
+  but the filesystem it lands on is a checkout of branch content, and git stores symlinks. So a
+  branch could commit `packages/web` as a link out of the tree, a subpath the operator
+  configured in good faith would pass the `resolve()` check, and `spawn` would follow the link
+  and run the check against a directory the run never captured - reporting the answer as if it
+  were about this submission. That is the wrong-verdict-rather-than-a-crash failure this
+  function's own comment already named as the worst shape available, so the check was not
+  meeting its stated bar. Both sides now go through `realpath` before comparison, the resolved
+  path is what the command is given, and anything unresolvable fails closed with a reason.
+  Deliberately not `canonicalPath` from the pool adapter, whose `realpath` failure falls back to
+  the raw string: right for comparing two spellings of a tree we own, wrong for a containment
+  check. Three tests: the escape refused, a symlink that stays INSIDE still honoured (the
+  over-blocking control), and a missing subpath failing closed with its own message. The
+  residual - a component swapped between the check and `spawn`'s `chdir` - is named in the
+  comment, because no sequence of stat calls wins that race.
+
+  **Declined - "Handle daemon termination signals for live check groups".** The mechanism is
+  real: `process.on("exit")` does not run when a signal terminates a process BY DEFAULT. The
+  premise is not, for this daemon. `src/server/index.ts:331-332` registers handlers for both
+  `SIGINT` and `SIGTERM` that run `shutdown()`, which ends at `process.exit(0)` (`:329`), so a
+  service stop is an ordinary exit and the hook is reached. Measured rather than argued, with a
+  stand-in daemon spawned in both shapes: handled -> the watched group is killed; Node's default
+  -> it survives. Both cases now ship as tests, so the dependency is a guarded claim instead of
+  an implicit one, and `killLiveCheckGroups`' comment names it with the file and lines.
+
+  Making the requested change would have been a regression rather than a fix. A second
+  `SIGTERM` listener calling `process.exit` races the daemon's orderly `shutdown()` and
+  truncates it - skipping `sdkSessions.stopAll()` and `workflows.stop()`, cutting embedded
+  sessions off mid-turn - trading a hypothetical leak for a certain one, and adding exactly the
+  kind of second teardown path this repository forbids. Wiring into `shutdown()` itself is also
+  out of scope twice over: this phase ships unwired, and the plan assigns `WorkflowEngine.stop()`
+  cancelling live check groups to Phase 4. `SIGKILL` of the daemon defeats every version of
+  this, which is why the durable row and identity-verified recovery exist at all.
+
+- **2026-07-31, review round 10 (Code Risk Reviewer).** One real defect in the scrubber, and it
+  is the sharpest kind: a guard that failed toward disclosure.
+
+  `scrubCheckEnv` only applied its value rule when the token was at least 16 characters, on the
+  reasoning that the daemon mints 48 hex characters so anything shorter must be a placeholder.
+  That protected the wrong side. It turned *"this token is unusually short"* into *"this token
+  is not removed at all"*, so a token like `short-token` in a variable whose NAME was not
+  credential-shaped - `INNOCENT=short-token` - travelled intact to branch code. Step 1 of this
+  phase says "removes: the daemon auth token", with no length exception, and the implementation
+  had quietly added one.
+
+  Fixed: any non-empty token is scrubbed. The empty-string exclusion stays and is doing real
+  work rather than restating the same rule - `"".includes` is true of every value, so an
+  unminted token would otherwise scrub the whole environment and leave a build failing for a
+  reason nobody could diagnose. The ordering between those two is now stated in the code: a
+  token short enough to collide with ordinary values is a token that must not leak either, so it
+  errs toward dropping a variable over disclosing a credential. Three cases added - a short
+  token bare and quoted inside a larger value, a single-character token where the collateral is
+  worst, and a whitespace-only token that trims to empty and correctly scrubs nothing.
+
+- **2026-07-31, review round 9 (Documentation Steward).** The round-8 correction below was
+  applied in two places out of three: `check-env.ts` and the README were fixed, and
+  `check-supervisor.ts`'s module comment was left still claiming the scrubber removes "the
+  variables that locate" the credential. So the codebase contradicted itself, with the honest
+  account and the overstated one sitting two files apart. Corrected, and the fix now carries the
+  measurements with it rather than pointing vaguely at another module: `HOME` is preserved
+  deliberately, removing it would not help because `os.homedir()` falls back to `getpwuid` and
+  `os.userInfo().homedir` ignores `$HOME` outright, and the allowlist is the boundary.
+
+  Worth noting as a pattern, since it is the third documentation finding on this branch: every
+  one has been prose claiming more than the code delivers, and this one was a partial fix of an
+  earlier one. A claim worth correcting is worth grepping for.
+
+- **2026-07-31, review round 8 (Inspector).** One `major`, declined on the remedy and accepted on
+  the fact: *"Do not pass the daemon HOME to check commands."*
+
+  The fact is correct. With no state-dir alias set, the daemon's state directory - and its token
+  file - defaults to a folder in the invoking user's home, and `HOME` points there.
+
+  Both proposed remedies were measured, and neither closes anything. Deleting `HOME` from the
+  child's environment entirely: `process.env.HOME` is gone, and `os.homedir()` still returns the
+  real home through `getpwuid`, and the token still reads. Substituting a decoy `HOME`:
+  `os.homedir()` follows the decoy, and `os.userInfo().homedir` ignores `$HOME` outright and
+  hands back the real one, and the token still reads. The token is reachable because the command
+  runs **as that user with that user's filesystem authority**, which is a property of the design
+  this phase explicitly does not change - it is the stated non-goal, in the same words, in the
+  scope section and the README. Meanwhile `HOME` is load-bearing for npm, cargo, git and ssh, so
+  dropping it would break nearly every real build in exchange for nothing.
+
+  What the finding DID expose is an overstatement, and that is fixed. The module comment claimed
+  to remove "the daemon's admission credential and the coordinates that locate it", which reads
+  as though the location were hidden. It is not, and cannot be. The comment now says what is
+  true: the token is removed from the environment so it is never HANDED to a check, the three
+  aliases are removed because an OVERRIDE is the one part of the location not otherwise
+  derivable, and the default location is not concealed by this or anything else. The README
+  gained the same correction, and `HOME`'s entry in the scrubber's table now carries the argument
+  for keeping it rather than sitting there unexplained. The allowlist is the boundary; this
+  function is hygiene.
+
+- **2026-07-31, review round 7 (Inspector).** One `major`, accepted, and it invalidated a claim
+  made two rounds earlier in this very record.
+
+  **"Terminate descendants after the supervisor exits."** Round 4 concluded that a group whose
+  leader is gone can never be signalled again, and dismissed it as "rare by construction". It is
+  not rare. `sh -c 'server & exit 0'` is the ordinary shape of a build that starts something in
+  the background: the command returns 0 immediately, the shim's child exits, the shim exits with
+  it - and the background process is left owning a group whose only identifiable member has
+  gone. Every later read returns `unknown`, nothing is ever signalled, and the lease is pinned
+  forever with a live process writing into the leased worktree. The step-4 design said the shim
+  "must remain the identifiable group leader for the life of the group", and this implementation
+  quietly did not.
+
+  Fixed at the root rather than at the symptom: **the shim now reports the command's outcome and
+  stays alive**, holding the group open, and the parent proceeds on that REPORT instead of on the
+  shim's exit. Teardown therefore runs while the supervisor is still alive and still
+  identifiable, so the identity check passes and the whole group - background process included -
+  is signalled. The shim exits when the control channel closes or when the group teardown reaches
+  it. Output draining moved after teardown, bounded, because the pipes now stay open until then.
+
+  Regression test: a command that exits 0 leaving `sleep 30` behind must still report `exited`
+  with code 0 - the verdict is preserved, this is not an infrastructure failure - and must report
+  `empty` with the background process dead. Verified end to end as well, with the Inspector's
+  exact shape: a real HTTP server backgrounded by a command that returns 0 is gone, and its port
+  refuses connections, once the check returns.
+
+  Note this narrows round 4's recorded property rather than contradicting it: a leader-gone group
+  still cannot be signalled, which is why the fix is to stop the leader from going.
+
+  One `minor` in the same round, on `TailRing` accounting, examined and answered with
+  measurement. The example given - a standalone invalid byte at the retained front being counted
+  as dropped - is exact: it is absent from the output, and retained + truncated still equals every
+  byte written (measured: 9 + 51 = 60). But probing it surfaced a real imprecision nearby that
+  the finding did not name, and that this module's own comment overstated: with NO truncation,
+  an invalid byte inside the retained region decodes to U+FFFD, three bytes where one was
+  written, so `byteLength(output) + truncatedBytes` overshoots (measured: 11 bytes written, a
+  13-byte string, `truncatedBytes` correctly 0). That is inherent to representing arbitrary bytes
+  as text. The invariant is now stated precisely - retained bytes plus `truncatedBytes` equals
+  bytes written - the caveat is named, and all three cases are pinned by test.
+
+- **2026-07-31, review round 3.** Two findings, both accepted, neither behavioural.
+
+  **Documentation Steward - the README overstated the identity.** It described the recorded
+  identity as containing "the supervisor's own command line" and claimed the pairing turns a
+  false match "from unlikely into impossible". Deviation 5 above had made the command-line half
+  a truncated SHA-256, so the README claimed more data than is kept and a stronger guarantee
+  than a digest can give. Corrected to say it is a short digest, why (the raw line carries
+  kilobytes of the supervisor's own source into a row retained for audit, and only equality is
+  ever asked of it), and what it costs: collision resistance rather than a literal comparison.
+  The same overstatement was in `processStartIdentity`'s own docstring, which called the
+  argument "structural rather than probabilistic" - now "structural modulo a 128-bit collision",
+  so code and README agree.
+
+  **Test Evidence Auditor - no transcript of the new suites actually running.** Fair: the
+  evidence was a suite total, which shows nothing about *which* behaviours ran. The three
+  check-runtime files are now run on their own with `--test-reporter=spec` and the full named
+  output attached to the pull request.
+
+- **2026-07-31, review round 4 (Inspector).** One `major`, accepted and fixed: *"Keep unproven
+  groups watched until they are empty."* `finish()` called `unwatchCheckGroup` unconditionally,
+  so a teardown that returned `not-empty` or `unknown` - meaning something may still be writing
+  into the leased worktree - dropped the group from the hard-exit hook anyway. That was the one
+  place in this design that let go of a resource it had not proven finished, and it contradicted
+  the fail-closed posture the lease row and the reaper pin already take for those same two
+  answers. Now only `empty` unwatches. Retaining is safe rather than merely cautious, because
+  the hook re-verifies identity before signalling.
+
+  The other end of the rule went in with it: `createCheckGroupRecovery` unwatches when it
+  finally proves a retained group gone, so the set cannot grow without bound.
+
+  Writing the test surfaced a property of this design worth recording, because it decides how a
+  stuck lease clears. **Once the leader is gone its identity is unreadable, so a group with
+  surviving descendants can never be signalled again** - it answers `unknown` until those
+  descendants exit on their own, and only then does a pass prove it `empty`. The first draft of
+  the test asserted recovery would kill it and was simply wrong about the code. That is the
+  fail-closed direction and it is self-healing rather than permanent, and it is rare by
+  construction, since the ladder `SIGKILL`s the whole group while the leader is still
+  identifiable. Now documented on `terminateCheckGroup`.
+
+  **And that test then flaked on CI, which is worth recording as its own lesson.** The second
+  draft asserted `unknown` from a recovery call made just after the teardown had already
+  `SIGKILL`ed the group - so it was racing a signal the test itself had sent. It passed locally
+  and failed on the Linux runner, where the kill had landed first (`'empty' !== 'unknown'`).
+  The fix was to delete the racing assertion rather than to widen it or retry it: the
+  watch-retention case now waits for the group to be provably gone before asserting the
+  release, and the leader-gone property gets its own case built so that nothing races - a leader
+  that exits on its own with a descendant still in its group, where no signal is ever sent, so
+  the descendant's survival is not a matter of timing. Re-verified on Linux in Docker, three
+  consecutive runs, 23/23, since a local-only re-run would have proven nothing about the
+  platform that failed.

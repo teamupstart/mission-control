@@ -2391,6 +2391,14 @@ that the runtime is unavailable. Command execution is a separate implementation 
 it must run against a pooled worktree pinned to the captured commit and recover its process
 and lease safely after a daemon crash.
 
+The two halves of that runtime are now built and tested, and nothing calls them yet: the
+[worktree it leases](#check-leases) and the [supervisor that runs the
+command](#running-a-check-command). Connecting them to the Check node is the change after
+this one, so the behaviour above is unchanged - a configured check still passes without
+running. The supervisor does set a platform floor worth knowing in advance: **check commands
+will run on Linux and macOS only**, and everywhere else a check reports Not run and passes,
+which is the same already-shipped path it takes today.
+
 **A Check names a slot, never a command.** The slots are `test`, `lint`, `typecheck` and
 `build`. The command assigned to each slot is configured per repository under **Settings →
 Workflows**, keeping the exportable published version machine-neutral and free of argv. The
@@ -4651,6 +4659,67 @@ treehouse records and never checks, so this is a rule the harness imposes on its
 
 If you ever see an idle `mission-control-check-…` lease that outlives its daemon, it is
 safe to hand back by hand: `treehouse return <path>`.
+
+### Running a check command
+
+Nothing calls this yet - see [Check nodes](#check-nodes) - but the runtime that will is
+built, and what it does with your machine is worth stating plainly before it is switched on.
+
+**Check commands run on Linux and macOS.** On any other platform a check reports Not run and
+passes. That is not an oversight: the daemon has to be able to prove afterwards that a
+command and everything it spawned is gone, before it hands the leased worktree back to the
+pool. It does that by recording *which exact process* the supervisor was and asking the
+operating system about it later, and neither Node nor any portable API answers that question -
+it is read from `/proc` on Linux and from `ps` on macOS. Somewhere it cannot be read, a check
+could be started but never proven finished, so the daemon declines to start one at all.
+
+The recorded identity is a **composite**: an operating-system start time *and* a short digest
+of the supervisor's command line, which carries the attempt id. The start time alone is not
+enough, because the finest value either platform will tell us is whole seconds on macOS, and
+process ids get reused - two different processes born in the same second would compare equal,
+and the daemon would signal a stranger's programs believing they were the check's. Pairing it
+with a command line that only one supervisor ever bears makes that vanishingly unlikely
+instead: a false match would need the same reused pid, in the same second, running the
+daemon's own supervisor, for an attempt only one supervisor is ever created for.
+
+The command line is stored as a truncated SHA-256 rather than in full, because the raw line
+carries a few kilobytes of the supervisor's own source and this value is written to a durable
+row kept for audit. Only equality is ever asked of it, and equal command lines digest equally,
+so the digest answers the same question in a fraction of the space - at the cost that the
+guarantee is now collision resistance rather than a literal comparison. That is a trade worth
+naming rather than glossing: it is not a proof, it is a very good bet, and the durable lease
+row and startup recovery are what make a wrong bet recoverable rather than silent.
+
+What a check command gets:
+
+- **An argv, never a shell.** `&&`, `|`, `;` and `$(…)` reach the command as ordinary
+  arguments, so there is no string for a repository's configured command to break out of.
+- **The captured commit, in a pooled worktree**, not your own working copy - so a check never
+  sees, and can never disturb, whatever you have open.
+- **A trimmed environment.** The daemon's auth token is removed, along with any variable that
+  overrides where its state directory lives and anything whose name reads like a credential
+  (`…_TOKEN`, `…_SECRET`, `…_PASSWORD`, `…_KEY`, `…_CREDENTIALS`). `PATH`, `HOME`, `SHELL`, the
+  locale and proxy variables and everything else a build needs are passed through. This stops a
+  credential being *handed* to a check; it does not hide the daemon's default state directory,
+  which sits in your home folder and which anything running as you can find whatever the
+  environment says.
+- **A closed stdin**, so a command that stops to ask a question fails immediately instead of
+  hanging until its timeout.
+- **Bounded output.** The last 4,000 bytes are kept, because a failing build's useful lines are
+  its last ones, and the run detail reports exactly how many bytes were dropped.
+
+**This is not a sandbox, and the trimmed environment should not be read as one.** A check
+command runs as you, with your filesystem access. Removing the token narrows what a build can
+reach *back into*; it does not confine what it can do generally. That is why a repository must
+be allowlisted before any of this happens - the allowlist, not the environment, is the boundary.
+
+When a check is cancelled, times out, or the daemon shuts down, the whole process group is
+signalled: `SIGTERM` first, then a few seconds' grace so a test runner can flush its output and
+clean up its own temporary files, then `SIGKILL`. The daemon then keeps asking until the group
+is actually empty before returning the worktree, because a build that leaves a server running
+behind it is common and the leader exiting proves nothing about its children. A group it cannot
+prove is empty keeps its lease rather than handing back a tree something may still be writing
+into.
 
 ## Configuration
 

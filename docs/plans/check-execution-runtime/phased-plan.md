@@ -283,6 +283,14 @@ export interface CheckProcessRegistry {
 }
 ```
 
+**This interface is closed.** Phase 3 consumes it exactly as published and adds nothing to it.
+Recovery needs to READ back an identity, which Contract P does not offer, and Phase 3 therefore
+declares that need as its own narrow seam - `CheckSupervisorLookup` in `check-supervisor.ts` -
+for Phase 4 to supply from an accessor it already holds. Recorded in Phase 3's audit, after a
+first implementation added a `read` here and was corrected: widening an earlier phase's
+published contract to serve a later phase's consumer turns a consumer's need into an owner's
+obligation, and it is the wrong direction even when the addition is purely additive.
+
 Phase 2 defines this interface and implements it against `workflow_check_leases`. Phase 3
 consumes it and must not reach the table directly.
 

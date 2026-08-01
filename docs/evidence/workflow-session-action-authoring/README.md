@@ -15,8 +15,11 @@ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
 ```
 
 It is behind that flag for `dispatch-and-converse.spec.ts`' reason: each capture carries a
-fresh worktree uuid and a relative timestamp, so an unconditional run would rewrite fourteen
+fresh worktree uuid and a relative timestamp, so an unconditional run would rewrite eighteen
 binaries on every `npm run test:e2e` for no added signal.
+
+It is TWO tests, because the last frame needs a session free to pick an instruction up rather
+than one already parked on a Preview packet, and each test gets its own daemon.
 
 Nothing here is operator data. The repository, the session, the two actions, the Persona and
 the workflow are all seeded by that spec, and the only substitution is the model -
@@ -118,6 +121,9 @@ A Preview binding, so the run holds still at `awaiting_send`. Three things are w
 - the action has its own **Session actions** card section above **Reviewer verdicts**, carrying
   the sentence behind the chip, the snapshot the version froze, and the exact instruction.
 
+Preview is what makes this frame possible - the run parks and holds still - and it is also what
+this frame cannot show. Capture 8 is the same surface after a **Live** action finished.
+
 ## 6. The Board ladder
 
 `06-board-ladder-*.png`
@@ -133,3 +139,49 @@ third label - a `completion policy` sub beside the name and the badge - and at 7
 Board's ~200px column drew it straight through the state text on the right. The sub is gone
 (the badge and the sentence already said it twice) and `.wf-ladder-title` now wraps, so no
 rung can overlap its own state again.
+
+## 7. A published snapshot the catalog has moved past
+
+`07-published-snapshot-outdated-wide.png`, `07-published-snapshot-outdated-narrow.png`
+
+Immutability is only demonstrable by making the catalog disagree with the version first, so the
+capture flow does exactly that: publish while the action sits at revision 2, then **rewrite** its
+instruction, then **archive** it. The version detail reads
+
+> `Tidy the workspace · revision 2 · outdated · archived source`
+
+with both indicators at once - and the `<pre>` below still holds *"Remove the stray scratch file
+and say so."*, the text that was frozen. Not the text the live row now carries, and not an error
+about a source that no longer exists. The required skill and the completion the version was
+published with sit beside it, and the fixed Inspector footer is drawn from that version's own
+policy rather than the workflow's current one.
+
+This is where a run's audit trail ends. Without it, *"an action ran"* is the last thing history
+can tell you about what was typed into somebody's session.
+
+## 8. A completed continuation, and the evidence it produced
+
+`08-completed-continuation-wide.png`, `08-completed-continuation-narrow.png`
+
+Capture 5 binds **Preview** deliberately - it parks at `awaiting_send` and holds still long
+enough to photograph the waiting vocabulary - which means it can never show the other half of
+the model. This one is a **Live** binding driven to completion, and it is the whole chain in a
+single frame:
+
+- the scrubber reads `Round 1 · evidence 1` and `Round 1 · evidence 2` - two evidence snapshots
+  inside **one** repair round, with the run header still `ROUND 1 OF 6`, so the continuation
+  visibly spent no budget;
+- the notice beneath names the action that produced the second and says what it cost: *"Evidence
+  2 of round 1, captured after Tidy the workspace finished. Continuing after an action does not
+  spend a repair round, and only the stages after it run again."*;
+- the action's stage chip reads **Complete**. Never Passed - it judged nothing;
+- the downstream `Check · test` ran against the *new* evidence, which is the thing a
+  continuation exists for;
+- the action's own card carries the turn's timeline - sent, picked up, turn finished - under
+  the sentence *"The turn finished, and the fresh evidence the stages below it review was
+  captured."*
+
+That is `parent evidence -> action turn -> fresh evidence -> downstream stages`, read off one
+screen. Nothing in it is stubbed: a real git worktree, a real SDK session with a real child
+process behind it, the instruction really typed into that session's pane, and the child segment
+captured from a real `git` read of the worktree. Only the model is a fake.

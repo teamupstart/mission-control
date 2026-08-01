@@ -269,7 +269,18 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.match(text, /dependsOnTaskIds/);
   assert.match(text, /dependsOnCurrentSession` to `true` on every call/);
   assert.match(text, /Do not flatten\s+the graph into a serial chain/);
-  assert.match(text, /embed the complete phase Markdown/);
+
+  // The task text is the agent's prompt and is judged as the human's requirement, so the skill must
+  // keep it at goal altitude and point at the phase file instead of pasting it in.
+  assert.match(text, /Keep the task text at goal altitude/);
+  assert.match(text, /proposed route, not a specification/);
+  assert.doesNotMatch(text, /embed the complete phase Markdown/);
+  assert.doesNotMatch(text, /Authoritative phase\s+instructions/);
+
+  // Concision is only safe if the referenced files are published first. The skill has to close that
+  // chain itself, not assume it.
+  assert.match(text, /committed and pushed on this session's branch/);
+  assert.match(text, /If you cannot commit and push the artifacts, do not create the tasks/);
 
   const mcp = readFileSync(new URL("../src/mcp/server.ts", import.meta.url), "utf8");
   const start = mcp.indexOf('"create_task"');
@@ -281,6 +292,9 @@ test("the shipped phased-plan skill audits compatibility and schedules direct ta
   assert.doesNotMatch(tool, /\n\s*agent:/, "omission preserves the dispatch default agent");
   assert.doesNotMatch(tool, /\n\s*effort:/, "omission preserves the harness default effort");
 });
+
+// The published task's own `intent` is verified end to end in `phased-plan-task-intent.test.ts`,
+// which pushes the skill's worked example through the create_task route and checks the stored value.
 
 test("the shipped pull-request skill is a real, triggered Mission Control skill", () => {
   const skill = readCatalog().skills.find((s) => s.id === "pull-request");

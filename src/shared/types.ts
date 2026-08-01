@@ -121,8 +121,8 @@ export type PendingTurnState = (typeof PENDING_TURN_STATES)[number];
  *
  * Queued rows are editable. `sending` means the row has crossed the atomic claim boundary
  * and may be entering a terminal or SDK driver, so recalling it would risk editing text
- * the agent already received. `uncertain` is the fail-closed recovery state for a raw
- * terminal write whose outcome cannot be proven.
+ * the agent already received. `uncertain` is the fail-closed recovery state whenever a
+ * handoff may have crossed its runtime boundary but its outcome cannot be proven.
  */
 export interface PendingTurn {
   id: string;

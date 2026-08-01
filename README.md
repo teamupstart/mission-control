@@ -350,9 +350,11 @@ risking a duplicate.
 The outbox is stored in SQLite under the native conversation id when Mission Control knows
 it, and otherwise under the discovered session id. It survives browser and daemon restarts.
 A row that was being delivered when the daemon stopped recovers as `delivery uncertain` and
-is never resent automatically. Reset clears pending messages along with the conversation
-drafts and work they described. Work Queue automation and its explicit wrap-up send retain
-their existing direct acknowledged delivery path.
+is never resent automatically. Reset discards rows that are still safely queued along with
+the conversation drafts and work they described. If a claimed row may already have crossed
+the runtime boundary, reset retains it as `delivery uncertain` for explicit resolution.
+Work Queue automation and its explicit wrap-up send retain their existing direct acknowledged
+delivery path.
 
 For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
@@ -636,10 +638,11 @@ with `MISSION_CODEX_HOOK`), and passes them on the command line. So a **dispatch
 session is instrumented from its first breath, and a Codex session **you** started
 yourself sends nothing but still reports confirmed **working** and **idle** states from
 explicit lifecycle markers in its rollout file. That passive evidence is enough to place
-the session in the right board column; it does not enable readiness, prompt delivery,
-task handover, queues, or other safeguards that specifically require live hooks. If the
-bridge bundle is missing - `npm run build` never ran - the launch drops the overrides and
-runs uninstrumented rather than failing.
+the session in the right board column and lets the editable outbox wait for confirmed idle
+before delivering a human message. It does not enable task handover, work queues, or other
+safeguards that specifically require live hooks. If the bridge bundle is missing because
+`npm run build` never ran, the launch drops the overrides and runs uninstrumented rather
+than failing.
 
 Those overrides ride with `--dangerously-bypass-hook-trust`, and never without them.
 Codex would otherwise stop at a trust prompt for hooks the dashboard itself just injected,
@@ -788,8 +791,9 @@ few sweeps rather than lingering as rows nothing can reach.
 
 **The reply box is closed while a menu is up**, deliberately. A dialog isn't a text box: it
 discards typed characters, and the Enter that follows confirms whichever row was already
-highlighted - so a reply sent at a menu doesn't fail, it silently answers with the default
-under your name. The buttons are the only safe way to answer one.
+highlighted. The outbox rechecks for a dialog at the terminal write boundary, so a queued
+reply waits if a menu appears after the card's last refresh. The buttons are the only way to
+answer one.
 
 Because the card's copy of the menu is up to one sweep old, a click sends back the **label**
 you were shown and the daemon re-reads the pane before pressing anything: if the screen has
@@ -915,9 +919,10 @@ to remember what a session is for.
 
 It lands in two tiers, both in the daemon:
 
-1. **Instantly, with no model.** The `UserPromptSubmit` hook already carries your prompt,
-   so the moment you send one the card shows your own words, shortened to a line. Free,
-   and the card is never blank waiting on anything.
+1. **As soon as the agent accepts it, with no model.** The `UserPromptSubmit` hook already
+   carries your prompt, so once a queued message leaves the editable outbox the card shows
+   your own words, shortened to a line. Free, and the card is never blank waiting on model
+   work.
 2. **Refined, a few seconds later.** One headless model call rewrites it into one
    sentence, reading your prompt plus a small window of the conversation. Which provider
    and which model is **Settings → [Models](#models-what-the-apps-own-model-work-runs-on)**;
@@ -3489,13 +3494,12 @@ treats a half-written task.
 
 A draft is forgotten on **successful submission**: a send that creates a durable pending
 turn for the reply and send boxes, or an **Add** that lands for the queue box. **Resetting
-the session** also forgets
-the reply and send drafts - a reset discards the task those boxes were replying to, so their
-half-written text goes with it, and an open reply box empties on the spot rather than keeping
-stale text behind the closing modal. The **queue add box is kept** through a reset, since it
-composes new work rather than a reply to the discarded task. A send that *fails* deliberately
-keeps your text - it's all you have and you're about to retry it. Drafts are per session and
-never bleed from one card into another.
+the session** also forgets the reply and send drafts - a reset discards the task those boxes
+were replying to, so their half-written text goes with it, and an open reply box empties on
+the spot rather than keeping stale text behind the closing modal. The **queue add box is
+kept** through a reset, since it composes new work rather than a reply to the discarded task.
+A send that *fails* deliberately keeps your text - it's all you have and you're about to retry
+it. Drafts are per session and never bleed from one card into another.
 
 Once **Send** succeeds, the composer draft becomes a durable queued turn. The full conversation
 turn stays visible beneath the conversation while Mission Control owns it. The compact Send
@@ -4338,11 +4342,11 @@ task's durable record, so a later prompt cannot outrun it; if several of the age
 episodes merged, the **most recent** merge is the one recorded.
 
 An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
-that conclusion is **reversible**: if you send a follow-up prompt, the task goes back to
-running and drops the outcome. Only conclusions Mission Control drew from idleness are
-undone this way - an outcome you recorded yourself is never overwritten. This correction
-is deliberately limited to the current daemon run; after a restart, a completed task
-stays done.
+that conclusion is **reversible**: once a follow-up prompt is delivered, the task goes back
+to running and drops the outcome. Only conclusions Mission Control drew from idleness are
+undone this way - an outcome you recorded yourself is never overwritten. This correction is
+deliberately limited to the current daemon run; after a restart, a completed task stays
+done.
 
 #### A merge that lands when nobody is watching
 

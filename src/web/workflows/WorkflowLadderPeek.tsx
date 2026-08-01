@@ -9,6 +9,8 @@ import {
 import { workflowRunLabel, workflowRunTone } from "../components/session-bits.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import {
+  actionBlockSentence,
+  actionWaitSentence,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
@@ -20,6 +22,8 @@ import {
   nodeStatusesForSubmission,
   reviewerStatus,
   selectedSubmission,
+  sessionActionProgress,
+  sessionActionStatus,
   shortSha,
   stageStatus,
   submissionStatus,
@@ -138,9 +142,15 @@ export function workflowLadderPeekView(
       const node = nodeId ? nodes.get(nodeId) : undefined;
       const attempt = nodeId ? attempts.get(nodeId) : undefined;
       const outcome = attempt ? checkOutcomeOf(attempt) : null;
-      const status = member.kind === "check"
-        ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
-        : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
+      // Not gated on `waiting`, for the full ladder's reason: a block is `state: "error"`.
+      const actionState = member.kind === "session_action" && attempt
+        ? sessionActionProgress(attempt)
+        : null;
+      const status = member.kind === "session_action"
+        ? sessionActionStatus(nodeId ? statuses[nodeId] : undefined, actionState?.wait ?? null)
+        : member.kind === "check"
+          ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
+          : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
       const name = node
         ? nodeLabel(graph, node, personaNames, actionNames)
         : member.kind === "check"
@@ -149,6 +159,14 @@ export function workflowLadderPeekView(
       const verdict = attempt ? verdictOf(attempt) : null;
       if (sentence === null && verdict?.verdict === "fail") {
         sentence = `${name}: ${verdict.summary}`;
+      }
+      // The peek shows ONE sentence, and a running action's is the most useful thing on the
+      // tile: the stage is moving, so no failure sentence exists to claim the slot, and
+      // without this the card reads "Session working" with nothing saying on what.
+      if (sentence === null && actionState?.blocked) {
+        sentence = `${name}: ${actionBlockSentence(actionState.blocked.code)}`;
+      } else if (sentence === null && actionState?.wait) {
+        sentence = `${name}: ${actionWaitSentence(actionState.wait)}`;
       }
       if (degradedSentence === null && status.degraded && outcome) {
         degradedSentence = checkStatusView(outcome.status).sentence;
@@ -163,7 +181,7 @@ export function workflowLadderPeekView(
       index,
       name: stageName(stage, index, personaNames, actionNames),
       sub: stageSummary(stage),
-      status: stageStatus(members.map((member) => member.status)),
+      status: stageStatus(members.map((member) => member.status), stage.kind),
       members,
       sentence,
       degradedSentence,

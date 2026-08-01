@@ -11,7 +11,7 @@ import { WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "@shared/workflow.
 // `App.tsx` renders whichever one the hash names. A second router would be a second answer
 // to "which page is showing", and the dirty-draft gate below only guards one of them.
 
-export type WorkflowTab = "workflows" | "personas" | "runs" | "ensembles";
+export type WorkflowTab = "workflows" | "personas" | "actions" | "runs" | "ensembles";
 export interface WorkflowRunFilters {
   status?: WorkflowRunStatus;
   workflowId?: string;
@@ -116,6 +116,10 @@ export function parseMissionRoute(hash: string): MissionRoute {
       : { page: "workflows", tab: "ensembles" };
   }
   if (path === "/workflows/personas") return { page: "workflows", tab: "personas" };
+  // `actions` rather than `session-actions`: the tab is called Actions on screen, and
+  // `missionRouteHash` serializes a tab by its own name, so the two have to be the same word
+  // or a link the operator copies out of the address bar lands on the fleet.
+  if (path === "/workflows/actions") return { page: "workflows", tab: "actions" };
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
   if (settings) {

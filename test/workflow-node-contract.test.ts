@@ -92,14 +92,24 @@ test("a dropped node is parsed strictly, and anything else is declined without t
   assert.equal(parseDroppedNode(JSON.stringify({ kind: "check" })), null);
   assert.equal(parseDroppedNode(JSON.stringify({ kind: "persona" })), null);
   assert.equal(parseDroppedNode(JSON.stringify({ kind: "session" })), null);
-  // A session action is NOT a palette kind in this build: nothing can execute one yet, so
-  // the drag route must not be a way to author what the palette deliberately does not offer.
+  // A session action IS a palette kind now, and its payload is checked for shape the way a
+  // Persona's is - an id that is missing or empty names nothing and is declined.
+  assert.deepEqual(
+    parseDroppedNode(JSON.stringify({ kind: "session_action", sessionActionId: "a1" })),
+    { kind: "session_action", sessionActionId: "a1" },
+  );
   assert.equal(parseDroppedNode(JSON.stringify({ kind: "session_action" })), null);
   assert.equal(
-    parseDroppedNode(JSON.stringify({ kind: "session_action", sessionActionId: "a1" })),
+    parseDroppedNode(JSON.stringify({ kind: "session_action", sessionActionId: "" })),
     null,
   );
-  assert.doesNotMatch(librarySource, /addNode\(\{ kind: "session_action"/);
+  // WHICH action may be dropped is not this parser's question and must not become one: the
+  // capability filter lives at the surface that owns the daemon's answer, and `addNode`
+  // re-checks the id against it so a stale drag cannot slip past a closed palette.
+  assert.match(
+    librarySource,
+    /!addableActions\.some\(\(action\) => action\.id === spec\.sessionActionId\)\) return/,
+  );
   // Not ours, and not an error: a canvas is handed other applications' payloads routinely.
   assert.equal(parseDroppedNode(""), null);
   assert.equal(parseDroppedNode("not json"), null);

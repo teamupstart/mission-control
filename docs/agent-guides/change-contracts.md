@@ -122,6 +122,59 @@ A SessionAction is a durable side effect, not an evaluator:
   completed action's routes, so the held sibling's activating receipt stays behind in the
   parent. A chain (`A -> B`) is supported and is the shape a pipeline authors.
 
+### What the browser may and may not decide about one
+
+- **Addability is the daemon's answer, never the bundle's.** Every add control filters through
+  `addableSessionActions(catalog, available)`, and `available` comes from
+  `GET /api/session-actions/capabilities`. Reading `SESSION_ACTION_COMPLETION_CAPABILITIES`
+  directly in a component would make the offer a property of the loaded JavaScript rather than
+  of the process that will refuse the publish. A failed capability read offers **nothing**; it
+  must never fall back to the shared table.
+- **Nameable is wider than addable.** An archived source, a shadowed built-in, or an adapter
+  this build cannot run stays in a picker as a RETAINED option when a node already names it. A
+  `<select>` whose value is absent from its options paints something else as chosen, and the
+  next change event rewrites a draft nobody meant to edit.
+- **An action never borrows an evaluator's vocabulary.** `sessionActionStatus` is its own chip
+  table beside `reviewerStatus` and `checkStatus`, and no arm of it says Passed, Failed or
+  Changes requested. `stageStatus` takes the stage kind for the same reason: folding a
+  singleton action stage through the all-pass logic headed it "Passed" one line above a member
+  chip that refuses to make that claim.
+- **A CAS conflict offers three routes, and Reapply is a three-way merge.** Reload discards
+  the draft, Duplicate keeps it on a different row, and Reapply lands it on the same row at
+  the revision that now exists. The merge is what makes the third one safe: the patch is
+  measured from `baselineRef` - the seed the draft STARTED at - not from the row the conflict
+  reported and not from the `action` prop, which the raising SSE upsert has already replaced
+  with the other tab's state. Measured either of those ways, a reapply sends back every field
+  the other tab changed at the values this editor loaded before they changed them, silently
+  reverting their save. `sessionActionSaveTarget` states the whole rule: Save and Reapply
+  differ in exactly one thing, the expected revision.
+- **Wait state is read, not derived.** `actionWait` and the durable `SessionActionAttemptState`
+  in the attempt's `output_json` are the runtime's own answers. The distinction between a stale
+  idle and a finished turn is a transcript byte offset the daemon recorded; nothing in a
+  summary can reconstruct it, and no surface may try.
+- **Round and segment are different facts and are displayed as such.** The repair budget counts
+  `round` only. A surface that derived a round by counting submissions would report a run as
+  closer to its limit every time an action finished.
+- **A continuation's source action is shown with the child segment.** The attempt stays on the
+  parent - that is what keeps upstream work from claiming it reviewed evidence it never saw -
+  so `continuationSourceAttempt` reads the submission's own `continuationNodeId` /
+  `continuationNodeAttemptId` columns and verifies both ends. This is the one deliberate
+  cross-submission read, and it is provenance the runtime wrote rather than a relationship
+  inferred from ordering.
+
+## The Inspector footer
+
+Inspector is `WorkflowCompletionPolicy`, and it gains no node, no id and no edge. `InspectorFooter`
+in `src/web/workflows/pipeline-bits.tsx` is the one projection of it, rendered after End by the
+Pipeline editor, the run pipeline, published version detail and the Board ladder. It returns
+`null` for a `none` policy, which is why every call site passes the policy unconditionally.
+
+Two things about it are load-bearing. It reads the **version's** policy on a run surface and the
+**workflow's** on a draft surface, so a run pinned to an older version shows the gate that
+version was published with. And `none` beneath an Inspector policy means "the run has not
+reached the gate", not "there is no gate" - `inspectorFooterStatus` exists so the footer does
+not contradict its own sentence for most of a live run's life.
+
 ## Harness changes
 
 Add an agent ID only to `AGENT_TYPES`. The resulting type errors identify the exhaustive records that need real values:

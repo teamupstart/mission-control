@@ -2406,6 +2406,23 @@ export const SessionActionAttemptStateSchema = z.object({
 });
 
 /** The build's per-adapter answer, as the browser receives it. Never re-derived client-side. */
+/**
+ * What a COMPLETED action attempt's `output_json` holds, which is not the waiting shape.
+ *
+ * `completeSessionActionAttempt` replaces the observation state with a record of what
+ * happened: the outcome, the action it was, the segment it authorized, and the three
+ * timestamps worth keeping. Read-only and deliberately narrow - run detail needs the
+ * timeline, and a reader that expected `SessionActionAttemptState` here gets `null` and
+ * silently drops it.
+ */
+export const SessionActionCompletedOutputSchema = z.object({
+  outcome: z.literal("complete"),
+  anchor: SessionActionDeliveryAnchorSchema.nullable().optional().default(null),
+  pickedUpAt: z.number().nullable().optional().default(null),
+  settledAt: z.number().nullable().optional().default(null),
+  continuationSubmissionId: WorkflowIdSchema.nullable().optional().default(null),
+});
+
 export const SessionActionCompletionCapabilitySchema = z.object({
   kind: z.enum(SESSION_ACTION_COMPLETION_KINDS),
   available: z.boolean(),

@@ -86,7 +86,13 @@ test("the pipeline editor roves by name and announces in names", () => {
   assert.match(editor, /`Added \$\{labelOfMember\(seeded\(seed\)\)\} to \$\{refOfStage\(stageIndex\)\}`/);
   assert.match(editor, /ariaLabel: `\$\{label\}, \$\{noun\} \$\{memberIndex \+ 1\}/);
   assert.match(editor, /member\.kind === "check" \? checkLabel\(member\.slot\) : nameOf\(member\.personaId\)/);
-  assert.match(editor, /ariaLabel: `\$\{stageLabel\}, \$\{stageRef\} of \$\{pipeline\.stages\.length\}/);
+  // The stage's own name, then its KIND when it has one worth saying, then its position. The
+  // kind clause is not decoration: a session action card otherwise sounds exactly like a
+  // one-reviewer stage to a screen-reader user, and the two do opposite things.
+  assert.match(
+    editor,
+    /ariaLabel: `\$\{stageLabel\}, \$\{isAction \? "session action stage, " : ""\}\$\{stageRef\} of \$\{pipeline\.stages\.length\}/,
+  );
   // A stage is REFERRED to positionally in every sentence about it or its members. The
   // derived name of a one-reviewer stage is that reviewer, so naming it any other way
   // produced "remove Security reviewer from Security reviewer".

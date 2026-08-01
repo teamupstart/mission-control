@@ -83,11 +83,20 @@ test("keyboard editing covers move, connect, confirmed delete, undo, redo, and d
   assert.doesNotMatch(librarySource, /window\.confirm/);
   assert.match(librarySource, /event\.metaKey \|\| event\.ctrlKey/);
   assert.match(librarySource, /if \(event\.shiftKey\) draft\.redo\(\)/);
-  // Session is never duplicated - a graph has exactly one. The rule moved into
-  // `duplicableIds`, which is also what GATES the control, so the button can no longer light
-  // up for a selection it would then refuse.
+  // The rule lives in `duplicableIds`, which is also what GATES the control, so the button
+  // can no longer light up for a selection it would then refuse. Two exclusions, for two
+  // reasons. Session, because a graph has exactly one. And a session
+  // action this daemon cannot offer: duplicating a node is an ADD control by another name -
+  // the third way to put one in a graph - so it answers the same `addableActions` question the
+  // palette and the drop handler do. Without that clause a draft already naming an archived or
+  // unavailable action was a way to mint a SECOND unpublishable stage from inside a builder
+  // whose every other add control refuses it.
   assert.match(librarySource, /const duplicableIds = selectedIds\.filter/);
-  assert.match(librarySource, /kind !== "session" && kind !== "session_action"/);
+  assert.match(librarySource, /if \(!node \|\| node\.kind === "session"\) return false;/);
+  assert.match(
+    librarySource,
+    /return addableActions\.some\(\(action\) => action\.id === node\.sessionActionId\);/,
+  );
   assert.match(draftSource, /slice\(-49\)/);
   assert.match(canvasSource, /workflow-alignment-guide is-vertical/);
   assert.match(canvasSource, /workflow-alignment-guide is-horizontal/);

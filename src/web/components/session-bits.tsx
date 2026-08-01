@@ -141,6 +141,11 @@ export type WorkflowRunTone = "running" | "waiting" | "blocked" | "passed" | "fa
 
 export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
   if (run.status === "completed") return "passed";
+  // `waiting_for_action` is deliberately NOT in this list. Every status here is a run that
+  // owes something to a human - repair the work, open a PR, wait out a review - and the
+  // chip's waiting tone is the fleet's mark for "your move". An action turn is the daemon's
+  // own instruction being worked on by the session, so it tones as running, and the label
+  // below says which of the two it is.
   if ([
     "waiting_for_session",
     "waiting_for_pr",
@@ -161,6 +166,10 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
   if (tone === "waiting") return "Review changes";
   if (tone === "blocked") return "Workflow blocked";
   if (tone === "failed") return run.status === "cancelled" ? "Preview cancelled" : "Preview failed";
+  // Named rather than folded into the round counter beside it. A run parked on an action is
+  // not a review in progress, and `Preview · R1` beside a session that has just been handed
+  // an instruction tells an operator nothing about why nothing is moving.
+  if (run.status === "waiting_for_action") return "Session action";
   return `Preview · R${run.round}`;
 }
 

@@ -310,6 +310,42 @@ Phase 4 may extend action wait copy with bounded PR-proof states, but it must re
 action stage and fixed Inspector footer. No-Mistakes v8 should be assembled through the same graph
 compiler and snapshot path an operator uses.
 
+As built, the seams Phase 4 will touch live at these names:
+
+| Contract | Where |
+|---|---|
+| The one filter every add control passes through | `addableSessionActions(catalog, available)` in `src/shared/workflow.ts` |
+| A picker's options, including the retained arm | `sessionActionChoicesForDisplay` / `sessionActionChoiceLabel`, same file |
+| The daemon's capability answer, fetched not imported | `useSessionActionCapabilities` in `src/web/workflows/sessionActionApi.ts` |
+| The library and editor | `SessionActionLibrary.tsx`, `SessionActionEditor.tsx`, route `#/workflows/actions` |
+| Stage authoring | `StageSeed`, `insertStage`, `replaceStageAction`, `parseStageOption` in `PipelineEditor.tsx` |
+| Graph authoring | the `session_action` arm of `NewWorkflowNode`, the palette entry and `addNode` in `WorkflowLibrary.tsx` |
+| The action's own chip and sentences | `sessionActionStatus`, `actionWaitSentence`, `actionBlockSentence` in `run-model.ts` |
+| Segment presentation | `runRounds`, `segmentProvenanceSentence`, `continuationSourceAttempt`, same file |
+| The fixed footer | `InspectorFooter` in `pipeline-bits.tsx`, plus `inspectorFooterStatus` in `run-model.ts` |
+
+Phase 4 turning `pull_request.available` true is the whole browser change: the built-in appears
+in every picker, the editor offers the completion, and the existing retained-option arm stops
+firing for it. Four things must NOT be added along the way:
+
+- a browser-side special case for the built-in. It is addressable catalog data like any other
+  row, and the only reason it is currently absent is `available: false`;
+- a second answer to "may I add this?". `addableSessionActions` is the filter, and the
+  availability set it takes comes from the daemon;
+- a PR-shaped arm in `sessionActionStatus`. The PR adapter's extra proof surfaces as
+  `awaiting_proof`, which already reads "Verifying" and already has a sentence. New *wait
+  reasons* appended to `SESSION_ACTION_WAIT_REASONS` fail typecheck in three `Record`s until
+  someone says what each means to a human - that is the intended cost;
+- an Inspector graph node. The footer is a projection, and v8's Pull Request stage reaches End
+  like any other stage before the completion policy claims it.
+
+One thing this phase deliberately did NOT do, because it belongs with the verified adapter: the
+Pull Request action's completion is unreachable in the editor, so nothing exercises the
+`pull_request` arm of the completion selector against a real save. `completionChoices` covers
+the retained case in `test/session-action-library-render.test.ts`, and Phase 4 should extend
+`e2e/specs/workflow-session-action.spec.ts` - whose last two tests currently pin the refusal -
+rather than deleting them.
+
 ## Cross-phase audit
 
 - Phase 2 runtime state remains server-owned and is displayed without client inference.

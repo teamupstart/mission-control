@@ -89,7 +89,14 @@ function declaredOn(cls: string, property: string): string[] {
  * The containers `pipeline-bits.tsx` renders a `PipelineStatusChip` into, as a sibling of the
  * label. Assertion 3 pins the count, so this list cannot silently fall behind the component.
  */
-const CHIP_CONTAINERS = ["wf-pipeline-terminus", "wf-pipeline-reviewer", "wf-pipeline-stage-head"];
+const CHIP_CONTAINERS = [
+  "wf-pipeline-terminus",
+  "wf-pipeline-reviewer",
+  "wf-pipeline-stage-head",
+  // The fixed Inspector footer. It carries the longest label of the four - a whole sentence
+  // about what the gate is waiting on - so it is the container that most needed the escape.
+  "wf-pipeline-inspector",
+];
 
 /**
  * The escape: the container is a grid that gives the chip its own explicit column, so the chip

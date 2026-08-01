@@ -222,9 +222,15 @@ function canvasNodes(
       subtitle = snapshot
         ? `Snapshot revision ${snapshot.sourceRevision}`
         : live
-          ? live.completion.kind === "pull_request"
-            ? "Waits for a verified pull request"
-            : "Waits for the session turn to finish"
+          ? [
+              live.completion.kind === "pull_request"
+                ? "Waits for a verified pull request"
+                : "Waits for the session turn to finish",
+              // Said on the node itself and not only in the rail: an archived source is why
+              // Publish is off, and a canvas that looked fine until the button did not work
+              // sends an operator hunting through diagnostics for it.
+              ...(live.archivedAt === null ? [] : ["archived source"]),
+            ].join(" · ")
           : "Select an active session action";
     } else if (node.kind === "end") {
       fallbackLabel = node.outcome;
@@ -235,9 +241,9 @@ function canvasNodes(
       id: node.id,
       type: node.kind,
       position: node.position,
-      // Session has exactly one instance; a session action has no affordance in this build,
-      // and React Flow's own delete key is one of them.
-      deletable: !readOnly && node.kind !== "session" && node.kind !== "session_action",
+      // Session is the one node a graph must keep, so it is the one node React Flow's own
+      // delete key may not remove.
+      deletable: !readOnly && node.kind !== "session",
       draggable: !readOnly,
       selectable: true,
       focusable: node.id === focusNodeId,

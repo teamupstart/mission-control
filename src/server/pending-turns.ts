@@ -45,7 +45,8 @@ interface PendingTurnDeps {
 
 interface PickupCandidate {
   turn: PendingTurn;
-  timer: ReturnType<typeof setTimeout>;
+  boundaryAt: number;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 /**
@@ -99,7 +100,9 @@ export class PendingTurnManager {
     this.unsubscribe?.();
     this.unsubscribe = null;
     for (const timer of this.idleTimers.values()) clearTimeout(timer);
-    for (const candidate of this.pickup.values()) clearTimeout(candidate.timer);
+    for (const candidate of this.pickup.values()) {
+      if (candidate.timer) clearTimeout(candidate.timer);
+    }
     this.idleTimers.clear();
     this.pickup.clear();
   }
@@ -204,7 +207,7 @@ export class PendingTurnManager {
       candidate &&
       session.state === "working" &&
       session.stateConfirmed &&
-      (session.lastActivity ?? 0) >= (candidate.turn.claimedAt ?? candidate.turn.updatedAt)
+      (session.lastActivity ?? 0) >= candidate.boundaryAt
     ) {
       this.completePickup(candidate.turn);
       return;
@@ -299,30 +302,33 @@ export class PendingTurnManager {
   }
 
   private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
-    const timer = unref(
-      setTimeout(() => {
-        const current = this.pickup.get(turn.noteKey);
-        if (!current || current.turn.id !== turn.id) return;
-        this.pickup.delete(turn.noteKey);
-        markPendingTurnUncertain(
-          turn.id,
-          turn.revision,
-          "Mission Control could not confirm that the terminal accepted this message.",
-          this.deps.now(),
-        );
-        this.registry.refreshPendingTurns(turn.noteKey);
-      }, this.deps.pickupTimeoutMs),
-    );
-    this.pickup.set(turn.noteKey, { turn, timer });
+    let boundaryCrossed = false;
+    const beforeWrite = (): string | null => {
+      const current = this.registry.getSession(session.id);
+      if (
+        !current ||
+        current.runtime !== "terminal" ||
+        noteKeyFor(current) !== turn.noteKey ||
+        !this.readyToDrain(current)
+      ) {
+        return "The agent became busy or opened a dialog before delivery.";
+      }
+      const resourceBlocker = this.registry.promptResourceBlockerForSession(session.id);
+      if (resourceBlocker) return resourceBlocker;
+      if (!boundaryCrossed) {
+        boundaryCrossed = true;
+        this.pickup.set(turn.noteKey, {
+          turn,
+          boundaryAt: this.deps.now(),
+          timer: null,
+        });
+      }
+      return null;
+    };
 
     let result: InjectResult;
     try {
-      result = await this.deps.inject(
-        session,
-        turn.text,
-        undefined,
-        () => this.registry.promptResourceBlockerForSession(session.id),
-      );
+      result = await this.deps.inject(session, turn.text, undefined, beforeWrite);
     } catch (err) {
       result = {
         ok: false,
@@ -333,7 +339,26 @@ export class PendingTurnManager {
     }
 
     const candidate = this.pickup.get(turn.noteKey);
-    if (!candidate || candidate.turn.id !== turn.id) return;
+    if (!candidate || candidate.turn.id !== turn.id) {
+      if (boundaryCrossed) return;
+      if (result.pasted || result.ok) {
+        markPendingTurnUncertain(
+          turn.id,
+          turn.revision,
+          result.error ?? "The terminal delivery outcome is unknown.",
+          this.deps.now(),
+        );
+      } else {
+        releasePendingTurn(
+          turn.id,
+          turn.revision,
+          result.error ?? "The terminal refused the message.",
+          this.deps.now(),
+        );
+      }
+      this.registry.refreshPendingTurns(turn.noteKey);
+      return;
+    }
     if (result.ok) {
       // A collapsed-paste placeholder observed before Enter and gone afterwards is direct
       // prompt-pickup evidence. Do not wait for a second hook/passive state signal that may
@@ -344,10 +369,11 @@ export class PendingTurnManager {
       }
       const latest = this.registry.getSession(session.id);
       if (latest) this.observeSession(latest);
+      this.armPickupTimeout(turn);
       return;
     }
 
-    clearTimeout(candidate.timer);
+    if (candidate.timer) clearTimeout(candidate.timer);
     this.pickup.delete(turn.noteKey);
     if (result.pasted) {
       markPendingTurnUncertain(
@@ -370,10 +396,29 @@ export class PendingTurnManager {
   private completePickup(turn: PendingTurn): void {
     const candidate = this.pickup.get(turn.noteKey);
     if (!candidate || candidate.turn.id !== turn.id) return;
-    clearTimeout(candidate.timer);
+    if (candidate.timer) clearTimeout(candidate.timer);
     this.pickup.delete(turn.noteKey);
     deleteClaimedPendingTurn(turn.id, turn.revision);
     this.registry.refreshPendingTurns(turn.noteKey);
+  }
+
+  private armPickupTimeout(turn: PendingTurn): void {
+    const candidate = this.pickup.get(turn.noteKey);
+    if (!candidate || candidate.turn.id !== turn.id || candidate.timer) return;
+    candidate.timer = unref(
+      setTimeout(() => {
+        const current = this.pickup.get(turn.noteKey);
+        if (!current || current.turn.id !== turn.id) return;
+        this.pickup.delete(turn.noteKey);
+        markPendingTurnUncertain(
+          turn.id,
+          turn.revision,
+          "Mission Control could not confirm that the terminal accepted this message.",
+          this.deps.now(),
+        );
+        this.registry.refreshPendingTurns(turn.noteKey);
+      }, this.deps.pickupTimeoutMs),
+    );
   }
 }
 

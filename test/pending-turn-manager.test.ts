@@ -96,6 +96,7 @@ function terminalFixture(
   name: string,
   inject: (text: string) => Promise<InjectResult>,
   pickupTimeoutMs = 15,
+  beforeBoundary: () => Promise<void> = async () => {},
 ) {
   const registry = new Registry();
   registry.applyDiscovery([discovered(name)]);
@@ -107,7 +108,12 @@ function terminalFixture(
     {
       idleSettleMs: 0,
       pickupTimeoutMs,
-      inject: async (_session, text) => {
+      inject: async (_session, text, _deps, beforeWrite) => {
+        await beforeBoundary();
+        const blocker = beforeWrite?.();
+        if (blocker) {
+          return { ok: false, error: blocker, pasted: false, submitVerified: false };
+        }
         injected.push(text);
         return inject(text);
       },
@@ -297,6 +303,64 @@ test("an unconfirmed terminal success becomes uncertain instead of duplicating",
   clearPendingTurns(f.key);
 });
 
+test("terminal delivery refuses when work starts before the write boundary", async () => {
+  let reachedBoundary!: () => void;
+  const boundaryReached = new Promise<void>((resolve) => (reachedBoundary = resolve));
+  let continueDelivery!: () => void;
+  const deliveryMayContinue = new Promise<void>((resolve) => (continueDelivery = resolve));
+  const f = terminalFixture(
+    "write-boundary-race",
+    async () => ({ ok: true, pasted: true, submitVerified: false }),
+    100,
+    async () => {
+      reachedBoundary();
+      await deliveryMayContinue;
+    },
+  );
+
+  f.manager.submit(f.id, "do not steer active work");
+  await boundaryReached;
+  userPromptHook(f.registry, "write-boundary-race");
+  continueDelivery();
+  await tick();
+
+  assert.deepEqual(f.injected, []);
+  const turn = f.registry.getSession(f.id)?.pendingTurns[0];
+  assert.equal(turn?.state, "queued");
+  assert.match(turn?.lastError ?? "", /became busy or opened a dialog/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+test("terminal pickup timeout starts only after injection settles", async () => {
+  let finishInjection!: () => void;
+  const injectionMayFinish = new Promise<void>((resolve) => (finishInjection = resolve));
+  let injectionStarted!: () => void;
+  const started = new Promise<void>((resolve) => (injectionStarted = resolve));
+  const f = terminalFixture(
+    "slow-injection",
+    async () => {
+      injectionStarted();
+      await injectionMayFinish;
+      return { ok: true, pasted: true, submitVerified: false };
+    },
+    10,
+  );
+
+  f.manager.submit(f.id, "wait for injection to settle");
+  await started;
+  await tick(30);
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "sending");
+
+  finishInjection();
+  await tick(30);
+  const turn = f.registry.getSession(f.id)?.pendingTurns[0];
+  assert.equal(turn?.state, "uncertain");
+  assert.match(turn?.lastError ?? "", /could not confirm/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
 test("Codex terminal delivery follows passive rollout completion and pickup markers", async () => {
   const registry = new Registry();
   const name = "codex-passive";
@@ -321,7 +385,11 @@ test("Codex terminal delivery follows passive rollout completion and pickup mark
     {
       idleSettleMs: 0,
       pickupTimeoutMs: 100,
-      inject: async (_session, text) => {
+      inject: async (_session, text, _deps, beforeWrite) => {
+        const blocker = beforeWrite?.();
+        if (blocker) {
+          return { ok: false, error: blocker, pasted: false, submitVerified: false };
+        }
         injected.push(text);
         return { ok: true, pasted: true, submitVerified: false };
       },

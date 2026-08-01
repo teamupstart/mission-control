@@ -311,10 +311,12 @@ test("an authored action becomes a pipeline stage, publishes, and freezes its in
   const pipeline = dashboard.locator(".wf-pipeline-strip");
   await expect(pipeline).toContainText("a reviewer, a check or a session action");
   const picker = pipeline.getByLabel("Add the first stage");
-  // Three groups, and the third is the one this phase adds. Asserted as a group rather than
-  // as a bare option so a Persona that happened to share the name could not satisfy it.
+  // Three groups, and the third is the one the session action phase added. Asserted as a group
+  // rather than as a bare option so a Persona that happened to share the name could not satisfy
+  // it, and exhaustively so the shipped Pull Request built-in - addable since its adapter
+  // shipped - has to be accounted for rather than silently tolerated.
   await expect(picker.locator('optgroup[label="Session actions"] option'))
-    .toHaveText(["Tidy the workspace"]);
+    .toHaveText(["Pull Request", "Tidy the workspace"]);
   await picker.selectOption({ label: "Tidy the workspace" });
 
   // It lands as a singleton stage that names itself and says what happens after it.
@@ -520,14 +522,16 @@ test("an action node duplicates, keeping the adapter it was copied for", async (
 
   await expect(dashboard.locator('[data-node-kind="session_action"]')).toHaveCount(2);
   // Asserted against the route, because "a second box appeared" is not the claim - "the daemon
-  // holds two nodes, and both name the action that was copied" is.
-  const detail = await api<{
-    workflow: { draft: { nodes: Array<{ kind: string; sessionActionId?: string }> } };
-  }>(daemon, `/api/workflows/${created.workflow.id}`);
-  const actions = detail.workflow.draft.nodes.filter((item) => item.kind === "session_action");
-  expect(actions).toHaveLength(2);
-  expect(actions.map((item) => item.sessionActionId))
-    .toEqual(["builtin:pull-request", "builtin:pull-request"]);
+  // holds two nodes, and both name the action that was copied" is. Polled because the draft
+  // autosaves on a debounce, so the DOM is ahead of the PATCH by design.
+  await expect.poll(async () => {
+    const detail = await api<{
+      workflow: { draft: { nodes: Array<{ kind: string; sessionActionId?: string }> } };
+    }>(daemon, `/api/workflows/${created.workflow.id}`);
+    return detail.workflow.draft.nodes
+      .filter((item) => item.kind === "session_action")
+      .map((item) => item.sessionActionId);
+  }).toEqual(["builtin:pull-request", "builtin:pull-request"]);
 });
 
 test("a graph naming the shipped built-in publishes, and freezes its snapshot", async ({
@@ -554,7 +558,7 @@ test("a graph naming the shipped built-in publishes, and freezes its snapshot", 
   await expect(pipeline.locator("li.wf-pipeline-reviewer")).toContainText("Skill · pull-request");
   // What the stage promises the runtime will prove, in the words the selector offered.
   await expect(pipeline.locator("li.wf-pipeline-reviewer"))
-    .toContainText("Pull request is opened and verified");
+    .toContainText("Completes when pull request is opened and verified");
   // The picker no longer has to RETAIN it under a refusal label: it is addable, so it appears
   // as an ordinary option under its own name.
   await expect(pipeline.getByLabel("Choose the session action Stage 1 sends"))
@@ -564,12 +568,26 @@ test("a graph naming the shipped built-in publishes, and freezes its snapshot", 
     .not.toContainText("cannot verify a pull request");
   await dashboard.getByRole("button", { name: "Publish" }).click();
 
-  const versions = await api<Array<{
-    version: number;
-    graph: { nodes: Array<{ id: string; kind: string; action?: { completion: { kind: string }; requiredSkillId: string | null; promptMarkdown: string } }> };
-  }>>(daemon, `/api/workflows/${id}/versions`);
-  expect(versions).toHaveLength(1);
-  const frozen = versions[0]!.graph.nodes.find((item) => item.id === PR_NODE.action)!;
+  // Polled: Publish is a click, and the version list is what the daemon has actually written.
+  await expect.poll(async () =>
+    (await api<Array<{ version: number }>>(daemon, `/api/workflows/${id}/versions`)).length,
+  ).toBe(1);
+
+  // The graph rides the single-version route; the list is summaries.
+  const published = await api<{
+    graph: {
+      nodes: Array<{
+        id: string;
+        kind: string;
+        action?: {
+          completion: { kind: string };
+          requiredSkillId: string | null;
+          promptMarkdown: string;
+        };
+      }>;
+    };
+  }>(daemon, `/api/workflows/${id}/versions/1`);
+  const frozen = published.graph.nodes.find((item) => item.id === PR_NODE.action)!;
   expect(frozen.kind).toBe("session_action");
   expect(frozen.action!.completion.kind).toBe("pull_request");
   expect(frozen.action!.requiredSkillId).toBe("pull-request");

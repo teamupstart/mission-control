@@ -28,7 +28,7 @@ npm run smoke
 npm run package
 ```
 
-`npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run package` builds the macOS application.
+`npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run test:e2e` additionally needs the Playwright browser, which `npm install` does not fetch - run `npx playwright install chromium` once per machine. `npm run package` builds the macOS application.
 
 Run one test file with the same concurrency and loader as the full suite:
 

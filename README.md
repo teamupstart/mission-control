@@ -4865,6 +4865,7 @@ npm run build          # build web + MCP bundle
 npm test               # full test suite, including real Electron GUI geometry checks
 npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
 npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
+npx playwright install chromium # one-time setup for test:e2e (npm install does not fetch it)
 npm run smoke          # boot the built bundles and check they actually run (after build)
 npm run typecheck      # tsc --noEmit
 npm run lint           # oxlint over src, hooks, test, scripts, e2e (also: make lint)
@@ -4883,6 +4884,11 @@ typing into a conversation - end to end. It spends no model tokens, because ever
 binary is redirected at a local fake through the `MISSION_*_BIN` chain that the daemon
 already resolves for operators. See [e2e/README.md](e2e/README.md) for the isolation
 contract and for what to do (and not do) when adding a spec.
+
+It needs two things a fresh checkout does not have: a build, and the browser. `npm install`
+deliberately does not fetch Chromium - that would tax every contributor for a suite most
+runs never touch - so run `npx playwright install chromium` once per machine. Without it the
+run fails with `browserType.launch: Executable doesn't exist`.
 
 `measure-inspector-prompt` prints the review prompt's byte size for the current source and
 for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in

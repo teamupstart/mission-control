@@ -5,9 +5,18 @@ layer in the repository where a click reaches a route, a route reaches a subproc
 result comes back to the DOM through a server event.
 
 ```sh
-npm run build      # required: this suite drives dist/, not src/
+npx playwright install chromium   # one-time, per machine
+npm run build                     # required: this suite drives dist/, not src/
 npm run test:e2e
 ```
+
+Both prerequisites are real: without the browser the run dies with `browserType.launch:
+Executable doesn't exist`, and without a build the daemon has no `dist/` to serve.
+
+The browser download is a separate step rather than a `postinstall` hook because `npm
+install` is run by everyone and this suite is not - fetching ~150MB of Chromium for a
+contributor who only ever runs `npm test` is a tax on the common path. CI installs it as its
+own step for the same reason, and skips it on the Node version that does not run this suite.
 
 Useful flags:
 

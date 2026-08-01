@@ -1871,22 +1871,30 @@ export function loadPendingReviews(): ReviewItem[] {
  * The status/actor filter is `isHumanResolvedReview` expressed in SQL, and the predicate is
  * asserted over the result so the two can be shown to agree rather than assumed to.
  *
- * `ASC` because this is read in reading order and merged into a transcript that runs the
- * same way; the LIMIT then keeps the OLDEST rows of a very long session, which is the
- * wrong end to keep - so the bound is deliberately high enough that no real session reaches
- * it, and a session that somehow did would lose its most recent answers visibly (the
- * conversation simply stops showing them) rather than silently reordering.
+ * The bound is applied to the NEWEST rows and the page is then flipped back to ascending, so
+ * the two orders in play are kept apart: the conversation is READ oldest-first, but when a
+ * session has more answers than the cap, the ones worth keeping are the recent ones.
+ *
+ * Selecting ascending and then limiting - which this did first - keeps the oldest page
+ * instead, so past the cap the newest answer silently stops appearing. That is the one
+ * failure this whole feature exists to prevent, and it lands on the answer a reader is most
+ * likely to have opened the session to check. It cannot be waved off as unreachable either:
+ * these rows are never restored to the live registry (`loadPendingReviews` reloads only
+ * pending ones), so this query IS the conversation after a restart, with no live half to
+ * paper over the gap.
  */
 export function loadHumanResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
   const statuses = [...HUMAN_REVIEW_STATUSES];
   const rows = openDb()
     .prepare(
-      `SELECT * FROM reviews
-        WHERE session_id = ?
-          AND resolved_by = 'human'
-          AND status IN (${statuses.map(() => "?").join(", ")})
-        ORDER BY resolved_at ASC, created_at ASC
-        LIMIT ?`,
+      `SELECT * FROM (
+         SELECT * FROM reviews
+          WHERE session_id = ?
+            AND resolved_by = 'human'
+            AND status IN (${statuses.map(() => "?").join(", ")})
+          ORDER BY resolved_at DESC, created_at DESC
+          LIMIT ?
+       ) ORDER BY resolved_at ASC, created_at ASC`,
     )
     .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
   return rows.map(rowToReview).filter(isHumanResolvedReview);

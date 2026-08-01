@@ -138,6 +138,58 @@ test("another session's answers stay in that session's conversation", () => {
   assert.ok(loadHumanResolvedReviews("s2").find((r) => r.id === "r-other"));
 });
 
+test("past the cap it keeps the NEWEST answers, still oldest-first", () => {
+  // The end that gets dropped is the whole point. Ordering ascending and then applying the
+  // LIMIT - which this did first - keeps the oldest page, so a session past the cap silently
+  // stops showing its most recent answer: the one a reader is likeliest to have opened the
+  // session to check, and exactly the failure this feature exists to prevent.
+  //
+  // It cannot be dismissed as unreachable, either. These rows are never restored to the live
+  // registry (`loadPendingReviews` reloads only pending ones), so this query IS the
+  // conversation after a daemon restart, with no live half to cover the gap.
+  //
+  // Driven through the `limit` parameter rather than by inserting 501 rows: the boundary
+  // being tested is "more answers than the cap", and 4-against-3 exercises it exactly as
+  // 501-against-500 does, in milliseconds.
+  const session = "s-capped";
+  for (const [i, stamp] of [3000, 3100, 3200, 3300].entries()) {
+    const id = `r-cap-${i}`;
+    insertReview(review(id, { sessionId: session }));
+    updateReviewStatus(id, "answered", `answer ${i}`, stamp, null, "human");
+  }
+
+  const kept = loadHumanResolvedReviews(session, 3);
+  assert.deepEqual(
+    kept.map((r) => r.id),
+    ["r-cap-1", "r-cap-2", "r-cap-3"],
+    "the newest three survive the cap, and are returned oldest-first for reading",
+  );
+  assert.equal(
+    kept.some((r) => r.id === "r-cap-3"),
+    true,
+    "the most recent answer is present - the regression this guards",
+  );
+  assert.equal(
+    kept.some((r) => r.id === "r-cap-0"),
+    false,
+    "and the oldest is the one dropped",
+  );
+});
+
+test("under the cap nothing is dropped, and the order is unchanged", () => {
+  const session = "s-uncapped";
+  for (const [i, stamp] of [4000, 4100].entries()) {
+    const id = `r-uncap-${i}`;
+    insertReview(review(id, { sessionId: session }));
+    updateReviewStatus(id, "answered", `answer ${i}`, stamp, null, "human");
+  }
+  assert.deepEqual(
+    loadHumanResolvedReviews(session, 3).map((r) => r.id),
+    ["r-uncap-0", "r-uncap-1"],
+    "a session inside the bound reads oldest-first with everything present",
+  );
+});
+
 test("a malformed selections blob degrades to null instead of throwing", () => {
   // The column is free text. One corrupt row must not take down every other answer in the
   // conversation with it; the card falls back to the response prose.

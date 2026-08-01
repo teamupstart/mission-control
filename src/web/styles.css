@@ -4717,20 +4717,34 @@ kbd {
 .turn-assistant .turn-role {
   color: color-mix(in oklab, var(--agent-accent, var(--muted)) 70%, var(--muted));
 }
-/* Transcript time is provenance rather than another status badge. It follows the voice
-   label in the utility face and yields visually to whichever speaker colour is active. */
-.turn-role .turn-time {
+/* Transcript time is provenance rather than another status badge. It keeps the speaker's
+   baseline, wears the utility face, and yields visually to whichever speaker colour is
+   active - but it sits at the far right of the row rather than trailing the label. Names
+   differ in length, so a time that follows the label lands in a different place on every
+   row and has to be re-found each time; against the right edge it forms one column the eye
+   can run down. It stays a flex item of the byline's own line box (`margin-left: auto`, not
+   a float or a column of its own), so the turn's text below still uses the full width of
+   the log - the timestamp costs the conversation no measure at all. */
+.turn .turn-time {
+  flex: none;
+  margin-left: auto;
+  /* Clears the platform's overlay scrollbar, which paints ON the log rather than beside
+     it - measured, not assumed: `scrollbar-gutter: stable` reserves nothing here because
+     the bar is an overlay. Every other row ends in bubble padding, so the bar had nothing
+     to hide until the clock moved out here; without this the last character is swallowed
+     for as long as you are scrolling, which is exactly when it is being read. Carried by
+     the clock alone so the bubbles keep their shared right edge with the reply box. */
+  padding-right: 8px;
   color: var(--dim);
   font: 500 9.5px/1 var(--mono);
   letter-spacing: 0.01em;
   text-transform: none;
   white-space: nowrap;
 }
-.turn-role .turn-time::before {
-  content: "·";
-  margin: 0 5px;
-  color: var(--dim);
-  font-family: var(--sans);
+/* A floor on the gap, for the byline long enough to reach across the row. The folded tool
+   run gets the same guarantee from its row `gap`. */
+.turn-role .turn-time {
+  padding-left: 10px;
 }
 .turn-text {
   white-space: pre-wrap;

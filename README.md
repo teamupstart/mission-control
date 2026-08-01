@@ -806,11 +806,15 @@ rest on demand. A card open reads a bounded tail rather than the file - a long s
 transcript runs to tens of megabytes, most of it tool output - so the panel is quick to
 open whatever the session has been doing.
 
-Every dated row carries its local month, day, and time beside the speaker, such as
-**You · Jul 31, 9:42 AM**. Hover it for the complete local instant with year, seconds, and
-timezone. A transcript record with no timestamp shows none rather than inventing one; a
-folded run of tool calls shows when that run began. Inline Foreman entries use the same
-absolute clock, while the Foreman history drawer keeps its relative age. See the
+Every dated row carries its local clock time on the speaker's line, pinned to the right
+edge of the log - **You** on the left, **9:42 AM** on the right - so the times read as one
+column instead of landing wherever each speaker's name happens to end. The message itself
+still runs the full width beneath, so the clock costs the conversation no measure. Hover a
+time for the complete local instant with weekday, date, seconds, and timezone; the date is
+there rather than on every row, where it would repeat unchanged down a whole session. A
+transcript record with no timestamp shows none rather than inventing one; a folded run of
+tool calls shows when that run began. Inline Foreman entries use the same absolute clock,
+while the Foreman history drawer keeps its relative age. See the
 [runtime capture](docs/evidence/conversation-timestamps/README.md) for the rendered layout.
 
 Scroll to the top of the log and the page above loads automatically, then the page above

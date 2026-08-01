@@ -2,10 +2,12 @@
 
 This capture renders the production `TranscriptPanel`, `ConversationTimestamp`, and
 `src/web/styles.css` in Electron. The seeded conversation uses fixed local times so the
-image demonstrates Option 1's full per-row format and its placement beside each speaker:
-`You · Jul 31, 9:42 AM` and `Claude · Jul 31, 9:43 AM`.
+image demonstrates the per-row format and its placement: the clock alone (`9:42 AM`,
+`9:43 AM`), pinned to the right edge of the speaker's line, with each message flowing the
+full width beneath it. The date is not dropped, only moved - it is in the hover tooltip and
+the accessible description on every row.
 
-![Conversation rows with timestamps beside each speaker](conversation-timestamps.png)
+![Conversation rows with the clock pinned to the right of each speaker line](conversation-timestamps.png)
 
 To regenerate the capture from the repository root:
 

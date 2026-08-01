@@ -67,10 +67,20 @@ app.whenReady().then(async () => {
     await waitFor(
       window,
       `(() => {
-        const rows = [...document.querySelectorAll('.turn-role')]
-          .map((row) => row.textContent.replace(/\\s+/g, ' ').trim().toLowerCase());
-        return rows.some((row) => row.includes('you') && row.includes('jul 31, 9:42 am'))
-          && rows.some((row) => row.includes('claude') && row.includes('jul 31, 9:43 am'));
+        const turns = [...document.querySelectorAll('.turn')];
+        const say = (row) => row.textContent.replace(/\\s+/g, ' ').trim().toLowerCase();
+        const spoke = (who, time) =>
+          turns.some((row) => say(row).includes(who) && say(row).includes(time));
+        // Placement is the claim this capture is making, so it is checked before the
+        // shutter rather than left to the reviewer's eye: every clock has to end within a
+        // pixel of its own turn's right edge, whatever the speaker beside it is called.
+        const pinned = turns.every((row) => {
+          const time = row.querySelector('.turn-time');
+          if (!time) return true;
+          const gap = row.getBoundingClientRect().right - time.getBoundingClientRect().right;
+          return Math.abs(gap) <= 1;
+        });
+        return pinned && spoke('you', '9:42 am') && spoke('claude', '9:43 am');
       })()`,
     );
     await waitForPaint(window);

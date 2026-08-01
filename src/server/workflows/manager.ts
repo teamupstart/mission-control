@@ -85,7 +85,8 @@ import {
   createReviewScheduler,
   type ReviewScheduler,
 } from "../llm/review-scheduler.ts";
-import type { CheckScheduler } from "./checks.ts";
+import type { CheckRunDeps, CheckScheduler } from "./checks.ts";
+import type { CheckAttemptRef } from "./check-runtime.ts";
 import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
@@ -224,6 +225,23 @@ export interface WorkflowManagerOptions {
    * single spender, so it is passed straight through rather than held here.
    */
   checkScheduler?: CheckScheduler;
+  /**
+   * The execution runtime a Check node reaches, bound per attempt.
+   *
+   * Beside `checkScheduler` because they are the two halves of the same wiring and the daemon
+   * hands over both at once: one paces check commands, the other is what makes there be a
+   * command to pace. Absent, every configured check reports `unavailable` and passes with a
+   * note - the shipped behaviour of a build with no runtime.
+   */
+  checkDeps?: (attempt: CheckAttemptRef) => CheckRunDeps;
+  /**
+   * Contract R, forwarded beside the runtime that creates the leases it asks about.
+   *
+   * Separate from `checkDeps` because it is consulted on a path the executor never reaches -
+   * the moment the engine decides whether to create a retry - and injecting one without the
+   * other would be a runtime that leases trees nothing gates a second lease against.
+   */
+  unresolvedCheckLease?: (submissionId: string, nodeId: string) => boolean;
   /**
    * Whether an external orchestrator may claim this session right now.
    *
@@ -415,8 +433,13 @@ export class WorkflowManager {
         ...options.engine,
         schedule: this.schedule,
         // After the spread, for `schedule`'s reason: a caller must not be able to hand the
-        // engine a second check budget alongside the daemon's.
+        // engine a second check budget alongside the daemon's - nor a second execution
+        // runtime, whose pooled leases and durable process rows are daemon-wide resources.
         ...(options.checkScheduler ? { checkSchedule: options.checkScheduler } : {}),
+        ...(options.checkDeps ? { checkDeps: options.checkDeps } : {}),
+        ...(options.unresolvedCheckLease
+          ? { unresolvedCheckLease: options.unresolvedCheckLease }
+          : {}),
         onSubmissionWaiting: (submissionId) => {
           this.scheduleWaitingDelivery(submissionId);
           configuredWaiting?.(submissionId);

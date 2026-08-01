@@ -358,6 +358,28 @@ export class CheckLeaseManager {
   }
 
   /**
+   * Stop claiming an attempt's lease WITHOUT returning its tree.
+   *
+   * The one exit a finished check has when its process group could not be proven empty.
+   * `releaseForAttempt` is the ordinary exit and it drops this claim in its `finally`, but it
+   * also ISSUES the return - and a return is exactly what an unproven group forbids. Without
+   * this, a check whose build left something running would stay in `owned` for the life of
+   * the daemon, and `reclaimLeaked` skips owned rows on the reasonable assumption that their
+   * check is still going. The row would then be collected by nothing until a restart: the
+   * shared reaper cannot see check leases at all, which is the whole reason this class owns
+   * its own reclamation.
+   *
+   * So the claim is dropped and everything protective is kept - the row stays `held`, the pin
+   * stays, `unresolvedLeaseForNode` keeps refusing a retry - and the next reclamation pass
+   * asks the group-recovery seam again. That pass is the one that eventually proves the
+   * stragglers gone and hands the tree back, which is the self-healing direction described on
+   * `terminateCheckGroup`.
+   */
+  handOffForReclaim(attemptId: string): void {
+    this.owned.delete(attemptId);
+  }
+
+  /**
    * Take a pooled worktree for one check attempt and pin it to the captured commit.
    *
    * There is deliberately NO fallback to `git worktree add`. The pool is what carries the

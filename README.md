@@ -2546,7 +2546,8 @@ same workflow status.
 ### Watching a run
 
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
-ladder above the transcript. Passed stages collapse, the active or failed stage names its
+ladder in the **Workflows** tab (<kbd>y</kbd>), alongside the no-mistakes gate for the same
+session. Passed stages collapse, the active or failed stage names its
 members, and an objection, Inspector wait, or uncertain delivery opens in place. Preview
 feedback can be copied there. The failing rung also reports a member that has failed consecutive
 repair rounds, the signal of a non-converging repair loop. At the Inspector gate, **Recheck
@@ -3821,18 +3822,31 @@ earns two surfaces a card has nowhere to put:
 
 - **Cards** renders the full session card. The **Console** gives
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
-  Gate / Diff / Files** - because a split pane has room a card doesn't: the conversation is
-  permanent, and the sections that share a card's height in the grid get a tab each. The
-  **Board** drills into that same detail when you open a card. In Console and Board, the
+  Workflows / Diff / Files** - because a split pane has room a card doesn't: the conversation
+  is permanent, and the sections that share a card's height in the grid get a tab each. The
+  **Conversation tab is the transcript and nothing else**: the workflow ladder and the
+  no-mistakes gate strip used to stack above it, where between them a gated session on a long
+  workflow could push the first message off the bottom of the screen. Both live in
+  **Workflows** (<kbd>y</kbd>) now, which is the tab that answers *how is this run going*
+  while Conversation answers *what was said* - and which absorbed the old separate **Gate**
+  tab, since two adjacent tabs both answering "is this change allowed to land" was the split
+  that put one of them above the transcript to begin with. A parked gate still shows its
+  count on the tab's face, and is still **answered** there - the gate strip is not a
+  read-only progress bar, and Console and Board have no card to carry its Approve / Fix /
+  Skip actions the way Cards does. Both tabs are captured in
+  [`docs/evidence/workflows-tab/`](docs/evidence/workflows-tab/README.md).
+  The **Board** drills into that same detail when you open a card.
+  In Console and Board, the
   Diff tab contains the complete checkout diff reader; the footer action, <kbd>d</kbd>, and
   a no-mistakes fix's **View diff** all reveal it in place. Opening the tab itself shows the
   whole-checkout diff, while **View diff** shows that one fix commit. Cards keep the diff in
   a modal viewer.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
   its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
-  the tab row opens their history. The rail is deliberately *not* a fifth tab - Work queue,
-  Gate and Diff are things the session *has*, while Foreman is an observer talking *about*
-  it. A card keeps the full note block instead, since it has no transcript to inline into.
+  the tab row opens their history. The rail is deliberately *not* a sixth tab - Work queue,
+  Workflows and Diff are things the session *has*, while Foreman is an observer talking
+  *about* it. A card keeps the full note block instead, since it has no transcript to inline
+  into.
 - **Cards** is the only layout with an in-place focus mode, so its floating command bar is
   unique to it. On the **board**'s overview <kbd>e</kbd> (expand) opens the drill-in the way
   <kbd>Enter</kbd> does, and closes it again. In the console, and in the board once you're
@@ -3843,7 +3857,7 @@ earns two surfaces a card has nowhere to put:
   wears a bright selector frame so it never gets lost against a busy state. Press
   <kbd>Tab</kbd> to step INTO the open detail: it lands on the conversation pane, which takes
   a soft ring, and <kbd>↑</kbd>/<kbd>↓</kbd> scroll it. Each further <kbd>Tab</kbd> moves one
-  tab right - Conversation, Work queue, Gate, Diff, Files - with <kbd>↑</kbd>/<kbd>↓</kbd>
+  tab right - Conversation, Work queue, Workflows, Diff, Files - with <kbd>↑</kbd>/<kbd>↓</kbd>
   scrolling whichever is showing, and it clamps at the last rather than tabbing away.
   <kbd>⇧</kbd><kbd>Tab</kbd> walks back the same way, and from the conversation hands the
   keyboard to the rail. The reader is chosen by where focus actually is, so a single
@@ -4071,7 +4085,7 @@ shortcut works in every layout:
 | Key | Action | Scope |
 |-----|--------|-------|
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. With nothing selected, the first arrow selects the first session | Anywhere |
-| <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Gate → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
+| <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail (**Board** only - the other layouts open it with the selection). On a focused link or button it activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
@@ -4081,6 +4095,7 @@ shortcut works in every layout:
 | <kbd>w</kbd> | Open the Workflows page, or press again to return to the fleet | Fleet or Workflows |
 | <kbd>e</kbd> | Expand / collapse the selected session. **Cards**: focus-expands the card and drops the cursor in its reply box, ready to type. **Board**: opens (and closes) the drill-in detail, the same thing <kbd>Enter</kbd> opens. Console already shows the selected session expanded, so there is nothing to toggle | Selected session |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>e</kbd> owns the toggle | Selected session |
+| <kbd>y</kbd> | Show the selected session's **Workflows** tab - its workflow ladder and its no-mistakes gate, together. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the fleet-wide Workflows page instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |

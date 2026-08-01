@@ -65,6 +65,7 @@ function view(over: Partial<SessionViewProps> = {}): SessionViewProps {
     onOpenFile: () => false,
     fileTabRequest: null,
     conversationTabRequest: null,
+    workflowsTabRequest: null,
     diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},

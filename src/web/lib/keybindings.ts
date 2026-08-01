@@ -28,6 +28,7 @@ export type ActionId =
   | "findInConversation"
   | "diff"
   | "files"
+  | "sessionWorkflows"
   | "filePicker"
   | "send"
   | "terminal"
@@ -103,7 +104,7 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "selection",
   },
   {
-    // First in the tab strip, so first of the three tab chords here - this list is the
+    // First in the tab strip, so first of the four tab chords here - this list is the
     // order the settings panel shows. `g` because the obvious letters are actions of
     // their own: `c` completes a task and `t` opens its terminal launcher.
     id: "conversation",
@@ -136,6 +137,18 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Open files",
     description: "Open the file editor for the expanded or console session.",
     defaultBinding: "f",
+    group: "selection",
+  },
+  {
+    // The detail's Workflows tab: this session's workflow ladder and its no-mistakes gate,
+    // which used to stack above the transcript and push it off the screen. Distinct from
+    // the global `workflows` action above - that one opens the fleet-wide Workflows PAGE,
+    // this reveals one session's run. `y` because every letter either verb owns is taken;
+    // `w` is the page and the tab chords already spent `g`, `d` and `f`.
+    id: "sessionWorkflows",
+    label: "Open session workflows",
+    description: "Show the selected session's workflow ladder and no-mistakes gate.",
+    defaultBinding: "y",
     group: "selection",
   },
   {

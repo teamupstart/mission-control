@@ -37,6 +37,7 @@ import {
   type FindScope,
 } from "../lib/find.ts";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
+import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -643,12 +644,13 @@ export function TranscriptPanel({
                   className="transcript-episode"
                   data-episode-marker={row.episode.marker}
                 >
-                  <ForemanEpisodeCard episode={row.episode} />
+                  <ForemanEpisodeCard episode={row.episode} absoluteTime />
                 </div>
               ) : row.kind === "tools" ? (
                 <ToolRun
                   key={row.id}
                   tools={row.tools}
+                  ts={row.ts}
                   agentLabel={agentLabel}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                 />
@@ -866,7 +868,10 @@ function Turn({
     <div className={`turn turn-${m.origin ?? m.role}`}>
       {/* Not searched: a byline is chrome, not conversation. Were it included,
           "you" would match the label above every message the human ever sent. */}
-      <div className="turn-role">{who}</div>
+      <div className="turn-role">
+        {who}
+        <ConversationTimestamp at={m.ts} className="turn-time" />
+      </div>
       {m.text && (
         // Formatted turns still wear `turn-text` - the bubble's colour, padding, and per-role
         // tint are the same either way. Only what's inside it changes, and `markdown` swaps
@@ -895,16 +900,22 @@ function Turn({
  */
 function ToolRun({
   tools,
+  ts,
   agentLabel,
   find,
 }: {
   tools: ToolCall[];
+  /** Start of the folded run: transcriptRows deliberately keeps its first turn's time. */
+  ts: number;
   agentLabel: string;
   find?: RowFind | null;
 }): React.JSX.Element {
   return (
     <div className="turn turn-assistant turn-toolrun">
-      <div className="turn-role">{agentLabel} executed</div>
+      <div className="turn-role">
+        {agentLabel} executed
+        <ConversationTimestamp at={ts} className="turn-time" />
+      </div>
       <ToolChips tools={tools} find={find} />
     </div>
   );

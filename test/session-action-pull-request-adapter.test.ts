@@ -5,6 +5,8 @@ import type {
   SessionActionAdapterContext,
   SessionActionAdoptedPullRequest,
 } from "../src/server/workflows/session-action-adapters.ts";
+import { FULL_SHA } from "../src/server/workflows/commit-id.ts";
+import { SessionActionContinuationExpectationSchema } from "@shared/protocol.ts";
 import type {
   SessionActionContinuationExpectation,
   SessionActionSnapshot,
@@ -357,4 +359,49 @@ test("a pull request action refuses an expectation that is not its own", () => {
     capturedHeadOid: HEAD,
   });
   assert.ok(problem);
+});
+
+// ---- one rule for what a full commit id is ------------------------------------------------
+
+test("the persisted expectation and the resolver agree on what a full commit id is", () => {
+  // These two are the producer and the schema it feeds, and they drifted: the resolver and the
+  // repository head reader accepted 40 hex while the schema accepted 40 or 64. A repository
+  // using git's SHA-256 object format reports 64-character ids everywhere, so on one of those
+  // the head read as null and a captured head was refused as "not a commit id" - the action
+  // waited for proof it could never accept, even with GitHub naming the exact commit.
+  //
+  // Stated twice on purpose: the schema is browser-safe shared code and the resolver is
+  // server-only. This is what stops the two spellings drifting again.
+  const cases = [
+    ["a".repeat(40), true],
+    ["a".repeat(64), true],
+    ["a".repeat(39), false],
+    ["a".repeat(41), false],
+    ["a".repeat(63), false],
+    ["a".repeat(65), false],
+    ["A".repeat(40), false],
+    ["z".repeat(40), false],
+    ["", false],
+  ] as const;
+  for (const [value, accepted] of cases) {
+    assert.equal(
+      FULL_SHA.test(value),
+      accepted,
+      `the resolver disagrees about ${value.length} chars`,
+    );
+    assert.equal(
+      SessionActionContinuationExpectationSchema.safeParse({
+        kind: "pull_request",
+        pullRequestKey: "owner/repo#7",
+        pullRequestUrl: "https://github.com/owner/repo/pull/7",
+        pullRequestNumber: 7,
+        repositoryRoot: REPO,
+        branch: BRANCH,
+        expectedHeadOid: value,
+        observedAt: 1,
+      }).success,
+      accepted,
+      `the persisted schema disagrees about ${value.length} chars`,
+    );
+  }
 });

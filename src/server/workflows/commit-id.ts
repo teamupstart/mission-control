@@ -11,15 +11,34 @@ import { run } from "../util/exec.ts";
  * case, GitHub's `headRefOid` in the second - and a prefix comparison is not that comparison.
  */
 
-const FULL_SHA = /^[0-9a-f]{40}$/;
+/**
+ * A FULL object id, in either width git produces: 40 hex for SHA-1, 64 for SHA-256.
+ *
+ * Both widths, because a repository created with `--object-format=sha256` reports 64-character
+ * ids everywhere and this is the one place that decides whether an id is "full" at all. Pinned
+ * at 40 alone, every such repository failed in the same silent direction: a captured head was
+ * rejected as "not a commit id", and a `pull_request` action waited for proof it could never
+ * accept even while GitHub named the exact commit.
+ *
+ * The short-circuit for a full id stays safe at either width. Git ignores a ref whose name is a
+ * full object id FOR THAT REPOSITORY's hash, so the ref-shadowing hazard `resolveCapturedCommit`
+ * exists to close cannot apply to one - and a 64-character string in a SHA-1 repository is not
+ * an object id at all, so it simply fails to resolve rather than resolving to the wrong thing.
+ *
+ * Exported because three callers used to spell this rule three different ways: this resolver at
+ * 40, `readWorkflowRepositoryHead` at 40, and the persisted expectation schema at 40-or-64. A
+ * producer narrower than the schema it feeds is a contract that lies about what it can carry.
+ */
+export const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 /**
  * An abbreviated object id and nothing else. Four is git's own floor for an abbreviation, and
- * lowercase-only keeps ONE spelling rule across this file and `verifyPinnedBase`.
+ * lowercase-only keeps ONE spelling rule across this file and `verifyPinnedBase`. The ceiling
+ * is the longer full width for `FULL_SHA`'s reason.
  */
-const ABBREVIATED_SHA = /^[0-9a-f]{4,40}$/;
+const ABBREVIATED_SHA = /^[0-9a-f]{4,64}$/;
 
 /**
- * Turn the capture's commit identifier into the full 40-character id a pin requires.
+ * Turn the capture's commit identifier into the full object id a pin requires.
  *
  * **Found by running this end to end, and invisible from the code alone.** Evidence capture
  * records `git rev-parse --short HEAD` (`src/server/diff.ts`), so `headSha` on a real

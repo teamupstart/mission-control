@@ -2373,7 +2373,16 @@ export const SessionActionSnapshotSchema = z.object({
   completion: SessionActionCompletionSchema,
 });
 
-/** A git object id, in either width this repository's tooling produces. */
+/**
+ * A git object id, in either width git produces: 40 hex for SHA-1, 64 for SHA-256.
+ *
+ * Kept in step with `FULL_SHA` in `src/server/workflows/commit-id.ts`, which is what actually
+ * decides whether a resolved id is full. This is browser-safe shared code and that module is
+ * server-only, so the rule is stated twice rather than imported - and
+ * `session-action-pull-request-adapter.test.ts` asserts the two accept exactly the same set,
+ * because a schema wider than its producer is a field that can never be filled and a schema
+ * narrower than its producer refuses a row the runtime just wrote.
+ */
 const CommitOidSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 
 /**

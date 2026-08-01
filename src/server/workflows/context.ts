@@ -23,6 +23,7 @@ import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
 import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
+import { FULL_SHA } from "./commit-id.ts";
 
 const MAX_GOAL = 16_000;
 const MAX_DECISIONS = 200;
@@ -584,7 +585,10 @@ export async function readWorkflowRepositoryHead(
     ["-C", cwd, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
     { timeoutMs: 15_000 },
   );
-  const headOid = headResult.code === 0 && /^[0-9a-f]{40}$/.test(headResult.stdout.trim())
+  // `FULL_SHA` rather than a 40-character literal, so a SHA-256 repository - whose HEAD is 64
+  // characters - reports a head instead of null. Null here means "unborn branch" to every
+  // caller, and an adapter that reads it waits for a commit that already exists.
+  const headOid = headResult.code === 0 && FULL_SHA.test(headResult.stdout.trim())
     ? headResult.stdout.trim()
     : null;
   return { repositoryId, root, branch, headOid };

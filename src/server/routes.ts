@@ -2238,6 +2238,7 @@ export function buildApp(
       parsed.data.clear,
       undefined,
       driverClearFor(sdkSessions),
+      pendingTurns,
     );
     return c.json(r, r.ok ? 200 : 500);
   });

@@ -94,7 +94,7 @@ Drafts live in `lib/drafts.ts` and survive unmounts. Successful submission clear
 
 Human conversation composer submissions enter the durable pending-turn outbox. Only its newest `queued` row is recallable. A `sending` row has crossed the delivery boundary and cannot be recalled; an `uncertain` row requires an explicit retry or resolution.
 
-Route every server-side reset through `resetSession` in `src/server/reset.ts`; it owns pending-turn, work-queue, workflow, work-episode, and cache cleanup. The UI reset callback separately clears message drafts, transcript history, file buffers, and reply attachments. Keep durable removal cleanup on `session_remove`, not `state === "exited"`.
+Route every server-side reset through `resetSession` in `src/server/reset.ts`; it owns pending-turn, work-queue, workflow, work-episode, and cache cleanup. It raises the registry reset marker before asking `PendingTurnManager` to settle a claimed SDK or terminal delivery. A turn refused before runtime acceptance is safe to discard. A turn that may have crossed that boundary is retained as `uncertain` through successful reset cleanup for explicit operator resolution. The UI reset callback separately clears message drafts, transcript history, file buffers, and reply attachments. Keep durable removal cleanup on `session_remove`, not `state === "exited"`.
 
 ## Overlays and shortcuts
 

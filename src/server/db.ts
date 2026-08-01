@@ -4142,9 +4142,16 @@ export function resolveUncertainPendingTurn(id: string, revision: number): boole
   );
 }
 
-export function clearPendingTurns(noteKey: string): number {
+export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): number {
+  const d = openDb();
+  if (preserveIds.length === 0) {
+    return Number(d.prepare(`DELETE FROM pending_turns WHERE note_key = ?`).run(noteKey).changes);
+  }
+  const placeholders = preserveIds.map(() => "?").join(", ");
   return Number(
-    openDb().prepare(`DELETE FROM pending_turns WHERE note_key = ?`).run(noteKey).changes,
+    d.prepare(
+      `DELETE FROM pending_turns WHERE note_key = ? AND id NOT IN (${placeholders})`,
+    ).run(noteKey, ...preserveIds).changes,
   );
 }
 

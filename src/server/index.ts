@@ -83,7 +83,7 @@ const reviews = new ReviewManager(registry);
 // ordering against `startPoller` is the contract - see the comment there.
 const sdkSessions = new SdkSupervisor(registry);
 const pendingTurns = new PendingTurnManager(registry, sdkSessions);
-const tasks = new TaskManager(registry, undefined, sdkSessions);
+const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // One ceiling on tool-less review work for the whole daemon, constructed here and injected,
@@ -163,7 +163,13 @@ ensembles = new EnsembleManager(registry, undefined, {
   // materialization through TaskManager, guarded pane injection, and the Workflow external
   // boundary. This is what lets a human-confirmed decision reap losers, preserve one exact winner,
   // and optionally submit its clean snapshot into a published Workflow - all restart-safe.
-  finalize: createFinalizeDeps({ registry, tasks, workflows, sdk: sdkSessions }),
+  finalize: createFinalizeDeps({
+    registry,
+    tasks,
+    workflows,
+    sdk: sdkSessions,
+    pendingTurns,
+  }),
   // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
   // selection is a typed refusal here, never a Preview downgrade.
   resolveWorkflowVersion: (workflowId, version) => resolveEnsembleWorkflowVersion(workflows, workflowId, version),

@@ -23,7 +23,11 @@ const DEFAULT_IDLE_SETTLE_MS = 1_500;
 const DEFAULT_PICKUP_TIMEOUT_MS = 15_000;
 
 export interface IdleSdkSender {
-  sendWhenIdle(id: string, turn: SdkTurn): Promise<"started" | null>;
+  sendWhenIdle(
+    id: string,
+    turn: SdkTurn,
+    beforeSend?: () => string | null,
+  ): Promise<"started" | null>;
 }
 
 export interface PendingTurnSubmitResult {
@@ -65,6 +69,8 @@ export class PendingTurnManager {
   private readonly draining = new Set<string>();
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pickup = new Map<string, PickupCandidate>();
+  private readonly activeDeliveries = new Map<string, Promise<void>>();
+  private readonly resetPreserve = new Map<string, Set<string>>();
   private readonly knownKeys = new Map<string, string>();
   private unsubscribe: (() => void) | null = null;
   private started = false;
@@ -107,6 +113,49 @@ export class PendingTurnManager {
     }
     this.idleTimers.clear();
     this.pickup.clear();
+  }
+
+  /**
+   * Establish reset as a delivery boundary before reset policy clears durable rows.
+   *
+   * A queued row is safe for reset to discard. A row whose SDK handoff or terminal paste
+   * may already have crossed is not: settle the active delivery and return its id so reset
+   * retains the resulting `uncertain` row for explicit operator resolution.
+   */
+  async invalidateForReset(sessionId: string): Promise<readonly string[]> {
+    const session = this.registry.getSession(sessionId);
+    if (!session) return [];
+    const key = noteKeyFor(session);
+    const preserve = new Set<string>();
+    this.resetPreserve.set(sessionId, preserve);
+    this.cancelIdleTimer(key);
+
+    const active = this.activeDeliveries.get(sessionId);
+    if (active) {
+      try {
+        await active;
+      } catch {
+        // Delivery owns its durable transition. Reset still performs the defensive pickup
+        // check below in case an unexpected failure left a terminal candidate behind.
+      }
+    }
+
+    const candidate = this.pickup.get(key);
+    if (candidate) {
+      this.markResetUncertain(
+        sessionId,
+        candidate.turn,
+        "Session reset began after terminal delivery may have crossed its write boundary.",
+      );
+    }
+    return [...preserve];
+  }
+
+  /** Resume a safely refused queued row only after reset's registry marker is gone. */
+  finishReset(sessionId: string): void {
+    this.resetPreserve.delete(sessionId);
+    const session = this.registry.getSession(sessionId);
+    if (session && this.readyToDrain(session)) this.scheduleDrain(noteKeyFor(session));
   }
 
   submit(sessionId: string, text: string): PendingTurnSubmitResult {
@@ -212,7 +261,14 @@ export class PendingTurnManager {
       (session.lastActivity ?? 0) >= candidate.boundaryAt
     ) {
       candidate.pickupObserved = true;
-      if (candidate.injectionSucceeded) this.completePickup(candidate.turn);
+      // A reset owns the session now. Evidence that arrives while injection is settling is
+      // provisional until deliverTerminal records the reset-safe uncertain transition.
+      if (
+        candidate.injectionSucceeded &&
+        !this.registry.sessionResetInProgress(session.id)
+      ) {
+        this.completePickup(candidate.turn);
+      }
       return;
     }
     if (this.readyToDrain(session)) this.scheduleDrain(key);
@@ -236,6 +292,7 @@ export class PendingTurnManager {
     return (
       session.stateConfirmed &&
       session.paneDialog === null &&
+      !this.registry.sessionResetInProgress(session.id) &&
       canMessage(session) &&
       settledIdle(session, this.deps.now(), this.deps.idleSettleMs)
     );
@@ -265,7 +322,29 @@ export class PendingTurnManager {
     this.idleTimers.delete(key);
   }
 
-  private async drain(key: string): Promise<void> {
+  private drain(key: string): Promise<void> {
+    const session = this.registry.sessionForNoteKey(key);
+    if (!session) return Promise.resolve();
+    const existing = this.activeDeliveries.get(session.id);
+    if (existing) return existing;
+    const active = this.drainOne(key);
+    this.activeDeliveries.set(session.id, active);
+    void active.then(
+      () => {
+        if (this.activeDeliveries.get(session.id) === active) {
+          this.activeDeliveries.delete(session.id);
+        }
+      },
+      () => {
+        if (this.activeDeliveries.get(session.id) === active) {
+          this.activeDeliveries.delete(session.id);
+        }
+      },
+    );
+    return active;
+  }
+
+  private async drainOne(key: string): Promise<void> {
     if (this.stopped || this.draining.has(key) || this.pickup.has(key)) return;
     const session = this.registry.sessionForNoteKey(key);
     if (!session || !this.readyToDrain(session)) return;
@@ -282,8 +361,13 @@ export class PendingTurnManager {
   }
 
   private async deliverSdk(session: Session, turn: PendingTurn): Promise<void> {
+    let acceptanceBoundaryCrossed = false;
     try {
-      const accepted = await this.sdk.sendWhenIdle(session.id, { text: turn.text });
+      const accepted = await this.sdk.sendWhenIdle(session.id, { text: turn.text }, () => {
+        const blocker = this.acceptanceBlocker(session.id, turn.noteKey);
+        if (!blocker) acceptanceBoundaryCrossed = true;
+        return blocker;
+      });
       if (accepted === null) {
         releasePendingTurn(
           turn.id,
@@ -291,11 +375,28 @@ export class PendingTurnManager {
           "The agent became busy before delivery.",
           this.deps.now(),
         );
+      } else if (this.registry.sessionResetInProgress(session.id)) {
+        this.markResetUncertain(
+          session.id,
+          turn,
+          "Session reset began while the SDK was accepting this message.",
+        );
       } else {
         deleteClaimedPendingTurn(turn.id, turn.revision);
       }
     } catch (err) {
-      releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
+      if (
+        acceptanceBoundaryCrossed &&
+        this.registry.sessionResetInProgress(session.id)
+      ) {
+        this.markResetUncertain(
+          session.id,
+          turn,
+          `Session reset began after SDK delivery may have crossed its acceptance boundary: ${errorMessage(err)}`,
+        );
+      } else {
+        releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
+      }
     }
     this.registry.refreshPendingTurns(turn.noteKey);
     const current = this.registry.getSession(session.id);
@@ -365,6 +466,14 @@ export class PendingTurnManager {
       return;
     }
     if (result.ok) {
+      if (this.registry.sessionResetInProgress(session.id)) {
+        this.markResetUncertain(
+          session.id,
+          turn,
+          "Session reset began after terminal delivery may have crossed its write boundary.",
+        );
+        return;
+      }
       candidate.injectionSucceeded = true;
       // A collapsed-paste placeholder observed before Enter and gone afterwards is direct
       // prompt-pickup evidence. Do not wait for a second hook/passive state signal that may
@@ -382,12 +491,21 @@ export class PendingTurnManager {
     if (candidate.timer) clearTimeout(candidate.timer);
     this.pickup.delete(turn.noteKey);
     if (result.pasted) {
-      markPendingTurnUncertain(
-        turn.id,
-        turn.revision,
-        result.error ?? "The terminal delivery outcome is unknown.",
-        this.deps.now(),
-      );
+      if (this.registry.sessionResetInProgress(session.id)) {
+        this.markResetUncertain(
+          session.id,
+          turn,
+          result.error ??
+            "Session reset began after terminal delivery may have crossed its write boundary.",
+        );
+      } else {
+        markPendingTurnUncertain(
+          turn.id,
+          turn.revision,
+          result.error ?? "The terminal delivery outcome is unknown.",
+          this.deps.now(),
+        );
+      }
     } else {
       releasePendingTurn(
         turn.id,
@@ -396,6 +514,34 @@ export class PendingTurnManager {
         this.deps.now(),
       );
     }
+    this.registry.refreshPendingTurns(turn.noteKey);
+  }
+
+  private acceptanceBlocker(sessionId: string, noteKey: string): string | null {
+    const current = this.registry.getSession(sessionId);
+    if (
+      !current ||
+      noteKeyFor(current) !== noteKey ||
+      !this.readyToDrain(current)
+    ) {
+      return "The session reset, became busy, or opened a dialog before delivery.";
+    }
+    return null;
+  }
+
+  private markResetUncertain(sessionId: string, turn: PendingTurn, error: string): void {
+    const candidate = this.pickup.get(turn.noteKey);
+    if (candidate?.turn.id === turn.id) {
+      if (candidate.timer) clearTimeout(candidate.timer);
+      this.pickup.delete(turn.noteKey);
+    }
+    const uncertain = markPendingTurnUncertain(
+      turn.id,
+      turn.revision,
+      error,
+      this.deps.now(),
+    );
+    if (uncertain) this.resetPreserve.get(sessionId)?.add(turn.id);
     this.registry.refreshPendingTurns(turn.noteKey);
   }
 

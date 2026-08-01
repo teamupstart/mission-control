@@ -135,3 +135,23 @@ test("binding a real conversation key appends synthetic-key rows without reorder
   );
   clearPendingTurns(to);
 });
+
+test("reset cleanup can preserve only an ambiguous claimed row", () => {
+  const key = "reset-preserve";
+  add(key, "reset-preserve-claimed", "possibly delivered");
+  add(key, "reset-preserve-queued", "safe to discard");
+  const claimed = claimNextPendingTurn(key, 20)!;
+  const uncertain = markPendingTurnUncertain(
+    claimed.id,
+    claimed.revision,
+    "reset crossed the delivery boundary",
+    21,
+  )!;
+
+  assert.equal(clearPendingTurns(key, [uncertain.id]), 1);
+  assert.deepEqual(
+    listPendingTurns(key).map((turn) => [turn.id, turn.state]),
+    [[uncertain.id, "uncertain"]],
+  );
+  clearPendingTurns(key);
+});

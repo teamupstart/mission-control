@@ -4815,8 +4815,8 @@ export class Registry extends EventEmitter {
   }
 
   /** Reset cleanup for human turns authored against discarded conversation state. */
-  clearPendingTurns(key: string): boolean {
-    const changed = clearPendingTurnsDb(key) > 0;
+  clearPendingTurns(key: string, preserveIds: readonly string[] = []): boolean {
+    const changed = clearPendingTurnsDb(key, preserveIds) > 0;
     if (changed) this.syncSessionsForPendingTurns(key);
     return changed;
   }

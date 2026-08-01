@@ -3497,11 +3497,12 @@ composes new work rather than a reply to the discarded task. A send that *fails*
 keeps your text - it's all you have and you're about to retry it. Drafts are per session and
 never bleed from one card into another.
 
-Once **Send** succeeds, the composer draft becomes a durable queued turn. The full text stays
-visible beneath the conversation and in the compact send surface while Mission Control owns
-it. Recalling it with <kbd>↑</kbd> moves the text back into the same draft system with the
-caret at the end. Recalled attachment uploads return as their already-inserted file paths;
-the thumbnail strip is not reconstructed.
+Once **Send** succeeds, the composer draft becomes a durable queued turn. The full conversation
+turn stays visible beneath the conversation while Mission Control owns it. The compact Send
+surface shows a single-line, ellipsized preview of that same queued text. Recalling it with
+<kbd>↑</kbd> moves the full text back into the same draft system with the caret at the end.
+Recalled attachment uploads return as their already-inserted file paths; the thumbnail strip
+is not reconstructed.
 
 Two things worth knowing:
 

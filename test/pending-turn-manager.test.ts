@@ -35,8 +35,10 @@ function sdkFixture(name: string, send: (text: string) => Promise<"started" | nu
   const manager = new PendingTurnManager(
     registry,
     {
-      sendWhenIdle: async (_id, turn) => {
+      sendWhenIdle: async (_id, turn, beforeSend) => {
         calls.push(turn.text);
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
         return send(turn.text);
       },
     },
@@ -537,9 +539,273 @@ test("a successful session reset clears pending turns authored for discarded wor
       cleared: false,
       detached: false,
     }),
+    undefined,
+    f.manager,
   );
   assert.equal(result.ok, true);
   assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
   assert.deepEqual(listPendingTurns(f.key), []);
   f.manager.stop();
+});
+
+test("an SDK reset refuses a claimed turn at the runtime acceptance boundary", async () => {
+  const registry = new Registry();
+  const id = "sdk:reset-before-acceptance";
+  const key = "agent:reset-before-acceptance";
+  registry.registerSdkSession({
+    id,
+    agent: "claude",
+    name: "reset-before-acceptance",
+    cwd: "/repo/reset-before-acceptance",
+    agentSessionId: key,
+  });
+  let deliveryReached!: () => void;
+  const deliveryReady = new Promise<void>((resolve) => (deliveryReached = resolve));
+  let continueDelivery!: () => void;
+  const deliveryMayContinue = new Promise<void>((resolve) => (continueDelivery = resolve));
+  let accepted = 0;
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
+        deliveryReached();
+        await deliveryMayContinue;
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
+        accepted += 1;
+        return "started";
+      },
+    },
+    { idleSettleMs: 0 },
+  );
+  manager.start();
+  idle(registry, id);
+  manager.submit(id, "discard before runtime acceptance");
+  await deliveryReady;
+
+  let resetCalled = false;
+  const reset = resetSession(
+    registry,
+    registry.getSession(id)!,
+    false,
+    async () => {
+      resetCalled = true;
+      return {
+        ok: true,
+        error: null,
+        root: "/repo/reset-before-acceptance",
+        cleared: false,
+        detached: false,
+      };
+    },
+    undefined,
+    manager,
+  );
+  await tick();
+  assert.equal(resetCalled, false, "reset waits for the claimed delivery to refuse");
+
+  continueDelivery();
+  assert.equal((await reset).ok, true);
+  assert.equal(accepted, 0);
+  assert.deepEqual(listPendingTurns(key), []);
+  manager.stop();
+});
+
+test("an SDK reset preserves uncertainty after runtime acceptance may have begun", async () => {
+  const registry = new Registry();
+  const id = "sdk:reset-after-acceptance";
+  const key = "agent:reset-after-acceptance";
+  registry.registerSdkSession({
+    id,
+    agent: "claude",
+    name: "reset-after-acceptance",
+    cwd: "/repo/reset-after-acceptance",
+    agentSessionId: key,
+  });
+  let acceptanceReached!: () => void;
+  const acceptanceBoundary = new Promise<void>((resolve) => (acceptanceReached = resolve));
+  let finishAcceptance!: () => void;
+  const acceptanceMayFinish = new Promise<void>((resolve) => (finishAcceptance = resolve));
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
+        acceptanceReached();
+        await acceptanceMayFinish;
+        return "started";
+      },
+    },
+    { idleSettleMs: 0 },
+  );
+  manager.start();
+  idle(registry, id);
+  manager.submit(id, "possibly accepted before reset");
+  await acceptanceBoundary;
+  manager.submit(id, "definitely still queued");
+
+  let resetCalled = false;
+  const reset = resetSession(
+    registry,
+    registry.getSession(id)!,
+    false,
+    async () => {
+      resetCalled = true;
+      return {
+        ok: true,
+        error: null,
+        root: "/repo/reset-after-acceptance",
+        cleared: false,
+        detached: false,
+      };
+    },
+    undefined,
+    manager,
+  );
+  await tick();
+  assert.equal(resetCalled, false, "reset waits for the ambiguous SDK handoff to settle");
+
+  finishAcceptance();
+  assert.equal((await reset).ok, true);
+  const retained = listPendingTurns(key);
+  assert.equal(retained.length, 1, "reset clears only the safely queued row");
+  assert.equal(retained[0]?.text, "possibly accepted before reset");
+  assert.equal(retained[0]?.state, "uncertain");
+  assert.match(retained[0]?.lastError ?? "", /reset began while the SDK was accepting/);
+  manager.stop();
+  clearPendingTurns(key);
+});
+
+test("an SDK error during reset stays uncertain after the acceptance boundary", async () => {
+  let acceptanceReached!: () => void;
+  const acceptanceBoundary = new Promise<void>((resolve) => (acceptanceReached = resolve));
+  let finishAcceptance!: () => void;
+  const acceptanceMayFinish = new Promise<void>((resolve) => (finishAcceptance = resolve));
+  const f = sdkFixture("reset-acceptance-error", async () => {
+    acceptanceReached();
+    await acceptanceMayFinish;
+    throw new Error("driver response was lost");
+  });
+  idle(f.registry, f.id);
+  f.manager.submit(f.id, "possibly accepted before the SDK error");
+  await acceptanceBoundary;
+
+  const reset = resetSession(
+    f.registry,
+    f.registry.getSession(f.id)!,
+    false,
+    async () => ({
+      ok: true,
+      error: null,
+      root: "/repo/reset-acceptance-error",
+      cleared: false,
+      detached: false,
+    }),
+    undefined,
+    f.manager,
+  );
+  finishAcceptance();
+  assert.equal((await reset).ok, true);
+
+  const retained = listPendingTurns(f.key);
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0]?.state, "uncertain");
+  assert.match(retained[0]?.lastError ?? "", /acceptance boundary.*driver response was lost/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+test("a terminal reset refuses a claimed turn at the write boundary", async () => {
+  let deliveryReached!: () => void;
+  const deliveryReady = new Promise<void>((resolve) => (deliveryReached = resolve));
+  let continueDelivery!: () => void;
+  const deliveryMayContinue = new Promise<void>((resolve) => (continueDelivery = resolve));
+  const f = terminalFixture(
+    "reset-before-write",
+    async () => ({ ok: true, pasted: true, submitVerified: false }),
+    100,
+    async () => {
+      deliveryReached();
+      await deliveryMayContinue;
+    },
+  );
+  f.manager.submit(f.id, "discard before terminal write");
+  await deliveryReady;
+
+  let resetCalled = false;
+  const reset = resetSession(
+    f.registry,
+    f.registry.getSession(f.id)!,
+    false,
+    async () => {
+      resetCalled = true;
+      return {
+        ok: true,
+        error: null,
+        root: "/repo/reset-before-write",
+        cleared: false,
+        detached: false,
+      };
+    },
+    undefined,
+    f.manager,
+  );
+  await tick();
+  assert.equal(resetCalled, false, "reset waits for the claimed terminal delivery to refuse");
+
+  continueDelivery();
+  assert.equal((await reset).ok, true);
+  assert.deepEqual(f.injected, []);
+  assert.deepEqual(listPendingTurns(f.key), []);
+  f.manager.stop();
+});
+
+test("a terminal reset preserves uncertainty after the write boundary may have crossed", async () => {
+  let injectionReached!: () => void;
+  const injectionStarted = new Promise<void>((resolve) => (injectionReached = resolve));
+  let finishInjection!: () => void;
+  const injectionMayFinish = new Promise<void>((resolve) => (finishInjection = resolve));
+  const f = terminalFixture(
+    "reset-after-write",
+    async () => {
+      injectionReached();
+      await injectionMayFinish;
+      return { ok: true, pasted: true, submitVerified: false };
+    },
+    100,
+  );
+  f.manager.submit(f.id, "possibly written before reset");
+  await injectionStarted;
+
+  let resetCalled = false;
+  const reset = resetSession(
+    f.registry,
+    f.registry.getSession(f.id)!,
+    false,
+    async () => {
+      resetCalled = true;
+      return {
+        ok: true,
+        error: null,
+        root: "/repo/reset-after-write",
+        cleared: false,
+        detached: false,
+      };
+    },
+    undefined,
+    f.manager,
+  );
+  await tick();
+  assert.equal(resetCalled, false, "reset waits for terminal injection to settle");
+
+  finishInjection();
+  assert.equal((await reset).ok, true);
+  assert.deepEqual(f.injected, ["possibly written before reset"]);
+  const retained = listPendingTurns(f.key);
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0]?.state, "uncertain");
+  assert.match(retained[0]?.lastError ?? "", /reset began after terminal delivery/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
 });

@@ -106,11 +106,24 @@ interface HarnessOptions {
   /** A reviewer AFTER the last action, so downstream activation is observable. */
   downstream?: boolean;
   verdict?: () => "pass" | "fail";
+  /**
+   * Wire both actions off Session directly rather than in a chain, so they become ready in
+   * the same submission. Only the raw draft API can author this; a linear pipeline cannot.
+   */
+  parallelActions?: boolean;
+  /** Make the pane positively reject the write, the way a guard or a busy pane does. */
+  refuseInject?: boolean;
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
 }
 
 async function harness(sessionId: string, options: HarnessOptions = {}) {
-  const actionSpecs = options.actions ?? [{ id: "act", prompt: "# Tidy\n\nRun the tidy pass.\n" }];
+  const actionSpecs = options.actions
+    ?? (options.parallelActions
+      ? [
+          { id: "first", prompt: "# First\n\nDo the first thing.\n" },
+          { id: "second", prompt: "# Second\n\nDo the second thing.\n" },
+        ]
+      : [{ id: "act", prompt: "# Tidy\n\nRun the tidy pass.\n" }]);
   const registry = new Registry();
   registry.applyDiscovery([discovered(sessionId)]);
   const personas = new PersonaManager(registry);
@@ -130,6 +143,12 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     ) => {
       const blocked = beforeWrite?.();
       if (blocked) return { ok: false, error: blocked, pasted: false, submitVerified: false };
+      // `pasted: false` is a POSITIVE refusal: the write was attempted and the pane rejected
+      // it, so nothing landed. That is a different answer from an uncertain write, and the
+      // runtime treats the two differently.
+      if (options.refuseInject) {
+        return { ok: false, error: "pane_blocked", pasted: false, paneBlocked: true, submitVerified: false };
+      }
       injected.push(payload);
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
@@ -230,25 +249,46 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       : []),
     { id: "end", kind: "end", outcome: "Approved", position: { x: 900, y: 0 } },
   ];
-  const sequence = ["upstream", ...chain.map((entry) => entry.node)];
-  if (options.downstream) sequence.push("downstream");
   const edges: unknown[] = [
     { id: "e-start", source: "session", sourcePort: "submitted", target: "upstream", targetPort: "activate" },
+    { id: "f-upstream", source: "upstream", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
   ];
-  for (let index = 0; index < sequence.length; index += 1) {
-    const from = sequence[index]!;
-    const to = sequence[index + 1] ?? "end";
-    const port = from === "upstream" || from === "downstream" ? "pass" : "complete";
-    const targetPort = to === "end" ? "terminal" : "activate";
-    edges.push({ id: `e-${from}`, source: from, sourcePort: port, target: to, targetPort });
-    if (port === "pass") {
+  if (options.parallelActions) {
+    // One `pass` fans out to BOTH actions, so both become ready off the same receipt.
+    for (const entry of chain) {
       edges.push({
-        id: `f-${from}`,
-        source: from,
-        sourcePort: "fail",
-        target: "session",
-        targetPort: "return_for_changes",
+        id: `e-fan-${entry.node}`,
+        source: "upstream",
+        sourcePort: "pass",
+        target: entry.node,
+        targetPort: "activate",
       });
+      edges.push({
+        id: `e-${entry.node}`,
+        source: entry.node,
+        sourcePort: "complete",
+        target: "end",
+        targetPort: "terminal",
+      });
+    }
+  } else {
+    const sequence = ["upstream", ...chain.map((entry) => entry.node)];
+    if (options.downstream) sequence.push("downstream");
+    for (let index = 0; index < sequence.length; index += 1) {
+      const from = sequence[index]!;
+      const to = sequence[index + 1] ?? "end";
+      const port = from === "upstream" || from === "downstream" ? "pass" : "complete";
+      const targetPort = to === "end" ? "terminal" : "activate";
+      edges.push({ id: `e-${from}`, source: from, sourcePort: port, target: to, targetPort });
+      if (port === "pass" && from !== "upstream") {
+        edges.push({
+          id: `f-${from}`,
+          source: from,
+          sourcePort: "fail",
+          target: "session",
+          targetPort: "return_for_changes",
+        });
+      }
     }
   }
 
@@ -783,14 +823,146 @@ test("an uncertain write parks the action and is never automatically resent", as
     await h.manager.stop();
     h.manager.start();
     for (let tick = 0; tick < 10; tick += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    for (let tick = 0; tick < 3; tick += 1) await h.manager.sweepSessionActions(SETTLED());
+    await h.manager.sweepSessionActions(SETTLED());
     assert.equal(h.injected.length, 1, "an uncertain packet was retyped automatically");
     assert.equal(h.store.getDelivery(delivery.id)?.state, "uncertain");
-    // And no turn is credited to it: an uncertain write is not proof the session read
-    // anything, so even a completed turn afterwards cannot complete the action.
+
+    // The action BLOCKS rather than waiting forever behind a generic delivery diagnostic.
+    // An action's contract is that its exact instruction ran once, so the runtime refuses to
+    // guess in either direction about a write it cannot confirm.
+    const attempt = h.store.listSubmissions(runId)
+      .flatMap((submission) => h.store.listAttempts(submission.id))
+      .find((item) => item.nodeId === "act")!;
+    assert.equal(attempt.state, "error");
+    assert.match(attempt.error ?? "", /delivery_uncertain/);
+    assert.equal(h.store.getRun(runId)?.currentPhase, "session_action_blocked");
+    // And no turn is credited to it either: a completed turn afterwards cannot complete an
+    // action whose instruction may never have arrived.
     h.runActionTurn();
     await h.manager.sweepSessionActions(SETTLED());
     assert.equal(h.store.listSubmissions(runId).length, 1);
+    assert.equal(h.injected.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("marking an uncertain packet delivered reopens the action and lets it finish", async () => {
+  const h = await harness("uncertain-resolved", { downstream: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    const delivery = h.store.listDeliveries(runId)
+      .find((item) => item.kind === "session_action")!;
+    h.store.setDeliveryState(delivery.id, "uncertain", "daemon_restart_after_send_claim");
+    await h.manager.sweepSessionActions(SETTLED());
+    const attemptId = h.store.listSubmissions(runId)
+      .flatMap((submission) => h.store.listAttempts(submission.id))
+      .find((item) => item.nodeId === "act")!.id;
+    assert.equal(h.store.getAttempt(attemptId)?.state, "error");
+
+    // The operator answers the one question the runtime would not guess at. Without this the
+    // block would be terminal, and "it landed" would be an answer nothing could act on.
+    const resolved = await h.manager.resolveDelivery(delivery.id, {
+      resolution: "mark_delivered",
+      requestId: "resolve-1",
+    });
+    assert.equal(resolved.ok, true, `resolve was refused: ${JSON.stringify(resolved)}`);
+    assert.equal(h.store.getAttempt(attemptId)?.state, "waiting");
+    assert.equal(h.store.getRun(runId)?.status, "waiting_for_action");
+    // Anchored at the resolution, with no transcript offset claimed - none was ever measured.
+    const state = h.store.sessionActionState(h.store.getAttempt(attemptId)!)!;
+    assert.equal(state.anchor?.transcriptBytes, null);
+    assert.equal(state.blocked, null);
+
+    // And the action now completes on the ordinary turn boundary.
+    h.head.sha = "head-2";
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.listSubmissions(runId).length === 2,
+      "the reopened action never captured its continuation segment",
+    );
+    assert.equal(h.store.getAttempt(attemptId)?.state, "completed");
+    assert.equal(h.injected.length, 1, "reopening retyped the packet");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a refused packet blocks the action, and no restart quietly prepares another", async () => {
+  // A GENUINE refusal: the write is attempted and the pane positively rejects it, so nothing
+  // landed. That is the state the observer used to sit behind forever.
+  const h = await harness("refused", { refuseInject: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((item) => item.state === "refused"),
+      "the rejecting pane did not refuse the packet",
+    );
+    const delivery = h.store.listDeliveries(runId)
+      .find((item) => item.kind === "session_action")!;
+    assert.equal(delivery.state, "refused");
+    assert.deepEqual(h.injected, [], "a refused packet must never reach the pane");
+
+    await h.manager.sweepSessionActions(SETTLED());
+    const attempt = h.store.listSubmissions(runId)
+      .flatMap((submission) => h.store.listAttempts(submission.id))
+      .find((item) => item.nodeId === "act")!;
+    // Blocked with the action's OWN code, not left waiting behind a generic delivery state.
+    assert.equal(attempt.state, "error");
+    assert.match(attempt.error ?? "", /delivery_refused/);
+    assert.equal(h.store.getRun(runId)?.status, "blocked");
+    assert.equal(h.store.getRun(runId)?.currentPhase, "session_action_blocked");
+
+    // A restart must not prepare a replacement: that would retry, on every daemon start, a
+    // write the operator never re-authorized.
+    await h.manager.stop();
+    h.manager.start();
+    for (let tick = 0; tick < 10; tick += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(h.store.listDeliveriesForAttempt(attempt.id).length, 1);
+    assert.deepEqual(h.injected, []);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("two actions ready at once are refused, never silently deferred", async () => {
+  // A branching graph, which a linear pipeline cannot author but the raw draft API can. The
+  // dangerous behaviour is running one and holding the other: the continuation seeds the
+  // child with only the completed action's routes, so the held sibling's activating receipt
+  // stays behind in the parent and it is never delivered at all.
+  const h = await harness("parallel", { parallelActions: true });
+  try {
+    const bound = h.manager.createBinding({
+      workflowVersionId: h.versionId,
+      sessionId: h.sessionId,
+    });
+    assert.equal(bound.ok, true);
+    const bindingId = bound.ok ? bound.value.id : "";
+    const submitted = await h.manager.submit(bindingId, { requestId: "parallel" });
+    assert.equal(submitted.ok, true);
+    const runId = submitted.ok ? submitted.value.run.id : "";
+    await waitFor(
+      () => h.store.getRun(runId)?.currentPhase === "session_action_parallel_unsupported",
+      "two concurrently ready actions were not refused",
+    );
+    assert.equal(h.store.getRun(runId)?.status, "failed");
+    // Nothing was typed, and neither action was half-started.
+    assert.deepEqual(h.injected, []);
+    const submission = h.store.latestSubmission(runId)!;
+    assert.deepEqual(
+      h.store.listAttempts(submission.id).filter((item) => item.state === "waiting"),
+      [],
+    );
+    // The diagnostic names both nodes, so a human can see which pair to chain.
+    const failure = h.store.listEvents(runId).find((event) => event.kind === "workflow_failed")!;
+    const payload = failure.payload as { error?: string };
+    assert.match(payload.error ?? "", /first/);
+    assert.match(payload.error ?? "", /second/);
   } finally {
     await h.stop();
   }

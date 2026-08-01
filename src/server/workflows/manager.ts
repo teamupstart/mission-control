@@ -1749,6 +1749,10 @@ export class WorkflowManager {
         if (input.resolution === "mark_delivered") {
           const session = this.registry.getSession(delivery.sessionId);
           if (session) this.rememberInjection(session.id, delivery.payload, "workflow");
+          // The operator has said this instruction landed, so the action it belongs to can
+          // be observed again. Without this the observer's refusal to guess about an
+          // uncertain write would make "it landed" an answer nothing could act on.
+          this.reopenSessionAction(resolved.delivery, now);
         }
         if (resolved.rearmed) this.queues.refresh(delivery.noteKey);
         this.publishRun(delivery.runId);
@@ -3369,6 +3373,36 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
+  /**
+   * Put a blocked action attempt back in play after its uncertain packet was resolved as
+   * delivered, anchored at the moment the operator said so.
+   *
+   * No transcript offset is claimed, because none was ever measured: `confirmDeliverySend`
+   * never ran for a packet whose send was never confirmed. Pickup therefore rests on the
+   * session going active after this moment, which is the same rule every other action uses.
+   */
+  private reopenSessionAction(delivery: WorkflowDelivery, now: number): void {
+    if (delivery.kind !== "session_action" || !delivery.nodeAttemptId) return;
+    const reopened = this.store.reopenSessionActionAttempt(delivery.nodeAttemptId, {
+      deliveryId: delivery.id,
+      sessionId: delivery.sessionId,
+      noteKey: delivery.noteKey,
+      deliveredAt: delivery.deliveredAt ?? now,
+      transcriptBytes: null,
+    }, now);
+    if (!reopened) return;
+    this.store.setRunState(delivery.runId, "waiting_for_action", "session_action", {
+      nodeId: reopened.nodeId,
+      attemptId: reopened.id,
+      deliveryId: delivery.id,
+    }, now);
+    this.store.appendEvent(delivery.runId, "session_action_reopened", {
+      attemptId: reopened.id,
+      nodeId: reopened.nodeId,
+      deliveryId: delivery.id,
+    }, now);
+  }
+
   /** Move a waiting attempt's observation state forward, leaving it waiting. */
   private setSessionActionWait(
     attemptId: string,
@@ -3439,20 +3473,60 @@ export class WorkflowManager {
   ): Promise<void> {
     const resolved = this.resolveSessionAction(attemptId);
     if (!resolved) return;
-    const { attempt, snapshot, state, binding, run } = resolved;
+    const { attempt, snapshot, binding, run } = resolved;
+    let state = resolved.state;
 
     const delivery = state.deliveryId ? this.store.getDelivery(state.deliveryId) : null;
-    // No confirmed send, no observation. Preview parks here forever by design, and so does a
-    // refused or uncertain Live write - an uncertain packet is never automatically resent and
-    // never automatically counted as read.
-    if (!delivery || delivery.state !== "delivered" || !state.anchor) return;
+    if (!delivery) return;
+    // A REFUSED or CANCELLED packet is positive proof that nothing was typed, and nothing
+    // about waiting longer will change that. Blocking here is what stops the attempt sitting
+    // in `waiting_for_action` forever behind a generic delivery diagnostic, and what stops
+    // startup recovery quietly preparing a replacement packet on every restart - an
+    // automatic retry of a write the operator never re-authorized.
+    if (delivery.state === "refused" || delivery.state === "cancelled") {
+      this.blockSessionAction(attempt.id, "delivery_refused",
+        delivery.error
+          ? `This action's instruction was refused before it reached the session: ${delivery.error}`
+          : "This action's instruction was refused before it reached the session.",
+        now);
+      return;
+    }
+    // An UNCERTAIN write may or may not have landed, and an action's whole contract is that
+    // its exact instruction ran once - so the runtime refuses to guess in either direction.
+    // It never resends, and it never counts the packet as read. `resolveDelivery`'s
+    // `mark_delivered` is the operator's answer, and it reopens this attempt.
+    if (delivery.state === "uncertain") {
+      this.blockSessionAction(attempt.id, "delivery_uncertain",
+        "It is not known whether this action's instruction reached the session. Resolve the "
+        + "delivery to say whether it landed.",
+        now);
+      return;
+    }
+    // Prepared or sending: nothing has been confirmed yet. Preview parks here by design.
+    if (delivery.state !== "delivered") return;
+    // A packet an operator marked delivered by hand never ran `confirmDeliverySend`, so it
+    // carries no anchor. Synthesize one from the resolution rather than refusing to observe:
+    // the operator has asserted the instruction landed, and without an anchor the action
+    // could never complete. No transcript offset is claimed, because none was measured -
+    // pickup then rests on the session going active after this moment.
+    const anchor = state.anchor ?? {
+      deliveryId: delivery.id,
+      sessionId: delivery.sessionId,
+      noteKey: delivery.noteKey,
+      deliveredAt: delivery.deliveredAt ?? delivery.updatedAt,
+      transcriptBytes: null,
+    };
+    if (!state.anchor) {
+      this.setSessionActionWait(attempt.id, "awaiting_pickup", { anchor }, now);
+      state = { ...state, anchor };
+    }
 
-    if (binding.state !== "active" || binding.sessionId !== state.anchor.sessionId) {
+    if (binding.state !== "active" || binding.sessionId !== anchor.sessionId) {
       this.blockSessionAction(attempt.id, "session_lost",
         "The workflow binding no longer names the session this action was sent to.", now);
       return;
     }
-    const session = this.registry.getSession(state.anchor.sessionId);
+    const session = this.registry.getSession(anchor.sessionId);
     if (!session || session.state === "exited") {
       // Deliberately NOT read as durable removal: `state === "exited"` is a linger window,
       // and `session_remove` is what the registry uses for gone. Blocking is the honest
@@ -3461,7 +3535,7 @@ export class WorkflowManager {
         "The bound session exited before this action's turn could be observed.", now);
       return;
     }
-    if (noteKeyFor(session) !== state.anchor.noteKey) {
+    if (noteKeyFor(session) !== anchor.noteKey) {
       this.blockSessionAction(attempt.id, "conversation_changed",
         "The session started a different conversation after this action was sent.", now);
       return;
@@ -3489,8 +3563,8 @@ export class WorkflowManager {
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
-      anchorTranscriptBytes: state.anchor.transcriptBytes,
-      deliveredAt: state.anchor.deliveredAt,
+      anchorTranscriptBytes: anchor.transcriptBytes,
+      deliveredAt: anchor.deliveredAt,
       pickedUpAt,
       settledAt: now,
       now,
@@ -4188,10 +4262,14 @@ export class WorkflowManager {
       if (!resolved) continue;
       const { state, binding, run } = resolved;
       const delivery = state.deliveryId ? this.store.getDelivery(state.deliveryId) : null;
-      // A waiting attempt with no live packet: prepare the one it owns. `prepareDelivery` is
-      // keyed on the attempt, so a packet prepared before the restart is returned rather than
-      // duplicated.
-      if (!delivery || ["refused", "cancelled"].includes(delivery.state)) {
+      // A waiting attempt that owns NO packet at all: prepare the one it needs.
+      // `prepareDelivery` is keyed on the attempt, so a packet prepared before the restart is
+      // returned rather than duplicated.
+      //
+      // A refused or cancelled packet is deliberately NOT re-prepared here. It is positive
+      // proof that nothing was typed, and re-preparing would retry, on every daemon start, a
+      // write the operator never re-authorized. The observer blocks it instead.
+      if (!delivery) {
         this.scheduleSessionActionDelivery(attempt.id);
         continue;
       }

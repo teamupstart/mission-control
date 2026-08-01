@@ -442,13 +442,32 @@ export class WorkflowEngine {
       const actionBusy = pending.some((attempt) =>
         ["waiting", "queued", "running", "retry_wait"].includes(attempt.state));
       if (!actionBusy && activatedActions.length > 0) {
-        // Stable node order decides, and the graph's own array IS that order: node ids are
-        // reused across every publish of a workflow, so two authors of the same pipeline get
-        // the same sequence. Sorting by id or by edge order would make the sequence depend
-        // on a spelling or on which receipt landed first.
+        // Stable node order, and the graph's own array IS that order: node ids are reused
+        // across every publish of a workflow, so two authors of the same pipeline get the
+        // same sequence. Sorting by id or by edge order would make the sequence depend on a
+        // spelling or on which receipt landed first.
         const ordered = graph.nodes
           .filter((node) => activatedActions.includes(node.id))
           .filter((node) => node.kind === "session_action");
+        // Two actions ready AT ONCE is a branching shape this phase does not execute, and it
+        // is REFUSED rather than serialized. Running the first and holding the rest looks
+        // safe and silently loses them: the continuation seeds the child segment with only
+        // the completed action's `complete` edges, so the held sibling's activating receipt
+        // stays behind in the parent and it is never delivered at all. A linear pipeline
+        // cannot produce this - `A -> B` in sequence is fine, and covered - so the honest
+        // answer is a diagnosable block naming both nodes.
+        if (ordered.length > 1) {
+          this.blockSubmission(
+            submission,
+            "session_action_parallel_unsupported",
+            "Two session actions became ready at the same time. One bound session has one "
+            + "turn, and this build runs them one after another rather than at once, so a "
+            + `graph that activates ${ordered.map((node) => node.id).join(" and ")} together `
+            + "cannot be executed. Chain them instead, so each one's completion activates the "
+            + "next.",
+          );
+          return;
+        }
         const first = ordered[0];
         if (first && first.kind === "session_action") {
           const previous = this.store.latestAttemptForNode(submission.id, first.id);

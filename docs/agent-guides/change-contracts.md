@@ -104,7 +104,16 @@ A SessionAction is a durable side effect, not an evaluator:
   refuses at Publish and again before anything is typed.
 - Refusal, lost authorization, an exited session or an infrastructure failure BLOCK the run with
   an action-specific code. They never become a Persona verdict, a repair packet, or a spent
-  repair round.
+  repair round. A REFUSED packet blocks (`delivery_refused`) because nothing was typed and
+  waiting cannot change that; an UNCERTAIN one blocks (`delivery_uncertain`) because an
+  action's contract is that its exact instruction ran once, and the runtime will not guess in
+  either direction. `resolveDelivery`'s `mark_delivered` is the operator's answer and reopens
+  the attempt. Recovery never re-prepares a refused packet - that would retry, on every daemon
+  start, a write nobody re-authorized.
+- Two actions ready at ONCE are refused, not serialized. Running one and holding the other
+  looks safe and silently loses it: the continuation seeds the child segment with only the
+  completed action's routes, so the held sibling's activating receipt stays behind in the
+  parent. A chain (`A -> B`) is supported and is the shape a pipeline authors.
 
 ## Harness changes
 

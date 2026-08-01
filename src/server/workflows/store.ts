@@ -84,6 +84,7 @@ import type {
   WorkflowDiagnostic,
   WorkflowValidationResult,
   SessionActionAttemptState,
+  SessionActionDeliveryAnchor,
   SessionActionCompletionCapability,
   SessionActionCompletionKind,
   SessionActionSnapshot,
@@ -3678,6 +3679,56 @@ export class WorkflowStore {
           AND r.status NOT IN ('completed', 'cancelled', 'failed')
         ORDER BY a.created_at ASC, a.id ASC`,
     ).all(sessionId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+  }
+
+  /**
+   * Return a blocked action attempt to `waiting`, on explicit operator authority.
+   *
+   * The one backwards transition this runtime allows, and it exists for exactly one caller:
+   * an operator resolving an uncertain delivery as `mark_delivered`. The observer blocks an
+   * uncertain action rather than guessing whether its instruction landed - so without a way
+   * back, saying "it landed" would be an answer the run could no longer act on.
+   *
+   * Guarded on the attempt being blocked by a DELIVERY, never on any other block code: a lost
+   * session or an unavailable adapter is not something marking a packet delivered can fix.
+   */
+  reopenSessionActionAttempt(
+    attemptId: string,
+    anchor: SessionActionDeliveryAnchor,
+    now = Date.now(),
+  ): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const attempt = this.getAttempt(attemptId);
+      if (!attempt || attempt.state !== "error" || !attempt.sessionAction) return null;
+      const parsed = SessionActionAttemptStateSchema.safeParse(attempt.output);
+      const state = parsed.success ? parsed.data : null;
+      if (!state?.blocked || !["delivery_refused", "delivery_uncertain"].includes(state.blocked.code)) {
+        return null;
+      }
+      const changed = this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET state = 'waiting', error = NULL, finished_at = NULL, output_json = ?,
+                updated_at = ?
+          WHERE id = ? AND state = 'error'`,
+      ).run(
+        JSON.stringify({
+          ...state,
+          wait: "awaiting_pickup",
+          deliveryId: anchor.deliveryId,
+          anchor,
+          blocked: null,
+        } satisfies SessionActionAttemptState),
+        now,
+        attemptId,
+      );
+      return Number(changed.changes) === 1 ? this.mustAttempt(attemptId) : null;
+    });
+  }
+
+  private mustAttempt(id: string): WorkflowNodeAttempt {
+    const attempt = this.getAttempt(id);
+    if (!attempt) throw new Error(`Workflow attempt ${id} is missing`);
+    return attempt;
   }
 
   /** One waiting action attempt's durable observation state, or null when it has none. */

@@ -408,6 +408,15 @@ Phase 3 must not:
 - `repeatOffenders` now folds submissions to one entry per ROUND. Walking submissions would
   see two rows of the same round, decide the sequence had broken, and report a reviewer that
   has failed five rounds running as having failed one.
+- Review found two gaps, both fixed. A refused or uncertain packet left the attempt waiting
+  forever behind a generic delivery diagnostic, and startup recovery re-prepared a refused one
+  on every restart; both delivery states now block with their declared codes, `mark_delivered`
+  reopens the attempt, and recovery only prepares when the attempt owns no packet at all.
+  Concurrently ready actions were serialized with the rest recorded as deferred, which
+  silently lost them - the continuation seeds the child with only the completed action's
+  routes, so a deferred sibling's activating receipt stays behind in the parent. That shape is
+  now refused with a diagnostic naming both nodes, which matches this phase's stated non-goal
+  of parallel action execution. A chain is unaffected and remains the shape a pipeline authors.
 - The `(run_id, round, segment)` index is created in `migrate()` and not in the schema block.
   That block runs first and its `CREATE TABLE` is a no-op on an existing database, so an index
   over `segment` there fails to open every upgraded database. `test/session-action-migration.test.ts`

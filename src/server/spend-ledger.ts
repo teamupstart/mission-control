@@ -18,7 +18,22 @@ import type { LlmSpendReport } from "@shared/llm-spend.ts";
 // `node:sqlite` with it - into a process that is forbidden from opening the database.
 
 /**
- * Price a report and write it. Returns what was recorded, or null when nothing was.
+ * What happened to a report, in the three ways that matter to whoever sent it.
+ *
+ * `empty` and `unsupported` both mean "no ledger row", and telling them apart is the whole
+ * point of this type. A report carrying no tokens is genuinely nothing to store, and
+ * acknowledging it is correct - the sender should forget it rather than retry it forever.
+ * A report this build cannot value is the opposite: the run happened, the tokens are spent,
+ * and this daemon simply cannot record it, so the sender must KEEP it. A single nullable
+ * return could not express that difference, and the route acknowledged both.
+ */
+export type SpendRecordOutcome =
+  | { kind: "recorded" }
+  | { kind: "empty" }
+  | { kind: "unsupported"; reason: string };
+
+/**
+ * Price a report and write it. Says which of the three outcomes occurred.
  *
  * Pricing happens HERE rather than in the runner that observed the run, because the worker
  * must not be the one deciding what its own work cost: it would be a second place the
@@ -29,11 +44,15 @@ import type { LlmSpendReport } from "@shared/llm-spend.ts";
  * the report came from a newer or older peer, and inventing a row for a provider whose
  * rates we cannot even look up would put a $0 automation row in the strip.
  */
-export function recordSpendReport(report: LlmSpendReport): LlmSpendReport | null {
-  if (!spendReportIsRecordable(report)) return null;
+export function recordSpendReport(report: LlmSpendReport): SpendRecordOutcome {
+  // "Nothing to record" and "cannot record" are different answers and must not share one,
+  // because the caller turns them into different HTTP statuses and the worker turns THOSE
+  // into keep-or-discard. Collapsing them to a bare null is what let an unrecordable report
+  // be acknowledged as if it had landed.
+  if (!spendReportIsRecordable(report)) return { kind: "empty" };
   if (!isLlmRunnerId(report.runner)) {
-    console.warn(`[spend] dropping ${report.role} usage from unknown runner ${report.runner}`);
-    return null;
+    console.warn(`[spend] cannot record ${report.role} usage from unknown runner ${report.runner}`);
+    return { kind: "unsupported", reason: `unknown runner: ${report.runner}` };
   }
   const runner = LLM_RUNNERS[report.runner];
   const models: AutomationUsageRow[] = report.models.map((m) => {
@@ -57,5 +76,5 @@ export function recordSpendReport(report: LlmSpendReport): LlmSpendReport | null
     ts: report.ts,
     models,
   });
-  return report;
+  return { kind: "recorded" };
 }

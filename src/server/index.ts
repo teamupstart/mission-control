@@ -196,7 +196,7 @@ try {
 // to record it. Straight to the ledger - the daemon is the only process allowed to write
 // it, which is exactly why the Foreman worker POSTs instead (`/api/usage/automation`).
 setLlmSpendSink((report) => {
-  if (recordSpendReport(report)) registry.applyAutomationUsage();
+  if (recordSpendReport(report).kind === "recorded") registry.applyAutomationUsage();
 });
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.

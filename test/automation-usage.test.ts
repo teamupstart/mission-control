@@ -222,7 +222,7 @@ test("a report is priced by its own runner before it is written", () => {
       reportedCostUsd: null,
     }],
   });
-  assert.ok(written, "the report was recorded");
+  assert.equal(written.kind, "recorded", "the report was recorded");
   const triage = automationSpendSince(T0 + 199).find((r) => r.role === "foreman:triage");
   // gpt-5.6-luna is $1/M input, doubled past the 272k long-context threshold - so 1M input
   // tokens is $2, not $1. Asserting the doubled figure is the point: it proves the real
@@ -276,7 +276,9 @@ test("a run that spent nothing is not recorded at all", () => {
       reportedCostUsd: null,
     }],
   });
-  assert.equal(written, null, "a zero-token run is the shape of a call that never happened");
+  // "empty" rather than a refusal: there is no spend to lose, so the sender should forget
+  // it rather than hold it for a recovery that has nothing to recover.
+  assert.equal(written.kind, "empty", "a zero-token run is the shape of a call that never happened");
   assert.equal(automationSpendSince(T0 - 1).length, before);
 });
 
@@ -298,5 +300,41 @@ test("a run with no id is dropped rather than recorded unattributably", () => {
       reportedCostUsd: null,
     }],
   });
-  assert.equal(written, null);
+  // "empty" for the same reason a zero-token run is: without a run id there is no dedup
+  // identity, so recording it could double-count on any retry. The worker already filters
+  // these before sending, so acknowledging is right - there is nothing to hold on to.
+  assert.equal(written.kind, "empty");
+});
+
+test("a runner this build cannot value is refused, not silently accepted", () => {
+  // The mirror of the worker-side rule. This daemon has no pricing for a runner a newer
+  // worker might name, so the run cannot become a ledger row - and saying "empty" or
+  // acknowledging it would have the worker delete its durable copy of spend that never
+  // landed. It has to be an explicit refusal so the sender keeps the run.
+  const written = recordSpendReport({
+    role: "foreman:review",
+    runner: "some-future-runner",
+    runId: "run-from-the-future",
+    ts: T0 + 400,
+    models: [{
+      modelId: "future-model",
+      input: 1_000,
+      output: 100,
+      reasoningOutput: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reportedCostUsd: null,
+    }],
+  });
+  assert.equal(written.kind, "unsupported");
+  assert.match(
+    written.kind === "unsupported" ? written.reason : "",
+    /unknown runner/,
+    "and it says why, so the refusal is diagnosable",
+  );
+  assert.equal(
+    automationSpendSince(T0 + 399).length,
+    0,
+    "nothing was written for a report this build cannot price",
+  );
 });

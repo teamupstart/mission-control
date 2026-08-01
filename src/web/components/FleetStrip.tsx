@@ -9,15 +9,16 @@ import { spendRoleLabel } from "@shared/llm-spend.ts";
  * The topbar's fleet economics: today's API-equivalent estimate, its recent rate, and how
  * long each provider's quota windows last at their own consumption rate.
  *
- * Four figures and a projection, chosen because each answers a question the others cannot:
- * estimated cost is the total, recent rate is its derivative, tokens are the measured work,
- * and estimated cost-per-PR turns the first figure into a unit price for shipped work. The
+ * Four session figures, a separate automation figure, and a projection, chosen because each
+ * answers a question the others cannot: estimated session cost is the total, recent rate is
+ * its derivative, tokens are the measured work, and estimated cost-per-PR turns the first
+ * figure into a unit price for shipped work. Automation names the app's own overhead. The
  * runway is the only forward-looking thing on the strip, and it is the reason the strip
  * exists: a rate limit that arrives mid-task is a surprise, and this is what stops it being one.
  *
- * Every figure degrades on its own rather than as a block. No telemetry -> the caller
- * renders nothing at all (a `$0.00` would claim a measured zero). No PRs opened today ->
- * no cost-per-PR, rather than a division by zero dressed as `$0.00`. No
+ * Every figure degrades on its own rather than as a block. No session or automation usage ->
+ * the caller renders nothing at all (a `$0.00` would claim a measured zero). No PRs opened
+ * today -> no cost-per-PR, rather than a division by zero dressed as `$0.00`. No
  * `rate_limits` (an API-key user, or a session before its first API response) -> no
  * runway, rather than a bar at 0%.
  *

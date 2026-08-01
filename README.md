@@ -55,10 +55,9 @@ and get your decision back.
   **gets stuck**, or a dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
 - **Tracks fleet economics**: a badge on every priced card and a topbar strip carrying
-  one Claude + Codex API-equivalent estimate, tokens, estimated cost per pull request,
-  and rate-limit runway. Claude calculates its rows and reports them over OpenTelemetry;
-  Mission Control calculates Codex rows from request-level rollout counters. See
-  [Cost telemetry](#cost-telemetry).
+  the sessions' Claude + Codex API-equivalent estimate, tokens, estimated cost per pull
+  request, and rate-limit runway. A separate automation figure attributes the Foreman's
+  and Inspector's own model spend by role. See [Cost telemetry](#cost-telemetry).
 - **Says what each prompt-reporting session is for**: its card carries a one-sentence
   **Goal** - what that session is currently trying to solve - derived from your own
   prompts and refreshed as you steer it. No API key: it runs the configured local
@@ -935,8 +934,8 @@ only agents whose harness can never read turns get an unsupported sentence.
 ### Cost telemetry
 
 You run a fleet; this values its usage consistently without pretending a subscription has
-a per-request dollar bill. Codex estimates are automatic. Claude's client-calculated
-estimate stream is off by default; switch that on in **Settings → Cost**, or from the CLI:
+a per-request dollar bill. Codex session estimates are automatic. Claude session telemetry
+is off by default; switch that on in **Settings → Cost**, or from the CLI:
 
 ```sh
 npm run install-telemetry     # adds an env block to ~/.claude/settings.json
@@ -945,16 +944,17 @@ npm run install-hooks -- --uninstall   # removes that block - and the hooks, and
                                        # cost telemetry, use Settings → Cost.
 ```
 
-Once either source has data, every priced card carries a **cost badge** beside its model /
-thinking / context row, and the topbar grows a foldable **Usage** row:
+Once any session or automation source has data, every priced session card carries a **cost
+badge** beside its model / thinking / context row, and the topbar grows a foldable **Usage**
+row:
 
 | Figure | What it is |
 |---|---|
-| **Estimated cost today** | Claude- plus Codex-estimated API-equivalent usage since local midnight |
-| **Estimated rate** | the last hour of that same combined estimate |
-| **Tokens today** | input, output and cache, every tier summed |
-| **Cost / PR** | today's combined estimate over pull requests either agent opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
-| **Automation today** | what the Foreman and the Inspector spent on their own model calls since midnight. Hover for the per-role split |
+| **Estimated cost today** | Claude- plus Codex-estimated session usage since local midnight |
+| **Estimated rate** | the last hour of that same session estimate |
+| **Tokens today** | session input, output and cache, every tier summed |
+| **Cost / PR** | today's session estimate over pull requests either agent opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
+| **Automation today** | API-equivalent estimated cost for the Foreman's and Inspector's own model calls since midnight. Hover for the per-role split |
 | **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
 
 The runway is the only forward-looking number in the app, and it is an average
@@ -987,21 +987,11 @@ writes no rollout file and exports nothing, while a `claude -p` run *does* expor
 OpenTelemetry, but under the fresh session id every headless run mints, so it landed in the
 ledger under a key belonging to no card and was silently counted as session spend.
 
-Both now report themselves under a **role** - a synthetic note key naming the subsystem and
-the job:
-
-| Role | What it pays for |
-|---|---|
-| `foreman:triage` | the cheap Tier 1 router that decides whether a full review is needed |
-| `foreman:review` | the full Tier 2 session review |
-| `foreman:verify` | verifying a finished work-queue item against the diff |
-| `foreman:backlog` | the dependency planner |
-| `inspector:review` | one PR review round |
-| `inspector:reply` | one follow-up reply in a review thread |
-
-Keeping them separate is the point: it makes "is shadow triage worth what it costs" and
-"did that prompt fix land" questions the app can answer, which one `automation` bucket
-could not.
+Both now report themselves per subsystem and role. The Foreman's triage, full review,
+work-item verification, and backlog planning are separate from the Inspector's PR reviews
+and follow-up replies. Hover **Automation today** for that split. Keeping the roles separate
+is the point: it makes "is shadow triage worth what it costs" and "did that prompt fix
+land" questions the app can answer, which one undifferentiated automation bucket could not.
 
 **This is a separate line, not part of the fleet total.** Session cost is work you asked
 for; this is the overhead of having that work watched, and it moves while nothing else is
@@ -1018,25 +1008,39 @@ Claude run's OpenTelemetry twin is recognised by that same id and excluded from 
 spend rather than billed twice.
 
 The Foreman worker never writes the database, so it reports over
-`POST /api/usage/automation` like everything else it does; the daemon prices what it is
-told and writes it. Because the run is already paid for by the time it is reported, a
-report that cannot be delivered is spend nothing can reconstruct - so each undelivered run
-gets an atomic file in the state dir's `foreman-spend-outbox/` directory and is retried with
-backoff. Its file is erased only once the daemon acknowledges that exact report. Every worker
-rescans the shared directory before draining it, so an overlapping process can adopt reports
-left by one that exited; duplicate delivery remains harmless because each ledger row is keyed
-to the run's own id. The directory is a request buffer, not a second ledger: it holds no
-schema and the daemon never reads it. Attribution deliberately did **not** take the other available route -
-giving these runs a stable `--session-id` so their OpenTelemetry could be attributed -
-because that is exactly the flag that would hand them a resumable conversation and cost the
-context isolation the Foreman depends on to review many sessions without one bleeding into
-the next.
+`POST /api/usage/automation`; the daemon prices and records the report. Valid reports are
+buffered durably in the state directory before delivery, retried with backoff, and recovered
+after a worker restart. Because each entry represents spend from a run that already
+finished, the buffer has no retention limit: it trades unbounded growth during a daemon
+outage for never discarding spend, and its small entries drain as soon as the daemon
+acknowledges them. **Waiting is the default for every failure**, and only a body the daemon
+has definitively refused - a schema rejection, or a runner it has no pricing for - is set
+aside - and only that daemon's own verdict counts, because only it is durable. A daemon
+mid-rolling-upgrade that has no `/api/usage/automation` yet, a rate limit, a timeout, a
+payload limit that may belong to a proxy rather than the daemon, a status nothing here
+anticipated: all of those simply hold, and land by themselves once the condition clears,
+with nobody involved. That direction is deliberate, because the
+only unacceptable outcome is losing an already-paid-for run, and holding one costs a stalled
+queue that resolves itself. A definitively rejected report is still not deleted: it moves to
+a `foreman-spend-quarantine.<id>.json` file so it cannot stall the reports behind it, and
+stays there for you to re-send. Nothing drains that file automatically, since re-queueing a
+body the daemon has already refused would loop forever; the worker logs an error naming the
+file when it puts something there. If that file is ever unreadable - corruption, a
+hand-edit - its bytes are moved aside to a `.unreadable-*` name rather than replaced, since
+every entry in it is a run that was already paid for. The daemon holds up the other end of that contract: it
+acknowledges a report only when the row was written or there was genuinely nothing to write,
+and answers 422 for one it cannot record at all - a runner a newer worker named that this
+build has no pricing for - so the sender quarantines it instead of treating silence as
+success. The buffers are not a second ledger, and duplicate
+delivery is harmless because each row is keyed to the run's own id. Attribution deliberately reads the fresh
+run's returned envelope instead of giving runs a reusable session id: the Foreman must review
+many sessions without one conversation's context bleeding into the next.
 
 Terminal Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
 (`npm run install-statusline`); embedded Claude SDK sessions repopulate them automatically.
 That SDK lookup is optional live enrichment: a failure neither interrupts the session nor
-clears the last valid account gauge, and it never writes cost - OpenTelemetry remains Claude's
-one cost ledger. The estimated-cost figures don't need the wrapper, and Codex's windows need
+clears the last valid account gauge, and it never writes cost - OpenTelemetry remains the cost
+source for Claude sessions. The estimated-cost figures don't need the wrapper, and Codex's windows need
 neither - they ride in the exact rollout file reported by app-server and read by the same
 runtime metadata poller that supplies model and context figures. Telemetry and the terminal
 wrapper remain separate opt-ins because they are two different asks of your config - one adds
@@ -1049,13 +1053,16 @@ A plan meter disappears once its window resets rather than holding the last perc
 a quota that has already rolled over is not a figure worth showing, and the same rule
 already governs an account with no rate limits to report.
 
-**Every dollar figure is one API-equivalent estimate and is marked `≈$`.** Claude Code
-calculates its rows from request usage; Mission Control prices Codex requests at an
-immutable snapshot of OpenAI Standard API rates, including cache and long-context rules.
+**Every dollar figure is one API-equivalent estimate.** Session cards mark it `≈$`; in the
+Usage row, the session labels say estimated and **Automation today** follows the valuation
+described above. Claude Code calculates its rows from request usage; Mission Control prices
+Codex requests at an immutable snapshot of OpenAI Standard API rates, including cache and
+long-context rules.
 Estimator provenance remains on each session, but both values have the same economic
-meaning: neither is Pro, Max, or ChatGPT plan spend, credits consumed, or an invoice. If
-any row in a fleet window has no verified price, that window reads **partial** and cost/PR
-is withheld rather than presenting a known subtotal as the complete estimate.
+meaning: neither is Pro, Max, or ChatGPT plan spend, credits consumed, or an invoice. The
+session and automation windows degrade independently. If any row in either window has no
+verified price, that window reads **partial**; an incomplete session window also withholds
+cost/PR rather than presenting a known subtotal as the complete estimate.
 
 Enabling it writes six keys into your `~/.claude/settings.json` `env` block (see
 [Configuration](#configuration)); the edit is surgical, your other settings and comments
@@ -2629,11 +2636,6 @@ Under `auto` the daemon watches its own parked runs. When the bound session has 
 the settle window, is not waiting on you, has been handed its packet, and the **repository has
 changed**, the run opens the next repair round by itself - fresh evidence, same graph, the
 round counter and `Max repair rounds` budget it always had.
-
-Repository change is content-sensitive: the observer compares the bounded diff fingerprint
-captured by the failed round, not only HEAD and the list of dirty paths. A repair that edits a
-file which was already dirty therefore resumes correctly even when it neither commits nor adds
-a new path.
 
 Four things it deliberately does not do:
 

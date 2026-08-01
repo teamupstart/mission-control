@@ -4066,10 +4066,13 @@ export function usageLedgerHasRows(): boolean {
   return Boolean(r);
 }
 
-/** True only after Claude's reported telemetry has arrived; Codex rows are automatic. */
+/** True only after Claude's reported session telemetry has arrived; Codex rows are automatic. */
 export function reportedUsageLedgerHasRows(): boolean {
   const r = openDb()
-    .prepare(`SELECT 1 AS x FROM usage_ledger WHERE cost_basis = 'reported' LIMIT 1`)
+    .prepare(
+      `SELECT 1 AS x FROM usage_ledger
+        WHERE cost_basis = 'reported' AND spend_kind = 'session' LIMIT 1`,
+    )
     .get() as { x: number } | undefined;
   return Boolean(r);
 }

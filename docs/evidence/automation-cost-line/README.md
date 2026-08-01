@@ -5,8 +5,11 @@ rather than from static markup.
 
 ## How it was produced
 
-An isolated daemon (its own `MISSION_HOME`, port 7391) and a Vite dev server pointed at it,
-so the screenshots show this branch's code and not the main checkout. Five headless runs
+An isolated daemon (its own `MISSION_HOME`) and a Vite dev server pointed at it, so the
+screenshots show this branch's code and not the main checkout. **Re-captured against the
+final branch state**, because `FleetStrip.tsx` changed after the first capture - the
+pipeline's documentation pass touched it, and the `main` merge brought in a usage-bar change
+- so the original images no longer showed the shipping UI. Five headless runs
 were delivered through the real route the Foreman worker uses:
 
 ```

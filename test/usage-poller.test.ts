@@ -11,7 +11,13 @@ process.env.MISSION_USAGE_POLL_MS = "15";
 
 const { Registry } = await import("../src/server/registry.ts");
 const { startUsagePoller, usageSourceKey } = await import("../src/server/usage.ts");
-const { commitUsageRead, openDb, reportedUsageLedgerHasRows, usageCursorFor } = await import("../src/server/db.ts");
+const {
+  commitUsageRead,
+  openDb,
+  recordAutomationUsage,
+  reportedUsageLedgerHasRows,
+  usageCursorFor,
+} = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -34,6 +40,27 @@ async function eventually(check: () => boolean, timeoutMs = 1_000): Promise<void
   }
   assert.fail("condition did not become true before timeout");
 }
+
+test("reported automation usage does not masquerade as Claude session telemetry", () => {
+  recordAutomationUsage({
+    role: "foreman:review",
+    agent: "claude",
+    runId: "reported-automation-only",
+    ts: Date.now(),
+    models: [{
+      modelId: "claude-opus-5",
+      input: 100,
+      output: 10,
+      reasoningOutput: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      costUsd: 0.01,
+      basis: "reported",
+      pricingVersion: "",
+    }],
+  });
+  assert.equal(reportedUsageLedgerHasRows(), false);
+});
 
 test("the poller prices a proven Codex rollout once and performs a final exit drain", async () => {
   const path = join(home, "rollout.jsonl");

@@ -64,15 +64,31 @@ test("a pre-feature run row upgrades, reads as nothing-disabled, and round-trips
   assert.ok(legacy);
   assert.deepEqual(legacy.disabledNodeIds, []);
 
-  // The set persists, bumps updated_at, and clears back to NULL rather than to "[]" bytes.
-  const disabled = store.setRunDisabledNodes("legacy-run", ["judge"], 99);
+  // The set persists with its audit events in one transaction, bumps updated_at, and
+  // clears back to NULL rather than to "[]" bytes.
+  const disabled = store.setRunDisabledNodes(
+    "legacy-run",
+    ["judge"],
+    [{ kind: "node_disabled", payload: { nodeId: "judge", requestId: "r-1" } }],
+    99,
+  );
+  assert.ok(disabled);
   assert.deepEqual(disabled.disabledNodeIds, ["judge"]);
   assert.equal(disabled.updatedAt, 99);
-  assert.deepEqual(store.setRunDisabledNodes("legacy-run", [], 100).disabledNodeIds, []);
+  assert.equal(store.listEvents("legacy-run").filter((event) => event.kind === "node_disabled").length, 1);
+  assert.deepEqual(store.setRunDisabledNodes("legacy-run", [], [], 100)?.disabledNodeIds, []);
 
-  // A finished run's history must read exactly as it ran: the store refuses the write even
-  // if a caller slips past the manager's own terminal-status guard.
-  const finished = store.setRunDisabledNodes("finished-run", ["judge"], 101);
-  assert.deepEqual(finished.disabledNodeIds, []);
-  assert.equal(finished.updatedAt, 2);
+  // A finished run's history must read exactly as it ran: the guarded UPDATE refuses the
+  // write, reports it with null so a caller cannot claim success, and the refused
+  // toggle's events never reach the timeline - they ride the same transaction.
+  const finished = store.setRunDisabledNodes(
+    "finished-run",
+    ["judge"],
+    [{ kind: "node_disabled", payload: { nodeId: "judge", requestId: "r-2" } }],
+    101,
+  );
+  assert.equal(finished, null);
+  assert.deepEqual(store.getRun("finished-run")?.disabledNodeIds, []);
+  assert.equal(store.getRun("finished-run")?.updatedAt, 2);
+  assert.equal(store.listEvents("finished-run").some((event) => event.kind === "node_disabled"), false);
 });

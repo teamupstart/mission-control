@@ -1278,20 +1278,31 @@ export class WorkflowManager {
       else next.delete(nodeId);
     }
     // Persisted in the graph's own node order so the stored set is deterministic and two
-    // toggles that produce the same membership produce the same bytes.
+    // toggles that produce the same membership produce the same bytes. The audit events
+    // ride the store's transaction, so a toggle and its timeline lines commit together.
     const updated = this.store.setRunDisabledNodes(
       run.id,
       version.graph.nodes.filter(isVerdictNode).map((node) => node.id)
         .filter((nodeId) => next.has(nodeId)),
+      input.nodeIds.map((nodeId) => ({
+        kind: input.disabled ? "node_disabled" : "node_enabled",
+        payload: {
+          nodeId,
+          persona: verdictAuthor(verdictNodes.get(nodeId)!),
+          requestId: input.requestId,
+        },
+      })),
       now,
     );
-    for (const nodeId of input.nodeIds) {
-      const node = verdictNodes.get(nodeId)!;
-      this.store.appendEvent(run.id, input.disabled ? "node_disabled" : "node_enabled", {
-        nodeId,
-        persona: verdictAuthor(node),
-        requestId: input.requestId,
-      }, now);
+    // The guarded UPDATE, not the status read above, decides the terminal race: a run
+    // that finished between the two refuses the write, and reporting success anyway
+    // would hand the operator a toggle that never happened.
+    if (!updated) {
+      return {
+        ok: false,
+        reason: "conflict",
+        message: "This run finished before the toggle applied, so disabling a reviewer or check can no longer change it",
+      };
     }
     this.publishRun(run.id);
     // A disabled node whose attempt is already queued auto-passes at claim time; wake the

@@ -1252,7 +1252,7 @@ function verdictRunner(reviewed: string[]) {
 
 test("a disabled reviewer auto-passes at claim time without a provider call", async () => {
   const store = seedSubmission("disable-claim", disableGraph());
-  store.setRunDisabledNodes("run-disable-claim", ["p2"], 4);
+  store.setRunDisabledNodes("run-disable-claim", ["p2"], [], 4);
   const reviewed: string[] = [];
   const engine = new WorkflowEngine(store, () => {}, {
     concurrency: 3,
@@ -1300,7 +1300,7 @@ test("disabling a reviewer after a failed round makes the repair round auto-pass
   // Round 1 genuinely failed on the blocking reviewer. The operator disables it and
   // resubmits; round 2 must complete without asking that reviewer again.
   assert.deepEqual([...reviewed].sort(), ["blocking", "honest"]);
-  store.setRunDisabledNodes("run-disable-rerun", ["p2"], 20);
+  store.setRunDisabledNodes("run-disable-rerun", ["p2"], [], 20);
   const repair = store.createRepairSubmission({
     id: "submission-disable-rerun-2",
     runId: "run-disable-rerun",
@@ -1347,7 +1347,7 @@ test("a disabled check auto-passes without reaching the execution runtime", asyn
     ],
   };
   const store = seedSubmission("disable-check", disabledCheckGraph);
-  store.setRunDisabledNodes("run-disable-check", ["gate"], 4);
+  store.setRunDisabledNodes("run-disable-check", ["gate"], [], 4);
   const engine = new WorkflowEngine(store, () => {}, {
     concurrency: 3,
     runnerFor: passingRunner,

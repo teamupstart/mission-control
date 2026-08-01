@@ -4846,18 +4846,26 @@ command runs as you, with your filesystem access. Removing the token narrows wha
 reach *back into*; it does not confine what it can do generally. That is why a repository must
 be allowlisted before any of this happens - the allowlist, not the environment, is the boundary.
 
-When a check is cancelled, times out, or the daemon shuts down, the whole process group is
-signalled: `SIGTERM` first, then a few seconds' grace so a test runner can flush its output and
-clean up its own temporary files, then `SIGKILL`. The daemon then keeps asking until the group
-is actually empty before returning the worktree, because a build that leaves a server running
-behind it is common and the leader exiting proves nothing about its children. A group it cannot
-prove is empty keeps its lease rather than handing back a tree something may still be writing
-into.
+When a check is cancelled or times out, the whole process group is signalled: `SIGTERM` first,
+then a few seconds' grace so a test runner can flush its output and clean up its own temporary
+files, then `SIGKILL`. The daemon then keeps asking until the group is actually empty before
+returning the worktree, because a build that leaves a server running behind it is common and
+the leader exiting proves nothing about its children. A group it cannot prove is empty keeps
+its lease rather than handing back a tree something may still be writing into.
 
-A daemon shutdown cancels live check groups first and then waits, so stopping Mission Control
-mid-build takes the seconds that ladder needs rather than the remainder of the command's
-timeout. And a check whose lease has not resolved is never retried onto a second worktree - the
-run blocks and says so, and clears itself once the leaked group is proven gone.
+**A daemon shutdown skips the grace and goes straight to `SIGKILL`**, deliberately. Stopping
+Mission Control mid-build would otherwise wait out the rest of the command's timeout - up to
+ten minutes for one test suite - and the output a grace period buys is output nobody is left to
+read, because the attempt ends as an infrastructure failure rather than a verdict either way.
+The daemon still waits for the group to be proven empty afterwards, so the worktree goes back
+to the pool on the way out; stopping a daemon with a check running takes well under a second.
+
+**A check whose worktree cannot be accounted for does not report a verdict**, whatever its
+command exited with. A group that will not go away, or a return that failed, means the gate has
+not been shown to have run against the commit it claims - so it is recorded as an infrastructure
+failure instead, the run blocks and says so, and it clears once the lease is reclaimed. The
+command's own exit code is kept in the reason, so you can still tell "the build failed and then
+cleanup broke" from "the build passed and then cleanup broke".
 
 ## Configuration
 

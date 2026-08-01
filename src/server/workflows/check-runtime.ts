@@ -1,12 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import { run } from "../util/exec.ts";
 import type {
-  CheckAttemptRef,
   CheckExecutionRequest,
   CheckExecutionResult,
   CheckExecutor,
 } from "./checks.ts";
-import { CheckLeaseStore, type CheckGroupRecovery, type CheckLeaseManager } from "./check-lease.ts";
+import {
+  CheckLeaseStore,
+  type CheckGroupRecovery,
+  type CheckLeaseManager,
+  type CheckLeaseRelease,
+} from "./check-lease.ts";
 import type { CheckGroupEmptiness, CheckGroupTeardownOptions } from "./check-group.ts";
 import { checkRuntimeSupport, type CheckRuntimeSupport } from "./check-identity.ts";
 import {
@@ -41,6 +45,32 @@ import {
 //
 // It never decides pass or fail. The ladder in `checks.ts` and `checkVerdict` in `engine.ts`
 // own that, and an exit code reaches them exactly as the supervisor reported it.
+
+/**
+ * Which attempt an executor is running for.
+ *
+ * Declared HERE, by the consumer, rather than added to `CheckExecutionRequest`. That type is
+ * published, closed, and describes a COMMAND - a slot, an argv, a repository, a commit - while
+ * this describes the attempt whose resources the command borrows, which is not something the
+ * ladder in `checks.ts` knows or should learn. Widening it would also have made every existing
+ * caller of `runCheck` supply an identity it has no reason to hold.
+ *
+ * This is the same direction the supervisor took with `CheckSupervisorLookup`: the consumer
+ * names the narrow shape it needs and its composer supplies one, rather than an earlier phase's
+ * published contract growing a member to serve a later phase's consumer. The engine builds one
+ * of these per attempt and binds it; nothing in `checks.ts` changes.
+ *
+ * All three fields answer different questions. `attemptId` is the lease key, the process
+ * registry key, and what makes the pooled worktree's holder token unique to one attempt.
+ * `submissionId` and `nodeId` are what let the engine ask, before it creates a retry, whether
+ * this node still owns a lease that has not resolved - a retry carries a NEW attempt id, so
+ * nothing about the retry itself would collide with the lease it must not outrun.
+ */
+export interface CheckAttemptRef {
+  attemptId: string;
+  submissionId: string;
+  nodeId: string;
+}
 
 /** How the composed runtime is driven, and every seam a test needs to drive it without a pool. */
 export interface CheckRuntimeDeps {
@@ -239,48 +269,98 @@ export class CheckRuntime {
     // `handleInfrastructureFailure`, which finishes this attempt and creates a fresh one, and
     // the retry gate it consults can only be right if this lease has already reached its true
     // state by the time it is asked.
-    await this.settle(attempt.attemptId, outcome.emptiness);
+    const cleanup = await this.settle(attempt.attemptId, outcome.emptiness);
+    // A cleanup that did not resolve is an INFRASTRUCTURE failure, and it outranks whatever the
+    // command said. Two reasons, and the second is the one that makes this load-bearing rather
+    // than fastidious:
+    //
+    //  - A gate whose worktree is still held, or was re-leased to somebody else while it ran,
+    //    has not been shown to have run against the commit it claims. Reporting `passed` on a
+    //    tree we cannot account for is the same class of wrong answer as running the command in
+    //    `sessionRepoRoot` - a verdict about the wrong thing, delivered confidently.
+    //  - The retry gate only ever sees an attempt through `handleInfrastructureFailure`. Let a
+    //    verdict through here and a run whose check exited 0 with a stranded lease advances,
+    //    completes, and holds a pool slot with nothing anywhere saying so. Returning
+    //    infrastructure is what turns that into a visible `check_cleanup_unresolved` block that
+    //    reclamation then clears.
+    //
+    // The command's own outcome rides along in the reason rather than being dropped, so the
+    // operator can still see what the build said before the lease went wrong.
+    if (!cleanup.ok) {
+      return {
+        kind: "infrastructure",
+        reason:
+          `the ${request.slot} check ran and ${describeResult(outcome.result)}, but that result is `
+          + `not reported because its pooled worktree could not be accounted for: ${cleanup.reason}`,
+      };
+    }
     return outcome.result;
   }
 
   /**
    * Resolve the lease against what the supervisor could PROVE, not against how the command
-   * exited.
+   * exited, and say whether the resource ended up accounted for.
    *
-   * A command that exits zero having left a background server running is ordinary, and its
-   * verdict is still a pass - but its tree is not free. The two answers are separate on
-   * purpose and only the second one may authorise a `return --force`.
+   * Those are two different questions and the caller needs both. A command that exits zero
+   * having left a background server running is ordinary, and its exit code is still zero - but
+   * its tree is not free, and only a proven-empty group may authorise a `return --force`.
    */
-  private async settle(attemptId: string, emptiness: CheckGroupEmptiness): Promise<void> {
+  private async settle(attemptId: string, emptiness: CheckGroupEmptiness): Promise<CheckCleanup> {
     if (emptiness !== "empty") {
       // Keep the row, keep the pin, drop only this process's claim - so the reclamation pass
       // stops treating the lease as a check that is still running and starts asking whether
       // its group has finally gone.
       this.leases.handOffForReclaim(attemptId);
-      console.warn(
-        `[mission-control] a check's process group could not be proven empty (${emptiness}); ` +
-          "its pooled worktree is kept until reclamation can prove it gone",
-      );
-      return;
+      return {
+        ok: false,
+        reason:
+          `its process group could not be proven empty (${emptiness}), so the worktree is kept `
+          + "until reclamation can prove it gone",
+      };
     }
+    let released: CheckLeaseRelease;
     try {
-      const released = await this.leases.releaseForAttempt(attemptId);
-      if (released.outcome === "retry") {
-        console.warn(
-          `[mission-control] a check's pooled worktree could not be returned (${released.reason}); ` +
-            "the lease is kept and reclamation will retry",
-        );
-      }
+      released = await this.leases.releaseForAttempt(attemptId);
     } catch (err) {
-      // Swallowed rather than thrown into the caller: the check has an answer, and losing it
-      // to a cleanup failure would turn a real verdict into an infrastructure retry that runs
-      // the whole build again. The lease survives in the durable table either way.
-      console.error(
-        "[mission-control] could not release a check's pooled worktree:",
-        message(err),
-      );
+      // Ownership is dropped in `releaseForAttempt`'s own `finally`, but a throw before that is
+      // reached would leave this attempt looking like a check still running - which is the one
+      // state reclamation skips.
+      this.leases.handOffForReclaim(attemptId);
+      return { ok: false, reason: `releasing the worktree failed outright: ${message(err)}` };
     }
+    if (released.outcome === "returned") return { ok: true };
+    if (released.outcome === "lost") {
+      // The tree was leased to somebody else by the time we tried to give it back, which means
+      // it may have been reset under the command while it ran. Nothing can be concluded about
+      // what that command was standing in, so nothing is concluded.
+      return {
+        ok: false,
+        reason:
+          `the worktree was held by ${released.holder ?? "another holder"} by the time it was `
+          + "handed back, so what the command was standing in cannot be established",
+      };
+    }
+    return {
+      ok: false,
+      reason: `the worktree could not be handed back (${released.reason}), and the lease is kept`,
+    };
   }
+}
+
+/** Whether a check's pooled worktree ended up accounted for, and why not when it did not. */
+type CheckCleanup = { ok: true } | { ok: false; reason: string };
+
+/**
+ * What the command did, for a reason line whose whole job is to explain a discarded result.
+ *
+ * The outcome is not lost just because it is not reported as a verdict: an operator looking at
+ * a blocked run has to be able to tell "the build failed and then cleanup went wrong" from
+ * "the build passed and then cleanup went wrong", because only one of those is also a repair.
+ */
+function describeResult(result: CheckExecutionResult): string {
+  if (result.kind === "exited") return `exited ${result.exitCode}`;
+  if (result.kind === "unavailable") return "reported that its command was not found";
+  return `could not be run (${result.reason})`;
 }
 
 function message(err: unknown): string {

@@ -1410,7 +1410,7 @@ test("stop() cancels a live check group instead of waiting out its command", {
         const outcome = await runSupervisedCheck({
           attemptId: attempt.attemptId,
           command: [process.execPath, "-e", "setTimeout(() => {}, 60000)"],
-          leasePath: home,
+          leasePath: checkTree,
           workingSubpath: "",
           timeoutMs: 60_000,
         }, {
@@ -1431,6 +1431,9 @@ test("stop() cancels a live check group instead of waiting out its command", {
   await engine.stop();
   const elapsed = Date.now() - started;
 
+  // Generous, because what it has to exclude is a 60-second wait rather than a slow machine:
+  // measured at 15-70ms, and 15 seconds still fails loudly against a stop() that awaits the
+  // command. The bound is the defect, not the performance.
   assert.ok(elapsed < 15_000, `stop() waited ${elapsed}ms for a 60s command`);
   assert.equal(liveCheckGroupCount(), 0, "a check group survived the stop that cancelled it");
   // And the cancellation is infrastructure, never a fail verdict about the submission.

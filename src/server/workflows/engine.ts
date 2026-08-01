@@ -40,10 +40,11 @@ import {
   createCheckScheduler,
   runCheck,
   tailBounded,
-  type CheckRunDepsFor,
+  type CheckRunDeps,
   type CheckScheduler,
 } from "./checks.ts";
-import { terminateLiveCheckGroups } from "./check-group.ts";
+import { killLiveCheckGroups } from "./check-group.ts";
+import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
 const PERSONA_TIMEOUT_MS = 120_000;
@@ -107,7 +108,7 @@ export interface WorkflowEngineOptions {
    * Absent in a build that ships no runtime, which is the shipped default: every configured
    * check then reports `unavailable` and passes with a note saying so.
    */
-  checkDeps?: CheckRunDepsFor;
+  checkDeps?: (attempt: CheckAttemptRef) => CheckRunDeps;
   /**
    * Contract R: does this check node still own a lease that has not resolved?
    *
@@ -258,7 +259,7 @@ export class WorkflowEngine {
     NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private readonly checkLimit: CheckScheduler;
-  private readonly checkDeps: CheckRunDepsFor;
+  private readonly checkDeps: NonNullable<WorkflowEngineOptions["checkDeps"]>;
   private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowConfig: () => WorkflowConfig;
   private stopped = true;
@@ -301,18 +302,21 @@ export class WorkflowEngine {
     this.wakeTimer = null;
     // Cancel live check groups BEFORE awaiting the attempts that own them. A check attempt is
     // a build, and `allSettled` on its own would wait out the command's whole timeout - up to
-    // ten minutes of daemon shutdown for one test suite somebody left running. Cancelling
-    // first turns that into the seconds the SIGTERM-grace-SIGKILL ladder needs, and the
-    // attempt then settles on its own through the ordinary path: the group is proven empty,
-    // its pooled worktree goes back, and the attempt reports an infrastructure failure rather
-    // than a verdict about a command that never finished.
+    // ten minutes of daemon shutdown for one test suite somebody left running.
+    //
+    // This is the supervisor's own hard-exit teardown, called deliberately early rather than a
+    // gentler variant of it: the same signal is going to reach these groups from the `exit`
+    // hook moments later whatever we do here, and the only thing a grace period would buy at
+    // shutdown is flushed output nobody is left to read. Signalling is all it does - each
+    // attempt then settles through the ordinary path, proves its group empty, and hands its
+    // pooled worktree back, which is what the `allSettled` below is waiting for.
     //
     // Inert in every build with no execution runtime, and in every daemon with no check
-    // running: the watched set is empty and this resolves immediately.
+    // running: the watched set is empty and this returns immediately.
     //
     // `src/server/index.ts` calls this from `shutdown()` BEFORE it stops the pool reaper, so
     // the returns issued here still run under a live reaper and its lock. Do not reorder that.
-    await terminateLiveCheckGroups();
+    killLiveCheckGroups();
     await Promise.allSettled([...this.inFlight]);
   }
 

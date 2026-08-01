@@ -232,41 +232,23 @@ export function liveCheckGroupCount(): number {
 }
 
 /**
- * The ORDERLY counterpart to `killLiveCheckGroups`, for a shutdown that can still await.
+ * The teardown for a daemon that is going away: every watched group at once, no grace.
  *
- * `WorkflowEngine.stop()` awaits every in-flight attempt, and a check attempt is a build that
- * may have minutes of its timeout left - so without this a daemon restart waits out somebody's
- * test suite. Cancelling first turns that into the seconds the ladder actually needs.
+ * `SIGKILL` with no grace, and that is not this module forgetting its own rule. It runs from
+ * two places and neither can offer one. The `exit` hook below cannot await anything, so there
+ * is no grace period available to give. And `WorkflowEngine.stop()` calls this deliberately
+ * before it awaits its in-flight attempts: a check attempt is a build with up to its whole
+ * timeout left, so the alternative is a daemon restart that waits out somebody's test suite,
+ * and the seconds a grace period would buy are seconds nobody is left to read the flushed
+ * output in. The ORDERLY ladder - `SIGTERM`, grace, `SIGKILL`, then prove it - belongs to a
+ * timeout or a cancellation, where the run continues afterwards and that output is a verdict.
  *
- * It gets the full ladder rather than the exit hook's bare `SIGKILL` precisely because there
- * IS time here: a test runner gets its grace to flush and unlink, and the group is then proven
- * empty, which is what authorises the leased worktree going back to the pool on the way out.
- * Groups are torn down concurrently, so shutdown costs one ladder rather than one per check.
+ * Signalling is all this does; it does not wait. The attempt that owns each group settles on
+ * its own through `terminateCheckGroup`, proves the group empty and hands its pooled worktree
+ * back, which is why `stop()` awaits those attempts after calling this rather than instead.
  *
- * A group this cannot prove empty stays watched, for the same reason `finish()` keeps one: the
- * hard-exit hook is the last thing that will ever see it, and it re-verifies identity before
- * signalling anything.
- */
-export async function terminateLiveCheckGroups(
-  options: CheckGroupTeardownOptions = {},
-): Promise<void> {
-  await Promise.all(
-    [...live].map(async ([pid, identity]) => {
-      if ((await terminateCheckGroup(pid, identity, options)) === "empty") live.delete(pid);
-    }),
-  );
-}
-
-/**
- * The last-resort teardown, on daemon exit.
- *
- * `SIGKILL` with no grace, and that is not this module forgetting its own rule: an `exit`
- * handler cannot await anything, so there is no grace period available to give. The ORDERLY
- * path - a timeout, a cancellation, `WorkflowEngine.stop()` - goes through
- * `terminateCheckGroup` and gets the full ladder. This is what runs when the daemon is already
- * on its way out, and a check's build outliving the daemon that started it, writing into a
- * pooled tree nobody is tracking any more, is worse than a build that loses its chance to
- * flush.
+ * A check's build outliving the daemon that started it, writing into a pooled tree nobody is
+ * tracking any more, is worse than a build that loses its chance to flush.
  *
  * The identity check is NOT dropped, though. Whatever else is true on the way out, we do not
  * signal a stranger.

@@ -85,7 +85,8 @@ import {
   createReviewScheduler,
   type ReviewScheduler,
 } from "../llm/review-scheduler.ts";
-import type { CheckRunDepsFor, CheckScheduler } from "./checks.ts";
+import type { CheckRunDeps, CheckScheduler } from "./checks.ts";
+import type { CheckAttemptRef } from "./check-runtime.ts";
 import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
@@ -232,7 +233,7 @@ export interface WorkflowManagerOptions {
    * command to pace. Absent, every configured check reports `unavailable` and passes with a
    * note - the shipped behaviour of a build with no runtime.
    */
-  checkDeps?: CheckRunDepsFor;
+  checkDeps?: (attempt: CheckAttemptRef) => CheckRunDeps;
   /**
    * Contract R, forwarded beside the runtime that creates the leases it asks about.
    *

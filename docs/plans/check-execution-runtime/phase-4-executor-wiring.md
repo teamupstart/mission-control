@@ -329,25 +329,31 @@ lease.
      COMMAND - slot, argv, repository, commit - and carries no attempt identity, while step 1's
      own rule is that the attempt id is the lease key and Contract R needs the submission and
      node ids to gate a retry. One of the two had to give. Contract E is explicitly owned by
-     nobody and changed by nobody, so the identity is BOUND rather than added to the request:
-     `CheckAttemptRef` and `CheckRunDepsFor` are new vocabulary in `checks.ts` beside the seam,
-     the three published types are byte-identical, and no existing caller of `runCheck` had to
-     learn anything. The alternative - widening `CheckExecutionRequest` and `runCheck`'s input -
-     would have edited the one contract this phase was told not to touch.
+     nobody and changed by nobody, so the identity is BOUND rather than added to the request.
+     `CheckAttemptRef` is declared in `check-runtime.ts` - **this phase's own module, not
+     `checks.ts`, which is left untouched** - which is the same seam direction Phase 3 took with
+     `CheckSupervisorLookup`: the consumer names the narrow shape it needs and its composer
+     supplies one. The alternative, widening `CheckExecutionRequest` and `runCheck`'s input,
+     would have edited the one contract this phase was told not to touch and made every existing
+     caller of `runCheck` supply an identity it has no reason to hold.
   3. **`unresolvedCheckLease` is its own engine option** rather than riding on `checkDeps`. It
      is consulted where a retry is created, a path the executor never reaches, and the two are
      wired together in `index.ts` from one `CheckRuntime` so neither can be injected without the
      other. Also applied in `recover()`, which this document did not name: a daemon that died
      mid-check rolls its interrupted attempt over on restart, and that is the likeliest place of
      all for a second tree to be leased behind a group that outlived us.
-  4. **Two small additions to earlier phases' modules, both of which their own comments already
-     promised.** `CheckLeaseManager.handOffForReclaim` exists because `releaseForAttempt` drops
-     the in-memory ownership claim in its `finally` *and* issues the return - so a check whose
-     group could not be proven empty had no exit at all: not returning kept it in `owned`, and
+  4. **One added member on an earlier phase's module, authorized by the operator.**
+     `CheckLeaseManager.handOffForReclaim` exists because `releaseForAttempt` drops the
+     in-memory ownership claim in its `finally` *and* issues the return - so a check whose group
+     could not be proven empty had no exit at all: not returning kept it in `owned`, and
      `reclaimLeaked` skips owned rows, so the lease would have been collected by nothing until a
-     restart. And `terminateLiveCheckGroups` in `check-group.ts` is the orderly plural teardown
-     that module's own `killLiveCheckGroups` comment already named `WorkflowEngine.stop()` as a
-     caller of. Both are additive, neither changes a published contract.
+     restart. A pool slot per unprovable group, for the life of the daemon, which is the exit
+     criterion about leaked leases failing. The two alternatives were put to the operator with
+     their costs - a second reclamation loop inside `check-runtime.ts` duplicating Phase 2's
+     backoff and bounding over the same table, or accepting the leak - and the decision was:
+     *"Don't introduce a defect. Keeping the originally planned interfaces isn't important,
+     what's important is that the feature works as intended."* So the three lines stay, and the
+     lease goes back to the single owner of reclamation rather than growing a parallel one.
   5. **`verifyPinnedBase` is not called separately** (step 1's item 3). `acquireForAttempt`
      already calls it as its first act, before anything is leased, which is exactly the ordering
      that item wanted; calling it twice would be a second git process per check for no answer.
@@ -358,12 +364,59 @@ lease.
      reconciliation has said which trees we already hold. The reclamation pass also gets the
      group-recovery seam, which this document mentioned only for `reconcileOnStartup`;
      uninjected there it would have kept every non-sentinel lease forever.
-  7. **No presentation change was needed.** `run-model.ts`'s four sentences and
+  7. **`WorkflowEngine.stop()` calls Phase 3's published `killLiveCheckGroups`**, not a new
+     orderly plural teardown. A first draft added `terminateLiveCheckGroups` to `check-group.ts`
+     so a shutdown would get the `SIGTERM`-grace-`SIGKILL` ladder; it was removed on review.
+     The grace period buys a test runner the chance to flush output that, at shutdown, nobody is
+     left to read - the attempt ends as an infrastructure failure either way - and the identical
+     `SIGKILL` reaches those groups from the `exit` hook moments later regardless. So the
+     existing export does the job with nothing added, and `stop()` still waits for its attempts
+     afterwards, which is where the emptiness proof and the lease return actually happen.
+     Measured on a real daemon with a 300-second command live: **0.65s** to shut down, no orphan,
+     the pooled worktree back in the pool. `killLiveCheckGroups`' own comment, which named
+     `WorkflowEngine.stop()` as a caller of the *other* path, was corrected so the code and the
+     prose agree.
+  8. **No presentation change was needed.** `run-model.ts`'s four sentences and
      `CHECK_OUTCOME_STATUSES` read correctly against real `passed` and `failed` outcomes -
      `passed`/`failed` fall through to the ordinary verdict mapping and only the two
      did-not-run statuses are marked degraded, which is right now that the other two occur. Two
      broken README anchors (`#check-nodes-gating-on-a-command`, which matches no heading) were
      fixed in passing.
+
+- **2026-07-31, review round 1 (Intent Conformance Judge).** Two findings, both accepted; one
+  was a real defect this phase's own tests had not been shaped to catch.
+
+  **Accepted and fixed - "Treat infrastructure cleanup failures as infrastructure, never
+  failed."** The executor resolved the lease before returning, as step 1 requires, but then
+  returned the command's result whatever the cleanup had said. So a check that exited 0 while
+  leaving a process group behind - the ordinary shape of a build that backgrounds a server -
+  reported `passed`, the graph advanced, the run completed green, and a pooled worktree stayed
+  held with nothing anywhere saying so. Worse, it made the retry gate this same phase added
+  nearly unreachable: that gate lives on the `handleInfrastructureFailure` path, so a verdict
+  slipping past cleanup means the gate is never consulted. The phase's own test had forced
+  `infrastructure` AND an unprovable group together, which is the one combination where the
+  hole is invisible.
+
+  Fixed: any cleanup that does not resolve - a group not proven empty, a return that failed, a
+  tree re-leased to somebody else while the command ran, or a throw out of the release - now
+  returns `infrastructure` and outranks the command's result. The command's own outcome rides
+  in the reason rather than being dropped, because "the build failed and then cleanup broke"
+  and "the build passed and then cleanup broke" need different things done about them. Three
+  tests changed shape to match: the two cleanup cases now assert a *passing* command is
+  withheld, and the retry-gate test is driven by exit 0 rather than by an infrastructure result,
+  which is what makes it fail against the unfixed code.
+
+  **Partly accepted - "Consume Phase 2 and Phase 3 contracts unchanged and add no interface."**
+  Three of the four flagged additions were removed rather than defended: `checks.ts` is back to
+  its shipped bytes with `CheckAttemptRef` moved into this phase's own module (deviation 2
+  above), and `terminateLiveCheckGroups` is gone in favour of Phase 3's published
+  `killLiveCheckGroups` (deviation 7). The fourth, `handOffForReclaim`, could not be removed
+  without reintroducing a leaked pool slot, and went to the operator as the finding's own text
+  invites - see deviation 4 for the decision.
+
+  Writing the `stop()` fix also surfaced a flaw in this phase's own test: it used the suite's
+  state directory as a stand-in leased worktree, so it passed only when another test had run
+  first. It now owns a directory outside `MISSION_HOME`, and passes alone.
 
   **Manual verification, both required scenarios, on a real repository with a real treehouse
   pool and a real `claude` session in a tmux pane:**
@@ -383,8 +436,15 @@ lease.
     mission-control-check-…; we only return our own leases"*. That is Contract L layer 1 with
     the defence-in-depth pin deliberately removed.
   - *Shutdown with a live check.* `SIGINT` to the daemon while a 300-second command was running:
-    **0.43 seconds**, no orphan process, the pooled worktree back in the pool, every lease row
-    terminal.
+    **0.65 seconds**, no orphan process, the pooled worktree back in the pool, every lease row
+    terminal. Re-run after the teardown was switched to `killLiveCheckGroups` in review round 1,
+    because that swap is exactly the kind of change a passing unit test would not have noticed.
+  - *And the headline again, after review round 1*, since making cleanup failures outrank the
+    command's result touches every check that succeeds: the gate failed a submission at exit 2
+    with its own output, and after the fix was committed it ran again and passed at exit 0 with
+    the run completing. It also demonstrated the pin unprompted - a submission captured before
+    the check script existed ran in a worktree pinned to that commit and failed on the script
+    being absent, which is the right answer about the wrong-looking thing.
 
 - **2026-07-30, Inspector round 5 (PR #326), consumed here:** the finding landed on Phase 2
   (startup reconciliation returning a lease whose group may still be live) and its fix spans

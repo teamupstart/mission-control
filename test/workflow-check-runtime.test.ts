@@ -149,6 +149,7 @@ function fakePool(repoRoot: string, slots: number) {
   }
   const calls: CliCall[] = [];
   const dry = { get: false };
+  const failReturn = { value: false };
   const render = (): string =>
     trees
       .map((t) => `${t.name}     ${t.state}       ${t.path}${t.holder ? `  (held by ${t.holder})` : ""}`)
@@ -168,6 +169,7 @@ function fakePool(repoRoot: string, slots: number) {
     },
     return: async ({ path, force }) => {
       calls.push({ cmd: "return", path, force });
+      if (failReturn.value) return stubRun({ stdout: "", stderr: "tree is busy", code: 1 });
       const t = trees.find((x) => realpathSync(x.path) === realpathSync(path));
       if (t) {
         t.state = "available";
@@ -176,7 +178,7 @@ function fakePool(repoRoot: string, slots: number) {
       return stubRun({ stdout: "", stderr: "", code: 0 });
     },
   };
-  return { cli, trees, calls, dry };
+  return { cli, trees, calls, dry, failReturn };
 }
 
 interface Fixture {
@@ -426,15 +428,24 @@ test("an infrastructure result is not returned until the lease is resolved", asy
   assert.deepEqual(pool.trees.filter((t) => t.state === "leased"), []);
 });
 
-test("a group that cannot be proven empty keeps its lease, and says so", async () => {
+/**
+ * The case where a PASSING command must still not produce a verdict.
+ *
+ * A cleanup failure is an infrastructure failure and outranks whatever the command said. The
+ * shape that makes it matter is exactly this one: exit 0 with a process group left behind. Let
+ * the exit code through and the node completes, the graph advances, the run finishes green -
+ * and a pooled worktree is held with nothing anywhere saying so, because the retry gate that
+ * would have said so is only ever reached through the infrastructure path.
+ */
+test("a group that cannot be proven empty withholds the verdict and keeps its lease", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 2);
   const leases = new CheckLeaseManager(db, { cli: pool.cli, pin: pinLeasedWorktree, verifyBase: verifyPinnedBase });
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,
     supervise: fixedSupervisor({
-      // The command answered; its process group did not go away. Two different questions, and
-      // only the second may authorise handing the tree back.
+      // The command answered, and answered WELL; its process group did not go away. Two
+      // different questions, and only the second may authorise handing the tree back.
       result: { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 },
       emptiness: "not-empty",
       supervisor: { pid: 424242, identity: "made-up" },
@@ -449,9 +460,15 @@ test("a group that cannot be proven empty keeps its lease, and says so", async (
     headSha,
   });
 
-  // The verdict survives - a build that leaves a server running still exited zero.
-  assert.equal(outcome.kind, "exited");
-  // The tree does not. No return was issued and the row is still live.
+  // Infrastructure, NOT a pass. A gate whose worktree is unaccounted for has not been shown to
+  // have run against the commit it claims.
+  assert.equal(outcome.kind, "infrastructure");
+  const reason = outcome.kind === "infrastructure" ? outcome.reason : "";
+  assert.match(reason, /could not be proven empty/);
+  // The command's own outcome is carried rather than dropped: "passed then cleanup broke" and
+  // "failed then cleanup broke" need different things done about them.
+  assert.match(reason, /exited 0/);
+  // The tree stays ours. No return was issued and the row is still live.
   assert.deepEqual(pool.calls.filter((c) => c.cmd === "return"), []);
   assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "held");
   assert.equal(leases.unresolvedLeaseForNode(ref.submissionId, ref.nodeId), true);
@@ -460,6 +477,58 @@ test("a group that cannot be proven empty keeps its lease, and says so", async (
   // lease, and with it provably gone it hands the tree back.
   await leases.reclaimLeaked(async () => "unknown");
   assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "held");
+  await leases.reclaimLeaked(async () => "empty");
+  assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
+  assert.deepEqual(pool.trees.filter((t) => t.state === "leased"), []);
+});
+
+/**
+ * The other cleanup failure, and the one whose danger is easiest to miss: the return itself
+ * failed, so the tree is still ours and still `returning`. The command may have run perfectly.
+ */
+test("a worktree that could not be handed back withholds the verdict too", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 2);
+  pool.failReturn.value = true;
+  // A clock this test can move, because a failed return backs off before it is retried and the
+  // point below is that the retry eventually lands - not that it lands immediately.
+  const clock = { now: Date.now() };
+  const leases = new CheckLeaseManager(db, {
+    cli: pool.cli,
+    pin: pinLeasedWorktree,
+    verifyBase: verifyPinnedBase,
+    now: () => clock.now,
+  });
+  const runtime = new CheckRuntime(leases, {
+    leaseStore: leaseRows,
+    supervise: fixedSupervisor({
+      result: { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 },
+      emptiness: "empty",
+      supervisor: { pid: 424244, identity: "made-up" },
+    }),
+  });
+  const ref = attemptRef();
+  const outcome = await runtime.executorFor(ref)({
+    slot: "test",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+  });
+
+  assert.equal(outcome.kind, "infrastructure");
+  assert.match(outcome.kind === "infrastructure" ? outcome.reason : "", /could not be handed back/);
+  // `returning` means AUTHORISED and failed: the row and the pin are retained and reclamation
+  // retries, and no second lease is possible for this attempt in the meantime.
+  assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returning");
+  assert.equal(leases.unresolvedLeaseForNode(ref.submissionId, ref.nodeId), true);
+
+  // Still in backoff: a failed return is retried on a schedule, not on the next tick.
+  pool.failReturn.value = false;
+  await leases.reclaimLeaked(async () => "empty");
+  assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returning");
+
+  clock.now += 120_000;
   await leases.reclaimLeaked(async () => "empty");
   assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
   assert.deepEqual(pool.trees.filter((t) => t.state === "leased"), []);
@@ -641,6 +710,11 @@ async function waitFor(check: () => boolean, message: string, timeoutMs = 10_000
  * A retry is a FRESH attempt id, so it carries a fresh holder token and the pool has other
  * slots to give it - nothing about leasing would stop a second build starting while the first
  * attempt's group may still be writing into the first tree.
+ *
+ * The command here exits ZERO, deliberately. That is the shape the gate has to survive: if a
+ * clean exit could carry a verdict past a stranded lease, this node would complete, the run
+ * would go green, and the gate below would never be consulted at all - it is only ever reached
+ * through the infrastructure path.
  */
 test("an unresolved lease blocks the retry instead of taking a second tree", async () => {
   const { repoRoot, headSha } = gitRepo();
@@ -649,9 +723,7 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,
     supervise: fixedSupervisor({
-      // Infrastructure AND an unprovable group: the exact pair that used to retry onto a
-      // second worktree.
-      result: { kind: "infrastructure", reason: "the check command did not finish in time" },
+      result: { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 },
       emptiness: "unknown",
       supervisor: { pid: 424243, identity: "made-up" },
     }),
@@ -679,9 +751,13 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
   await engine.stop();
 
   assert.equal(store.getRun("run-gate-block")?.currentPhase, "check_cleanup_unresolved");
+  // The clean exit did NOT become a passing gate. Had it, the run would have completed rather
+  // than blocked, and the stranded worktree would have gone unmentioned.
+  assert.notEqual(store.getRun("run-gate-block")?.status, "completed");
   // No second attempt, and therefore no second tree.
   const attempts = store.listAttempts("submission-gate-block").filter((a) => a.nodeId === "gate");
   assert.equal(attempts.length, 1, "a retry was created behind an unresolved lease");
+  assert.equal(attempts[0]?.state, "error", "a cleanup failure must not finish as a verdict");
   assert.equal(pool.calls.filter((c) => c.cmd === "get").length, 1, "a second pooled worktree was taken");
   assert.deepEqual(
     store.listEvents("run-gate-block").filter((e) => e.kind === "persona_retry_scheduled"),

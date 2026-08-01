@@ -232,6 +232,46 @@ export function sessionActionDraftProblem(
   return null;
 }
 
+/**
+ * Why the DAEMON's capability answer forbids this save, or null.
+ *
+ * Separate from `sessionActionDraftProblem` because it is a different question. That one asks
+ * whether the operator's draft is well formed; this one asks whether this build can honour the
+ * completion the write would assert. Folding them together was the gap: a brand-new action
+ * defaults to `session_turn` and is perfectly well formed, so Save stayed enabled while the
+ * selector beside it said no completion could be selected - the surface contradicting itself,
+ * and the one boundary it exists to enforce quietly bypassed.
+ *
+ * `inherited` is what keeps this from breaking a documented behaviour. Duplicating the shipped
+ * Pull Request action is SUPPOSED to carry its `pull_request` adapter across - the plan calls
+ * for it, so an operator can customise the instruction without losing the PR verification -
+ * and an update to an existing row carries whatever that row already holds. Neither asserts a
+ * new choice, so neither is blocked. Only a write that PICKS a completion has to prove the
+ * daemon can run it, and only that write is stopped while the answer is unknown.
+ */
+export function sessionActionCapabilityBlock(input: {
+  /** The completion this save would write. */
+  completionKind: SessionActionCompletionKind;
+  /** What the daemon reported. Empty means unread, not "none". */
+  capabilities: readonly SessionActionCompletionCapability[];
+  /** The capability read is still in flight. */
+  loading: boolean;
+  /** The completion comes from an existing row rather than from a choice made here. */
+  inherited: boolean;
+}): string | null {
+  const { completionKind, capabilities, loading, inherited } = input;
+  if (inherited) return null;
+  if (loading) return "Waiting for this daemon to report which completions it can prove.";
+  if (capabilities.length === 0) {
+    return "This daemon has not reported which completions it can prove, so a new session"
+      + " action cannot be authored against it yet.";
+  }
+  const capability = capabilities.find((candidate) => candidate.kind === completionKind);
+  if (capability?.available) return null;
+  return capability?.unavailableReason
+    ?? "This build cannot prove the completion this session action names.";
+}
+
 /** A file name for the prompt editor's toolbar, derived the way the Persona editor derives its own. */
 export function sessionActionPromptPath(name: string): string {
   const slug = normalizeSessionActionName(name)
@@ -296,7 +336,12 @@ export function completionChoices(
       disabled: true,
       note: loading
         ? null
-        : retained?.unavailableReason ?? "This build cannot prove this completion.",
+        : capabilities.length === 0
+          // No answer at all is NOT the same as an answer of no. Saying "this build cannot
+          // prove it" here sends an operator looking for a missing feature when what is
+          // actually missing is the daemon's reply.
+          ? "This daemon has not said which completions it can prove yet."
+          : retained?.unavailableReason ?? "This build cannot prove this completion.",
     },
     ...offered,
   ];
@@ -473,6 +518,12 @@ export function SessionActionEditor({
     [draft.promptMarkdown],
   );
   const problem = sessionActionDraftProblem(draft, promptBytes);
+  const capabilityBlock = sessionActionCapabilityBlock({
+    completionKind: draft.completionKind,
+    capabilities,
+    loading: capabilitiesLoading,
+    inherited: action !== null,
+  });
   const choices = completionChoices(capabilities, draft.completionKind, capabilitiesLoading);
   const retainedCompletion = choices.find(
     (choice) => choice.kind === draft.completionKind && choice.disabled,
@@ -529,6 +580,20 @@ export function SessionActionEditor({
     );
     if (blocked) {
       setError(blocked);
+      return;
+    }
+    // Re-asked here rather than trusted from the disabled button: the window-level Cmd+S
+    // handler reaches this function without passing one. `inherited` is widened to every mode
+    // but an ordinary save of a NEW row - a duplicate carries its source's adapter across on
+    // purpose, and an update carries whatever the row already holds.
+    const refused = sessionActionCapabilityBlock({
+      completionKind: submitted.completionKind,
+      capabilities,
+      loading: capabilitiesLoading,
+      inherited: mode !== "save" || action !== null,
+    });
+    if (refused) {
+      setError(refused);
       return;
     }
     let updateBody: Record<string, unknown> | null = null;
@@ -610,6 +675,8 @@ export function SessionActionEditor({
       ? "This session action is archived and cannot be edited"
       : problem
         ? problem
+        : capabilityBlock
+          ? capabilityBlock
         : action !== null && !dirty
           ? "No unsaved changes"
           : "Save this session action as a new revision";
@@ -631,7 +698,11 @@ export function SessionActionEditor({
           <Tooltip label={saveHint}>
             <button
               className="btn"
-              disabled={readOnly || saving || problem !== null || (action !== null && !dirty)}
+              disabled={readOnly
+                || saving
+                || problem !== null
+                || capabilityBlock !== null
+                || (action !== null && !dirty)}
               onClick={() => void save()}
             >
               {saving ? "Saving…" : "Save"}
@@ -673,7 +744,8 @@ export function SessionActionEditor({
       {error && <p className="wf-error" role="alert">{error}</p>}
       {capabilityError && (
         <p className="wf-error" role="alert">
-          {capabilityError} Until this daemon answers, no completion can be selected.
+          This daemon has not said which completions it can prove, so a new session action
+          cannot be authored against it yet. <code>{capabilityError}</code>
         </p>
       )}
 

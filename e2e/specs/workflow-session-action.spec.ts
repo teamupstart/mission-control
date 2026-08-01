@@ -99,6 +99,56 @@ test("an operator authors a session action in the library, and the daemon stores
     .toContainText("Revision 1");
 });
 
+test("a filled new action will not save while the daemon has not said what it can prove", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The capability read is the boundary this surface exists to enforce, and a brand-new draft
+  // defaults to a completion without the operator choosing one - so a save gate that only
+  // asked whether the DRAFT was well formed let a fully-typed action through while the
+  // selector beside it said nothing could be selected.
+  await dashboard.route("**/api/session-actions/capabilities", (route) => route.abort());
+  await dashboard.goto(`${daemon.baseURL}/#/workflows/actions`);
+  await dashboard.getByRole("button", { name: "New" }).click();
+
+  const fields = dashboard.locator("section.wf-action-fields");
+  await fields.getByLabel("Name").fill("Tidy the workspace");
+  const promptEditor = dashboard.locator(".wf-action-editor-host .cm-content");
+  await promptEditor.click();
+  await promptEditor.pressSequentially("# Tidy");
+
+  // Everything the operator owns is now valid, and the save is still refused - by the one
+  // fact they do not own.
+  await expect(dashboard.getByRole("button", { name: "Save" })).toBeDisabled();
+  // And the reason is on the screen, in both places an operator looks: the banner over the
+  // form, and the note under the selector it is about. Neither says "this build cannot prove
+  // it" - that is an answer, and no answer arrived.
+  await expect(dashboard.locator(".wf-error"))
+    .toContainText("has not said which completions it can prove");
+  await expect(dashboard.locator(".wf-action-note"))
+    .toHaveText("This daemon has not said which completions it can prove yet.");
+  // Nothing reached the catalog. Asserted against the route rather than the screen, because
+  // "the button looked off" is not the claim - "no row was written" is.
+  const rows = await api<ActionRow[]>(daemon, "/api/session-actions");
+  expect(rows.some((row) => row.name === "Tidy the workspace")).toBe(false);
+
+  // The control case, which is what makes the refusal above mean something rather than being
+  // a form that never worked: with the daemon answering, the identical draft saves.
+  await dashboard.unroute("**/api/session-actions/capabilities");
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "New" }).click();
+  await dashboard.locator("section.wf-action-fields").getByLabel("Name").fill("Tidy the workspace");
+  const retry = dashboard.locator(".wf-action-editor-host .cm-content");
+  await retry.click();
+  await retry.pressSequentially("# Tidy");
+  await expect(dashboard.getByRole("button", { name: "Save" })).toBeEnabled();
+  await dashboard.getByRole("button", { name: "Save" }).click();
+  await expect
+    .poll(async () => (await api<ActionRow[]>(daemon, "/api/session-actions"))
+      .some((row) => row.name === "Tidy the workspace"))
+    .toBe(true);
+});
+
 test("editing bumps one revision, and archiving retires the action without touching history", async ({
   dashboard,
   daemon,

@@ -22,6 +22,7 @@ import {
   reconcileSessionActionSave,
   SessionActionEditor,
   SessionActionEditorStatus,
+  sessionActionCapabilityBlock,
   sessionActionCreateBody,
   sessionActionDraftProblem,
   sessionActionPatchFrom,
@@ -239,10 +240,17 @@ test("a capability read still in flight accuses the action of nothing", () => {
   assert.equal(loading[0]!.label, "Session turn finishes");
   assert.doesNotMatch(loading[0]!.label, /session_turn/);
 
-  // Once the answer arrives and genuinely says no, the reason appears.
+  // Once the read has finished, the note says which fact it is. An EMPTY list is "nothing
+  // answered", not "the answer was no" - those lead an operator to different actions, so they
+  // get different sentences.
   assert.equal(
     completionChoices([], "session_turn", false)[0]!.note,
-    "This build cannot prove this completion.",
+    "This daemon has not said which completions it can prove yet.",
+  );
+  // Answered, and the answer is no: the daemon's own reason.
+  assert.equal(
+    completionChoices(CAPABILITIES, "pull_request", false)[0]!.note,
+    "This build cannot verify a pull request yet.",
   );
 });
 
@@ -467,6 +475,89 @@ test("Cmd/Ctrl+S saves, and stands down while an overlay owns the screen", () =>
   assert.equal(isSessionActionSaveShortcut({ metaKey: false, ctrlKey: false, key: "s" }, false), false);
 });
 
+test("a new action cannot be saved against a completion the daemon has not blessed", () => {
+  // Inspector's finding. A brand-new draft defaults to `session_turn` and is perfectly well
+  // formed, so a save gate that only asked `sessionActionDraftProblem` stayed OPEN while the
+  // selector beside it said no completion could be selected - the surface contradicting
+  // itself, and the daemon-capability boundary it exists to enforce quietly bypassed.
+  const pick = (
+    over: Partial<Parameters<typeof sessionActionCapabilityBlock>[0]> = {},
+  ): string | null => sessionActionCapabilityBlock({
+    completionKind: "session_turn",
+    capabilities: CAPABILITIES,
+    loading: false,
+    inherited: false,
+    ...over,
+  });
+
+  // The answer is in: `session_turn` is available, so a new action saves.
+  assert.equal(pick(), null);
+  // Still in flight. Unknown is not permission.
+  assert.match(pick({ loading: true })!, /Waiting for this daemon to report/);
+  // The read failed, so the catalog is empty - which means UNREAD, not "none available".
+  assert.match(pick({ capabilities: [] })!, /has not reported which completions it can prove/);
+  // Answered, and the answer is no. The daemon's own sentence is what the operator reads.
+  assert.equal(
+    pick({ completionKind: "pull_request" }),
+    "This build cannot verify a pull request yet.",
+  );
+
+  // INHERITED writes are never blocked, and that is load-bearing rather than a loophole:
+  // duplicating the shipped Pull Request action is SUPPOSED to carry its `pull_request`
+  // adapter across, so an operator can customise the instruction without losing the PR
+  // verification. Blocking it would break a documented behaviour to satisfy this check.
+  assert.equal(pick({ completionKind: "pull_request", inherited: true }), null);
+  assert.equal(pick({ capabilities: [], inherited: true }), null);
+  assert.equal(pick({ loading: true, inherited: true }), null);
+});
+
+test("the Save button is off, and says why, while the capability answer is unknown", () => {
+  // A FILLED draft, because that is the state Inspector described: an empty form is already
+  // refused for wanting a name, so the bypass only shows on a draft that is otherwise ready
+  // to go. `sessionActionDraftProblem` still wins when both apply - an operator fixes their
+  // own draft before the daemon's state is any of their business.
+  const filled: SessionActionDraftSeed = {
+    name: "Tidy the workspace",
+    description: "",
+    promptMarkdown: "# Tidy\n",
+    requiredSkillId: null,
+    completionKind: "session_turn",
+  };
+  const newEditor = (
+    capabilities: SessionActionCompletionCapability[],
+    capabilityError: string | null = null,
+  ): string => renderToStaticMarkup(createElement(SessionActionEditor, {
+    action: null,
+    seed: filled,
+    capabilities,
+    ...(capabilityError ? { capabilityError } : {}),
+    skills: [],
+    isOverlayOpen: () => false,
+    onDirtyChange: () => {},
+    onSaved: () => {},
+    onDuplicate: () => {},
+    onArchive: () => {},
+  }));
+
+  const blocked = newEditor([], "Failed to fetch");
+  assert.match(blocked, /<button class="btn" disabled=""[^>]*>Save<\/button>/);
+  // The Save tooltip carries the refusal...
+  assert.match(blocked, /has not reported which completions it can prove/);
+  // ...and the two on-screen sentences say the same thing without accusing the build of a
+  // limit it never reported, keeping the raw fetch message beside them as a detail rather
+  // than pasting it onto the front of a sentence.
+  assert.match(blocked, /has not said which completions it can prove, so a new session action/);
+  assert.match(blocked, /<code>Failed to fetch<\/code>/);
+  assert.match(blocked, /This daemon has not said which completions it can prove yet\./);
+  assert.doesNotMatch(blocked, /This build cannot prove this completion/);
+
+  // The control case that makes the negative mean something: with the answer in, the same
+  // filled editor offers Save.
+  const ready = newEditor(CAPABILITIES);
+  assert.doesNotMatch(ready, /<button class="btn" disabled=""[^>]*>Save<\/button>/);
+  assert.match(ready, /Save this session action as a new revision/);
+});
+
 test("no capability answer means nothing is selectable, and the reason is on screen", () => {
   const html = renderToStaticMarkup(createElement(SessionActionEditor, {
     action: null,
@@ -479,7 +570,10 @@ test("no capability answer means nothing is selectable, and the reason is on scr
     onDuplicate: () => {},
     onArchive: () => {},
   }));
-  assert.match(html, /Until this daemon answers, no completion can be selected/);
+  assert.match(html, /has not said which completions it can prove, so a new session action/);
+  // The raw fetch message is kept BESIDE the sentence rather than pasted onto the front of
+  // it, which produced "Failed to fetch Until this daemon answers, ..." on screen.
+  assert.match(html, /<code>Could not read what this build can prove<\/code>/);
   assert.match(html, /role="alert"/);
 });
 

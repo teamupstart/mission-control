@@ -102,8 +102,39 @@ export function codexHookPath(): string {
 // in a file the harnesses know nothing about - and `claude-cli.ts` quietly kept a second
 // chain of its own beside it.
 
-/** How often the passive discovery poller sweeps the system. */
-export const POLL_INTERVAL_MS = Number(envVar("POLL_MS") ?? 1500);
+/** How often the passive pollers sweep, absent an override. */
+const DEFAULT_POLL_MS = 1500;
+
+/**
+ * The passive-polling interval, or null when passive polling is switched OFF.
+ *
+ * `MISSION_POLL_MS=0` is how anyone would try to disable a periodic job, and it has to
+ * actually disable it - handed to `setTimeout`, 0 is a ~1ms tick, which turns the off
+ * switch into a hot loop of `ps` over every process on the machine. Same for any negative
+ * value. An unparseable value is a typo rather than an instruction, so it falls back to
+ * the default instead of into that spin. This mirrors `reapIntervalMs` in `pool.ts`, which
+ * is where the `=0` convention was set; a second spelling of "off" is how one of the two
+ * ends up not honouring it.
+ *
+ * The off switch is not only a test affordance, though a browser-level suite is what forced
+ * it. Terminal discovery walks EVERY process on the machine and cards anything that looks
+ * like an agent, which is correct on an operator's laptop and wrong everywhere else: a
+ * daemon in a container or on CI has no terminal sessions to find, and one booted beside a
+ * developer's real sessions adopts them - including the Kill and Reset controls that act on
+ * them. `e2e/` sets this to 0 for exactly that reason.
+ *
+ * Read per call, not at import, so the value is whatever the daemon was started with rather
+ * than whatever won the module-load race. `raw` is injected the way `resolveSettleMs` takes
+ * it - the string, not an env object - so a test states the input it means without having to
+ * restate `envVar`'s prefix chain, which has its own coverage.
+ */
+export function pollIntervalMs(raw = envVar("POLL_MS")): number | null {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_POLL_MS;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms)) return DEFAULT_POLL_MS;
+  if (ms <= 0) return null;
+  return ms;
+}
 
 /**
  * How often the PR poller asks `gh` whether each feature-branch session has an

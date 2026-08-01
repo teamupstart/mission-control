@@ -83,6 +83,33 @@ jobs:
       - name: Smoke the built bundles
         run: npm run smoke
 
+      # Browser-level end-to-end tests. Runs after Build because it drives the BUILT
+      # dashboard served by the BUILT daemon - `dist/web` and `dist/server/index.mjs` both
+      # have to exist, which is also why this suite lives in `e2e/` and not `test/`.
+      #
+      # Gated to one Node version rather than the matrix. The matrix exists to pin the
+      # `node:sqlite` floor and the current release for the DAEMON; the browser layer gains
+      # nothing from being run twice, and this is the slowest gate on the PR path.
+      #
+      # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every
+      # `MISSION_*_BIN` at a local fake, and nothing in `src/` reaches a model API by any
+      # other route. See that file for why that is a property of the daemon, not a hope.
+      - name: Install Playwright browser
+        if: matrix.node-version == '24'
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        if: matrix.node-version == '24'
+        run: npm run test:e2e
+
+      - name: Upload e2e report
+        if: failure() && matrix.node-version == '24'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
   # Full macOS app packaging. It's slow (downloads the Electron runtime + builds a
   # dmg), so it only runs for tagged releases or a manual dispatch - not every PR.
   # There are no native modules to rebuild (node:sqlite is a builtin), so this just

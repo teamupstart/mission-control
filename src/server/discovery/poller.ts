@@ -1,4 +1,4 @@
-import { POLL_INTERVAL_MS } from "../config.ts";
+import { pollIntervalMs } from "../config.ts";
 import type { Registry } from "../registry.ts";
 import { unref } from "../util/timers.ts";
 import { gitInfo } from "../util/git.ts";
@@ -59,13 +59,20 @@ export function startPoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  // `MISSION_POLL_MS=0` switches passive discovery off entirely - not one sweep, none. The
+  // first tick fires immediately, so a check that only skipped the RESCHEDULE would still
+  // walk every process on the machine once and card whatever it found, which is the whole
+  // thing the off switch exists to prevent.
+  const interval = pollIntervalMs();
+  if (interval === null) return () => {};
+
   const tick = async (): Promise<void> => {
     if (stopped) return;
     // Refresh after the sweep attempt, so a rediscovered pane-backed session and one the
     // daemon runs itself are both current before the PR poller reads either.
     await pollOnce(registry);
     if (stopped) return;
-    timer = unref(setTimeout(tick, POLL_INTERVAL_MS));
+    timer = unref(setTimeout(tick, interval));
   };
 
   void tick();

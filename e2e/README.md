@@ -170,6 +170,13 @@ correct through refactors. Four traps, all of which have cost time already:
    `readdirSync` on the record directory the moment a card appears fails about one run in
    six, because the card is registered before the subprocess it launched has written
    anything.
+5. **Never assert that something is absent without first making it present.** Asserting a
+   variable did not leak proves nothing when the variable was never set - on CI it is `null`
+   whether the code strips it or not, so the test passes through the exact regression it
+   names. Seed a recognisable sentinel, then assert the sentinel did not arrive.
+   `DAEMON_TERMINAL_IDENTITY` does this for the three pane variables `sdkSubprocessEnv`
+   strips. The same reasoning applies to any "did not happen" assertion: arrange for it to be
+   able to happen, or the test is decoration.
 
 Each test gets its own daemon (`fixtures/test.ts`). That costs about a second and a half and
 buys independence: a spec asserting "exactly one session on the fleet" must not silently

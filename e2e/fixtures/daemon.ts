@@ -34,6 +34,29 @@ const BOOT_TIMEOUT_MS = 30_000;
 const POLL_MS = 100;
 
 /**
+ * A terminal identity for the daemon to leak, seeded so that "it did not leak" can fail.
+ *
+ * `sdkSubprocessEnv` strips these three before launching an agent, and the launch spec
+ * asserts the child received none of them. That assertion is worth nothing unless the
+ * daemon HAD them: CI starts with no `TMUX_PANE`, `WEZTERM_PANE` or `TERM_PROGRAM`, so
+ * inheriting `process.env` means the fake records `null` whether the stripping still works
+ * or not - and a regression that forwarded the daemon's pane down to every session it
+ * launches would sail through the one path CI actually requires.
+ *
+ * The values are deliberately recognisable rather than realistic. If one ever shows up in a
+ * recorded invocation, the failure message names exactly what leaked and from where.
+ *
+ * This is not a hypothetical defect. Inheriting the spawner's pane env once fused two
+ * different real cards onto one headless run's uuid, which is what `sdkSubprocessEnv`'s own
+ * comment documents.
+ */
+export const DAEMON_TERMINAL_IDENTITY = {
+  TMUX_PANE: "%e2e-daemon-tmux-pane",
+  WEZTERM_PANE: "e2e-daemon-wezterm-pane",
+  TERM_PROGRAM: "e2e-daemon-term-program",
+} as const;
+
+/**
  * A port the OS has just confirmed is free on loopback.
  *
  * NOT a fixed port derived from the worker index, which is what this was and which had a
@@ -141,6 +164,8 @@ export async function startDaemon(): Promise<DaemonHandle> {
       // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
       // instead of quietly spending.
       ANTHROPIC_API_KEY: "",
+      // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
+      ...DAEMON_TERMINAL_IDENTITY,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

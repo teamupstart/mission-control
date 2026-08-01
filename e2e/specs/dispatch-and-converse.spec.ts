@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
-import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
  * The path this suite exists to cover: a person dispatches an agent from the dashboard and
@@ -194,9 +194,21 @@ test("the dispatched agent was launched headless, without the daemon's terminal 
   // inside this subprocess exactly as they do in a pane, and a daemon started from a
   // terminal would otherwise hand its own pane down to every session it launches - which
   // once fused two different real cards onto one headless run.
-  expect(record.tmuxPane, "TMUX_PANE must not leak into a dispatched session").toBeNull();
-  expect(record.weztermPane, "WEZTERM_PANE must not leak into a dispatched session").toBeNull();
-  expect(record.termProgram, "TERM_PROGRAM must not leak into a dispatched session").toBeNull();
+  //
+  // The daemon was seeded with a recognisable identity for exactly this assertion
+  // (`DAEMON_TERMINAL_IDENTITY`), so `null` here means the strip ran rather than meaning the
+  // variable was never set. Asserted against the sentinel FIRST, because that is the failure
+  // that reads as a leak; the null check then covers a partial strip that blanks instead of
+  // deletes.
+  for (const [key, sentinel, actual] of [
+    ["TMUX_PANE", DAEMON_TERMINAL_IDENTITY.TMUX_PANE, record.tmuxPane],
+    ["WEZTERM_PANE", DAEMON_TERMINAL_IDENTITY.WEZTERM_PANE, record.weztermPane],
+    ["TERM_PROGRAM", DAEMON_TERMINAL_IDENTITY.TERM_PROGRAM, record.termProgram],
+  ] as const) {
+    expect(actual, `${key} leaked the daemon's own terminal identity into a dispatched session`)
+      .not.toBe(sentinel);
+    expect(actual, `${key} must not reach a dispatched session at all`).toBeNull();
+  }
 
   // And it ran in the worktree the dispatch cut, not in the repo or the daemon's cwd.
   expect(record.cwd).toContain("worktrees");

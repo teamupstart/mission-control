@@ -217,6 +217,19 @@ export interface WorkflowManagerOptions {
    * checkout, and a workflow test must be able to drive the observer without one.
    */
   readEvidenceProbe?: typeof readWorkflowEvidenceProbe;
+  /**
+   * The three reads a completion adapter's proof is built from, injectable for the reason
+   * every seam above is: two of them shell out to git in the session's checkout and the third
+   * reads the Inspector's ledger, and a workflow test must be able to state a repository, a
+   * pull request and a resolved commit rather than arrange one on disk and on GitHub.
+   *
+   * `resolveCommit` is the same seam `CheckRuntimeDeps` already carries, for the same reason:
+   * turning a captured abbreviation into a full object id is a question about a real object
+   * database, and the proof it feeds has to be provable without one.
+   */
+  readRepositoryHead?: typeof readWorkflowRepositoryHead;
+  adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
+  resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
   compactContext?: typeof compactWorkflowContext;
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
@@ -3304,9 +3317,21 @@ export class WorkflowManager {
     const attempt = this.store.getAttempt(attemptId);
     if (!attempt || attempt.state !== "waiting" || !attempt.sessionAction) return null;
     const state = this.store.sessionActionState(attempt);
+    // A waiting action whose own durable state will not parse is STUCK, and silently returning
+    // null here is what made that invisible: the sweep looked, found nothing to resolve, and
+    // left the attempt waiting forever with no reason on the run. The shape is deliberately
+    // strict - a state read tolerantly could re-send a packet somebody already received - so
+    // the honest answer to an unreadable one is to block for a human rather than to wait for a
+    // change that cannot come. Reachable only across a daemon downgrade, and cheap to state.
+    if (!state) {
+      this.blockSessionAction(attempt.id, "capture_failed",
+        "This action's durable progress record cannot be read by this build, so its turn "
+        + "cannot be observed. Reset the run to start it again.");
+      return null;
+    }
     const submission = this.store.getSubmission(attempt.submissionId);
     const run = submission ? this.store.getRun(submission.runId) : null;
-    if (!state || !submission || !run || runIsTerminal(run)) return null;
+    if (!submission || !run || runIsTerminal(run)) return null;
     const binding = this.store.getBinding(run.bindingId);
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     const node = version?.graph.nodes.find(
@@ -3612,7 +3637,9 @@ export class WorkflowManager {
     // cheaper answer, and an observer that shelled out to git for each waiting action on each
     // sweep would pay for three `rev-parse` calls per action per fifteen seconds to answer a
     // question that only matters at this line.
-    const repository = await readWorkflowRepositoryHead(session.cwd).catch(() => null);
+    const repository = await (this.options.readRepositoryHead ?? readWorkflowRepositoryHead)(
+      session.cwd,
+    ).catch(() => null);
     // The head a reserved child has already captured, if one has. See `capturedHeadOid`.
     const capturedChild = state.continuationSubmissionId
       ? this.store.getSubmission(state.continuationSubmissionId)
@@ -3683,7 +3710,8 @@ export class WorkflowManager {
    * already arrived. Bounded by the number of open pull requests on this machine, which is
    * the same set the Inspector already sweeps every ninety seconds.
    */
-  private adoptedPullRequestsForAction(): SessionActionAdoptedPullRequest[] {
+  private adoptedPullRequestsForAction(): readonly SessionActionAdoptedPullRequest[] {
+    if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
     return loadOpenInspectorPrs().map((pr) => ({
       key: pr.key,
       url: pr.url,
@@ -3711,7 +3739,8 @@ export class WorkflowManager {
     const context = WorkflowContextSnapshotSchema.safeParse(child.context);
     const headSha = context.success ? context.data.evidence.headSha : null;
     if (!headSha || !repositoryRoot) return null;
-    return resolveCapturedCommit(repositoryRoot, headSha).catch(() => null);
+    const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
+    return resolve(repositoryRoot, headSha).catch(() => null);
   }
 
   /**

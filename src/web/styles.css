@@ -646,6 +646,11 @@
    across three surfaces. The card's own heading and chip already name it, so the edge is a
    confirmation rather than the claim. */
 .wf-run-action { border-left-color: color-mix(in oklab, #a878ff 70%, var(--border)); }
+/* The proven pull request reads as a fact rather than a call to action: it sits in the meta
+   row with the rest of the lifecycle, and the commit beside it is monospaced because it is an
+   object id somebody will compare against another one by eye. */
+.wf-run-action-pr { display: flex; gap: 4px; align-items: baseline; flex-wrap: wrap; }
+.wf-run-action-pr a { font-variant-numeric: tabular-nums; }
 .wf-run-check.is-passed { border-left-color: var(--idle); }
 .wf-run-check.is-failed { border-left-color: var(--danger); }
 .wf-run-check.is-skipped,

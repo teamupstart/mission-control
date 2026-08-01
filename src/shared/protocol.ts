@@ -2446,6 +2446,13 @@ export const SessionActionCompletedOutputSchema = z.object({
   pickedUpAt: z.number().nullable().optional().default(null),
   settledAt: z.number().nullable().optional().default(null),
   continuationSubmissionId: WorkflowIdSchema.nullable().optional().default(null),
+  /**
+   * What the adapter PROVED before it let the graph advance, kept past completion.
+   *
+   * Optional and defaulted for the reason every field above is: a row written by an older
+   * daemon carries none, and the reader draws the absence rather than failing the card.
+   */
+  expectation: SessionActionContinuationExpectationSchema.nullable().optional().default(null),
 });
 
 export const SessionActionCompletionCapabilitySchema = z.object({

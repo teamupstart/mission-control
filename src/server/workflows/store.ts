@@ -3544,6 +3544,12 @@ export class WorkflowStore {
           anchor: state?.anchor ?? null,
           pickedUpAt: state?.pickedUpAt ?? null,
           settledAt: state?.settledAt ?? null,
+          // Carried past completion rather than dropped with the waiting state, because it is
+          // the only durable record of WHAT WAS PROVEN. A finished `pull_request` action whose
+          // expectation went with its wait state can say it completed and nothing else - not
+          // which pull request, not at which commit - which is exactly the audit question run
+          // detail and a diagnostic are asked afterwards.
+          expectation: state?.expectation ?? null,
         }),
         error: null,
       }, input.now);

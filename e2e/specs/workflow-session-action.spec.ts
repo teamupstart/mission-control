@@ -15,8 +15,11 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * proves that a `<select>` an operator changes reaches `PATCH /api/workflows/:id`, survives
  * publish, and comes back as a snapshot.
  *
- * The one negative that stays is the Pull Request built-in: its adapter does not exist until
- * Phase 4, so it must not be addable, and a graph naming it must not publish.
+ * The Pull Request built-in used to be this file's standing negative - not addable, not
+ * publishable - because its adapter did not exist. It does now, so those three tests were
+ * turned around rather than removed: the same controls, the same routes, the same graph, and
+ * the opposite answer. Keeping them pointed at the shipped built-in is what makes "the whole
+ * browser change was the daemon saying yes" a claim a spec checks rather than a comment.
  */
 
 const PROMPT = "# Tidy the workspace\n\nRemove the stray scratch file and say so.\n";
@@ -72,10 +75,14 @@ test("an operator authors a session action in the library, and the daemon stores
   await dashboard.keyboard.press("Enter");
   await promptEditor.pressSequentially("Remove the stray scratch file and say so.");
 
-  // Only what this build can PROVE is offered. `pull_request` has no adapter until Phase 4,
-  // so a control that listed it would author a workflow that then refuses to publish.
+  // Only what this build can PROVE is offered, and it now proves both. The list is asserted
+  // exhaustively rather than by membership: a completion the daemon cannot run appearing here
+  // is how an operator authors a workflow that then refuses to publish.
   const completion = fields.getByLabel("Completes when");
-  await expect(completion.locator("option")).toHaveText(["Session turn finishes"]);
+  await expect(completion.locator("option")).toHaveText([
+    "Session turn finishes",
+    "Pull request is opened and verified",
+  ]);
 
   await dashboard.getByRole("button", { name: "Save" }).click();
   await expect(dashboard.locator(".wf-action-editor-head .workflow-eyebrow"))
@@ -439,147 +446,134 @@ test("the Graph palette creates an action node with one complete port, and can d
   await expect(dashboard.locator('[data-node-kind="session_action"]')).toHaveCount(0);
 });
 
-test("the unavailable built-in is not addable, and a graph naming it will not publish", async ({
+test("the shipped Pull Request built-in is addable from the pipeline and the palette", async ({
   dashboard,
   daemon,
 }) => {
-  // The one negative that survives this phase. `pull_request` has no verified adapter yet, so
-  // the shipped Pull Request action must be nameable without being offerable.
+  // This was the standing negative until its adapter shipped, and the assertions are the same
+  // ones read the other way. Nothing in the browser was special-cased for the built-in: it is
+  // catalog data that `addableSessionActions` filters on availability, and availability is a
+  // fact the daemon states over a route.
   await api(daemon, "/api/workflows", { name: "E2E ship it" });
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /E2E ship it/ }).click();
 
   const picker = dashboard.locator(".wf-pipeline-strip").getByLabel("Add the first stage");
-  await expect(picker.locator("option", { hasText: "Pull Request" })).toHaveCount(0);
-  await expect(picker.locator("optgroup", { hasText: "Pull Request" })).toHaveCount(0);
-  // The reason is in the control's own tooltip rather than behind a failed publish.
-  await expect(dashboard.locator(".tt-desc").filter({ hasText: "Add the first stage" }))
-    .toContainText("No session action here can run on this daemon yet");
+  await expect(picker.locator("option", { hasText: "Pull Request" })).toHaveCount(1);
 
   await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
-  // No palette entry either, because nothing addable exists on this daemon.
+  // And the palette gained the entry, because something addable now exists on this daemon.
   await expect(dashboard.locator("section.workflow-palette").getByRole("button")).toHaveText([
     "＋ Persona",
     "＋ All-pass Join",
     "＋ Check",
+    "＋ Session action",
     "＋ End",
   ]);
 });
 
-test("an unavailable action node cannot be duplicated into a second unpublishable stage", async ({
+/** Session -> Pull Request built-in -> End, as the raw draft API writes it. */
+const PR_NODE = { action: "action-node", session: "session-node", end: "end-node" };
+
+const prDraft = {
+  nodes: [
+    { id: PR_NODE.session, kind: "session", position: { x: 60, y: 60 } },
+    {
+      id: PR_NODE.action,
+      kind: "session_action",
+      sessionActionId: "builtin:pull-request",
+      position: { x: 340, y: 60 },
+    },
+    { id: PR_NODE.end, kind: "end", outcome: "Complete", position: { x: 620, y: 60 } },
+  ],
+  edges: [
+    { id: "e-submit", source: PR_NODE.session, sourcePort: "submitted", target: PR_NODE.action, targetPort: "activate" },
+    { id: "e-complete", source: PR_NODE.action, sourcePort: "complete", target: PR_NODE.end, targetPort: "terminal" },
+  ],
+};
+
+test("an action node duplicates, keeping the adapter it was copied for", async ({
   dashboard,
   daemon,
 }) => {
   // Duplicating a node is the THIRD way to put one in a graph, beside the palette button and
-  // the drop handler. Both of those consult `addableActions`; while this one did not, a draft
-  // that already named an unavailable action - which is exactly the shape below, and the one
-  // the raw draft API can still produce - was a side door onto minting another.
-  const NODE = { action: "action-node", session: "session-node", end: "end-node" };
+  // the drop handler, and it gates on the same catalog both of those do. It used to be off for
+  // this node because the adapter was unavailable; it is on now, and the copy has to carry the
+  // action it was copied FOR rather than whatever the palette happens to have selected.
   const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "E2E duplicate guard",
+    name: "E2E duplicate action",
   });
   await api(daemon, `/api/workflows/${created.workflow.id}`, {
     expectedDraftRevision: 1,
-    draft: {
-      nodes: [
-        { id: NODE.session, kind: "session", position: { x: 60, y: 60 } },
-        {
-          id: NODE.action,
-          kind: "session_action",
-          sessionActionId: "builtin:pull-request",
-          position: { x: 340, y: 60 },
-        },
-        { id: NODE.end, kind: "end", outcome: "Complete", position: { x: 620, y: 60 } },
-      ],
-      edges: [
-        { id: "e-submit", source: NODE.session, sourcePort: "submitted", target: NODE.action, targetPort: "activate" },
-        { id: "e-complete", source: NODE.action, sourcePort: "complete", target: NODE.end, targetPort: "terminal" },
-      ],
-    },
+    draft: prDraft,
   }, "PATCH");
 
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
-  await dashboard.getByRole("button", { name: /E2E duplicate guard/ }).click();
+  await dashboard.getByRole("button", { name: /E2E duplicate action/ }).click();
   await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
 
   const node = dashboard.locator('[data-node-kind="session_action"]');
   await expect(node).toHaveCount(1);
   await node.click();
-  // Selected, and Duplicate stays off - a lit button that then refused would be worse.
-  await expect(dashboard.getByRole("button", { name: "Duplicate nodes" })).toBeDisabled();
-
-  // Still one action node, and the draft the daemon holds still has one. Asserted against the
-  // route, because "the button looked off" is not the claim - "no second node exists" is.
-  await expect(dashboard.locator('[data-node-kind="session_action"]')).toHaveCount(1);
-  const detail = await api<{ workflow: { draft: { nodes: Array<{ kind: string }> } } }>(
-    daemon,
-    `/api/workflows/${created.workflow.id}`,
-  );
-  expect(
-    detail.workflow.draft.nodes.filter((item) => item.kind === "session_action"),
-  ).toHaveLength(1);
-
-  // The control case: a Persona node in the same graph duplicates, so the refusal above is the
-  // action's unavailability and not a Duplicate button that never worked.
-  await dashboard.locator('[data-node-kind="end"]').click();
   await expect(dashboard.getByRole("button", { name: "Duplicate nodes" })).toBeEnabled();
+  await dashboard.getByRole("button", { name: "Duplicate nodes" }).click();
+
+  await expect(dashboard.locator('[data-node-kind="session_action"]')).toHaveCount(2);
+  // Asserted against the route, because "a second box appeared" is not the claim - "the daemon
+  // holds two nodes, and both name the action that was copied" is.
+  const detail = await api<{
+    workflow: { draft: { nodes: Array<{ kind: string; sessionActionId?: string }> } };
+  }>(daemon, `/api/workflows/${created.workflow.id}`);
+  const actions = detail.workflow.draft.nodes.filter((item) => item.kind === "session_action");
+  expect(actions).toHaveLength(2);
+  expect(actions.map((item) => item.sessionActionId))
+    .toEqual(["builtin:pull-request", "builtin:pull-request"]);
 });
 
-test("a draft naming the unavailable built-in renders, and the daemon refuses to publish it", async ({
+test("a graph naming the shipped built-in publishes, and freezes its snapshot", async ({
   dashboard,
   daemon,
 }) => {
-  // The shape can still arrive through the raw draft API, so it still has to read as itself
-  // and still has to be refused - by the SERVER, with a diagnostic the panel is showing.
-  const NODE = { action: "action-node", session: "session-node", end: "end-node" };
+  // The other half of the turned-around negative. The same draft that was refused now reads as
+  // itself in the pipeline AND publishes, and the version that comes back carries a frozen
+  // copy of the shipped prompt rather than a live reference to it.
   const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "E2E legacy pr draft",
+    name: "E2E pr stage",
   });
   const id = created.workflow.id;
   await api(daemon, `/api/workflows/${id}`, {
     expectedDraftRevision: 1,
-    draft: {
-      nodes: [
-        { id: NODE.session, kind: "session", position: { x: 60, y: 60 } },
-        {
-          id: NODE.action,
-          kind: "session_action",
-          sessionActionId: "builtin:pull-request",
-          position: { x: 340, y: 60 },
-        },
-        { id: NODE.end, kind: "end", outcome: "Complete", position: { x: 620, y: 60 } },
-      ],
-      edges: [
-        { id: "e-submit", source: NODE.session, sourcePort: "submitted", target: NODE.action, targetPort: "activate" },
-        { id: "e-complete", source: NODE.action, sourcePort: "complete", target: NODE.end, targetPort: "terminal" },
-      ],
-    },
+    draft: prDraft,
   }, "PATCH");
 
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
-  await dashboard.getByRole("button", { name: /E2E legacy pr draft/ }).click();
+  await dashboard.getByRole("button", { name: /E2E pr stage/ }).click();
 
   const pipeline = dashboard.locator(".wf-pipeline-strip");
   await expect(pipeline.locator("li.wf-pipeline-reviewer")).toContainText("Pull Request");
   await expect(pipeline.locator("li.wf-pipeline-reviewer")).toContainText("Skill · pull-request");
-  // The replace picker RETAINS it, disabled-by-labelling, so changing anything else on this
-  // draft cannot silently repoint the node at something else.
+  // What the stage promises the runtime will prove, in the words the selector offered.
+  await expect(pipeline.locator("li.wf-pipeline-reviewer"))
+    .toContainText("Pull request is opened and verified");
+  // The picker no longer has to RETAIN it under a refusal label: it is addable, so it appears
+  // as an ordinary option under its own name.
   await expect(pipeline.getByLabel("Choose the session action Stage 1 sends"))
-    .toContainText("Pull Request (Not available in this build)");
+    .not.toContainText("Not available in this build");
 
-  await expect(dashboard.getByRole("button", { name: "Publish" })).toBeDisabled();
-  await expect(dashboard.locator(".workflow-validation")).toContainText(
-    "This build cannot verify a pull request yet, so a workflow using this action cannot be published.",
-  );
+  await expect(dashboard.locator(".workflow-validation"))
+    .not.toContainText("cannot verify a pull request");
+  await dashboard.getByRole("button", { name: "Publish" }).click();
 
-  const refused = await fetch(`${daemon.baseURL}/api/workflows/${id}/publish`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ expectedDraftRevision: 2 }),
-  });
-  expect(refused.status).toBe(422);
-  const body = (await refused.json()) as { diagnostics: Array<{ code: string; nodeId?: string }> };
-  expect(body.diagnostics.some((item) =>
-    item.code === "session_action_runtime_unavailable" && item.nodeId === NODE.action)).toBe(true);
-  expect(await api<unknown[]>(daemon, `/api/workflows/${id}/versions`)).toEqual([]);
+  const versions = await api<Array<{
+    version: number;
+    graph: { nodes: Array<{ id: string; kind: string; action?: { completion: { kind: string }; requiredSkillId: string | null; promptMarkdown: string } }> };
+  }>>(daemon, `/api/workflows/${id}/versions`);
+  expect(versions).toHaveLength(1);
+  const frozen = versions[0]!.graph.nodes.find((item) => item.id === PR_NODE.action)!;
+  expect(frozen.kind).toBe("session_action");
+  expect(frozen.action!.completion.kind).toBe("pull_request");
+  expect(frozen.action!.requiredSkillId).toBe("pull-request");
+  // The published node carries the TEXT, not the id it was resolved from: an edit to the
+  // shipped document cannot reach a version already published.
+  expect(frozen.action!.promptMarkdown).toContain("# Pull Request");
 });

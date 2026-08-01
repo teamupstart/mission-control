@@ -12,6 +12,7 @@ import type {
   WorkflowNodeAttempt,
   SessionActionAttemptState,
   SessionActionBlockCode,
+  SessionActionContinuationExpectation,
   SessionActionDeliveryAnchor,
   SessionActionWaitReason,
   WorkflowNodeAttemptState,
@@ -890,6 +891,15 @@ export interface SessionActionProgress {
   anchor: SessionActionDeliveryAnchor | null;
   pickedUpAt: number | null;
   settledAt: number | null;
+  /**
+   * What the completion adapter requires of the capture, or has already proven.
+   *
+   * The same field on both durable shapes, which is what lets one card explain a waiting
+   * action and a finished one without asking which it is reading. `{ kind: "none" }` and null
+   * are both "nothing to show" - a `session_turn` action constrains nothing, and a row written
+   * by an older daemon recorded nothing.
+   */
+  expectation: SessionActionContinuationExpectation | null;
   /** The action ran to completion and authorized a continuation segment. */
   complete: boolean;
 }
@@ -905,6 +915,7 @@ export function sessionActionProgress(
       anchor: waiting.anchor,
       pickedUpAt: waiting.pickedUpAt,
       settledAt: waiting.settledAt,
+      expectation: waiting.expectation,
       complete: false,
     };
   }
@@ -916,8 +927,22 @@ export function sessionActionProgress(
     anchor: done.data.anchor,
     pickedUpAt: done.data.pickedUpAt,
     settledAt: done.data.settledAt,
+    expectation: done.data.expectation,
     complete: true,
   };
+}
+
+/**
+ * The pull request an action proved, or null when this action proved no such thing.
+ *
+ * One narrowing helper rather than a `expectation?.kind === "pull_request"` check at each
+ * surface, so the ladder, the peek and the run card cannot disagree about when there is a
+ * pull request to name.
+ */
+export function provenPullRequest(
+  state: SessionActionProgress | null,
+): Extract<SessionActionContinuationExpectation, { kind: "pull_request" }> | null {
+  return state?.expectation?.kind === "pull_request" ? state.expectation : null;
 }
 
 export function attemptStateLabel(state: WorkflowNodeAttemptState): string {

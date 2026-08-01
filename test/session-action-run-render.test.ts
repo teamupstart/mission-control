@@ -24,6 +24,7 @@ import {
   nodeStatusesForSubmission,
   runRounds,
   segmentProvenanceSentence,
+  provenPullRequest,
   sessionActionProgress,
   sessionActionStateOf,
   sessionActionStatus,
@@ -267,6 +268,87 @@ test("progress reads BOTH durable shapes, so nothing loses its sentence", () => 
   // And an unreadable blob is still absent rather than fatal.
   assert.equal(sessionActionProgress(attempt({ output: { outcome: "nonsense" } })), null);
   assert.equal(sessionActionProgress(attempt({ output: null })), null);
+});
+
+const PROVEN = {
+  kind: "pull_request",
+  pullRequestKey: "owner/repo#7",
+  pullRequestUrl: "https://github.com/owner/repo/pull/7",
+  pullRequestNumber: 7,
+  repositoryRoot: "/repo",
+  branch: "feature/x",
+  expectedHeadOid: "a".repeat(40),
+  observedAt: 1_700_000_003_000,
+} as const;
+
+test("what a pull request action PROVED survives its completion", () => {
+  // The audit question a finished action is asked afterwards is "which pull request, at which
+  // commit" - and until the expectation was carried past the waiting state, a completed action
+  // could answer neither. It could say only that it completed.
+  const waiting = sessionActionProgress(attempt({
+    output: actionState({
+      wait: "awaiting_pushed_head",
+      expectation: PROVEN,
+    }) as unknown as WorkflowNodeAttempt["output"],
+  }))!;
+  assert.equal(provenPullRequest(waiting)?.pullRequestNumber, 7);
+
+  const done = sessionActionProgress(attempt({
+    state: "completed",
+    output: {
+      outcome: "complete",
+      action: "Pull Request",
+      completion: "pull_request",
+      continuationSubmissionId: "sub-1",
+      anchor: actionState().anchor,
+      pickedUpAt: 1_700_000_001_000,
+      settledAt: 1_700_000_002_000,
+      expectation: PROVEN,
+    } as unknown as WorkflowNodeAttempt["output"],
+  }))!;
+  assert.equal(done.complete, true);
+  const proven = provenPullRequest(done);
+  assert.equal(proven?.pullRequestUrl, "https://github.com/owner/repo/pull/7");
+  assert.equal(proven?.expectedHeadOid, "a".repeat(40));
+  assert.equal(proven?.branch, "feature/x");
+});
+
+test("an action that proved no pull request offers no link to one", () => {
+  // A `session_turn` action constrains nothing, and a row written by an older daemon recorded
+  // nothing. Both must read as "there is no pull request here" rather than as a broken link.
+  const turn = sessionActionProgress(attempt({
+    output: actionState({ expectation: { kind: "none" } }) as unknown as WorkflowNodeAttempt["output"],
+  }))!;
+  assert.equal(provenPullRequest(turn), null);
+
+  const legacy = sessionActionProgress(attempt({
+    state: "completed",
+    output: {
+      outcome: "complete",
+      anchor: null,
+    } as unknown as WorkflowNodeAttempt["output"],
+  }))!;
+  assert.equal(legacy.complete, true);
+  assert.equal(provenPullRequest(legacy), null);
+  assert.equal(provenPullRequest(null), null);
+});
+
+test("the two pull request waits explain different work, and neither is a verdict", () => {
+  // They exist as separate reasons because their remedies differ: one is about the session
+  // never having produced a pull request, the other about a commit not having reached one. A
+  // single "Verifying" chip left an operator unable to tell those apart.
+  const missing = actionWaitSentence("awaiting_pull_request");
+  const behind = actionWaitSentence("awaiting_pushed_head");
+  assert.notEqual(missing, behind);
+  assert.match(missing, /pull request/i);
+  assert.match(behind, /commit/i);
+  assert.notDeepEqual(
+    sessionActionStatus("waiting", "awaiting_pull_request"),
+    sessionActionStatus("waiting", "awaiting_pushed_head"),
+  );
+  // Both are still the RUNNING tone: neither is a gate a human has to clear.
+  assert.equal(sessionActionStatus("waiting", "awaiting_pull_request").tone, "running");
+  assert.equal(sessionActionStatus("waiting", "awaiting_pushed_head").tone, "running");
 });
 
 test("an unknown completion kind names itself instead of taking the panel down", () => {

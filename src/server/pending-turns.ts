@@ -138,6 +138,9 @@ export class PendingTurnManager {
     if (!session) return [];
     const key = noteKeyFor(session);
     const preserve = new Set<string>();
+    for (const turn of session.pendingTurns) {
+      if (turn.state === "uncertain") preserve.add(turn.id);
+    }
     this.resetPreserve.set(sessionId, preserve);
     this.cancelIdleTimer(key);
 
@@ -149,6 +152,11 @@ export class PendingTurnManager {
         // Delivery owns its durable transition. Reset still performs the defensive pickup
         // check below in case an unexpected failure left a terminal candidate behind.
       }
+    }
+
+    const current = this.registry.getSession(sessionId);
+    for (const turn of current?.pendingTurns ?? []) {
+      if (turn.state === "uncertain") preserve.add(turn.id);
     }
 
     const candidate = this.pickup.get(key);
@@ -437,10 +445,11 @@ export class PendingTurnManager {
         handoff.ownershipUncertain ||
         this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id
       ) {
-        this.markDeliveryUncertain(
+        this.markBoundaryUncertain(
           session.id,
           turn,
           "SDK conversation ownership changed during delivery.",
+          handoff.acceptanceBoundaryCrossed,
         );
       } else if (accepted === null) {
         releasePendingTurn(
@@ -463,10 +472,11 @@ export class PendingTurnManager {
         handoff.ownershipUncertain ||
         this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id
       ) {
-        this.markDeliveryUncertain(
+        this.markBoundaryUncertain(
           session.id,
           turn,
           `SDK conversation ownership changed during delivery: ${errorMessage(err)}`,
+          handoff.acceptanceBoundaryCrossed,
         );
       } else if (
         handoff.acceptanceBoundaryCrossed &&
@@ -541,11 +551,11 @@ export class PendingTurnManager {
       candidate.sessionId !== session.id
     ) {
       if (boundaryCrossed || result.pasted || result.ok) {
-        markPendingTurnUncertain(
-          turn.id,
-          turn.revision,
+        this.markBoundaryUncertain(
+          session.id,
+          turn,
           result.error ?? "The terminal delivery owner or outcome is unknown.",
-          this.deps.now(),
+          boundaryCrossed || result.pasted || result.ok,
         );
       } else {
         releasePendingTurn(
@@ -562,10 +572,11 @@ export class PendingTurnManager {
       candidate.ownershipUncertain ||
       this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id
     ) {
-      this.markDeliveryUncertain(
+      this.markBoundaryUncertain(
         session.id,
         turn,
         "Terminal conversation ownership changed during delivery.",
+        true,
       );
       return;
     }
@@ -641,6 +652,19 @@ export class PendingTurnManager {
   private markResetUncertain(sessionId: string, turn: PendingTurn, error: string): void {
     const uncertain = this.markDeliveryUncertain(sessionId, turn, error);
     if (uncertain) this.resetPreserve.get(sessionId)?.add(turn.id);
+  }
+
+  private markBoundaryUncertain(
+    sessionId: string,
+    turn: PendingTurn,
+    error: string,
+    boundaryCrossed: boolean,
+  ): void {
+    if (boundaryCrossed && this.registry.sessionResetInProgress(sessionId)) {
+      this.markResetUncertain(sessionId, turn, error);
+    } else {
+      this.markDeliveryUncertain(sessionId, turn, error);
+    }
   }
 
   private markDeliveryUncertain(sessionId: string, turn: PendingTurn, error: string): PendingTurn | null {

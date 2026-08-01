@@ -882,6 +882,73 @@ test("an SDK reset preserves uncertainty after runtime acceptance may have begun
   clearPendingTurns(key);
 });
 
+test("an SDK ownership race during reset retains the accepted row", async () => {
+  const registry = new Registry();
+  const id = "sdk:reset-owner-race";
+  const key = "agent:reset-owner-race";
+  registry.registerSdkSession({
+    id,
+    agent: "claude",
+    name: "reset-owner-race",
+    cwd: "/repo/reset-owner-race",
+    agentSessionId: key,
+  });
+  let acceptanceReached!: () => void;
+  const acceptanceBoundary = new Promise<void>((resolve) => (acceptanceReached = resolve));
+  let acknowledge!: () => void;
+  const acknowledgement = new Promise<void>((resolve) => (acknowledge = resolve));
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
+        acceptanceReached();
+        await acknowledgement;
+        return "started";
+      },
+    },
+    { idleSettleMs: 0 },
+  );
+  manager.start();
+  idle(registry, id);
+  manager.submit(id, "possibly accepted during the SDK ownership race");
+  await acceptanceBoundary;
+  manager.submit(id, "safe queued row");
+
+  registry.registerSdkSession({
+    id: "sdk:reset-owner-race-other",
+    agent: "claude",
+    name: "reset-owner-race-other",
+    cwd: "/repo/reset-owner-race",
+    agentSessionId: key,
+  });
+  const reset = resetSession(
+    registry,
+    registry.getSession(id)!,
+    false,
+    async () => ({
+      ok: true,
+      error: null,
+      root: "/repo/reset-owner-race",
+      cleared: false,
+      detached: false,
+    }),
+    undefined,
+    manager,
+  );
+  acknowledge();
+  assert.equal((await reset).ok, true);
+
+  const retained = listPendingTurns(key);
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0]?.text, "possibly accepted during the SDK ownership race");
+  assert.equal(retained[0]?.state, "uncertain");
+  assert.match(retained[0]?.lastError ?? "", /ownership changed/);
+  manager.stop();
+  clearPendingTurns(key);
+});
+
 test("an SDK error during reset stays uncertain after the acceptance boundary", async () => {
   let acceptanceReached!: () => void;
   const acceptanceBoundary = new Promise<void>((resolve) => (acceptanceReached = resolve));
@@ -1011,6 +1078,55 @@ test("a terminal reset preserves uncertainty after the write boundary may have c
   assert.equal(retained.length, 1);
   assert.equal(retained[0]?.state, "uncertain");
   assert.match(retained[0]?.lastError ?? "", /reset began after terminal delivery/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+test("a terminal ownership race during reset retains the injected row", async () => {
+  let injectionReached!: () => void;
+  const injectionStarted = new Promise<void>((resolve) => (injectionReached = resolve));
+  let finishInjection!: () => void;
+  const injectionMayFinish = new Promise<void>((resolve) => (finishInjection = resolve));
+  const f = terminalFixture(
+    "reset-owner-source",
+    async () => {
+      injectionReached();
+      await injectionMayFinish;
+      return { ok: true, pasted: true, submitVerified: false };
+    },
+    100,
+  );
+  f.manager.submit(f.id, "possibly injected during the terminal ownership race");
+  await injectionStarted;
+  f.manager.submit(f.id, "safe queued row");
+
+  const other = "reset-owner-other";
+  f.registry.applyDiscovery([
+    { ...discovered("reset-owner-source"), agentSessionId: f.key },
+    { ...discovered(other), agentSessionId: f.key },
+  ]);
+  const reset = resetSession(
+    f.registry,
+    f.registry.getSession(f.id)!,
+    false,
+    async () => ({
+      ok: true,
+      error: null,
+      root: "/repo/reset-owner-source",
+      cleared: false,
+      detached: false,
+    }),
+    undefined,
+    f.manager,
+  );
+  finishInjection();
+  assert.equal((await reset).ok, true);
+
+  const retained = listPendingTurns(f.key);
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0]?.text, "possibly injected during the terminal ownership race");
+  assert.equal(retained[0]?.state, "uncertain");
+  assert.match(retained[0]?.lastError ?? "", /ownership changed/);
   f.manager.stop();
   clearPendingTurns(f.key);
 });

@@ -94,7 +94,7 @@ function userPromptHook(registry: InstanceType<typeof Registry>, name: string): 
 
 function terminalFixture(
   name: string,
-  inject: (text: string) => Promise<InjectResult>,
+  inject: (text: string, beforeWrite: () => string | null) => Promise<InjectResult>,
   pickupTimeoutMs = 15,
   beforeBoundary: () => Promise<void> = async () => {},
 ) {
@@ -110,12 +110,13 @@ function terminalFixture(
       pickupTimeoutMs,
       inject: async (_session, text, _deps, beforeWrite) => {
         await beforeBoundary();
-        const blocker = beforeWrite?.();
+        const guard = beforeWrite ?? (() => null);
+        const blocker = guard();
         if (blocker) {
           return { ok: false, error: blocker, pasted: false, submitVerified: false };
         }
         injected.push(text);
-        return inject(text);
+        return inject(text, guard);
       },
     },
   );
@@ -359,6 +360,48 @@ test("terminal pickup timeout starts only after injection settles", async () => 
   assert.match(turn?.lastError ?? "", /could not confirm/);
   f.manager.stop();
   clearPendingTurns(f.key);
+});
+
+test("in-flight pickup evidence stays provisional until injection succeeds", async () => {
+  for (const scenario of [
+    { name: "paste-failure", pasted: false, state: "queued" },
+    { name: "submit-refusal", pasted: true, state: "uncertain" },
+  ] as const) {
+    let f!: ReturnType<typeof terminalFixture>;
+    let finishInjection!: () => void;
+    const injectionMayFinish = new Promise<void>((resolve) => (finishInjection = resolve));
+    let pickupObserved!: () => void;
+    const observed = new Promise<void>((resolve) => (pickupObserved = resolve));
+    f = terminalFixture(
+      `provisional-${scenario.name}`,
+      async (_text, beforeWrite) => {
+        userPromptHook(f.registry, `provisional-${scenario.name}`);
+        pickupObserved();
+        await injectionMayFinish;
+        const blocker = scenario.pasted ? beforeWrite() : "terminal paste failed";
+        return {
+          ok: false,
+          error: blocker ?? "terminal submit failed",
+          pasted: scenario.pasted,
+          submitVerified: false,
+        };
+      },
+      100,
+    );
+
+    f.manager.submit(f.id, `preserve ${scenario.name}`);
+    await observed;
+    assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "sending");
+
+    finishInjection();
+    await tick();
+
+    const turns = f.registry.getSession(f.id)?.pendingTurns ?? [];
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.state, scenario.state);
+    f.manager.stop();
+    clearPendingTurns(f.key);
+  }
 });
 
 test("Codex terminal delivery follows passive rollout completion and pickup markers", async () => {

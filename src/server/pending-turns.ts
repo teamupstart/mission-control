@@ -46,6 +46,8 @@ interface PendingTurnDeps {
 interface PickupCandidate {
   turn: PendingTurn;
   boundaryAt: number;
+  injectionSucceeded: boolean;
+  pickupObserved: boolean;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -209,7 +211,8 @@ export class PendingTurnManager {
       session.stateConfirmed &&
       (session.lastActivity ?? 0) >= candidate.boundaryAt
     ) {
-      this.completePickup(candidate.turn);
+      candidate.pickupObserved = true;
+      if (candidate.injectionSucceeded) this.completePickup(candidate.turn);
       return;
     }
     if (this.readyToDrain(session)) this.scheduleDrain(key);
@@ -320,6 +323,8 @@ export class PendingTurnManager {
         this.pickup.set(turn.noteKey, {
           turn,
           boundaryAt: this.deps.now(),
+          injectionSucceeded: false,
+          pickupObserved: false,
           timer: null,
         });
       }
@@ -360,10 +365,11 @@ export class PendingTurnManager {
       return;
     }
     if (result.ok) {
+      candidate.injectionSucceeded = true;
       // A collapsed-paste placeholder observed before Enter and gone afterwards is direct
       // prompt-pickup evidence. Do not wait for a second hook/passive state signal that may
       // never exist on an otherwise readable terminal session.
-      if (result.submitVerified) {
+      if (result.submitVerified || candidate.pickupObserved) {
         this.completePickup(turn);
         return;
       }

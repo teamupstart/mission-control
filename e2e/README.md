@@ -18,6 +18,24 @@ npm run test:e2e -- -g "conversation" # one spec
 npx playwright show-trace test-results/<dir>/trace.zip
 ```
 
+## Evidence
+
+[`evidence/conversation.png`](evidence/conversation.png) is a committed capture of a green
+run: a dispatched session's expanded conversation carrying the seeded dispatch turn plus the
+three messages the spec types and the three mocked replies that came back, with the
+`Agent SDK` runtime badge and the `Claude e2e Mock` model line the driver reported.
+
+Regenerate it with:
+
+```sh
+MC_E2E_EVIDENCE=1 npm run test:e2e
+```
+
+It is behind that flag rather than captured on every run because the card carries a relative
+timestamp and a fresh worktree uuid, so an unconditional capture would rewrite a binary on
+every run for no added signal. Playwright's own `screenshot`/`video`/`trace` settings still
+fire automatically on failure; this covers the success path, which they do not.
+
 ## What this layer is for
 
 The repository already tests UI three other ways, and none of them can reach this seam:
@@ -29,13 +47,19 @@ The repository already tests UI three other ways, and none of them can reach thi
 | Electron geometry (2 files) | laid-out heights | behaviour, state, the daemon |
 | **`e2e/`** | **click → route → subprocess → SSE → DOM** | native shell chrome |
 
-Write a spec here when the thing you changed only breaks when the parts are connected: a
-control that fires a request, a server event that has to repaint something, a flow that
-crosses more than one screen.
+**Every new UI feature and every UI change needs a spec here** - see the rule in
+[AGENTS.md](../AGENTS.md). There are no exemptions: if a person using the dashboard can see
+the change, assert its user-visible consequence in a browser.
 
-Do **not** write one here for something a cheaper layer already covers. A pure function
-belongs in `test/`, a component's markup belongs in a `renderToStaticMarkup` test, and a
-route's edge cases belong in an in-process HTTP test where you can enumerate them quickly.
+For a change that is purely visual, that consequence is still assertable: the text someone
+reads, the control they can reach, the element that is now present or gone, the state a
+control reports. Assert what the change is *for*, not the CSS that implements it.
+
+The other layers are additions, never substitutes. Reach for them alongside a spec when they
+say something a browser cannot - `renderToStaticMarkup` to pin an exact markup shape, and the
+Electron geometry tests to measure used height for overflow and clipping. Changes with no UI
+surface at all (pure functions, reducers, route edge cases) are not UI changes and belong in
+`test/`.
 
 ## Why it costs nothing
 

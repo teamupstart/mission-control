@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
@@ -107,6 +108,34 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   for (const message of messages) {
     await expect(card.getByText(`Mock reply to: ${message}`)).toBeVisible();
     await expect(card.getByText(message, { exact: true })).toBeVisible();
+  }
+
+  // Visual evidence of the SUCCESSFUL path. Playwright's own `screenshot` setting captures
+  // only on failure, which means a green run leaves nothing a reviewer can look at - and
+  // "the conversation renders" is a claim that deserves to be seen rather than read.
+  //
+  // Behind an env flag, and committed, because the alternative is a binary that changes on
+  // every run: the card carries a relative timestamp and a fresh worktree uuid, so an
+  // unconditional capture would churn the repository for no added signal. Regenerate with
+  // `MC_E2E_EVIDENCE=1 npm run test:e2e`. This follows the same shape as the `*-evidence`
+  // generators under `scripts/`, which also produce committed artifacts on demand.
+  if (process.env.MC_E2E_EVIDENCE) {
+    // The expanded card is a fixed-height box and its log scrolls, so a plain capture shows
+    // only the last turn and a half. Unclip both FOR THE CAPTURE ONLY, so one image holds
+    // all six turns. This changes nothing the test asserted - every expectation above has
+    // already passed against the real, clipped layout - and the clipping itself is covered
+    // by `test/transcript-scroll-electron.test.ts`, which measures used height.
+    await card.evaluate((el: HTMLElement) => {
+      el.style.height = "auto";
+      const log = el.querySelector<HTMLElement>(".transcript-log");
+      if (log) {
+        log.style.maxHeight = "none";
+        log.style.height = "auto";
+      }
+    });
+    await card.screenshot({
+      path: fileURLToPath(new URL("../evidence/conversation.png", import.meta.url)),
+    });
   }
 });
 

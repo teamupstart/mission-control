@@ -137,32 +137,30 @@ test("falls back when a harness does not offer the stored runtime", () => {
 
 Read [e2e/README.md](e2e/README.md) before writing one.
 
-A new UI feature, or a change to how existing UI behaves, needs a Playwright spec in `e2e/`.
+**Every new UI feature and every UI change requires a Playwright spec in `e2e/`.** There are
+no exemptions. If the change is visible to a person using the dashboard, it is covered here
+before it lands.
+
 The three older UI layers each assert something real and none of them can see whether the
 thing works: `renderToStaticMarkup` asserts markup shape, the in-process HTTP tests assert
 routes without a browser, and the Electron tests measure laid-out geometry. Only `e2e/`
 connects a click to a route to a server event and back to the DOM.
 
-Required:
+This includes, and is not limited to:
 
 - A new control, form, modal, or view.
 - A change to what an existing control does, what it sends, or what it renders in response.
+- Markup, styling, copy, and layout changes. Assert the user-visible consequence - the text
+  a person reads, the control they can reach, the element that is now present or gone.
 - A fix for a bug that reproduced through the UI. Write the failing spec first.
 
-Not required, and do not add one:
+The other layers are additions to this requirement, never substitutes for it. Reach for them
+alongside a spec when they say something a browser cannot: `renderToStaticMarkup` to pin an
+exact markup shape, and the Electron geometry tests to measure used height for overflow and
+clipping, which no assertion on markup can produce.
 
-- Pure functions, reducers, selectors, formatting. Those go in `test/` and run in
-  milliseconds.
-- Markup or styling with no behavior change. A `renderToStaticMarkup` test is the cheaper,
-  more precise tool.
-- Layout and overflow. The Electron geometry tests exist for that and measure used height,
-  which Playwright assertions on markup cannot.
-- Route edge cases. Enumerate those against `buildApp()` in `test/`, where a case costs
-  nothing.
-
-The rule is about the seam, not about the file that changed. If the change only breaks when
-the parts are connected, it belongs here; if a cheaper layer can fail on it, it belongs
-there.
+Changes with no UI surface - pure functions, reducers, selectors, formatting helpers, route
+edge cases - are not UI changes and belong in `test/`, where a case costs milliseconds.
 
 Two standing constraints:
 

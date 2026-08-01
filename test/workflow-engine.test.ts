@@ -14,11 +14,20 @@ const home = mkdtempSync(join(tmpdir(), "mission-workflow-engine-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
+// A directory for the one test that needs a real one, kept OUTSIDE the state dir. The daemon
+// owns what lives under `MISSION_HOME` and sweeps parts of it at startup; a test's stand-in
+// worktree planted in there passes or fails depending on what ran before it.
+const checkTree = mkdtempSync(join(tmpdir(), "mission-workflow-engine-tree-"));
+after(() => rmSync(checkTree, { recursive: true, force: true }));
+
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { runSupervisedCheck } = await import("../src/server/workflows/check-supervisor.ts");
+const { liveCheckGroupCount } = await import("../src/server/workflows/check-group.ts");
+const { checkRuntimeSupport } = await import("../src/server/workflows/check-identity.ts");
 
 function persona(
   id: string,
@@ -835,9 +844,9 @@ test("a passing check advances the graph and reaches the End through the Join", 
     resolveExecution: passingExecution,
     retryBaseMs: 1,
     workflowConfig: () => checkConfig(),
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => ({ kind: "exited", exitCode: 0, output: "42 passing\n", truncatedBytes: 0 }),
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-check-pass");
@@ -876,14 +885,14 @@ test("a failing check returns a repair packet to the Session, citing its own out
       resolveExecution: passingExecution,
       retryBaseMs: 1,
       workflowConfig: () => checkConfig(),
-      checkDeps: {
+      checkDeps: () => ({
         execute: async () => ({
           kind: "exited",
           exitCode: 1,
           output: "src/thing.ts(4,1): error TS2345: nope\n",
           truncatedBytes: 0,
         }),
-      },
+      }),
     },
   });
   manager.engine.start();
@@ -959,12 +968,12 @@ test("an unconfigured slot passes without the executor ever being asked", async 
     resolveExecution: passingExecution,
     retryBaseMs: 1,
     workflowConfig: () => checkConfig({ checkCommands: [] }),
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => {
         asked += 1;
         return { kind: "exited", exitCode: 1, output: "should never run", truncatedBytes: 0 };
       },
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-check-skip");
@@ -986,12 +995,12 @@ test("a check that could not run is an infrastructure retry, never a fail verdic
     resolveExecution: passingExecution,
     retryBaseMs: 1,
     workflowConfig: () => checkConfig(),
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => {
         calls += 1;
         return { kind: "infrastructure", reason: "timed out after 600000ms" };
       },
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-check-infra");
@@ -1042,14 +1051,14 @@ test("a check does not spend a review slot, and a review does not spend a check 
         checkBusy.active -= 1;
       }
     },
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => {
         // While the check runs, no review slot may be held by it.
         assert.equal(reviewBusy.active, 0, "a check must not occupy a review slot");
         await holdOne();
         return { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 };
       },
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-check-budget");
@@ -1108,7 +1117,7 @@ test("the shipped v3 gate fails a broken build at stage 1 with zero Persona call
           { repoRoot: "/repo", slot: "test" as const, command: ["npm", "test"] },
         ],
       }),
-      checkDeps: {
+      checkDeps: () => ({
         execute: async (request) => {
           spawned.push(request.slot);
           // Typecheck is broken; the test command would have passed. One failing gate is
@@ -1122,7 +1131,7 @@ test("the shipped v3 gate fails a broken build at stage 1 with zero Persona call
               }
             : { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 };
         },
-      },
+      }),
     },
   });
   manager.engine.start();
@@ -1173,11 +1182,11 @@ test("the shipped v3 gate passes untouched on a machine that configured no comma
       retryBaseMs: 1,
       // Checks enabled and the repository authorized, but NO command for either slot.
       workflowConfig: () => checkConfig({ checkCommands: [] }),
-      checkDeps: {
+      checkDeps: () => ({
         execute: async () => {
           throw new Error("an unconfigured slot must never reach the execution runtime");
         },
-      },
+      }),
     },
   });
   manager.engine.start();
@@ -1354,11 +1363,11 @@ test("a disabled check auto-passes without reaching the execution runtime", asyn
     resolveExecution: passingExecution,
     retryBaseMs: 1,
     workflowConfig: () => checkConfig(),
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => {
         throw new Error("a disabled check must never reach the execution runtime");
       },
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-disable-check");
@@ -1369,4 +1378,66 @@ test("a disabled check auto-passes without reaching the execution runtime", asyn
     .find((attempt) => attempt.nodeId === "gate")!;
   assert.equal(gate.state, "completed");
   assert.deepEqual(gate.output, { outcome: "pass", disabled: true });
+});
+
+/**
+ * A daemon restart must not wait out somebody's test suite.
+ *
+ * Before this, `stop()` set a flag and awaited every in-flight attempt - and a check attempt
+ * is a build with up to its whole timeout left to run. The command below would have held
+ * shutdown for a minute; a real `npm test` would hold it for the ten-minute default. Nothing
+ * about that is visible from the outside: the daemon simply appears to hang on exit.
+ *
+ * The assertion is the WALL CLOCK, deliberately, because that is the defect. A test that only
+ * checked "the group is gone afterwards" would pass against the unfixed code too - it would
+ * just take a minute to say so.
+ */
+test("stop() cancels a live check group instead of waiting out its command", {
+  skip: !checkRuntimeSupport().supported,
+}, async () => {
+  const store = seedSubmission("check-stop", checkGraph);
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowConfig: () => checkConfig(),
+    // The REAL supervisor, because the thing under test is whether `stop()` reaches the
+    // process group it registered. A stubbed executor would register nothing and the test
+    // would prove that stopping an engine with no check running is fast.
+    checkDeps: (attempt) => ({
+      execute: async () => {
+        const outcome = await runSupervisedCheck({
+          attemptId: attempt.attemptId,
+          command: [process.execPath, "-e", "setTimeout(() => {}, 60000)"],
+          leasePath: checkTree,
+          workingSubpath: "",
+          timeoutMs: 60_000,
+        }, {
+          // No lease in this test: the question is the process group, and Contract P's
+          // implementation is exercised where the lease is.
+          registry: { record: () => {}, clear: () => {} },
+          teardown: { graceMs: 300, confirmMs: 3_000, pollMs: 20 },
+        });
+        return outcome.result;
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-stop");
+  await waitFor(() => liveCheckGroupCount() > 0, 15_000);
+
+  const started = Date.now();
+  await engine.stop();
+  const elapsed = Date.now() - started;
+
+  // Generous, because what it has to exclude is a 60-second wait rather than a slow machine:
+  // measured at 15-70ms, and 15 seconds still fails loudly against a stop() that awaits the
+  // command. The bound is the defect, not the performance.
+  assert.ok(elapsed < 15_000, `stop() waited ${elapsed}ms for a 60s command`);
+  assert.equal(liveCheckGroupCount(), 0, "a check group survived the stop that cancelled it");
+  // And the cancellation is infrastructure, never a fail verdict about the submission.
+  const attempt = store.listAttempts("submission-check-stop").find((item) => item.nodeId === "gate")!;
+  assert.equal(attempt.state, "error");
+  assert.equal(attempt.verdict, null);
 });

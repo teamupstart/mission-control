@@ -1145,7 +1145,7 @@ async function processPromptedWrapup(
     session,
     bucket: reportBucket(session, live),
     queue,
-    goalPrompt: goal?.prompt ?? null,
+    intent: goal,
     cfg: pcfg,
     now: Date.now(),
   });
@@ -1155,7 +1155,7 @@ async function processPromptedWrapup(
   // the failures below that can repeat forever. Checked HERE, above every read, because
   // the whole point of the cap is to stop spending on it: a check further down would
   // still pay for the evidence gather and the `claude -p` it exists to prevent.
-  if (promptedFailures.gaveUp(session.id, candidate.goal)) return false;
+  if (promptedFailures.gaveUp(session.id, candidate.episodeKey)) return false;
 
   // --- evidence. Same discipline as runVerify: any gap in it is a verify-INFRASTRUCTURE
   // failure and must never reach the verifier, which would otherwise find no proof the
@@ -1183,7 +1183,7 @@ async function processPromptedWrapup(
     // it and claiming progress anyway would re-process this session every BETWEEN_MS -
     // four loopback reads a pass against the daemon's single synchronous handle, which
     // also serves hook ingest and SSE - for as long as the write stays broken.
-    if (!(await retirePromptedEpisode(client, session, candidate.goal))) return false;
+    if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;
     log(`${session.name}: prompted wrap-up held - the session changed nothing`);
     return true;
   }
@@ -1200,7 +1200,8 @@ async function processPromptedWrapup(
   // is one question, and a second prompt for it would be a second thing to keep true.
   const result = await verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
-    intent: candidate.goal,
+    intent: candidate.objective,
+    focus: candidate.focus,
     round: 0,
     diff: diff.patch,
     diffTruncated: diff.truncated,
@@ -1222,9 +1223,9 @@ async function processPromptedWrapup(
     // and only a new human prompt (which moves the goal, resetting the strikes) re-arms
     // it. Retired durably as well, so the give-up survives a worker restart; the
     // in-memory count is what holds the line when that write is the thing that's broken.
-    const failures = promptedFailures.onFailure(session.id, candidate.goal);
+    const failures = promptedFailures.onFailure(session.id, candidate.episodeKey);
     if (failures >= VERIFY_FAILURE_CAP) {
-      await retirePromptedEpisode(client, session, candidate.goal);
+      await retirePromptedEpisode(client, session, candidate.episodeKey);
       log(
         `${session.name}: prompted wrap-up gave up - verify failed ${failures}x (${result.reason})`,
       );
@@ -1246,7 +1247,13 @@ async function processPromptedWrapup(
   const currentGoal = currentSession && currentSession.id === session.id
     ? await client.goal(currentSession.id).catch(() => null)
     : null;
-  if (currentGoal?.prompt?.trim() !== candidate.goal) return false;
+  if (
+    currentGoal?.objectiveVersion !== candidate.objectiveVersion ||
+    currentGoal.promptRevision !== candidate.promptRevision ||
+    currentGoal.resolvedPromptRevision !== candidate.promptRevision ||
+    currentGoal.objective?.trim() !== candidate.objective ||
+    currentGoal.relationship === "unclear"
+  ) return false;
 
   if (
     result.verdict.complete
@@ -1261,7 +1268,7 @@ async function processPromptedWrapup(
       withNoMistakesFallback(
         promptedCompletionClaim({
           noteKey: noteKeyOf(session),
-          goal: candidate.goal,
+          goal: candidate.objective,
           headSha: diff.headSha,
           transcriptAnchor,
           summary: result.verdict.summary,
@@ -1286,7 +1293,7 @@ async function processPromptedWrapup(
       // `false` below selects `ask-wrapup`, which retires this verified episode without
       // typing the no-mistakes skill alongside that binding.
       const plan = planPromptedWrapup(
-        candidate.goal,
+        candidate.episodeKey,
         result.verdict,
         pcfg,
         false,
@@ -1301,7 +1308,7 @@ async function processPromptedWrapup(
     }
   }
   const plan = planPromptedWrapup(
-    candidate.goal,
+    candidate.episodeKey,
     result.verdict,
     pcfg,
     foremanMayActLive(cfg, session.cwd, session.repoRoot),

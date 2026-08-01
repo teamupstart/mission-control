@@ -696,6 +696,9 @@ export type NoteDisposition = "answered" | "pending" | "escalated" | "skipped";
  */
 export type GoalSource = "heuristic" | "model";
 
+/** How the latest human instruction relates to the session's durable objective. */
+export type IntentRelationship = "initial" | "steer" | "amend" | "replace" | "unclear";
+
 /**
  * The durable Foreman record for one session, keyed on `agentSessionId` when
  * known (stable across the synthetic-id churn) else the synthetic session id.
@@ -858,11 +861,13 @@ export interface PaneDialogSummary {
  */
 export interface SessionGoal {
   noteKey: string;
-  /** The sentence itself. Null while only the raw prompt has been captured. */
+  /** The compact form of the durable objective shown on session cards. */
   text: string | null;
   source: GoalSource | null;
+  /** The completion contract Foreman verifies before it offers or performs wrap-up. */
+  objective: string | null;
   /**
-   * The filtered prompt `text` was derived from.
+   * The latest filtered human prompt awaiting or represented by `relationship`.
    *
    * Persisted rather than re-read because the refiner runs debounced, well after the hook
    * that captured it: without this it would have to race the transcript for text it was
@@ -870,7 +875,34 @@ export interface SessionGoal {
    * a pasted log can't put a megabyte in a row. Server-side only - never shipped to a card.
    */
   prompt: string | null;
+  /** Compact rendering of `prompt`, kept separate from the durable objective. */
+  focus: string | null;
+  /** The latest resolved relationship. Null while the newest prompt is being reconciled. */
+  relationship: IntentRelationship | null;
+  /** Short explanation of the relationship, shown in the Foreman drawer. */
+  rationale: string | null;
+  /** Increments only when the effective objective is amended or replaced. */
+  objectiveVersion: number;
+  /** Increments for every substantive human prompt. */
+  promptRevision: number;
+  /** The newest prompt revision the intent reconciler has classified. */
+  resolvedPromptRevision: number;
+  /**
+   * Every captured instruction not yet incorporated into the effective objective, oldest
+   * first. This is durable so a rapid amendment followed by tactical steering cannot collapse
+   * into the steering prompt across a debounce window or daemon restart.
+   *
+   * Server-side reconciliation state. It is returned only by the loopback full-goal endpoint,
+   * never denormalized onto session cards.
+   */
+  pendingPrompts: GoalPromptRevision[];
   updatedAt: number;
+}
+
+export interface GoalPromptRevision {
+  revision: number;
+  /** Null only for a legacy unresolved revision whose text was already lost before migration. */
+  prompt: string | null;
 }
 
 // ---- Foreman session work queues ----
@@ -1089,10 +1121,16 @@ export interface OrphanedQueueHint {
  * render nothing.
  */
 export interface SessionGoalSummary {
-  /** The sentence shown under the card title. */
+  /** The current resolved objective shown under the card title. */
   text: string | null;
-  /** Lets the card tell a raw prompt from a refined sentence. */
+  /** Lets the card tell an initial raw objective from a refined one. */
   source: GoalSource | null;
+  /** The current tactical focus, bounded to the same one-line size as the objective. */
+  focus?: string | null;
+  relationship?: IntentRelationship | null;
+  objectiveVersion?: number;
+  promptRevision?: number;
+  resolvedPromptRevision?: number;
   updatedAt: number;
 }
 

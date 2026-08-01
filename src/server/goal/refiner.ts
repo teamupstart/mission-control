@@ -9,13 +9,13 @@ import type { Session, SessionGoal } from "@shared/types.ts";
 import { buildGoalPrompt, GoalSchema } from "./prompt.ts";
 import { readGoalWindow } from "./source.ts";
 
-// Tier 2: rewrite each session's raw prompt into the sentence its card shows, with one
-// headless model call on the cheap tier.
+// Tier 2: reconcile each human prompt with the durable session objective, in captured
+// revision order, with one headless model call on the cheap tier.
 //
 // A poller rather than an event listener, on purpose. The trigger is entirely in the data -
-// Tier 1 stamps `source: "heuristic"` on every new prompt, and this stamps `"model"` when it
-// has summarised one - so a restart resumes correctly with no in-memory state to rebuild,
-// and rapid prompts collapse into one refresh instead of queueing a call each.
+// Tier 1 increments `promptRevision` on every new prompt, and this advances
+// `resolvedPromptRevision` when it has classified one - so a restart resumes correctly,
+// and rapid prompts remain a durable ordered queue across debounce windows and restarts.
 //
 // There is still no kill switch (Q3). The silent fallback is error handling, not
 // configuration: if the provider is missing, logged out, or slow, the card quietly keeps its
@@ -71,13 +71,13 @@ export function startGoalRefiner(registry: Registry): () => void {
   const limit = createLimiter(GOAL_CONCURRENCY);
   const debounce = new EvaluationDebounce(GOAL_REFRESH_MS);
   /**
-   * The prompt whose refinement last failed, per session.
+   * The pending revision whose intent reconciliation last failed, per session.
    *
-   * This is the whole of the no-retry-storm rule (Q3). Without it a failing provider leaves
-   * `source: "heuristic"` set forever, so every tick would re-offer the same session and the
-   * debounce would faithfully spawn a doomed subprocess every 60s for as long as the session
-   * lives. Keyed on the PROMPT, so a new instruction always gets a fresh attempt - what is
-   * abandoned is one summary, not the session.
+   * This closes the retry race around the durable `unclear` stamp below. Without either
+   * guard, every tick would re-offer the same session and the debounce would faithfully
+   * spawn a doomed subprocess every 60s. Keyed on the prompt, so a new instruction always
+   * gets a fresh attempt with the newer context. What is paused is one classification, not
+   * the session, and no later revision can leapfrog it.
    *
    * In-memory on purpose: a daemon restart retrying once per session is the cheap, correct
    * side of that trade, and it is how a transient outage eventually heals.
@@ -89,12 +89,12 @@ export function startGoalRefiner(registry: Registry): () => void {
     try {
       const live = registry.liveSessions();
       for (const s of live) {
-        const goal = dueForRefine(registry, s, failedFor);
-        if (!goal) continue;
+        const pending = dueForRefine(registry, s, failedFor);
+        if (!pending) continue;
         // Claimed only once everything else says go, because a claim consumes the window
         // whether or not any work follows it.
         if (!debounce.claim(s.id)) continue;
-        void refine(registry, s, goal, limit, failedFor);
+        void refine(registry, s, pending, limit, failedFor);
       }
       const liveIds = new Set(live.map((x) => x.id));
       for (const id of failedFor.keys()) if (!liveIds.has(id)) failedFor.delete(id);
@@ -121,38 +121,87 @@ export function startGoalRefiner(registry: Registry): () => void {
   };
 }
 
-/** The goal to refine for this session, or null when there's nothing to do. */
+interface PendingRefinement {
+  goal: SessionGoal;
+  prompt: SessionGoal["pendingPrompts"][number];
+}
+
+function failureKey(pending: PendingRefinement): string {
+  // Include the current queue tail. A newly captured instruction is new context worth one
+  // retry of the blocked head, while identical polls remain suppressed.
+  return `${pending.prompt.revision}:${pending.prompt.prompt ?? "<lost>"}:${pending.goal.promptRevision}`;
+}
+
+function comparableObjective(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Amendments may extend the completion contract, never rewrite it from scratch. Requiring
+ * the prior contract as the explicit prefix makes preservation mechanically checkable
+ * instead of trusting a schema-valid model classification to preserve it semantically.
+ */
+function amendmentPreservesObjective(current: string | null, proposed: string): boolean {
+  if (!current) return false;
+  const prior = comparableObjective(current);
+  const next = comparableObjective(proposed);
+  return prior.length > 0 && next.startsWith(prior) && next.length > prior.length;
+}
+
+/** The oldest unresolved prompt, or null when there is nothing safe to reconcile. */
 function dueForRefine(
   registry: Registry,
   s: Session,
   failedFor: Map<string, string>,
-): SessionGoal | null {
+): PendingRefinement | null {
   if (GOAL_UNSUPPORTED[s.agent]) return null;
   const goal = registry.getGoal(s.id);
   if (!goal?.prompt) return null;
-  // `source` IS the queue: Tier 1 sets "heuristic" on each new prompt, and a success below
-  // sets "model". So "already summarised, nothing new since" needs no extra state.
-  if (goal.source === "model") return null;
-  if (failedFor.get(s.id) === goal.prompt) return null;
-  return goal;
+  // The revision pair gates completion; the persisted prompt list preserves the content and
+  // order behind that gap. The objective's display source cannot represent either fact.
+  if (goal.resolvedPromptRevision >= goal.promptRevision) return null;
+  const prompt = goal.pendingPrompts[0] ?? {
+    // A defensive fail-closed barrier for an in-memory fixture or corrupt row that claims an
+    // unresolved gap without its durable prompt queue.
+    revision: goal.resolvedPromptRevision + 1,
+    prompt: null,
+  };
+  const pending = { goal, prompt };
+  if (failedFor.get(s.id) === failureKey(pending)) return null;
+  return pending;
 }
 
 async function refine(
   registry: Registry,
   s: Session,
-  goal: SessionGoal,
+  pending: PendingRefinement,
   limit: <T>(fn: () => Promise<T>) => Promise<T>,
   failedFor: Map<string, string>,
 ): Promise<void> {
+  const { goal, prompt } = pending;
   try {
     await limit(async () => {
+      if (!prompt.prompt) {
+        // A pre-queue build already discarded this revision's text. Nothing can honestly
+        // classify it now, so keep the revision unresolved and automation paused.
+        failedFor.set(s.id, failureKey(pending));
+        const current = registry.getGoal(s.id);
+        if (current?.pendingPrompts[0]?.revision === prompt.revision) {
+          registry.upsertGoal(s.id, {
+            relationship: "unclear",
+            rationale:
+              "An earlier unresolved instruction was not durably captured; automatic wrap-up remains paused.",
+          });
+        }
+        return;
+      }
       const r = await runJobStructured<typeof GoalSchema>(
         "goal",
         buildGoalPrompt({
           session: s,
-          // The sentence being upgraded, so "unchanged" is available as an answer.
-          currentGoal: goal.text,
-          prompt: goal.prompt,
+          currentObjective: goal.objective,
+          initial: prompt.revision === 1,
+          prompt: prompt.prompt,
           window: readGoalWindow(s),
         }),
         (raw) => parseModelJson(raw, GoalSchema),
@@ -160,19 +209,85 @@ async function refine(
         { timeoutMs: GOAL_TIMEOUT_MS },
       );
       if (r.kind === "failed") {
-        // Silent by design: the card keeps its Tier 1 goal and the human sees a slightly
-        // rougher sentence, not an error. Logged once per prompt, never per tick.
-        failedFor.set(s.id, goal.prompt!);
+        // Fail closed for completion: keep the objective, mark the relationship unclear, and
+        // leave this revision at the head so no later steering prompt can leapfrog it. The
+        // failure key prevents a retry storm until new human context arrives.
+        failedFor.set(s.id, failureKey(pending));
+        const current = registry.getGoal(s.id);
+        if (
+          current?.pendingPrompts[0]?.revision === prompt.revision &&
+          current.pendingPrompts[0].prompt === prompt.prompt
+        ) {
+          registry.upsertGoal(s.id, {
+            relationship: "unclear",
+            rationale: `Intent could not be reconciled: ${r.reason}`,
+          });
+        }
         console.error(`[goal] ${s.name}: ${r.reason}`);
         return;
       }
-      // The prompt may have moved on while the model was thinking - the human sent another
-      // instruction mid-call. Writing now would stamp "model" on a summary of the PREVIOUS
-      // ask and, worse, `source` would then say this prompt was refined when it wasn't, so
-      // the newer one would never be picked up. Drop it; the next tick summarises the new one.
+      // Newer prompts may arrive while the model is thinking. That is safe: they append after
+      // this durable head. Only abandon the result if the head or the objective it was judged
+      // against changed, which means another reconciliation won the race.
       const current = registry.getGoal(s.id);
-      if (current?.prompt !== goal.prompt) return;
-      registry.upsertGoal(s.id, { text: r.value.goal, source: "model" });
+      if (
+        current?.pendingPrompts[0]?.revision !== prompt.revision ||
+        current.pendingPrompts[0].prompt !== prompt.prompt ||
+        current.objectiveVersion !== goal.objectiveVersion
+      ) return;
+
+      const initial = prompt.revision === 1;
+      let relationship = r.value.relationship;
+      if (initial) relationship = "initial";
+      else if (relationship === "initial") relationship = "unclear";
+
+      const currentObjective = current.objective ?? current.text ?? null;
+      if (
+        relationship === "amend" &&
+        !amendmentPreservesObjective(currentObjective, r.value.objective)
+      ) {
+        // A model can choose the right relationship while returning a narrower objective.
+        // Keep this revision unresolved at the queue head so later steering cannot make
+        // automatic wrap-up eligible against the older or proposed smaller contract.
+        failedFor.set(s.id, failureKey(pending));
+        registry.upsertGoal(s.id, {
+          relationship: "unclear",
+          rationale:
+            "The proposed amendment did not explicitly preserve the current objective; automatic wrap-up remains paused.",
+        });
+        return;
+      }
+
+      // A steering or unclear classification is not authorised to shrink the completion
+      // contract. Amend and replace are the only relationships that may change it.
+      const mayChangeObjective =
+        relationship === "amend" || relationship === "replace" || relationship === "initial";
+      const objective = mayChangeObjective
+        ? r.value.objective
+        : currentObjective ?? current.prompt;
+      const text = mayChangeObjective ? r.value.goal : current.text;
+      const objectiveChanged = objective !== current.objective;
+      const objectiveVersion =
+        relationship === "initial"
+          ? Math.max(1, current.objectiveVersion)
+          : relationship === "amend" || relationship === "replace"
+            ? current.objectiveVersion + (objectiveChanged ? 1 : 0)
+            : current.objectiveVersion;
+
+      registry.upsertGoal(s.id, {
+        objective,
+        text,
+        source: "model",
+        // While a newer instruction waits, the UI keeps showing that latest captured focus.
+        // Resolving an older transition must not make the drawer appear to move backwards.
+        focus: current.pendingPrompts.length === 1 ? r.value.focus : current.focus,
+        relationship,
+        rationale: r.value.reason,
+        objectiveVersion,
+        resolvedPromptRevision: prompt.revision,
+        pendingPrompts: current.pendingPrompts.slice(1),
+      });
+      failedFor.delete(s.id);
     });
   } catch (err) {
     // `limit` only rejects if the body throws, which `runStructured` promises not to do -

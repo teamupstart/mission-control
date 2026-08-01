@@ -12,6 +12,7 @@ import type {
   PermissionMode,
   ResetPreview,
   SessionDiff,
+  SessionGoal,
   SessionFileDocument,
   SessionFileEntry,
   SessionFileSaveResult,
@@ -960,6 +961,9 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/foreman-episode/resolve`, p),
   episodes: (id: string) =>
     fetchJson<ForemanEpisode[]>(`/api/sessions/${encodeURIComponent(id)}/foreman-episodes`),
+  /** Full resolved intent for the Foreman drawer; the session snapshot carries only its summary. */
+  goal: (id: string) =>
+    fetchJson<SessionGoal>(`/api/sessions/${encodeURIComponent(id)}/goal`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>

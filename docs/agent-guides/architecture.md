@@ -12,6 +12,7 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Electron shell | `src/main/index.ts`, `src/preload/index.ts` | Starts and embeds the daemon |
 | MCP server | `src/mcp/server.ts` | Stdio child that reaches the daemon over HTTP |
 | Foreman | `src/server/foreman/worker.ts` | Separate auto-responder process, HTTP only, never SQLite |
+| Session intent | `src/server/goal/` | Daemon-owned objective and focus reconciliation; only the daemon persists it |
 | Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |

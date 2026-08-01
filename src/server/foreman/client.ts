@@ -1250,7 +1250,7 @@ export class ForemanClient implements ForemanActions {
     if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);
   }
 
-  /** The full goal record - the verbatim prompt, which the card summary never carries. */
+  /** The full reconciled intent, whose objective and raw prompt the card summary omits. */
   async goal(sessionId: string): Promise<SessionGoal | null> {
     const res = await send("GET", `/api/sessions/${enc(sessionId)}/goal`);
     if (!res.ok) return null;

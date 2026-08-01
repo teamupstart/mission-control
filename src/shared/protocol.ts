@@ -853,7 +853,22 @@ export const SetGoalSchema = z
   .object({
     text: z.string().nullable().optional(),
     source: z.enum(["heuristic", "model"]).nullable().optional(),
+    objective: z.string().nullable().optional(),
     prompt: z.string().nullable().optional(),
+    focus: z.string().nullable().optional(),
+    relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]).nullable().optional(),
+    rationale: z.string().nullable().optional(),
+    objectiveVersion: z.number().int().nonnegative().optional(),
+    promptRevision: z.number().int().nonnegative().optional(),
+    resolvedPromptRevision: z.number().int().nonnegative().optional(),
+    pendingPrompts: z
+      .array(
+        z.object({
+          revision: z.number().int().positive(),
+          prompt: z.string().nullable(),
+        }),
+      )
+      .optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty goal update" });
 export type SetGoal = z.infer<typeof SetGoalSchema>;

@@ -34,7 +34,8 @@ const fake = join(bin, "claude.sh");
 writeFileSync(
   fake,
   `#!/bin/sh
-{ cat; printf '\\n%s\\n' '${RUN_DELIM}'; } >> ${runLog}
+request=$(cat)
+{ printf '%s\\n' "$request"; printf '%s\\n' '${RUN_DELIM}'; } >> ${runLog}
 # Every reply is printed as a %s ARGUMENT, never as the printf format. A format string
 # processes escapes, and POSIX leaves \\" undefined: bash (macOS /bin/sh) drops the
 # backslash while dash (Ubuntu /bin/sh) keeps it, so a formatted reply is valid JSON on
@@ -46,15 +47,29 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp.
   # Same fenced shape as the good reply below, so it reaches the schema the same way - a
   # malformed fixture here would "pass" the test on a parse error instead of the rejection.
-  blank)  printf %s '{"result":"\`\`\`json\\n{\\"goal\\":\\"   \\"}\\n\`\`\`"}' ;;
+  blank)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"   \\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
+  amend)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
+  shrink) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Only expose current intent in the Foreman drawer\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
+  rapid)
+    case "$request" in
+      *"also expose the current intent in the Foreman drawer"*)
+        printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Expose current intent in the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
+      *)
+        printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
+    esac
+    ;;
+  replace) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"replace\\",\\"objective\\":\\"Replace the session database with a remote service\\",\\"goal\\":\\"Replace the session database with a remote service\\",\\"focus\\":\\"Design the remote persistence layer\\",\\"reason\\":\\"The user explicitly changed the desired end state.\\"}\\n\`\`\`"}' ;;
   # The model fences its JSON even when told not to (observed on a real probe), so the fake
   # does too - that keeps the parse ladder inside what this test covers rather than mocked.
-  *) printf %s '{"result":"\`\`\`json\\n{\\"goal\\":\\"Ship the Goal feature end to end\\"}\\n\`\`\`"}' ;;
+  *) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
 esac
 `,
 );
 chmodSync(fake, 0o755);
-const setMode = (m: "good" | "broken" | "crash" | "blank"): void => writeFileSync(modeFile, m);
+const setMode = (
+  m: "good" | "broken" | "crash" | "blank" | "amend" | "shrink" | "rapid" | "replace",
+): void =>
+  writeFileSync(modeFile, m);
 setMode("good");
 
 process.env.MISSION_CLAUDE_BIN = fake;
@@ -118,12 +133,16 @@ function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
  * the whole file, and a run from an earlier test appending late would otherwise show up as
  * this test's second spawn. Every test's prompts are its own, so naming them is exact.
  */
-function runsAsking(...prompts: string[]): number {
-  if (!existsSync(runLog)) return 0;
+function askedPrompts(): string[] {
+  if (!existsSync(runLog)) return [];
   return readFileSync(runLog, "utf8")
     .split(RUN_DELIM)
-    .map((run) => run.match(/## The human's most recent instruction\n(.*)/)?.[1])
-    .filter((ask) => ask !== undefined && prompts.includes(ask)).length;
+    .map((run) => run.match(/## The specific unresolved instruction to classify now\n(.*)/)?.[1])
+    .filter((ask): ask is string => ask !== undefined);
+}
+
+function runsAsking(...prompts: string[]): number {
+  return askedPrompts().filter((ask) => prompts.includes(ask)).length;
 }
 
 /** Poll until `fn` is true, or fail. Beats a fixed sleep: the loop is async by nature. */
@@ -185,6 +204,191 @@ test("a refined goal is not re-refined until a new prompt arrives", async () => 
   }
 });
 
+test("an amendment updates the objective shown on the card and advances its version", async () => {
+  const { r, s, env } = withSession("r14", "%44");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
+    assert.equal(r.getGoal(s.id)?.objectiveVersion, 1);
+
+    setMode("amend");
+    r.applyHook(
+      evt({
+        event: "UserPromptSubmit",
+        env,
+        prompt: "also expose what Foreman is considering in its notes drawer",
+      }),
+    );
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the amended objective",
+      FLOOR_MS + RUN_TIMEOUT_MS,
+    );
+
+    const goal = r.getGoal(s.id)!;
+    assert.equal(goal.relationship, "amend");
+    assert.equal(goal.objectiveVersion, 2);
+    assert.equal(
+      goal.objective,
+      "Ship the Goal feature end to end. Also expose its intent in the Foreman drawer",
+    );
+    assert.equal(
+      r.snapshot().sessions.find((x) => x.id === s.id)?.goal?.text,
+      "Ship the Goal feature and expose intent in the Foreman drawer",
+    );
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("a schema-valid amendment that drops the current objective fails closed", async () => {
+  const { r, s, env } = withSession("r18", "%48");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
+  const stop = startGoalRefiner(r);
+  const amendment = "also expose the current intent in the Foreman drawer, but keep the larger goal";
+  try {
+    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
+    const prior = r.getGoal(s.id)!;
+    setMode("shrink");
+    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: amendment }));
+
+    await until(
+      () =>
+        r.getGoal(s.id)?.relationship === "unclear" &&
+        r.getGoal(s.id)?.rationale?.includes("did not explicitly preserve") === true,
+      "the shrinking amendment to be rejected",
+      FLOOR_MS + RUN_TIMEOUT_MS,
+    );
+    // Cross another complete debounce window. A rejected contract stays parked instead of
+    // consuming model calls or resolving itself on the next poll.
+    await new Promise((resolve) => setTimeout(resolve, FLOOR_MS + 50));
+
+    const goal = r.getGoal(s.id)!;
+    assert.equal(goal.objective, prior.objective, "the larger completion contract was replaced");
+    assert.equal(goal.text, prior.text, "the card adopted the model's smaller objective");
+    assert.equal(goal.objectiveVersion, 1, "a rejected amendment advanced the objective version");
+    assert.equal(goal.resolvedPromptRevision, 1, "a rejected amendment was marked resolved");
+    assert.equal(goal.promptRevision, 2);
+    assert.equal(goal.relationship, "unclear");
+    assert.deepEqual(goal.pendingPrompts, [{ revision: 2, prompt: amendment }]);
+    assert.equal(runsAsking(amendment), 1, "the rejected amendment retried without new context");
+    assert.equal(
+      r.snapshot().sessions.find((x) => x.id === s.id)?.goal?.text,
+      prior.text,
+      "the session card stopped showing the larger objective",
+    );
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("a rapid amendment followed by steering preserves and applies both transitions in order", async () => {
+  const { r, s, env } = withSession("r17", "%47");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
+    setMode("rapid");
+
+    // Both arrive before the debounce floor can admit another model call. The amendment must
+    // remain the queue head even though the latest captured prompt is tactical steering.
+    r.applyHook(
+      evt({
+        event: "UserPromptSubmit",
+        env,
+        prompt: "also expose the current intent in the Foreman drawer",
+      }),
+    );
+    r.applyHook(
+      evt({
+        event: "UserPromptSubmit",
+        env,
+        prompt: "then add one focused regression test before running the full suite",
+      }),
+    );
+    assert.deepEqual(r.getGoal(s.id)?.pendingPrompts, [
+      { revision: 2, prompt: "also expose the current intent in the Foreman drawer" },
+      {
+        revision: 3,
+        prompt: "then add one focused regression test before running the full suite",
+      },
+    ]);
+
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 3,
+      "both rapid instructions to reconcile",
+      FLOOR_MS * 3 + RUN_TIMEOUT_MS,
+    );
+    const goal = r.getGoal(s.id)!;
+    assert.equal(goal.objectiveVersion, 2);
+    assert.equal(
+      goal.objective,
+      "Ship the Goal feature end to end. Also expose its intent in the Foreman drawer",
+      "the later steering instruction erased the earlier amendment",
+    );
+    assert.equal(goal.relationship, "steer");
+    assert.deepEqual(goal.pendingPrompts, []);
+    assert.equal(
+      runsAsking("also expose the current intent in the Foreman drawer"),
+      1,
+      "the amendment was not reconciled exactly once",
+    );
+    assert.equal(
+      runsAsking("then add one focused regression test before running the full suite"),
+      1,
+      "the steering instruction was not reconciled exactly once",
+    );
+    assert.deepEqual(
+      askedPrompts().filter(
+        (ask) =>
+          ask === "also expose the current intent in the Foreman drawer" ||
+          ask === "then add one focused regression test before running the full suite",
+      ),
+      [
+        "also expose the current intent in the Foreman drawer",
+        "then add one focused regression test before running the full suite",
+      ],
+      "the rapid instructions were not reconciled in capture order",
+    );
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("a replacement establishes a new objective without special command vocabulary", async () => {
+  const { r, s, env } = withSession("r15", "%45");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
+    setMode("replace");
+    r.applyHook(
+      evt({
+        event: "UserPromptSubmit",
+        env,
+        prompt: "new information changes the plan; use a remote service instead of SQLite",
+      }),
+    );
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the replacement objective",
+      FLOOR_MS + RUN_TIMEOUT_MS,
+    );
+
+    const goal = r.getGoal(s.id)!;
+    assert.equal(goal.relationship, "replace");
+    assert.equal(goal.objectiveVersion, 2);
+    assert.equal(goal.objective, "Replace the session database with a remote service");
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
 test("a failed refinement leaves the Tier 1 goal up and does not retry that prompt", async () => {
   // Q3's silent fallback. The card keeps the human's own words; nobody sees an error. And it
   // must not retry: `source` stays "heuristic" on failure, so without the per-prompt memory
@@ -198,15 +402,18 @@ test("a failed refinement leaves the Tier 1 goal up and does not retry that prom
     const g = r.getGoal(s.id);
     assert.equal(g?.source, "heuristic", "a failure must not stamp the goal as refined");
     assert.equal(g?.text, "a prompt the model chokes on", "the Tier 1 goal was lost");
+    assert.equal(g?.resolvedPromptRevision, 0, "a failed transition was marked resolved");
+    assert.deepEqual(g?.pendingPrompts, [
+      { revision: 1, prompt: "a prompt the model chokes on" },
+    ]);
   } finally {
     stop();
     setMode("good");
   }
 });
 
-test("a new prompt gets a fresh attempt after an earlier one failed", async () => {
-  // The no-retry rule is keyed on the PROMPT, so what is abandoned is one summary, never the
-  // session - otherwise a single blip would freeze a card's goal for its whole life.
+test("a new prompt retries a failed queue head before reconciling the newer instruction", async () => {
+  // New context earns the blocked head one retry, but the newer instruction cannot leapfrog it.
   setMode("crash");
   const { r, s, env } = withSession("r4", "%34");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "the doomed ask" }));
@@ -218,8 +425,8 @@ test("a new prompt gets a fresh attempt after an earlier one failed", async () =
     setMode("good");
     r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "a brand new ask" }));
     await until(
-      () => r.getGoal(s.id)?.source === "model",
-      "the new prompt to be refined",
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "both the retried head and new prompt to be refined",
       // The floor applies to the retry too - it is one refresh like any other. Budgeted for
       // the slowest LEGITIMATE path, not the typical one (~350ms): the tick that lands as the
       // wait above ends can still see the OLD prompt, because the first attempt's failure has
@@ -228,24 +435,20 @@ test("a new prompt gets a fresh attempt after an earlier one failed", async () =
       // shorter than the refiner's own per-run ceiling can tell "starved" from "broken".
       FLOOR_MS * 2 + RUN_TIMEOUT_MS,
     );
-    assert.equal(r.getGoal(s.id)?.text, "Ship the Goal feature end to end");
+    const goal = r.getGoal(s.id);
+    assert.equal(goal?.text, "Ship the Goal feature end to end");
+    assert.equal(goal?.relationship, "steer");
+    assert.equal(goal?.focus, "Finish the current instruction");
+    assert.deepEqual(goal?.pendingPrompts, []);
   } finally {
     stop();
     setMode("good");
   }
 });
 
-test("a burst of prompts costs one refinement, not one per prompt", async () => {
-  // The cadence floor (Q1). A session answering rapid-fire instructions must not fork a
-  // subprocess per prompt - cost is governed by cadence alone, since there is no kill switch.
-  //
-  // Asserted by COUNTING SPAWNS, which is the invariant, rather than by checking that nothing
-  // had refined a fraction of a floor after the first one landed. That earlier shape was a
-  // race and flaked on CI: the floor is stamped when the slot is CLAIMED, before the
-  // subprocess starts, while the wait below returns only once that subprocess has exited - so
-  // on a loaded runner most of the 300ms floor is already spent by the time the burst is
-  // fired, and a second refine inside the sleep is the product working correctly. The number
-  // of runs a burst costs holds however the wall clock falls.
+test("a burst of prompts is reconciled once per revision in capture order", async () => {
+  // The cadence floor limits spawn rate, not correctness. Every instruction remains durable
+  // and later steering cannot stand in for an earlier objective transition.
   const { r, s, env } = withSession("r6", "%36");
   const stop = startGoalRefiner(r);
   try {
@@ -253,33 +456,31 @@ test("a burst of prompts costs one refinement, not one per prompt", async () => 
     await until(() => r.getGoal(s.id)?.source === "model", "the first refine");
     assert.equal(runsAsking("first"), 1, "precondition: the first ask cost exactly one run");
 
-    // Three more instructions, in one turn so no poll tick can interleave. Tier 1 re-stamps
-    // "heuristic" on each, so each one is due - and the floor is the only thing holding them.
+    // Three more instructions, in one turn so no poll tick can interleave. Each advances the
+    // prompt revision while leaving the durable objective standing.
     for (const p of ["second", "third", "fourth"]) {
       r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: p }));
     }
-    // Tier 1 stamps synchronously on ingest, so these are facts about the burst rather than
-    // observations that have to beat a timer.
-    assert.equal(r.getGoal(s.id)?.text, "fourth", "the card should track the latest ask at once");
-    assert.equal(r.getGoal(s.id)?.source, "heuristic", "and drop back until a refine lands");
-
-    // The LATEST prompt gets summarised, and the earlier ones collapse into it rather than
-    // queueing a call each - whenever the floor happens to expire.
-    await until(
-      () => runsAsking("second", "third", "fourth") > 0,
-      "the burst to collapse into one refine",
-      // One floor to wait out, then a real spawn. This is a ceiling on a starved machine,
-      // never the assertion: what the burst cost is the equality below.
-      FLOOR_MS * 2 + RUN_TIMEOUT_MS,
-    );
     assert.equal(
-      runsAsking("second", "third", "fourth"),
-      1,
-      "three prompts inside the floor cost ONE refinement",
+      r.getGoal(s.id)?.text,
+      "Ship the Goal feature end to end",
+      "a steering burst replaced the durable objective",
     );
-    // The spawn is already in flight by here, so its own per-run ceiling is the bound.
-    await until(() => r.getGoal(s.id)?.source === "model", "that refine to land", RUN_TIMEOUT_MS);
-    assert.equal(r.getGoal(s.id)?.prompt, "fourth", "and it summarised the newest ask");
+    assert.ok(
+      r.getGoal(s.id)!.resolvedPromptRevision < r.getGoal(s.id)!.promptRevision,
+      "the burst did not leave intent reconciliation pending",
+    );
+
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 4,
+      "every prompt in the burst to reconcile",
+      FLOOR_MS * 4 + RUN_TIMEOUT_MS,
+    );
+    for (const prompt of ["second", "third", "fourth"]) {
+      assert.equal(runsAsking(prompt), 1, `${prompt} was not reconciled exactly once`);
+    }
+    assert.equal(r.getGoal(s.id)?.prompt, "fourth");
+    assert.deepEqual(r.getGoal(s.id)?.pendingPrompts, []);
   } finally {
     stop();
   }
@@ -289,7 +490,16 @@ test("a Codex session goal is refined through the configured background provider
   // Goal refinement is provider-independent: once the Codex hook/transcript path supplies
   // a Tier 1 goal, the configured background provider should refine it like any other session.
   const { r, s } = withSession("r5", "%35", "codex");
-  r.upsertGoal(s.id, { prompt: "somehow", text: "somehow", source: "heuristic" });
+  r.upsertGoal(s.id, {
+    prompt: "somehow",
+    text: "somehow",
+    source: "heuristic",
+    objective: "somehow",
+    focus: "somehow",
+    objectiveVersion: 1,
+    promptRevision: 1,
+    pendingPrompts: [{ revision: 1, prompt: "somehow" }],
+  });
   const stop = startGoalRefiner(r);
   try {
     await until(() => r.getGoal(s.id)?.source === "model", "the Codex goal to be refined");
@@ -305,7 +515,7 @@ test("a whitespace-only reply is a failure, not an empty goal", async () => {
   // out of the queue so the prompt is never retried. A failure must never be stamped as a
   // judgment, so the schema has to reject this after the shortener, not before it.
   setMode("blank");
-  const { r, s, env } = withSession("r6", "%36");
+  const { r, s, env } = withSession("r16", "%46");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "an ask the model answers with air" }));
   const stop = startGoalRefiner(r);
   try {

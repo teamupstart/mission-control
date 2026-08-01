@@ -3043,6 +3043,21 @@ session carries a `✓ Foreman answered: …` audit line. An escalation also fir
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
 
+The **Goal** line on each session card is a durable objective, not a copy of the latest
+prompt. Mission Control durably queues every substantive human instruction and reconciles
+pending revisions in capture order as one of five relationships: the initial objective,
+tactical steering, an amendment, a replacement, or unclear. Steering updates the current
+focus without shrinking the objective. An amendment or replacement updates the Goal line
+and advances its objective version. No command or special vocabulary is required: the
+relationship is inferred from the instruction and the conversation around it. The debounce
+limits how quickly model calls start, but never coalesces prompt content: a rapid objective
+amendment followed by tactical steering is applied as two ordered transitions. While a new
+instruction is still being reconciled, when its relationship is unclear, or when an older
+unresolved instruction cannot be recovered, later prompts cannot leapfrog it and prompted
+automatic wrap-up remains paused. An amendment is accepted only when its proposed contract
+explicitly retains the current objective as its prefix; a narrower amendment remains unresolved
+and keeps automatic wrap-up paused.
+
 In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
 arranged differently, because a permanent conversation gives it somewhere better to sit:
 Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
@@ -3068,6 +3083,12 @@ exists, per the transcript gap above. The **Foreman · N** rail at the end of th
 row opens that history: rows lead with the *ask* rather than the verdict, and opening one
 shows the ask verbatim beside Foreman's reasoning and the resolution, credited to whoever
 actually made the call. Records age out after a retention window.
+
+That drawer also starts with **Current intent**, even when Foreman has made no decisions yet.
+It shows the objective and version used for completion, the latest tactical focus, whether
+the instruction steered, amended, or replaced the objective, and Foreman's rationale. This
+is the inspectable source for what Foreman currently believes the session is trying to
+finish; the rows below it remain the decision history.
 
 Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
 process acquires no **lease** and idles as a standby, taking over automatically if the
@@ -3327,10 +3348,11 @@ allowlisted.
 
 The prompted trigger doesn't fire on idleness alone, because idle isn't finished. It runs
 the same verifier queued items get - a fresh tool-less `claude -p` reading the branch diff
-against your captured prompt - and acts only on a **complete** verdict; an empty diff
+against the reconciled durable objective - and acts only on a **complete** verdict; an empty diff
 decides itself without a model call. A session that still needs you is left alone, and a
 checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
-per prompt: a new prompt from you re-arms it, and so does a confirmed workflow repair packet -
+per resolved instruction: a new prompt from you re-arms it after intent reconciliation, and
+so does a confirmed workflow repair packet -
 which is what lets [the repair loop](#the-repair-loop-end-to-end) run for a session that has no
 queue to drain. An incomplete verdict retires the episode rather than sending the agent back -
 Foreman didn't commission that work. Untick both triggers and Foreman never wraps up on its own.

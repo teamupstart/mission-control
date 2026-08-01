@@ -1,4 +1,4 @@
-import type { AgentType, Session, SessionQueue } from "@shared/types.ts";
+import type { AgentType, Session, SessionGoal, SessionQueue } from "@shared/types.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
@@ -56,21 +56,8 @@ export interface PromptedInput {
    * one, not the card summary: this needs `promptedGoal`, which the summary omits.
    */
   queue: SessionQueue | null;
-  /**
-   * The session's captured goal PROMPT - the human's last substantive ask, verbatim.
-   *
-   * Passed in rather than read off `session.goal`, and that is not plumbing
-   * convenience: the card summary carries only the refiner's derived SENTENCE, which
-   * a debounced Haiku call rewrites minutes after the prompt that produced it. Keying
-   * the once-per-episode guard on a value that changes on its own would re-arm this
-   * trigger without a human doing anything - firing a second wrap-up at a session
-   * whose only change was a model rewording its own summary. The verbatim prompt moves
-   * when, and only when, someone types.
-   *
-   * It is also the better `intent` for the verifier: the exact words of the ask beat a
-   * one-line paraphrase of them when the question is "was this actually satisfied".
-   */
-  goalPrompt: string | null;
+  /** Full reconciled intent. The card summary deliberately omits its completion contract. */
+  intent: SessionGoal | null;
   cfg: PromptedConfig;
   now: number;
 }
@@ -84,7 +71,21 @@ export type PromptedCandidate =
    * episode key the result gets stamped under, so the two cannot come from different
    * reads of a session that moved in between.
    */
-  | { kind: "check"; goal: string };
+  | {
+      kind: "check";
+      /** Opaque once-per-prompt guard. */
+      episodeKey: string;
+      /** Durable completion contract. */
+      objective: string;
+      /** Latest steering instruction, never a replacement completion target. */
+      focus: string | null;
+      objectiveVersion: number;
+      promptRevision: number;
+    };
+
+export function promptedIntentKey(intent: SessionGoal): string {
+  return `intent:${intent.objectiveVersion}:${intent.promptRevision}`;
+}
 
 /**
  * Is this session a candidate for a prompted wrap-up? Every branch is an early
@@ -96,7 +97,7 @@ export type PromptedCandidate =
  * finish.
  */
 export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
-  const { session, bucket, queue, goalPrompt, cfg, now } = input;
+  const { session, bucket, queue, intent, cfg, now } = input;
 
   // 1. The trigger is off. First because it is the cheapest and because an unarmed
   //    trigger must reach no other branch - including the ones that WRITE.
@@ -162,19 +163,26 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   //    made to anyone. Say nothing.
   if (!hasPane(session)) return { kind: "skip", why: "no pane to type into" };
 
-  // 8. No captured goal means no human ask on record, and therefore nothing to verify
-  //    the work AGAINST. `captureGoalPrompt` stores one on every substantive
-  //    `UserPromptSubmit`, so this is a session that has taken no real prompt yet -
-  //    scaffolding turns and `/clear` only. There is no "prompted work" to complete.
-  const goal = goalPrompt?.trim();
-  if (!goal) return { kind: "skip", why: "no captured goal to verify against" };
+  // 8. No durable objective means there is no completion contract to verify. A newest prompt
+  //    still being reconciled is equally ineligible: shipping against the previous objective
+  //    would race the very decision that says whether the human replaced it.
+  const objective = intent?.objective?.trim();
+  if (!intent || !objective) {
+    return { kind: "skip", why: "no captured objective to verify against" };
+  }
+  if (intent.resolvedPromptRevision < intent.promptRevision) {
+    return { kind: "skip", why: "the latest instruction is still being reconciled" };
+  }
+  if (!intent.relationship || intent.relationship === "unclear") {
+    return { kind: "skip", why: "the latest instruction's relationship to the objective is unclear" };
+  }
 
   // 9. THE LOOP GUARD. The goal is one of our own wrap-up instructions, which means
   //    the last prompt this session took was typed by Foreman: we fired, `/no-mistakes`
   //    landed as a `UserPromptSubmit`, goal capture stored it, and the run has now
   //    finished and parked. Firing again here is the infinite loop - see
   //    `isWrapupPayload`, which exists for this line.
-  if (isWrapupPayload(goal)) {
+  if (intent.prompt && isWrapupPayload(intent.prompt.trim())) {
     return { kind: "skip", why: "the last prompt was Foreman's own wrap-up" };
   }
 
@@ -182,11 +190,19 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   //     held - and nothing has changed since: the session is idle, so the goal is the
   //     same goal, and re-verifying would spend a `claude -p` per tick to re-learn an
   //     unchanged answer. A new prompt from the human moves the goal and re-arms this.
-  if (queue?.promptedGoal === goal) {
+  const episodeKey = promptedIntentKey(intent);
+  if (queue?.promptedGoal === episodeKey) {
     return { kind: "skip", why: "already wrapped up this prompt" };
   }
 
-  return { kind: "check", goal };
+  return {
+    kind: "check",
+    episodeKey,
+    objective,
+    focus: intent.prompt,
+    objectiveVersion: intent.objectiveVersion,
+    promptRevision: intent.promptRevision,
+  };
 }
 
 /** Step 3's answer, once the verifier has judged the work. */

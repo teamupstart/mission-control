@@ -369,7 +369,7 @@ test("a harness that can't hold a queue is never selected for a tick, or asked t
       session: mkSession({ agent, state: "idle" }),
       bucket: "idle",
       queue: null,
-      goalPrompt: "ship the thing",
+      intent: null,
       cfg: { triggers: ["prompted"] } as never,
       now: 0,
     } as never);
@@ -395,7 +395,7 @@ test("the work-queue null path still refuses selection and explains why", async 
       session,
       bucket: "idle",
       queue: null,
-      goalPrompt: "ship the thing",
+      intent: null,
       cfg: { triggers: ["prompted"] } as never,
       now: 0,
     } as never);

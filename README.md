@@ -347,11 +347,12 @@ written returns the row to `queued`. If text may have landed but pickup cannot b
 the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
 risking a duplicate.
 
-The outbox is stored in SQLite under the stable conversation id. It survives browser and
-daemon restarts. A row that was being delivered when the daemon stopped recovers as
-`delivery uncertain` and is never resent automatically. Reset clears pending messages along
-with the conversation drafts and work they described. Work Queue automation and its explicit
-wrap-up send retain their existing direct acknowledged delivery path.
+The outbox is stored in SQLite under the native conversation id when Mission Control knows
+it, and otherwise under the discovered session id. It survives browser and daemon restarts.
+A row that was being delivered when the daemon stopped recovers as `delivery uncertain` and
+is never resent automatically. Reset clears pending messages along with the conversation
+drafts and work they described. Work Queue automation and its explicit wrap-up send retain
+their existing direct acknowledged delivery path.
 
 For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
@@ -3463,8 +3464,8 @@ answerable without reading a log.
 
 ## Half-written text is kept
 
-A session card **keeps what you've typed** until it's actually delivered. Three of its
-boxes hold a draft:
+A session card **keeps what you've typed** until it is successfully submitted. Conversation
+messages then remain visible in the editable outbox until delivery. Three boxes hold a draft:
 
 - the **Work queue** panel's add box,
 - the **reply** box under the transcript on an expanded card, and

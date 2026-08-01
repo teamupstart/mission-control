@@ -23,10 +23,14 @@ import type {
 } from "../src/shared/workflow.ts";
 import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
 import { WorkflowRunView, WorkflowRunsEmpty } from "../src/web/workflows/WorkflowRuns.tsx";
-import { workflowRunLoadError } from "../src/web/workflows/run-model.ts";
+import {
+  inspectorOnlySkipStatus,
+  workflowRunLoadError,
+} from "../src/web/workflows/run-model.ts";
 import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
 import type { Session } from "../src/shared/types.ts";
+import { tooltipLabels } from "./helpers/markup.ts";
 
 /**
  * Graph identities are real UUIDs on purpose: the leak this file guards against is a node
@@ -825,6 +829,8 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.match(html, /Open Inspector settings/);
   assert.match(html, /Open PR/);
   assert.match(html, /This Inspector repair round ran no Personas/);
+  assert.match(html, /wf-pipeline-status workflow-passed wf-status-explained/);
+  assert.ok(tooltipLabels(html).includes(inspectorOnlySkipStatus().tooltip!));
   assertNoGraphIds(html);
 });
 

@@ -16,7 +16,13 @@ import {
   type PipelineStatus,
 } from "./pipeline-bits.tsx";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
-import { checkStatus, reviewerStatus, stageStatus } from "./run-model.ts";
+import {
+  canShowInspectorOnlySkip,
+  checkStatus,
+  inspectorOnlySkipStatus,
+  reviewerStatus,
+  stageStatus,
+} from "./run-model.ts";
 
 /**
  * The run, drawn on the pipeline its author drew.
@@ -39,6 +45,7 @@ export function RunPipeline({
   end,
   metaFor,
   checkOutcomeFor,
+  inspectorOnly = false,
   repair,
 }: {
   version: WorkflowVersion;
@@ -57,6 +64,8 @@ export function RunPipeline({
    * distinction rather than asserting the wrong half of it.
    */
   checkOutcomeFor?: (nodeId: string) => WorkflowCheckStatus | null;
+  /** This round bypassed stages that passed before an Inspector-requested repair. */
+  inspectorOnly?: boolean;
   repair: string | null;
 }): React.JSX.Element {
   const graph = version.graph;
@@ -119,12 +128,19 @@ export function RunPipeline({
               ? member.slot
               : node ? nodeLabel(graph, node, personaNames) : "Missing persona",
             meta: member.nodeId ? metaFor(member.nodeId) : null,
-            status: member.kind === "check"
-              ? checkStatus(
-                  member.nodeId ? statuses[member.nodeId] : undefined,
-                  member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
-                )
-              : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined),
+            status: canShowInspectorOnlySkip(
+              inspectorOnly,
+              member.nodeId,
+              node !== undefined,
+              member.nodeId !== null && statuses[member.nodeId] !== undefined,
+            )
+              ? inspectorOnlySkipStatus()
+              : member.kind === "check"
+                ? checkStatus(
+                    member.nodeId ? statuses[member.nodeId] : undefined,
+                    member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
+                  )
+                : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined),
           };
         });
         const parallel = stage.members.length > 1;
@@ -133,7 +149,11 @@ export function RunPipeline({
             <StageCard
               name={stageName(stage, index, personaNames)}
               subtitle={stageSummary(stage)}
-              status={stageStatus(members.map((member) => member.status))}
+              status={inspectorOnly
+                && members.length > 0
+                && members.every((member) => member.status.skipKind === "inspector_repair")
+                ? inspectorOnlySkipStatus()
+                : stageStatus(members.map((member) => member.status))}
             >
               <ul className="wf-pipeline-members">
                 {members.map((member) => (

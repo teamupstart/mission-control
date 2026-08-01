@@ -16,6 +16,7 @@ import type {
   WorkflowSubmission,
 } from "../src/shared/workflow.ts";
 import {
+  canShowInspectorOnlySkip,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
@@ -24,6 +25,7 @@ import {
   eventLine,
   eventsByRound,
   gateWaitSentence,
+  inspectorOnlySkipStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
   readCapturedContext,
@@ -206,11 +208,15 @@ test("a check that never ran says so, and is never laundered into Passed", () =>
   assert.deepEqual(checkStatus("pass", "unavailable"), {
     tone: "waiting",
     label: "Not run",
+    tooltip: "This check could not run. Open the run details for its recorded reason.",
+    skipKind: "unavailable_check",
     degraded: true,
   });
   assert.deepEqual(checkStatus("pass", "skipped"), {
     tone: "waiting",
     label: "Skipped",
+    tooltip: "Skipped because no command is configured for this check.",
+    skipKind: "unconfigured_check",
     degraded: true,
   });
   // A check that genuinely ran keeps the ordinary vocabulary, and a real failure still wins.
@@ -240,14 +246,23 @@ test("a stage says how much of its gate was real", () => {
   const ran = checkStatus("pass", "passed");
   const notRun = checkStatus("pass", "unavailable");
   const skipped = checkStatus("pass", "skipped");
+  assert.deepEqual(stageStatus([skipped, skipped]), {
+    tone: "waiting",
+    label: "Skipped",
+    tooltip: "Skipped because no command is configured for the checks in this stage.",
+    skipKind: "unconfigured_check",
+    degraded: true,
+  });
   assert.deepEqual(stageStatus([notRun, skipped]), {
     tone: "waiting",
     label: "None ran",
+    tooltip: "One or more checks in this stage did not run. Hover each check for its reason.",
     degraded: true,
   });
   assert.deepEqual(stageStatus([notRun]), {
     tone: "waiting",
     label: "Did not run",
+    tooltip: "One or more checks in this stage did not run. Hover each check for its reason.",
     degraded: true,
   });
   assert.equal(stageStatus([ran, notRun]).label, "Passed, 1 not run");
@@ -256,6 +271,23 @@ test("a stage says how much of its gate was real", () => {
   assert.deepEqual(stageStatus([ran, ran]), { tone: "passed", label: "All passed" });
   // A real failure still outranks a gate that did not run.
   assert.equal(stageStatus([notRun, checkStatus("fail", "failed")]).tone, "failed");
+});
+
+test("an Inspector-only repair marks previously passed stages as green skipped", () => {
+  assert.deepEqual(inspectorOnlySkipStatus(), {
+    tone: "passed",
+    label: "Skipped",
+    tooltip: "Skipped because this stage passed in the prior full workflow round. This Inspector repair round only rechecks Inspector.",
+    skipKind: "inspector_repair",
+  });
+});
+
+test("an Inspector-only repair never treats a missing pipeline member as previously passed", () => {
+  assert.equal(canShowInspectorOnlySkip(true, null, false, false), false);
+  assert.equal(canShowInspectorOnlySkip(true, "stale-node", false, false), false);
+  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, false), true);
+  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, true), false);
+  assert.equal(canShowInspectorOnlySkip(false, "authored-node", true, false), false);
 });
 
 test("a stage passes only when all of it passed, and any failure wins", () => {

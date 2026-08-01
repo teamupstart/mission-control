@@ -15,6 +15,7 @@ import {
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import {
+  canShowInspectorOnlySkip,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
@@ -23,6 +24,7 @@ import {
   gateSummaryStatus,
   gateWaitSentence,
   inspectorOnlyRoundSentence,
+  inspectorOnlySkipStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
   reviewerStatus,
@@ -136,6 +138,14 @@ function Rung({
   pending?: boolean;
   children?: React.ReactNode;
 }): React.JSX.Element {
+  const state = (
+    <span
+      className={`wf-ladder-state${status.tooltip ? " wf-status-explained" : ""}`}
+      tabIndex={status.tooltip ? 0 : undefined}
+    >
+      {status.label}
+    </span>
+  );
   return (
     <li
       className={[
@@ -150,7 +160,7 @@ function Rung({
           <strong>{name}</strong>
           {sub && <span className="wf-ladder-sub">{sub}</span>}
         </span>
-        <span className="wf-ladder-state">{status.label}</span>
+        {status.tooltip ? <Tooltip label={status.tooltip}>{state}</Tooltip> : state}
       </div>
       {children}
     </li>
@@ -242,9 +252,16 @@ export function WorkflowLadder({
             const node = nodeId ? nodes.get(nodeId) : undefined;
             const attempt = nodeId ? attempts.get(nodeId) : undefined;
             const outcome = attempt ? checkOutcomeOf(attempt) : null;
-            const status = member.kind === "check"
-              ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
-              : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
+            const status = canShowInspectorOnlySkip(
+              inspectorOnly,
+              nodeId,
+              node !== undefined,
+              attempt !== undefined,
+            )
+              ? inspectorOnlySkipStatus()
+              : member.kind === "check"
+                ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
+                : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
             const name = node
               ? nodeLabel(graph, node, personaNames)
               : member.kind === "check" ? `Check · ${member.slot}` : "Missing persona";
@@ -252,7 +269,11 @@ export function WorkflowLadder({
             const meta = attempt ? verdictMeta(attempt, calls) : null;
             return { member, name, attempt, outcome, status, verdict, meta };
           });
-          const status = stageStatus(members.map((member) => member.status));
+          const status = inspectorOnly
+            && members.length > 0
+            && members.every((member) => member.status.skipKind === "inspector_repair")
+            ? inspectorOnlySkipStatus()
+            : stageStatus(members.map((member) => member.status));
           const expanded = status.tone === "running"
             || status.tone === "failed"
             || members.some((member) => member.status.degraded);
@@ -302,7 +323,18 @@ export function WorkflowLadder({
                             {statusGlyph(member.status)}
                           </span>
                           <span className="wf-ladder-member-name">{member.name}</span>
-                          <span className="wf-ladder-member-state">{member.status.label}</span>
+                          {member.status.tooltip ? (
+                            <Tooltip label={member.status.tooltip}>
+                              <span
+                                className="wf-ladder-member-state wf-status-explained"
+                                tabIndex={0}
+                              >
+                                {member.status.label}
+                              </span>
+                            </Tooltip>
+                          ) : (
+                            <span className="wf-ladder-member-state">{member.status.label}</span>
+                          )}
                         </span>
                         {meta && <span className="wf-ladder-member-meta">{meta}</span>}
                         {checkExplanation && (

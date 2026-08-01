@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Tooltip } from "../components/Tooltip.tsx";
 
 /**
  * The presentational leaves every stage surface is drawn from - the role `session-bits.tsx`
@@ -22,6 +23,10 @@ export type PipelineStatusTone = (typeof PIPELINE_STATUS_TONES)[number];
 export interface PipelineStatus {
   tone: PipelineStatusTone;
   label: string;
+  /** Why this status was skipped or otherwise needs more context. */
+  tooltip?: string;
+  /** Machine-readable reason for a deliberate skip; labels remain presentation only. */
+  skipKind?: "inspector_repair" | "unconfigured_check" | "unavailable_check";
   /**
    * This advanced the pipeline without being earned - a check that was skipped or could not
    * run, rather than one that ran and succeeded.
@@ -75,11 +80,17 @@ function itemAttributes(item: PipelineItemProps): Record<string, unknown> {
 }
 
 export function PipelineStatusChip({ status }: { status: PipelineStatus }): React.JSX.Element {
-  return (
-    <span className={`workflow-chip wf-pipeline-status workflow-${status.tone}`}>
+  const chip = (
+    <span
+      className={`workflow-chip wf-pipeline-status workflow-${status.tone}${
+        status.tooltip ? " wf-status-explained" : ""
+      }`}
+      tabIndex={status.tooltip ? 0 : undefined}
+    >
       {status.label}
     </span>
   );
+  return status.tooltip ? <Tooltip label={status.tooltip}>{chip}</Tooltip> : chip;
 }
 
 /**

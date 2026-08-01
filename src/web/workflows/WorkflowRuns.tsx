@@ -699,6 +699,7 @@ export function WorkflowRunView({
             const attempt = latestAttemptByNode.get(nodeId);
             return attempt ? checkOutcomeOf(attempt)?.status ?? null : null;
           }}
+          inspectorOnly={inspectorOnly}
           repair={detail.summary.maxRepairRounds > 0
             ? "Any fail returns the submission to Session for repair, then the whole pipeline runs again."
             : null}

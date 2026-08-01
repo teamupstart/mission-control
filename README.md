@@ -2569,7 +2569,10 @@ refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload its
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
-state. A stage of two or more members shows each one and passes only when all do. A version
+state. Inspector-only repair rounds show their previously passed stages as green **Skipped**;
+the tooltip explains that only Inspector is being rerun. A check skipped because its command
+is not configured stays amber, with its reason available on the check and stage status.
+A stage of two or more members shows each one and passes only when all do. A version
 drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
 read-only, carrying the same statuses. No surface prints a node id.
 

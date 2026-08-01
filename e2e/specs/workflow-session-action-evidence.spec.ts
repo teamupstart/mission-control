@@ -323,4 +323,27 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   await expect(dashboard.locator(".wf-run-notice"))
     .toContainText("does not spend a repair round");
   await shoot(dashboard, "08-completed-continuation");
+
+  // 9. The shipped Pull Request action, read-only.
+  //
+  //    The two fields it exists for are visible together - its required skill and the
+  //    completion it promises - and both are disabled, because a built-in has no save.
+  await dashboard.goto(`${daemon.baseURL}/#/workflows/actions`);
+  await dashboard.getByRole("button", { name: /Pull Request/ }).click();
+  await expect(dashboard.locator(".wf-state.builtin")).toBeVisible();
+  await shoot(dashboard, "09-builtin-pull-request-action");
+
+  // 10. No-Mistakes Review v8, scrolled to where its claim lives.
+  //
+  //     The Pull Request stage, then End, then the fixed Inspector footer, in that order. That
+  //     ordering IS the feature: the action opens the pull request and reaches End, and the
+  //     Inspector reviews it afterwards. A capture that showed the footer looking finished the
+  //     moment the action completed would be the misreading to catch.
+  await dashboard.goto(`${daemon.baseURL}/#/workflows`);
+  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await expect(dashboard.locator(".wf-pipeline-strip")).toBeVisible();
+  await dashboard.locator(".wf-pipeline-strip").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+  await expect(dashboard.locator("li.wf-pipeline-reviewer").filter({ hasText: "Pull Request" }))
+    .toBeVisible();
+  await shoot(dashboard, "10-no-mistakes-v8-pull-request-stage");
 });

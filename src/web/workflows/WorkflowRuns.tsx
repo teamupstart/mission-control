@@ -58,6 +58,7 @@ import {
   runStatusLabel,
   segmentProvenanceSentence,
   selectedSubmission,
+  provenPullRequest,
   sessionActionProgress,
   sessionActionStatus,
   shortSha,
@@ -282,6 +283,7 @@ function SessionActionCard({
 }): React.JSX.Element {
   const snapshot = attempt.sessionAction;
   const blocked = state?.blocked ?? null;
+  const proven = provenPullRequest(state);
   const prompt = snapshot?.promptMarkdown ?? "";
   const clipped = prompt.length > ACTION_PREVIEW_CHARS;
   return (
@@ -322,6 +324,22 @@ function SessionActionCard({
           Sent {when(state.anchor.deliveredAt)}
           {state.pickedUpAt === null ? "" : ` · picked up ${when(state.pickedUpAt)}`}
           {state.settledAt === null ? "" : ` · turn finished ${when(state.settledAt)}`}
+        </p>
+      )}
+      {/* What the proof actually WAS, for the one adapter that has one.
+          Shown only once it exists, because until then there is no pull request to link and
+          no commit to name - and a link rendered early is the "Open PR" affordance the plan
+          refuses, offering to open something nothing has verified. The commit is printed
+          because it is the whole claim: this pull request, at this commit, is what the stages
+          below were allowed to read fresh evidence for. */}
+      {proven && (
+        <p className="wf-run-meta wf-run-action-pr">
+          <Tooltip label="The pull request this action proved, at the commit it was proved at">
+            <a href={proven.pullRequestUrl} target="_blank" rel="noreferrer">
+              #{proven.pullRequestNumber}
+            </a>
+          </Tooltip>
+          {` on ${proven.branch}, verified at ${proven.expectedHeadOid.slice(0, 8)}`}
         </p>
       )}
       {snapshot && (

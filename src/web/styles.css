@@ -646,6 +646,11 @@
    across three surfaces. The card's own heading and chip already name it, so the edge is a
    confirmation rather than the claim. */
 .wf-run-action { border-left-color: color-mix(in oklab, #a878ff 70%, var(--border)); }
+/* The proven pull request reads as a fact rather than a call to action: it sits in the meta
+   row with the rest of the lifecycle, and the commit beside it is monospaced because it is an
+   object id somebody will compare against another one by eye. */
+.wf-run-action-pr { display: flex; gap: 4px; align-items: baseline; flex-wrap: wrap; }
+.wf-run-action-pr a { font-variant-numeric: tabular-nums; }
 .wf-run-check.is-passed { border-left-color: var(--idle); }
 .wf-run-check.is-failed { border-left-color: var(--danger); }
 .wf-run-check.is-skipped,
@@ -10878,6 +10883,15 @@ select.ensemble-judge-persona {
   align-items: start;
   column-gap: 8px;
   row-gap: 6px;
+  /* `flex: none`, exactly as every stage and terminus card in the strip declares.
+     Without it this was the ONE card that shrank: the strip is a flex row whose content is
+     routinely wider than the pane, so flex-shrink runs before `overflow-x` ever scrolls, and
+     an item with a `width` but no `flex: none` collapses toward min-content. The grid's
+     `minmax(0, 1fr)` then let the text overflow the box rather than the box keeping its
+     width - so the dashed border, which is this card's whole "not authored" signal, drew a
+     ~40px sliver with the sentence spilling out beside it. Invisible on a pipeline short
+     enough to fit, which is why it survived until a version with four stages was captured. */
+  flex: none;
   width: 236px;
   padding: 9px 10px;
   border: 1px dashed color-mix(in oklab, var(--border) 70%, var(--dim));

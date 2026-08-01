@@ -2126,6 +2126,31 @@ export interface InspectorPr {
    * merging nothing while saying nothing.
    */
   mergeBlock: string | null;
+  /**
+   * The pull request's remote head as of the last POLL, not the last review.
+   *
+   * `headSha` above advances only when a review round completes, which makes it useless for
+   * the question "has the branch reached the pull request yet". That question is what a
+   * `pull_request` session action has to answer before it lets downstream stages read fresh
+   * evidence, so the tick writes down what `fetchPr` already told it.
+   *
+   * Null means this build has not looked since the column existed. Every reader treats that
+   * as "unknown", never as "unchanged" - a session action waits for the next tick rather than
+   * completing on a head nobody observed.
+   */
+  observedHeadSha: string | null;
+  /** What that same poll saw the pull request's state to be, or null when never polled. */
+  observedState: "OPEN" | "CLOSED" | "MERGED" | null;
+  /** When that observation was made, epoch ms, or null when never polled. */
+  observedAt: number | null;
+  /**
+   * The branch the pull request is opened FROM, as GitHub reports it.
+   *
+   * Stored because a session action proves its pull request by repository AND branch: a commit
+   * id match alone cannot tell a pull request opened from this work apart from one that
+   * happens to include the same commit. Null until the first poll after adoption.
+   */
+  headRefName: string | null;
   adoptedAt: number;
   updatedAt: number;
 }

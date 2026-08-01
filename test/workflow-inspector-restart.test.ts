@@ -126,6 +126,10 @@ test("findings deliver, full resubmit reruns, and only the newly approved clean 
     lastAttemptSha: null,
     mergedAt: null,
     mergeBlock: null,
+    observedHeadSha: null,
+    observedState: null,
+    observedAt: null,
+    headRefName: null,
     adoptedAt: 1,
     updatedAt: 1,
   };

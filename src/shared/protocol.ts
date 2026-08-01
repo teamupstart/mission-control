@@ -2374,15 +2374,41 @@ export const SessionActionSnapshotSchema = z.object({
 });
 
 /**
+ * A git object id, in either width git produces: 40 hex for SHA-1, 64 for SHA-256.
+ *
+ * Kept in step with `FULL_SHA` in `src/server/workflows/commit-id.ts`, which is what actually
+ * decides whether a resolved id is full. This is browser-safe shared code and that module is
+ * server-only, so the rule is stated twice rather than imported - and
+ * `session-action-pull-request-adapter.test.ts` asserts the two accept exactly the same set,
+ * because a schema wider than its producer is a field that can never be filled and a schema
+ * narrower than its producer refuses a row the runtime just wrote.
+ */
+const CommitOidSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+
+/**
  * What an adapter may require of a continuation capture, as a CLOSED discriminated union.
  *
  * This value is persisted on a waiting attempt and re-validated against a capture that may
  * happen after a daemon restart, so an `unknown` escape hatch would be a durable field
- * nothing can read back safely. Phase 4's PR adapter adds its arm here.
+ * nothing can read back safely.
+ *
+ * The `pull_request` arm replaced a placeholder `head` arm that no adapter ever produced: the
+ * only completion kind that could have written one refused before deciding, because its
+ * capability shipped `available: false`. Nothing stored names it, so the union stays closed
+ * over exactly the two shapes that are written.
  */
 export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("none") }),
-  z.object({ kind: z.literal("head"), headSha: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/) }),
+  z.object({
+    kind: z.literal("pull_request"),
+    pullRequestKey: z.string().min(1).max(400),
+    pullRequestUrl: z.string().min(1).max(2_000),
+    pullRequestNumber: z.number().int().positive(),
+    repositoryRoot: z.string().min(1).max(4_000),
+    branch: z.string().min(1).max(400),
+    expectedHeadOid: CommitOidSchema,
+    observedAt: z.number().int(),
+  }),
 ]);
 
 export const SessionActionDeliveryAnchorSchema = z.object({
@@ -2429,6 +2455,13 @@ export const SessionActionCompletedOutputSchema = z.object({
   pickedUpAt: z.number().nullable().optional().default(null),
   settledAt: z.number().nullable().optional().default(null),
   continuationSubmissionId: WorkflowIdSchema.nullable().optional().default(null),
+  /**
+   * What the adapter PROVED before it let the graph advance, kept past completion.
+   *
+   * Optional and defaulted for the reason every field above is: a row written by an older
+   * daemon carries none, and the reader draws the absence rather than failing the card.
+   */
+  expectation: SessionActionContinuationExpectationSchema.nullable().optional().default(null),
 });
 
 export const SessionActionCompletionCapabilitySchema = z.object({

@@ -247,6 +247,7 @@ function snapshot(threads: ThreadSnapshot[]): PrSnapshot {
   return {
     state: "OPEN",
     headSha: "sha",
+    headRefName: "branch",
     title: "t",
     body: "b",
     isDraft: false,

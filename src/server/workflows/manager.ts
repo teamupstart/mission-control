@@ -94,6 +94,8 @@ import {
   probeMatchesEvidence,
   readWorkflowContextRaw,
   readWorkflowEvidenceProbe,
+  readWorkflowRepositoryHead,
+  readWorkflowRepositoryId,
   workflowContextFingerprint,
 } from "./context.ts";
 import {
@@ -101,7 +103,13 @@ import {
   sessionActionCompleteEdges,
   type WorkflowEngineOptions,
 } from "./engine.ts";
-import { sessionActionAdapter } from "./session-action-adapters.ts";
+import {
+  completionWatchesPullRequests,
+  sessionActionAdapter,
+  type SessionActionAdoptedPullRequest,
+  type SessionActionCaptureFacts,
+} from "./session-action-adapters.ts";
+import { resolveCapturedCommit } from "./commit-id.ts";
 import {
   externalSourceKey,
   type EnsureExternalBindingInput,
@@ -130,6 +138,7 @@ import { repeatOffenders } from "./repeat-offender.ts";
 import {
   getInspectorPr,
   loadInspectorComments,
+  loadAdoptedInspectorPrsSince,
   loadInspectorInspections,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
@@ -209,6 +218,20 @@ export interface WorkflowManagerOptions {
    * checkout, and a workflow test must be able to drive the observer without one.
    */
   readEvidenceProbe?: typeof readWorkflowEvidenceProbe;
+  /**
+   * The three reads a completion adapter's proof is built from, injectable for the reason
+   * every seam above is: two of them shell out to git in the session's checkout and the third
+   * reads the Inspector's ledger, and a workflow test must be able to state a repository, a
+   * pull request and a resolved commit rather than arrange one on disk and on GitHub.
+   *
+   * `resolveCommit` is the same seam `CheckRuntimeDeps` already carries, for the same reason:
+   * turning a captured abbreviation into a full object id is a question about a real object
+   * database, and the proof it feeds has to be provable without one.
+   */
+  readRepositoryHead?: typeof readWorkflowRepositoryHead;
+  readRepositoryId?: typeof readWorkflowRepositoryId;
+  adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
+  resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
   compactContext?: typeof compactWorkflowContext;
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
@@ -463,6 +486,12 @@ export class WorkflowManager {
     if (!this.inspectionUnsubscribe) {
       this.inspectionUnsubscribe = this.registry.onInspectionUpdated((event) => {
         this.scheduleInspectionUpdate(event);
+        // The gate is not the only thing that waits on a pull request any more. A
+        // `pull_request` action settles its turn long before its proof exists, and the proof
+        // is exactly what this event carries word of - so without this the action would sit
+        // until the next fifteen-second sweep happened to look, on every push, for every
+        // action. The sweep still runs; this only stops it being the sole way forward.
+        this.scheduleSessionActionProofCheck();
       });
     }
     this.resetRecoveredGateObservations();
@@ -3290,9 +3319,21 @@ export class WorkflowManager {
     const attempt = this.store.getAttempt(attemptId);
     if (!attempt || attempt.state !== "waiting" || !attempt.sessionAction) return null;
     const state = this.store.sessionActionState(attempt);
+    // A waiting action whose own durable state will not parse is STUCK, and silently returning
+    // null here is what made that invisible: the sweep looked, found nothing to resolve, and
+    // left the attempt waiting forever with no reason on the run. The shape is deliberately
+    // strict - a state read tolerantly could re-send a packet somebody already received - so
+    // the honest answer to an unreadable one is to block for a human rather than to wait for a
+    // change that cannot come. Reachable only across a daemon downgrade, and cheap to state.
+    if (!state) {
+      this.blockSessionAction(attempt.id, "capture_failed",
+        "This action's durable progress record cannot be read by this build, so its turn "
+        + "cannot be observed. Reset the run to start it again.");
+      return null;
+    }
     const submission = this.store.getSubmission(attempt.submissionId);
     const run = submission ? this.store.getRun(submission.runId) : null;
-    if (!state || !submission || !run || runIsTerminal(run)) return null;
+    if (!submission || !run || runIsTerminal(run)) return null;
     const binding = this.store.getBinding(run.bindingId);
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     const node = version?.graph.nodes.find(
@@ -3448,6 +3489,19 @@ export class WorkflowManager {
     const state = attempt ? this.store.sessionActionState(attempt) : null;
     if (!attempt || !state || state.wait === wait && Object.keys(patch).length === 0) return;
     this.store.updateSessionActionState(attemptId, { ...state, ...patch, wait }, now);
+    // PUSHED, not merely stored. A wait reason is the answer to "why is nothing happening",
+    // and until this was here it reached the database and stopped: nothing else publishes
+    // while an action waits, so a run detail page that had rendered "Awaiting PR" kept saying
+    // so after the daemon knew the pull request had gone to another branch. Every other state
+    // this observer can reach already publishes - completion and every block do - and the
+    // waits were the ones an operator sits and watches.
+    //
+    // Guarded by the early return above, so a sweep that changes nothing is still silent
+    // rather than re-publishing the same run every fifteen seconds.
+    if (state.wait !== wait) {
+      const submission = this.store.getSubmission(attempt.submissionId);
+      if (submission) this.publishRun(submission.runId);
+    }
   }
 
   /** Stop a waiting action and block its run, without ever producing repair feedback. */
@@ -3594,6 +3648,20 @@ export class WorkflowManager {
       return;
     }
 
+    // Read the checkout only once the turn has settled. Every earlier return above is a
+    // cheaper answer, and an observer that shelled out to git for each waiting action on each
+    // sweep would pay for three `rev-parse` calls per action per fifteen seconds to answer a
+    // question that only matters at this line.
+    const repository = await (this.options.readRepositoryHead ?? readWorkflowRepositoryHead)(
+      session.cwd,
+    ).catch(() => null);
+    // The head a reserved child has already captured, if one has. See `capturedHeadOid`.
+    const capturedChild = state.continuationSubmissionId
+      ? this.store.getSubmission(state.continuationSubmissionId)
+      : null;
+    const capturedHeadOid = capturedChild
+      ? await this.capturedContinuationHead(capturedChild, repository?.root ?? null)
+      : null;
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
@@ -3602,6 +3670,9 @@ export class WorkflowManager {
       pickedUpAt,
       settledAt: now,
       now,
+      repository,
+      adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
+      capturedHeadOid,
     });
     if (decision.kind === "blocked") {
       this.blockSessionAction(attempt.id, decision.code, decision.detail, now);
@@ -3618,6 +3689,100 @@ export class WorkflowManager {
     }, now);
     this.publishRun(run.id);
     await this.captureSessionActionContinuation(attempt.id, now);
+  }
+
+  /**
+   * Re-observe every action whose completion depends on the adoption ledger.
+   *
+   * Narrowed by completion kind rather than sweeping everything: a `session_turn` action's
+   * decision cannot change because a pull request somewhere moved, and re-deciding it would
+   * be work with no possible outcome. Failures are swallowed per attempt for the sweep's
+   * reason - one unreadable checkout must not stop the others being looked at.
+   */
+  private scheduleSessionActionProofCheck(): void {
+    const now = Date.now();
+    for (const attempt of this.store.listWaitingActionAttempts()) {
+      if (!attempt.sessionAction) continue;
+      if (!completionWatchesPullRequests(attempt.sessionAction.completion.kind)) continue;
+      const sessions = this.registry.snapshot().sessions;
+      this.trackDeliveryTask(
+        this.observeSessionAction(attempt.id, sessions, now).catch((error) => {
+          workflowLog("error", {
+            event: "session_action_observe_failed",
+            call: attempt.id,
+            error: error instanceof Error ? error.name : "unknown",
+          });
+        }),
+      );
+    }
+  }
+
+  /**
+   * The adoption ledger, narrowed to what a completion proof may consider.
+   *
+   * Read fresh on every decision rather than cached: the poller writes to it from its own
+   * timer, and a cached copy is exactly how an action would keep waiting for a head that had
+   * already arrived.
+   *
+   * `observedSince` is this action's delivery instant, and it is what makes a CLOSED pull
+   * request reachable at all. The poller retires a closed row in the statement after the one
+   * that records the closure, so the open set loses it on the very tick the adapter needed to
+   * see it - and a durable contradiction that should block would report as an ordinary missing
+   * pull request and wait for ever. Anything retired before this action was even delivered
+   * stays out, so the extra set is approximately zero rows and the cost stays the open set's:
+   * one repository-identity resolution per DISTINCT root, which is a git subprocess.
+   */
+  private async adoptedPullRequestsForAction(
+    observedSince: number,
+  ): Promise<readonly SessionActionAdoptedPullRequest[]> {
+    if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
+    // One git call per DISTINCT root, not per pull request: several open pull requests on one
+    // repository are the ordinary case, and this runs on the settle path of every waiting
+    // action.
+    const identities = new Map<string, string | null>();
+    const identify = async (root: string | null): Promise<string | null> => {
+      if (!root) return null;
+      if (!identities.has(root)) {
+        identities.set(root, await (this.options.readRepositoryId ?? readWorkflowRepositoryId)(root));
+      }
+      return identities.get(root) ?? null;
+    };
+    // Open adoptions PLUS any retired since this action's packet was delivered. The poller
+    // retires a closed pull request on the same tick it first observes the closure, so without
+    // the second half the adapter could never reach the one state it is meant to block on.
+    const rows = loadAdoptedInspectorPrsSince(observedSince);
+    const resolved = await Promise.all(rows.map((pr) => identify(pr.repoRoot)));
+    return rows.map((pr, index) => ({
+      key: pr.key,
+      url: pr.url,
+      number: pr.number,
+      repositoryRoot: resolved[index] ?? null,
+      branch: pr.headRefName,
+      observedHeadOid: pr.observedHeadSha,
+      observedState: pr.observedState,
+      observedAt: pr.observedAt,
+      sessionId: pr.sessionId,
+      adoptedAt: pr.adoptedAt,
+    }));
+  }
+
+  /**
+   * The commit a captured child segment holds, as a full object id.
+   *
+   * Null whenever that cannot be established - the context will not parse, the repository is
+   * unreadable, or the stored abbreviation names no single commit. Every caller treats null as
+   * "not proven", which keeps the action waiting rather than sealing a continuation whose
+   * commit nobody could name.
+   */
+  private async capturedContinuationHead(
+    child: WorkflowSubmission,
+    repositoryRoot: string | null,
+  ): Promise<string | null> {
+    const context = WorkflowContextSnapshotSchema.safeParse(child.context);
+    const headSha = context.success ? context.data.evidence.headSha : null;
+    if (!headSha || !repositoryRoot) return null;
+    const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
+    return resolve(repositoryRoot, headSha).catch(() => null);
   }
 
   /**
@@ -3710,6 +3875,27 @@ export class WorkflowManager {
     if (!run) return;
     const expectation = state.expectation ?? { kind: "none" as const };
     const adapter = sessionActionAdapter(snapshot.completion.kind);
+    // Resolved once, from the binding's own record of the repository, rather than per seal.
+    // `binding.sessionRepoRoot` is the same root the Inspector gate matches adoptions against,
+    // so the two cannot disagree about which repository a run belongs to.
+    const captureRoot = binding.sessionRepoRoot ?? null;
+    // A child that is already captured cannot be captured again - the capture guard requires
+    // the run and the submission to both be `capturing`, and a completed capture left neither.
+    // It gets here when a previous pass captured the evidence and the adapter then refused it,
+    // which is the ordinary shape of "HEAD moved between the proof and the capture": the
+    // observer has since re-decided against the head this child actually holds, so the only
+    // thing left to do is re-check that fresh expectation against the evidence that exists.
+    // Without this the run would sit in `awaiting_proof` forever, re-reserving a row it could
+    // never refill.
+    if (child.status !== "capturing") {
+      if (await this.sealCapturedContinuation(attempt.id, child)) return;
+      workflowLog("error", {
+        event: "session_action_continuation_unsealed",
+        call: attempt.id,
+        error: child.status,
+      });
+      return;
+    }
     const captured = await this.captureAndActivate(
       binding,
       run,
@@ -3729,6 +3915,7 @@ export class WorkflowManager {
         expectation,
         adapter,
         child: capturedSubmission,
+        repositoryRoot: captureRoot,
       }),
     );
     if (!captured.ok) {
@@ -3751,7 +3938,7 @@ export class WorkflowManager {
    * capture guard requires the run and submission to be `capturing`, and neither is any more -
    * so recovery has to be able to seal an already-captured child directly.
    */
-  private sealSessionActionContinuation(input: {
+  private async sealSessionActionContinuation(input: {
     attempt: WorkflowNodeAttempt;
     snapshot: SessionActionSnapshot;
     version: WorkflowVersion;
@@ -3759,7 +3946,9 @@ export class WorkflowManager {
     expectation: SessionActionContinuationExpectation;
     adapter: ReturnType<typeof sessionActionAdapter>;
     child: WorkflowSubmission;
-  }): boolean {
+    /** Where to resolve the captured abbreviation, or null when it cannot be resolved. */
+    repositoryRoot: string | null;
+  }): Promise<boolean> {
     const { attempt, snapshot, version, node, expectation, adapter, child } = input;
     const context = WorkflowContextSnapshotSchema.safeParse(child.context);
     if (!context.success) {
@@ -3767,7 +3956,11 @@ export class WorkflowManager {
         "The continuation evidence could not be read back after capture.", Date.now());
       return false;
     }
-    const problem = adapter.validateCapture(expectation, context.data);
+    const capture: SessionActionCaptureFacts = {
+      context: context.data,
+      capturedHeadOid: await this.capturedContinuationHead(child, input.repositoryRoot),
+    };
+    const problem = adapter.validateCapture(expectation, capture);
     if (problem) {
       // Deliberately a WAIT rather than a block when the expectation has simply not been met
       // yet: the child row stays reserved, nothing downstream activates, and the next sweep
@@ -3805,6 +3998,20 @@ export class WorkflowManager {
     );
   }
 
+  /**
+   * Which skill this packet's first line has to still resolve to, or null when it names none.
+   *
+   * The two kinds answer from different places on purpose. A `pr_handoff` was produced by the
+   * completion policy, which knows only one skill, so the id is the constant. A `session_action`
+   * carries whatever its published snapshot named - including nothing, which is the ordinary
+   * case for an operator's own action.
+   */
+  private deliverySkillId(delivery: WorkflowDelivery): string | null {
+    if (delivery.kind === "pr_handoff") return PULL_REQUEST_SKILL;
+    if (delivery.kind !== "session_action" || !delivery.nodeAttemptId) return null;
+    return this.store.getAttempt(delivery.nodeAttemptId)?.sessionAction?.requiredSkillId ?? null;
+  }
+
   private deliveryBlock(delivery: WorkflowDelivery, expectedPane?: string | null): string | null {
     const run = this.store.getRun(delivery.runId);
     if (!run || runIsTerminal(run)) return "run_terminal";
@@ -3815,31 +4022,28 @@ export class WorkflowManager {
     const session = this.registry.getSession(delivery.sessionId);
     if (!session || session.state === "exited") return "session_unavailable";
     if (noteKeyFor(session) !== delivery.noteKey) return "conversation_changed";
-    if (delivery.kind === "pr_handoff") {
-      const required = this.requireSkill(session, PULL_REQUEST_SKILL);
-      if (!required.ok) return "required_skill_unavailable";
-      if (!delivery.payload.startsWith(`${required.command}\n`)) {
-        return "required_skill_invocation_stale";
-      }
-    }
     // The SECOND required-skill gate, and the reason there are two: the packet was rendered
-    // when the attempt started waiting, and a skill can be switched off, uninstalled or
-    // re-linked between then and the write. Re-resolving here and comparing the prefix is
-    // what stops a prepared packet invoking a command that no longer means what it did.
-    // Read from the ATTEMPT's frozen snapshot, never the live library, so an edit to the
-    // action cannot change what this run demands.
+    // when it was prepared, and a skill can be switched off, uninstalled or re-linked between
+    // then and the write. Re-resolving here and comparing the prefix is what stops a prepared
+    // packet invoking a command that no longer means what it did.
+    //
+    // ONE check over both delivery kinds, because the rule is one rule. Where the required
+    // skill comes FROM differs and that is the whole difference: a legacy PR handoff is
+    // hard-wired to the pull-request skill by the completion policy that produced it, while an
+    // action reads its ATTEMPT's frozen snapshot - never the live library, so an edit to the
+    // action cannot change what an in-flight run demands.
     if (delivery.kind === "session_action") {
       const attempt = delivery.nodeAttemptId ? this.store.getAttempt(delivery.nodeAttemptId) : null;
       if (!attempt || attempt.state !== "waiting" || !attempt.sessionAction) {
         return "session_action_not_waiting";
       }
-      const skillId = attempt.sessionAction.requiredSkillId;
-      if (skillId) {
-        const required = this.requireSkill(session, skillId);
-        if (!required.ok) return "required_skill_unavailable";
-        if (!delivery.payload.startsWith(`${required.command}\n`)) {
-          return "required_skill_invocation_stale";
-        }
+    }
+    const requiredSkillId = this.deliverySkillId(delivery);
+    if (requiredSkillId) {
+      const required = this.requireSkill(session, requiredSkillId);
+      if (!required.ok) return "required_skill_unavailable";
+      if (!delivery.payload.startsWith(`${required.command}\n`)) {
+        return "required_skill_invocation_stale";
       }
     }
     if (expectedPane !== undefined && paneToken(session) !== expectedPane) return "pane_recreated";
@@ -3998,7 +4202,9 @@ export class WorkflowManager {
     previousFingerprint?: string,
     allowUnchanged = false,
     expectation?: WorkflowCaptureExpectation,
-    beforeActivate?: (captured: WorkflowSubmission) => boolean,
+    // Awaited, because the one guard that uses it has to ask git which commit the capture
+    // actually holds before it can say whether the capture is the one the adapter proved.
+    beforeActivate?: (captured: WorkflowSubmission) => boolean | Promise<boolean>,
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     try {
       return await this.withCaptureLock(binding.noteKey, async () => {
@@ -4195,7 +4401,7 @@ export class WorkflowManager {
         previousFingerprint: previousFingerprint ?? null,
         compaction: context.compaction.status,
       }, Date.now());
-      if (beforeActivate && !beforeActivate(runnable)) {
+      if (beforeActivate && !(await beforeActivate(runnable))) {
         this.publishRun(run.id);
         return {
           ok: false,
@@ -4323,27 +4529,42 @@ export class WorkflowManager {
       if (state.wait === "capturing" && state.continuationSubmissionId) {
         const child = this.store.getSubmission(state.continuationSubmissionId);
         if (!child) continue;
-        // The child's evidence is already durable and only its receipt is missing: the daemon
-        // stopped inside `captureAndActivate`'s activation step. Re-capturing is not an option
-        // - the capture guard requires run and submission to both be `capturing`, and neither
-        // is any more - so seal it directly and let the engine activate from the receipt.
-        if (child.status !== "capturing" && this.sealCapturedContinuation(attempt.id, child)) {
-          continue;
-        }
-        if (child.status === "failed" && run.status === "blocked") {
-          this.store.resumeCapture(run.id, child.id, EXTERNAL_RESUMABLE_PHASES);
-        }
-        this.trackDeliveryTask(
-          this.captureSessionActionContinuation(attempt.id, Date.now()).catch((error) => {
-            this.blockSessionAction(
-              attempt.id,
-              "capture_failed",
-              error instanceof Error ? error.message : String(error),
-            );
-          }),
-        );
+        // Tracked rather than awaited, for the reason recovery is not an async function: it
+        // runs on the daemon's start path, and blocking it on git for every waiting action
+        // would delay every other run's recovery behind one repository. The sequence inside
+        // is what has to be ordered, and it is.
+        this.trackDeliveryTask(this.recoverSessionActionCapture(attempt.id, child).catch((error) => {
+          this.blockSessionAction(
+            attempt.id,
+            "capture_failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }));
       }
     }
+  }
+
+  /**
+   * Pick one interrupted continuation back up, in the order its three durable states require.
+   *
+   * Seal first: a child whose evidence is durable and whose receipt is not needs its receipt,
+   * not a second capture - the capture guard requires the run and the submission to both be
+   * `capturing`, and a completed capture left neither. Only when that is refused does the row
+   * get resumed and refilled, and `resumeCapture` is what puts the pair back into the state
+   * the capture path requires.
+   */
+  private async recoverSessionActionCapture(
+    attemptId: string,
+    child: WorkflowSubmission,
+  ): Promise<void> {
+    if (child.status !== "capturing" && await this.sealCapturedContinuation(attemptId, child)) {
+      return;
+    }
+    const run = this.store.getRun(child.runId);
+    if (child.status === "failed" && run?.status === "blocked") {
+      this.store.resumeCapture(run.id, child.id, EXTERNAL_RESUMABLE_PHASES);
+    }
+    await this.captureSessionActionContinuation(attemptId, Date.now());
   }
 
   /**
@@ -4353,12 +4574,15 @@ export class WorkflowManager {
    * ordinary capture-resume path. `activateSubmission` is what moves the run out of the
    * `capture_interrupted` state the engine's own recovery left it in.
    */
-  private sealCapturedContinuation(attemptId: string, child: WorkflowSubmission): boolean {
+  private async sealCapturedContinuation(
+    attemptId: string,
+    child: WorkflowSubmission,
+  ): Promise<boolean> {
     const resolved = this.resolveSessionAction(attemptId);
     if (!resolved) return false;
-    const { attempt, snapshot, state, version, node } = resolved;
+    const { attempt, snapshot, state, binding, version, node } = resolved;
     if (!WorkflowContextSnapshotSchema.safeParse(child.context).success) return false;
-    const sealed = this.sealSessionActionContinuation({
+    const sealed = await this.sealSessionActionContinuation({
       attempt,
       snapshot,
       version,
@@ -4366,6 +4590,7 @@ export class WorkflowManager {
       expectation: state.expectation ?? { kind: "none" },
       adapter: sessionActionAdapter(snapshot.completion.kind),
       child,
+      repositoryRoot: binding.sessionRepoRoot ?? null,
     });
     if (!sealed) return false;
     this.store.appendEvent(child.runId, "session_action_continuation_resealed", {

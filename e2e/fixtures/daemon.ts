@@ -167,6 +167,17 @@ export async function startDaemon(): Promise<DaemonHandle> {
       MISSION_POLL_MS: "0",
       // A fake agent answers instantly, so the dispatch settle windows are pure latency here.
       MISSION_DISPATCH_SETTLE_MS: "0",
+      // The same reasoning for the workflow sweep, which is what advances a session action
+      // once its turn has settled. Shipped at 15s for a laptop with real agents on it; here
+      // every turn is already over by the time the first sweep would have looked, so the
+      // default is pure wall clock in every action spec.
+      //
+      // A second and lower, deliberately: this runs in EVERY daemon this suite starts, not
+      // only the ones running an action, and four workers each hold a daemon and a browser.
+      // `queued-turn-recall` has a real five-second budget between two submits, so background
+      // work here is not free - and a sweep fifteen times faster than shipped is already far
+      // more than the action specs need.
+      MISSION_WORKFLOW_SWEEP_MS: "1000",
       // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
       // instead of quietly spending.
       ANTHROPIC_API_KEY: "",

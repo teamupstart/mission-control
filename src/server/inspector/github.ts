@@ -134,6 +134,15 @@ export function parsePrUrl(
 export interface PrSnapshot {
   state: "OPEN" | "CLOSED" | "MERGED";
   headSha: string;
+  /**
+   * The branch the pull request is opened FROM, or "" when GitHub did not report one.
+   *
+   * Read by the `pull_request` session action adapter, which proves its pull request by
+   * repository AND branch. Empty is carried rather than defaulted: a blank branch matches
+   * nothing, which is the fail-closed reading for a field that decides whether a workflow
+   * lets downstream stages run.
+   */
+  headRefName: string;
   title: string;
   body: string;
   isDraft: boolean;
@@ -201,7 +210,7 @@ interface ThreadPage {
 const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      state headRefOid isDraft title body createdAt mergeable reviewDecision
+      state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
       commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
       reviewThreads(first:100){
         nodes{
@@ -330,6 +339,7 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
   return {
     state: (pr.state as PrSnapshot["state"]) ?? "CLOSED",
     headSha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
+    headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
     title: typeof pr.title === "string" ? pr.title : "",
     body: typeof pr.body === "string" ? pr.body : "",
     isDraft: pr.isDraft === true,

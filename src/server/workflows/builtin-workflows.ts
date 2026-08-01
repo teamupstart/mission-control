@@ -27,11 +27,15 @@ import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import {
   compileStages,
   stageNodeIds,
+  type Stage,
   type StageMember,
   type StagePipeline,
 } from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
-import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
+import {
+  BUILTIN_SESSION_ACTIONS,
+  PULL_REQUEST_SESSION_ACTION_ID,
+} from "./builtin-session-actions.ts";
 
 export {
   BUILTIN_WORKFLOW_ID_PREFIX,
@@ -271,6 +275,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   evidence: "nmr-test-evidence",
   documentation: "nmr-documentation",
   depth: "nmr-depth-join",
+  pullRequest: "nmr-pull-request",
   end: "nmr-end",
 } as const;
 
@@ -279,6 +284,10 @@ const reviewer = (nodeId: string, slug: string): StageMember =>
 
 const check = (nodeId: string, slot: WorkflowCheckSlot): StageMember =>
   ({ nodeId, kind: "check", slot });
+
+/** One session action, alone in its own stage - which is the only shape the runtime executes. */
+const action = (nodeId: string, sessionActionId: SessionActionId): Stage =>
+  ({ kind: "session_action", member: { nodeId, kind: "session_action", sessionActionId } });
 
 /**
  * Intent first as the cheap gate, then the three deep reviews in parallel behind it.
@@ -387,6 +396,58 @@ const NO_MISTAKES_REVIEW_V3: StagePipeline = {
 };
 
 /**
+ * Version 8: the version 3 graph with the pull request opened as an authored STAGE.
+ *
+ * Written out in full for the reason every version above is, and the duplication is again the
+ * point: versions 1 through 7 are frozen, and a shared array is one edit away from rewriting a
+ * graph existing bindings are pinned to.
+ *
+ * What changes is where the pull request comes from. Versions 5 through 7 reach End first and
+ * then have the completion policy type the handoff, which means the run is already "successful"
+ * when the pull request is opened and nothing proves one was. Here the action is a stage like
+ * any other: it runs after the reviews have passed, it types the same `pull-request` skill, and
+ * its `complete` route reaches End only once an open pull request has been observed at the
+ * commit the continuation captured. So End means the same thing it always did - the authored
+ * graph succeeded - and by the time the Inspector claims that success there is provably
+ * something for it to review.
+ *
+ * It is LAST among the authored stages and not first, because a pull request is the thing you
+ * open once the work has been judged. Its fresh evidence segment therefore feeds End rather
+ * than another evaluator, which is the cheapest possible use of a continuation and the reason
+ * this version costs no extra model calls.
+ */
+const NO_MISTAKES_REVIEW_V4: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.build,
+      members: [
+        check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
+        check(NO_MISTAKES_REVIEW_NODES.test, "test"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: null,
+      members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+      ],
+    },
+    action(NO_MISTAKES_REVIEW_NODES.pullRequest, PULL_REQUEST_SESSION_ACTION_ID),
+  ],
+};
+
+/**
  * The binding posture shipped before Foreman Complete became the application default.
  *
  * Built-in versions are immutable app data: deriving versions 1-5 from today's default would
@@ -425,10 +486,10 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     description:
       "A typecheck and test stage, then four built-in review roles composed as designed: "
       + "Intent Conformance as the cheap first judge, then Code Risk, "
-      + "Test Evidence and Documentation in parallel behind it. This build does not yet spawn "
-      + "configured commands, so configured checks are recorded as not run and passed; "
-      + "unconfigured slots are skipped and pass. Every fail returns to the session for repair, "
-      + "and a passed review is gated on the Inspector finding nothing on the pull request.",
+      + "Test Evidence and Documentation in parallel behind it. Configured check commands run "
+      + "for real; unconfigured slots are skipped and pass. Every fail returns to the session "
+      + "for repair. The current version then opens the pull request as its last stage, and a "
+      + "passed review is gated on the Inspector finding nothing on it.",
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
@@ -523,6 +584,26 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         resumptionPolicy: "auto",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 6,
+      },
+      {
+        // Version 8: the pull request becomes an authored stage before End.
+        //
+        // `missingPrAction: "wait"` is the half of this that is easy to get wrong. Versions 5
+        // through 7 say `prepare_pr` because in those versions nothing has opened a pull
+        // request by the time the gate is entered, so the gate has to. Here the graph cannot
+        // reach End without one - that is what the action's completion proved - so a gate that
+        // found none has met a state its own preparation would not fix, and typing a second
+        // handoff into the session would be asking for a pull request the run already has.
+        // Waiting is the honest answer, and the operator still has Prepare PR by hand.
+        pipeline: NO_MISTAKES_REVIEW_V4,
+        completionPolicy: {
+          kind: "inspector",
+          onFindings: "inspector_only",
+          missingPrAction: "wait",
+        },
+        resumptionPolicy: "auto",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 7,
       },
     ],
   }),

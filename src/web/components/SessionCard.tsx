@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import type { Session, SessionQueueSummary } from "@shared/types.ts";
+import type { ReviewItem, Session, SessionQueueSummary } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
@@ -22,6 +22,7 @@ import {
 import type { SessionLaunchersHandle } from "./LaunchMenu.tsx";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
 import type { SessionFilesController } from "../lib/sessionFiles.ts";
+import { useTimelineReviews } from "../lib/timelineReviews.ts";
 import { ForemanNote } from "./ForemanNote.tsx";
 import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
@@ -39,6 +40,15 @@ import {
   EnsembleChip,
   SessionWhere,
 } from "./session-bits.tsx";
+
+/**
+ * The default for the `reviews` prop, hoisted so it is the SAME array every render.
+ *
+ * A `[]` literal in the parameter list is a fresh reference each time, which would
+ * invalidate the memo inside `useTimelineReviews` on every frame the grid draws - and the
+ * grid redraws on every SSE tick.
+ */
+const EMPTY_REVIEWS: ReviewItem[] = [];
 
 /**
  * The teaser for a queue you can't see, and the way back into it.
@@ -103,6 +113,7 @@ export function SessionCard({
   selected = false,
   onSelect,
   expanded = false,
+  reviews = EMPTY_REVIEWS,
   canExpand = true,
   onToggleExpand,
   registerEl,
@@ -174,6 +185,12 @@ export function SessionCard({
   inputReviewId?: string | null;
   /** Live pending review ids, so Foreman's Approve can tell a since-resolved draft is stale. */
   pendingReviewIds?: ReadonlySet<string>;
+  /**
+   * Every review App knows about, live off the SSE stream. Narrowed to this session's
+   * human-resolved ones by `useTimelineReviews`, which folds them into the expanded
+   * conversation - the answers you gave, shown where you gave them.
+   */
+  reviews?: ReviewItem[];
   workflowRun?: WorkflowRunSummary | null;
   onOpenWorkflowRun?: (runId: string) => void;
   onBindWorkflow?: () => void;
@@ -201,6 +218,10 @@ export function SessionCard({
   // different intents, and on a collapsed card folding is what stops a long batch from
   // stretching the whole grid row.
   const [queueCollapsed, setQueueCollapsed] = useState(false);
+  // Gated on `expanded`, which is when the transcript below is mounted at all. The grid
+  // holds a card per session; fetching every one's review history to draw the single
+  // conversation on screen would be a request per card on every layout change.
+  const timelineReviews = useTimelineReviews(session.id, reviews, expanded);
   // The expanded transcript's reply box, so the send shortcut can put a cursor in the
   // box that's already there instead of opening a second one (null while collapsed,
   // which is exactly when this card's own send box is the right answer).
@@ -474,6 +495,7 @@ export function SessionCard({
               session={session}
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
+              reviews={timelineReviews}
               onReplyBox={setHasReply}
               onOpenFile={onOpenFile}
               files={files}

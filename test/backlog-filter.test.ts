@@ -67,6 +67,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     foremanAllowlist: [],
     inputReviewBySession: new Map<string, string>(),
     pendingReviewIds: new Set<string>(),
+    reviews: [],
   };
 }
 

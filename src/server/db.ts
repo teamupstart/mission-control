@@ -19,6 +19,8 @@ import type {
   NoteDisposition,
   PaneDialogSummary,
   PlanDecision,
+  PlanDecisionAnswer,
+  ReviewActor,
   ReviewItem,
   ReviewKind,
   ReviewStatus,
@@ -36,6 +38,7 @@ import type {
   WorkItemState,
   WorktreeProvider,
 } from "@shared/types.ts";
+import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { readCheapAction, readDivergence } from "@shared/foreman.ts";
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
@@ -1490,6 +1493,21 @@ function migrate(d: DatabaseSync): void {
   // another kind, reads as "no decisions" - which is exactly what they are.
   addColumn(d, "reviews", "decisions", "TEXT");
 
+  // `selections`: which option ids the human actually picked, as a JSON array of
+  // `PlanDecisionAnswer`. The `response` beside it has always held the FLATTENED answer the
+  // agent reads, which names the chosen labels and nothing else - so the conversation
+  // cannot replay the question from it. Nullable with no default: an existing row, and
+  // every resolution with no form behind it, reads as "no selections", and the transcript
+  // falls back to showing the response prose.
+  addColumn(d, "reviews", "selections", "TEXT");
+
+  // `resolved_by`: who settled the review. Needed because Foreman resolves through the same
+  // route the dashboard does, and only the human's answers belong in the conversation -
+  // Foreman's are already there as its own episode. Nullable with no default, so a row
+  // written before this column reads as "unattributed" rather than being credited to the
+  // operator on the strength of its status alone.
+  addColumn(d, "reviews", "resolved_by", "TEXT");
+
   // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
   // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
   // is new enough that the only dbs carrying it are the ones this feature was developed
@@ -1744,6 +1762,8 @@ interface ReviewRow {
   status: string;
   response: string | null;
   decisions: string | null;
+  selections: string | null;
+  resolved_by: string | null;
   created_at: number;
   resolved_at: number | null;
 }
@@ -1757,22 +1777,26 @@ function rowToReview(r: ReviewRow): ReviewItem {
     body: r.body,
     status: r.status as ReviewStatus,
     response: r.response,
-    decisions: parseDecisions(r.decisions),
+    decisions: parseJsonArray<PlanDecision>(r.decisions),
+    selections: parseJsonArray<PlanDecisionAnswer>(r.selections),
+    resolvedBy: (r.resolved_by as ReviewActor | null) ?? null,
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
   };
 }
 
 /**
- * Decode the `decisions` column. A malformed blob returns null rather than throwing:
- * one corrupt row must not take down `loadPendingReviews` and every review with it, and
- * "no decisions" is the safe degradation - the card renders as a plain plan.
+ * Decode one of the review table's JSON array columns (`decisions`, `selections`). A
+ * malformed blob returns null rather than throwing: one corrupt row must not take down
+ * `loadPendingReviews` and every review with it, and "absent" is the safe degradation for
+ * both - the card renders as a plain plan, and the transcript falls back to the response
+ * prose instead of replaying a form it cannot trust.
  */
-function parseDecisions(raw: string | null): PlanDecision[] | null {
+function parseJsonArray<T>(raw: string | null): T[] | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as PlanDecision[]) : null;
+    return Array.isArray(parsed) ? (parsed as T[]) : null;
   } catch {
     return null;
   }
@@ -1792,21 +1816,39 @@ export function insertReview(r: ReviewItem): void {
       r.body,
       r.status,
       r.response,
-      r.decisions && r.decisions.length ? JSON.stringify(r.decisions) : null,
+      jsonArrayColumn(r.decisions),
       r.createdAt,
       r.resolvedAt,
     );
 }
 
+/**
+ * Settle a review: its status, what the human said, what they picked, and who they were.
+ *
+ * All five move together in one statement because they describe a single event. Splitting
+ * the two new columns into a second UPDATE would leave a window in which the row is
+ * `answered` but unattributed, and the conversation reads that as "not a human's answer".
+ */
 export function updateReviewStatus(
   id: string,
   status: ReviewStatus,
   response: string | null,
   resolvedAt: number | null,
+  selections: PlanDecisionAnswer[] | null = null,
+  resolvedBy: ReviewActor | null = null,
 ): void {
   openDb()
-    .prepare(`UPDATE reviews SET status = ?, response = ?, resolved_at = ? WHERE id = ?`)
-    .run(status, response, resolvedAt, id);
+    .prepare(
+      `UPDATE reviews
+          SET status = ?, response = ?, resolved_at = ?, selections = ?, resolved_by = ?
+        WHERE id = ?`,
+    )
+    .run(status, response, resolvedAt, jsonArrayColumn(selections), resolvedBy, id);
+}
+
+/** Store a JSON array column, collapsing both "absent" and "empty" to NULL. */
+function jsonArrayColumn(rows: unknown[] | null | undefined): string | null {
+  return rows && rows.length ? JSON.stringify(rows) : null;
 }
 
 /** Reviews still awaiting a human decision - reloaded into the registry on start. */
@@ -1815,6 +1857,39 @@ export function loadPendingReviews(): ReviewItem[] {
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
   return rows.map(rowToReview);
+}
+
+/**
+ * The reviews a session's conversation replays: the ones a HUMAN settled, oldest first.
+ *
+ * Separate from `loadResolvedWorkflowReviews` rather than sharing its query, because the
+ * two ask different questions of the same table. That one gathers evidence of intent, so it
+ * takes only the kinds that carry a plan or an answer and drops a dismissal outright. This
+ * one reconstructs a conversation, so it takes every kind - an approved `diff` is a thing
+ * you said - and keeps dismissals, which are the record of a question closed unanswered.
+ *
+ * The status/actor filter is `isHumanResolvedReview` expressed in SQL, and the predicate is
+ * asserted over the result so the two can be shown to agree rather than assumed to.
+ *
+ * `ASC` because this is read in reading order and merged into a transcript that runs the
+ * same way; the LIMIT then keeps the OLDEST rows of a very long session, which is the
+ * wrong end to keep - so the bound is deliberately high enough that no real session reaches
+ * it, and a session that somehow did would lose its most recent answers visibly (the
+ * conversation simply stops showing them) rather than silently reordering.
+ */
+export function loadHumanResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
+  const statuses = [...HUMAN_REVIEW_STATUSES];
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM reviews
+        WHERE session_id = ?
+          AND resolved_by = 'human'
+          AND status IN (${statuses.map(() => "?").join(", ")})
+        ORDER BY resolved_at ASC, created_at ASC
+        LIMIT ?`,
+    )
+    .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
+  return rows.map(rowToReview).filter(isHumanResolvedReview);
 }
 
 /** Human-resolved plan/input records retained as workflow intent evidence. */

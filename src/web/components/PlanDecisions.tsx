@@ -1,51 +1,39 @@
 import { useState } from "react";
-import type { PlanDecision } from "@shared/types.ts";
+import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
+import { formatResponse, isAnswered } from "../lib/reviews.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** Per-decision answer state: chosen option ids plus any free-text "Other". */
 type Answers = Record<string, { selected: string[]; other: string }>;
 
 /**
- * A decision is answered once it has a selected option, or free text when the
- * decision allows it. Submit stays disabled until every decision clears this bar,
- * and an empty decision set is "nothing to submit" rather than vacuously complete,
- * so the agent never unblocks on a half-filled or content-free form.
- */
-function isAnswered(d: PlanDecision, a: { selected: string[]; other: string } | undefined): boolean {
-  if (!a) return false;
-  if (a.selected.length > 0) return true;
-  return Boolean(d.allowOther && a.other.trim());
-}
-
-/**
- * Format the selections into the response string the agent receives verbatim as its
- * tool result. Deterministic and human-legible (it also shows in the transcript), one
- * block per question with the chosen labels and any free-text note.
+ * The form's state as the wire shape, in the order the questions were asked.
  *
- * `lead` names what was answered, because this form now serves two askers: a
- * `plan-decisions` review resolving several choices about a plan, and an `input` review
- * where `request_input` asked one question with options - the replacement for Claude's
- * built-in `AskUserQuestion`. Telling the second one "Plan decisions submitted" would hand
- * the agent a plan it never wrote.
+ * One conversion at the edge rather than holding `PlanDecisionAnswer[]` throughout: the
+ * form indexes by decision id on every keystroke, which a map does well and an array does
+ * not. Every decision is emitted, answered or not - an unanswered one is a real fact about
+ * a submission, and dropping it would make a form that could not have been submitted look
+ * like one that never asked. Blank "Other" text normalizes to null so "typed nothing" and
+ * "typed and cleared it" are the same record.
  */
-function formatResponse(decisions: PlanDecision[], answers: Answers, lead: string): string {
-  const blocks = decisions.map((d) => {
-    const a = answers[d.id] ?? { selected: [], other: "" };
-    const labels = d.options.filter((o) => a.selected.includes(o.id)).map((o) => o.label);
-    const lines = [`• ${d.question}`];
-    if (labels.length) lines.push(`  → ${labels.join(", ")}`);
-    if (d.allowOther && a.other.trim()) lines.push(`  Other: ${a.other.trim()}`);
-    if (!labels.length && !(d.allowOther && a.other.trim())) lines.push("  → (no selection)");
-    return lines.join("\n");
+function toDecisionAnswers(decisions: PlanDecision[], answers: Answers): PlanDecisionAnswer[] {
+  return decisions.map((d) => {
+    const a = answers[d.id];
+    return {
+      decisionId: d.id,
+      selected: a?.selected ?? [],
+      other: a?.other.trim() ? a.other.trim() : null,
+    };
   });
-  return `${lead}\n\n${blocks.join("\n\n")}`;
 }
 
 /**
  * Renders each decision as a radio group (choose one) or checkbox group (choose many),
- * with an optional free-text "Other". Its Submit hands the formatted selections up so
- * the caller can resolve the review with `action: "answer"`. When `onDismiss` is
- * supplied, Dismiss resolves the whole request without submitting any selections.
+ * with an optional free-text "Other". Its Submit hands up both the formatted response the
+ * agent will read and the structured selections behind it, so the caller can resolve the
+ * review with `action: "answer"` and the conversation can later replay the form. When
+ * `onDismiss` is supplied, Dismiss resolves the whole request without submitting any
+ * selections.
  */
 export function DecisionForm({
   decisions,
@@ -82,7 +70,11 @@ export function DecisionForm({
 }: {
   decisions: PlanDecision[];
   busy: boolean;
-  onSubmit: (response: string) => void;
+  /**
+   * `response` is the agent's tool result, `selections` the record kept beside it. Handed
+   * up together, from one derivation, so the two can never describe different answers.
+   */
+  onSubmit: (response: string, selections: PlanDecisionAnswer[]) => void;
   /** Resolve this decision request without sending any of its options as an answer. */
   onDismiss?: () => void;
   lead?: string;
@@ -117,7 +109,10 @@ export function DecisionForm({
     }));
   }
 
-  const complete = decisions.length > 0 && decisions.every((d) => isAnswered(d, answers[d.id]));
+  // Built once per render and used for both the completeness test and the submit, so the
+  // button's enabled state is decided over exactly the payload it would send.
+  const payload = toDecisionAnswers(decisions, answers);
+  const complete = decisions.length > 0 && decisions.every((d, i) => isAnswered(d, payload[i]));
 
   return (
     <div className="decisions">
@@ -173,7 +168,7 @@ export function DecisionForm({
           <button
             className="btn btn-approve"
             disabled={busy || !complete}
-            onClick={() => onSubmit(formatResponse(decisions, answers, lead))}
+            onClick={() => onSubmit(formatResponse(decisions, payload, lead), payload)}
           >
             Submit
           </button>

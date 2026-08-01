@@ -427,13 +427,47 @@ export const McpCreateTaskSchema = z
   );
 export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
 
-/** The human's decision on a review, from the dashboard. */
+/**
+ * What the human picked for one decision, echoed back by option id.
+ *
+ * Ids and not labels: the label is display text that an agent may rewrite between asking
+ * and being answered, while the id is the handle the question was built with. Unbounded
+ * `selected` because a `multiSelect` decision has no fixed arity; empty is legal, since a
+ * decision with `allowOther` can be answered entirely in free text.
+ */
+export const PlanDecisionAnswerSchema = z.object({
+  decisionId: z.string().min(1),
+  selected: z.array(z.string().min(1)),
+  other: z.string().nullable().optional().default(null),
+});
+export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
+
+/**
+ * The human's decision on a review, from the dashboard.
+ *
+ * `selections` is the structured twin of `response`, sent only by the decision form. The
+ * agent still receives `response` verbatim - that contract is untouched - but the flattened
+ * string cannot say which options were NOT taken, so the conversation replays the form from
+ * this instead. Optional, because most resolutions have no form behind them: a free-text
+ * `input`, an approve/reject note, a dismiss.
+ *
+ * `by` names the actor, defaulting to the human because this route is the dashboard's. The
+ * Foreman worker is the one caller that must say otherwise, and it reaches the daemon
+ * through this same HTTP route rather than in-process - so it declares itself here, and its
+ * answers stay out of the conversation the human is credited with.
+ */
 export const ResolveReviewSchema = z.object({
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
+  selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
+  by: z.enum(["human", "foreman"]).optional().default("human"),
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,
+  // A dismiss chose nothing by definition, so it carries no form to replay. Cleared here
+  // beside the response for the same reason that one is: a client sending both a dismiss
+  // and a set of selections is contradicting itself, and the stored row must not.
+  selections: resolution.action === "dismiss" ? null : resolution.selections,
 }));
 export type ResolveReview = z.infer<typeof ResolveReviewSchema>;
 

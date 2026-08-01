@@ -1830,6 +1830,18 @@ export type ReviewStatus =
   | "dismissed"
   | "orphaned";
 
+/**
+ * Who settled a review. Persisted as text in `reviews.resolved_by`, so these spellings
+ * are append-only.
+ *
+ * The daemon's own `orphaned` settle records NEITHER: nobody decided anything, the agent
+ * simply stopped being there to hear an answer. A row from before this column existed
+ * reads as null for the same reason - it may well have been a human, but the record does
+ * not say so, and the conversation must not claim an answer the human cannot be shown to
+ * have given.
+ */
+export type ReviewActor = "human" | "foreman";
+
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
   /** Stable id, echoed back in the human's selection. */
@@ -1858,6 +1870,28 @@ export interface PlanDecision {
   allowOther?: boolean;
 }
 
+/**
+ * What the human picked for one `PlanDecision`.
+ *
+ * The structured half of an answer, kept because `response` is not one: that string is
+ * FLATTENED for the agent to read ("→ OAuth via Clerk"), so it records the labels chosen
+ * and nothing about the ones passed over. Replaying the question in the conversation needs
+ * both - which option was taken and what it was taken from - and re-deriving the first by
+ * matching labels back out of the prose would break the moment two options shared a prefix
+ * or a label contained the separator.
+ *
+ * Option ids rather than labels, so a decision replays correctly even though the label is
+ * what the agent's response string quotes.
+ */
+export interface PlanDecisionAnswer {
+  /** The `PlanDecision.id` this answers. */
+  decisionId: string;
+  /** Chosen `PlanDecisionOption.id`s - one for a radio, any number for a multi-select. */
+  selected: string[];
+  /** What was typed into "Other", when the decision allowed it and the human used it. */
+  other: string | null;
+}
+
 export interface ReviewItem {
   id: string;
   sessionId: string;
@@ -1876,6 +1910,14 @@ export interface ReviewItem {
    * whose agent supplied discrete options, absent for a free-text `input`.
    */
   decisions?: PlanDecision[] | null;
+  /**
+   * The human's selections against `decisions`, kept alongside the flattened `response`
+   * so the conversation can replay the form as it was answered. Null for every other way
+   * a review settles: free-text `input`, approve/reject, dismiss, orphan.
+   */
+  selections?: PlanDecisionAnswer[] | null;
+  /** Who settled it, or null when nobody did (`orphaned`) and on pre-column rows. */
+  resolvedBy?: ReviewActor | null;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }

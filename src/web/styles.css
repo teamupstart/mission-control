@@ -17464,6 +17464,165 @@ select.sc-input {
   background: color-mix(in oklab, var(--panel-2) 90%, var(--attention) 4%);
 }
 
+/* --- the human's answer to a review, replayed in the conversation ---
+
+   Gold, because gold is what the form wore when it was asked (`--attention` carries every
+   surface that wants a person: the kind tag, the radio accent, the inbox rule). Reading the
+   same colour back in the log is what says "this is that question, answered" rather than
+   "this is a new kind of message".
+
+   Geometry is `.foreman-episode`'s - same padding, radius, and 3px left rule - so the two
+   things that happened ALONGSIDE the transcript read as peers of each other and as visitors
+   among the turns, which wear no left rule at all. Only the colour separates them: purple is
+   Foreman deciding, gold is you. */
+.review-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 4px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--attention);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel-2) 92%, var(--attention) 8%);
+}
+.review-answer-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+/* The byline, in the same utility face as a turn's - it is the same kind of fact, so it
+   should not shout louder than "you" does two rows up. */
+.review-answer-who {
+  flex: none;
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--attention);
+}
+/* What was asked. Recedes to the byline: the reader already knows they answered something,
+   and the question itself is restated in full below. */
+.review-answer-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 12px/1.35 var(--sans);
+  color: var(--muted);
+}
+.review-answer-head .turn-time {
+  flex: none;
+  color: var(--dim);
+  font: 500 9.5px/1 var(--mono);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.review-answer-decisions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* Mirrors `.decision`, which is the fieldset this replays. */
+.review-answer-decision {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+.review-answer-q {
+  margin: 0;
+  font: 640 13.5px/1.4 var(--sans);
+  color: var(--fg);
+}
+.review-answer-options {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* Mirrors `.decision-option` minus every affordance: no pointer, no hover, no focus ring.
+   A record must not look like a control. */
+.review-answer-option {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+/* The option that was taken. The wash and the border are what carry it - the reader should
+   find the answer by colour, before reading a word of it. */
+.review-answer-option.is-picked {
+  border-color: color-mix(in oklab, var(--attention) 38%, var(--border));
+  background: color-mix(in oklab, var(--attention) 12%, transparent);
+}
+/* Standing in for the radio/checkbox. The unpicked ring is deliberately faint: the options
+   passed over are context for the one taken, not a list to read through. */
+.review-answer-mark {
+  flex: none;
+  margin-top: 1px;
+  font: 11px/1.35 var(--mono);
+  color: var(--dim);
+}
+.review-answer-option.is-picked .review-answer-mark {
+  color: var(--attention);
+}
+.review-answer-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.review-answer-option-label {
+  font: 13px/1.35 var(--sans);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.review-answer-option.is-picked .review-answer-option-label {
+  color: var(--fg);
+  font-weight: 560;
+}
+/* Free text typed into "Other". Tagged rather than merely indented, because it is an answer
+   the agent never offered and the reader should not mistake it for one of the options. */
+.review-answer-other {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0;
+  font: 13px/1.45 var(--sans);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.review-answer-other-tag {
+  flex: none;
+  font: 600 9.5px/1 var(--sans);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--attention);
+}
+.review-answer-none {
+  margin: 0;
+  font: 12px/1.45 var(--sans);
+  color: var(--dim);
+}
+/* The fallback body: a free-text answer, or a note left on an approve/reject. Wears the
+   turn bubble's typography, because that is exactly what it is - something you wrote. */
+.review-answer-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 13px/1.5 var(--sans);
+  color: var(--fg);
+}
+
 /* --- the rail + drawer --- */
 
 /* Sits in the tab row, pushed to its far end - see the comment at its call site.

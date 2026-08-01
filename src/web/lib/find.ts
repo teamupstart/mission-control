@@ -144,9 +144,12 @@ export function hitsInWindow(hits: FindHit[], from: number, to: number): FindHit
 /**
  * Walk the rendered conversation and collect every occurrence, in document order.
  *
- * Episodes are skipped: they are Foreman's own cards rather than transcript turns,
+ * Episodes and review answers are skipped: they are cards rather than transcript turns,
  * they are not part of the conversation the agent had, and they carry their own
- * structure that a flat offset could not address.
+ * structure that a flat offset could not address. A review answer in particular is a
+ * question, its options, and a selection among them - there is no single string whose
+ * offsets a hit could name, and highlighting the flattened response would light up text
+ * that is not the text on screen.
  *
  * Role BYLINES are not searched either. They are chrome, not conversation - without
  * that exclusion, `you` matches the label above every message the human ever sent,
@@ -163,7 +166,7 @@ export function collectHits(
   const hits: FindHit[] = [];
 
   for (const row of rows) {
-    if (row.kind === "episode") continue;
+    if (row.kind === "episode" || row.kind === "review") continue;
 
     if (row.kind === "turn") {
       const who = turnWho(row.message, agentLabel);

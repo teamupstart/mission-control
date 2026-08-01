@@ -166,6 +166,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const manager = new WorkflowManager(registry, store, {
     readRepositoryHead: async () => ({
+      repositoryId: repository.root,
       root: repository.root,
       branch: repository.branch,
       headOid: full(head.sha),

@@ -154,6 +154,16 @@ const workflows = new WorkflowManager(registry, personas.store, {
   unresolvedCheckLease: (submissionId, nodeId) =>
     checkRuntime.unresolvedLeaseForNode(submissionId, nodeId),
   inject: runtimePromptInjector(sdkSessions),
+  // How often the resumption observer and the session action sweep look, in ms.
+  //
+  // Overridable for the reason `INSPECTOR_POLL_MS` and `MISSION_POLL_MS` are: both loops ask
+  // "has the bound session stopped?", and the shipped fifteen seconds is a cadence chosen for
+  // a laptop with real agents on it. A browser test driving a real action turn otherwise waits
+  // that long per state transition for a fake agent that answered instantly. Unset, the
+  // shipped default stands - this is not a setting an operator has any reason to touch.
+  ...(envVar("WORKFLOW_SWEEP_MS")
+    ? { resumptionIntervalMs: Number(envVar("WORKFLOW_SWEEP_MS")) }
+    : {}),
   canBindSessionToWorkflow: (sessionId) => ensembles.canBindSessionToWorkflow(sessionId),
   externalBindingEligibility: ({ sessionId }) => ensembles.canBindSessionToWorkflow(sessionId),
 });

@@ -117,7 +117,7 @@ test("a session_turn action completes on the turn boundary and constrains nothin
     now: 4,
     // Supplied and pointedly IGNORED. A session turn completes on the turn, so a repository
     // it could have read and a pull request it could have matched change nothing here.
-    repository: { root: "/repo", branch: "feature", headOid: "a".repeat(40) },
+    repository: { repositoryId: "/repo/.git", root: "/repo", branch: "feature", headOid: "a".repeat(40) },
     adoptedPullRequests: [],
     capturedHeadOid: null,
   });

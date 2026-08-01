@@ -95,6 +95,7 @@ import {
   readWorkflowContextRaw,
   readWorkflowEvidenceProbe,
   readWorkflowRepositoryHead,
+  readWorkflowRepositoryId,
   workflowContextFingerprint,
 } from "./context.ts";
 import {
@@ -228,6 +229,7 @@ export interface WorkflowManagerOptions {
    * database, and the proof it feeds has to be provable without one.
    */
   readRepositoryHead?: typeof readWorkflowRepositoryHead;
+  readRepositoryId?: typeof readWorkflowRepositoryId;
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
   compactContext?: typeof compactWorkflowContext;
@@ -3487,6 +3489,19 @@ export class WorkflowManager {
     const state = attempt ? this.store.sessionActionState(attempt) : null;
     if (!attempt || !state || state.wait === wait && Object.keys(patch).length === 0) return;
     this.store.updateSessionActionState(attemptId, { ...state, ...patch, wait }, now);
+    // PUSHED, not merely stored. A wait reason is the answer to "why is nothing happening",
+    // and until this was here it reached the database and stopped: nothing else publishes
+    // while an action waits, so a run detail page that had rendered "Awaiting PR" kept saying
+    // so after the daemon knew the pull request had gone to another branch. Every other state
+    // this observer can reach already publishes - completion and every block do - and the
+    // waits were the ones an operator sits and watches.
+    //
+    // Guarded by the early return above, so a sweep that changes nothing is still silent
+    // rather than re-publishing the same run every fifteen seconds.
+    if (state.wait !== wait) {
+      const submission = this.store.getSubmission(attempt.submissionId);
+      if (submission) this.publishRun(submission.runId);
+    }
   }
 
   /** Stop a waiting action and block its run, without ever producing repair feedback. */
@@ -3656,7 +3671,7 @@ export class WorkflowManager {
       settledAt: now,
       now,
       repository,
-      adoptedPullRequests: this.adoptedPullRequestsForAction(),
+      adoptedPullRequests: await this.adoptedPullRequestsForAction(),
       capturedHeadOid,
     });
     if (decision.kind === "blocked") {
@@ -3710,13 +3725,26 @@ export class WorkflowManager {
    * already arrived. Bounded by the number of open pull requests on this machine, which is
    * the same set the Inspector already sweeps every ninety seconds.
    */
-  private adoptedPullRequestsForAction(): readonly SessionActionAdoptedPullRequest[] {
+  private async adoptedPullRequestsForAction(): Promise<readonly SessionActionAdoptedPullRequest[]> {
     if (this.options.adoptedPullRequests) return this.options.adoptedPullRequests();
-    return loadOpenInspectorPrs().map((pr) => ({
+    // One git call per DISTINCT root, not per pull request: several open pull requests on one
+    // repository are the ordinary case, and this runs on the settle path of every waiting
+    // action.
+    const identities = new Map<string, string | null>();
+    const identify = async (root: string | null): Promise<string | null> => {
+      if (!root) return null;
+      if (!identities.has(root)) {
+        identities.set(root, await (this.options.readRepositoryId ?? readWorkflowRepositoryId)(root));
+      }
+      return identities.get(root) ?? null;
+    };
+    const rows = loadOpenInspectorPrs();
+    const resolved = await Promise.all(rows.map((pr) => identify(pr.repoRoot)));
+    return rows.map((pr, index) => ({
       key: pr.key,
       url: pr.url,
       number: pr.number,
-      repositoryRoot: pr.repoRoot,
+      repositoryRoot: resolved[index] ?? null,
       branch: pr.headRefName,
       observedHeadOid: pr.observedHeadSha,
       observedState: pr.observedState,

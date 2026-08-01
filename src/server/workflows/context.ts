@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { z } from "zod";
 import type { ReviewItem, Session, TranscriptMessage } from "@shared/types.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
@@ -542,6 +543,19 @@ export function probeMatchesEvidence(
  * be in, and the caller's answer to all of them is to keep waiting.
  */
 export interface WorkflowRepositoryHead {
+  /**
+   * Which REPOSITORY this checkout belongs to, as git's common directory.
+   *
+   * Not the working tree's toplevel, and that distinction is the whole point. Mission Control
+   * dispatches agents into linked worktrees, so a bound session's toplevel is a per-session
+   * path while the pull request it opens is adopted against the repository the worktree was
+   * cut from. Comparing toplevels made those two look like different repositories for every
+   * dispatched session - which is the ordinary case, not an edge one - and a `pull_request`
+   * action could then never complete. `--git-common-dir` is identical for a main checkout and
+   * all of its linked worktrees, which is exactly the identity being compared.
+   */
+  repositoryId: string;
+  /** The working tree's own toplevel. Reported for diagnostics, never for identity. */
   root: string;
   branch: string | null;
   headOid: string | null;
@@ -554,6 +568,8 @@ export async function readWorkflowRepositoryHead(
   const top = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 15_000 });
   const root = top.code === 0 ? top.stdout.trim() : "";
   if (!root) return null;
+  const repositoryId = await readWorkflowRepositoryId(cwd);
+  if (!repositoryId) return null;
   const branchResult = await run(
     "git",
     ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
@@ -571,7 +587,36 @@ export async function readWorkflowRepositoryHead(
   const headOid = headResult.code === 0 && /^[0-9a-f]{40}$/.test(headResult.stdout.trim())
     ? headResult.stdout.trim()
     : null;
-  return { root, branch, headOid };
+  return { repositoryId, root, branch, headOid };
+}
+
+/**
+ * The repository a checkout belongs to, as git's common directory, or null when it is not one.
+ *
+ * Shared by the repository facts a completion adapter compares and by the resolution of an
+ * adoption ledger row, because the two must answer identically or a correct pull request reads
+ * as belonging elsewhere. `--path-format=absolute` is required: without it git answers a linked
+ * worktree with a RELATIVE path, which would compare unequal against the main checkout's
+ * absolute one and reinstate the bug this exists to close.
+ */
+export async function readWorkflowRepositoryId(cwd: string | null): Promise<string | null> {
+  if (!cwd) return null;
+  const result = await run(
+    "git",
+    ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { timeoutMs: 15_000 },
+  );
+  const dir = result.code === 0 ? result.stdout.trim() : "";
+  if (!dir) return null;
+  // Resolved, because the two sides are reached by different paths: a session's cwd is the
+  // string it was launched with, while a ledger row holds the repository root recorded at
+  // adoption. On macOS every `/tmp` and `/var/folders` checkout differs between the two
+  // spellings, and so does any repository behind a symlinked home or workspace.
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
 }
 
 export async function captureBoundaryChanged(

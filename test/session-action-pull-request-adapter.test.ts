@@ -58,7 +58,7 @@ const decide = (
     pickedUpAt: 2,
     settledAt: 3,
     now: 5_000,
-    repository: { root: REPO, branch: BRANCH, headOid: HEAD },
+    repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: HEAD },
     adoptedPullRequests: adopted,
     capturedHeadOid: null,
     ...patch,
@@ -187,6 +187,35 @@ test("an adopted pull request the poller has never looked at waits", () => {
   assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
 });
 
+test("a linked worktree and its main checkout are ONE repository", () => {
+  // The bug a browser spec found, pinned here as the cheap version. Mission Control dispatches
+  // agents into linked worktrees, so the bound checkout's toplevel is a per-session path while
+  // the pull request it opens is adopted against the repository that worktree was cut from.
+  // Comparing toplevels made those two different repositories for every dispatched session -
+  // the ordinary case - so the action could never complete, and once mismatch states existed it
+  // would have blamed the operator for it.
+  //
+  // `repositoryId` is git's common directory, which is the same string for a main checkout and
+  // all of its linked worktrees, and it is what both sides are normalised to.
+  const decision = decide([pr({ repositoryRoot: "/main/.git" })], {
+    repository: {
+      repositoryId: "/main/.git",
+      root: "/worktrees/abc",
+      branch: BRANCH,
+      headOid: HEAD,
+    },
+  });
+  assert.equal(decision.kind, "complete", "a worktree's pull request must be its repository's");
+  // And the identity is what the provenance records, so a reader can tell which repository was
+  // proven rather than which directory happened to be checked out.
+  if (decision.kind !== "complete") return;
+  assert.equal(
+    decision.continuationExpectation.kind === "pull_request"
+      && decision.continuationExpectation.repositoryRoot,
+    "/main/.git",
+  );
+});
+
 test("an unpolled pull request is UNKNOWN, never reported as being on the wrong branch", () => {
   // The distinction the mismatch arms turn on, stated on its own because it is the one that
   // false-accuses if it is got wrong. A row adopted seconds ago by this very turn has a null
@@ -214,14 +243,14 @@ test("a repository that could not be read waits rather than deciding anything", 
 
 test("a detached HEAD has no branch to match a pull request against", () => {
   assert.deepEqual(
-    decide([pr()], { repository: { root: REPO, branch: null, headOid: HEAD } }),
+    decide([pr()], { repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD } }),
     { kind: "waiting", reason: "awaiting_proof" },
   );
 });
 
 test("an unborn branch has no commit to prove", () => {
   assert.deepEqual(
-    decide([pr()], { repository: { root: REPO, branch: BRANCH, headOid: null } }),
+    decide([pr()], { repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null } }),
     { kind: "waiting", reason: "awaiting_proof" },
   );
 });
@@ -260,7 +289,7 @@ test("a captured head, not the moving local head, is what a re-check proves", ()
   // action would wait forever while the head kept moving.
   const decision = decide(
     [pr({ observedHeadOid: OTHER_HEAD })],
-    { capturedHeadOid: OTHER_HEAD, repository: { root: REPO, branch: BRANCH, headOid: HEAD } },
+    { capturedHeadOid: OTHER_HEAD, repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: HEAD } },
   );
   assert.equal(decision.kind, "complete");
   if (decision.kind !== "complete") return;

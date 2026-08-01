@@ -167,6 +167,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
       MISSION_POLL_MS: "0",
       // A fake agent answers instantly, so the dispatch settle windows are pure latency here.
       MISSION_DISPATCH_SETTLE_MS: "0",
+      // The same reasoning for the workflow sweep, which is what advances a session action
+      // once its turn has settled. Shipped at 15s for a laptop with real agents on it; here
+      // every turn is already over by the time the first sweep would have looked, so the
+      // default is pure wall clock in every action spec.
+      MISSION_WORKFLOW_SWEEP_MS: "250",
       // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
       // instead of quietly spending.
       ANTHROPIC_API_KEY: "",

@@ -61,7 +61,16 @@ export interface SessionActionAdapterContext {
 
 /** What the bound session's checkout says about itself, resolved before the adapter runs. */
 export interface SessionActionRepositoryFacts {
-  /** `git rev-parse --show-toplevel` for the bound session's working directory. */
+  /**
+   * Which REPOSITORY this checkout belongs to - git's common directory, not the working tree.
+   *
+   * Mission Control dispatches agents into linked worktrees, so a bound session's toplevel is a
+   * per-session path while the pull request it opens is adopted against the repository that
+   * worktree was cut from. Comparing toplevels made those look like different repositories for
+   * every dispatched session, and a `pull_request` action could then never complete.
+   */
+  repositoryId: string;
+  /** The working tree's own toplevel. Diagnostics only; never the identity being compared. */
   root: string;
   /** The checked-out branch, or null on a detached HEAD. */
   branch: string | null;
@@ -81,7 +90,21 @@ export interface SessionActionAdoptedPullRequest {
   key: string;
   url: string;
   number: number;
-  /** Where the pull request was adopted from, or null on a row that predates the field. */
+  /**
+   * Which REPOSITORY it was adopted against, in the same spelling as
+   * `SessionActionRepositoryFacts.repositoryId` - git's common directory, resolved.
+   *
+   * The ledger stores the repository ROOT a session was reached by, and that is not comparable
+   * to the bound checkout as written. Two things make them differ, and both are the ordinary
+   * case rather than an edge one: a dispatched session works in a linked worktree whose
+   * toplevel is its own path, and a checkout behind a symlink - every `/tmp` and
+   * `/var/folders` path on macOS - is spelled differently by git than by the process that
+   * recorded it. Normalising both sides to the resolved common directory is what makes a
+   * correct pull request compare as belonging to this repository.
+   *
+   * Null is UNKNOWN and is neither a match nor a mismatch: it cannot satisfy the proof, and it
+   * cannot accuse an operator's session of opening a pull request somewhere else.
+   */
   repositoryRoot: string | null;
   /** The branch the pull request is opened FROM, or null until the first poll. */
   branch: string | null;
@@ -201,11 +224,11 @@ export function completionWatchesPullRequests(kind: SessionActionCompletionKind)
  */
 function matchesActionWork(
   pr: SessionActionAdoptedPullRequest,
-  repositoryRoot: string,
+  repositoryId: string,
   branch: string,
   headOid: string,
 ): boolean {
-  return pr.repositoryRoot === repositoryRoot
+  return pr.repositoryRoot === repositoryId
     && pr.branch === branch
     && pr.observedHeadOid === headOid;
 }
@@ -213,10 +236,10 @@ function matchesActionWork(
 /** Whether an adopted row is on this branch at all, whatever its head has reached. */
 function belongsToBranch(
   pr: SessionActionAdoptedPullRequest,
-  repositoryRoot: string,
+  repositoryId: string,
   branch: string,
 ): boolean {
-  return pr.repositoryRoot === repositoryRoot && pr.branch === branch;
+  return pr.repositoryRoot === repositoryId && pr.branch === branch;
 }
 
 /**
@@ -280,10 +303,10 @@ const pullRequest: SessionActionAdapter = {
     if (!target) return { kind: "waiting", reason: "awaiting_proof" };
 
     const onBranch = context.adoptedPullRequests.filter(
-      (pr) => belongsToBranch(pr, repository.root, repository.branch!),
+      (pr) => belongsToBranch(pr, repository.repositoryId, repository.branch!),
     );
     const matching = onBranch.filter(
-      (pr) => matchesActionWork(pr, repository.root, repository.branch!, target),
+      (pr) => matchesActionWork(pr, repository.repositoryId, repository.branch!, target),
     );
     const open = matching.filter((pr) => pr.observedState === "OPEN");
     if (open.length > 0) {
@@ -298,7 +321,7 @@ const pullRequest: SessionActionAdapter = {
           pullRequestKey: chosen.key,
           pullRequestUrl: chosen.url,
           pullRequestNumber: chosen.number,
-          repositoryRoot: repository.root,
+          repositoryRoot: repository.repositoryId,
           branch: repository.branch,
           expectedHeadOid: target,
           observedAt: chosen.observedAt ?? context.now,
@@ -340,7 +363,7 @@ const pullRequest: SessionActionAdapter = {
     // A row the poller has not reached yet carries a null branch and a null head, and reading
     // that as "not this branch" would report a pull request opened seconds ago - the ordinary
     // case - as an operator's mistake. Unknown is unknown, and unknown waits.
-    if (strays.some((pr) => pr.repositoryRoot !== null && pr.repositoryRoot !== repository.root)) {
+    if (strays.some((pr) => pr.repositoryRoot !== null && pr.repositoryRoot !== repository.repositoryId)) {
       return { kind: "waiting", reason: "pull_request_wrong_repository" };
     }
     if (strays.some((pr) => pr.branch !== null && pr.branch !== repository.branch)) {

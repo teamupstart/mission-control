@@ -25,6 +25,7 @@ import type {
   PersonaVerdict,
   SessionActionAttemptState,
   SessionActionBlockCode,
+  SessionActionContinuationExpectation,
   SessionActionSnapshot,
   SessionActionWaitReason,
   WorkflowBinding,
@@ -3612,42 +3613,15 @@ export class WorkflowManager {
       undefined,
       true,
       undefined,
-      (capturedSubmission) => {
-        const context = WorkflowContextSnapshotSchema.safeParse(capturedSubmission.context);
-        if (!context.success) {
-          this.blockSessionAction(attempt.id, "capture_failed",
-            "The continuation evidence could not be read back after capture.", Date.now());
-          return false;
-        }
-        const problem = adapter.validateCapture(expectation, context.data);
-        if (problem) {
-          // Deliberately a WAIT rather than a block when the expectation has simply not been
-          // met yet: the child row stays reserved, nothing downstream activates, and the next
-          // sweep re-checks. A block here would end a run for a race.
-          this.setSessionActionWait(attempt.id, "awaiting_proof", {}, Date.now());
-          this.store.appendEvent(child.runId, "session_action_expectation_unmet", {
-            attemptId: attempt.id,
-            submissionId: child.id,
-            detail: problem,
-          }, Date.now());
-          return false;
-        }
-        const receipts = sessionActionCompleteEdges(version.graph, node.id).map((edge) => ({
-          edgeId: edge.id,
-          payload: workflowJson({
-            outcome: "complete",
-            action: snapshot.name,
-            nodeId: node.id,
-            completion: snapshot.completion.kind,
-          }),
-        }));
-        return Boolean(this.store.completeSessionActionContinuation({
-          attemptId: attempt.id,
-          submissionId: child.id,
-          receipts,
-          now: Date.now(),
-        }));
-      },
+      (capturedSubmission) => this.sealSessionActionContinuation({
+        attempt,
+        snapshot,
+        version,
+        node,
+        expectation,
+        adapter,
+        child: capturedSubmission,
+      }),
     );
     if (!captured.ok) {
       workflowLog("error", {
@@ -3657,6 +3631,62 @@ export class WorkflowManager {
       });
     }
     this.publishRun(child.runId);
+  }
+
+  /**
+   * Validate the captured evidence and, if it satisfies the adapter, close the attempt and
+   * seed its `complete` route. Returns false when the graph must NOT advance.
+   *
+   * Extracted because it has two callers, and the second is the one that matters: a daemon
+   * that stopped between "the child's evidence is durable" and "the receipt is written" leaves
+   * a captured child with a still-waiting attempt. Re-capturing that is not an option - the
+   * capture guard requires the run and submission to be `capturing`, and neither is any more -
+   * so recovery has to be able to seal an already-captured child directly.
+   */
+  private sealSessionActionContinuation(input: {
+    attempt: WorkflowNodeAttempt;
+    snapshot: SessionActionSnapshot;
+    version: WorkflowVersion;
+    node: WorkflowSessionActionNode;
+    expectation: SessionActionContinuationExpectation;
+    adapter: ReturnType<typeof sessionActionAdapter>;
+    child: WorkflowSubmission;
+  }): boolean {
+    const { attempt, snapshot, version, node, expectation, adapter, child } = input;
+    const context = WorkflowContextSnapshotSchema.safeParse(child.context);
+    if (!context.success) {
+      this.blockSessionAction(attempt.id, "capture_failed",
+        "The continuation evidence could not be read back after capture.", Date.now());
+      return false;
+    }
+    const problem = adapter.validateCapture(expectation, context.data);
+    if (problem) {
+      // Deliberately a WAIT rather than a block when the expectation has simply not been met
+      // yet: the child row stays reserved, nothing downstream activates, and the next sweep
+      // re-checks. A block here would end a run for a race.
+      this.setSessionActionWait(attempt.id, "awaiting_proof", {}, Date.now());
+      this.store.appendEvent(child.runId, "session_action_expectation_unmet", {
+        attemptId: attempt.id,
+        submissionId: child.id,
+        detail: problem,
+      }, Date.now());
+      return false;
+    }
+    const receipts = sessionActionCompleteEdges(version.graph, node.id).map((edge) => ({
+      edgeId: edge.id,
+      payload: workflowJson({
+        outcome: "complete",
+        action: snapshot.name,
+        nodeId: node.id,
+        completion: snapshot.completion.kind,
+      }),
+    }));
+    return Boolean(this.store.completeSessionActionContinuation({
+      attemptId: attempt.id,
+      submissionId: child.id,
+      receipts,
+      now: Date.now(),
+    }));
   }
 
   private trackDeliveryTask(task: Promise<void>): void {
@@ -4181,6 +4211,13 @@ export class WorkflowManager {
       if (state.wait === "capturing" && state.continuationSubmissionId) {
         const child = this.store.getSubmission(state.continuationSubmissionId);
         if (!child) continue;
+        // The child's evidence is already durable and only its receipt is missing: the daemon
+        // stopped inside `captureAndActivate`'s activation step. Re-capturing is not an option
+        // - the capture guard requires run and submission to both be `capturing`, and neither
+        // is any more - so seal it directly and let the engine activate from the receipt.
+        if (child.status !== "capturing" && this.sealCapturedContinuation(attempt.id, child)) {
+          continue;
+        }
         if (child.status === "failed" && run.status === "blocked") {
           this.store.resumeCapture(run.id, child.id, EXTERNAL_RESUMABLE_PHASES);
         }
@@ -4195,6 +4232,37 @@ export class WorkflowManager {
         );
       }
     }
+  }
+
+  /**
+   * Finish a continuation whose evidence survived but whose receipt did not.
+   *
+   * Returns false when this child was not in fact captured, so the caller falls through to the
+   * ordinary capture-resume path. `activateSubmission` is what moves the run out of the
+   * `capture_interrupted` state the engine's own recovery left it in.
+   */
+  private sealCapturedContinuation(attemptId: string, child: WorkflowSubmission): boolean {
+    const resolved = this.resolveSessionAction(attemptId);
+    if (!resolved) return false;
+    const { attempt, snapshot, state, version, node } = resolved;
+    if (!WorkflowContextSnapshotSchema.safeParse(child.context).success) return false;
+    const sealed = this.sealSessionActionContinuation({
+      attempt,
+      snapshot,
+      version,
+      node,
+      expectation: state.expectation ?? { kind: "none" },
+      adapter: sessionActionAdapter(snapshot.completion.kind),
+      child,
+    });
+    if (!sealed) return false;
+    this.store.appendEvent(child.runId, "session_action_continuation_resealed", {
+      attemptId: attempt.id,
+      submissionId: child.id,
+    });
+    this.engine.activateSubmission(child.id);
+    this.publishRun(child.runId);
+    return true;
   }
 
   private startEngineAndMaintenance(): void {

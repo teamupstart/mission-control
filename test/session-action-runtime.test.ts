@@ -795,3 +795,63 @@ test("an uncertain write parks the action and is never automatically resent", as
     await h.stop();
   }
 });
+
+test("a child captured but interrupted before its receipt is sealed, not re-captured", async () => {
+  const h = await harness("seal", { downstream: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    const attempt = waitingAttempt(h, runId)!;
+
+    // Reserve and capture the child WITHOUT sealing it - the exact window where a daemon
+    // stopped between "the evidence is durable" and "the receipt is written". Re-capturing
+    // is impossible from here: the capture guard wants the run and submission both
+    // `capturing`, and neither is any more.
+    const reserved = h.store.reserveSessionActionContinuation({
+      attemptId: attempt.id,
+      submissionId: "sealed-child",
+      triggerKey: `session_action:${attempt.id}:interrupted`,
+      now: Date.now(),
+    });
+    assert.equal(reserved.ok, true);
+    const parent = h.store.getSubmission(attempt.submissionId)!;
+    h.store.updateSubmissionCapture("sealed-child", {
+      context: parent.context,
+      evidence: parent.evidence,
+      fingerprint: "sealed-fingerprint",
+      status: "running",
+    }, Date.now());
+    // And the engine's own recovery blocks the run, exactly as it would on restart.
+    h.store.setRunState(runId, "blocked", "capture_interrupted", { error: "interrupted" });
+
+    await h.manager.stop();
+    h.manager.start();
+    await waitFor(
+      () => h.store.getAttempt(attempt.id)?.state === "completed",
+      "the captured child was never sealed, so the run stayed stuck on a waiting attempt",
+    );
+
+    // Sealed through the recovery path specifically, not re-captured through the ordinary
+    // one - which the capture guard would have refused anyway, leaving the run stuck.
+    assert.equal(
+      h.store.listEvents(runId).some((event) => event.kind === "session_action_continuation_resealed"),
+      true,
+    );
+    // No SECOND child, one receipt, and the graph moved on from the reserved segment.
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+    assert.equal(
+      h.store.listReceipts("sealed-child").filter((receipt) => receipt.edgeId === "e-act").length,
+      1,
+    );
+    await waitFor(
+      () => h.store.listAttempts("sealed-child").some((item) => item.nodeId === "downstream"),
+      "the downstream reviewer never activated on the resealed child",
+    );
+    assert.equal(h.injected.length, 1, "the packet was retyped while resealing");
+  } finally {
+    await h.stop();
+  }
+});

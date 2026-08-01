@@ -899,6 +899,13 @@ export interface SessionGoal {
   updatedAt: number;
 }
 
+export interface SessionIntentGuard {
+  objective: string;
+  objectiveVersion: number;
+  promptRevision: number;
+  episodeKey: string;
+}
+
 export interface GoalPromptRevision {
   revision: number;
   /** Null only for a legacy unresolved revision whose text was already lost before migration. */

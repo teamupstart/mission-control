@@ -1,7 +1,12 @@
 import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
-import type { InspectorComment, InspectorInspection, InspectorMode } from "./types.ts";
+import type {
+  InspectorComment,
+  InspectorInspection,
+  InspectorMode,
+  SessionIntentGuard,
+} from "./types.ts";
 import { providerModelDefault } from "./model.ts";
 import { repoAllowlisted } from "./allowlist.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
@@ -1021,13 +1026,7 @@ export interface WorkflowCompletionClaim {
    * completion reaches a conversation with no active binding. Existing bindings always win.
    */
   fallbackWorkflow: "no-mistakes" | null;
-  /**
-   * The prompted episode the verifier judged. Null for drain claims.
-   *
-   * The daemon compares this with its current goal at the same synchronous boundary
-   * that retires the guard, so a newer human prompt cannot inherit an older verdict.
-   */
-  expectedGoal: string | null;
+  expectedIntent: SessionIntentGuard | null;
 }
 
 export type WorkflowCompletionClaimResult =

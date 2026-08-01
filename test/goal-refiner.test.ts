@@ -50,6 +50,7 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   blank)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"   \\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
   amend)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   shrink) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Only expose current intent in the Foreman drawer\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
+  negate) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end, but drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature without its existing test requirement\\",\\"focus\\":\\"Drop the existing test requirement\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
   rapid)
     case "$request" in
       *"also expose the current intent in the Foreman drawer"*)
@@ -67,7 +68,7 @@ esac
 );
 chmodSync(fake, 0o755);
 const setMode = (
-  m: "good" | "broken" | "crash" | "blank" | "amend" | "shrink" | "rapid" | "replace",
+  m: "good" | "broken" | "crash" | "blank" | "amend" | "shrink" | "negate" | "rapid" | "replace",
 ): void =>
   writeFileSync(modeFile, m);
 setMode("good");
@@ -279,6 +280,33 @@ test("a schema-valid amendment that drops the current objective fails closed", a
       prior.text,
       "the session card stopped showing the larger objective",
     );
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("an amendment cannot preserve by prefix and then retract a requirement", async () => {
+  const { r, s, env } = withSession("r19", "%49");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
+    const prior = r.getGoal(s.id)!;
+    setMode("negate");
+    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "drop the existing test requirement" }));
+    await until(
+      () => r.getGoal(s.id)?.relationship === "unclear",
+      "the retracting amendment to be rejected",
+      FLOOR_MS + RUN_TIMEOUT_MS,
+    );
+    const goal = r.getGoal(s.id)!;
+    assert.equal(goal.objective, prior.objective);
+    assert.equal(goal.objectiveVersion, prior.objectiveVersion);
+    assert.equal(goal.resolvedPromptRevision, prior.resolvedPromptRevision);
+    assert.deepEqual(goal.pendingPrompts, [
+      { revision: 2, prompt: "drop the existing test requirement" },
+    ]);
   } finally {
     stop();
     setMode("good");

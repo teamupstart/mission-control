@@ -1,4 +1,5 @@
 import type { AgentType, Session, SessionGoal, SessionQueue } from "@shared/types.ts";
+import { resolvedSessionIntent } from "@shared/goal.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
@@ -84,7 +85,8 @@ export type PromptedCandidate =
     };
 
 export function promptedIntentKey(intent: SessionGoal): string {
-  return `intent:${intent.objectiveVersion}:${intent.promptRevision}`;
+  return resolvedSessionIntent(intent)?.episodeKey ??
+    `intent:${intent.objectiveVersion}:${intent.promptRevision}`;
 }
 
 /**
@@ -166,16 +168,9 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   // 8. No durable objective means there is no completion contract to verify. A newest prompt
   //    still being reconciled is equally ineligible: shipping against the previous objective
   //    would race the very decision that says whether the human replaced it.
-  const objective = intent?.objective?.trim();
-  if (!intent || !objective) {
-    return { kind: "skip", why: "no captured objective to verify against" };
-  }
-  if (intent.resolvedPromptRevision < intent.promptRevision) {
-    return { kind: "skip", why: "the latest instruction is still being reconciled" };
-  }
-  if (!intent.relationship || intent.relationship === "unclear") {
-    return { kind: "skip", why: "the latest instruction's relationship to the objective is unclear" };
-  }
+  const resolvedIntent = resolvedSessionIntent(intent);
+  if (!resolvedIntent) return { kind: "skip", why: "the latest instruction has unresolved intent" };
+  const objective = resolvedIntent.objective;
 
   // 9. THE LOOP GUARD. The goal is one of our own wrap-up instructions, which means
   //    the last prompt this session took was typed by Foreman: we fired, `/no-mistakes`
@@ -190,7 +185,7 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   //     held - and nothing has changed since: the session is idle, so the goal is the
   //     same goal, and re-verifying would spend a `claude -p` per tick to re-learn an
   //     unchanged answer. A new prompt from the human moves the goal and re-arms this.
-  const episodeKey = promptedIntentKey(intent);
+  const episodeKey = resolvedIntent.episodeKey;
   if (queue?.promptedGoal === episodeKey) {
     return { kind: "skip", why: "already wrapped up this prompt" };
   }
@@ -200,8 +195,8 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     episodeKey,
     objective,
     focus: intent.prompt,
-    objectiveVersion: intent.objectiveVersion,
-    promptRevision: intent.promptRevision,
+    objectiveVersion: resolvedIntent.objectiveVersion,
+    promptRevision: resolvedIntent.promptRevision,
   };
 }
 

@@ -32,6 +32,7 @@ import type { ReviewContext, Verdict } from "./verdict.ts";
 import { cheapActionOf, classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
+import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   VERIFY_FAILURE_CAP,
   decideQueueTick,
@@ -993,11 +994,13 @@ async function processTarget(
   }
 
   const qcfg = queueConfig(cfg);
+  const intent = await client.goal(fresh.id).catch(() => null);
 
   const action = decideQueueTick({
     session: fresh,
     bucket: reportBucket(fresh, live),
     queue,
+    intent,
     cfg: qcfg,
     mayActLive: foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot),
     now: Date.now(),
@@ -1021,48 +1024,63 @@ async function processTarget(
     const useNoMistakesFallback = action.kind === "auto-wrapup"
       && cfg.wrapup === "no-mistakes"
       && foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot);
-    const [diff, transcriptAnchor] = await Promise.all([
-      client.diff(fresh.id).catch(() => null),
-      client.transcriptSize(fresh.id).catch(() => null),
-    ]);
-    const claim = await tryWorkflowCompletionClaim(
-      client,
-      fresh.id,
-      withNoMistakesFallback(
-        drainCompletionClaim(action.queue, diff?.ok ? diff.headSha : null, transcriptAnchor),
-        useNoMistakesFallback,
-      ),
-    );
-    if (claim.kind === "failed") {
-      log(`${fresh.name}: workflow completion claim failed closed (${claim.error})`);
-      return false;
-    }
-    if (claim.kind === "claimed") {
-      log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
-      return true;
-    }
-    if (useNoMistakesFallback) {
-      if (claim.result.reason === "no_binding") {
-        // A current daemon creates the built-in binding before it can answer this way.
-        // Treat an older or inconsistent daemon as unavailable rather than falling back
-        // to the legacy skill invocation and launching a second shipping system.
-        log(`${fresh.name}: no-mistakes workflow fallback was not bound; held for retry`);
+    const completionIntent = action.kind === "auto-wrapup"
+      ? action.intentGuard
+      : resolvedSessionIntent(intent);
+    if (completionIntent) {
+      const [diff, transcriptAnchor] = await Promise.all([
+        client.diff(fresh.id).catch(() => null),
+        client.transcriptSize(fresh.id).catch(() => null),
+      ]);
+      const claim = await tryWorkflowCompletionClaim(
+        client,
+        fresh.id,
+        withNoMistakesFallback(
+          drainCompletionClaim(
+            action.queue,
+            diff?.ok ? diff.headSha : null,
+            transcriptAnchor,
+            completionIntent,
+          ),
+          useNoMistakesFallback,
+        ),
+      );
+      if (claim.kind === "failed") {
+        log(`${fresh.name}: workflow completion claim failed closed (${claim.error})`);
         return false;
       }
-      // A Manual binding is an existing operator choice and must neither be replaced nor
-      // auto-submitted. Degrade to the same Ship it? card dry-run uses; do not also type
-      // the no-mistakes skill beside a workflow the operator deliberately left Manual.
-      const outcome = await applyQueueAction(
-        queueActions(client, cfg),
-        fresh,
-        { kind: "ask-wrapup", queue: action.queue },
-        qcfg,
-        Date.now(),
-      );
-      log(`${fresh.name}: existing workflow is Manual - asked about wrapping up`);
-      return outcome.kind !== "noop";
+      if (claim.kind === "claimed") {
+        log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
+        return true;
+      }
+      if (useNoMistakesFallback) {
+        if (claim.result.reason === "no_binding") {
+          // A current daemon creates the built-in binding before it can answer this way.
+          // Treat an older or inconsistent daemon as unavailable rather than falling back
+          // to the legacy skill invocation and launching a second shipping system.
+          log(`${fresh.name}: no-mistakes workflow fallback was not bound; held for retry`);
+          return false;
+        }
+        // A Manual binding is an existing operator choice and must neither be replaced nor
+        // auto-submitted. Degrade to the same Ship it? card dry-run uses; do not also type
+        // the no-mistakes skill beside a workflow the operator deliberately left Manual.
+        const outcome = await applyQueueAction(
+          queueActions(client, cfg),
+          fresh,
+          { kind: "ask-wrapup", queue: action.queue },
+          qcfg,
+          Date.now(),
+        );
+        log(`${fresh.name}: existing workflow is Manual - asked about wrapping up`);
+        return outcome.kind !== "noop";
+      }
     }
   }
+
+  if (
+    action.kind === "auto-wrapup" &&
+    !sessionIntentMatches(await client.goal(fresh.id).catch(() => null), action.intentGuard)
+  ) return false;
 
   const outcome = await applyQueueAction(
     queueActions(client, cfg),
@@ -1247,13 +1265,13 @@ async function processPromptedWrapup(
   const currentGoal = currentSession && currentSession.id === session.id
     ? await client.goal(currentSession.id).catch(() => null)
     : null;
-  if (
-    currentGoal?.objectiveVersion !== candidate.objectiveVersion ||
-    currentGoal.promptRevision !== candidate.promptRevision ||
-    currentGoal.resolvedPromptRevision !== candidate.promptRevision ||
-    currentGoal.objective?.trim() !== candidate.objective ||
-    currentGoal.relationship === "unclear"
-  ) return false;
+  const intentGuard = {
+    objective: candidate.objective,
+    objectiveVersion: candidate.objectiveVersion,
+    promptRevision: candidate.promptRevision,
+    episodeKey: candidate.episodeKey,
+  };
+  if (!sessionIntentMatches(currentGoal, intentGuard)) return false;
 
   if (
     result.verdict.complete
@@ -1268,7 +1286,7 @@ async function processPromptedWrapup(
       withNoMistakesFallback(
         promptedCompletionClaim({
           noteKey: noteKeyOf(session),
-          goal: candidate.objective,
+          intent: intentGuard,
           headSha: diff.headSha,
           transcriptAnchor,
           summary: result.verdict.summary,

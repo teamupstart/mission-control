@@ -1,4 +1,4 @@
-import type { AgentType } from "./types.ts";
+import type { AgentType, SessionGoal, SessionIntentGuard } from "./types.ts";
 
 /**
  * Why an agent's sessions can never carry a Goal, or null when they can.
@@ -45,4 +45,37 @@ export function goalLine(text: string, max = GOAL_MAX_CHARS): string {
   const cut = flat.slice(0, max - 1);
   const space = cut.lastIndexOf(" ");
   return `${(space > max * 0.75 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+export function resolvedSessionIntent(goal: SessionGoal | null): SessionIntentGuard | null {
+  const objective = goal?.objective?.trim() ?? "";
+  if (
+    !goal ||
+    !objective ||
+    goal.objectiveVersion < 1 ||
+    goal.promptRevision < 1 ||
+    goal.resolvedPromptRevision !== goal.promptRevision ||
+    !goal.relationship ||
+    goal.relationship === "unclear"
+  ) return null;
+  return {
+    objective,
+    objectiveVersion: goal.objectiveVersion,
+    promptRevision: goal.promptRevision,
+    episodeKey: `intent:${goal.objectiveVersion}:${goal.promptRevision}`,
+  };
+}
+
+export function sessionIntentMatches(
+  goal: SessionGoal | null,
+  expected: SessionIntentGuard,
+): boolean {
+  const current = resolvedSessionIntent(goal);
+  return Boolean(
+    current &&
+    current.objective === expected.objective &&
+    current.objectiveVersion === expected.objectiveVersion &&
+    current.promptRevision === expected.promptRevision &&
+    current.episodeKey === expected.episodeKey
+  );
 }

@@ -52,16 +52,26 @@ test("drain and prompted markers are stable proof hashes and change with a re-ar
   );
   const prompted = promptedCompletionClaim({
     noteKey: "note",
-    goal: "repair",
+    intent: {
+      objective: "repair",
+      objectiveVersion: 2,
+      promptRevision: 3,
+      episodeKey: "intent:2:3",
+    },
     headSha: "head",
     transcriptAnchor: 100,
     summary: "complete",
   });
   assert.equal(prompted.completionKind, "prompted");
   assert.equal(prompted.marker.length, 64);
-  assert.equal(prompted.expectedGoal, "repair");
+  assert.deepEqual(prompted.expectedIntent, {
+    objective: "repair",
+    objectiveVersion: 2,
+    promptRevision: 3,
+    episodeKey: "intent:2:3",
+  });
   assert.equal(prompted.fallbackWorkflow, null);
-  assert.equal(drain.expectedGoal, null);
+  assert.equal(drain.expectedIntent, null);
   assert.equal(drain.fallbackWorkflow, null);
   assert.equal(withNoMistakesFallback(drain, false), drain);
   assert.equal(

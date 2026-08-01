@@ -68,6 +68,7 @@ import type {
   WorkflowDiagnostic,
 } from "@shared/workflow.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import type { SessionIntentGuard } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
@@ -1023,7 +1024,7 @@ export interface ForemanCompletionStoreInput {
   marker: string;
   summary: string;
   evidenceFingerprint: string;
-  expectedGoal: string | null;
+  expectedIntent: SessionIntentGuard | null;
   runId: string;
   submissionId: string;
   now: number;
@@ -2262,14 +2263,20 @@ export class WorkflowStore {
         };
       }
 
-      const expectedGoal = input.expectedGoal?.trim() || null;
-      const currentGoal = input.completionKind === "prompted"
-        ? (
-            this.db.prepare(
-              `SELECT prompt FROM session_goals WHERE note_key = ?`,
-            ).get(noteKey) as { prompt: string | null } | undefined
-          )?.prompt?.trim() || null
-        : null;
+      const expectedIntent = input.expectedIntent;
+      const currentIntent = expectedIntent || input.completionKind === "prompted"
+        ? this.db.prepare(
+            `SELECT objective, objective_version, prompt_revision,
+                    resolved_prompt_revision, relationship
+               FROM session_goals WHERE note_key = ?`,
+          ).get(noteKey) as {
+            objective: string | null;
+            objective_version: number;
+            prompt_revision: number;
+            resolved_prompt_revision: number;
+            relationship: string | null;
+          } | undefined
+        : undefined;
 
       if (binding) {
         const triggerKey =
@@ -2299,11 +2306,24 @@ export class WorkflowStore {
         }
       }
 
+      if (input.completionKind === "prompted" && !expectedIntent) {
+        throw new Error("Foreman prompted completion has no intent guard");
+      }
       if (
-        input.completionKind === "prompted"
-        && (!expectedGoal || currentGoal !== expectedGoal)
+        expectedIntent &&
+        (
+          !currentIntent ||
+          currentIntent.objective?.trim() !== expectedIntent.objective ||
+          currentIntent.objective_version !== expectedIntent.objectiveVersion ||
+          currentIntent.prompt_revision !== expectedIntent.promptRevision ||
+          currentIntent.resolved_prompt_revision !== expectedIntent.promptRevision ||
+          !currentIntent.relationship ||
+          currentIntent.relationship === "unclear" ||
+          expectedIntent.episodeKey !==
+            `intent:${currentIntent.objective_version}:${currentIntent.prompt_revision}`
+        )
       ) {
-        throw new Error("Foreman prompted completion goal is no longer current");
+        throw new Error("Foreman completion intent is no longer current");
       }
 
       // For an unbound fallback, retire the durable Foreman guard before inserting the
@@ -2316,7 +2336,11 @@ export class WorkflowStore {
         }
         guardRetired = input.completionKind === "drain"
           ? this.retireDrainGuard(noteKey, `workflow:${input.runId}`, input.now)
-          : this.retirePromptedGuard(input.fallbackBinding, currentGoal, input.now);
+          : this.retirePromptedGuard(
+              input.fallbackBinding,
+              expectedIntent!.episodeKey,
+              input.now,
+            );
         if (!guardRetired) {
           throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
         }
@@ -2411,7 +2435,7 @@ export class WorkflowStore {
       if (!guardRetired) {
         const retired = input.completionKind === "drain"
           ? this.retireDrainGuard(binding.noteKey, `workflow:${run.id}`, input.now)
-          : this.retirePromptedGuard(binding, currentGoal, input.now);
+          : this.retirePromptedGuard(binding, expectedIntent!.episodeKey, input.now);
         if (!retired) {
           throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
         }
@@ -4353,28 +4377,26 @@ export class WorkflowStore {
 
   private retirePromptedGuard(
     binding: Pick<WorkflowBinding, "noteKey" | "sessionCwd">,
-    currentGoal: string | null,
+    episodeKey: string,
     now: number,
   ): boolean {
-    const goal = currentGoal?.trim();
-    if (!goal) return false;
     const existing = this.db.prepare(
       `SELECT prompted_goal FROM foreman_queues WHERE note_key = ?`,
     ).get(binding.noteKey) as { prompted_goal: string | null } | undefined;
-    if (existing?.prompted_goal === goal) return false;
+    if (existing?.prompted_goal === episodeKey) return false;
     if (existing) {
       const result = this.db.prepare(
         `UPDATE foreman_queues SET prompted_goal = ?, updated_at = ?
           WHERE note_key = ?
             AND (prompted_goal IS NULL OR prompted_goal <> ?)`,
-      ).run(goal, now, binding.noteKey, goal);
+      ).run(episodeKey, now, binding.noteKey, episodeKey);
       return Number(result.changes) === 1;
     }
     const result = this.db.prepare(
       `INSERT INTO foreman_queues (
          note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
        ) VALUES (?, ?, NULL, NULL, NULL, ?, ?)`,
-    ).run(binding.noteKey, binding.sessionCwd, goal, now);
+    ).run(binding.noteKey, binding.sessionCwd, episodeKey, now);
     return Number(result.changes) === 1;
   }
 

@@ -326,7 +326,7 @@ test("a Foreman completion claim cannot create a full submission during the new-
     marker: "inspector-new-head-wait",
     summary: "Foreman observed a completed repair.",
     evidenceFingerprint: "foreman-head",
-    expectedGoal: null,
+    expectedIntent: null,
     runId: "must-not-create-run",
     submissionId: "must-not-create-submission",
     now: 13,

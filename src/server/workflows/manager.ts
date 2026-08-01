@@ -4,6 +4,7 @@ import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
+import { sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
 import { reportBucket, settledIdle } from "@shared/session.ts";
 import type {
@@ -1732,6 +1733,13 @@ export class WorkflowManager {
     if (!session || session.state === "exited") {
       throw new Error("The completion target session is not live");
     }
+    if (
+      (claim.completionKind === "prompted" && !claim.expectedIntent) ||
+      (claim.expectedIntent &&
+        !sessionIntentMatches(this.registry.getGoal(session.id), claim.expectedIntent))
+    ) {
+      throw new Error("Foreman completion intent is no longer current");
+    }
     let binding = this.store.activeBindingForNote(noteKeyFor(session));
     let fallbackBinding: WorkflowBindingInsert | null = null;
     if (!binding && claim.fallbackWorkflow === "no-mistakes") {
@@ -1799,7 +1807,7 @@ export class WorkflowManager {
       marker: claim.marker,
       summary: claim.summary,
       evidenceFingerprint: claim.evidenceFingerprint,
-      expectedGoal: claim.expectedGoal,
+      expectedIntent: claim.expectedIntent,
       runId: randomUUID(),
       submissionId: randomUUID(),
       now,

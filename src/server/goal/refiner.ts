@@ -145,7 +145,12 @@ function amendmentPreservesObjective(current: string | null, proposed: string): 
   if (!current) return false;
   const prior = comparableObjective(current);
   const next = comparableObjective(proposed);
-  return prior.length > 0 && next.startsWith(prior) && next.length > prior.length;
+  if (!prior || !next.startsWith(prior)) return false;
+  const addition = next.slice(prior.length).trim();
+  if (!/^(?:[.;,:+-]\s*)?(?:also\b|additionally\b|and\b|plus\b)/.test(addition)) return false;
+  return !/(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/.test(
+    addition,
+  );
 }
 
 /** The oldest unresolved prompt, or null when there is nothing safe to reconcile. */

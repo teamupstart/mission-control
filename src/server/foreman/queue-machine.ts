@@ -1,6 +1,8 @@
 import type {
   GapSeverity,
   Session,
+  SessionGoal,
+  SessionIntentGuard,
   SessionQueue,
   TrackedGap,
   WorkItem,
@@ -9,6 +11,7 @@ import type {
 import { reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
+import { resolvedSessionIntent } from "@shared/goal.ts";
 import { foremanAutomationAuthorized } from "../harness/index.ts";
 import { foremanTriageAuthorized } from "./authorization.ts";
 import type { ReportBucket } from "@shared/session.ts";
@@ -83,13 +86,19 @@ export type QueueAction =
    * the apply step holds no policy - and so the decision about WHAT to send is made
    * in the same pure, table-tested place as the decision about whether to send.
    */
-  | { kind: "auto-wrapup"; queue: SessionQueue; payload: string };
+  | {
+      kind: "auto-wrapup";
+      queue: SessionQueue;
+      payload: string;
+      intentGuard: SessionIntentGuard;
+    };
 
 export interface QueueTickInput {
   session: Session;
   /** The session's bucket, computed cross-session (a parked gate needs the other sessions). */
   bucket: ReportBucket;
   queue: SessionQueue;
+  intent: SessionGoal | null;
   cfg: QueueConfig;
   /** Whether Foreman is cleared to SEND for this session (live + allowlisted). */
   mayActLive: boolean;
@@ -286,7 +295,7 @@ function queueWantsATick(s: Session, triggers: readonly WrapupTrigger[]): boolea
  * policy - see the individual comments for why each one sits where it does.
  */
 export function decideQueueTick(input: QueueTickInput): QueueAction {
-  const { session, bucket, queue, cfg, mayActLive, now } = input;
+  const { session, bucket, queue, intent, cfg, mayActLive, now } = input;
   const items = queue.items;
 
   // 1. The session is gone. Escalate ONLY what was mid-flight; nothing else can
@@ -389,7 +398,10 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // (`queueWantsATick` stays true while drained and unasked).
     if (!settledIdle(session, now, cfg.settleMs)) return { kind: "none" };
 
-    return { kind: "auto-wrapup", queue, payload };
+    const intentGuard = resolvedSessionIntent(intent);
+    if (!intentGuard) return { kind: "none" };
+
+    return { kind: "auto-wrapup", queue, payload, intentGuard };
   }
 
   // 6. The agent is still busy (or hasn't settled): don't interrupt it.

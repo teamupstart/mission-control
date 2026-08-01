@@ -275,18 +275,50 @@ test("a driver busy result returns the claimed row to the editable queue", async
   clearPendingTurns(f.key);
 });
 
-test("a driver rejection is positive non-delivery and remains safely retryable", async () => {
+test("an SDK error after the acceptance boundary remains uncertain", async () => {
   const f = sdkFixture("driver-error", async () => {
-    throw new Error("driver refused before acceptance");
+    throw new Error("transport closed after turn/start");
   });
   idle(f.registry, f.id);
-  f.manager.submit(f.id, "keep me editable");
+  f.manager.submit(f.id, "do not replay me automatically");
   await tick();
   const turn = f.registry.getSession(f.id)?.pendingTurns[0];
-  assert.equal(turn?.state, "queued");
-  assert.equal(turn?.lastError, "driver refused before acceptance");
+  assert.equal(turn?.state, "uncertain");
+  assert.match(turn?.lastError ?? "", /acceptance boundary.*transport closed after turn\/start/);
   f.manager.stop();
   clearPendingTurns(f.key);
+});
+
+test("an SDK failure before the acceptance boundary remains safely retryable", async () => {
+  const registry = new Registry();
+  const id = "sdk:pre-boundary-error";
+  const key = "conversation:pre-boundary-error";
+  registry.registerSdkSession({
+    id,
+    agent: "claude",
+    name: "pre-boundary-error",
+    cwd: "/repo/pre-boundary-error",
+    agentSessionId: key,
+  });
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      sendWhenIdle: async () => {
+        throw new Error("supervisor refused before acceptance");
+      },
+    },
+    { idleSettleMs: 0 },
+  );
+  manager.start();
+  idle(registry, id);
+  manager.submit(id, "keep me editable");
+  await tick();
+
+  const turn = registry.getSession(id)?.pendingTurns[0];
+  assert.equal(turn?.state, "queued");
+  assert.equal(turn?.lastError, "supervisor refused before acceptance");
+  manager.stop();
+  clearPendingTurns(key);
 });
 
 test("SDK ownership changes before acceptance preserve uncertainty", async () => {

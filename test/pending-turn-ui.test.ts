@@ -8,6 +8,7 @@ import { PendingTurnView } from "../src/web/components/TranscriptPanel.tsx";
 import {
   latestEditablePendingTurn,
   pendingTurnStatus,
+  recallPendingTurnIntoDraft,
   shouldRecallPendingTurn,
 } from "../src/web/lib/pending-turns.ts";
 
@@ -107,6 +108,88 @@ test("recall targets the newest queued row, skipping sending and uncertain rows"
   assert.equal(pendingTurnStatus(turns[3]!), "delivery uncertain");
 });
 
+test("the shared recall abstraction restores acknowledged server text", async () => {
+  const selected = turn({ text: "local copy" });
+  let restored: string | null = null;
+  const result = await recallPendingTurnIntoDraft({
+    client: {
+      recallPendingTurn: async (sessionId, turnId, revision) => {
+        assert.deepEqual([sessionId, turnId, revision], ["s1", selected.id, selected.revision]);
+        return { ok: true, status: 200, text: "acknowledged copy" };
+      },
+    },
+    sessionId: "s1",
+    turn: selected,
+    restore: (text) => {
+      restored = text;
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.acknowledgementLost, undefined);
+  assert.equal(restored, "acknowledged copy");
+});
+
+test("recall response loss restores the exact locally known multiline text", async () => {
+  const selected = turn({ text: "race.\nDo not steer" });
+  let restored: string | null = null;
+  const result = await recallPendingTurnIntoDraft({
+    client: {
+      recallPendingTurn: async () => ({ ok: false, error: "connection closed" }),
+    },
+    sessionId: "s1",
+    turn: selected,
+    restore: (text) => {
+      restored = text;
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.acknowledgementLost, true);
+  assert.equal(restored, "race.\nDo not steer");
+});
+
+test("an explicit recall CAS conflict leaves the draft untouched", async () => {
+  const selected = turn();
+  let restored = false;
+  const result = await recallPendingTurnIntoDraft({
+    client: {
+      recallPendingTurn: async () => ({
+        ok: false,
+        status: 409,
+        error: "that queued message is no longer editable",
+      }),
+    },
+    sessionId: "s1",
+    turn: selected,
+    restore: () => {
+      restored = true;
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(restored, false);
+});
+
+test("a successful recall with a lost response body falls back to local text", async () => {
+  const selected = turn({ text: "known before recall" });
+  let restored: string | null = null;
+  const result = await recallPendingTurnIntoDraft({
+    client: {
+      recallPendingTurn: async () => ({ ok: true, status: 200 }),
+    },
+    sessionId: "s1",
+    turn: selected,
+    restore: (text) => {
+      restored = text;
+    },
+  });
+
+  assert.equal(result.acknowledgementLost, true);
+  assert.equal(restored, "known before recall");
+});
+
 test("both uncontrolled composer surfaces wire Arrow Up to the shared recall guard", () => {
   for (const path of [
     "src/web/components/TranscriptPanel.tsx",
@@ -114,7 +197,11 @@ test("both uncontrolled composer surfaces wire Arrow Up to the shared recall gua
   ]) {
     const source = readFileSync(path, "utf8");
     assert.match(source, /shouldRecallPendingTurn\(/, `${path} has no recall guard`);
-    assert.match(source, /recallPendingTurn\(/, `${path} does not call the CAS endpoint`);
+    assert.match(
+      source,
+      /recallPendingTurnIntoDraft\(/,
+      `${path} does not use the acknowledged recall abstraction`,
+    );
     assert.match(source, /writeDraft\(/, `${path} does not restore the recalled draft`);
     assert.match(source, /setSelectionRange\(/, `${path} does not put the caret at the end`);
   }

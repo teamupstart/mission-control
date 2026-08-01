@@ -15,6 +15,8 @@ import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import {
   latestEditablePendingTurn,
   pendingTurnStatus,
+  RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
+  recallPendingTurnIntoDraft,
   shouldRecallPendingTurn,
 } from "../lib/pending-turns.ts";
 import {
@@ -593,16 +595,31 @@ export function TranscriptPanel({
       return;
     }
     setPendingAction(turn.id);
-    const result = await api.recallPendingTurn(sessionId, turn.id, turn.revision);
+    const result = await recallPendingTurnIntoDraft({
+      client: api,
+      sessionId,
+      turn,
+      restore: (text) => {
+        input.value = text;
+        writeDraft(sessionId, "reply", text);
+        input.focus();
+        input.setSelectionRange(text.length, text.length);
+      },
+    });
     setPendingAction(null);
-    if (!result.ok || result.text === undefined) {
+    if (!result.ok) {
       showFlash({ text: result.error ?? "That message is no longer editable.", ok: false }, 3500);
       return;
     }
-    input.value = result.text;
-    writeDraft(sessionId, "reply", result.text);
-    input.focus();
-    input.setSelectionRange(result.text.length, result.text.length);
+    if (result.acknowledgementLost) {
+      showFlash(
+        {
+          text: RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
+          ok: false,
+        },
+        6000,
+      );
+    }
   }
 
   async function retry(turn: PendingTurn): Promise<void> {

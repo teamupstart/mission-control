@@ -479,14 +479,17 @@ export class PendingTurnManager {
           `SDK conversation ownership changed during delivery: ${errorMessage(err)}`,
           handoff.acceptanceBoundaryCrossed,
         );
-      } else if (
-        handoff.acceptanceBoundaryCrossed &&
-        this.registry.sessionResetInProgress(session.id)
-      ) {
-        this.markResetUncertain(
+      } else if (handoff.acceptanceBoundaryCrossed) {
+        // Once the supervisor crossed its serialized acceptance guard, a thrown
+        // transport response is not proof of refusal: Codex may already have written
+        // `turn/start`. Keep fail-closed uncertainty instead of automatically replaying
+        // the same text on the next idle transition. markBoundaryUncertain also carries
+        // the row through a concurrent reset.
+        this.markBoundaryUncertain(
           session.id,
           turn,
-          `Session reset began after SDK delivery may have crossed its acceptance boundary: ${errorMessage(err)}`,
+          `SDK delivery may have crossed its acceptance boundary before failing: ${errorMessage(err)}`,
+          true,
         );
       } else {
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());

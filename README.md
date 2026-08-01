@@ -353,8 +353,9 @@ A row that was being delivered when the daemon stopped recovers as `delivery unc
 is never resent automatically. Reset discards rows that are still safely queued along with
 the conversation drafts and work they described. If a claimed row may already have crossed
 the runtime boundary, reset retains it as `delivery uncertain` for explicit resolution.
-Work Queue automation and its explicit wrap-up send retain their existing direct acknowledged
-delivery path.
+Work Queue automation, its explicit wrap-up send, and a human-approved Foreman draft retain
+their direct acknowledged delivery path because their durable audit records claim the text
+was delivered.
 
 For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
@@ -3505,6 +3506,9 @@ Once **Send** succeeds, the composer draft becomes a durable queued turn. The fu
 turn stays visible beneath the conversation while Mission Control owns it. The compact Send
 surface shows a single-line, ellipsized preview of that same queued text. Recalling it with
 <kbd>↑</kbd> moves the full text back into the same draft system with the caret at the end.
+If the recall response is lost after the daemon may have committed it, the browser restores
+the exact text it already held and warns you to confirm the queued copy disappears before
+sending; an explicit stale-revision conflict leaves the composer untouched.
 Recalled attachment uploads return as their already-inserted file paths; the thumbnail strip
 is not reconstructed.
 

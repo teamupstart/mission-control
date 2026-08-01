@@ -9,6 +9,8 @@ import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import {
   latestEditablePendingTurn,
   pendingTurnStatus,
+  RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
+  recallPendingTurnIntoDraft,
   shouldRecallPendingTurn,
 } from "../lib/pending-turns.ts";
 import { Keycap } from "./Keycap.tsx";
@@ -194,13 +196,27 @@ export function ActionBar({
       return;
     }
     const result = await run("pending", () =>
-      api.recallPendingTurn(session.id, latestEditable.id, latestEditable.revision),
+      recallPendingTurnIntoDraft({
+        client: api,
+        sessionId: session.id,
+        turn: latestEditable,
+        restore: (text) => {
+          input.value = text;
+          writeDraft(session.id, "send", text);
+          input.focus();
+          input.setSelectionRange(text.length, text.length);
+        },
+      }),
     );
-    if (!result.ok || result.text === undefined) return;
-    input.value = result.text;
-    writeDraft(session.id, "send", result.text);
-    input.focus();
-    input.setSelectionRange(result.text.length, result.text.length);
+    if (result.acknowledgementLost) {
+      showFlash(
+        {
+          text: RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
+          ok: false,
+        },
+        6000,
+      );
+    }
   }
 
   async function retryPending(id: string, revision: number): Promise<void> {

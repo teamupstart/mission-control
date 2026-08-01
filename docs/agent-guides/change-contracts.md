@@ -58,7 +58,14 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   these are `workflow_runs.status`, `workflow_node_attempts.state` and
   `workflow_deliveries.kind` on operators' machines
 - SessionAction wait reasons and block codes (`SESSION_ACTION_WAIT_REASONS`,
-  `SESSION_ACTION_BLOCK_CODES`) - these reach a waiting attempt's `output_json`
+  `SESSION_ACTION_BLOCK_CODES`) - these reach a waiting attempt's `output_json`. Each one is a
+  `Record` key in `src/web/workflows/run-model.ts`, so adding one fails typecheck until
+  somebody says what it means to a human. That is the intended cost, not an obstacle to route
+  around with a default arm.
+- Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
+  `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
+  editing one rewrites the graph every existing binding pinned to it. The literal node and
+  edge tables in `test/builtin-workflows.test.ts` exist to fail when that happens.
 
 Search for the owning constant and its contract tests before extending a tuple.
 
@@ -102,6 +109,41 @@ A SessionAction is a durable side effect, not an evaluator:
   registry; `SESSION_ACTION_COMPLETION_CAPABILITIES` in `src/shared/workflow.ts` is the one
   answer the validator, the daemon and the browser all read. An adapter reported unavailable
   refuses at Publish and again before anything is typed.
+- An adapter is CODE with proof and recovery tests, never a string an operator types or a skill
+  they name. Adding one means: an append-only entry in `SESSION_ACTION_COMPLETION_KINDS`, a
+  capability, a `decide`/`validateSnapshot`/`validateCapture` implementation, an arm of
+  `SessionActionContinuationExpectation` if its proof has to survive to the capture, a sentence
+  for every wait reason and block code it introduces, and tests for the restart at each
+  boundary. It must not reach for a provider directly - see the pull request adapter below for
+  why the one poller that does is the one that keeps doing it.
+- Adapters are PURE decisions over stated evidence. Everything they need - the checkout's root,
+  branch and full HEAD oid, the adoption ledger, the commit a reserved child already captured -
+  is supplied on `SessionActionAdapterContext` by the manager, which is where git and SQLite
+  live. An adapter that fetched its own facts could not be tested without arranging them on a
+  real machine, and "we could not look" would stop being distinguishable from "the answer is
+  no". Null means unknown, and unknown always means wait.
+
+### The `pull_request` adapter
+
+- Its proof is: an OPEN pull request in Mission Control's adoption ledger, on the same
+  repository root and branch as the bound checkout, whose last observed remote head is the
+  exact commit the continuation captured. `Session.prUrl` is a lookup hint and satisfies
+  nothing; neither does a branch name, nor a pull request merely existing.
+- It never talks to a provider. The Inspector poller is the only thing that does, and
+  `inspector_prs.observed_head_sha` / `observed_state` / `head_ref_name` are the durable form
+  of what it saw. A second poll loop would double the API cost of every open pull request to
+  answer a question the first one already answers.
+- Heads are compared as FULL object ids on both sides. Evidence capture records
+  `git rev-parse --short HEAD`, so a captured abbreviation goes through
+  `resolveCapturedCommit` (`src/server/workflows/commit-id.ts`), which enumerates the object
+  database by prefix and consults no ref. Prefix-matching a captured head against a provider's
+  40-character id is not this comparison - see that module for the ref-shadowing case it closes.
+- When the checkout moves between the proof and the capture, the adapter is re-asked against
+  the head the CHILD holds, not the live one. Re-deciding against a moving HEAD sets an
+  expectation the immutable child can never satisfy, and the action waits forever while the
+  head keeps moving.
+- Only a closed or merged pull request AT the reviewed commit blocks. Everything else waits,
+  including a provider that could not be reached: waiting is recoverable and a block is not.
 - Refusal, lost authorization, an exited session or an infrastructure failure BLOCK the run with
   an action-specific code. They never become a Persona verdict, a repair packet, or a spent
   repair round. A REFUSED packet blocks (`delivery_refused`) because nothing was typed and

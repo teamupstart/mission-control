@@ -183,7 +183,12 @@ server.registerTool(
       intent: z
         .string()
         .min(1)
-        .describe("Complete implementation instructions, including the plan and phase file paths"),
+        .describe(
+          "Goal-level brief for the agent: the outcome to deliver, the plan or phase file paths to " +
+            "read and follow, and the verification bar. This text becomes the agent's prompt and is " +
+            "read as the requester's explicit requirement, so keep it concise and leave step-by-step " +
+            "detail in the referenced files rather than restating it here",
+        ),
       dependsOnTaskIds: z
         .array(z.string().min(1))
         .max(50)

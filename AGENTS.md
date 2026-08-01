@@ -23,11 +23,12 @@ npm run typecheck
 npm run lint
 npm test
 npm run test:electron
+npm run test:e2e
 npm run smoke
 npm run package
 ```
 
-`npm run smoke` requires a successful `npm run build` first. `npm run package` builds the macOS application.
+`npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run test:e2e` additionally needs the Playwright browser, which `npm install` does not fetch - run `npx playwright install chromium` once per machine. `npm run package` builds the macOS application.
 
 Run one test file with the same concurrency and loader as the full suite:
 
@@ -37,7 +38,7 @@ node --test --test-concurrency=2 --import tsx test/session-contracts.test.ts
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI runs typecheck, tests, build, and bundle smoke tests on Node.js 24 and 26. Lint is a required local check but is not currently a CI job.
+CI runs typecheck, tests, build, and bundle smoke tests on Node.js 24 and 26, then the `e2e/` Playwright suite on Node.js 24 only. Lint is a required local check but is not currently a CI job.
 
 ## Working rules
 
@@ -46,7 +47,8 @@ CI runs typecheck, tests, build, and bundle smoke tests on Node.js 24 and 26. Li
 3. Update README documentation in the same change when behavior, configuration, commands, or shortcuts change.
 4. Add focused tests for behavior changes and regressions.
 5. Validate in proportion to the change. UI changes require runtime or visual verification, not diff inspection alone.
-6. Commit only task-related files on a feature branch.
+6. New UI features and UI behavior changes require a Playwright spec in `e2e/`. See below.
+7. Commit only task-related files on a feature branch.
 
 When using no-mistakes, follow its gate until it passes. After it passes, do not rerun it to address Inspector feedback. Fix the feedback, resolve conflicts, push, and monitor the existing PR and CI until green.
 
@@ -116,6 +118,8 @@ if (session.tmux || session.wezterm || session.runtime === "sdk") {
 
 Tests use `node:test` and `node:assert/strict`. React rendering tests use `renderToStaticMarkup`; do not introduce jsdom or Testing Library without an explicit project decision.
 
+Browser end-to-end tests are the one exception, and they live apart: `e2e/` uses `@playwright/test` and runs under `npm run test:e2e`, never `npm test`. Everything in `test/` runs against `src/` and must pass on a fresh checkout; `e2e/` drives the BUILT dashboard served by the BUILT daemon, so it needs `npm run build` first. That is the same line `scripts/smoke-bundles.mjs` already draws.
+
 ```ts
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -128,6 +132,44 @@ test("falls back when a harness does not offer the stored runtime", () => {
   });
 });
 ```
+
+## UI changes require an end-to-end spec
+
+Read [e2e/README.md](e2e/README.md) before writing one.
+
+**Every new UI feature and every UI change requires a Playwright spec in `e2e/`.** There are
+no exemptions. If the change is visible to a person using the dashboard, it is covered here
+before it lands.
+
+The three older UI layers each assert something real and none of them can see whether the
+thing works: `renderToStaticMarkup` asserts markup shape, the in-process HTTP tests assert
+routes without a browser, and the Electron tests measure laid-out geometry. Only `e2e/`
+connects a click to a route to a server event and back to the DOM.
+
+This includes, and is not limited to:
+
+- A new control, form, modal, or view.
+- A change to what an existing control does, what it sends, or what it renders in response.
+- Markup, styling, copy, and layout changes. Assert the user-visible consequence - the text
+  a person reads, the control they can reach, the element that is now present or gone.
+- A fix for a bug that reproduced through the UI. Write the failing spec first.
+
+The other layers are additions to this requirement, never substitutes for it. Reach for them
+alongside a spec when they say something a browser cannot: `renderToStaticMarkup` to pin an
+exact markup shape, and the Electron geometry tests to measure used height for overflow and
+clipping, which no assertion on markup can produce.
+
+Changes with no UI surface - pure functions, reducers, selectors, formatting helpers, route
+edge cases - are not UI changes and belong in `test/`, where a case costs milliseconds.
+
+Two standing constraints:
+
+- **Never spend model tokens.** Every agent binary is redirected at a fake by
+  `e2e/fixtures/fake-agents.ts`. A dispatch launches the CLI through two unrelated paths -
+  the one-shot `claude -p` runner and the Agent SDK session - and both must stay faked.
+- **Never add `data-testid`.** Select by role, label, or placeholder. The app has 229
+  `aria-label`s and 155 `role`s already, and selecting through them keeps the accessible
+  names honest.
 
 ## Boundaries
 
@@ -161,6 +203,7 @@ Treat these paths as controlled:
 - `npm run typecheck` passes.
 - `npm run lint` passes.
 - `npm run build` and `npm run smoke` pass when build or runtime surfaces changed.
+- `npm run test:e2e` passes when UI surfaces changed, with a spec covering the new behavior.
 - README and linked technical docs match the implementation.
 - The worktree contains no unrelated edits.
 - Requested PR and CI work is complete before reporting completion.

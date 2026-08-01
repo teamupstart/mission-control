@@ -25,7 +25,7 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -48,11 +48,41 @@ const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { getQueueRow } = await import("../src/server/db.ts");
 const { drainCompletionClaim, promptedCompletionClaim } =
   await import("../src/server/foreman/workflow-claim.ts");
+const { runSupervisedCheck } = await import("../src/server/workflows/check-supervisor.ts");
+const { checkRuntimeSupport } = await import("../src/server/workflows/check-identity.ts");
 
-// Live delivery consent. `liveEnabled` is omitted rather than passed: it now defaults ON, and
-// letting the schema supply it means this fixture breaks if that default is ever quietly
-// reverted, instead of papering over the revert with an explicit `true`.
-setWorkflowConfig({ repoAllowlist: ["/repo"] });
+/**
+ * The gate the check cases drive, as a REAL command whose verdict the "session" can change.
+ *
+ * A file the command reads and the test writes is the check-shaped equivalent of `head.sha`:
+ * one knob meaning "the session did the repair", read by a real process that really exits
+ * non-zero and then really exits zero. Faking the exit code would have left the loop being
+ * proved against a stub in exactly the place the loop is supposed to have stopped being one.
+ */
+const marker = join(home, "check-marker.txt");
+writeFileSync(marker, "broken\n");
+const CHECK_COMMAND = [
+  process.execPath,
+  "-e",
+  "const v = require('node:fs').readFileSync(process.argv[1], 'utf8').trim();"
+    + "if (v === 'fixed') { console.log('0 problems'); process.exit(0); }"
+    + "console.error('src/thing.ts(4,1): error TS2345: nope'); process.exit(2);",
+  marker,
+];
+/** Where the command runs. A real directory, standing in for the worktree a lease would hand over. */
+const checkCwd = join(home, "check-tree");
+mkdirSync(checkCwd, { recursive: true });
+
+// Live delivery consent, and the check gate's own second consent beside it: `checksEnabled`
+// plus an allowlisted repository, both deliberate and both required. `liveEnabled` is omitted
+// rather than passed: it now defaults ON, and letting the schema supply it means this fixture
+// breaks if that default is ever quietly reverted, instead of papering over the revert with an
+// explicit `true`.
+setWorkflowConfig({
+  repoAllowlist: ["/repo"],
+  checksEnabled: true,
+  checkCommands: [{ repoRoot: "/repo", slot: "test", command: CHECK_COMMAND }],
+});
 setForemanConfig({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
 
 /** Two reviewers, so "the graph re-runs from the top" is more than one attempt row. */
@@ -82,6 +112,7 @@ const failingRunner: LlmRunner = {
   label: "fake",
   runInThread: null,
   sandbox: null,
+  price: () => null,
   litter: null,
   killLiveRuns() {},
   async run() {
@@ -127,7 +158,11 @@ interface Harness {
  * unchanged-evidence case. That is the whole mechanism under test, so it is one variable
  * rather than several that have to be kept consistent by hand.
  */
-async function harness(sessionId: string): Promise<Harness> {
+async function harness(
+  sessionId: string,
+  opts: { gate?: "personas" | "check" } = {},
+): Promise<Harness> {
+  const gate = opts.gate ?? "personas";
   const registry = new Registry();
   registry.applyDiscovery([discovered(sessionId)]);
   const queues = new QueueManager(registry);
@@ -193,6 +228,30 @@ async function harness(sessionId: string): Promise<Harness> {
         model: { id: "fake", source: "config" },
       }),
     },
+    // The execution runtime, wired the way the daemon wires it - bound per attempt - but
+    // handed a plain directory instead of a pooled lease. This file has no repository and no
+    // pool; what it needs from the runtime is a command that really runs and really fails, and
+    // the lease half is proved against a real pool in `workflow-check-runtime.test.ts`.
+    ...(gate === "check"
+      ? {
+          checkDeps: (attempt: { attemptId: string }) => ({
+            // Declines nested matching without shelling out to git for a path that is a
+            // fixture rather than a checkout.
+            checkoutSubpath: async () => null,
+            execute: async (request: { command: string[]; workingSubpath: string }) =>
+              (await runSupervisedCheck({
+                attemptId: attempt.attemptId,
+                command: request.command,
+                leasePath: checkCwd,
+                workingSubpath: request.workingSubpath,
+                timeoutMs: 30_000,
+              }, {
+                registry: { record: () => {}, clear: () => {} },
+                teardown: { graceMs: 300, confirmMs: 3_000, pollMs: 20 },
+              })).result,
+          }),
+        }
+      : {}),
   });
 
   // The workflow itself, through the real create/publish path rather than seeded rows: publish
@@ -209,24 +268,29 @@ async function harness(sessionId: string): Promise<Harness> {
     assert.equal(created.ok, true, `persona ${name} was refused`);
     return created.ok ? created.persona.id : "";
   });
+  // Two shapes, ONE loop. The check gate swaps the reviewers for a command node and changes
+  // nothing else - same trigger mode, same live delivery, same return_for_changes edge - which
+  // is the claim: a check failure and a persona failure reach the repair cycle by the same
+  // route, and nothing about it was written twice.
+  const gateNodes = gate === "check" ? (["gate"] as const) : PERSONA_NODES;
   const draft = {
     nodes: [
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
-      ...PERSONA_NODES.map((name, index) => ({
-        id: name,
-        kind: "persona",
-        personaId: personaIds[index]!,
-        position: { x: 200, y: index * 120 },
-      })),
+      ...(gate === "check"
+        ? [{ id: "gate", kind: "check", slot: "test", position: { x: 200, y: 0 } }]
+        : PERSONA_NODES.map((name, index) => ({
+            id: name,
+            kind: "persona",
+            personaId: personaIds[index]!,
+            position: { x: 200, y: index * 120 },
+          }))),
       { id: "end", kind: "end", outcome: "Approved", position: { x: 420, y: 0 } },
     ],
-    edges: [
-      ...PERSONA_NODES.flatMap((name) => [
-        { id: `a-${name}`, source: "session", sourcePort: "submitted", target: name, targetPort: "activate" },
-        { id: `p-${name}`, source: name, sourcePort: "pass", target: "end", targetPort: "terminal" },
-        { id: `f-${name}`, source: name, sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
-      ]),
-    ],
+    edges: gateNodes.flatMap((name) => [
+      { id: `a-${name}`, source: "session", sourcePort: "submitted", target: name, targetPort: "activate" },
+      { id: `p-${name}`, source: name, sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: `f-${name}`, source: name, sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ]),
   };
   const created = manager.create({
     name: `Repair cycle ${sessionId}`,
@@ -424,13 +488,26 @@ test("an item-less session repairs itself through the prompted episode", async (
     h.registry.upsertGoal(h.sessionId, {
       prompt: goal,
       text: goal,
+      objective: goal,
+      focus: goal,
+      relationship: "initial",
+      rationale: "Initial objective",
+      objectiveVersion: 1,
+      promptRevision: 1,
+      resolvedPromptRevision: 1,
+      pendingPrompts: [],
       source: "heuristic",
     }, 5);
     h.head.sha = "head-2";
 
     const claim = promptedCompletionClaim({
       noteKey: h.noteKey,
-      goal,
+      intent: {
+        objective: goal,
+        objectiveVersion: 1,
+        promptRevision: 1,
+        episodeKey: "intent:1:1",
+      },
       headSha: h.head.sha,
       transcriptAnchor: 100,
       summary: "complete",
@@ -626,6 +703,68 @@ test("a changed fingerprint resets the unchanged-evidence count", async () => {
     assert.equal(h.store.getRun(runId)?.status, "waiting_for_session");
     assert.notEqual(h.store.getRun(runId)?.currentPhase, "unchanged_evidence_exhausted");
     assert.match(nudges()[2]!.payload, /Nudge 1 of 2/);
+  } finally {
+    h.stop();
+  }
+});
+
+/**
+ * The same loop, triggered by a command instead of a model.
+ *
+ * Deliberately in THIS file rather than a new one. The point of the check gate landing is not
+ * that checks got their own repair path - it is that they got the existing one, so a failing
+ * build reaches a session exactly the way a failing reviewer does. A forked test would have
+ * proved a second implementation exists, which is the outcome to avoid.
+ *
+ * And it is a real command: a real process, a real non-zero exit, and its own stderr quoted
+ * back in the packet. Before the executor was wired, this gate recorded "Not run" and PASSED,
+ * so round 1 would never have parked at all and there would have been no cycle to drive.
+ */
+test("a failing check drives the same repair cycle, and round 2 runs it again and passes", {
+  skip: !checkRuntimeSupport().supported,
+}, async () => {
+  writeFileSync(marker, "broken\n");
+  const h = await harness("check-cycle", { gate: "check" });
+  try {
+    const { runId } = await parkedAfterRoundOne(h);
+    const roundOne = h.store.latestSubmission(runId)!;
+    const gateOne = h.store.listAttempts(roundOne.id).find((a) => a.nodeId === "gate")!;
+
+    // The gate RAN, and failed on its own exit code rather than on anybody's opinion.
+    const outcomeOne = gateOne.output as { status: string; exitCode: number | null };
+    assert.equal(outcomeOne.status, "failed");
+    assert.equal(outcomeOne.exitCode, 2);
+    assert.equal((gateOne.verdict as { verdict: string }).verdict, "fail");
+    // And the command's own output is what the session was given to work from.
+    assert.match(JSON.stringify(gateOne.verdict), /TS2345/);
+    assert.equal(h.injected.length, 1, "the failing check must type exactly one packet");
+    assert.match(h.injected[0]!, /TS2345/, "the packet did not carry the command's output");
+
+    // The session did the repair: the commit moved, and the command's answer moved with it.
+    writeFileSync(marker, "fixed\n");
+    h.head.sha = "head-2";
+
+    const queue = drainedQueue(h, "fix the failing check");
+    const claimed = await h.manager.claimCompletion(
+      h.sessionId,
+      drainCompletionClaim(queue, h.head.sha, 100),
+    );
+    assert.equal(claimed.claimed, true, "the drain completion claim was refused");
+
+    // Round 2 re-ran the check against the repaired state and it passed, so the run finished
+    // instead of parking for a third round.
+    await waitFor(
+      () => h.store.getRun(runId)?.status === "completed",
+      "round 2 never completed after the check was repaired",
+    );
+    const roundTwo = h.store.latestSubmission(runId)!;
+    assert.equal(roundTwo.round, 2);
+    assert.notEqual(roundTwo.id, roundOne.id);
+    const gateTwo = h.store.listAttempts(roundTwo.id).find((a) => a.nodeId === "gate")!;
+    const outcomeTwo = gateTwo.output as { status: string; exitCode: number | null };
+    assert.equal(outcomeTwo.status, "passed");
+    assert.equal(outcomeTwo.exitCode, 0);
+    assert.equal(h.injected.length, 1, "a passing round must not type a repair packet");
   } finally {
     h.stop();
   }

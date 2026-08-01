@@ -103,6 +103,7 @@ const failingRunner: LlmRunner = {
   label: "fake",
   runInThread: null,
   sandbox: null,
+  price: () => null,
   litter: null,
   killLiveRuns() {},
   async run() {
@@ -173,6 +174,7 @@ async function waitFor(check: () => boolean, message: string): Promise<void> {
 interface Probe {
   headSha: string | null;
   workingTreeStatus: string[];
+  diffFingerprint: string;
 }
 
 interface Harness {
@@ -211,7 +213,7 @@ function harness(sessionId: string, resumptionIntervalMs?: number): Harness {
   const store = new WorkflowStore();
   const injected: string[] = [];
   const head = { sha: "head-1" };
-  const probe: Probe = { headSha: "head-1", workingTreeStatus: [] };
+  const probe: Probe = { headSha: "head-1", workingTreeStatus: [], diffFingerprint: "content-1" };
   const transcript = { anchor: 0 };
   const manager = new WorkflowManager(registry, store, {
     queueManager: queues,
@@ -229,7 +231,11 @@ function harness(sessionId: string, resumptionIntervalMs?: number): Harness {
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
     recordInjection: (() => {}) as never,
-    readEvidenceProbe: async () => ({ ...probe, headSha: head.sha }),
+    readEvidenceProbe: async () => ({
+      ...probe,
+      headSha: head.sha,
+      diffFingerprint: `${head.sha}:${probe.diffFingerprint}`,
+    }),
     readContextRaw: async (_registry, binding) => {
       const raw = {
         primaryGoal: { rawPrompt: "Ship the feature", refined: null, sourceNoteKey: binding.noteKey },
@@ -238,7 +244,7 @@ function harness(sessionId: string, resumptionIntervalMs?: number): Harness {
         session: { agent: "claude" as const, name: sessionId, cwd: "/repo", branch: "feature" },
         evidence: {
           headSha: head.sha,
-          diffFingerprint: `diff-${head.sha}`,
+          diffFingerprint: `${head.sha}:${probe.diffFingerprint}`,
           diff: "patch",
           diffTruncated: false,
           workingTreeDirty: probe.workingTreeStatus.length > 0,
@@ -326,6 +332,7 @@ async function personaFeedbackRun(
   versionId: string,
   resumptionPolicy: WorkflowResumptionPolicy | null,
   resumptionIntervalMs?: number,
+  initialProbe?: Partial<Probe>,
 ): Promise<Harness & { runId: string; bindingId: string; agentSessionId: string; paneId: string }> {
   seedVersion(versionId, PERSONA_GRAPH, { kind: "none" }, {
     triggerMode: "manual",
@@ -333,6 +340,7 @@ async function personaFeedbackRun(
     maxRepairRounds: 5,
   }, resumptionPolicy);
   const h = harness(sessionId, resumptionIntervalMs);
+  Object.assign(h.probe, initialProbe);
   const paneId = `%${sessionId.length}`;
   const agentSessionId = `agent-${sessionId}`;
   // Bind the conversation BEFORE the binding exists, so the note key is stable for the rest
@@ -458,6 +466,49 @@ test("unchanged evidence leaves the run WAITING, and never blocks or re-captures
   h.probe.workingTreeStatus = [" M src/file.ts"];
   await h.manager.sweepResumptions(SETTLED());
   assert.equal(h.store.listSubmissions(h.runId).length, 2);
+  await h.manager.stop();
+});
+
+test("content changes inside the same dirty paths resume the next repair round", async () => {
+  const h = await personaFeedbackRun(
+    "content-persona",
+    "v-content-persona",
+    "auto",
+    undefined,
+    {
+      workingTreeStatus: [" M src/already-dirty.ts"],
+      diffFingerprint: "failed-round-bytes",
+    },
+  );
+
+  // The repair edits bytes in that same file, so HEAD and `git status --porcelain` remain
+  // byte-for-byte identical. Only the captured diff fingerprint moves.
+  h.probe.diffFingerprint = "repaired-bytes";
+  reportIdle(h, "content-persona", h.agentSessionId, h.paneId);
+  await h.manager.sweepResumptions(SETTLED());
+
+  const submissions = h.store.listSubmissions(h.runId);
+  assert.equal(submissions.length, 2, "the content-only repair did not open a new submission");
+  const repair = submissions[1]!;
+  assert.equal(repair.round, 2);
+  assert.equal(repair.triggerSource, "session");
+  assert.equal(repair.triggerKey, `resume:${h.runId}:${submissions[0]!.evidenceFingerprint}`);
+  assert.notEqual(repair.evidenceFingerprint, submissions[0]!.evidenceFingerprint);
+
+  // Demonstrate the complete handoff, not only insertion of a submission row: round 2 is
+  // captured, reviewed, and its next repair packet reaches the bound live session.
+  await waitFor(
+    () => h.store.listDeliveries(h.runId).some((delivery) =>
+      delivery.submissionId === repair.id && delivery.state === "delivered"),
+    "round 2 was not reviewed and delivered back to the bound session",
+  );
+  assert.equal(h.injected.length, 2);
+  assert.equal(h.store.getRun(h.runId)?.status, "waiting_for_session");
+  assert.equal(h.store.getRun(h.runId)?.currentPhase, "persona_feedback");
+  assert.equal(
+    h.store.listEvents(h.runId).some((event) => event.kind === "resumption_started"),
+    true,
+  );
   await h.manager.stop();
 });
 

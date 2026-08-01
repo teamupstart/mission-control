@@ -507,6 +507,7 @@ test("card and console detail agree on every shared leaf", () => {
         onOpenFile: () => false,
         fileTabRequest: null,
         conversationTabRequest: null,
+        workflowsTabRequest: null,
         diffTabRequest: null,
         files: {} as SessionFilesController,
         onReset: () => {},
@@ -528,6 +529,7 @@ test("card and console detail agree on every shared leaf", () => {
         foremanAllowlist: [],
         inputReviewBySession: new Map<string, string>(),
         pendingReviewIds: new Set<string>(),
+        reviews: [],
       },
     }),
   );
@@ -647,6 +649,7 @@ function scheduledView(session: Session): SessionViewProps {
     onOpenFile: () => false,
     fileTabRequest: null,
     conversationTabRequest: null,
+    workflowsTabRequest: null,
     diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},
@@ -668,6 +671,7 @@ function scheduledView(session: Session): SessionViewProps {
     foremanAllowlist: [],
     inputReviewBySession: new Map<string, string>(),
     pendingReviewIds: new Set<string>(),
+    reviews: [],
     onOpenSchedule: () => {},
     scheduleNameById: SCHEDULE_NAMES,
   };

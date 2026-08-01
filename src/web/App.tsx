@@ -121,6 +121,7 @@ export function App(): React.JSX.Element {
     reviews,
     tasks,
     personas,
+    sessionActions,
     workflowSummaries,
     workflowRunSummaries: workflowRuns,
     ensembleSummaries,
@@ -220,6 +221,10 @@ export function App(): React.JSX.Element {
     nonce: number;
   } | null>(null);
   const [conversationTabRequest, setConversationTabRequest] = useState<{
+    sessionId: string;
+    nonce: number;
+  } | null>(null);
+  const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
     sessionId: string;
     nonce: number;
   } | null>(null);
@@ -502,6 +507,9 @@ export function App(): React.JSX.Element {
   const requestConversationTab = useCallback((sessionId: string) => {
     setConversationTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, []);
+  const requestWorkflowsTab = useCallback((sessionId: string) => {
+    setWorkflowsTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
+  }, []);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);
     setLauncherFocusError(message);
@@ -757,6 +765,11 @@ export function App(): React.JSX.Element {
       request && request.sessionId !== expandedForView ? null : request,
     );
   }, [expandedForView]);
+  useEffect(() => {
+    setWorkflowsTabRequest((request) =>
+      request && request.sessionId !== expandedForView ? null : request,
+    );
+  }, [expandedForView]);
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
@@ -782,12 +795,19 @@ export function App(): React.JSX.Element {
    *
    * The inbox's deep links are the callers: an item's home is a card, and a click that only
    * selected it would leave the operator on the Workflows page wondering what happened.
+   *
+   * `reveal` names the surface that ANSWERS the item, for the layouts where that is a tab
+   * rather than the card. A parked gate passes "workflows": Cards puts the gate strip on
+   * the card itself, but Console and the Board drill-in put it behind a tab, so without
+   * this the one deep link whose whole purpose is "come and answer this" would land on the
+   * transcript with the answer one keypress out of sight.
    */
-  function focusSession(sessionId: string): void {
+  function focusSession(sessionId: string, reveal?: "workflows"): void {
     navigate({ page: "fleet" });
     setFilter("");
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
+    if (reveal === "workflows" && layout !== "grid") requestWorkflowsTab(sessionId);
   }
 
   // Everything a layout needs, and nothing it could decide for itself. App stays the
@@ -822,6 +842,7 @@ export function App(): React.JSX.Element {
     fileTabRequest,
     diffTabRequest,
     conversationTabRequest,
+    workflowsTabRequest,
     files,
     onReset: setResetSessionId,
     onComplete: setCompleteSessionId,
@@ -842,6 +863,9 @@ export function App(): React.JSX.Element {
     foremanAllowlist,
     inputReviewBySession,
     pendingReviewIds,
+    // The whole list, unnarrowed - the conversation replays RESOLVED reviews, which every
+    // other consumer here filters out. See `SessionViewProps.reviews`.
+    reviews,
     onEditTask: openTaskEditor,
     workflowRunBySession,
     onOpenWorkflowRun: (runId) => navigate({ page: "workflows", tab: "runs", runId }),
@@ -1290,6 +1314,21 @@ export function App(): React.JSX.Element {
         }
         return;
       }
+      // "Show me how this session's run is going" - the Workflows tab, which holds both the
+      // workflow ladder and the no-mistakes gate. Unlike the conversation, this surface has
+      // no Cards equivalent to fall back to (that layout draws no tab strip and never
+      // mounted the ladder), so the chord is left unclaimed there rather than swallowed to
+      // no effect - the fleet-wide Workflows page on `w` is what Cards has instead.
+      if (chord === bindings.sessionWorkflows) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel || layout === "grid") return;
+        e.preventDefault();
+        // The board's overview shows tiles, not the detail that owns the tab, so drill in
+        // first - the same reveal-then-act `openDiff` performs for the Diff tab.
+        if (layout === "board") setBoardOpen(true);
+        requestWorkflowsTab(sel.id);
+        return;
+      }
       if (chord === bindings.filePicker) {
         const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
         if (!sel?.cwd) return;
@@ -1394,7 +1433,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody]);
+  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -1632,6 +1671,7 @@ export function App(): React.JSX.Element {
             <WorkflowPage
               tab={route.page === "workflows" ? route.tab : "workflows"}
               personas={personas}
+              sessionActions={sessionActions}
               workflowSummaries={workflowSummaries}
               workflowRuns={workflowRuns}
               selectedRunId={
@@ -1834,6 +1874,12 @@ export function App(): React.JSX.Element {
             <p className="empty-sub">
               Start a {agentList(AGENT_TYPES)} session in a terminal pane and it will appear
               here.
+            </p>
+            {/* The stream can be reconnecting behind this screen, which looks identical to
+                "nothing is running" - so the way out of a stale view is printed here rather
+                than left for the operator to guess. */}
+            <p className="empty-sub empty-hint">
+              Already running one? Press <kbd>⌘R</kbd> or <kbd>Ctrl+R</kbd> to refresh.
             </p>
           </div>
         )}

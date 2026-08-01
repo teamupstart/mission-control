@@ -64,6 +64,7 @@ const TWO_STAGE: StagePipeline = {
   endOutcome: "Complete",
   stages: [
     {
+      kind: "evaluation",
       joinId: "bbbbbbbb-0000-4000-8000-000000000001",
       members: [
         { nodeId: "cccccccc-0000-4000-8000-000000000001", kind: "persona", personaId: personas[0]!.id },
@@ -71,6 +72,7 @@ const TWO_STAGE: StagePipeline = {
       ],
     },
     {
+      kind: "evaluation",
       joinId: null,
       members: [{ nodeId: "cccccccc-0000-4000-8000-000000000003", kind: "persona", personaId: personas[2]!.id }],
     },
@@ -122,9 +124,12 @@ test("a brand-new workflow opens on an empty stage affordance, not an error wall
   // not edit it, so the strip is drawn from what is there - one placeholder between the
   // termini - and the graph reaches the compiler only on the first real edit.
   const html = editor(EMPTY);
-  assert.match(html, /No reviewers yet/);
+  // "No stages yet" rather than "No reviewers yet": a stage is now one of three things, and
+  // the placeholder that named only the first of them was an offer the picker no longer
+  // matches.
+  assert.match(html, /No stages yet/);
   assert.match(html, /Add a reviewer to route the submission|Add one, and the submission routes through it/);
-  assert.match(html, /Add reviewer or check…/);
+  assert.match(html, /Add a stage…/);
   // Every active Persona is offered inline; the sidebar palette is a graph-mode affordance.
   for (const item of personas) assert.match(html, new RegExp(item.name));
   assert.doesNotMatch(html, /Stage 1/);
@@ -191,6 +196,7 @@ const GATED: StagePipeline = {
   endOutcome: "Complete",
   stages: [
     {
+      kind: "evaluation",
       joinId: "bbbbbbbb-0000-4000-8000-000000000002",
       members: [
         { nodeId: "dddddddd-0000-4000-8000-000000000001", kind: "check", slot: "typecheck" },
@@ -198,6 +204,7 @@ const GATED: StagePipeline = {
       ],
     },
     {
+      kind: "evaluation",
       joinId: null,
       members: [{ nodeId: "cccccccc-0000-4000-8000-000000000003", kind: "persona", personaId: personas[2]!.id }],
     },

@@ -19,6 +19,8 @@ import {
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
+  disabledMemberStatus,
+  disabledStatusFor,
   endStatus,
   errorView,
   eventLine,
@@ -42,6 +44,10 @@ const submission = (
   id,
   runId: "run",
   round,
+  segment: 0,
+  parentSubmissionId: null,
+  continuationNodeId: null,
+  continuationNodeAttemptId: null,
   mode: "full_workflow",
   triggerSource: "manual",
   triggerKey: `manual:${id}`,
@@ -68,6 +74,7 @@ const attempt = (
   attempt: 1,
   state: "completed",
   persona: null,
+  sessionAction: null,
   runner: "claude",
   model: "reviewer",
   verdict: null,
@@ -256,6 +263,60 @@ test("a stage says how much of its gate was real", () => {
   assert.deepEqual(stageStatus([ran, ran]), { tone: "passed", label: "All passed" });
   // A real failure still outranks a gate that did not run.
   assert.equal(stageStatus([notRun, checkStatus("fail", "failed")]).tone, "failed");
+});
+
+test("the Disabled chip follows the engine's claim-time boundary, never a reached outcome", () => {
+  const set = ["judge"];
+  const attempt = (over: { state: string; verdict?: unknown; output?: unknown }) => ({
+    state: over.state as never,
+    verdict: (over.verdict ?? null) as never,
+    output: (over.output ?? null) as never,
+  });
+  // Work the auto-pass will convert reads Disabled: nothing yet, queued, retrying, or
+  // cancelled before any verdict existed.
+  assert.deepEqual(disabledStatusFor(set, "judge", undefined), disabledMemberStatus());
+  assert.deepEqual(disabledStatusFor(set, "judge", attempt({ state: "queued" })), disabledMemberStatus());
+  assert.deepEqual(disabledStatusFor(set, "judge", attempt({ state: "retry_wait" })), disabledMemberStatus());
+  assert.deepEqual(disabledStatusFor(set, "judge", attempt({ state: "cancelled" })), disabledMemberStatus());
+  // The engine's own synthetic auto-pass marks itself and reads Disabled too.
+  assert.deepEqual(
+    disabledStatusFor(set, "judge", attempt({
+      state: "completed",
+      verdict: { verdict: "pass" },
+      output: { outcome: "pass", disabled: true },
+    })),
+    disabledMemberStatus(),
+  );
+  // An outcome the round already reached stands: a recorded failure, a live review, an
+  // infrastructure error, and a late audit-only verdict all keep their real chips.
+  assert.equal(disabledStatusFor(set, "judge", attempt({ state: "completed", verdict: { verdict: "fail" } })), null);
+  assert.equal(disabledStatusFor(set, "judge", attempt({ state: "running" })), null);
+  assert.equal(disabledStatusFor(set, "judge", attempt({ state: "error" })), null);
+  assert.equal(disabledStatusFor(set, "judge", attempt({ state: "cancelled", verdict: { verdict: "fail" } })), null);
+  // A node that is not disabled never gets the override, whatever its state.
+  assert.equal(disabledStatusFor(set, "other", undefined), null);
+  assert.equal(disabledStatusFor([], "judge", undefined), null);
+  assert.equal(disabledStatusFor(undefined, "judge", undefined), null);
+});
+
+test("a disabled member reads red on its own chip and as not-run in the stage fold", () => {
+  const disabled = disabledMemberStatus();
+  // The chip itself is the red "Disabled" indicator the operator clicked for...
+  assert.equal(disabled.tone, "failed");
+  assert.equal(disabled.label, "Disabled");
+  assert.equal(disabled.degraded, true);
+  // ...but disabling is how an operator forces a stage PAST a member, so the fold must not
+  // call the stage failed. With a passed sibling it counts among the not-run gates.
+  const ran = checkStatus("pass", "passed");
+  assert.deepEqual(stageStatus([ran, disabled]), {
+    tone: "waiting",
+    label: "Passed, 1 not run",
+    degraded: true,
+  });
+  // A wholly disabled stage is finished, not waiting on anything.
+  assert.equal(stageStatus([disabled]).label, "Did not run");
+  // A real failure beside a disabled member still fails the stage.
+  assert.equal(stageStatus([disabled, reviewerStatus("fail")]).tone, "failed");
 });
 
 test("a stage passes only when all of it passed, and any failure wins", () => {

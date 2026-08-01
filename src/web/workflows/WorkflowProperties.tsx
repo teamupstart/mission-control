@@ -1,5 +1,7 @@
 import type {
   PersonaView,
+  SessionAction,
+  SessionActionCompletionKind,
   WorkflowCheckSlot,
   WorkflowDefinition,
   WorkflowDiagnostic,
@@ -10,8 +12,37 @@ import {
   WORKFLOW_CHECK_SLOTS,
   personaChoiceLabel,
   personaChoicesForDisplay,
+  sessionActionChoiceLabel,
+  sessionActionChoicesForDisplay,
 } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
+
+/**
+ * What the rail says about the action a node names: the skill it needs and the proof it
+ * waits for. Both are facts the runtime enforces, so the panel states them rather than
+ * leaving an operator to open the library to find out what the node will do.
+ */
+function selectedActionSummary(
+  sessionActionId: string,
+  sessionActions: readonly SessionAction[],
+): string {
+  const action = sessionActions.find((candidate) => candidate.id === sessionActionId);
+  if (!action) return "This session action no longer exists, so this node cannot be published.";
+  return [
+    action.requiredSkillId
+      ? `Requires the ${action.requiredSkillId} skill.`
+      : "Requires no skill.",
+    action.completion.kind === "pull_request"
+      ? "Completes only once a matching pull request is open and verified."
+      : "Completes once the session's turn finishes.",
+    ...(action.archivedAt === null
+      ? []
+      : ["Its source is archived, so this draft cannot be published until it is replaced."]),
+  ].join(" ");
+}
+
+/** A module constant, so an omitted prop does not re-render every consumer of this set. */
+const EMPTY_COMPLETIONS: ReadonlySet<SessionActionCompletionKind> = new Set();
 import type { WorkflowSelection } from "./WorkflowCanvas.tsx";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -176,6 +207,8 @@ export function WorkflowPipelineProperties({
 export function WorkflowProperties({
   workflow,
   personas,
+  sessionActions = [],
+  availableCompletions = EMPTY_COMPLETIONS,
   diagnostics,
   selection,
   readOnly,
@@ -184,6 +217,10 @@ export function WorkflowProperties({
 }: {
   workflow: WorkflowDefinition;
   personas: PersonaView[];
+  /** Names a selected action node and populates its picker, archived rows included. */
+  sessionActions?: SessionAction[];
+  /** Adapters this daemon can run. Narrows the picker; never narrows what can be NAMED. */
+  availableCompletions?: ReadonlySet<SessionActionCompletionKind>;
   diagnostics: WorkflowDiagnostic[];
   selection: WorkflowSelection;
   readOnly: boolean;
@@ -199,7 +236,9 @@ export function WorkflowProperties({
   );
   const labelOf = (id: string): string => {
     const node = workflow.draft.nodes.find((candidate) => candidate.id === id);
-    return node ? nodeLabel(workflow.draft, node, personas) : "a node that no longer exists";
+    return node
+      ? nodeLabel(workflow.draft, node, personas, sessionActions)
+      : "a node that no longer exists";
   };
   const replaceNode = (next: WorkflowDraftGraph["nodes"][number]): void => onUpdate({
     draft: { ...workflow.draft, nodes: workflow.draft.nodes.map((node) => node.id === next.id ? next : node) },
@@ -229,6 +268,9 @@ export function WorkflowProperties({
     }
     if (selection.kind === "multi") return;
     const node = workflow.draft.nodes.find((candidate) => candidate.id === selection.id);
+    // Session is the one node a graph must keep. Refused at the model layer too, not only by
+    // hiding the button: the canvas delete key routes here as well, and an affordance
+    // withheld in one place and left open in the other is the same affordance.
     if (!node || node.kind === "session") return;
     const edgeCount = workflow.draft.edges.filter((edge) =>
       edge.source === selection.id || edge.target === selection.id).length;
@@ -255,13 +297,23 @@ export function WorkflowProperties({
   );
   const selectedPersonaAvailable = selectedPersonaId === null
     || personaChoices.some(({ persona }) => persona.id === selectedPersonaId);
+  const selectedActionId = selectedNode?.kind === "session_action"
+    ? selectedNode.sessionActionId
+    : null;
+  const actionChoices = sessionActionChoicesForDisplay(
+    sessionActions,
+    selectedActionId === null ? [] : [selectedActionId],
+    availableCompletions,
+  );
+  const selectedActionListed = selectedActionId === null
+    || actionChoices.some(({ action }) => action.id === selectedActionId);
 
   return (
     <aside className="workflow-properties" aria-label="Workflow properties and validation">
       {selectedNode ? (
         <section>
           <p className="workflow-eyebrow">Selected node</p>
-          <h3>{nodeLabel(workflow.draft, selectedNode, personas)}</h3>
+          <h3>{nodeLabel(workflow.draft, selectedNode, personas, sessionActions)}</h3>
           {selectedNode.kind === "persona" && (
             <label>Persona
               <Tooltip label="Which reviewer Persona this node runs">
@@ -304,6 +356,46 @@ export function WorkflowProperties({
           )}
           {selectedNode.kind === "session" && <p>Session is the one submission and repair boundary. It cannot be deleted.</p>}
           {selectedNode.kind === "all_pass" && <p>Waits for one pass/fail receipt from every predecessor.</p>}
+          {selectedNode.kind === "session_action" && (
+            <>
+              <label>Session action
+                <Tooltip label="Which authored instruction this node sends to the bound session">
+                  <select
+                    disabled={readOnly}
+                    value={selectedNode.sessionActionId}
+                    onChange={(event) => replaceNode({
+                      ...selectedNode,
+                      sessionActionId: event.target.value,
+                    })}
+                  >
+                    {/* A source that left the catalog entirely still needs an option, or the
+                        select would paint a different action as chosen and the next change
+                        would rewrite a node nobody meant to edit. */}
+                    {!selectedActionListed && (
+                      <option value={selectedNode.sessionActionId}>
+                        Unavailable: {selectedNode.sessionActionId}
+                      </option>
+                    )}
+                    {actionChoices.map(({ action, retained }) => (
+                      <option key={action.id} value={action.id}>
+                        {sessionActionChoiceLabel(action, retained, availableCompletions)}
+                      </option>
+                    ))}
+                  </select>
+                </Tooltip>
+              </label>
+              <p>
+                Sends this action's exact instruction to the bound session and waits for it to
+                finish. Every stage after it reviews evidence captured once it has.
+              </p>
+              <p>
+                {selectedActionSummary(selectedNode.sessionActionId, sessionActions)}
+              </p>
+            </>
+          )}
+          {/* Session is excluded because a graph has exactly one of it. Every other kind,
+              a session action included, is removable now that it is authorable - an add
+              control without a matching remove is half an authoring loop. */}
           {!readOnly && selectedNode.kind !== "session" && (
             <Tooltip label="Remove this node and every route touching it">
               <button className="btn btn-danger" onClick={removeSelection}>Delete node</button>

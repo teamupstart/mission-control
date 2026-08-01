@@ -70,6 +70,11 @@ Each phase file must contain:
 9. a downstream handoff describing what later phases may rely on and must not change;
 10. a cross-phase audit record.
 
+The phase file is the only place this detail lives. The task scheduled for the phase points at the
+file rather than restating it, so write each phase file to stand on its own for an agent that arrives
+with nothing but its path, and treat publishing it to the default branch as part of delivering the
+phase rather than as follow-up.
+
 Apply the `html-plans` rendering contract to `phased-plan.md` when that skill is available. Keep the
 phase Markdown files as the detailed sources linked from that rendered index; the parent review owns
 the phased-plan follow-up, so do not recursively ask whether each generated phase should itself be
@@ -94,19 +99,74 @@ plan without depending on undocumented cleanup.
 
 ## Schedule the implementation tasks
 
-Create tasks only after every Markdown/HTML artifact has been written and the final audit passes.
-Use the Mission Control MCP tool `create_task` once per phase, in the same topological order as the
-index. The tool deliberately creates a ship task in the backlog with the default agent and no model
-or effort override.
+A task carries paths instead of content, so the paths must be real before the task exists. Create
+tasks only after all of the following hold:
+
+1. every Markdown/HTML artifact has been written and the final audit passes;
+2. those artifacts are committed and pushed on this session's branch - not merely present in the
+   worktree, which can be reclaimed;
+3. you have confirmed that each path you are about to name resolves in the pushed commit, spelled
+   exactly as the task will state it and relative to the repository root.
+
+If you cannot commit and push the artifacts, do not create the tasks. Report why instead: an
+unpublished plan with scheduled tasks is worse than no tasks, because a concise task whose paths do
+not resolve carries no instructions at all.
+
+Then use the Mission Control MCP tool `create_task` once per phase, in the same topological order as
+the index. The tool deliberately creates a ship task in the backlog with the default agent and no
+model or effort override.
+
+### Keep the task text at goal altitude
+
+A task's `intent` is delivered verbatim as the implementing agent's opening prompt, and it becomes
+that session's recorded human goal. Conformance review then treats it as the requesting human's
+explicit requirement, judged as written: a required behavior that the change omits is a failure.
+Every step pasted into the task therefore hardens into a contract clause, so an agent that finds the
+repository disagrees with a planned step and adapts is failed for it, even though the human only
+asked for the feature. Keep the requirement in the task and the route in the plan.
+
+Two mechanics make a bulk paste actively harmful rather than merely verbose. Review sees only the
+recorded goal text, the diff, and a transcript window - it cannot open a path the intent names, so a
+referenced plan is never read as requirements while an inlined one always is. And the recorded goal
+is truncated to its opening and closing fragments, so a pasted phase document loses its middle and
+promotes whatever detail happens to land at the edges into the requirement.
+
+Write the `intent` as a short brief - the goal, the pointers, the boundaries, the bar - and never as
+a copy of the phase document. Keep it well under 3000 characters.
+
+Pointers replace content only because a delivery chain makes them resolvable, and closing that chain
+is part of this skill's work, not an assumption it may make. The chain has three links: the artifacts
+are committed and pushed before any task is created, every task depends on this planning session, and
+that dependency releases the task only when this session's pull request merges the artifacts to the
+default branch. The gate is what makes concision safe - an unmerged plan leaves its phase tasks
+backlogged rather than dispatching an agent against paths that do not exist. Verify each link below;
+a broken one means the task must not be created yet.
+
+Schedule before the merge, not after it. Waiting for the merge to create the tasks would also work
+and would even be simpler to verify, but it requires this planning session to still be alive at merge
+time. Scheduling first lets the tasks wait in the backlog and release themselves whenever the human
+merges, which is the behavior this skill is for.
 
 For each call:
 
 - Set `title` to `Implement <plan name> - Phase <n>: <phase name>`.
-- Set `intent` to instruct the agent to read the source-plan, phased-plan, and phase-file paths;
-  implement only that phase; preserve the named cross-phase contracts; run its specified
-  verification; and open a reviewable pull request whose merge can release dependent phases. Include
-  repo-relative paths and embed the complete phase Markdown under an `Authoritative phase
-  instructions` heading so the task remains executable if the planning worktree is later reclaimed.
+- Set `intent` to a brief containing exactly these four parts:
+  1. **the goal** - one or two sentences naming the user-visible or engineering outcome this phase
+     delivers, written the way the human would ask for it;
+  2. **the pointers** - repo-relative paths to the source plan, `phased-plan.md`, and this phase's
+     file, with an instruction to read them first and follow the phase file as the implementation
+     guide;
+  3. **the boundaries** - implement only this phase, keep the cross-phase contracts the phase file
+     names, and leave later phases' scope alone;
+  4. **the bar** - run the verification the phase file specifies and open a reviewable pull request
+     whose merge can release dependent phases.
+- State plainly in the `intent` that the phase document is the proposed route, not a specification:
+  the agent follows it where the repository agrees, uses its own judgement where the repository
+  disagrees or a better implementation presents itself, and records any deviation and its reasoning
+  in the pull request. Only the goal is fixed.
+- Keep implementation detail out of the task text. Do not embed the phase Markdown, file inventories,
+  numbered step lists, schema or API definitions, or acceptance checklists. Those live in the phase
+  file, which the agent reads.
 - Set `dependsOnTaskIds` to the returned task ids of that phase's direct prerequisites. Do not flatten
   the graph into a serial chain. Parallel phases should share prerequisites and not depend on one
   another.
@@ -117,6 +177,22 @@ For each call:
   a session id into `dependsOnTaskIds`.
 - Save the returned task id before creating any dependent task.
 
+A well-formed `intent` reads like a person asking for the feature:
+
+> Give Mission Control durable schedules, so a recurring mission survives a daemon restart and still
+> fires exactly once per due window.
+>
+> Read `docs/plans/recurring-missions/plan.md` for the approved goal,
+> `docs/plans/recurring-missions/phased-plan.md` for how the work is split, and
+> `docs/plans/recurring-missions/phase-1-durable-schedule-foundation.md` for this phase. That phase
+> file is the proposed route, not a specification: follow it where the repository agrees, use your own
+> judgement where it does not or where a better implementation presents itself, and record any
+> deviation and its reasoning in the pull request.
+>
+> Implement only this phase and preserve the cross-phase contracts it names; later phases own the
+> scheduling UI and the catalog. Run the verification that phase file specifies, then open a
+> reviewable pull request - its merge releases the dependent phase tasks.
+
 If task creation fails, stop creating tasks that depend on it. Report the failure and every task id
 already created; never recreate successful tasks speculatively, because duplicate implementation
 tasks are worse than an incomplete graph.
@@ -124,14 +200,16 @@ tasks are worse than an incomplete graph.
 ## Ship the artifacts and watch the pull request
 
 The scheduled tasks are gated on the planning session, so the plan is not delivered until the
-artifacts reach the default branch. After task creation succeeds:
+artifacts reach the default branch. Merging is the act that publishes the paths every task names.
+After task creation succeeds:
 
-1. Commit every artifact this run created or updated (the source plan and its HTML, the phased-plan
-   index and its HTML, every phase file) on a branch following the repository's branch and commit
-   conventions, and open a pull request containing exactly that work. Follow the repository's PR
-   skill where one exists (for Mission Control sessions, `mission-pull-request`). The description
-   names the approved decisions, the phase-to-task-id map, and states that the backlogged phase
-   tasks are released by this PR's merge.
+1. Open a pull request containing exactly the artifact commit this run pushed before scheduling (the
+   source plan and its HTML, the phased-plan index and its HTML, every phase file), on a branch
+   following the repository's branch and commit conventions. Commit and push anything the run
+   produced after that point, so the branch holds every artifact the tasks reference. Follow the
+   repository's PR skill where one exists (for Mission Control sessions, `mission-pull-request`). The
+   description names the approved decisions, the phase-to-task-id map, and states that the backlogged
+   phase tasks are released by this PR's merge.
 2. Watch the pull request until CI passes. Fix failures this PR caused; a failure that reproduces on
    the base branch is reported, not chased. Do not stop at "pushed" - the deliverable is a green,
    merged PR.
@@ -146,9 +224,15 @@ artifacts reach the default branch. After task creation succeeds:
    the PR is green with no unresolved actionable comments. Never weaken a phase's contracts or exit
    criteria to satisfy a reviewer without recording the change in the affected cross-phase audit
    records.
-4. When the human has asked for it (or the repository's conventions authorize it), merge once green;
+4. Before the merge, re-verify every path the scheduled tasks name against the branch as it now
+   stands. Review can rename, move, or split an artifact, and each task holds only a path. Any path
+   that no longer resolves is repaired in the affected task's intent - or by restoring the path -
+   before that task is released.
+5. When the human has asked for it (or the repository's conventions authorize it), merge once green;
    otherwise hand the green PR to the human for merge. Merging is what releases the dependent phase
-   tasks.
+   tasks and publishes the referenced files to the default branch. If the PR is instead abandoned,
+   say so and cancel the scheduled tasks; leaving them backlogged against unpublished paths strands
+   them.
 
 Finish by reporting the artifact paths, the phase-to-task-id map, the direct dependency edges
 (including the active planning-session edge on every task), which tasks may execute concurrently,

@@ -1,9 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { CreatePersona, CreateWorkflow, UpdatePersona, UpdateWorkflow } from "@shared/protocol.ts";
+import type {
+  CreatePersona,
+  CreateSessionAction,
+  CreateWorkflow,
+  UpdatePersona,
+  UpdateSessionAction,
+  UpdateWorkflow,
+} from "@shared/protocol.ts";
 import {
   PersonaSnapshotSchema,
+  SessionActionAttemptStateSchema,
+  SessionActionSkillIdSchema,
+  SessionActionSnapshotSchema,
   PublishedWorkflowGraphSchema,
   WorkflowBindingDefaultsSchema,
   WorkflowCompletionPolicySchema,
@@ -31,7 +41,11 @@ import {
   WORKFLOW_RESUMPTION_POLICIES,
   WORKFLOW_TRIGGER_MODES,
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
+  SESSION_ACTION_COMPLETION_KINDS,
+  personaSnapshotOf,
   personasForDisplay,
+  sessionActionSnapshotOf,
+  sessionActionsForDisplay,
   workflowsForDisplay,
   type WorkflowTriggerSource,
   type WorkflowCompletionKind,
@@ -40,8 +54,10 @@ import {
   type WorkflowInspectorGateState,
   type WorkflowResumptionPolicy,
 } from "@shared/workflow.ts";
+import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
 import type {
   Persona,
+  SessionAction,
   WorkflowBinding,
   WorkflowBindingClaim,
   WorkflowCaptureExpectation,
@@ -66,11 +82,19 @@ import type {
   WorkflowVersionMetadata,
   WorkflowSummary,
   WorkflowDiagnostic,
+  WorkflowValidationResult,
+  SessionActionAttemptState,
+  SessionActionDeliveryAnchor,
+  SessionActionCompletionCapability,
+  SessionActionCompletionKind,
+  SessionActionSnapshot,
 } from "@shared/workflow.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import type { SessionIntentGuard } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { openDb } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
+import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
@@ -137,6 +161,7 @@ function compactGate(run: WorkflowRun, gate: WorkflowInspectorGateState | null):
 
 export const WORKFLOW_TABLES = [
   "personas",
+  "session_actions",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
@@ -264,6 +289,60 @@ export function parsePersonaRow(value: unknown): Persona {
     // runner union; Persona resolution is the tolerant boundary that reports the fallback.
     runner: row.runner_id as LlmRunnerId | null,
     model: row.model_id,
+    revision: row.revision,
+    archivedAt: row.archived_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    // A row is operator data by construction: built-ins are never written to this table.
+    builtin: false,
+  };
+}
+
+const SessionActionRowSchema = z.object({
+  id: nonempty,
+  name: nonempty.max(WORKFLOW_LIMITS.sessionActionName),
+  normalized_name: nonempty,
+  description: text.max(WORKFLOW_LIMITS.sessionActionDescription),
+  prompt_md: text,
+  required_skill_id: nullableText,
+  /**
+   * STRICT on read, unlike `personas.runner_id` beside it, and the asymmetry is the point.
+   * An unreadable runner degrades to the app-wide default and reports the fallback - the
+   * review still happens, just on another model. An unreadable completion kind has no safe
+   * fallback: reading a newer build's stricter adapter as `session_turn` would let an action
+   * complete on a settled idle turn when the version it belongs to demanded durable proof.
+   */
+  completion_kind: z.enum(SESSION_ACTION_COMPLETION_KINDS),
+  revision: positive,
+  archived_at: nullableInteger,
+  created_at: integer,
+  updated_at: integer,
+});
+
+export function parseSessionActionRow(value: unknown): SessionAction {
+  const row = parseShape("session_actions", SessionActionRowSchema, value);
+  // The READ bound, which is looser than the authoring one on purpose: a row written before
+  // the prompt ceiling was tied to the deliverable packet budget stays visible and editable
+  // rather than becoming a row nobody can read in order to shorten. It still cannot be
+  // published - the snapshot schema holds it to `sessionActionPromptBytes`.
+  if (utf8.encode(row.prompt_md).byteLength > WORKFLOW_LIMITS.sessionActionPromptReadBytes) {
+    throw new WorkflowRowError("session_actions", row.id, "prompt_md exceeds the prompt byte limit");
+  }
+  if (row.prompt_md.trim().length === 0) {
+    throw new WorkflowRowError("session_actions", row.id, "prompt_md is empty");
+  }
+  const skill = row.required_skill_id;
+  if (skill !== null && !SessionActionSkillIdSchema.safeParse(skill).success) {
+    throw new WorkflowRowError("session_actions", row.id, "required_skill_id is not a catalog id");
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    normalizedName: row.normalized_name,
+    description: row.description,
+    promptMarkdown: row.prompt_md,
+    requiredSkillId: skill,
+    completion: { kind: row.completion_kind },
     revision: row.revision,
     archivedAt: row.archived_at,
     createdAt: row.created_at,
@@ -444,7 +523,11 @@ const WorkflowRunRowSchema = z.object({
   updated_at: integer,
   completed_at: nullableInteger,
   evidence_pruned_at: nullableInteger.optional().default(null),
+  disabled_nodes_json: nullableText.optional().default(null),
 });
+
+/** Node ids an operator disabled for one run. Bounded by the graph's own node ceiling. */
+const DisabledNodesSchema = z.array(nonempty.max(200)).max(WORKFLOW_LIMITS.graphNodes);
 
 export function parseWorkflowRunRow(value: unknown): WorkflowRun {
   const row = parseShape("workflow_runs", WorkflowRunRowSchema, value);
@@ -467,6 +550,13 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
       WorkflowJsonSchema,
       WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
     ),
+    disabledNodeIds: parseNullableJson(
+      "workflow_runs",
+      row.id,
+      "disabled_nodes_json",
+      row.disabled_nodes_json ?? null,
+      DisabledNodesSchema,
+    ) ?? [],
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -478,6 +568,12 @@ const WorkflowSubmissionRowSchema = z.object({
   id: nonempty,
   run_id: nonempty,
   round: positive,
+  // Optional with a zero default only so a row written by a build without the column still
+  // parses in-process during an upgrade; `migrate()` supplies the real NOT NULL DEFAULT 0.
+  segment: integer.nonnegative().optional().default(0),
+  parent_submission_id: nullableText.optional().default(null),
+  continuation_node_id: nullableText.optional().default(null),
+  continuation_node_attempt_id: nullableText.optional().default(null),
   mode: WorkflowSubmissionModeSchema,
   trigger_source: WorkflowTriggerSourceSchema,
   trigger_key: nonempty,
@@ -493,10 +589,31 @@ const WorkflowSubmissionRowSchema = z.object({
 
 export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
   const row = parseShape("workflow_submissions", WorkflowSubmissionRowSchema, value);
+  // Continuation provenance is ALL-OR-NOTHING with a nonzero segment, and the check lives
+  // here because a half-written continuation is exactly the row a reader would misinterpret:
+  // a child segment with no parent looks like an ordinary repair round, and a segment-zero
+  // row carrying a parent claims a continuation that never happened.
+  const segment = row.segment ?? 0;
+  const provenance = [
+    row.parent_submission_id ?? null,
+    row.continuation_node_id ?? null,
+    row.continuation_node_attempt_id ?? null,
+  ];
+  if (segment === 0 ? provenance.some((v) => v !== null) : provenance.some((v) => v === null)) {
+    throw new WorkflowRowError(
+      "workflow_submissions",
+      row.id,
+      "continuation provenance must be present exactly when segment is nonzero",
+    );
+  }
   return {
     id: row.id,
     runId: row.run_id,
     round: row.round,
+    segment,
+    parentSubmissionId: row.parent_submission_id ?? null,
+    continuationNodeId: row.continuation_node_id ?? null,
+    continuationNodeAttemptId: row.continuation_node_attempt_id ?? null,
     mode: row.mode,
     triggerSource: row.trigger_source,
     triggerKey: row.trigger_key,
@@ -532,6 +649,7 @@ const WorkflowNodeAttemptRowSchema = z.object({
   attempt: positive,
   state: WorkflowNodeAttemptStateSchema,
   persona_snapshot_json: nullableText,
+  session_action_snapshot_json: nullableText.optional().default(null),
   runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model_id: nullableText.optional().default(null),
   verdict_json: nullableText,
@@ -547,6 +665,25 @@ const WorkflowNodeAttemptRowSchema = z.object({
 
 export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt {
   const row = parseShape("workflow_node_attempts", WorkflowNodeAttemptRowSchema, value);
+  // An attempt executes ONE kind of thing. Carrying both snapshots would make every reader
+  // that branches on "is this a reviewer or an action?" answer both ways, and the row is the
+  // last place that can still be told apart cheaply.
+  if (row.persona_snapshot_json !== null && (row.session_action_snapshot_json ?? null) !== null) {
+    throw new WorkflowRowError(
+      "workflow_node_attempts",
+      row.id,
+      "an attempt cannot carry both a Persona and a session action snapshot",
+    );
+  }
+  // `waiting` exists only for a session action, so a waiting attempt with no action snapshot
+  // is a row nothing can deliver, recover, or explain. Refuse it rather than park a run on it.
+  if (row.state === "waiting" && (row.session_action_snapshot_json ?? null) === null) {
+    throw new WorkflowRowError(
+      "workflow_node_attempts",
+      row.id,
+      "a waiting attempt must carry its session action snapshot",
+    );
+  }
   return {
     id: row.id,
     submissionId: row.submission_id,
@@ -559,6 +696,14 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       "persona_snapshot_json",
       row.persona_snapshot_json,
       PersonaSnapshotSchema,
+    ),
+    sessionAction: parseNullableJson(
+      "workflow_node_attempts",
+      row.id,
+      "session_action_snapshot_json",
+      row.session_action_snapshot_json ?? null,
+      SessionActionSnapshotSchema,
+      WORKFLOW_LIMITS.sessionActionPromptReadBytes + WORKFLOW_LIMITS.eventPayloadBytes,
     ),
     runner: row.runner_id ?? null,
     model: row.model_id ?? null,
@@ -621,6 +766,7 @@ const WorkflowDeliveryRowSchema = z.object({
   run_id: nonempty,
   submission_id: nonempty,
   kind: z.enum(WORKFLOW_DELIVERY_KINDS),
+  node_attempt_id: nullableText.optional().default(null),
   session_id: nonempty,
   note_key: nonempty,
   payload: text,
@@ -650,6 +796,20 @@ const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string> = {
   inspector_feedback: "inspector_findings",
   pr_handoff: "pr_handoff",
   unchanged_evidence_nudge: "unchanged_evidence",
+  session_action: "session_action",
+};
+
+/**
+ * The run STATUS a confirmed delivery of each kind leaves behind, when it is not the default
+ * `waiting_for_session`.
+ *
+ * An action wait is its own status because the two are watched by different observers with
+ * different budgets: `waiting_for_session` is a parked repair round the resumption sweep may
+ * resubmit, while a delivered action must be resumed only by proving pickup and a settled
+ * turn. Sharing the status would hand every action turn to the resumption observer.
+ */
+const DELIVERY_RUN_STATUS: Partial<Record<WorkflowDeliveryKind, WorkflowRun["status"]>> = {
+  session_action: "waiting_for_action",
 };
 
 export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
@@ -657,11 +817,23 @@ export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
   if (utf8.encode(row.payload).byteLength > WORKFLOW_LIMITS.eventPayloadBytes) {
     throw new WorkflowRowError("workflow_deliveries", row.id, "payload exceeds the delivery limit");
   }
+  // The link is required for an action and refused for everything else. Stated as one
+  // biconditional at the row boundary so an action packet can never be orphaned from the
+  // attempt that owns it, and so no legacy kind can quietly acquire an attempt it does not
+  // have - which would make recovery believe a pr_handoff was a graph node's action.
+  if ((row.kind === "session_action") !== ((row.node_attempt_id ?? null) !== null)) {
+    throw new WorkflowRowError(
+      "workflow_deliveries",
+      row.id,
+      "only a session_action delivery names a node attempt, and it must name one",
+    );
+  }
   return {
     id: row.id,
     runId: row.run_id,
     submissionId: row.submission_id,
     kind: row.kind,
+    nodeAttemptId: row.node_attempt_id ?? null,
     sessionId: row.session_id,
     noteKey: row.note_key,
     payload: row.payload,
@@ -853,7 +1025,10 @@ export type PersonaPatch = Omit<UpdatePersona, "expectedRevision" | "name"> & {
 type WorkflowDeliveryInsert = Pick<
   WorkflowDelivery,
   "id" | "runId" | "submissionId" | "kind" | "sessionId" | "noteKey" | "payload" | "payloadSha256"
->;
+> & {
+  /** Required for `session_action` and refused for every other kind. */
+  nodeAttemptId?: string | null;
+};
 
 export type PersonaStoreWrite =
   | { ok: true; persona: Persona }
@@ -862,6 +1037,33 @@ export type PersonaStoreWrite =
       /** `builtin` is "this Persona ships with the app", the one refusal a retry cannot clear. */
       reason: "not_found" | "revision_conflict" | "name_conflict" | "archived" | "builtin";
       current: Persona | null;
+    };
+
+export interface SessionActionInsert extends CreateSessionAction {
+  id: string;
+  normalizedName: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type SessionActionPatch =
+  Omit<UpdateSessionAction, "expectedRevision" | "name"> & {
+    name?: string;
+    normalizedName?: string;
+  };
+
+/**
+ * Deliberately the same refusal vocabulary as `PersonaStoreWrite`, not a wider one. The two
+ * catalogs answer to the same CAS, name-reservation and built-in rules, and a route that had
+ * to translate two error sets would be the place they quietly diverged.
+ */
+export type SessionActionStoreWrite =
+  | { ok: true; action: SessionAction }
+  | {
+      ok: false;
+      /** `builtin` is "this action ships with the app", the one refusal a retry cannot clear. */
+      reason: "not_found" | "revision_conflict" | "name_conflict" | "archived" | "builtin";
+      current: SessionAction | null;
     };
 
 export interface WorkflowInsert extends CreateWorkflow {
@@ -962,6 +1164,19 @@ export interface WorkflowSubmissionInsert {
   id: string;
   runId: string;
   round: number;
+  /**
+   * Server-owned and absent from every caller outside the continuation transaction.
+   *
+   * An API client never chooses a segment. Omitting it means zero, which is the only value
+   * an initial or repair submission may have, and the continuation transaction is the one
+   * place that computes `parent.segment + 1`.
+   */
+  segment?: number;
+  continuation?: {
+    parentSubmissionId: string;
+    nodeId: string;
+    nodeAttemptId: string;
+  };
   triggerSource: WorkflowTriggerSource;
   triggerKey: string;
   context: WorkflowJson;
@@ -1004,11 +1219,32 @@ export interface WorkflowAttemptInsert {
   attempt: number;
   state: WorkflowNodeAttempt["state"];
   persona: WorkflowNodeAttempt["persona"];
+  /** Required whenever `state` is `waiting`; refused beside a Persona snapshot. */
+  sessionAction?: SessionActionSnapshot | null;
+  /** The waiting attempt's initial observation state, written with the row. */
+  sessionActionState?: SessionActionAttemptState | null;
   inputFingerprint: string;
   retryAt?: number | null;
   error?: string | null;
   now: number;
 }
+
+/** Everything the continuation transaction needs to reserve and seed one child segment. */
+export interface WorkflowContinuationInput {
+  /** The waiting action attempt whose completion authorizes this segment. */
+  attemptId: string;
+  /** The child submission's id, minted by the caller so recovery can find it again. */
+  submissionId: string;
+  triggerKey: string;
+  now: number;
+}
+
+export type WorkflowContinuationReservation =
+  | { ok: true; submission: WorkflowSubmission; parent: WorkflowSubmission; idempotent: boolean }
+  | {
+      ok: false;
+      reason: "attempt_not_waiting" | "parent_superseded" | "run_terminal" | "already_continued";
+    };
 
 export interface ForemanCompletionStoreInput {
   binding: WorkflowBinding | null;
@@ -1023,7 +1259,7 @@ export interface ForemanCompletionStoreInput {
   marker: string;
   summary: string;
   evidenceFingerprint: string;
-  expectedGoal: string | null;
+  expectedIntent: SessionIntentGuard | null;
   runId: string;
   submissionId: string;
   now: number;
@@ -1067,7 +1303,42 @@ export class WorkflowStore {
     /** Injectable for the same reason `builtins` is: the merge rules are provable on a
      * fabricated catalog, so they do not depend on what the shipped graph happens to say. */
     private readonly builtinWorkflows: readonly BuiltinWorkflow[] = BUILTIN_WORKFLOWS,
+    private readonly builtinActions: readonly SessionAction[] = BUILTIN_SESSION_ACTIONS,
+    /**
+     * Which completion adapters this build can EXECUTE. Injectable for the reason the two
+     * catalogs above are: the publish transaction's snapshot and atomicity rules have to be
+     * provable without depending on which adapters happen to be shipping.
+     *
+     * A per-adapter map rather than the single boolean this replaced. Publishing is now a
+     * question about the proof an action selected, not about the runtime as a whole: a
+     * `session_turn` graph runs today while a `pull_request` graph is still refused, and one
+     * flag cannot express both.
+     */
+    private readonly sessionActionCompletions: Record<
+      SessionActionCompletionKind,
+      Pick<SessionActionCompletionCapability, "available" | "unavailableReason">
+    > = SESSION_ACTION_COMPLETION_CAPABILITIES,
   ) {}
+
+  /**
+   * The one draft validation, so the library card, the diagnostics route and Publish cannot
+   * answer differently about the same draft.
+   *
+   * `catalogs` is optional only so Publish can pass the lists it already read INSIDE its own
+   * transaction; every other caller reads them here.
+   */
+  validateDraft(
+    workflow: Pick<WorkflowDefinition, "draft" | "completionPolicy">,
+    catalogs?: { personas: readonly Persona[]; sessionActions: readonly SessionAction[] },
+  ): WorkflowValidationResult {
+    return validateWorkflowGraph({
+      graph: workflow.draft,
+      personas: catalogs?.personas ?? this.personaCatalog(),
+      sessionActions: catalogs?.sessionActions ?? this.sessionActionCatalog(),
+      completionPolicy: workflow.completionPolicy,
+      sessionActionCompletionCapabilities: this.sessionActionCompletions,
+    });
+  }
 
   /**
    * Merge the shipped Personas into a set of rows.
@@ -1289,6 +1560,232 @@ export class WorkflowStore {
     const persona = this.getPersonaInTransaction(id);
     if (!persona) throw new Error(`Persona ${id} disappeared during a workflow transaction`);
     return persona;
+  }
+
+  // ---- SessionActions ----
+  //
+  // The same five rules as Personas above, stated again rather than shared through a generic
+  // helper. The two tables have different columns, different limits and a different strictness
+  // on read (`completion_kind` fails the row where `runner_id` degrades), so a shared
+  // implementation would be a parameter list longer than either method and would put the one
+  // asymmetry that matters behind a flag.
+
+  private sortSessionActions(actions: SessionAction[]): SessionAction[] {
+    return actions.sort((a, b) =>
+      a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
+  }
+
+  private withBuiltinActions(rows: SessionAction[]): SessionAction[] {
+    return this.sortSessionActions(sessionActionsForDisplay(rows.concat(this.builtinActions)));
+  }
+
+  private withAddressableBuiltinActions(rows: SessionAction[]): SessionAction[] {
+    return this.sortSessionActions(rows.concat(this.builtinActions));
+  }
+
+  private builtinSessionAction(id: string): SessionAction | null {
+    return this.builtinActions.find((action) => action.id === id) ?? null;
+  }
+
+  private builtinSessionActionNamed(normalizedName: string): SessionAction | null {
+    return this.builtinActions.find((action) => action.normalizedName === normalizedName) ?? null;
+  }
+
+  listSessionActions(includeArchived = false): SessionAction[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM session_actions
+          ${includeArchived ? "" : "WHERE archived_at IS NULL"}
+         ORDER BY normalized_name ASC, id ASC`,
+      )
+      .all() as unknown[];
+    const out: SessionAction[] = [];
+    for (const row of rows) {
+      try {
+        out.push(parseSessionActionRow(row));
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    // Built-ins are never archived, so they belong in both listings.
+    return this.withBuiltinActions(out);
+  }
+
+  /**
+   * Every SessionAction a durable draft may address.
+   *
+   * Unlike `listSessionActions`, this catalog never applies live-row name shadowing.
+   * Shadowing is only a display rule, while validation and Publish must continue resolving
+   * every built-in id that may already be stored in a draft.
+   */
+  sessionActionCatalog(): SessionAction[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM session_actions ORDER BY normalized_name ASC, id ASC`)
+      .all() as unknown[];
+    const out: SessionAction[] = [];
+    for (const row of rows) {
+      try {
+        out.push(parseSessionActionRow(row));
+      } catch (error) {
+        diagnose(error);
+      }
+    }
+    return this.withAddressableBuiltinActions(out);
+  }
+
+  getSessionAction(id: string): SessionAction | null {
+    const row = this.db.prepare(`SELECT * FROM session_actions WHERE id = ?`).get(id);
+    if (!row) return this.builtinSessionAction(id);
+    try {
+      return parseSessionActionRow(row);
+    } catch (error) {
+      diagnose(error);
+      return null;
+    }
+  }
+
+  insertSessionAction(input: SessionActionInsert): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const shipped = this.builtinSessionAction(input.id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      const named = this.builtinSessionActionNamed(input.normalizedName);
+      if (named) return { ok: false, reason: "name_conflict", current: named };
+      const conflict = this.db
+        .prepare(`SELECT * FROM session_actions WHERE normalized_name = ?`)
+        .get(input.normalizedName);
+      if (conflict) {
+        let current: SessionAction | null = null;
+        try {
+          current = parseSessionActionRow(conflict);
+        } catch (error) {
+          diagnose(error);
+        }
+        return { ok: false, reason: "name_conflict", current };
+      }
+      this.db
+        .prepare(
+          `INSERT INTO session_actions (
+             id, name, normalized_name, description, prompt_md, required_skill_id,
+             completion_kind, revision, archived_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)`,
+        )
+        .run(
+          input.id,
+          input.name,
+          input.normalizedName,
+          input.description,
+          input.promptMarkdown,
+          input.requiredSkillId,
+          input.completion.kind,
+          input.createdAt,
+          input.updatedAt,
+        );
+      return { ok: true, action: this.mustSessionAction(input.id) };
+    });
+  }
+
+  updateSessionActionCas(
+    id: string,
+    expectedRevision: number,
+    patch: SessionActionPatch,
+    updatedAt = Date.now(),
+  ): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const shipped = this.builtinSessionAction(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      const current = this.getSessionActionInTransaction(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
+      if (current.revision !== expectedRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      if (patch.normalizedName !== undefined) {
+        const named = this.builtinSessionActionNamed(patch.normalizedName);
+        if (named && named.normalizedName !== current.normalizedName) {
+          return { ok: false, reason: "name_conflict", current: named };
+        }
+        const conflict = this.db
+          .prepare(`SELECT id FROM session_actions WHERE normalized_name = ? AND id <> ?`)
+          .get(patch.normalizedName, id);
+        if (conflict) return { ok: false, reason: "name_conflict", current };
+      }
+
+      const assignments: string[] = [];
+      const values: Array<string | number | null> = [];
+      const add = (column: string, value: string | number | null): void => {
+        assignments.push(`${column} = ?`);
+        values.push(value);
+      };
+      if (patch.name !== undefined) add("name", patch.name);
+      if (patch.normalizedName !== undefined) add("normalized_name", patch.normalizedName);
+      if (patch.description !== undefined) add("description", patch.description);
+      if (patch.promptMarkdown !== undefined) add("prompt_md", patch.promptMarkdown);
+      if ("requiredSkillId" in patch) add("required_skill_id", patch.requiredSkillId ?? null);
+      if (patch.completion !== undefined) add("completion_kind", patch.completion.kind);
+      assignments.push("revision = revision + 1", "updated_at = ?");
+      values.push(updatedAt, id, expectedRevision);
+      const result = this.db
+        .prepare(
+          `UPDATE session_actions SET ${assignments.join(", ")}
+            WHERE id = ? AND revision = ? AND archived_at IS NULL`,
+        )
+        .run(...values);
+      if (Number(result.changes) !== 1) {
+        const latest = this.getSessionActionInTransaction(id);
+        return { ok: false, reason: "revision_conflict", current: latest };
+      }
+      return { ok: true, action: this.mustSessionAction(id) };
+    });
+  }
+
+  /**
+   * Soft archive. The row STAYS, and keeps its name reserved.
+   *
+   * Both halves are load-bearing here in a way they are not for a reviewer: a draft or a
+   * published version may name this action, and history has to keep resolving the id it
+   * snapshotted. Releasing the name would let a second action claim the identity an
+   * operator's version reports as its source.
+   */
+  archiveSessionActionCas(
+    id: string,
+    expectedRevision: number,
+    archivedAt = Date.now(),
+  ): SessionActionStoreWrite {
+    return transaction(this.db, () => {
+      const shipped = this.builtinSessionAction(id);
+      if (shipped) return { ok: false, reason: "builtin", current: shipped };
+      const current = this.getSessionActionInTransaction(id);
+      if (!current) return { ok: false, reason: "not_found", current: null };
+      if (current.archivedAt !== null) return { ok: false, reason: "archived", current };
+      if (current.revision !== expectedRevision) {
+        return { ok: false, reason: "revision_conflict", current };
+      }
+      const result = this.db
+        .prepare(
+          `UPDATE session_actions
+              SET archived_at = ?, updated_at = ?, revision = revision + 1
+            WHERE id = ? AND revision = ? AND archived_at IS NULL`,
+        )
+        .run(archivedAt, archivedAt, id, expectedRevision);
+      if (Number(result.changes) !== 1) {
+        const latest = this.getSessionActionInTransaction(id);
+        return { ok: false, reason: "revision_conflict", current: latest };
+      }
+      return { ok: true, action: this.mustSessionAction(id) };
+    });
+  }
+
+  private getSessionActionInTransaction(id: string): SessionAction | null {
+    const row = this.db.prepare(`SELECT * FROM session_actions WHERE id = ?`).get(id);
+    return row ? parseSessionActionRow(row) : null;
+  }
+
+  private mustSessionAction(id: string): SessionAction {
+    const action = this.getSessionActionInTransaction(id);
+    if (!action) {
+      throw new Error(`Session action ${id} disappeared during a workflow transaction`);
+    }
+    return action;
   }
 
   /**
@@ -1646,18 +2143,34 @@ export class WorkflowStore {
       if (workflow.draftRevision !== expectedDraftRevision) {
         return { ok: false, reason: "revision_conflict", current: workflow };
       }
+      // BOTH catalogs read inside this transaction, and the snapshots below are taken from
+      // these exact lists. Re-reading either after validation would open the window this
+      // whole method exists to close: an action archived between the two reads would pass
+      // validation and then be frozen into an immutable version as a live source.
       const personas = this.listPersonasInTransaction();
-      const validation = validateWorkflowGraph({
-        graph: workflow.draft,
-        personas,
-        completionPolicy: workflow.completionPolicy,
-      });
+      const sessionActions = this.listSessionActionsInTransaction();
+      const validation = this.validateDraft(workflow, { personas, sessionActions });
       if (!validation.valid) {
         return { ok: false, reason: "validation", current: workflow, diagnostics: validation.diagnostics };
       }
       const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
+      const actionMap = new Map(sessionActions.map((action) => [action.id, action]));
       const graph = {
         nodes: workflow.draft.nodes.map((node) => {
+          if (node.kind === "session_action") {
+            const action = actionMap.get(node.sessionActionId);
+            if (!action || action.archivedAt !== null) {
+              throw new Error(
+                `validated session action ${node.sessionActionId} disappeared during Publish`,
+              );
+            }
+            return {
+              id: node.id,
+              kind: "session_action" as const,
+              position: node.position,
+              action: sessionActionSnapshotOf(action),
+            };
+          }
           if (node.kind !== "persona") return node;
           const persona = personaMap.get(node.personaId);
           if (!persona || persona.archivedAt !== null) {
@@ -1667,15 +2180,7 @@ export class WorkflowStore {
             id: node.id,
             kind: "persona" as const,
             position: node.position,
-            persona: {
-              sourcePersonaId: persona.id,
-              sourceRevision: persona.revision,
-              name: persona.name,
-              description: persona.description,
-              guidanceMarkdown: persona.guidanceMarkdown,
-              runner: persona.runner,
-              model: persona.model,
-            },
+            persona: personaSnapshotOf(persona),
           };
         }),
         edges: workflow.draft.edges,
@@ -1714,11 +2219,7 @@ export class WorkflowStore {
   }
 
   summary(workflow: WorkflowDefinition): WorkflowSummary {
-    const validation = validateWorkflowGraph({
-      graph: workflow.draft,
-      personas: this.personaCatalog(),
-      completionPolicy: workflow.completionPolicy,
-    });
+    const validation = this.validateDraft(workflow);
     // A built-in owns no version rows, so the row lookup below would report it unpublished -
     // which reads on the card as a shipped workflow nobody can bind.
     const current = workflow.currentVersionId === null
@@ -2090,7 +2591,18 @@ export class WorkflowStore {
         noteKey: String(row.note_key),
         status: run.status,
         phase: run.currentPhase,
+        // `MAX(s.round)` and never a count of submissions: a repair round may now hold
+        // several evidence segments, so counting rows would inflate the number the repair
+        // budget is compared against.
         round: Number(row.current_round),
+        segment: submission?.segment ?? 0,
+        // Derived once, HERE, from the attempt the runtime is actually watching. A surface
+        // that re-derived it from session activity would be guessing at the one distinction
+        // this phase exists to make - a stale idle is not a finished turn.
+        actionWait: attempts
+          .flatMap((attempt) =>
+            attempt.state === "waiting" ? [this.sessionActionState(attempt)?.wait] : [])
+          .find((wait) => wait !== undefined) ?? null,
         maxRepairRounds: run.maxRepairRounds,
         activePersonaNames: attempts.flatMap((attempt) =>
           attempt.persona && ["queued", "running", "retry_wait"].includes(attempt.state)
@@ -2132,9 +2644,10 @@ export class WorkflowStore {
     return row ? parseWorkflowSubmissionRow(row) : null;
   }
 
+  /** Every submission of one run in evidence order: repair rounds, and segments within them. */
   listSubmissions(runId: string): WorkflowSubmission[] {
     return (this.db.prepare(
-      `SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round ASC`,
+      `SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round ASC, segment ASC`,
     ).all(runId) as unknown[]).map(parseWorkflowSubmissionRow);
   }
 
@@ -2144,11 +2657,49 @@ export class WorkflowStore {
     ).all(status) as unknown[]).map(parseWorkflowSubmissionRow);
   }
 
-  latestSubmission(runId: string): WorkflowSubmission | null {
+  /**
+   * The newest evidence snapshot of a run, ordered by `(round, segment)` and never by
+   * insertion time.
+   *
+   * Insertion order and evidence order agree today and must not be relied on to: a
+   * continuation is reserved before its evidence is captured, so a row's `created_at` says
+   * when the daemon started work, not which evidence is current.
+   */
+  latestSubmissionForRun(runId: string): WorkflowSubmission | null {
     const row = this.db.prepare(
-      `SELECT * FROM workflow_submissions WHERE run_id = ? ORDER BY round DESC LIMIT 1`,
+      `SELECT * FROM workflow_submissions WHERE run_id = ?
+        ORDER BY round DESC, segment DESC LIMIT 1`,
     ).get(runId);
     return row ? parseWorkflowSubmissionRow(row) : null;
+  }
+
+  /**
+   * The submission a REPAIR round started with, which is always its segment zero.
+   *
+   * Named separately from `latestSubmissionForRun` because the two answer different
+   * questions and the difference only became visible once a round could hold more than one
+   * snapshot: the repair budget, the round scrubber and a resubmission all mean "the round",
+   * while delivery and activation mean "the current evidence".
+   */
+  submissionForRepairRound(runId: string, round: number): WorkflowSubmission | null {
+    return this.submissionForSegment(runId, round, 0);
+  }
+
+  /** One exact evidence snapshot, by its full `(round, segment)` identity. */
+  submissionForSegment(runId: string, round: number, segment: number): WorkflowSubmission | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_submissions WHERE run_id = ? AND round = ? AND segment = ?`,
+    ).get(runId, round, segment);
+    return row ? parseWorkflowSubmissionRow(row) : null;
+  }
+
+  /**
+   * The newest evidence snapshot. Retained as the merged spelling every existing call site
+   * uses; `latestSubmissionForRun` is the same query under the name the continuation work
+   * introduced, so both readings of "latest" resolve to one statement.
+   */
+  latestSubmission(runId: string): WorkflowSubmission | null {
+    return this.latestSubmissionForRun(runId);
   }
 
   createInitialSubmission(
@@ -2262,14 +2813,20 @@ export class WorkflowStore {
         };
       }
 
-      const expectedGoal = input.expectedGoal?.trim() || null;
-      const currentGoal = input.completionKind === "prompted"
-        ? (
-            this.db.prepare(
-              `SELECT prompt FROM session_goals WHERE note_key = ?`,
-            ).get(noteKey) as { prompt: string | null } | undefined
-          )?.prompt?.trim() || null
-        : null;
+      const expectedIntent = input.expectedIntent;
+      const currentIntent = expectedIntent || input.completionKind === "prompted"
+        ? this.db.prepare(
+            `SELECT objective, objective_version, prompt_revision,
+                    resolved_prompt_revision, relationship
+               FROM session_goals WHERE note_key = ?`,
+          ).get(noteKey) as {
+            objective: string | null;
+            objective_version: number;
+            prompt_revision: number;
+            resolved_prompt_revision: number;
+            relationship: string | null;
+          } | undefined
+        : undefined;
 
       if (binding) {
         const triggerKey =
@@ -2299,11 +2856,24 @@ export class WorkflowStore {
         }
       }
 
+      if (input.completionKind === "prompted" && !expectedIntent) {
+        throw new Error("Foreman prompted completion has no intent guard");
+      }
       if (
-        input.completionKind === "prompted"
-        && (!expectedGoal || currentGoal !== expectedGoal)
+        expectedIntent &&
+        (
+          !currentIntent ||
+          currentIntent.objective?.trim() !== expectedIntent.objective ||
+          currentIntent.objective_version !== expectedIntent.objectiveVersion ||
+          currentIntent.prompt_revision !== expectedIntent.promptRevision ||
+          currentIntent.resolved_prompt_revision !== expectedIntent.promptRevision ||
+          !currentIntent.relationship ||
+          currentIntent.relationship === "unclear" ||
+          expectedIntent.episodeKey !==
+            `intent:${currentIntent.objective_version}:${currentIntent.prompt_revision}`
+        )
       ) {
-        throw new Error("Foreman prompted completion goal is no longer current");
+        throw new Error("Foreman completion intent is no longer current");
       }
 
       // For an unbound fallback, retire the durable Foreman guard before inserting the
@@ -2316,7 +2886,11 @@ export class WorkflowStore {
         }
         guardRetired = input.completionKind === "drain"
           ? this.retireDrainGuard(noteKey, `workflow:${input.runId}`, input.now)
-          : this.retirePromptedGuard(input.fallbackBinding, currentGoal, input.now);
+          : this.retirePromptedGuard(
+              input.fallbackBinding,
+              expectedIntent!.episodeKey,
+              input.now,
+            );
         if (!guardRetired) {
           throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
         }
@@ -2411,7 +2985,7 @@ export class WorkflowStore {
       if (!guardRetired) {
         const retired = input.completionKind === "drain"
           ? this.retireDrainGuard(binding.noteKey, `workflow:${run.id}`, input.now)
-          : this.retirePromptedGuard(binding, currentGoal, input.now);
+          : this.retirePromptedGuard(binding, expectedIntent!.episodeKey, input.now);
         if (!retired) {
           throw new Error(`Foreman ${input.completionKind} completion guard is no longer armed`);
         }
@@ -2483,6 +3057,40 @@ export class WorkflowStore {
         WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
     ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
     return this.mustRun(id);
+  }
+
+  /**
+   * Replace one run's operator-disabled verdict node set and append its audit events, in
+   * one transaction - or report `null` when the run had already finished.
+   *
+   * A dedicated UPDATE rather than a parameter on `setRunState`, because `setRunState`
+   * overwrites `gate_state_json` unconditionally on every call and a disabled set stored
+   * there would be erased by the next ordinary state transition.
+   *
+   * The guarded UPDATE is the authority on the terminal race, not a status read before
+   * it: a run can finish between a caller's check and this write, and a toggle reported
+   * as applied when the row refused it would tell the operator a gate was disabled while
+   * the finished run's history says nothing of the kind. Zero changed rows means nothing
+   * is written - the events ride the same transaction precisely so a refused toggle
+   * cannot leave a `node_disabled` line on a run it never changed. The caller resolves
+   * "no such run" separately; here an absent row and a finished one earn the same `null`.
+   */
+  setRunDisabledNodes(
+    id: string,
+    nodeIds: readonly string[],
+    events: ReadonlyArray<{ kind: string; payload: WorkflowJson }> = [],
+    now = Date.now(),
+  ): WorkflowRun | null {
+    return transaction(this.db, () => {
+      const result = this.db.prepare(
+        `UPDATE workflow_runs
+            SET disabled_nodes_json = ?, updated_at = ?
+          WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
+      ).run(nodeIds.length === 0 ? null : JSON.stringify(nodeIds), now, id);
+      if (Number(result.changes) !== 1) return null;
+      for (const event of events) this.appendEvent(id, event.kind, event.payload, now);
+      return this.mustRun(id);
+    });
   }
 
   enterInspectorGate(input: {
@@ -2790,13 +3398,223 @@ export class WorkflowStore {
     return Number(changed.changes) === 1 ? this.mustSubmission(id) : null;
   }
 
+  /**
+   * Reserve the child evidence segment one completed session action authorizes.
+   *
+   * The reservation and the capture are deliberately SEPARATE transactions. Capture shells
+   * out to git and may call a model, which cannot happen inside a SQLite write; reserving
+   * first is what makes "exactly one child segment" a database fact rather than a promise
+   * about how fast the daemon is. `(run_id, round, segment)` is UNIQUE, so a second reserver
+   * loses the insert rather than opening a rival branch of the run.
+   *
+   * Idempotent in both directions: a reservation recorded on the attempt is returned as-is,
+   * and a `trigger_key` that already exists resolves to the same row. Retrying after a crash
+   * therefore resumes the reserved continuation instead of creating a second one.
+   */
+  reserveSessionActionContinuation(
+    input: WorkflowContinuationInput,
+  ): WorkflowContinuationReservation {
+    return transaction(this.db, () => {
+      const attempt = this.getAttempt(input.attemptId);
+      if (!attempt || attempt.state !== "waiting" || !attempt.sessionAction) {
+        return { ok: false, reason: "attempt_not_waiting" } as const;
+      }
+      const parent = this.getSubmission(attempt.submissionId);
+      if (!parent) return { ok: false, reason: "attempt_not_waiting" } as const;
+      const run = this.getRun(parent.runId);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.status)) {
+        return { ok: false, reason: "run_terminal" } as const;
+      }
+      // Idempotency is resolved BEFORE the supersede check, and the order is load-bearing.
+      // A successful reservation makes the CHILD the run's latest submission, so asking
+      // "is the parent still latest?" first would make every resume after a crash - the one
+      // path this reservation exists to survive - look like a stale completion and refuse.
+      const state = this.sessionActionState(attempt);
+      const reserved = state?.continuationSubmissionId
+        ? this.getSubmission(state.continuationSubmissionId)
+        : null;
+      if (reserved) {
+        return { ok: true, submission: reserved, parent, idempotent: true } as const;
+      }
+      const byTrigger = this.submissionByTrigger(input.triggerKey);
+      if (byTrigger) {
+        return { ok: true, submission: byTrigger, parent, idempotent: true } as const;
+      }
+      // Only now, for a genuinely NEW reservation: the action ran against the parent's
+      // evidence, so a newer segment means something else already moved this run on and this
+      // completion is stale.
+      const latest = this.latestSubmissionForRun(parent.runId);
+      if (!latest || latest.id !== parent.id) {
+        return { ok: false, reason: "parent_superseded" } as const;
+      }
+      // Same round, next segment. `round` is untouched on purpose: an action never spends
+      // repair budget, however many of them one round executes.
+      this.insertSubmissionInTransaction({
+        id: input.submissionId,
+        runId: parent.runId,
+        round: parent.round,
+        segment: parent.segment + 1,
+        continuation: {
+          parentSubmissionId: parent.id,
+          nodeId: attempt.nodeId,
+          nodeAttemptId: attempt.id,
+        },
+        mode: parent.mode,
+        triggerSource: parent.triggerSource,
+        triggerKey: input.triggerKey,
+        context: {},
+        evidence: {},
+        now: input.now,
+      });
+      const updated = this.db.prepare(
+        `UPDATE workflow_node_attempts SET output_json = ?, updated_at = ?
+          WHERE id = ? AND state = 'waiting'`,
+      ).run(
+        JSON.stringify({
+          ...(state ?? {
+            wait: "capturing" as const,
+            deliveryId: null,
+            anchor: null,
+            pickedUpAt: null,
+            settledAt: null,
+            expectation: null,
+            continuationSubmissionId: null,
+            blocked: null,
+          }),
+          wait: "capturing",
+          continuationSubmissionId: input.submissionId,
+        } satisfies SessionActionAttemptState),
+        input.now,
+        attempt.id,
+      );
+      if (Number(updated.changes) !== 1) {
+        throw new Error(`Session action attempt ${attempt.id} stopped waiting mid-reservation`);
+      }
+      this.setRunState(
+        parent.runId,
+        "capturing",
+        "session_action_capture",
+        { nodeId: attempt.nodeId, attemptId: attempt.id, submissionId: input.submissionId },
+        input.now,
+      );
+      this.appendEvent(parent.runId, "session_action_continuation_reserved", {
+        parentSubmissionId: parent.id,
+        submissionId: input.submissionId,
+        nodeId: attempt.nodeId,
+        attemptId: attempt.id,
+        round: parent.round,
+        segment: parent.segment + 1,
+      }, input.now);
+      return {
+        ok: true,
+        submission: this.mustSubmission(input.submissionId),
+        parent,
+        idempotent: false,
+      } as const;
+    });
+  }
+
+  /**
+   * Close the action attempt and seed its `complete` route into the captured child segment,
+   * in one transaction.
+   *
+   * The two writes belong together: an attempt marked complete without its receipt strands
+   * the run with no node left to activate, and a receipt without a completed attempt would
+   * let recovery prepare a second delivery for work that already happened.
+   */
+  completeSessionActionContinuation(input: {
+    attemptId: string;
+    submissionId: string;
+    receipts: Array<{ edgeId: string; payload: WorkflowJson }>;
+    now: number;
+  }): { attempt: WorkflowNodeAttempt; submission: WorkflowSubmission } | null {
+    return transaction(this.db, () => {
+      const attempt = this.getAttempt(input.attemptId);
+      if (!attempt || attempt.state !== "waiting") return null;
+      const child = this.getSubmission(input.submissionId);
+      if (!child || child.continuationNodeAttemptId !== attempt.id) return null;
+      const state = this.sessionActionState(attempt);
+      const completed = this.finishAttempt(attempt.id, {
+        state: "completed",
+        output: workflowJson({
+          outcome: "complete",
+          action: attempt.sessionAction?.name ?? null,
+          completion: attempt.sessionAction?.completion.kind ?? null,
+          continuationSubmissionId: child.id,
+          anchor: state?.anchor ?? null,
+          pickedUpAt: state?.pickedUpAt ?? null,
+          settledAt: state?.settledAt ?? null,
+        }),
+        error: null,
+      }, input.now);
+      for (const receipt of input.receipts) {
+        this.addReceipt(child.id, receipt.edgeId, attempt.id, receipt.payload, input.now);
+      }
+      this.appendEvent(child.runId, "session_action_completed", {
+        nodeId: attempt.nodeId,
+        attemptId: attempt.id,
+        submissionId: child.id,
+        parentSubmissionId: child.parentSubmissionId,
+        receipts: input.receipts.map((receipt) => receipt.edgeId),
+      }, input.now);
+      return { attempt: completed, submission: this.mustSubmission(child.id) };
+    });
+  }
+
+  /**
+   * Stop a waiting action attempt for a reason that is not the graph's business.
+   *
+   * A block, never a verdict: it carries an action-specific code, leaves the run's repair
+   * budget untouched, and writes no receipt, so nothing downstream reads it as work the
+   * session was asked to redo.
+   */
+  blockSessionActionAttempt(input: {
+    attemptId: string;
+    code: string;
+    detail: string;
+    now: number;
+  }): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const attempt = this.getAttempt(input.attemptId);
+      if (!attempt || attempt.state !== "waiting") return null;
+      const state = this.sessionActionState(attempt);
+      const finished = this.finishAttempt(attempt.id, {
+        state: "error",
+        // The observation state is KEPT beside the block, so run detail can still say how
+        // far the action got - sent, picked up, settled - rather than only that it stopped.
+        output: workflowJson({
+          ...state,
+          blocked: { code: input.code, detail: input.detail },
+        }),
+        error: `${input.code}: ${input.detail}`,
+      }, input.now);
+      const submission = this.getSubmission(attempt.submissionId);
+      if (submission) {
+        this.setRunState(submission.runId, "blocked", "session_action_blocked", {
+          nodeId: attempt.nodeId,
+          attemptId: attempt.id,
+          code: input.code,
+          detail: input.detail,
+        }, input.now);
+        this.appendEvent(submission.runId, "session_action_blocked", {
+          nodeId: attempt.nodeId,
+          attemptId: attempt.id,
+          code: input.code,
+          detail: input.detail,
+        }, input.now);
+      }
+      return finished;
+    });
+  }
+
   insertAttempt(input: WorkflowAttemptInsert): WorkflowNodeAttempt {
     this.db.prepare(
       `INSERT OR IGNORE INTO workflow_node_attempts (
-         id, submission_id, node_id, attempt, state, persona_snapshot_json, runner_id,
+         id, submission_id, node_id, attempt, state, persona_snapshot_json,
+         session_action_snapshot_json, runner_id,
          model_id, verdict_json, output_json, retry_at, input_fingerprint, error,
          created_at, updated_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
     ).run(
       input.id,
       input.submissionId,
@@ -2804,6 +3622,11 @@ export class WorkflowStore {
       input.attempt,
       input.state,
       input.persona === null ? null : JSON.stringify(input.persona),
+      input.sessionAction ? JSON.stringify(input.sessionAction) : null,
+      // The waiting attempt's observation state is written WITH the row, not after it: a
+      // daemon that stopped between the two would leave an attempt nothing can tell apart
+      // from one whose packet was already prepared.
+      input.sessionActionState ? JSON.stringify(input.sessionActionState) : null,
       input.retryAt ?? null,
       input.inputFingerprint,
       input.error ?? null,
@@ -2813,6 +3636,129 @@ export class WorkflowStore {
     const attempt = this.attemptForNode(input.submissionId, input.nodeId, input.attempt);
     if (!attempt) throw new Error(`Workflow attempt ${input.id} disappeared after insert`);
     return attempt;
+  }
+
+  /**
+   * The action attempts of one run that are still waiting, oldest first.
+   *
+   * Joined through submissions and runs rather than read per submission, because recovery's
+   * question is fleet-wide: "which action attempts does this daemon owe work to?" Terminal
+   * runs are excluded so a cancelled run's waiting rows never wake an observer.
+   */
+  listWaitingActionAttempts(runId?: string): WorkflowNodeAttempt[] {
+    const rows = runId
+      ? this.db.prepare(
+          `SELECT a.* FROM workflow_node_attempts a
+             JOIN workflow_submissions s ON s.id = a.submission_id
+            WHERE a.state = 'waiting' AND s.run_id = ?
+            ORDER BY a.created_at ASC, a.id ASC`,
+        ).all(runId)
+      : this.db.prepare(
+          `SELECT a.* FROM workflow_node_attempts a
+             JOIN workflow_submissions s ON s.id = a.submission_id
+             JOIN workflow_runs r ON r.id = s.run_id
+            WHERE a.state = 'waiting'
+              AND r.status NOT IN ('completed', 'cancelled', 'failed')
+            ORDER BY a.created_at ASC, a.id ASC`,
+        ).all();
+    return (rows as unknown[]).map(parseWorkflowNodeAttemptRow);
+  }
+
+  /**
+   * Waiting action attempts whose packet was CONFIRMED SENT into one session.
+   *
+   * Joined through the delivery rather than through the binding, because the question this
+   * answers is "which packets is this pane still owed a turn for?" - and the delivery is the
+   * only row that records which session actually received one. A prepared-but-unsent packet
+   * is deliberately excluded: nothing was typed, so no activity in that pane can be pickup.
+   */
+  waitingActionAttemptsForSession(sessionId: string): WorkflowNodeAttempt[] {
+    return (this.db.prepare(
+      `SELECT a.* FROM workflow_node_attempts a
+         JOIN workflow_deliveries d ON d.node_attempt_id = a.id
+         JOIN workflow_submissions s ON s.id = a.submission_id
+         JOIN workflow_runs r ON r.id = s.run_id
+        WHERE a.state = 'waiting'
+          AND d.session_id = ? AND d.state = 'delivered'
+          AND r.status NOT IN ('completed', 'cancelled', 'failed')
+        ORDER BY a.created_at ASC, a.id ASC`,
+    ).all(sessionId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+  }
+
+  /**
+   * Return a blocked action attempt to `waiting`, on explicit operator authority.
+   *
+   * The one backwards transition this runtime allows, and it exists for exactly one caller:
+   * an operator resolving an uncertain delivery as `mark_delivered`. The observer blocks an
+   * uncertain action rather than guessing whether its instruction landed - so without a way
+   * back, saying "it landed" would be an answer the run could no longer act on.
+   *
+   * Guarded on the attempt being blocked by a DELIVERY, never on any other block code: a lost
+   * session or an unavailable adapter is not something marking a packet delivered can fix.
+   */
+  reopenSessionActionAttempt(
+    attemptId: string,
+    anchor: SessionActionDeliveryAnchor,
+    now = Date.now(),
+  ): WorkflowNodeAttempt | null {
+    return transaction(this.db, () => {
+      const attempt = this.getAttempt(attemptId);
+      if (!attempt || attempt.state !== "error" || !attempt.sessionAction) return null;
+      const parsed = SessionActionAttemptStateSchema.safeParse(attempt.output);
+      const state = parsed.success ? parsed.data : null;
+      if (!state?.blocked || !["delivery_refused", "delivery_uncertain"].includes(state.blocked.code)) {
+        return null;
+      }
+      const changed = this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET state = 'waiting', error = NULL, finished_at = NULL, output_json = ?,
+                updated_at = ?
+          WHERE id = ? AND state = 'error'`,
+      ).run(
+        JSON.stringify({
+          ...state,
+          wait: "awaiting_pickup",
+          deliveryId: anchor.deliveryId,
+          anchor,
+          blocked: null,
+        } satisfies SessionActionAttemptState),
+        now,
+        attemptId,
+      );
+      return Number(changed.changes) === 1 ? this.mustAttempt(attemptId) : null;
+    });
+  }
+
+  private mustAttempt(id: string): WorkflowNodeAttempt {
+    const attempt = this.getAttempt(id);
+    if (!attempt) throw new Error(`Workflow attempt ${id} is missing`);
+    return attempt;
+  }
+
+  /** One waiting action attempt's durable observation state, or null when it has none. */
+  sessionActionState(attempt: WorkflowNodeAttempt): SessionActionAttemptState | null {
+    if (attempt.sessionAction === null) return null;
+    const parsed = SessionActionAttemptStateSchema.safeParse(attempt.output);
+    return parsed.success ? parsed.data : null;
+  }
+
+  /**
+   * Advance a waiting action attempt's observation state without finishing it.
+   *
+   * Guarded on `state = 'waiting'` so a completed, cancelled or blocked attempt can never be
+   * moved backwards by an observer that was already in flight when the attempt resolved.
+   */
+  updateSessionActionState(
+    attemptId: string,
+    state: SessionActionAttemptState,
+    now = Date.now(),
+  ): WorkflowNodeAttempt | null {
+    const changed = this.db.prepare(
+      `UPDATE workflow_node_attempts
+          SET output_json = ?, updated_at = ?
+        WHERE id = ? AND state = 'waiting'`,
+    ).run(JSON.stringify(state), now, attemptId);
+    return Number(changed.changes) === 1 ? this.getAttempt(attemptId) : null;
   }
 
   getAttempt(id: string): WorkflowNodeAttempt | null {
@@ -3017,6 +3963,18 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * Record one edge receipt, refusing a source attempt that does not belong to this
+   * submission's own evidence.
+   *
+   * There is exactly ONE legal cross-submission source, and it is named on the submission
+   * itself: the action attempt a continuation segment declares as
+   * `continuation_node_attempt_id`. That attempt ran against the PARENT evidence and its
+   * completion is what authorized downstream work against this segment - deliberate
+   * provenance, not a leak. Any other attempt from another submission would let a node
+   * activated on one evidence snapshot advance a graph running on a different one, so it is
+   * refused here rather than inferred from whether the ids happen to line up.
+   */
   addReceipt(
     submissionId: string,
     edgeId: string,
@@ -3024,6 +3982,22 @@ export class WorkflowStore {
     payload: WorkflowJson,
     now = Date.now(),
   ): boolean {
+    const legal = this.db.prepare(
+      `SELECT 1 FROM workflow_node_attempts a
+        WHERE a.id = ?
+          AND (
+            a.submission_id = ?
+            OR EXISTS (
+              SELECT 1 FROM workflow_submissions s
+               WHERE s.id = ? AND s.continuation_node_attempt_id = a.id
+            )
+          )`,
+    ).get(sourceAttemptId, submissionId, submissionId);
+    if (!legal) {
+      throw new Error(
+        `Workflow receipt on edge ${edgeId} names an attempt outside submission ${submissionId}`,
+      );
+    }
     const result = this.db.prepare(
       `INSERT OR IGNORE INTO workflow_edge_receipts (
          submission_id, edge_id, source_attempt_id, payload_json, created_at
@@ -3072,8 +4046,17 @@ export class WorkflowStore {
     now = Date.now(),
   ): { delivery: WorkflowDelivery; idempotent: boolean } {
     return transaction(this.db, () => {
-      const existing = this.deliveryForPacket(input.submissionId, input.kind, input.payloadSha256);
-      if (existing) return { delivery: existing, idempotent: true };
+      // An action's packet identity is its ATTEMPT, not `(submission, kind, payload sha)`.
+      // Two action nodes in one submission can legitimately render the same bytes, so the
+      // generic packet lookup would hand the second one the first one's delivery and
+      // complete two graph nodes on a single write.
+      if (input.kind === "session_action") {
+        const live = this.liveDeliveryForAttempt(input.nodeAttemptId ?? "");
+        if (live) return { delivery: live, idempotent: true };
+      } else {
+        const existing = this.deliveryForPacket(input.submissionId, input.kind, input.payloadSha256);
+        if (existing) return { delivery: existing, idempotent: true };
+      }
       return {
         delivery: this.insertDeliveryInTransaction(input, now),
         idempotent: false,
@@ -3081,17 +4064,54 @@ export class WorkflowStore {
     });
   }
 
+  /**
+   * The packet an action attempt already owns, in any state that means "do not prepare
+   * another one". Refused and cancelled rows are excluded so an explicit retry can prepare.
+   */
+  liveDeliveryForAttempt(nodeAttemptId: string): WorkflowDelivery | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_deliveries
+        WHERE node_attempt_id = ?
+          AND state IN ('prepared', 'sending', 'delivered', 'uncertain')
+        LIMIT 1`,
+    ).get(nodeAttemptId);
+    return row ? parseWorkflowDeliveryRow(row) : null;
+  }
+
+  /** Every packet ever prepared for one action attempt, oldest first. */
+  listDeliveriesForAttempt(nodeAttemptId: string): WorkflowDelivery[] {
+    return (this.db.prepare(
+      `SELECT * FROM workflow_deliveries WHERE node_attempt_id = ?
+        ORDER BY created_at ASC, id ASC`,
+    ).all(nodeAttemptId) as unknown[]).map(parseWorkflowDeliveryRow);
+  }
+
   private insertDeliveryInTransaction(input: WorkflowDeliveryInsert, now: number): WorkflowDelivery {
+    const nodeAttemptId = input.kind === "session_action" ? input.nodeAttemptId ?? null : null;
+    if (input.kind === "session_action") {
+      // The link is validated by JOIN rather than trusted, because the row parser cannot:
+      // a delivery naming an attempt in another submission - or another run - would let a
+      // completed action advance a graph it never ran in.
+      const attempt = nodeAttemptId ? this.getAttempt(nodeAttemptId) : null;
+      if (!attempt || attempt.submissionId !== input.submissionId) {
+        throw new Error("A session action delivery must name an attempt of its own submission");
+      }
+      const submission = this.getSubmission(input.submissionId);
+      if (!submission || submission.runId !== input.runId) {
+        throw new Error("A session action delivery must name a submission of its own run");
+      }
+    }
     this.db.prepare(
       `INSERT INTO workflow_deliveries (
-         id, run_id, submission_id, kind, session_id, note_key, payload, payload_sha256,
-         state, error, created_at, updated_at, delivered_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, NULL)`,
+         id, run_id, submission_id, kind, node_attempt_id, session_id, note_key, payload,
+         payload_sha256, state, error, created_at, updated_at, delivered_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', NULL, ?, ?, NULL)`,
     ).run(
       input.id,
       input.runId,
       input.submissionId,
       input.kind,
+      nodeAttemptId,
       input.sessionId,
       input.noteKey,
       input.payload,
@@ -3197,14 +4217,44 @@ export class WorkflowStore {
       const inspectorOnly =
         version?.completionPolicy.kind === "inspector"
         && version.completionPolicy.onFindings === "inspector_only";
-      const nextStatus = delivery.kind === "inspector_feedback" && inspectorOnly
-        ? "waiting_for_new_head"
-        : "waiting_for_session";
+      const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
+        ?? (delivery.kind === "inspector_feedback" && inspectorOnly
+          ? "waiting_for_new_head"
+          : "waiting_for_session");
+      // The pickup anchor lands in the SAME transaction that marks the packet delivered.
+      // Split across two writes, a daemon that stopped between them would leave an attempt
+      // that knows a packet was sent and nothing about when - and "before the send" is the
+      // one fact that separates a finished action turn from the session's ordinary idleness.
+      if (delivery.kind === "session_action" && delivery.nodeAttemptId) {
+        const attempt = this.getAttempt(delivery.nodeAttemptId);
+        const state = attempt ? this.sessionActionState(attempt) : null;
+        if (state) {
+          this.db.prepare(
+            `UPDATE workflow_node_attempts SET output_json = ?, updated_at = ?
+              WHERE id = ? AND state = 'waiting'`,
+          ).run(
+            JSON.stringify({
+              ...state,
+              wait: "awaiting_pickup",
+              deliveryId: delivery.id,
+              anchor: {
+                deliveryId: delivery.id,
+                sessionId: delivery.sessionId,
+                noteKey: delivery.noteKey,
+                deliveredAt: now,
+                transcriptBytes: transcriptAnchor,
+              },
+            } satisfies SessionActionAttemptState),
+            now,
+            delivery.nodeAttemptId,
+          );
+        }
+      }
       this.setRunState(
         delivery.runId,
         nextStatus,
         DELIVERY_RUN_PHASE[delivery.kind],
-        delivery.kind === "persona_feedback"
+        delivery.kind === "persona_feedback" || delivery.kind === "session_action"
           ? { deliveryId: delivery.id, transcriptAnchor }
           : run.gateState,
         now,
@@ -3684,8 +4734,10 @@ export class WorkflowStore {
           if (uncertain) return false;
 
           const rows = this.db.prepare(
+            // Evidence order, so a compaction event's counts read in the same sequence run
+            // detail shows: repair rounds, and the continuation segments inside them.
             `SELECT id, mode, status, context_json FROM workflow_submissions
-              WHERE run_id = ? ORDER BY round ASC, id ASC`,
+              WHERE run_id = ? ORDER BY round ASC, segment ASC, id ASC`,
           ).all(runId) as Array<{
             id: string;
             mode: string;
@@ -4039,10 +5091,14 @@ export class WorkflowStore {
       if (!run) return null;
       if (["completed", "cancelled", "failed"].includes(run.status)) return run;
       this.db.prepare(
+        // `waiting` is in the set for the reason the other three are: a cancelled run must
+        // leave nothing an observer would still pick up. An action attempt left waiting
+        // would keep its delivery live and its pickup watch armed on a run nobody is
+        // reviewing any more.
         `UPDATE workflow_node_attempts SET state = 'cancelled', error = ?,
                 updated_at = ?, finished_at = COALESCE(finished_at, ?)
           WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)
-            AND state IN ('queued', 'retry_wait', 'running')`,
+            AND state IN ('queued', 'retry_wait', 'running', 'waiting')`,
       ).run(reason, now, now, id);
       this.db.prepare(
         `UPDATE workflow_submissions SET status = 'cancelled', updated_at = ?,
@@ -4308,8 +5364,8 @@ export class WorkflowStore {
    * `rearmDrainCompletionForDelivery` above can only speak for a session that has queue
    * items - its `EXISTS` clause is what makes "the queue drained again" a true statement.
    * A session driven by a human prompt has no items at all, so before this existed a
-   * confirmed repair packet re-armed nothing and the loop depended on the session's goal
-   * text happening to move. Clearing `prompted_goal` is the exact inverse of what
+   * confirmed repair packet re-armed nothing and the loop depended on a new human prompt.
+   * Clearing `prompted_goal` is the exact inverse of what
    * `retirePromptedGuard` writes, so `decidePromptedWrapup` step 10 stops matching and the
    * episode is armed again.
    *
@@ -4346,6 +5402,12 @@ export class WorkflowStore {
     delivery: WorkflowDelivery,
     now: number,
   ): WorkflowCompletionKind | null {
+    // A session action re-arms NOTHING. Every other packet asks the session to change the
+    // work under review, so a Foreman completion afterwards is a legitimate new repair
+    // round. An action asks it to perform one instruction, and the daemon's own observer
+    // owns what happens next - re-arming here would let the session's completion signal
+    // open a repair round that competes with the continuation segment for the same turn.
+    if (delivery.kind === "session_action") return null;
     if (this.rearmDrainCompletionForDelivery(delivery, now)) return "drain";
     if (this.rearmPromptedCompletionForDelivery(delivery, now)) return "prompted";
     return null;
@@ -4353,42 +5415,52 @@ export class WorkflowStore {
 
   private retirePromptedGuard(
     binding: Pick<WorkflowBinding, "noteKey" | "sessionCwd">,
-    currentGoal: string | null,
+    episodeKey: string,
     now: number,
   ): boolean {
-    const goal = currentGoal?.trim();
-    if (!goal) return false;
     const existing = this.db.prepare(
       `SELECT prompted_goal FROM foreman_queues WHERE note_key = ?`,
     ).get(binding.noteKey) as { prompted_goal: string | null } | undefined;
-    if (existing?.prompted_goal === goal) return false;
+    if (existing?.prompted_goal === episodeKey) return false;
     if (existing) {
       const result = this.db.prepare(
         `UPDATE foreman_queues SET prompted_goal = ?, updated_at = ?
           WHERE note_key = ?
             AND (prompted_goal IS NULL OR prompted_goal <> ?)`,
-      ).run(goal, now, binding.noteKey, goal);
+      ).run(episodeKey, now, binding.noteKey, episodeKey);
       return Number(result.changes) === 1;
     }
     const result = this.db.prepare(
       `INSERT INTO foreman_queues (
          note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at
        ) VALUES (?, ?, NULL, NULL, NULL, ?, ?)`,
-    ).run(binding.noteKey, binding.sessionCwd, goal, now);
+    ).run(binding.noteKey, binding.sessionCwd, episodeKey, now);
     return Number(result.changes) === 1;
   }
 
   private insertSubmissionInTransaction(input: WorkflowSubmissionInsert): void {
+    const segment = input.segment ?? 0;
+    // The same all-or-nothing rule the row parser enforces, asserted before the write so a
+    // caller that supplied half a continuation fails here rather than leaving a row that
+    // reads as an ordinary repair round.
+    if ((segment > 0) !== Boolean(input.continuation)) {
+      throw new Error("A continuation segment requires exactly one parent attempt provenance");
+    }
     this.db.prepare(
       `INSERT INTO workflow_submissions (
-         id, run_id, round, mode, trigger_source, trigger_key, evidence_fingerprint,
+         id, run_id, round, segment, parent_submission_id, continuation_node_id,
+         continuation_node_attempt_id, mode, trigger_source, trigger_key, evidence_fingerprint,
          context_json, evidence_json, pr_head_sha, status, created_at, updated_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                  CASE WHEN ? IN ('completed', 'cancelled', 'failed') THEN ? ELSE NULL END)`,
     ).run(
       input.id,
       input.runId,
       input.round,
+      segment,
+      input.continuation?.parentSubmissionId ?? null,
+      input.continuation?.nodeId ?? null,
+      input.continuation?.nodeAttemptId ?? null,
       input.mode ?? "full_workflow",
       input.triggerSource,
       input.triggerKey,
@@ -4434,6 +5506,14 @@ export class WorkflowStore {
       `SELECT * FROM personas ORDER BY normalized_name ASC, id ASC`,
     ).all() as unknown[];
     return this.withAddressableBuiltins(rows.map((row) => parsePersonaRow(row)));
+  }
+
+  /** The SessionAction half of the same catalog, for the same reason. */
+  private listSessionActionsInTransaction(): SessionAction[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM session_actions ORDER BY normalized_name ASC, id ASC`,
+    ).all() as unknown[];
+    return this.withAddressableBuiltinActions(rows.map((row) => parseSessionActionRow(row)));
   }
 
   private getWorkflowInTransaction(id: string): WorkflowDefinition | null {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ForemanEpisode, Session } from "@shared/types.ts";
+import type { ForemanEpisode, Session, SessionGoal } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -7,8 +7,7 @@ import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
-import { NomistakesStrip } from "../NomistakesStrip.tsx";
-import { NomistakesFixLog } from "../NomistakesFixLog.tsx";
+import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
@@ -31,13 +30,14 @@ import {
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
+import { useTimelineReviews } from "../../lib/timelineReviews.ts";
 import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 import { FileWorkspace, type FileWorkspaceHandle } from "../FileWorkspace.tsx";
 import { InlineDiffViewer } from "../DiffViewer.tsx";
 import { Tooltip } from "../Tooltip.tsx";
-import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
+import { detailTabs, type DetailTabId } from "../../lib/detailTabs.ts";
 
-type Tab = "conversation" | "queue" | "gate" | "diff" | "files";
+type Tab = DetailTabId;
 
 type DiffSelection = {
   sessionId: string;
@@ -78,19 +78,64 @@ function useEpisodes(sessionId: string, noteStamp: number): ForemanEpisode[] {
 }
 
 /**
+ * SSE-visible goal fields that move when a prompt is captured and again when its
+ * reconciliation becomes the effective completion contract.
+ */
+export function intentRefreshStamp(goal: Session["goal"]): string {
+  return [
+    goal?.promptRevision ?? 0,
+    goal?.resolvedPromptRevision ?? 0,
+    goal?.objectiveVersion ?? 0,
+  ].join(":");
+}
+
+/** Load the full completion contract only for the drawer that can render it. */
+function useIntent(
+  sessionId: string,
+  refreshStamp: string,
+  open: boolean,
+): SessionGoal | null {
+  const [intent, setIntent] = useState<SessionGoal | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    setIntent(null);
+    void api
+      .goal(sessionId)
+      .then((goal) => {
+        if (live) setIntent(goal);
+      })
+      .catch(() => {
+        if (live) setIntent(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [sessionId, refreshStamp, open]);
+  return intent;
+}
+
+/**
  * The console's detail pane: a bespoke, tabbed reading of ONE session - not the grid's
  * card dropped into a column.
  *
  * The chrome is fixed and always on screen (who this is, where it lives, its controls);
- * only the body switches between Conversation, Work queue, Gate and Diff. That is the
- * whole point of a split-pane console - the conversation gets the room a card can't give
- * it, and the sections that share a card's height in the grid get a tab each here instead
- * of stacking and fighting.
+ * only the body switches between Conversation, Work queue, Workflows, Diff and Files. That
+ * is the whole point of a split-pane console - the conversation gets the room a card can't
+ * give it, and the sections that share a card's height in the grid get a tab each here
+ * instead of stacking and fighting.
+ *
+ * The Conversation tab is the transcript and nothing else. Progress readouts - the workflow
+ * ladder and the no-mistakes gate strip - used to stack above it, and between them they
+ * could push the first message of a long-running session off the bottom of the screen. Both
+ * now live in Workflows, which is the tab that answers "how is this run going" while
+ * Conversation answers "what was said". They are the same components either way; only where
+ * they mount moved.
  *
  * Built from the same leaf pieces the card is (the transcript, the work queue, the gate
  * strip, the action bar, the session-bits), arranged fresh. Keyed by session id in the
  * parent, so switching sessions remounts it - the tab resets to the conversation and the
- * transcript starts clean, rather than showing the last session's Gate tab.
+ * transcript starts clean, rather than showing the last session's Workflows tab.
  */
 export function ConsoleDetail({
   view,
@@ -113,6 +158,8 @@ export function ConsoleDetail({
   const filesRef = useRef<FileWorkspaceHandle>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
+  const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
+  const timelineReviews = useTimelineReviews(session.id, view.reviews);
   // Set when the send shortcut arrives on another tab: the reply box exists, it's just
   // not mounted yet, so the focus has to wait for the conversation to come back.
   const focusPending = useRef(false);
@@ -130,6 +177,13 @@ export function ConsoleDetail({
   useEffect(() => {
     if (view.conversationTabRequest?.sessionId === session.id) setTab("conversation");
   }, [view.conversationTabRequest, session.id]);
+
+  // And for Workflows, reached by the same shape of one-shot request. This tab has no
+  // grid equivalent to fall back to - Cards draws no tab strip - so the chord is a plain
+  // reveal here rather than a per-layout decision like the conversation's.
+  useEffect(() => {
+    if (view.workflowsTabRequest?.sessionId === session.id) setTab("workflows");
+  }, [view.workflowsTabRequest, session.id]);
 
   useEffect(() => {
     const scroll = (direction: -1 | 1): void => {
@@ -188,22 +242,7 @@ export function ConsoleDetail({
   const openCount = openEpisodeCount(episodes);
 
   const tabs = useMemo(
-    () =>
-      [
-        // `action` is the shortcut that also reveals the tab, printed on its face when
-        // keybinding hints are on. Gate has none - it is reached by Tab-walking the
-        // strip, which is not a rebindable action.
-        {
-          id: "conversation" as const,
-          label: "Conversation",
-          pip: 0,
-          action: "conversation" as const,
-        },
-        { id: "queue" as const, label: "Work queue", pip: queueCount, action: "queue" as const },
-        { id: "gate" as const, label: "Gate", pip: gateNeedsYou ? 1 : 0, action: null },
-        { id: "diff" as const, label: "Diff", pip: 0, action: "diff" as const },
-        { id: "files" as const, label: "Files", pip: 0, action: "files" as const },
-      ],
+    () => detailTabs({ queueCount, gateNeedsYou }),
     [queueCount, gateNeedsYou],
   );
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
@@ -317,6 +356,7 @@ export function ConsoleDetail({
 
       <ForemanDrawer
         episodes={episodes}
+        intent={intent}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
@@ -341,7 +381,7 @@ export function ConsoleDetail({
               }
             }}
           >
-            {t.action && <Keycap action={t.action} />}
+            <Keycap action={t.action} />
             {t.label}
             {t.pip > 0 && <span className="detail-pip">{t.pip}</span>}
           </button>
@@ -351,17 +391,17 @@ export function ConsoleDetail({
         {/* In the tab row but NOT a tab - no `role="tab"`, and pushed to the far end
             past a flexible gap. Work queue, Gate and Diff are things this session
             HAS; Foreman is an observer talking about it, so it opens a surface rather
-            than switching the body. Hidden when Foreman has never spoken here: an
-            empty archive isn't worth a permanent control. */}
-        {episodes.length > 0 && (
-          <Tooltip label={drawerOpen ? "Close Foreman's notes" : `Read Foreman's ${episodes.length} note${episodes.length === 1 ? "" : "s"} on this session`}>
+            than switching the body. A captured objective also makes the surface useful,
+            even before Foreman has made its first decision. */}
+        {(episodes.length > 0 || session.goal) && (
+          <Tooltip label={drawerOpen ? "Close Foreman's session reading" : "Inspect Foreman's objective and decision history"}>
             <button
               className="foreman-rail"
               aria-expanded={drawerOpen}
               onClick={() => setDrawerOpen((v) => !v)}
             >
               {openCount > 0 && <span className="fr-dot" aria-hidden="true" />}
-              Foreman · {episodes.length}
+              {episodes.length > 0 ? `Foreman · ${episodes.length}` : "Foreman intent"}
             </button>
           </Tooltip>
         )}
@@ -391,33 +431,13 @@ export function ConsoleDetail({
                 onJump={() => transcriptRef.current?.scrollToEpisode(session.note?.handledMarker ?? null)}
               />
             )}
-            {session.nomistakes && (
-              <NomistakesStrip
-                sessionId={session.id}
-                nm={session.nomistakes}
-                needsYou={gateNeedsYou}
-                narration={session.nomistakesNarration}
-              />
-            )}
-            {session.nomistakesFixes.length > 0 && (
-              <NomistakesFixLog
-                sessionId={session.id}
-                fixes={session.nomistakesFixes}
-                onOpenDiff={(sha) => view.onOpenDiff(session.id, sha)}
-              />
-            )}
-            {workflowRun && (
-              <WorkflowLadderPanel
-                run={workflowRun}
-                onOpenRun={() => view.onOpenWorkflowRun?.(workflowRun.id)}
-              />
-            )}
             <TranscriptPanel
               ref={transcriptRef}
               session={session}
               canSend={canSend}
               dialogOpen={Boolean(dialog)}
               episodes={episodes}
+              reviews={timelineReviews}
               onReplyBox={setHasReply}
               onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               files={view.files}
@@ -445,27 +465,18 @@ export function ConsoleDetail({
           </div>
         )}
 
-        {tab === "gate" && (
+        {/* This tab absorbed the old Gate tab rather than sitting beside it: two adjacent
+            tabs both answering "is this change allowed to land" was the split that put one
+            of them above the transcript in the first place. */}
+        {tab === "workflows" && (
           <div ref={paneRef} className="detail-pane">
-            {session.nomistakes ? (
-              <>
-                <NomistakesStrip
-                  sessionId={session.id}
-                  nm={session.nomistakes}
-                  needsYou={gateNeedsYou}
-                  narration={session.nomistakesNarration}
-                />
-                {session.nomistakesFixes.length > 0 && (
-                  <NomistakesFixLog
-                    sessionId={session.id}
-                    fixes={session.nomistakesFixes}
-                    onOpenDiff={(sha) => view.onOpenDiff(session.id, sha)}
-                  />
-                )}
-              </>
-            ) : (
-              <p className="detail-empty">This repo isn&rsquo;t gated by no-mistakes.</p>
-            )}
+            <SessionWorkflowsPane
+              session={session}
+              run={workflowRun}
+              gateNeedsYou={gateNeedsYou}
+              onOpenRun={(runId) => view.onOpenWorkflowRun?.(runId)}
+              onOpenDiff={(sha) => view.onOpenDiff(session.id, sha)}
+            />
           </div>
         )}
 

@@ -1,4 +1,4 @@
-import type { BacklogPlan, Session, Task } from "@shared/types.ts";
+import type { BacklogPlan, ReviewItem, Session, Task } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
 import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
@@ -78,6 +78,12 @@ export interface SessionViewProps {
    * without one a second press after walking to Files would be a no-op.
    */
   conversationTabRequest: { sessionId: string; nonce: number } | null;
+  /**
+   * One-shot request from the session-workflows shortcut to reveal a session's Workflows
+   * tab - its workflow ladder and no-mistakes gate. Nonce for the same reason the others
+   * carry one: the request is consumed by a mounted detail, not stored as a tab preference.
+   */
+  workflowsTabRequest: { sessionId: string; nonce: number } | null;
   files: SessionFilesController;
   onReset: (id: string) => void;
   /** Open the complete-and-close confirm for this session (app-level modal). */
@@ -117,6 +123,15 @@ export interface SessionViewProps {
   foremanAllowlist?: string[];
   inputReviewBySession: ReadonlyMap<string, string>;
   pendingReviewIds: ReadonlySet<string>;
+  /**
+   * Every review App holds, at every status - NOT the pending ones.
+   *
+   * Deliberately wider than the two narrowed views above it, because the conversation reads
+   * the opposite end of a review's life: what was ANSWERED, so it can show the answer where
+   * it was given. Narrowing here would leave `useTimelineReviews` unable to see a resolution
+   * arrive, which is the whole point of taking the live list rather than refetching.
+   */
+  reviews: ReviewItem[];
   /** App-owned join from compact run SSE summaries to each live session. */
   workflowRunBySession?: ReadonlyMap<string, WorkflowRunSummary>;
   onOpenWorkflowRun?: (runId: string) => void;
@@ -189,6 +204,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     foremanAllowlist: p.foremanAllowlist,
     inputReviewId: p.inputReviewBySession.get(s.id) ?? null,
     pendingReviewIds: p.pendingReviewIds,
+    reviews: p.reviews,
     workflowRun: p.workflowRunBySession?.get(s.id) ?? null,
     onOpenWorkflowRun: p.onOpenWorkflowRun,
     onBindWorkflow: p.onBindWorkflow ? () => p.onBindWorkflow?.(s.id) : undefined,

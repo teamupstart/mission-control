@@ -40,6 +40,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     onOpenFile: () => false,
     fileTabRequest: null,
     conversationTabRequest: null,
+    workflowsTabRequest: null,
     diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},
@@ -61,6 +62,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     foremanAllowlist: [],
     inputReviewBySession: new Map<string, string>(),
     pendingReviewIds: new Set<string>(),
+    reviews: [],
     ...over,
   };
 }

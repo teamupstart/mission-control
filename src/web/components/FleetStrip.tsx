@@ -3,20 +3,22 @@ import { FIVE_HOUR_MS, SEVEN_DAY_MS, projectRunway } from "@shared/cost.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { compactTokens, contextTone, fmtRunway, fmtUsd, untilReset } from "../lib/format.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { spendRoleLabel } from "@shared/llm-spend.ts";
 
 /**
  * The topbar's fleet economics: today's API-equivalent estimate, its recent rate, and how
  * long each provider's quota windows last at their own consumption rate.
  *
- * Four figures and a projection, chosen because each answers a question the others cannot:
- * estimated cost is the total, recent rate is its derivative, tokens are the measured work,
- * and estimated cost-per-PR turns the first figure into a unit price for shipped work. The
+ * Four session figures, a separate automation figure, and a projection, chosen because each
+ * answers a question the others cannot: estimated session cost is the total, recent rate is
+ * its derivative, tokens are the measured work, and estimated cost-per-PR turns the first
+ * figure into a unit price for shipped work. Automation names the app's own overhead. The
  * runway is the only forward-looking thing on the strip, and it is the reason the strip
  * exists: a rate limit that arrives mid-task is a surprise, and this is what stops it being one.
  *
- * Every figure degrades on its own rather than as a block. No telemetry -> the caller
- * renders nothing at all (a `$0.00` would claim a measured zero). No PRs opened today ->
- * no cost-per-PR, rather than a division by zero dressed as `$0.00`. No
+ * Every figure degrades on its own rather than as a block. No session or automation usage ->
+ * the caller renders nothing at all (a `$0.00` would claim a measured zero). No PRs opened
+ * today -> no cost-per-PR, rather than a division by zero dressed as `$0.00`. No
  * `rate_limits` (an API-key user, or a session before its first API response) -> no
  * runway, rather than a bar at 0%.
  *
@@ -63,7 +65,18 @@ export function fleetStripHasContent(fleet: FleetCost | null): boolean {
   const limits = fleet.rateLimits;
   return fleet.estimatedCostToday === null || fleet.estimatedBurnPerHour === null ||
     fleet.estimatedCostToday > 0 || fleet.estimatedBurnPerHour > 0 || fleet.tokensToday > 0 ||
+    // A fleet with no live sessions can still have spent: the loops run on their own
+    // schedule, and an Inspector reviewing a PR overnight is exactly the case where the
+    // strip must not be empty. Without this clause the one figure that had moved would be
+    // the one nobody could see.
+    automationHasContent(fleet) ||
     !!limits?.fiveHour || !!limits?.sevenDay || !!fleet.rateLimitSources?.some((s) => s.windows.length);
+}
+
+/** Whether the loops have anything to report today. One predicate, three readers. */
+function automationHasContent(fleet: FleetCost): boolean {
+  const auto = fleet.automation;
+  return !!auto && (auto.tokensToday > 0 || auto.roles.length > 0);
 }
 
 export function compactFleetCost(fleet: FleetCost): string | null {
@@ -76,7 +89,8 @@ function FleetStats({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
   if (
     fleet.estimatedCostToday !== null && fleet.estimatedCostToday <= 0 &&
     fleet.estimatedBurnPerHour !== null && fleet.estimatedBurnPerHour <= 0 &&
-    fleet.tokensToday <= 0
+    fleet.tokensToday <= 0 &&
+    !automationHasContent(fleet)
   ) return null;
   const estimated = fleet.estimatedCostToday;
   return (
@@ -94,7 +108,13 @@ function FleetStats({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
         label="cost estimate"
         tip="At least one usage row has no verified model price, so Mission Control will not present the known subtotal as a complete fleet estimate. Tokens remain complete."
       />}
-      {fleet.estimatedBurnPerHour !== null && <FleetStat
+      {/* `> 0`, matching the daily estimate above rather than merely being non-null. The
+          strip's rule is that it never claims a measured zero, and this was the one figure
+          that could still print one: an hour with no session usage is not "$0.00/hr spent",
+          it is nothing to report. It became visible once the automation line could hold the
+          strip open on its own - a fleet whose only spend was the app's own overhead drew a
+          confident "$0.00/hr" beside it. */}
+      {fleet.estimatedBurnPerHour !== null && fleet.estimatedBurnPerHour > 0 && <FleetStat
         n={fmtUsd(fleet.estimatedBurnPerHour)}
         unit="/hr"
         label="estimated rate"
@@ -120,7 +140,50 @@ function FleetStats({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
           }
         />
       )}
+      <AutomationStat fleet={fleet} />
     </div>
+  );
+}
+
+/**
+ * What the app spent watching the fleet, kept beside the fleet's own figures rather than
+ * inside them.
+ *
+ * A separate stat because it is a different KIND of number, not a smaller one: everything
+ * to its left is work an operator asked for, and this is the standing cost of having that
+ * work supervised. It moves while nobody is asking for anything, which is exactly why
+ * folding it into "estimated cost today" would make that figure untrustworthy - a quiet
+ * morning with a busy Inspector would read as fleet activity.
+ *
+ * Silent until the loops have actually spent. Before this existed the honest answer was
+ * unknown rather than zero, and rendering `≈$0.00` for a fleet whose loops are switched off
+ * would be the same confident-zero mistake the strip avoids everywhere else.
+ *
+ * The per-role breakdown lives in the tooltip rather than the strip. Six roles would crowd
+ * out the figures beside them, and the headline answers the question people actually ask
+ * first ("how much is the overhead?"); the roles answer the follow-up ("which loop?").
+ */
+function AutomationStat({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
+  const auto = fleet.automation;
+  if (!auto || (auto.tokensToday <= 0 && !auto.roles.length)) return null;
+  const cost = auto.estimatedCostToday;
+  const roles = auto.roles
+    .map((r) => {
+      const money = r.costUsd === null ? "unpriced" : fmtUsd(r.costUsd);
+      return `${spendRoleLabel(r.role)}: ${money} · ${compactTokens(r.tokens)} tok · ${r.runs} run${r.runs === 1 ? "" : "s"}`;
+    })
+    .join("\n");
+  return (
+    <FleetStat
+      n={cost === null ? "partial" : fmtUsd(cost)}
+      label="automation today"
+      cost={cost !== null}
+      tip={
+        `The Foreman's and the Inspector's own model calls since midnight - the app watching your fleet, not the fleet itself.\n` +
+        `Counted separately from the figures beside it: this is overhead you did not ask for, and it spends while nothing else is happening.\n\n` +
+        `${roles || "No headless runs recorded today."}`
+      }
+    />
   );
 }
 

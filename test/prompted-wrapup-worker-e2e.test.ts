@@ -250,6 +250,22 @@ function mkQueue(cwd: string, over: Partial<SessionQueue> = {}): SessionQueue {
 }
 
 const GOAL = "make the uploader retry on a 500";
+const INTENT_KEY = "intent:1:1";
+const goalRecord = {
+  noteKey: "agent-1",
+  text: GOAL,
+  source: "model",
+  objective: GOAL,
+  prompt: GOAL,
+  focus: GOAL,
+  relationship: "initial",
+  rationale: "This is the session's initial objective.",
+  objectiveVersion: 1,
+  promptRevision: 1,
+  resolvedPromptRevision: 1,
+  pendingPrompts: [],
+  updatedAt: 0,
+};
 
 /**
  * Boot the real worker against a stub daemon, let it run, then stop it.
@@ -595,7 +611,7 @@ test("a verified prompt binds the no-mistakes workflow exactly once instead of t
     if (p === "/api/queues") return { status: 200, json: [] };
     if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
     if (p === "/api/sessions/s1/goal") {
-      return { status: 200, json: { prompt: GOAL, text: GOAL, updatedAt: 0 } };
+      return { status: 200, json: goalRecord };
     }
     if (p === "/api/sessions/s1/diff") {
       return {
@@ -621,7 +637,7 @@ test("a verified prompt binds the no-mistakes workflow exactly once instead of t
       // The real daemon retires the prompted guard in the same transaction that claims
       // the completion. Mirror that durable effect so later worker ticks see the episode
       // as spent and prove this path does not request a second run.
-      queue = { ...queue, promptedGoal: GOAL };
+      queue = { ...queue, promptedGoal: INTENT_KEY };
       return {
         status: 200,
         json: { claimed: true, runId: "run-no-mistakes", submissionId: "sub-1", state: "started" },
@@ -687,7 +703,7 @@ test("a failed Manual-binding card write leaves the prompted completion retryabl
     if (p === "/api/queues") return { status: 200, json: [] };
     if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
     if (p === "/api/sessions/s1/goal") {
-      return { status: 200, json: { prompt: GOAL, text: GOAL, updatedAt: 0 } };
+      return { status: 200, json: goalRecord };
     }
     if (p === "/api/sessions/s1/diff") {
       return {
@@ -741,7 +757,7 @@ test("a failed Manual-binding card write leaves the prompted completion retryabl
     0,
     `used the non-atomic card endpoint\n${out}`,
   );
-  assert.equal(queue.promptedGoal, GOAL, `the successful retry did not retire the episode\n${out}`);
+  assert.equal(queue.promptedGoal, INTENT_KEY, `the successful retry did not retire the episode\n${out}`);
   assert.ok(queue.wrapupAskedAt, `the successful retry did not raise the Ship it? card\n${out}`);
   assert.equal(claudeCalls(fake.log).length, 2, `the failed handoff did not retry exactly once\n${out}`);
 });
@@ -772,7 +788,7 @@ test("a broken verifier gives up after the strike cap, at one strike per unhurri
     if (p === "/api/queues") return { status: 200, json: [] };
     if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
     if (p === "/api/sessions/s1/goal") {
-      return { status: 200, json: { prompt: GOAL, text: GOAL, updatedAt: 0 } };
+      return { status: 200, json: goalRecord };
     }
     if (p === "/api/sessions/s1/diff") {
       return {

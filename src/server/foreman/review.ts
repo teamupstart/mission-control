@@ -48,7 +48,7 @@ export async function reviewSession(
   runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
 ): Promise<ReviewResult> {
   const r = await runStructured<typeof VerdictSchema>(
-    (p) => llmRunner(runnerId).run(p, { model }),
+    (p) => llmRunner(runnerId).run(p, { model, role: "foreman:review" }),
     buildReviewPrompt(input),
     extractVerdict,
     "Foreman review",

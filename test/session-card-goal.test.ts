@@ -84,6 +84,41 @@ test("a collapsed card shows its goal without being expanded", () => {
   assert.match(html, /class="goal goal-model"/);
 });
 
+test("a steering prompt keeps the durable objective on the card while intent resolves", () => {
+  const html = render(
+    mkSession({
+      goal: goal({
+        text: "Implement durable session objectives",
+        focus: "Add one focused regression test",
+        relationship: undefined,
+        objectiveVersion: 1,
+        promptRevision: 2,
+        resolvedPromptRevision: 1,
+      }),
+    }),
+  );
+  assert.match(html, /Implement durable session objectives/);
+  assert.doesNotMatch(html, /Add one focused regression test/);
+  assert.match(html, /goal-resolving/);
+});
+
+test("an unclear relationship keeps the objective visible and marks automation paused", () => {
+  const html = render(
+    mkSession({
+      goal: goal({
+        text: "Implement durable session objectives",
+        relationship: "unclear",
+        objectiveVersion: 1,
+        promptRevision: 2,
+        resolvedPromptRevision: 2,
+      }),
+    }),
+  );
+  assert.match(html, /Implement durable session objectives/);
+  assert.match(html, /goal-unclear/);
+  assert.match(html, /automatic wrap-up is paused/);
+});
+
 test("the goal is a separate line from the activity ticker", () => {
   // The two are orthogonal facts - what it is FOR vs what it is doing this second - and an
   // earlier draft of the plan was wrong about exactly this, proposing the goal take the

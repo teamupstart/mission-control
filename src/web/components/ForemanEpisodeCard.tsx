@@ -2,6 +2,7 @@ import { Markdown } from "./Markdown.tsx";
 import type { ForemanEpisode, NoteDisposition } from "@shared/types.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { relativeTime } from "../lib/format.ts";
+import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 
 // One recorded Foreman decision, rendered whole: what it concluded, and - on the
 // detail path - the ask that provoked it and what actually reached the child.
@@ -48,9 +49,12 @@ export function ForemanEpisodeCard({
   episode,
   /** The ask, and what was sent. Off in the transcript, where the ask is the chat. */
   detail = false,
+  /** Conversation rows use the same absolute clock as turns; the archive stays relative. */
+  absoluteTime = false,
 }: {
   episode: ForemanEpisode;
   detail?: boolean;
+  absoluteTime?: boolean;
 }): React.JSX.Element {
   const e = episode;
   return (
@@ -58,7 +62,11 @@ export function ForemanEpisodeCard({
       <header className="fe-head">
         <span className="fn-badge">Foreman</span>
         <span className="fe-disp">{episodeLabel(e)}</span>
-        {e.createdAt > 0 && <span className="fe-time dim">{relativeTime(e.createdAt)}</span>}
+        {absoluteTime ? (
+          <ConversationTimestamp at={e.createdAt} className="fe-time dim" />
+        ) : (
+          e.createdAt > 0 && <span className="fe-time dim">{relativeTime(e.createdAt)}</span>
+        )}
       </header>
 
       {detail && <EpisodeAsk episode={e} />}

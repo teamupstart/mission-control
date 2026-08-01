@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
-import type { PersonaView, WorkflowVersion, WorkflowVersionMetadata } from "@shared/workflow.ts";
-import { personaSnapshotIsOutdated } from "@shared/workflow.ts";
+import type {
+  PersonaView,
+  SessionAction,
+  WorkflowVersion,
+  WorkflowVersionMetadata,
+} from "@shared/workflow.ts";
+import { personaSnapshotIsOutdated, sessionActionSnapshotIsOutdated } from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
+import { InspectorFooter } from "./pipeline-bits.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import {
@@ -12,13 +18,16 @@ import {
 export function WorkflowVersionDetail({
   version,
   personas,
+  sessionActions = [],
   onBindVersion,
 }: {
   version: WorkflowVersion;
   personas: PersonaView[];
+  sessionActions?: SessionAction[];
   onBindVersion?: (version: WorkflowVersion) => void;
 }): React.JSX.Element {
   const live = new Map(personas.map((persona) => [persona.id, persona]));
+  const liveActions = new Map(sessionActions.map((action) => [action.id, action]));
   return (
     <div className="workflow-version-detail">
       {onBindVersion && (
@@ -28,7 +37,16 @@ export function WorkflowVersionDetail({
           </button>
         </Tooltip>
       )}
-      <WorkflowCanvas graph={version.graph} personas={personas} readOnly />
+      <WorkflowCanvas
+        graph={version.graph}
+        personas={personas}
+        sessionActions={sessionActions}
+        readOnly
+      />
+      {/* OUTSIDE the canvas, deliberately. Inspector is not in the persisted graph and gains
+          no node here; this is the compact non-interactive note that says the version ends
+          with it, drawn from the same policy projection the pipeline footer reads. */}
+      <InspectorFooter policy={version.completionPolicy} />
       <dl>
         <div><dt>Trigger</dt><dd>{version.bindingDefaults.triggerMode}</dd></div>
         <div><dt>Delivery</dt><dd>{version.bindingDefaults.deliveryMode}</dd></div>
@@ -60,6 +78,35 @@ export function WorkflowVersionDetail({
           </details>
         );
       })}
+      {/* The action's frozen prompt, beside the frozen guidance above it. A version that
+          typed an instruction into a session has to be able to show WHICH instruction, or
+          its audit trail stops at "an action ran". */}
+      {version.graph.nodes.map((node) => {
+        if (node.kind !== "session_action") return null;
+        const current = liveActions.get(node.action.sourceSessionActionId);
+        const outdated = sessionActionSnapshotIsOutdated(node.action, current);
+        return (
+          <details key={node.id} className="workflow-version-persona">
+            <Tooltip label={`Show the instruction ${node.action.name} was published with`}>
+              <summary>
+                {node.action.name} · revision {node.action.sourceRevision}
+                {!current ? " · source unavailable" : outdated ? " · outdated" : ""}
+                {current !== undefined && current.archivedAt !== null ? " · archived source" : ""}
+              </summary>
+            </Tooltip>
+            <p>
+              {node.action.requiredSkillId
+                ? `Requires the ${node.action.requiredSkillId} skill`
+                : "No required skill"}
+              {" · "}
+              {node.action.completion.kind === "pull_request"
+                ? "Completes on a verified pull request"
+                : "Completes when the session turn finishes"}
+            </p>
+            <pre>{node.action.promptMarkdown}</pre>
+          </details>
+        );
+      })}
     </div>
   );
 }
@@ -68,12 +115,14 @@ export function WorkflowVersionHistory({
   workflowId,
   versions,
   personas,
+  sessionActions = [],
   builtin = false,
   onBindVersion,
 }: {
   workflowId?: string;
   versions: WorkflowVersionMetadata[];
   personas: PersonaView[];
+  sessionActions?: SessionAction[];
   /**
    * A shipped version was not published on this machine, so it carries `publishedAt: 0`.
    * Printing that instant renders 1970 beside the flagship workflow; say what it is instead,
@@ -143,6 +192,7 @@ export function WorkflowVersionHistory({
         <WorkflowVersionDetail
           version={selected}
           personas={personas}
+          sessionActions={sessionActions}
           onBindVersion={onBindVersion}
         />
       )}

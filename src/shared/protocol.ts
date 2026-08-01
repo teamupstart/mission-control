@@ -5,6 +5,7 @@ import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { CHEAP_ACTIONS, DIVERGENCE_KINDS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
+import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, THINKING_LEVELS } from "./types.ts";
@@ -16,6 +17,9 @@ import {
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   EVIDENCE_REF_KINDS,
   INSPECTOR_FINDINGS_POLICIES,
+  SESSION_ACTION_BLOCK_CODES,
+  SESSION_ACTION_COMPLETION_KINDS,
+  SESSION_ACTION_WAIT_REASONS,
   WORKFLOW_BINDING_STATES,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_CHECK_STATUSES,
@@ -426,13 +430,47 @@ export const McpCreateTaskSchema = z
   );
 export type McpCreateTask = z.infer<typeof McpCreateTaskSchema>;
 
-/** The human's decision on a review, from the dashboard. */
+/**
+ * What the human picked for one decision, echoed back by option id.
+ *
+ * Ids and not labels: the label is display text that an agent may rewrite between asking
+ * and being answered, while the id is the handle the question was built with. Unbounded
+ * `selected` because a `multiSelect` decision has no fixed arity; empty is legal, since a
+ * decision with `allowOther` can be answered entirely in free text.
+ */
+export const PlanDecisionAnswerSchema = z.object({
+  decisionId: z.string().min(1),
+  selected: z.array(z.string().min(1)),
+  other: z.string().nullable().optional().default(null),
+});
+export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
+
+/**
+ * The human's decision on a review, from the dashboard.
+ *
+ * `selections` is the structured twin of `response`, sent only by the decision form. The
+ * agent still receives `response` verbatim - that contract is untouched - but the flattened
+ * string cannot say which options were NOT taken, so the conversation replays the form from
+ * this instead. Optional, because most resolutions have no form behind them: a free-text
+ * `input`, an approve/reject note, a dismiss.
+ *
+ * `by` names the actor, defaulting to the human because this route is the dashboard's. The
+ * Foreman worker is the one caller that must say otherwise, and it reaches the daemon
+ * through this same HTTP route rather than in-process - so it declares itself here, and its
+ * answers stay out of the conversation the human is credited with.
+ */
 export const ResolveReviewSchema = z.object({
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
+  selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
+  by: z.enum(["human", "foreman"]).optional().default("human"),
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,
+  // A dismiss chose nothing by definition, so it carries no form to replay. Cleared here
+  // beside the response for the same reason that one is: a client sending both a dismiss
+  // and a set of selections is contradicting itself, and the stored row must not.
+  selections: resolution.action === "dismiss" ? null : resolution.selections,
 }));
 export type ResolveReview = z.infer<typeof ResolveReviewSchema>;
 
@@ -852,7 +890,22 @@ export const SetGoalSchema = z
   .object({
     text: z.string().nullable().optional(),
     source: z.enum(["heuristic", "model"]).nullable().optional(),
+    objective: z.string().nullable().optional(),
     prompt: z.string().nullable().optional(),
+    focus: z.string().nullable().optional(),
+    relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]).nullable().optional(),
+    rationale: z.string().nullable().optional(),
+    objectiveVersion: z.number().int().nonnegative().optional(),
+    promptRevision: z.number().int().nonnegative().optional(),
+    resolvedPromptRevision: z.number().int().nonnegative().optional(),
+    pendingPrompts: z
+      .array(
+        z.object({
+          revision: z.number().int().positive(),
+          prompt: z.string().nullable(),
+        }),
+      )
+      .optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty goal update" });
 export type SetGoal = z.infer<typeof SetGoalSchema>;
@@ -1815,6 +1868,43 @@ export const OtlpMetricsSchema = z.object({
 });
 export type OtlpMetrics = z.infer<typeof OtlpMetricsSchema>;
 
+/**
+ * One finished headless run, as the Foreman worker reports it to the daemon.
+ *
+ * The worker is a separate process and never opens the database, so its share of the app's
+ * own token spend reaches the ledger the way everything else it does reaches it: over a
+ * route. The daemon's own Inspector runs skip the wire and call the same writer directly.
+ *
+ * TOKENS ONLY - there is deliberately no cost field. The daemon prices what it is told,
+ * because a worker that priced its own runs would be a second place the versioned rate
+ * snapshot is applied, and the two would disagree the moment one process was restarted and
+ * the other was not. `role` is validated against the shipped tuple rather than accepted as
+ * free text: these strings become note keys, and a typo would mint a seventh bucket that
+ * looks like a role and answers to nothing.
+ *
+ * Every count is capped at a number no honest run reaches. The bound is not about a hostile
+ * caller - the route is loopback-only - but about a parse bug on either side turning into a
+ * ledger row that swamps a day's fleet total and cannot be told from real spend afterwards.
+ */
+export const SpendModelUsageSchema = z.object({
+  modelId: z.string().max(200),
+  input: z.number().int().min(0).max(1_000_000_000),
+  output: z.number().int().min(0).max(1_000_000_000),
+  reasoningOutput: z.number().int().min(0).max(1_000_000_000),
+  cacheRead: z.number().int().min(0).max(1_000_000_000),
+  cacheWrite: z.number().int().min(0).max(1_000_000_000),
+  reportedCostUsd: z.number().min(0).max(100_000).nullable(),
+});
+
+export const SpendReportSchema = z.object({
+  role: z.enum(LLM_SPEND_ROLES),
+  runner: z.string().min(1).max(64),
+  runId: z.string().min(1).max(200),
+  ts: z.number().int().positive(),
+  models: z.array(SpendModelUsageSchema).min(1).max(32),
+});
+export type SpendReportBody = z.infer<typeof SpendReportSchema>;
+
 // ---- Foreman session work queues ----
 
 /**
@@ -2189,6 +2279,169 @@ export const PersonaSnapshotSchema = z.object({
   model: ModelIdSchema.nullable(),
 });
 
+// ---- SessionActions ----
+
+const SessionActionNameSchema = z.string().trim().min(1).max(WORKFLOW_LIMITS.sessionActionName);
+const SessionActionDescriptionSchema = z.string().max(WORKFLOW_LIMITS.sessionActionDescription);
+
+/**
+ * Exact Markdown: validation observes it but never transforms it.
+ *
+ * `.trim()` is deliberately absent where `PersonaNameSchema` has one. This string is TYPED
+ * INTO a session verbatim, so a boundary that silently stripped its leading blank line would
+ * deliver a packet different from the one the operator authored and the version snapshotted.
+ */
+export const SessionActionPromptSchema = z
+  .string()
+  .refine((value) => value.trim().length > 0, { message: "Session action prompt cannot be empty" })
+  .refine((value) => utf8AtMost(value, WORKFLOW_LIMITS.sessionActionPromptBytes), {
+    message: `Session action prompt exceeds ${WORKFLOW_LIMITS.sessionActionPromptBytes} UTF-8 bytes`,
+  });
+
+/**
+ * A skill CAPABILITY id, bounded like the data it is.
+ *
+ * The character class is the load-bearing part, not the length: this value reaches the code
+ * that resolves a harness-native invocation, so anything that could carry whitespace, a
+ * shell metacharacter or a path separator has to be refused at the boundary rather than
+ * relied on to be harmless later. A catalog id is a slug, and a slug is all this admits.
+ */
+export const SessionActionSkillIdSchema = z
+  .string()
+  .max(WORKFLOW_LIMITS.sessionActionSkillId)
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, "A required skill is a catalog id, not a command");
+
+/**
+ * The closed, server-owned completion registry.
+ *
+ * Spelled arm by arm rather than as `z.object({ kind: z.enum(SESSION_ACTION_COMPLETION_KINDS) })`
+ * so the parsed type is the discriminated union the shared contract declares, and so an
+ * adapter that later carries a parameter gains it on one arm instead of all of them.
+ * `session-action-contracts.test.ts` pins this against the tuple so the two cannot drift.
+ */
+export const SessionActionCompletionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("session_turn") }),
+  z.object({ kind: z.literal("pull_request") }),
+]);
+
+export const CreateSessionActionSchema = z.object({
+  name: SessionActionNameSchema,
+  description: SessionActionDescriptionSchema.optional().default(""),
+  promptMarkdown: SessionActionPromptSchema,
+  requiredSkillId: SessionActionSkillIdSchema.nullable().optional().default(null),
+  // `session_turn` is the default because it is the only completion a freshly authored
+  // action can honestly promise. `pull_request` proves something about a repository, and an
+  // operator opts into that proof rather than inheriting it.
+  completion: SessionActionCompletionSchema.optional().default({ kind: "session_turn" }),
+});
+export type CreateSessionAction = z.infer<typeof CreateSessionActionSchema>;
+
+const SESSION_ACTION_EDIT_FIELDS = [
+  "name",
+  "description",
+  "promptMarkdown",
+  "requiredSkillId",
+  "completion",
+] as const;
+
+export const UpdateSessionActionSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    name: SessionActionNameSchema.optional(),
+    description: SessionActionDescriptionSchema.optional(),
+    promptMarkdown: SessionActionPromptSchema.optional(),
+    requiredSkillId: SessionActionSkillIdSchema.nullable().optional(),
+    completion: SessionActionCompletionSchema.optional(),
+  })
+  .refine((value) => SESSION_ACTION_EDIT_FIELDS.some((field) => field in value), {
+    message: "Session action update has no editable fields",
+  });
+export type UpdateSessionAction = z.infer<typeof UpdateSessionActionSchema>;
+
+export const ArchiveSessionActionSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+});
+export type ArchiveSessionAction = z.infer<typeof ArchiveSessionActionSchema>;
+
+export const SessionActionSnapshotSchema = z.object({
+  sourceSessionActionId: WorkflowIdSchema,
+  sourceRevision: z.number().int().positive(),
+  name: SessionActionNameSchema,
+  description: SessionActionDescriptionSchema,
+  promptMarkdown: SessionActionPromptSchema,
+  requiredSkillId: SessionActionSkillIdSchema.nullable(),
+  completion: SessionActionCompletionSchema,
+});
+
+/**
+ * What an adapter may require of a continuation capture, as a CLOSED discriminated union.
+ *
+ * This value is persisted on a waiting attempt and re-validated against a capture that may
+ * happen after a daemon restart, so an `unknown` escape hatch would be a durable field
+ * nothing can read back safely. Phase 4's PR adapter adds its arm here.
+ */
+export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({ kind: z.literal("head"), headSha: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/) }),
+]);
+
+export const SessionActionDeliveryAnchorSchema = z.object({
+  deliveryId: WorkflowIdSchema,
+  sessionId: z.string().min(1).max(200),
+  noteKey: z.string().min(1).max(1_000),
+  deliveredAt: z.number().int(),
+  transcriptBytes: z.number().int().nonnegative().nullable(),
+});
+
+/**
+ * A waiting action attempt's durable observation state, as it is stored in `output_json`.
+ *
+ * Strict rather than permissive: this is what a restart reads to decide whether a packet was
+ * sent, whether the session picked it up, and whether a child segment already exists. A
+ * shape that degraded on a malformed field could re-send a packet somebody already received.
+ */
+export const SessionActionAttemptStateSchema = z.object({
+  wait: z.enum(SESSION_ACTION_WAIT_REASONS),
+  deliveryId: WorkflowIdSchema.nullable(),
+  anchor: SessionActionDeliveryAnchorSchema.nullable(),
+  pickedUpAt: z.number().int().nullable(),
+  settledAt: z.number().int().nullable(),
+  expectation: SessionActionContinuationExpectationSchema.nullable(),
+  continuationSubmissionId: WorkflowIdSchema.nullable(),
+  blocked: z
+    .object({ code: z.enum(SESSION_ACTION_BLOCK_CODES), detail: z.string().max(2_000) })
+    .nullable(),
+});
+
+/** The build's per-adapter answer, as the browser receives it. Never re-derived client-side. */
+/**
+ * What a COMPLETED action attempt's `output_json` holds, which is not the waiting shape.
+ *
+ * `completeSessionActionAttempt` replaces the observation state with a record of what
+ * happened: the outcome, the action it was, the segment it authorized, and the three
+ * timestamps worth keeping. Read-only and deliberately narrow - run detail needs the
+ * timeline, and a reader that expected `SessionActionAttemptState` here gets `null` and
+ * silently drops it.
+ */
+export const SessionActionCompletedOutputSchema = z.object({
+  outcome: z.literal("complete"),
+  anchor: SessionActionDeliveryAnchorSchema.nullable().optional().default(null),
+  pickedUpAt: z.number().nullable().optional().default(null),
+  settledAt: z.number().nullable().optional().default(null),
+  continuationSubmissionId: WorkflowIdSchema.nullable().optional().default(null),
+});
+
+export const SessionActionCompletionCapabilitySchema = z.object({
+  kind: z.enum(SESSION_ACTION_COMPLETION_KINDS),
+  available: z.boolean(),
+  label: z.string().min(1).max(200),
+  unavailableReason: z.string().max(1_000).nullable(),
+});
+export const SessionActionCapabilitiesSchema = z.object({
+  completions: z.array(SessionActionCompletionCapabilitySchema),
+});
+export type SessionActionCapabilities = z.infer<typeof SessionActionCapabilitiesSchema>;
+
 export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("session"), position: WorkflowPointSchema }),
   z.object({
@@ -2202,6 +2455,12 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     id: WorkflowNodeIdSchema,
     kind: z.literal("check"),
     slot: z.enum(WORKFLOW_CHECK_SLOTS),
+    position: WorkflowPointSchema,
+  }),
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("session_action"),
+    sessionActionId: WorkflowIdSchema,
     position: WorkflowPointSchema,
   }),
   z.object({
@@ -2227,6 +2486,15 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     id: WorkflowNodeIdSchema,
     kind: z.literal("check"),
     slot: z.enum(WORKFLOW_CHECK_SLOTS),
+    position: WorkflowPointSchema,
+  }),
+  // Unlike a Check, an action's published form DIFFERS from its draft: the exact text a run
+  // types has to be frozen into the version, or an edit to the library would change what an
+  // in-flight run says. `sessionActionId` alone is refused here for that reason.
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("session_action"),
+    action: SessionActionSnapshotSchema,
     position: WorkflowPointSchema,
   }),
   z.object({
@@ -2534,6 +2802,25 @@ export const RestartFullWorkflowSchema = WorkflowRunActionSchema.extend({
 });
 export type RestartFullWorkflow = z.infer<typeof RestartFullWorkflowSchema>;
 
+/**
+ * Toggle the operator-disabled (auto-pass) flag on verdict nodes of ONE run.
+ *
+ * An array rather than a single id so disabling a whole stage is one atomic request:
+ * a stage half-disabled by a failed second POST would pass some of its members and run
+ * the rest, which is neither of the states the operator asked for.
+ *
+ * Duplicate ids are refused rather than tolerated: the request drives one audit event
+ * per named gate, and a repeated id would put the same toggle on the timeline twice.
+ */
+export const SetWorkflowNodesDisabledSchema = WorkflowRunActionSchema.extend({
+  nodeIds: z.array(WorkflowIdSchema).min(1).max(WORKFLOW_LIMITS.graphNodes)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "nodeIds must not repeat",
+    }),
+  disabled: z.boolean(),
+});
+export type SetWorkflowNodesDisabled = z.infer<typeof SetWorkflowNodesDisabledSchema>;
+
 export const WorkflowInspectorGateStateSchema = z.object({
   prKey: z.string().min(1).max(1_000).nullable(),
   prUrl: z.string().url().max(4_000).nullable(),
@@ -2657,9 +2944,16 @@ export const WorkflowCompletionClaimSchema = z.object({
   // Closed to the built-in fallback the Foreman option names. The daemon resolves its
   // immutable version; the worker never gets to choose an arbitrary workflow id.
   fallbackWorkflow: z.literal("no-mistakes").nullable().optional().default(null),
-  // Optional on the wire only for drain-claim compatibility with an older worker.
-  // A prompted claim without it is refused by the daemon rather than trusted.
-  expectedGoal: z.string().min(1).max(INTENT_MAX).nullable().optional().default(null),
+  expectedIntent: z.object({
+    objective: z.string().trim().min(1).max(INTENT_MAX),
+    objectiveVersion: z.number().int().min(1),
+    promptRevision: z.number().int().min(1),
+    episodeKey: z.string().min(1).max(200),
+  }).refine(
+    (intent) =>
+      intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
+    { message: "Intent episode key does not match its revisions" },
+  ).nullable().optional().default(null),
 });
 export type WorkflowCompletionClaimInput = z.infer<typeof WorkflowCompletionClaimSchema>;
 

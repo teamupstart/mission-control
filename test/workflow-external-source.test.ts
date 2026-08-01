@@ -765,6 +765,11 @@ test("run detail carries display provenance and never the opaque idempotency key
   // Run SUMMARIES travel over SSE for every run in the fleet, so provenance must not widen
   // them. The summary keys are exactly what they were.
   assert.deepEqual(Object.keys(detail.summary).sort(), [
+    // The two continuation fields are the only additions, and both are compact scalars: the
+    // evidence segment inside the current repair round, and why a session action is waiting.
+    // They ride the summary rather than run detail precisely so no surface has to re-derive
+    // them from attempts or live session activity.
+    "actionWait",
     "activePersonaNames",
     "bindingId",
     "bypassedPersonaReview",
@@ -779,6 +784,7 @@ test("run detail carries display provenance and never the opaque idempotency key
     "refusedDeliveryCount",
     "reviewPosture",
     "round",
+    "segment",
     "sessionId",
     "status",
     "uncertainDeliveryCount",

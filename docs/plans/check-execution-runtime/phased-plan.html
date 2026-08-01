@@ -314,6 +314,16 @@
   clear(attemptId: string): void;
 }</code></pre>
 <p>
+  <strong>This interface is closed.</strong> Phase 3 consumes it exactly as published and adds
+  nothing to it. Recovery needs to READ back an identity, which Contract P does not offer, so
+  Phase 3 declares that need as its own narrow seam - <code>CheckSupervisorLookup</code> in
+  <code>check-supervisor.ts</code> - for Phase 4 to supply from an accessor it already holds.
+  Recorded in Phase 3's audit, after a first implementation added a <code>read</code> here and was
+  corrected: widening an earlier phase's published contract to serve a later phase's consumer
+  turns a consumer's need into an owner's obligation, and that is the wrong direction even when
+  the addition is purely additive.
+</p>
+<p>
   A <strong>second, opposite-direction seam</strong> joins the same two phases:
   <code>CheckGroupRecovery(attemptId) =&gt; "empty" | "not-empty" | "unknown"</code>. Phase 2's
   startup reconciliation can prove a leased tree is <em>ours</em> but not that its process group is

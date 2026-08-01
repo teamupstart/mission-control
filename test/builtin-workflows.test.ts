@@ -10,9 +10,14 @@ import {
   normalizeWorkflowName,
   personaSnapshotIsOutdated,
 } from "../src/shared/workflow.ts";
-import type { PublishedWorkflowGraph, WorkflowDraftGraph } from "../src/shared/workflow.ts";
+import type {
+  PublishedWorkflowGraph,
+  WorkflowDraftGraph,
+  WorkflowDraftNode,
+} from "../src/shared/workflow.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
 import { compileStages, projectStages, stageBlockers } from "../src/shared/workflow-stages.ts";
+import type { EvaluationStage, Stage } from "../src/shared/workflow-stages.ts";
 import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
 import { BUILTIN_PERSONAS } from "../src/server/workflows/builtin-personas.ts";
 import {
@@ -34,9 +39,20 @@ import {
 /** A published graph, read back as the draft it was published from. */
 function asDraft(graph: PublishedWorkflowGraph): WorkflowDraftGraph {
   return {
-    nodes: graph.nodes.map((node) => node.kind === "persona"
-      ? { id: node.id, kind: "persona" as const, personaId: node.persona.sourcePersonaId, position: node.position }
-      : node),
+    nodes: graph.nodes.map((node): WorkflowDraftNode => {
+      if (node.kind === "persona") {
+        return { id: node.id, kind: "persona", personaId: node.persona.sourcePersonaId, position: node.position };
+      }
+      if (node.kind === "session_action") {
+        return {
+          id: node.id,
+          kind: "session_action",
+          sessionActionId: node.action.sourceSessionActionId,
+          position: node.position,
+        };
+      }
+      return node;
+    }),
     edges: [...graph.edges],
   };
 }
@@ -195,11 +211,22 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   );
 });
 
+/**
+ * Every stage a shipped workflow declares is an evaluation wave, and this narrows to that
+ * rather than casting. No built-in authors a session action yet - the runtime that would
+ * execute one arrives in a later phase - so a stage that is not an evaluation here is a
+ * shipped graph that changed shape, which is exactly what these tests exist to catch.
+ */
+const evaluation = (stage: Stage | undefined): EvaluationStage => {
+  assert.ok(stage && stage.kind === "evaluation", "a shipped stage must be an evaluation wave");
+  return stage;
+};
+
 /** The members of each stage, named by Persona id or by slot, so a mixed stage reads as one. */
 const shapeOf = (graph: WorkflowDraftGraph) => {
   const pipeline = projectStages(graph);
   assert.ok(pipeline, "a shipped version must render in the Pipeline editor");
-  return pipeline.stages.map((stage) => stage.members.map((member) =>
+  return pipeline.stages.map((stage) => evaluation(stage).members.map((member) =>
     member.kind === "persona" ? member.personaId : `check:${member.slot}`));
 };
 
@@ -250,25 +277,25 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
       ],
     ],
   );
-  assert.equal(pipeline.stages[0]!.joinId, null, "one reviewer needs no join");
-  assert.notEqual(pipeline.stages[1]!.joinId, null, "the parallel stage aggregates at a join");
+  assert.equal(evaluation(pipeline.stages[0]).joinId, null, "one reviewer needs no join");
+  assert.notEqual(evaluation(pipeline.stages[1]).joinId, null, "the parallel stage aggregates at a join");
 
   // The adopted edge table, spelled out: every fail returns to Session, both outcomes of each
   // parallel reviewer reach the join, and only the join's pass reaches End.
   const draft = v1;
   const session = pipeline.sessionId;
-  const join = pipeline.stages[1]!.joinId!;
+  const join = evaluation(pipeline.stages[1]).joinId!;
   const route = (source: string, port: string) =>
     draft.edges.filter((edge) => edge.source === source && edge.sourcePort === port)
       .map((edge) => `${edge.target}:${edge.targetPort}`).sort();
-  const intent = pipeline.stages[0]!.members[0]!.nodeId!;
+  const intent = evaluation(pipeline.stages[0]).members[0]!.nodeId!;
   assert.deepEqual(route(session, "submitted"), [`${intent}:activate`]);
   assert.deepEqual(route(intent, "fail"), [`${session}:return_for_changes`]);
   assert.deepEqual(
     route(intent, "pass"),
-    pipeline.stages[1]!.members.map((member) => `${member.nodeId}:activate`).sort(),
+    evaluation(pipeline.stages[1]).members.map((member) => `${member.nodeId}:activate`).sort(),
   );
-  for (const member of pipeline.stages[1]!.members) {
+  for (const member of evaluation(pipeline.stages[1]).members) {
     assert.deepEqual(route(member.nodeId!, "pass"), [`${join}:result`]);
     assert.deepEqual(route(member.nodeId!, "fail"), [`${join}:result`]);
   }
@@ -366,7 +393,7 @@ test("version 5 adds automatic PR preparation after the Inspector-only repair po
     ],
   ]);
   const pipeline = projectStages(draft)!;
-  assert.notEqual(pipeline.stages[0]!.joinId, null, "two checks aggregate at an all-pass join");
+  assert.notEqual(evaluation(pipeline.stages[0]).joinId, null, "two checks aggregate at an all-pass join");
   assert.equal(pipeline.endOutcome, "Complete");
 
   // Every slot named is one this build ships. A version naming a slot the vocabulary does not

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, u
 import type {
   ForemanEpisode,
   PendingTurn,
+  ReviewItem,
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
@@ -31,7 +32,7 @@ import {
 } from "../lib/transcript-history.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
-import { mergeEpisodes } from "../lib/episodes.ts";
+import { mergeConversation } from "../lib/episodes.ts";
 import {
   collectHits,
   hitsInScope,
@@ -45,7 +46,9 @@ import {
   type FindScope,
 } from "../lib/find.ts";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
+import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
+import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { Markdown } from "./Markdown.tsx";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
@@ -120,6 +123,7 @@ export function TranscriptPanel({
   canSend,
   dialogOpen = false,
   episodes = [],
+  reviews = [],
   onReplyBox,
   onOpenFile,
   files,
@@ -159,6 +163,18 @@ export function TranscriptPanel({
    * the note moves.
    */
   episodes?: ForemanEpisode[];
+  /**
+   * The human's answers to this session's reviews, interleaved into the log by the time
+   * they were GIVEN.
+   *
+   * A prop for the same reason the episodes are: they are not in the transcript and the SSE
+   * stream this panel opens could not carry them. A review's answer travels to the agent as
+   * an MCP tool result, which every harness parser drops as machine noise - so without this
+   * the log shows the agent's question as a grey tool chip and then nothing at all where the
+   * decision was made. The owner supplies them (`useTimelineReviews`) and re-renders when
+   * one is answered.
+   */
+  reviews?: ReviewItem[];
   /**
    * Bumped whenever this session is reset. The reply box is uncontrolled - its text
    * lives in the draft map, re-read only on mount - so a reset that clears the draft
@@ -253,7 +269,7 @@ export function TranscriptPanel({
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
    * so a search over a differently-folded list would highlight the wrong span.
    */
-  const rows = mergeEpisodes(transcriptRows(messages), episodes);
+  const rows = mergeConversation(transcriptRows(messages), episodes, reviews);
   const agentLabel = AGENT_IDENTITY[agent].speaker;
 
   // Derived, never stored. A streamed turn arriving re-runs the search, which is what
@@ -695,7 +711,7 @@ export function TranscriptPanel({
             )}
           </div>
         )}
-        {status !== "unavailable" && messages.length === 0 && episodes.length === 0 && (
+        {status !== "unavailable" && rows.length === 0 && (
           <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
         )}
         {rows.map((row) =>
@@ -705,12 +721,15 @@ export function TranscriptPanel({
                   className="transcript-episode"
                   data-episode-marker={row.episode.marker}
                 >
-                  <ForemanEpisodeCard episode={row.episode} />
+                  <ForemanEpisodeCard episode={row.episode} absoluteTime />
                 </div>
+              ) : row.kind === "review" ? (
+                <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
               ) : row.kind === "tools" ? (
                 <ToolRun
                   key={row.id}
                   tools={row.tools}
+                  ts={row.ts}
                   agentLabel={agentLabel}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                 />
@@ -1011,7 +1030,10 @@ function Turn({
     <div className={`turn turn-${m.origin ?? m.role}`}>
       {/* Not searched: a byline is chrome, not conversation. Were it included,
           "you" would match the label above every message the human ever sent. */}
-      <div className="turn-role">{who}</div>
+      <div className="turn-role">
+        {who}
+        <ConversationTimestamp at={m.ts} className="turn-time" />
+      </div>
       {m.text && (
         // Formatted turns still wear `turn-text` - the bubble's colour, padding, and per-role
         // tint are the same either way. Only what's inside it changes, and `markdown` swaps
@@ -1040,10 +1062,13 @@ function Turn({
  */
 function ToolRun({
   tools,
+  ts,
   agentLabel,
   find,
 }: {
   tools: ToolCall[];
+  /** Start of the folded run: transcriptRows deliberately keeps its first turn's time. */
+  ts: number;
   agentLabel: string;
   find?: RowFind | null;
 }): React.JSX.Element {
@@ -1051,6 +1076,10 @@ function ToolRun({
     <div className="turn turn-assistant turn-toolrun">
       <div className="turn-role">{agentLabel} executed</div>
       <ToolChips tools={tools} find={find} />
+      {/* The same byline time as a prose turn, but a child of the row rather than of the
+          label: a folded run lays its label and its chips along one line, so the right
+          edge the timestamp is pinned to belongs to the row, not to the byline. */}
+      <ConversationTimestamp at={ts} className="turn-time" />
     </div>
   );
 }

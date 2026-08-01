@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import type { WorkflowCompletionPolicy } from "@shared/workflow.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
 
 /**
  * The presentational leaves every stage surface is drawn from - the role `session-bits.tsx`
@@ -90,6 +92,12 @@ export function PipelineStatusChip({ status }: { status: PipelineStatus }): Reac
  * a different row: the two are peers in a stage - same routes, same join, same reorder - and
  * drawing them as two shapes would say they behave differently. A check's `name` is its bare
  * slot, so the chip supplies the noun that "test" alone next to a Persona's name does not.
+ *
+ * `disabled` and `onToggleDisabled` are the runs monitor's per-run auto-pass affordance.
+ * Optional and defaulting off so the editor renders byte-identically: disabling belongs to
+ * ONE run, so the affordance must not exist where a draft or a version is being read. When
+ * a toggle is supplied the row's body becomes a real `<button>` - the whole row is the
+ * click target - and `actions` stays outside it so the two can never nest.
  */
 export function ReviewerRow({
   name,
@@ -99,25 +107,54 @@ export function ReviewerRow({
   state = "idle",
   actions = null,
   item = {},
+  disabled = false,
+  onToggleDisabled = null,
+  toggleLabel = null,
 }: {
   name: string;
-  kind?: "persona" | "check";
+  kind?: "persona" | "check" | "session_action";
   meta?: string | null;
   status?: PipelineStatus | null;
   state?: PipelineItemState;
   actions?: ReactNode;
   item?: PipelineItemProps;
+  disabled?: boolean;
+  onToggleDisabled?: (() => void) | null;
+  toggleLabel?: string | null;
 }): React.JSX.Element {
-  return (
-    <li className={`wf-pipeline-reviewer is-${kind}${stateClass(state)}`} {...itemAttributes(item)}>
+  const content = (
+    <>
       <span className="wf-pipeline-reviewer-body">
         <span className="wf-pipeline-reviewer-name">
+          {disabled && <span className="wf-pipeline-disabled-mark" aria-hidden>⊘</span>}
           {kind === "check" && <span className="wf-pipeline-check-mark">Check</span>}
+          {/* The badge says what this row IS, because a session action sitting in a column
+              of reviewers otherwise reads as one - and it does the opposite of reviewing. */}
+          {kind === "session_action" && <span className="wf-pipeline-action-mark">Session action</span>}
           {name}
         </span>
         {meta && <span className="wf-pipeline-reviewer-meta">{meta}</span>}
       </span>
       {status && <PipelineStatusChip status={status} />}
+    </>
+  );
+  return (
+    <li
+      className={`wf-pipeline-reviewer is-${kind}${stateClass(state)}${disabled ? " is-disabled" : ""}`}
+      {...itemAttributes(item)}
+    >
+      {onToggleDisabled ? (
+        <Tooltip label={toggleLabel ?? ""}>
+          <button
+            type="button"
+            className="wf-pipeline-toggle wf-pipeline-reviewer-hit"
+            aria-pressed={disabled}
+            onClick={onToggleDisabled}
+          >
+            {content}
+          </button>
+        </Tooltip>
+      ) : content}
       {actions && <span className="wf-pipeline-reviewer-actions">{actions}</span>}
     </li>
   );
@@ -128,6 +165,11 @@ export function ReviewerRow({
  *
  * `header` wires the stage's own roving stop and drag handle; `frame` takes drops for the
  * card as a whole, so a member can be moved onto a stage without aiming at a row.
+ *
+ * `disabled`/`onToggleDisabled` mirror `ReviewerRow`'s per-run auto-pass affordance at
+ * stage grain: one click switches every member of the gate, which is the "force this
+ * phase to pass" the runs monitor offers. Optional, so the editor's header - which owns
+ * these same slots for focus and drag - is untouched.
  */
 export function StageCard({
   name,
@@ -137,6 +179,9 @@ export function StageCard({
   actions = null,
   header = {},
   frame = {},
+  disabled = false,
+  onToggleDisabled = null,
+  toggleLabel = null,
   children,
 }: {
   name: string;
@@ -146,20 +191,42 @@ export function StageCard({
   actions?: ReactNode;
   header?: PipelineItemProps;
   frame?: Pick<PipelineItemProps, "onDragOver" | "onDrop">;
+  disabled?: boolean;
+  onToggleDisabled?: (() => void) | null;
+  toggleLabel?: string | null;
   children: ReactNode;
 }): React.JSX.Element {
+  const title = (
+    <>
+      <span className="wf-pipeline-stage-title">
+        <span className="wf-pipeline-stage-name">
+          {disabled && <span className="wf-pipeline-disabled-mark" aria-hidden>⊘</span>}
+          {name}
+        </span>
+        {subtitle && <span className="wf-pipeline-stage-sub">{subtitle}</span>}
+      </span>
+      {status && <PipelineStatusChip status={status} />}
+    </>
+  );
   return (
     <section
-      className={`wf-pipeline-stage${stateClass(state)}`}
+      className={`wf-pipeline-stage${stateClass(state)}${disabled ? " is-disabled" : ""}`}
       onDragOver={frame.onDragOver}
       onDrop={frame.onDrop}
     >
       <header className="wf-pipeline-stage-head" {...itemAttributes(header)}>
-        <span className="wf-pipeline-stage-title">
-          <span className="wf-pipeline-stage-name">{name}</span>
-          {subtitle && <span className="wf-pipeline-stage-sub">{subtitle}</span>}
-        </span>
-        {status && <PipelineStatusChip status={status} />}
+        {onToggleDisabled ? (
+          <Tooltip label={toggleLabel ?? ""}>
+            <button
+              type="button"
+              className="wf-pipeline-toggle wf-pipeline-stage-hit"
+              aria-pressed={disabled}
+              onClick={onToggleDisabled}
+            >
+              {title}
+            </button>
+          </Tooltip>
+        ) : title}
         {actions && <span className="wf-pipeline-stage-actions">{actions}</span>}
       </header>
       {children}
@@ -216,6 +283,68 @@ export function TerminusCard({
       </span>
       {status && <PipelineStatusChip status={status} />}
     </section>
+  );
+}
+
+/**
+ * Inspector, drawn after End as a FIXED footer.
+ *
+ * A projection of `WorkflowCompletionPolicy` and never a stage. It carries no drag handle, no
+ * focus stop in the strip's roving order, no member list, no edge and no delete, because
+ * there is nothing in the persisted graph for any of those to act on: Inspector is a property
+ * of the workflow, End is still the graph's success boundary, and the completion policy
+ * claims that boundary afterwards.
+ *
+ * Rendering it here rather than at each surface is what stops the three places it appears -
+ * the editor, a run, and the Board ladder - from drawing three different pictures of the same
+ * immutable rule. Returning `null` for a `none` policy is the whole visibility contract: a
+ * workflow that does not end at Inspector shows no footer at all, which is why every caller
+ * can hand this the policy unconditionally.
+ *
+ * `status` and `detail` are the RUN's answers - the gate chip and the sentence saying what it
+ * is waiting on. Absent in the editor, where there is no run to have an opinion.
+ */
+export function InspectorFooter({
+  policy,
+  status = null,
+  detail = null,
+}: {
+  policy: WorkflowCompletionPolicy;
+  status?: PipelineStatus | null;
+  detail?: string | null;
+}): React.JSX.Element | null {
+  if (policy.kind !== "inspector") return null;
+  return (
+    <>
+      {/* The seam says what has to have happened, and it is deliberately not a gate an
+          author can change: End is reached, and only then does Inspector look at the work. */}
+      <StageSeam gate="workflow succeeded" />
+      <section
+        className="wf-pipeline-inspector"
+        aria-label="Inspector, the fixed completion policy after End"
+      >
+        <span className="wf-pipeline-inspector-mark" aria-hidden>✦</span>
+        <span className="wf-pipeline-inspector-body">
+          <span className="wf-pipeline-inspector-name">
+            Inspector
+            {/* A word, not a colour. The point of this badge is that the card is not part of
+                the pipeline an author is editing, and that has to survive a greyscale
+                screenshot and a reader who never sees the styling. */}
+            <span className="wf-pipeline-inspector-fixed">Fixed</span>
+          </span>
+          {/* Two facts and no more. A strip card is read at a glance beside four others, and
+              the first draft of this spent eight lines restating what the Fixed badge and
+              the absent controls already say. What is left is what an operator cannot see
+              from the card: what Inspector looks at, and where its switches actually live. */}
+          <span className="wf-pipeline-inspector-sub">
+            Reviews the finished pull request once the workflow succeeds. Set in Workflow
+            settings, not on the graph.
+          </span>
+          {detail && <span className="wf-pipeline-inspector-detail">{detail}</span>}
+        </span>
+        {status && <PipelineStatusChip status={status} />}
+      </section>
+    </>
   );
 }
 

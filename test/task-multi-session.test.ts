@@ -494,6 +494,7 @@ function viewFor(session: Session): SessionViewProps {
     onOpenFile: () => false,
     fileTabRequest: null,
     conversationTabRequest: null,
+    workflowsTabRequest: null,
     diffTabRequest: null,
     files: {} as SessionFilesController,
     onReset: () => {},
@@ -515,6 +516,7 @@ function viewFor(session: Session): SessionViewProps {
     foremanAllowlist: [],
     inputReviewBySession: new Map<string, string>(),
     pendingReviewIds: new Set<string>(),
+    reviews: [],
     onOpenSchedule: () => {},
     scheduleNameById: new Map<string, string>(),
   };

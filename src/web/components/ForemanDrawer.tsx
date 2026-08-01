@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ForemanEpisode } from "@shared/types.ts";
+import type { ForemanEpisode, IntentRelationship, SessionGoal } from "@shared/types.ts";
 // Moved to shared so the daemon can reduce an episode the same way this drawer does -
 // the fleet-wide ledger ships the RESULT rather than the captured screen it came from.
 import { askPreview } from "@shared/foreman-ask.ts";
@@ -21,10 +21,12 @@ export function openEpisodeCount(episodes: ForemanEpisode[]): number {
 
 export function ForemanDrawer({
   episodes,
+  intent,
   open,
   onClose,
 }: {
   episodes: ForemanEpisode[];
+  intent: SessionGoal | null;
   open: boolean;
   onClose: () => void;
 }): React.JSX.Element | null {
@@ -86,17 +88,87 @@ export function ForemanDrawer({
       <div className="fd-pane">
         {detail ? (
           <ForemanEpisodeCard episode={detail} detail />
-        ) : episodes.length === 0 ? (
-          <p className="fd-empty dim">
-            Foreman hasn&apos;t had to decide anything on this session yet.
-          </p>
         ) : (
-          episodes.map((e) => (
-            <EpisodeRow key={e.id} episode={e} onOpen={() => setSelected(e.id)} />
-          ))
+          <>
+            <IntentSummary intent={intent} />
+            <div className="fd-history-head">
+              <span>Decision history</span>
+              <span>{episodes.length}</span>
+            </div>
+            {episodes.length === 0 ? (
+              <p className="fd-empty dim">
+                Foreman hasn&apos;t had to decide anything on this session yet.
+              </p>
+            ) : (
+              episodes.map((e) => (
+                <EpisodeRow key={e.id} episode={e} onOpen={() => setSelected(e.id)} />
+              ))
+            )}
+          </>
         )}
       </div>
     </aside>
+  );
+}
+
+const RELATIONSHIP_LABEL: Record<IntentRelationship, string> = {
+  initial: "objective set",
+  steer: "steering",
+  amend: "objective amended",
+  replace: "objective replaced",
+  unclear: "needs more context",
+};
+
+/** What Foreman will treat as the completion contract on its next prompted wrap-up. */
+function IntentSummary({ intent }: { intent: SessionGoal | null }): React.JSX.Element {
+  if (!intent?.objective) {
+    return (
+      <section className="fd-intent fd-intent-empty">
+        <span className="fd-intent-kicker">Current intent</span>
+        <p>Waiting for the session&apos;s first substantive instruction.</p>
+      </section>
+    );
+  }
+
+  const resolving = intent.resolvedPromptRevision < intent.promptRevision;
+  const relationship = resolving ? null : intent.relationship;
+  const label = resolving
+    ? "reconciling"
+    : relationship
+      ? RELATIONSHIP_LABEL[relationship]
+      : "not classified";
+
+  return (
+    <section className={`fd-intent fd-intent-${relationship ?? "pending"}`}>
+      <div className="fd-intent-top">
+        <span className="fd-intent-kicker">Current intent</span>
+        <span className="fd-intent-version">objective v{intent.objectiveVersion}</span>
+      </div>
+      <div className="fd-intent-track">
+        <span className="fd-intent-node" aria-hidden />
+        <div className="fd-intent-copy">
+          <span className="fd-intent-label">Objective</span>
+          <p className="fd-intent-objective">{intent.objective}</p>
+        </div>
+      </div>
+      {intent.focus && (
+        <div className="fd-intent-track fd-intent-focus">
+          <span className="fd-intent-node" aria-hidden />
+          <div className="fd-intent-copy">
+            <span className="fd-intent-label">Latest focus</span>
+            <p>{intent.focus}</p>
+          </div>
+        </div>
+      )}
+      <div className="fd-intent-reading">
+        <span className="fd-intent-relation">{label}</span>
+        <span>
+          {resolving
+            ? "Automatic wrap-up is paused until this instruction is classified."
+            : intent.rationale ?? "No classification rationale is available yet."}
+        </span>
+      </div>
+    </section>
   );
 }
 

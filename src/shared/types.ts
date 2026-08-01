@@ -12,6 +12,7 @@ import type { CheapAction, Divergence } from "./foreman.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
+import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
@@ -20,6 +21,8 @@ import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
 import type {
   PersonaId,
   PersonaView,
+  SessionAction,
+  SessionActionId,
   WorkflowId,
   WorkflowRunId,
   WorkflowRunSummary,
@@ -305,7 +308,39 @@ export interface FleetCost {
   rateLimits: RateLimits | null;
   /** Quota windows grouped by provider, so account updates remain independent. */
   rateLimitSources?: RateLimitSource[];
+  /**
+   * What the app spent on ITSELF - the Foreman's and Inspector's own headless runs - kept
+   * out of every figure above.
+   *
+   * A separate line rather than part of the fleet total, and that is a product decision
+   * rather than a schema convenience. The figures above answer "what is the work I asked
+   * for costing me"; this answers "what is the overhead of having it watched", and they
+   * move for unrelated reasons - the loops spend while nobody is asking for anything. Rolled
+   * together, a quiet morning with a busy Inspector would read as fleet activity, and the
+   * operator would have no way to tell which half moved. Anyone who wants one number can add
+   * two that are each independently true.
+   */
+  automation: FleetAutomationCost;
   updatedAt: number;
+}
+
+/**
+ * The autonomous loops' own spend, today.
+ *
+ * Always present, never null: unlike a rate-limit window, whose absence means "not
+ * reported", an empty automation summary is a claim we can always make truthfully - the
+ * loops either ran or they did not, and the ledger knows which.
+ */
+export interface FleetAutomationCost {
+  /** API-equivalent estimate since local midnight; null when a row in it is unpriced. */
+  estimatedCostToday: number | null;
+  /** Every tier summed, since local midnight. */
+  tokensToday: number;
+  /**
+   * Per role, heaviest first, so the strip can name what the money went on rather than
+   * only how much. Empty when the loops have not run today.
+   */
+  roles: AutomationRoleCost[];
 }
 
 export interface Session {
@@ -698,13 +733,17 @@ export type NoteDisposition = "answered" | "pending" | "escalated" | "skipped";
  *  - heuristic: the human's own filtered prompt, written instantly by the daemon on
  *    `UserPromptSubmit`. Free, always available, but reads like a prompt rather than a
  *    summary - and says nothing at all for a session driven by a slash command.
- *  - model: a `claude -p` pass rewrote it into one sentence.
+ *  - model: a headless model pass reconciled an instruction with the durable objective
+ *    and derived the compact card sentence.
  *
- * Stored rather than inferred because the refiner needs to know what it is upgrading, and
- * because "this is still the raw prompt" is a real distinction when a refinement silently
- * fails (see the Q3 fallback: a failed refine leaves the heuristic goal standing).
+ * Stored rather than inferred because legacy rows use it to distinguish an already-refined
+ * prompt, and because "this is still the initial raw prompt" remains visible while its first
+ * reconciliation is pending.
  */
 export type GoalSource = "heuristic" | "model";
+
+/** How the latest human instruction relates to the session's durable objective. */
+export type IntentRelationship = "initial" | "steer" | "amend" | "replace" | "unclear";
 
 /**
  * The durable Foreman record for one session, keyed on `agentSessionId` when
@@ -853,8 +892,9 @@ export interface PaneDialogSummary {
 }
 
 /**
- * A session's Goal: one sentence saying what it is currently attempting to solve, written
- * by the DAEMON on every instrumented Claude session whether or not Foreman ever runs.
+ * A session's durable objective, compact card sentence, and ordered intent-reconciliation
+ * state, written by the daemon for every harness that reports substantive human prompts.
+ * Foreman may never run, but the daemon still owns and persists this record.
  *
  * Keyed on the same `noteKeyFor` as SessionNote - so it survives a daemon restart and
  * orphans on a `/clear` exactly as a note does - but stored in its own row, NOT as columns
@@ -868,11 +908,13 @@ export interface PaneDialogSummary {
  */
 export interface SessionGoal {
   noteKey: string;
-  /** The sentence itself. Null while only the raw prompt has been captured. */
+  /** The compact form of the durable objective shown on session cards. */
   text: string | null;
   source: GoalSource | null;
+  /** The completion contract Foreman verifies before it offers or performs wrap-up. */
+  objective: string | null;
   /**
-   * The filtered prompt `text` was derived from.
+   * The latest filtered human prompt awaiting or represented by `relationship`.
    *
    * Persisted rather than re-read because the refiner runs debounced, well after the hook
    * that captured it: without this it would have to race the transcript for text it was
@@ -880,7 +922,44 @@ export interface SessionGoal {
    * a pasted log can't put a megabyte in a row. Server-side only - never shipped to a card.
    */
   prompt: string | null;
+  /** Compact rendering of `prompt`, kept separate from the durable objective. */
+  focus: string | null;
+  /**
+   * The most recently reconciled relationship. A revision gap, rather than this field alone,
+   * says whether a newer instruction is still pending.
+   */
+  relationship: IntentRelationship | null;
+  /** Short explanation of the relationship, shown in the Foreman drawer. */
+  rationale: string | null;
+  /** Starts at one and advances when an amendment or replacement changes the objective. */
+  objectiveVersion: number;
+  /** Increments for every substantive human prompt. */
+  promptRevision: number;
+  /** The newest prompt revision the intent reconciler has classified. */
+  resolvedPromptRevision: number;
+  /**
+   * Every captured instruction not yet incorporated into the effective objective, oldest
+   * first. This is durable so a rapid amendment followed by tactical steering cannot collapse
+   * into the steering prompt across a debounce window or daemon restart.
+   *
+   * Server-side reconciliation state. It is returned only by the loopback full-goal endpoint,
+   * never denormalized onto session cards.
+   */
+  pendingPrompts: GoalPromptRevision[];
   updatedAt: number;
+}
+
+export interface SessionIntentGuard {
+  objective: string;
+  objectiveVersion: number;
+  promptRevision: number;
+  episodeKey: string;
+}
+
+export interface GoalPromptRevision {
+  revision: number;
+  /** Null only for a legacy unresolved revision whose text was already lost before migration. */
+  prompt: string | null;
 }
 
 // ---- Foreman session work queues ----
@@ -1012,14 +1091,12 @@ export interface SessionQueue {
   wrapupAskedAt: number | null;
   wrapupAnswer: string | null;
   /**
-   * The session goal the `prompted` wrap-up trigger last fired on, or null if it never
-   * has. The trigger's once-per-episode guard: it fires only when the CURRENT goal
-   * differs from this, so a new human prompt re-arms it and an idle session that has
-   * already been wrapped up stays quiet.
+   * The resolved intent episode the `prompted` wrap-up trigger last handled, or null if
+   * it never has. Encoded as `intent:<objectiveVersion>:<promptRevision>`, so a newly
+   * reconciled human instruction re-arms it and an unchanged idle session stays quiet.
    *
-   * Stored as the goal text verbatim rather than a hash - it is capped at 4000 chars
-   * upstream (`clampPrompt`), so there is nothing to gain by hashing and a collision
-   * here would silently skip a wrap-up nobody could then explain.
+   * The historical field name is persisted and must not be renamed casually; its value
+   * is now an opaque episode key rather than goal text.
    *
    * Deliberately separate from `wrapupAskedAt`, which stays the DRAIN trigger's guard.
    * One field for both would mean a prompted wrap-up consumed the drain ask (or the
@@ -1099,10 +1176,16 @@ export interface OrphanedQueueHint {
  * render nothing.
  */
 export interface SessionGoalSummary {
-  /** The sentence shown under the card title. */
+  /** The current resolved objective shown under the card title. */
   text: string | null;
-  /** Lets the card tell a raw prompt from a refined sentence. */
+  /** Lets the card tell an initial raw objective from a refined one. */
   source: GoalSource | null;
+  /** The current tactical focus, bounded to the same one-line size as the objective. */
+  focus?: string | null;
+  relationship?: IntentRelationship | null;
+  objectiveVersion?: number;
+  promptRevision?: number;
+  resolvedPromptRevision?: number;
   updatedAt: number;
 }
 
@@ -1792,6 +1875,18 @@ export type ReviewStatus =
   | "dismissed"
   | "orphaned";
 
+/**
+ * Who settled a review. Persisted as text in `reviews.resolved_by`, so these spellings
+ * are append-only.
+ *
+ * The daemon's own `orphaned` settle records NEITHER: nobody decided anything, the agent
+ * simply stopped being there to hear an answer. A row from before this column existed
+ * reads as null for the same reason - it may well have been a human, but the record does
+ * not say so, and the conversation must not claim an answer the human cannot be shown to
+ * have given.
+ */
+export type ReviewActor = "human" | "foreman";
+
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
   /** Stable id, echoed back in the human's selection. */
@@ -1820,6 +1915,28 @@ export interface PlanDecision {
   allowOther?: boolean;
 }
 
+/**
+ * What the human picked for one `PlanDecision`.
+ *
+ * The structured half of an answer, kept because `response` is not one: that string is
+ * FLATTENED for the agent to read ("→ OAuth via Clerk"), so it records the labels chosen
+ * and nothing about the ones passed over. Replaying the question in the conversation needs
+ * both - which option was taken and what it was taken from - and re-deriving the first by
+ * matching labels back out of the prose would break the moment two options shared a prefix
+ * or a label contained the separator.
+ *
+ * Option ids rather than labels, so a decision replays correctly even though the label is
+ * what the agent's response string quotes.
+ */
+export interface PlanDecisionAnswer {
+  /** The `PlanDecision.id` this answers. */
+  decisionId: string;
+  /** Chosen `PlanDecisionOption.id`s - one for a radio, any number for a multi-select. */
+  selected: string[];
+  /** What was typed into "Other", when the decision allowed it and the human used it. */
+  other: string | null;
+}
+
 export interface ReviewItem {
   id: string;
   sessionId: string;
@@ -1838,6 +1955,14 @@ export interface ReviewItem {
    * whose agent supplied discrete options, absent for a free-text `input`.
    */
   decisions?: PlanDecision[] | null;
+  /**
+   * The human's selections against `decisions`, kept alongside the flattened `response`
+   * so the conversation can replay the form as it was answered. Null for every other way
+   * a review settles: free-text `input`, approve/reject, dismiss, orphan.
+   */
+  selections?: PlanDecisionAnswer[] | null;
+  /** Who settled it, or null when nobody did (`orphaned`) and on pre-column rows. */
+  resolvedBy?: ReviewActor | null;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }
@@ -2134,6 +2259,12 @@ export type ServerEvent =
       reviews: ReviewItem[];
       tasks: Task[];
       personas: PersonaView[];
+      /**
+       * The bounded SessionAction catalog, archived rows included so a draft or version can
+       * always name its source. Carries the full record - prompt Markdown and all - the way
+       * `personas` carries guidance; see `Registry.sessionActions` for why that is bounded.
+       */
+      sessionActions: SessionAction[];
       workflowSummaries: WorkflowSummary[];
       workflowRunSummaries: WorkflowRunSummary[];
       /**
@@ -2169,6 +2300,9 @@ export type ServerEvent =
   | { type: "task_remove"; id: string }
   | { type: "persona_upsert"; persona: PersonaView }
   | { type: "persona_remove"; id: PersonaId }
+  /** Archive emits UPSERT, not remove: the entity stays addressable by every draft naming it. */
+  | { type: "session_action_upsert"; action: SessionAction }
+  | { type: "session_action_remove"; id: SessionActionId }
   | { type: "workflow_upsert"; workflow: WorkflowSummary }
   | { type: "workflow_remove"; id: WorkflowId }
   | { type: "workflow_run_upsert"; run: WorkflowRunSummary }

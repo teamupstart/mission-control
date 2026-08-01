@@ -1,4 +1,4 @@
-import { POLL_INTERVAL_MS } from "../config.ts";
+import { pollIntervalMs } from "../config.ts";
 import type { Registry } from "../registry.ts";
 import { unref } from "../util/timers.ts";
 import { gitInfo } from "../util/git.ts";
@@ -13,9 +13,9 @@ import { discover } from "./correlate.ts";
  * is pure filesystem and explicitly cheap enough to run for every session every poll. One
  * cadence and one reader is what keeps the two runtimes from disagreeing about Git state.
  *
- * Kept out of `applyDiscovery`: that takes what the process sweep found, and widening it to
- * carry sessions no process table can produce is exactly the scope creep its own comments
- * warn off. The registry does the reconciling, this does the reading - the same split
+ * Kept out of `applyDiscovery`: that takes what terminal discovery found, and widening it to
+ * carry sessions the process sweep deliberately excludes is exactly the scope creep its own
+ * comments warn off. The registry does the reconciling, this does the reading - the same split
  * `discover()` / `applyDiscovery()` already makes. `read` is injected so a test can drive
  * the real reconciliation with no repository on disk.
  */
@@ -40,8 +40,9 @@ export async function pollOnce(
     console.error("[poller] sweep failed:", err);
   }
 
-  // Driver-run sessions have no process on a tty, so their filesystem refresh must not
-  // depend on terminal discovery succeeding.
+  // Driver-run sessions are not represented by terminal discovery: any agent subprocesses
+  // they own are excluded with the rest of the daemon's subtree. Their filesystem refresh
+  // therefore must not depend on terminal discovery succeeding.
   try {
     refresh(registry);
   } catch (err) {
@@ -58,13 +59,33 @@ export function startPoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
+  // `MISSION_POLL_MS=0` switches passive discovery off entirely - not one sweep, none. The
+  // first tick fires immediately, so a check that only skipped the RESCHEDULE would still
+  // walk every process on the machine once and card whatever it found, which is the whole
+  // thing the off switch exists to prevent.
+  const interval = pollIntervalMs();
+  if (interval === null) {
+    // Off is a FINAL answer about terminal sessions, not a pending one, and it has to be
+    // reported as such. Everything gated on `sessionsObserved()` - the workflow engine's
+    // start, delivery recovery, binding reconciliation - waits for the first completed
+    // sweep so it does not act on a session map that is still filling in; with polling
+    // disabled that sweep would never come, and a daemon that could capture workflow
+    // submissions but never review them is what actually shipped (found by the browser
+    // e2e suite, whose daemon runs with discovery off). An empty COMPLETED sweep is the
+    // truthful translation: no terminal session will ever be discovered here, and the
+    // eviction loop it drives is scoped to `runtime === "terminal"`, so daemon-owned SDK
+    // sessions are untouched by construction.
+    registry.applyDiscovery([]);
+    return () => {};
+  }
+
   const tick = async (): Promise<void> => {
     if (stopped) return;
     // Refresh after the sweep attempt, so a rediscovered pane-backed session and one the
     // daemon runs itself are both current before the PR poller reads either.
     await pollOnce(registry);
     if (stopped) return;
-    timer = unref(setTimeout(tick, POLL_INTERVAL_MS));
+    timer = unref(setTimeout(tick, interval));
   };
 
   void tick();

@@ -55,10 +55,9 @@ and get your decision back.
   **gets stuck**, or a dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
 - **Tracks fleet economics**: a badge on every priced card and a topbar strip carrying
-  one Claude + Codex API-equivalent estimate, tokens, estimated cost per pull request,
-  and rate-limit runway. Claude calculates its rows and reports them over OpenTelemetry;
-  Mission Control calculates Codex rows from request-level rollout counters. See
-  [Cost telemetry](#cost-telemetry).
+  the sessions' Claude + Codex API-equivalent estimate, tokens, estimated cost per pull
+  request, and rate-limit runway. A separate automation figure attributes the Foreman's
+  and Inspector's own model spend by role. See [Cost telemetry](#cost-telemetry).
 - **Says what each prompt-reporting session is for**: its card carries a one-sentence
   **Goal** - what that session is currently trying to solve - derived from your own
   prompts and refreshed as you steer it. No API key: it runs the configured local
@@ -68,12 +67,14 @@ and get your decision back.
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
 - **Builds reusable review workflows**: open **Workflows** in the top bar to author exact
-  Markdown Personas, then arrange Session, Persona, all-pass Join, Check, and End nodes on a
-  validated canvas. Drafts autosave with conflict protection and Publish captures immutable
-  Persona snapshots. Bind a published version to a session and start a manual **Preview** to
-  run concurrent, read-only Persona reviews against one immutable evidence snapshot. A
-  published Inspector final gate can then require the exact clean PR head to pass before the
-  workflow completes.
+  Markdown Personas and [session actions](#session-actions), then arrange Session, Persona,
+  all-pass Join, Check, Session action, and End nodes on a validated canvas. Drafts autosave
+  with conflict protection and Publish captures immutable Persona and action snapshots. Bind a
+  published version to a session and start a manual **Preview** to run concurrent, read-only
+  Persona reviews against one immutable evidence snapshot. A session action stage instead
+  *sends* one authored instruction to the bound session, waits for that turn, and captures
+  fresh evidence for everything below it. A published Inspector final gate can then require
+  the exact clean PR head to pass before the workflow completes.
 - **Equips** every session with [skills](#skills-every-session-mixed-reload-behavior): switch
   a skill on in Settings and it is linked into each harness's own skills directory, including
   sessions this app never launched. Claude reloads when idle, Codex watches automatically,
@@ -101,6 +102,19 @@ do the minimum by hand:
 npm install
 npm run dev        # daemon + Vite, open http://127.0.0.1:5173
 ```
+
+Vite serves within a moment; the daemon takes a few seconds longer, and requests the
+dashboard makes in that window have nowhere to go. That is expected, and it prints one
+line rather than a stack per request:
+
+```
+8:15:10 AM [vite] daemon at http://127.0.0.1:7317 is not answering - proxied requests fail until it is up (further failures are summarized)
+8:15:14 AM [vite] daemon at http://127.0.0.1:7317 is answering again - 17 requests failed while it was down
+```
+
+The same pair appears whenever a server edit restarts the daemon under `tsx watch`. Any
+proxy failure other than a refused connection while the daemon is not listening still prints
+in full.
 
 Discovery works immediately - your live sessions show up with coarse grey
 "running" status. To light up precise **working / idle / needs-input** states
@@ -179,8 +193,13 @@ that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in 
 
 That same sweep re-reads the mutable Git facts in each session's checkout: its branch and
 whether the repo is gated by no-mistakes. Sessions the daemon runs itself (Agent SDK
-`runtime`) have no process on a tty for the sweep to find, so those facts are read directly
-from their working directory at launch or restoration and refreshed on the same cadence.
+`runtime`) are never carded by that sweep: it skips every agent process inside the daemon's
+own subtree, because those are the daemon's own subprocesses rather than somebody's session.
+Without that rule an embedded session's CLI subprocess - which inherits the terminal the
+daemon itself was started from, since the Agent SDK owns the spawn - would appear a second
+time as a terminal card, named after the daemon's tab and claiming its session's branch and
+PR. Their Git facts are instead read directly from their working directory at launch or
+restoration and refreshed on the same cadence.
 This keeps both the **PR chip** and [no-mistakes](#no-mistakes) status honest without a
 terminal session sharing the checkout. A pooled worktree is often leased with no branch at
 all, and the PR poller finds a session's pull request by asking
@@ -827,6 +846,26 @@ rest on demand. A card open reads a bounded tail rather than the file - a long s
 transcript runs to tens of megabytes, most of it tool output - so the panel is quick to
 open whatever the session has been doing.
 
+Every dated row carries its local clock time on the speaker's line, pinned to the right
+edge of the log - **You** on the left, **9:42 AM** on the right - so the times read as one
+column instead of landing wherever each speaker's name happens to end. The message itself
+still runs the full width beneath, so the clock costs the conversation no measure. Hover a
+time for the complete local instant with weekday, date, seconds, and timezone; the date is
+there rather than on every row, where it would repeat unchanged down a whole session. A
+transcript record with no timestamp shows none rather than inventing one; a folded run of
+tool calls shows when that run began. Inline Foreman entries use the same absolute clock,
+while the Foreman history drawer keeps its relative age. See the
+[runtime capture](docs/evidence/conversation-timestamps/README.md) for the rendered layout.
+
+Four voices share the log, told apart by colour rather than by label alone: the agent's turns
+in its own harness accent, your typed replies in blue, Foreman's entries in purple, and - in
+gold - the [answers you gave its review questions](#review-channel-mcp). The gold entries are
+not transcript turns; like Foreman's, they happened beside the conversation and are placed by
+when they happened, so an agent that blocked on a question for an hour shows your answer
+after the hour of work, not before it. See the
+[runtime capture](docs/evidence/review-answers-in-conversation/README.md) for how the four
+read against each other.
+
 Scroll to the top of the log and the page above loads automatically, then the page above
 that, back to the session's first turn. **Load older messages** does the same on click,
 for when you would rather not scroll. Nothing appears once you reach the beginning: a
@@ -870,7 +909,9 @@ rather than disappearing. Closed, find costs a conversation nothing at all.
 The query is literal, not a pattern: `foo(bar)` finds those seven characters.
 
 Tool chips are searched too, because that is where the file paths are. Role bylines are
-not - otherwise `you` would match the label above every message you ever sent.
+not - otherwise `you` would match the label above every message you ever sent. Foreman's
+entries and your review answers are not searched either: they are cards rather than turns,
+and a match inside one has no single string whose offsets a highlight could name.
 
 One caveat the bar states rather than hides: the log holds the session's recent turns, not
 the whole file (above), so find counts what is **loaded**. When there is more to load the
@@ -914,25 +955,44 @@ backed by days of data rather than one sample.
 
 ### Goal
 
-Every card carries a one-sentence **Goal**: what that session is currently trying to
-solve. It sits under the title, on the collapsed card - you should never have to click
-to remember what a session is for.
+Every instrumented card with a captured prompt carries a one-sentence **Goal** under its
+title, visible even while the card is collapsed. The Goal is the session's durable completion
+objective, not a copy of the newest prompt or the step the agent happens to be working on.
 
-It lands in two tiers, both in the daemon:
+The first substantive instruction establishes an immediate provisional objective with no
+model call. Every substantive instruction, including that first one, enters a durable queue;
+later instructions also update the tactical focus immediately. The daemon then reconciles the
+queue in capture order, one instruction at a time, using the prompt and a small conversation
+window. Rapid prompts are never coalesced, so an objective change cannot disappear behind later
+steering.
 
-1. **As soon as the agent accepts it, with no model.** The `UserPromptSubmit` hook already
-   carries your prompt, so once a queued message leaves the editable outbox the card shows
-   your own words, shortened to a line. Free, and the card is never blank waiting on model
-   work.
-2. **Refined, a few seconds later.** One headless model call rewrites it into one
-   sentence, reading your prompt plus a small window of the conversation. Which provider
-   and which model is **Settings → [Models](#models-what-the-apps-own-model-work-runs-on)**;
-   out of the box that is the **local `claude` CLI, not the Anthropic API** - there's no
-   API key, and it bills through whatever your CLI is logged in as.
+An instruction still in the editable pending-turn outbox has not reached this pipeline. Once
+the agent accepts it, the instruction leaves the outbox, enters the reconciliation queue, and
+can update the card's tactical focus immediately.
 
-The goal refreshes as you steer the session, at most once a minute per session. If the
-provider is missing, logged out, or slow, the card quietly keeps your own words - nothing
-breaks, you just get a rougher sentence.
+Each reconciliation records one of five relationships:
+
+- **initial** establishes the first objective;
+- **steer** changes the method, priority, sequence, or next step without shrinking the
+  objective;
+- **amend** extends the existing completion contract;
+- **replace** supersedes the old outcome; and
+- **unclear** keeps the existing objective while completion remains ambiguous.
+
+No command or special vocabulary is required. The model infers the relationship from the
+instruction and conversation. An amendment is accepted only when its proposed contract
+explicitly retains the existing objective as its prefix; a narrower amendment stays
+unresolved. An effective amendment or replacement updates the Goal and advances its objective
+version, while steering changes only the latest focus.
+
+The reconciliation call is rate-limited to at most once a minute per session. Its provider
+and model are selected in **Settings → [Models](#models-what-the-apps-own-model-work-runs-on)**;
+out of the box it uses the **local `claude` CLI, not the Anthropic API**, with no API key in
+Mission Control. If the provider is missing, logged out, slow, or returns an unsafe amendment,
+the last durable objective stays visible and the unresolved instruction remains ahead of later
+ones. Prompted automatic wrap-up stays paused until every instruction has a resolved,
+unambiguous relationship. The same fail-closed rule covers migrated state whose missing prompt
+text cannot be recovered.
 
 What it deliberately isn't:
 
@@ -956,8 +1016,8 @@ only agents whose harness can never read turns get an unsupported sentence.
 ### Cost telemetry
 
 You run a fleet; this values its usage consistently without pretending a subscription has
-a per-request dollar bill. Codex estimates are automatic. Claude's client-calculated
-estimate stream is off by default; switch that on in **Settings → Cost**, or from the CLI:
+a per-request dollar bill. Codex session estimates are automatic. Claude session telemetry
+is off by default; switch that on in **Settings → Cost**, or from the CLI:
 
 ```sh
 npm run install-telemetry     # adds an env block to ~/.claude/settings.json
@@ -966,15 +1026,17 @@ npm run install-hooks -- --uninstall   # removes that block - and the hooks, and
                                        # cost telemetry, use Settings → Cost.
 ```
 
-Once either source has data, every priced card carries a **cost badge** beside its model /
-thinking / context row, and the topbar grows a foldable **Usage** row:
+Once any session or automation source has data, every priced session card carries a **cost
+badge** beside its model / thinking / context row, and the topbar grows a foldable **Usage**
+row:
 
 | Figure | What it is |
 |---|---|
-| **Estimated cost today** | Claude- plus Codex-estimated API-equivalent usage since local midnight |
-| **Estimated rate** | the last hour of that same combined estimate |
-| **Tokens today** | input, output and cache, every tier summed |
-| **Cost / PR** | today's combined estimate over pull requests either agent opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
+| **Estimated cost today** | Claude- plus Codex-estimated session usage since local midnight |
+| **Estimated rate** | the last hour of that same session estimate |
+| **Tokens today** | session input, output and cache, every tier summed |
+| **Cost / PR** | today's session estimate over pull requests either agent opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
+| **Automation today** | API-equivalent estimated cost for the Foreman's and Inspector's own model calls since midnight. Hover for the per-role split |
 | **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
 
 The runway is the only forward-looking number in the app, and it is an average
@@ -988,7 +1050,7 @@ sessions reads as calm for a while.
 Folding the row away keeps today's estimate visible beside the toggle, and the choice
 persists per machine like the layout.
 
-Four transports feed the strip, each kept to the facts it actually reports:
+Five transports feed the strip, each kept to the facts it actually reports:
 
 | Source | Provides |
 |---|---|
@@ -996,12 +1058,71 @@ Four transports feed the strip, each kept to the facts it actually reports:
 | **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows for terminal sessions; OTel has no quota metric |
 | **Claude Agent SDK usage** | the same account windows for embedded SDK sessions, refreshed when the session resumes after a daemon restart and after each completed turn |
 | **Codex rollout file** | quota windows plus request-level `last_token_usage`, including model, cached input, cache writes, output, and reasoning output. A durable byte cursor and event identity make restarts/replays idempotent |
+| **Headless run envelopes** | the app's OWN model calls: `claude -p --output-format json` reports its cost and per-model tokens, `codex exec --json` reports tokens on `turn.completed`. Read straight from the process the run already returns, so no exporter or endpoint is involved |
+
+#### What the app spends on itself
+
+The Foreman and the Inspector call models on their own schedule, with nobody asking them
+to. That spend is real - on a busy fleet it is the largest thing running when you are not
+looking - and until it was attributed it was also invisible: a `codex exec --ephemeral` run
+writes no rollout file and exports nothing, while a `claude -p` run *does* export
+OpenTelemetry, but under the fresh session id every headless run mints, so it landed in the
+ledger under a key belonging to no card and was silently counted as session spend.
+
+Both now report themselves per subsystem and role. The Foreman's triage, full review,
+work-item verification, and backlog planning are separate from the Inspector's PR reviews
+and follow-up replies. Hover **Automation today** for that split. Keeping the roles separate
+is the point: it makes "is shadow triage worth what it costs" and "did that prompt fix
+land" questions the app can answer, which one undifferentiated automation bucket could not.
+
+**This is a separate line, not part of the fleet total.** Session cost is work you asked
+for; this is the overhead of having that work watched, and it moves while nothing else is
+happening - rolled together, a quiet morning with a busy Inspector would read as fleet
+activity with no way to see which half moved. The two are each independently true and can
+be added by anyone who wants one number.
+
+The runs are valued exactly as everything else is: Claude runs carry the cost the CLI
+calculated (`reported`), Codex runs are priced from the same versioned Standard API
+snapshot an interactive Codex session uses (`api-equivalent`), and a model with no verified
+rate stays honestly unpriced. Each row is keyed to the run's own id - `claude -p`'s
+`session_id`, `codex exec`'s `thread_id` - so a retried report cannot double-count, and a
+Claude run's OpenTelemetry twin is recognised by that same id and excluded from session
+spend rather than billed twice.
+
+The Foreman worker never writes the database, so it reports over
+`POST /api/usage/automation`; the daemon prices and records the report. Valid reports are
+buffered durably in the state directory before delivery, retried with backoff, and recovered
+after a worker restart. Because each entry represents spend from a run that already
+finished, the buffer has no retention limit: it trades unbounded growth during a daemon
+outage for never discarding spend, and its small entries drain as soon as the daemon
+acknowledges them. **Waiting is the default for every failure**, and only a body the daemon
+has definitively refused - a schema rejection, or a runner it has no pricing for - is set
+aside - and only that daemon's own verdict counts, because only it is durable. A daemon
+mid-rolling-upgrade that has no `/api/usage/automation` yet, a rate limit, a timeout, a
+payload limit that may belong to a proxy rather than the daemon, a status nothing here
+anticipated: all of those simply hold, and land by themselves once the condition clears,
+with nobody involved. That direction is deliberate, because the
+only unacceptable outcome is losing an already-paid-for run, and holding one costs a stalled
+queue that resolves itself. A definitively rejected report is still not deleted: it moves to
+a `foreman-spend-quarantine.<id>.json` file so it cannot stall the reports behind it, and
+stays there for you to re-send. Nothing drains that file automatically, since re-queueing a
+body the daemon has already refused would loop forever; the worker logs an error naming the
+file when it puts something there. If that file is ever unreadable - corruption, a
+hand-edit - its bytes are moved aside to a `.unreadable-*` name rather than replaced, since
+every entry in it is a run that was already paid for. The daemon holds up the other end of that contract: it
+acknowledges a report only when the row was written or there was genuinely nothing to write,
+and answers 422 for one it cannot record at all - a runner a newer worker named that this
+build has no pricing for - so the sender quarantines it instead of treating silence as
+success. The buffers are not a second ledger, and duplicate
+delivery is harmless because each row is keyed to the run's own id. Attribution deliberately reads the fresh
+run's returned envelope instead of giving runs a reusable session id: the Foreman must review
+many sessions without one conversation's context bleeding into the next.
 
 Terminal Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
 (`npm run install-statusline`); embedded Claude SDK sessions repopulate them automatically.
 That SDK lookup is optional live enrichment: a failure neither interrupts the session nor
-clears the last valid account gauge, and it never writes cost - OpenTelemetry remains Claude's
-one cost ledger. The estimated-cost figures don't need the wrapper, and Codex's windows need
+clears the last valid account gauge, and it never writes cost - OpenTelemetry remains the cost
+source for Claude sessions. The estimated-cost figures don't need the wrapper, and Codex's windows need
 neither - they ride in the exact rollout file reported by app-server and read by the same
 runtime metadata poller that supplies model and context figures. Telemetry and the terminal
 wrapper remain separate opt-ins because they are two different asks of your config - one adds
@@ -1014,13 +1135,16 @@ A plan meter disappears once its window resets rather than holding the last perc
 a quota that has already rolled over is not a figure worth showing, and the same rule
 already governs an account with no rate limits to report.
 
-**Every dollar figure is one API-equivalent estimate and is marked `≈$`.** Claude Code
-calculates its rows from request usage; Mission Control prices Codex requests at an
-immutable snapshot of OpenAI Standard API rates, including cache and long-context rules.
+**Every dollar figure is one API-equivalent estimate.** Session cards mark it `≈$`; in the
+Usage row, the session labels say estimated and **Automation today** follows the valuation
+described above. Claude Code calculates its rows from request usage; Mission Control prices
+Codex requests at an immutable snapshot of OpenAI Standard API rates, including cache and
+long-context rules.
 Estimator provenance remains on each session, but both values have the same economic
-meaning: neither is Pro, Max, or ChatGPT plan spend, credits consumed, or an invoice. If
-any row in a fleet window has no verified price, that window reads **partial** and cost/PR
-is withheld rather than presenting a known subtotal as the complete estimate.
+meaning: neither is Pro, Max, or ChatGPT plan spend, credits consumed, or an invoice. The
+session and automation windows degrade independently. If any row in either window has no
+verified price, that window reads **partial**; an incomplete session window also withholds
+cost/PR rather than presenting a known subtotal as the complete estimate.
 
 Enabling it writes six keys into your `~/.claude/settings.json` `env` block (see
 [Configuration](#configuration)); the edit is surgical, your other settings and comments
@@ -1091,6 +1215,36 @@ Each option-based question or plan decision set is an independent review. Dismis
 only that review, persists without a fabricated answer, and releases its blocked tool call.
 These reviews keep the session under **Needs you** while any set remains pending; submitting
 or dismissing the final set clears that review-based signal.
+
+**Your answer stays in the conversation.** Submitting a review writes a gold entry into that
+session's conversation, at the point in time you answered. What the entry shows depends on
+how you were asked:
+
+| You answered | The entry shows |
+|---|---|
+| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** |
+| **A direct-text question** (`request_input` with no options) | the text you submitted |
+| **A diff or plan** (`request_review`, `share_plan`) | what you did - approved, or requested changes - and the note you left, if any |
+| **A dismissal** | that you closed it without choosing, and nothing more |
+
+It is a record, not a control: nothing on it can be clicked, and a resolved review cannot be
+answered twice. See the
+[runtime capture](docs/evidence/review-answers-in-conversation/README.md) for both shapes
+rendered in a conversation, beside an ordinary user turn and a Foreman one.
+
+This exists because the answer had nowhere else to go. It reaches the agent as an MCP tool
+result, and a transcript turn that is purely a tool result is dropped by every harness parser
+as machine noise - so the log used to show the agent's question as a grey tool chip, then a
+silence, then the agent carrying on as though something had been decided. Where there were
+options, the entry is rendered from the choices as stored rather than from the answer string
+sent to the agent, because that string names only what you picked and cannot say what you
+picked it from. Where there were none, that string *is* the whole answer, so it is shown as
+you wrote it.
+
+Only **your** resolutions appear there. Foreman resolves reviews through the same channel,
+and its answers are already in the conversation as [its own entry](#foreman-auto-responder),
+so they are not also shown as yours. Answers recorded before this shipped carry no actor and
+are left out rather than credited to you on the strength of their status.
 
 A review is bound to the session that asked it, so **the agent going away settles it too**.
 When a session is evicted - killed, its terminal closed, or simply gone by the time the
@@ -2153,7 +2307,8 @@ The **Workflows** button in the top bar changes only the dashboard body. The fle
 live SSE connection, and Cards, Console, or Board selection stay mounted, so returning to
 **Fleet** does not reconnect or discard the fleet view. The page uses bookmarkable hashes:
 `#/workflows` for the graph library and builder, `#/workflows/personas` for the Persona
-library, `#/workflows/runs` for run history, `#/workflows/runs/:id` for one run's evidence
+library, `#/workflows/actions` for the [session action](#session-actions) library,
+`#/workflows/runs` for run history, `#/workflows/runs/:id` for one run's evidence
 and timeline, and `#/fleet` to return.
 The top-bar button opens the graph library and restores the last active workflow selected
 in this browser when it is still available.
@@ -2229,16 +2384,17 @@ nothing to author and nothing to import - it is in the Workflows tab of a fresh 
 already published, and can be bound to a session immediately.
 
 Stage 1 is a deterministic gate: the [`typecheck` and `test` checks](#check-nodes), placed
-ahead of every reviewer so that, once command execution is supplied, a change which does not
-compile costs no model calls at all. Under that execution contract both are evaluated on the
-same submission and both must pass at their All-pass Join before anything behind them starts,
-so one failing gate returns the submission to the session with the command's own output and
-**no Persona runs**.
+ahead of every reviewer so that a change which does not compile costs no model calls at all.
+Both are evaluated on the same submission and both must pass at their All-pass Join before
+anything behind them starts, so one failing gate returns the submission to the session with the
+command's own output and **no Persona runs**.
 
-The [Check nodes](#check-nodes) section owns the current execution status and the rules for
-configured, unconfigured and unauthorized slots. In this build those rules make versions 3
-through 6 follow the same Persona review path as version 2 while preserving the deterministic
-stage in the graph.
+Those checks are live from version 3 onward, on a machine where you have switched checks on and
+configured a command - the graph did not change, the runtime behind it arrived. Where you have
+not, the gates report Not run and pass, and versions 3 through 6 follow the same Persona review
+path version 2 does while preserving the deterministic stage in the graph. The
+[Check nodes](#check-nodes) section owns the rules for configured, unconfigured and unauthorized
+slots.
 
 Behind it are the four built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending three deeper reviews
@@ -2297,12 +2453,21 @@ a seeding step that could half-run. It is compiled into the build beside the Per
 
 ### Workflow drafts and published versions
 
-A workflow is **stages of members** - Persona reviewers and deterministic Checks - and the
-**Pipeline** view is where you author one. It draws Session, the stages between it, and the End
-outcome; you add, remove and reorder members and stages, and everything structural is generated
-for you. A stage holding two or more members gets its all-pass Join, every fail returns to
-Session for repair, and the last stage's pass reaches End. Nothing is hand-drawn, so none of it
-can be got wrong.
+A workflow is a chain of **stages**, and the **Pipeline** view is where you author one. It
+draws Session, the stages between it, and the End outcome; you add, remove and reorder stages,
+and everything structural is generated for you. Every fail returns to Session for repair, and
+the last stage's pass reaches End. Nothing is hand-drawn, so none of it can be got wrong.
+
+There are two kinds of stage, and the difference is what they do to the run:
+
+- An **evaluation** stage holds one or more Persona reviewers and deterministic Checks. They
+  all read the same submission, a stage of two or more gets its all-pass Join, and the stage
+  moves on only when every member passes.
+- A **[session action](#session-actions)** stage holds exactly one action and no members. It
+  does not judge the work - it *sends* an instruction to the bound session, waits for that
+  turn to finish, and captures fresh evidence. Its outgoing seam says `complete`, never
+  `pass`, and everything after it reviews the new evidence rather than the evidence the
+  stages above it saw.
 
 A brand-new workflow opens on Session, one empty stage affordance, and End - opening it never
 edits it. Picking a Persona from the stage's inline list makes it stage 1; picking a second
@@ -2319,14 +2484,16 @@ Announcements and labels name members and stages; no surface prints a node id. A
 is derived, not stored: one member names its own stage, and a parallel stage reads "Stage N".
 
 **Graph** is the other half of the toolbar toggle, and it still edits anything. Add Persona,
-**All-pass Join**, **Check** and End nodes from the left palette, then connect the directional
-handles: Session emits `submitted`; a Persona, Check or Join emits `pass` and `fail`; failures
-may return to Session for changes. Session needs at least one `submitted` route and may fan
-out to several. A Join needs both outcomes from at least two distinct predecessors, waits for
-one result from each, and passes only when all passed; a predecessor may be a Persona, a Check
-or another Join. Cycles are legal only when they include Session. Persona-only cycles are
-rejected because they could spend repeatedly against unchanged work. There is no checkpoint
-node and Inspector is not a graph node.
+**All-pass Join**, **Check**, **Session action** and End nodes from the left palette, then
+connect the directional handles: Session emits `submitted`; a Persona, Check or Join emits
+`pass` and `fail`; a session action emits only `complete`; failures may return to Session for
+changes. Session needs at least one `submitted` route and may fan out to several. A Join needs
+both outcomes from at least two distinct predecessors, waits for one result from each, and
+passes only when all passed; a predecessor may be a Persona, a Check or another Join, and
+never a session action - an action produces no verdict for a join to aggregate. Cycles are
+legal only when they include Session. Persona-only cycles are rejected because they could
+spend repeatedly against unchanged work. There is no checkpoint node and Inspector is not a
+graph node.
 
 The Pipeline view is offered exactly when a draft *is* a pipeline: one Session, a linear chain
 of stages, one End, and nothing else. A graph drawn freehand that is not - two End nodes, a
@@ -2334,20 +2501,87 @@ fail routed somewhere other than Session, a Join fed from two different stages -
 Graph with a banner naming each reason in a sentence. Both views write ordinary draft graphs,
 so a draft moves between them freely and existing workflows need no migration.
 
-The add control on every stage offers your Personas and the four check slots in one list. A
-check appears as a row marked `Check` and named by its slot. Checks are offered even before
-you have authored a Persona, because the slots are a fixed vocabulary rather than something
-you configure here.
+There are two add controls, because they answer two different questions. **＋ Stage**, on the
+seam between cards, creates a stage and offers all three things a stage can be: your Personas,
+the four check slots, and your addable session actions, grouped. The picker inside an
+evaluation stage adds another *member* to it, so it offers Personas and checks only. A session
+action stage has neither - it holds exactly one action by construction - so its own control
+chooses **which** action it sends. Checks are offered even before you have authored a Persona,
+because the slots are a fixed vocabulary rather than something you configure here.
+
+Immediately after End, the Pipeline draws a fixed **Inspector** footer whenever the workflow's
+final gate is Inspector. It is a projection of the completion policy and not a stage: it has
+no drag handle, no member list, no graph edge and no delete, it is marked `Fixed`, and its
+switches are the ones in the settings rail. End is still where the graph succeeds; Inspector
+claims that success afterwards. A workflow whose final gate is None shows no footer at all.
+
+### Session actions
+
+A **session action** is a reusable instruction a workflow stage sends to the session it is
+bound to. It is not a third kind of reviewer. A Persona reads one immutable submission and
+returns a verdict; an action writes to the bound conversation, may change the repository, and
+returns only "this finished". `#/workflows/actions` is its library, beside Personas.
+
+An action's fields are its name, description, the **exact Markdown instruction** the session
+receives, an optional **required skill**, and the **completion** Mission Control must observe
+before the stages below it run. The instruction is exact in the same sense Persona guidance
+is: nothing trims it, re-wraps it or normalizes its newlines between the editor and SQLite,
+because it is typed into somebody's conversation verbatim. Its ceiling is what one delivery
+packet can actually carry, so an action that would be truncated on the way out is refused at
+authoring rather than half-sent at run time.
+
+Saves are revisioned and use compare-and-swap, so a second tab editing an older revision gets
+an explicit conflict and keeps its local text. Nothing is resolved until you pick one of
+three:
+
+| Choice | What it writes |
+|---|---|
+| **Reload latest** | Nothing. Your edits are discarded and the newer revision is loaded. |
+| **Reapply my changes** | Your edits, onto the newer revision, on **this same action** - so a workflow already pointing at it gets them. This is a three-way merge: only the fields you actually changed are sent, so a field the other tab edited and you did not keeps their value. |
+| **Save as duplicate** | Your edits, as a **new** action. The original is untouched. |
+
+Archive is soft: an archived action is read-only, leaves the add
+controls, keeps reserving its normalized name, and stays readable because drafts and published
+versions name its id. Built-in actions ship with the application, are marked `Built-in`, and
+are read-only; **Duplicate** is the way to a copy you own.
+
+The completion selector offers what **this build can prove**, read from the daemon rather than
+from the browser's own copy of the list:
+
+| Completion | What the daemon must observe |
+|---|---|
+| Session turn finishes | The session verifiably picked the instruction up, then settled. A pre-existing idle never counts. |
+| Pull request is opened and verified | The same turn boundary plus durable matching pull-request provenance. **Not available yet** - the verified adapter is a later change, so this build offers it nowhere and refuses to publish a workflow that names it. |
+
+An action stage may sit anywhere a stage may sit, and a pipeline may hold more than one. When
+the turn finishes, Mission Control captures **fresh evidence** and resumes from that action's
+`complete` route. This is not a repair: it spends no repair round, and the stages *above* it
+keep their attempts on the evidence they actually reviewed. Only a real evaluation failure
+starts round *N+1* back at Session.
+
+Publishing snapshots the action exactly as it snapshots a Persona - name, description,
+instruction, required skill, completion, source id and source revision. Editing or archiving
+the source afterwards cannot reach a version already published; version history marks the
+snapshot outdated or its source archived and shows the exact instruction that version froze.
 
 ### Check nodes
 
-A **Check** represents a deterministic command gate instead of a model review. This build
-ships the graph node, configuration, validation, and run-detail contract, but not the
-crash-safe execution runtime: **it does not spawn configured check commands yet**. An
-authorized, configured Check is recorded as **Not run** and passes with a note explaining
-that the runtime is unavailable. Command execution is a separate implementation unit because
-it must run against a pooled worktree pinned to the captured commit and recover its process
-and lease safely after a daemon crash.
+A **Check** represents a deterministic command gate instead of a model review. **A configured,
+authorized check now runs its command, and a non-zero exit fails the submission** - the failing
+output comes back to the session as a repair packet, exactly the way a Persona's requested
+changes do. It runs in a [pooled worktree of its own](#check-leases), pinned to the commit the
+run captured, under a [supervisor](#running-a-check-command) that can prove afterwards that the
+command and everything it spawned is gone.
+
+> **If you already had checks switched on, this changes your results.** Earlier builds shipped
+> the node without an execution runtime, so a configured check recorded **Not run** and passed.
+> Those same commands now run and can fail. That is the fix rather than a regression, but a
+> gate that has been quietly green may go red on the first run after upgrading, and the first
+> thing to check is whether the command actually passes on the captured commit.
+
+**Check commands run on Linux and macOS.** Everywhere else a check reports Not run and passes,
+which is the same already-shipped path an unconfigured slot takes - see [Running a check
+command](#running-a-check-command) for why the platform floor exists.
 
 **A Check names a slot, never a command.** The slots are `test`, `lint`, `typecheck` and
 `build`. The command assigned to each slot is configured per repository under **Settings →
@@ -2376,22 +2610,35 @@ checkout's `packages/web` resolves the command configured for the repository's
 `packages/web`.
 
 **An unrun gate passes, with a note saying why.** A slot with no command configured for this
-repository is *skipped*; a repository that has not been authorized is *not run*. Both pass,
+repository is *skipped*; a repository that has not been authorized is *not run*; a platform that
+cannot run checks, or an executable that is not there, is *not run* too. All of them pass,
 because a workflow that failed on every unconfigured machine would be broken by default, and
-both say which of the two happened so it is never mistaken for a gate that ran. In this build,
-the missing execution runtime is a third *not run* outcome that also passes with its own note.
+each says which of them happened so it is never mistaken for a gate that ran. Only a command
+that ran and exited non-zero fails.
+
+An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
+give: none of them is a statement about the change under review, so they retry and then block
+the run visibly rather than reporting a verdict.
 
 **Checks are consent-gated twice**, and are off by default. **Settings → Workflows**
 (`#/settings/workflows`) carries both controls: **Enable workflow check commands**, the switch,
 and **Check commands**, the table of repository root, slot and argv. The switch alone is not
-enough - the repository must also be on the same Workflow allowlist Live delivery uses.
-Enabling it authorizes running code the reviewed branch supplies - its scripts, dependencies
-and build steps - with the daemon's own filesystem authority. This is not a sandbox. Checks run
-through their own small attempt budget, separate from the review budget; enabling consent does
-not override this build's missing execution runtime.
+enough - the repository must also be on the same Workflow allowlist Live delivery uses, and
+neither is granted by default. Enabling both authorizes running code the reviewed branch
+supplies - its scripts, dependencies and build steps - with the daemon's own filesystem
+authority. **This is not a sandbox**, and the allowlist rather than anything in the runtime is
+what bounds it.
 
-Run detail draws a check as its own card. In this build it shows the slot, configured argv,
-and the reason the command was skipped or not run.
+**Checks share the treehouse pool with dispatch.** Two check commands run at once, and each one
+holds a pooled worktree for as long as it runs - drawn from the same `max_trees` a dispatched
+session draws from (`treehouse.toml` in the repository; this one sets 16). On a repository with
+a small pool, a long test suite gating a review is a slot a dispatch is waiting for. Raise
+`max_trees` there if dispatch starts queuing behind checks. Checks also run through their own
+small attempt budget, separate from the review budget, so a build never spends a Persona's slot.
+
+Run detail draws a check as its own card: the slot, the configured argv, the exit code, and the
+last few kilobytes of output with a count of anything dropped - or, for a gate that did not run,
+the sentence saying which of the reasons above applied.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
@@ -2489,9 +2736,12 @@ same workflow status.
 ### Watching a run
 
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
-ladder above the transcript. Passed stages collapse, the active or failed stage names its
-members, and an objection, Inspector wait, or uncertain delivery opens in place. Preview
-feedback can be copied there. The failing rung also reports a member that has failed consecutive
+ladder in the **Workflows** tab (<kbd>y</kbd>), alongside the no-mistakes gate for the same
+session. Passed stages collapse, the active or failed stage names its
+members, and an objection, Inspector wait, session-action wait, or uncertain delivery opens in
+place. A workflow whose final gate is Inspector ends the ladder with a fixed `Inspector` rung
+*after* the End outcome, marked `Fixed`, reading `Not reached` until the run gets there.
+Preview feedback can be copied there. The failing rung also reports a member that has failed consecutive
 repair rounds, the signal of a non-converging repair loop. At the Inspector gate, **Recheck
 Inspector** evaluates the wait again and **Open PR** opens the adopted pull request. A waiting
 run with a missing or unadopted PR also offers **Prepare PR in session** when its immutable run
@@ -2513,7 +2763,29 @@ stages and End the Pipeline view draws, with a live status on every member. Revi
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
 state. A stage of two or more members shows each one and passes only when all do. A version
 drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
-read-only, carrying the same statuses. No surface prints a node id.
+read-only, carrying the same statuses. No surface prints a node id. The same fixed
+**Inspector** footer the author saw follows End here, carrying the gate's live state.
+
+A **session action** reports a lifecycle rather than an outcome, and its vocabulary is
+deliberately its own - nothing about it ever reads Passed, Failed or Changes requested,
+because it judged nothing:
+
+| Chip | What has been proven |
+|---|---|
+| Preparing | The attempt exists; its one packet has not been composed yet. |
+| Ready to send | Composed, and nothing has been typed - Preview, or Live awaiting authorization. |
+| Sent | Typed into the pane. Nothing newer than the send anchor proves the session read it. |
+| Session working | Pickup proven, and the turn has not settled. |
+| Needs you | Picked up and parked on a question. Never a settled turn. |
+| Verifying | Settled, and the completion this action asks for wants evidence it does not have yet. |
+| Capturing evidence | The completion is satisfied and the fresh evidence is being captured. |
+| Complete | The turn finished and the downstream evidence exists. |
+| Could not run | A delivery or infrastructure problem, stated as a sentence. Never a repair packet, never a spent round. |
+
+Each waiting or blocked action also carries the sentence behind its chip, and its own card
+under **Session actions** - separate from **Reviewer verdicts**, which promises a verdict an
+action does not produce. The card names the snapshot the version froze, what the action
+required, and a bounded preview of the exact instruction that was sent.
 
 The rail lists history newest first with a state chip, the bound conversation and a relative
 time. Four chips - **All**, **Running**, **Needs you**, **Done** - are shortcuts onto the
@@ -2521,13 +2793,39 @@ same single-state filter the **State** dropdown offers in full; the dropdown sti
 every state, and workflow id and session filters sit beside it. Filters and the selected run
 are part of the bookmarkable hash, and history pages 50 rows at a time.
 
-A run is read one **round** at a time. The scrubber lists every submission with the round it
-is - Inspector-only repair rounds marked as such - and the round that asked for changes is
-marked even though its submission is a healthy `waiting for the session`. Selecting a round
-scopes the pipeline statuses, the verdicts, the join packets and the timeline to it; the
-latest round is selected by default. The Inspector gate, completion claims, deliveries and
-every recovery action always reflect the live run whatever round is on screen, and a note
-says so while an earlier one is selected.
+A run is read one **submission** at a time. The scrubber lists every one with the round it
+belongs to - Inspector-only repair rounds marked as such - and the round that asked for
+changes is marked even though its submission is a healthy `waiting for the session`.
+Selecting one scopes the pipeline statuses, the verdicts, the join packets and the timeline to
+it; the latest is selected by default. The Inspector gate, completion claims, deliveries and
+every recovery action always reflect the live run whatever is on screen, and a note says so
+while an earlier one is selected.
+
+**A repair round and an evidence segment are different things.** A round is a repair: an
+evaluator asked for changes, the work came back, and the whole pipeline runs again from
+Session against the repair budget. A segment is a session action finishing: fresh evidence,
+only the stages after the action, and no budget spent. A round that holds more than one
+segment labels each of them - `Round 1 · evidence 1`, `Round 1 · evidence 2` - and selecting
+a continuation says in a sentence which action produced it and that it cost no repair round. A
+round with a single segment is just `Round 1`, because there is no distinction to draw. The
+action that authorized a segment is shown *with* that segment even though its attempt belongs
+to the parent, so a continuation never reads as evidence that arrived from nowhere.
+
+On a run that has not finished, **clicking a reviewer or check disables it for that run** -
+the row turns red with a ⊘ mark - and clicking it again re-enables it. Clicking a stage
+header switches every member of the stage at once. A disabled gate auto-passes instead of
+running: any round that has not reached it yet, the current one included, records a pass
+verdict that says plainly the gate was disabled, stamps no provider, and appears in the
+timeline as `Disabled node auto passed`. A gate already running or already finished this
+round keeps its real outcome - the red row treatment says the gate is switched off going
+forward, while the member's chip stays the viewed round's history: **Disabled** only for
+a gate the round has not reached (or the auto-pass itself), the recorded verdict
+otherwise, so a failure that already happened never reads as skipped. The switch is
+scoped to that one run - the published version, other runs of the same workflow, and the
+workflow editor are untouched - and it is how you force a phase to pass on the next
+resubmission when a reviewer keeps blocking for reasons outside the work. A **Disabled**
+chip never folds its stage to **Failed**; the stage counts it with the not-run gates
+("Passed, 1 not run"), and the session tile's compact ladder shows the same boundary.
 
 Verdicts are cards: the outcome, the reviewer, its summary, its approval rationale or
 requested changes with evidence references, and the runner, model, duration and cost that
@@ -2646,7 +2944,7 @@ says so: the refusal is `live_not_authorized` on the run, not silence.
 A Live binding can be saved only while its current session is in an allowlisted checkout.
 Removing consent keeps the binding choice visible but refuses the next delivery; it is never
 silently changed to Preview. The same panel holds the second, independent switch for
-[Check nodes](#check-nodes-gating-on-a-command), which shares that allowlist and is still
+[Check nodes](#check-nodes), which shares that allowlist and is still
 **off** by default, because it grants something different in kind: running branch-authored code
 on your disk, rather than typing text a human can read before it acts.
 
@@ -2675,7 +2973,7 @@ has queue items, prompted when it does not. Exactly one, because re-arming both 
 single repair packet produce two completion claims and therefore two review rounds for one fix.
 So the whole cycle runs without you:
 
-1. A Persona (or a [Check](#check-nodes-gating-on-a-command)) fails. The run parks in
+1. A Persona (or a [Check](#check-nodes)) fails. The run parks in
    `waiting_for_session` and the repair packet is typed into the pane.
 2. Confirming that delivery re-arms one Foreman completion episode.
 3. The session makes the change and goes idle.
@@ -2739,6 +3037,13 @@ If no adopted PR exists, the published policy waits, offers **Prepare PR in sess
 it automatically. The latter two use the same deterministic commit, push, and PR prompt; the gate
 itself never pushes or opens a pull request. The offered action prepares the packet under Preview
 or sends it under Live delivery. Automatic preparation is scheduled only for a Live binding.
+When that handoff opens an already-reviewed clean commit, its durable adoption record pins the PR.
+The record must belong to the bound session, match its exact known repository root, and have been
+adopted after gate entry, so an older PR or one from a nested checkout is never claimed.
+After the handoff turn settles, unchanged repository evidence advances the gate to a fresh Inspector
+observation without spending another Persona round. If PR preparation changed the head, the normal
+full resubmission requirement still applies. The durable adoption also preserves the workflow's
+Shipping veto across a daemon or SDK-session restart before the gate has pinned the PR key.
 **Recheck Inspector** only reevaluates the current durable observation and remains waiting until
 Inspector's normal sweep has seen a new head.
 
@@ -2837,7 +3142,7 @@ drawers.
 ## Models (what the app's own model work runs on)
 
 Mission Control does a little model work of its own - naming an untitled
-[dispatch](#dispatch-an-agent), rewriting a prompt into the [Goal](#goal) on a card, narrating the
+[dispatch](#dispatch-an-agent), reconciling prompts with the [Goal](#goal) on a card, narrating the
 [away digest](#away-mode), compacting Workflow evidence, and evaluating Ensemble submissions. None
 of it is the agent in a card, and none of it should have to be: **Settings → Models** is where you
 say which provider does that work and which model each job uses.
@@ -2856,7 +3161,7 @@ model boxes below it, because a `claude` model id is not something `codex` can r
 | Job | Default | Env | What it does |
 |---|---|---|---|
 | Task title | `claude-haiku-4-5` | `MISSION_TASK_TITLE_MODEL` | Names a dispatched task whose Title was left blank, for the card and the branch |
-| Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Rewrites each session's raw prompt into the sentence its card shows |
+| Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Reconciles each instruction with the durable objective and derives the card sentence and tactical focus |
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
 | Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts Preview evidence without replacing its preserved raw goal, decisions, and rationale |
 | Ensemble evaluation | `claude-haiku-4-5` | `MISSION_ENSEMBLE_COMPARISON_MODEL` | Ranks Best-of-N candidates, mines a Consensus run's divergences, or scores one Panel-vote ballot per judge, all tool-less. A judging Persona's own model wins over this |
@@ -2974,6 +3279,9 @@ session carries a `✓ Foreman answered: …` audit line. An escalation also fir
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
 
+Foreman's completion checks use the card's [durable Goal](#goal), while its latest tactical
+focus remains separate.
+
 In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
 arranged differently, because a permanent conversation gives it somewhere better to sit:
 Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
@@ -2999,6 +3307,12 @@ exists, per the transcript gap above. The **Foreman · N** rail at the end of th
 row opens that history: rows lead with the *ask* rather than the verdict, and opening one
 shows the ask verbatim beside Foreman's reasoning and the resolution, credited to whoever
 actually made the call. Records age out after a retention window.
+
+That drawer also starts with **Current intent**, even when Foreman has made no decisions yet.
+It shows the completion objective and version, the latest tactical focus, the latest
+relationship or reconciliation state, and Foreman's rationale. This is the inspectable source
+for what Foreman currently believes the session is trying to finish; the rows below it remain
+the decision history.
 
 Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
 process acquires no **lease** and idles as a standby, taking over automatically if the
@@ -3258,10 +3572,11 @@ allowlisted.
 
 The prompted trigger doesn't fire on idleness alone, because idle isn't finished. It runs
 the same verifier queued items get - a fresh tool-less `claude -p` reading the branch diff
-against your captured prompt - and acts only on a **complete** verdict; an empty diff
+against the reconciled durable objective - and acts only on a **complete** verdict; an empty diff
 decides itself without a model call. A session that still needs you is left alone, and a
 checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
-per prompt: a new prompt from you re-arms it, and so does a confirmed workflow repair packet -
+per resolved instruction: a new prompt from you re-arms it after intent reconciliation, and
+so does a confirmed workflow repair packet -
 which is what lets [the repair loop](#the-repair-loop-end-to-end) run for a session that has no
 queue to drain. An incomplete verdict retires the episode rather than sending the agent back -
 Foreman didn't commission that work. Untick both triggers and Foreman never wraps up on its own.
@@ -3767,18 +4082,31 @@ earns two surfaces a card has nowhere to put:
 
 - **Cards** renders the full session card. The **Console** gives
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
-  Gate / Diff / Files** - because a split pane has room a card doesn't: the conversation is
-  permanent, and the sections that share a card's height in the grid get a tab each. The
-  **Board** drills into that same detail when you open a card. In Console and Board, the
+  Workflows / Diff / Files** - because a split pane has room a card doesn't: the conversation
+  is permanent, and the sections that share a card's height in the grid get a tab each. The
+  **Conversation tab is the transcript and nothing else**: the workflow ladder and the
+  no-mistakes gate strip used to stack above it, where between them a gated session on a long
+  workflow could push the first message off the bottom of the screen. Both live in
+  **Workflows** (<kbd>y</kbd>) now, which is the tab that answers *how is this run going*
+  while Conversation answers *what was said* - and which absorbed the old separate **Gate**
+  tab, since two adjacent tabs both answering "is this change allowed to land" was the split
+  that put one of them above the transcript to begin with. A parked gate still shows its
+  count on the tab's face, and is still **answered** there - the gate strip is not a
+  read-only progress bar, and Console and Board have no card to carry its Approve / Fix /
+  Skip actions the way Cards does. Both tabs are captured in
+  [`docs/evidence/workflows-tab/`](docs/evidence/workflows-tab/README.md).
+  The **Board** drills into that same detail when you open a card.
+  In Console and Board, the
   Diff tab contains the complete checkout diff reader; the footer action, <kbd>d</kbd>, and
   a no-mistakes fix's **View diff** all reveal it in place. Opening the tab itself shows the
   whole-checkout diff, while **View diff** shows that one fix commit. Cards keep the diff in
   a modal viewer.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
   its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
-  the tab row opens their history. The rail is deliberately *not* a fifth tab - Work queue,
-  Gate and Diff are things the session *has*, while Foreman is an observer talking *about*
-  it. A card keeps the full note block instead, since it has no transcript to inline into.
+  the tab row opens their history. The rail is deliberately *not* a sixth tab - Work queue,
+  Workflows and Diff are things the session *has*, while Foreman is an observer talking
+  *about* it. A card keeps the full note block instead, since it has no transcript to inline
+  into.
 - **Cards** is the only layout with an in-place focus mode, so its floating command bar is
   unique to it. On the **board**'s overview <kbd>e</kbd> (expand) opens the drill-in the way
   <kbd>Enter</kbd> does, and closes it again. In the console, and in the board once you're
@@ -3789,7 +4117,7 @@ earns two surfaces a card has nowhere to put:
   wears a bright selector frame so it never gets lost against a busy state. Press
   <kbd>Tab</kbd> to step INTO the open detail: it lands on the conversation pane, which takes
   a soft ring, and <kbd>↑</kbd>/<kbd>↓</kbd> scroll it. Each further <kbd>Tab</kbd> moves one
-  tab right - Conversation, Work queue, Gate, Diff, Files - with <kbd>↑</kbd>/<kbd>↓</kbd>
+  tab right - Conversation, Work queue, Workflows, Diff, Files - with <kbd>↑</kbd>/<kbd>↓</kbd>
   scrolling whichever is showing, and it clamps at the last rather than tabbing away.
   <kbd>⇧</kbd><kbd>Tab</kbd> walks back the same way, and from the conversation hands the
   keyboard to the rail. The reader is chosen by where focus actually is, so a single
@@ -4017,7 +4345,7 @@ shortcut works in every layout:
 | Key | Action | Scope |
 |-----|--------|-------|
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. With nothing selected, the first arrow selects the first session | Anywhere |
-| <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Gate → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
+| <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail (**Board** only - the other layouts open it with the selection). On a focused link or button it activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
@@ -4027,6 +4355,7 @@ shortcut works in every layout:
 | <kbd>w</kbd> | Open the Workflows page, or press again to return to the fleet | Fleet or Workflows |
 | <kbd>e</kbd> | Expand / collapse the selected session. **Cards**: focus-expands the card and drops the cursor in its reply box, ready to type. **Board**: opens (and closes) the drill-in detail, the same thing <kbd>Enter</kbd> opens. Console already shows the selected session expanded, so there is nothing to toggle | Selected session |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>e</kbd> owns the toggle | Selected session |
+| <kbd>y</kbd> | Show the selected session's **Workflows** tab - its workflow ladder and its no-mistakes gate, together. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the fleet-wide Workflows page instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
@@ -4265,9 +4594,10 @@ landing in the seconds between the decision and the call makes GitHub refuse rat
 merge code nothing has looked at. Squash by default; merge commit and rebase are the other
 two options.
 
-The workflow veto is narrow and can only block. Inspector remains the sole PR poller and the
-sole GitHub merge path. An active published Inspector gate vetoes its adopted or candidate PR;
-completed, cancelled, archived, and no-final-gate workflows do not.
+The workflow veto is narrow and can only block. Inspector remains the sole PR poller, and Shipping
+remains the sole merge executor; Shipping rides the Inspector tick instead of polling independently.
+An active published Inspector gate vetoes its adopted or candidate PR; completed, cancelled,
+archived, and no-final-gate workflows do not.
 
 ### It needs the Inspector, fully on
 
@@ -4610,8 +4940,91 @@ label, never a check token, so the daemon sees the mismatch and refuses to touch
 (`treehouse return` accepts a path and no holder, and `--lease-holder` is a label
 treehouse records and never checks, so this is a rule the harness imposes on itself.)
 
+**A check lease costs a pool slot for as long as the command runs.** Two checks run at once, so
+in the worst case two of a repository's `max_trees` are held by builds rather than by sessions,
+and a dispatch that finds the pool dry waits. If that starts happening, raise `max_trees` in
+that repository's `treehouse.toml` - the number is per repository, and the one in this
+repository is 16.
+
 If you ever see an idle `mission-control-check-…` lease that outlives its daemon, it is
 safe to hand back by hand: `treehouse return <path>`.
+
+### Running a check command
+
+This is what a [Check node](#check-nodes) does once you switch checks on and allowlist the
+repository, and what it does with your machine is worth stating plainly before you do.
+
+**Check commands run on Linux and macOS.** On any other platform a check reports Not run and
+passes. That is not an oversight: the daemon has to be able to prove afterwards that a
+command and everything it spawned is gone, before it hands the leased worktree back to the
+pool. It does that by recording *which exact process* the supervisor was and asking the
+operating system about it later, and neither Node nor any portable API answers that question -
+it is read from `/proc` on Linux and from `ps` on macOS. Somewhere it cannot be read, a check
+could be started but never proven finished, so the daemon declines to start one at all.
+
+The recorded identity is a **composite**: an operating-system start time *and* a short digest
+of the supervisor's command line, which carries the attempt id. The start time alone is not
+enough, because the finest value either platform will tell us is whole seconds on macOS, and
+process ids get reused - two different processes born in the same second would compare equal,
+and the daemon would signal a stranger's programs believing they were the check's. Pairing it
+with a command line that only one supervisor ever bears makes that vanishingly unlikely
+instead: a false match would need the same reused pid, in the same second, running the
+daemon's own supervisor, for an attempt only one supervisor is ever created for.
+
+The command line is stored as a truncated SHA-256 rather than in full, because the raw line
+carries a few kilobytes of the supervisor's own source and this value is written to a durable
+row kept for audit. Only equality is ever asked of it, and equal command lines digest equally,
+so the digest answers the same question in a fraction of the space - at the cost that the
+guarantee is now collision resistance rather than a literal comparison. That is a trade worth
+naming rather than glossing: it is not a proof, it is a very good bet, and the durable lease
+row and startup recovery are what make a wrong bet recoverable rather than silent.
+
+What a check command gets:
+
+- **An argv, never a shell.** `&&`, `|`, `;` and `$(…)` reach the command as ordinary
+  arguments, so there is no string for a repository's configured command to break out of.
+- **The captured commit, in a pooled worktree**, not your own working copy - so a check never
+  sees, and can never disturb, whatever you have open. The tree is `reset --hard` to that exact
+  commit and cleaned with `clean -fd`, never `-fdx`, which is what preserves the pool's warm
+  ignored dependencies: your `node_modules` survives, so a check is a build rather than an
+  install. A subdirectory command runs in that subdirectory *of the leased tree*.
+- **A trimmed environment.** The daemon's auth token is removed, along with any variable that
+  overrides where its state directory lives and anything whose name reads like a credential
+  (`…_TOKEN`, `…_SECRET`, `…_PASSWORD`, `…_KEY`, `…_CREDENTIALS`). `PATH`, `HOME`, `SHELL`, the
+  locale and proxy variables and everything else a build needs are passed through. This stops a
+  credential being *handed* to a check; it does not hide the daemon's default state directory,
+  which sits in your home folder and which anything running as you can find whatever the
+  environment says.
+- **A closed stdin**, so a command that stops to ask a question fails immediately instead of
+  hanging until its timeout.
+- **Bounded output.** The last 4,000 bytes are kept, because a failing build's useful lines are
+  its last ones, and the run detail reports exactly how many bytes were dropped.
+
+**This is not a sandbox, and the trimmed environment should not be read as one.** A check
+command runs as you, with your filesystem access. Removing the token narrows what a build can
+reach *back into*; it does not confine what it can do generally. That is why a repository must
+be allowlisted before any of this happens - the allowlist, not the environment, is the boundary.
+
+When a check is cancelled or times out, the whole process group is signalled: `SIGTERM` first,
+then a few seconds' grace so a test runner can flush its output and clean up its own temporary
+files, then `SIGKILL`. The daemon then keeps asking until the group is actually empty before
+returning the worktree, because a build that leaves a server running behind it is common and
+the leader exiting proves nothing about its children. A group it cannot prove is empty keeps
+its lease rather than handing back a tree something may still be writing into.
+
+**A daemon shutdown skips the grace and goes straight to `SIGKILL`**, deliberately. Stopping
+Mission Control mid-build would otherwise wait out the rest of the command's timeout - up to
+ten minutes for one test suite - and the output a grace period buys is output nobody is left to
+read, because the attempt ends as an infrastructure failure rather than a verdict either way.
+The daemon still waits for the group to be proven empty afterwards, so the worktree goes back
+to the pool on the way out; stopping a daemon with a check running takes well under a second.
+
+**A check whose worktree cannot be accounted for does not report a verdict**, whatever its
+command exited with. A group that will not go away, or a return that failed, means the gate has
+not been shown to have run against the commit it claims - so it is recorded as an infrastructure
+failure instead, the run blocks and says so, and it clears once the lease is reclaimed. The
+command's own exit code is kept in the reason, so you can still tell "the build failed and then
+cleanup broke" from "the build passed and then cleanup broke".
 
 ## Configuration
 
@@ -4669,7 +5082,7 @@ safe to hand back by hand: `treehouse return <path>`.
 | `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
 | `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
 | `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step, the PR follow-up, and the backlog autopilot's "is this agent free?" test |
-| `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence. **Settings → Models → Goal** wins where it is set, then this, then the shipped default |
+| `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that reconciles each instruction with the durable objective. **Settings → Models → Goal** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |
 | `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative. **Settings → Models → Away digest** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
@@ -4734,17 +5147,32 @@ npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow
 npm run build          # build web + MCP bundle
 npm test               # full test suite, including real Electron GUI geometry checks
 npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Seatbelt guidance)
+npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
+npx playwright install chromium # one-time setup for test:e2e (npm install does not fetch it)
 npm run smoke          # boot the built bundles and check they actually run (after build)
 npm run typecheck      # tsc --noEmit
-npm run lint           # oxlint over src, hooks, test, scripts (also: make lint)
+npm run lint           # oxlint over src, hooks, test, scripts, e2e (also: make lint)
 npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (terminal model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
 npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
+npm run session-actions # recompile the built-in session actions from docs/session-actions/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```
+
+`npm run test:e2e` is the browser layer: it boots the built daemon against a throwaway state
+dir, loads the built dashboard in Chromium, and drives real flows - dispatching an agent,
+typing into a conversation - end to end. It spends no model tokens, because every agent
+binary is redirected at a local fake through the `MISSION_*_BIN` chain that the daemon
+already resolves for operators. See [e2e/README.md](e2e/README.md) for the isolation
+contract and for what to do (and not do) when adding a spec.
+
+It needs two things a fresh checkout does not have: a build, and the browser. `npm install`
+deliberately does not fetch Chromium - that would tax every contributor for a suite most
+runs never touch - so run `npx playwright install chromium` once per machine. Without it the
+run fails with `browserType.launch: Executable doesn't exist`.
 
 `measure-inspector-prompt` prints the review prompt's byte size for the current source and
 for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in

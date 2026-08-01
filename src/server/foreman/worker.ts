@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import type { AgentType, ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { activePaneDialog, reportBucket } from "@shared/session.ts";
-import { ForemanClient } from "./client.ts";
+import {
+  ForemanClient,
+  flushPendingSpend,
+  loadSpendOutbox,
+  pendingSpendReports,
+  sweepSpendOutbox,
+} from "./client.ts";
+import { setLlmSpendSink } from "../llm/spend.ts";
 import { reviewModel, reviewSession } from "./review.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
@@ -25,6 +32,7 @@ import type { ReviewContext, Verdict } from "./verdict.ts";
 import { cheapActionOf, classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
 import type { CheapAction, Divergence } from "@shared/foreman.ts";
+import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   VERIFY_FAILURE_CAP,
   decideQueueTick,
@@ -119,6 +127,16 @@ function askOnScreen(session: Session, pane: string | null): PaneDialog | null {
 const IDLE_MS = 4000;
 /** Small breather between processing two sessions. */
 const BETWEEN_MS = 400;
+/**
+ * How often to look for spend reports abandoned by an exited peer.
+ *
+ * A recovery interval, not a poll of anything live: what it finds belongs to runs that have
+ * already finished and been paid for, so arriving half a minute late costs nothing, while
+ * scanning on every pass of a loop that can spin at `BETWEEN_MS` would read the state
+ * directory dozens of times a minute for no benefit.
+ */
+const SPEND_SWEEP_MS = 30_000;
+let lastSpendSweepAt = 0;
 /**
  * Minimum wall-clock gap between two full reviews of the *same* session. The marker
  * idempotency check already skips an unchanged episode for free; this floor stops a
@@ -233,18 +251,55 @@ function installShutdown(client: ForemanClient): void {
       // Every runner, not just `claude -p`: the cheap tier spawns through whichever one
       // is configured, and these children are detached so they outlive this process.
       killLiveLlmRuns();
-      void client.releaseLease(WORKER_ID).finally(() => process.exit(0));
+      // One last attempt to deliver accounting for runs that already happened. Best-effort
+      // rather than load-bearing now that the outbox is durable: anything this does not
+      // manage to send stays on disk and the next worker picks it up. It still runs first,
+      // because delivering now is better than delivering after the next restart.
+      if (pendingSpendReports() > 0) log(`flushing ${pendingSpendReports()} spend report(s)…`);
+      void flushPendingSpend()
+        .catch(() => {})
+        .then(() => client.releaseLease(WORKER_ID))
+        .finally(() => process.exit(0));
     });
   }
 }
 
 async function main(): Promise<void> {
   const client = new ForemanClient();
+  // This process's half of usage accounting, installed before anything can spend. The
+  // worker never opens the database, so its runs reach the ledger the way everything else
+  // it does reaches it - over a route. `void` rather than await: the runner reports on the
+  // way out of a call that has already produced its answer, and blocking a review on an
+  // accounting POST would let a slow daemon slow the loop down.
+  setLlmSpendSink((report) => void client.reportSpend(report));
+  // Anything a previous worker spent but never managed to report - it crashed, or was
+  // restarted while the daemon was down. This is the moment that spend either reaches the
+  // ledger or is lost for good, so it happens before the loop rather than on the first
+  // report of this process's own.
+  const recovered = loadSpendOutbox();
+  if (recovered > 0) {
+    log(`recovered ${recovered} undelivered spend report(s) from a previous run`);
+    void flushPendingSpend();
+  }
   installShutdown(client);
   startLeaseRenewal(client);
   log(`Foreman worker started (${WORKER_ID}); watching the needs-you queue + session work queues.`);
 
   for (;;) {
+    // Recovery for a peer that died while THIS worker kept running. Startup adoption cannot
+    // cover that: the abandoned spool would sit unreported until some future process
+    // happened to boot, which on a machine whose worker simply stays up is never.
+    //
+    // The cadence is the worker's rather than the client's, because this loop spins as fast
+    // as BETWEEN_MS when it is busy and a scan on every pass would read the state directory
+    // dozens of times a minute for reports that are in no hurry - they belong to runs that
+    // already finished. Placed before the config read so it still runs while the daemon is
+    // unreachable, and not gated on leadership: a standby that outlives the leader is
+    // exactly who should be carrying the leader's last reports.
+    if (Date.now() - lastSpendSweepAt >= SPEND_SWEEP_MS) {
+      lastSpendSweepAt = Date.now();
+      sweepSpendOutbox();
+    }
     let cfg;
     try {
       cfg = await client.getConfig();
@@ -939,11 +994,13 @@ async function processTarget(
   }
 
   const qcfg = queueConfig(cfg);
+  const intent = await client.goal(fresh.id).catch(() => null);
 
   const action = decideQueueTick({
     session: fresh,
     bucket: reportBucket(fresh, live),
     queue,
+    intent,
     cfg: qcfg,
     mayActLive: foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot),
     now: Date.now(),
@@ -967,48 +1024,63 @@ async function processTarget(
     const useNoMistakesFallback = action.kind === "auto-wrapup"
       && cfg.wrapup === "no-mistakes"
       && foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot);
-    const [diff, transcriptAnchor] = await Promise.all([
-      client.diff(fresh.id).catch(() => null),
-      client.transcriptSize(fresh.id).catch(() => null),
-    ]);
-    const claim = await tryWorkflowCompletionClaim(
-      client,
-      fresh.id,
-      withNoMistakesFallback(
-        drainCompletionClaim(action.queue, diff?.ok ? diff.headSha : null, transcriptAnchor),
-        useNoMistakesFallback,
-      ),
-    );
-    if (claim.kind === "failed") {
-      log(`${fresh.name}: workflow completion claim failed closed (${claim.error})`);
-      return false;
-    }
-    if (claim.kind === "claimed") {
-      log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
-      return true;
-    }
-    if (useNoMistakesFallback) {
-      if (claim.result.reason === "no_binding") {
-        // A current daemon creates the built-in binding before it can answer this way.
-        // Treat an older or inconsistent daemon as unavailable rather than falling back
-        // to the legacy skill invocation and launching a second shipping system.
-        log(`${fresh.name}: no-mistakes workflow fallback was not bound; held for retry`);
+    const completionIntent = action.kind === "auto-wrapup"
+      ? action.intentGuard
+      : resolvedSessionIntent(intent);
+    if (completionIntent) {
+      const [diff, transcriptAnchor] = await Promise.all([
+        client.diff(fresh.id).catch(() => null),
+        client.transcriptSize(fresh.id).catch(() => null),
+      ]);
+      const claim = await tryWorkflowCompletionClaim(
+        client,
+        fresh.id,
+        withNoMistakesFallback(
+          drainCompletionClaim(
+            action.queue,
+            diff?.ok ? diff.headSha : null,
+            transcriptAnchor,
+            completionIntent,
+          ),
+          useNoMistakesFallback,
+        ),
+      );
+      if (claim.kind === "failed") {
+        log(`${fresh.name}: workflow completion claim failed closed (${claim.error})`);
         return false;
       }
-      // A Manual binding is an existing operator choice and must neither be replaced nor
-      // auto-submitted. Degrade to the same Ship it? card dry-run uses; do not also type
-      // the no-mistakes skill beside a workflow the operator deliberately left Manual.
-      const outcome = await applyQueueAction(
-        queueActions(client, cfg),
-        fresh,
-        { kind: "ask-wrapup", queue: action.queue },
-        qcfg,
-        Date.now(),
-      );
-      log(`${fresh.name}: existing workflow is Manual - asked about wrapping up`);
-      return outcome.kind !== "noop";
+      if (claim.kind === "claimed") {
+        log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
+        return true;
+      }
+      if (useNoMistakesFallback) {
+        if (claim.result.reason === "no_binding") {
+          // A current daemon creates the built-in binding before it can answer this way.
+          // Treat an older or inconsistent daemon as unavailable rather than falling back
+          // to the legacy skill invocation and launching a second shipping system.
+          log(`${fresh.name}: no-mistakes workflow fallback was not bound; held for retry`);
+          return false;
+        }
+        // A Manual binding is an existing operator choice and must neither be replaced nor
+        // auto-submitted. Degrade to the same Ship it? card dry-run uses; do not also type
+        // the no-mistakes skill beside a workflow the operator deliberately left Manual.
+        const outcome = await applyQueueAction(
+          queueActions(client, cfg),
+          fresh,
+          { kind: "ask-wrapup", queue: action.queue },
+          qcfg,
+          Date.now(),
+        );
+        log(`${fresh.name}: existing workflow is Manual - asked about wrapping up`);
+        return outcome.kind !== "noop";
+      }
     }
   }
+
+  if (
+    action.kind === "auto-wrapup" &&
+    !sessionIntentMatches(await client.goal(fresh.id).catch(() => null), action.intentGuard)
+  ) return false;
 
   const outcome = await applyQueueAction(
     queueActions(client, cfg),
@@ -1091,7 +1163,7 @@ async function processPromptedWrapup(
     session,
     bucket: reportBucket(session, live),
     queue,
-    goalPrompt: goal?.prompt ?? null,
+    intent: goal,
     cfg: pcfg,
     now: Date.now(),
   });
@@ -1101,7 +1173,7 @@ async function processPromptedWrapup(
   // the failures below that can repeat forever. Checked HERE, above every read, because
   // the whole point of the cap is to stop spending on it: a check further down would
   // still pay for the evidence gather and the `claude -p` it exists to prevent.
-  if (promptedFailures.gaveUp(session.id, candidate.goal)) return false;
+  if (promptedFailures.gaveUp(session.id, candidate.episodeKey)) return false;
 
   // --- evidence. Same discipline as runVerify: any gap in it is a verify-INFRASTRUCTURE
   // failure and must never reach the verifier, which would otherwise find no proof the
@@ -1129,7 +1201,7 @@ async function processPromptedWrapup(
     // it and claiming progress anyway would re-process this session every BETWEEN_MS -
     // four loopback reads a pass against the daemon's single synchronous handle, which
     // also serves hook ingest and SSE - for as long as the write stays broken.
-    if (!(await retirePromptedEpisode(client, session, candidate.goal))) return false;
+    if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;
     log(`${session.name}: prompted wrap-up held - the session changed nothing`);
     return true;
   }
@@ -1142,17 +1214,19 @@ async function processPromptedWrapup(
 
   const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
-  // The SAME verifier the queue uses, deliberately. "Did this diff satisfy this ask?"
-  // is one question, and a second prompt for it would be a second thing to keep true.
+  // The SAME verifier the queue uses, deliberately. "Did this diff satisfy the durable
+  // objective, in light of the latest focus?" is one question, and a second prompt for it
+  // would be a second thing to keep true.
   const result = await verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
-    intent: candidate.goal,
+    intent: candidate.objective,
+    focus: candidate.focus,
     round: 0,
     diff: diff.patch,
     diffTruncated: diff.truncated,
     // Always true here: with no per-item base sha the diff is the whole branch, which
-    // may well carry work from before this prompt. Telling the verifier so is what
-    // stops it crediting - or blaming - this ask for someone else's commits.
+    // may well carry work from before this intent episode. Telling the verifier so is
+    // what stops it crediting - or blaming - this objective for someone else's commits.
     diffMayIncludeOtherWork: true,
     transcript: window.messages,
     transcriptTruncated: window.truncated,
@@ -1165,12 +1239,13 @@ async function processPromptedWrapup(
     // Unlike the queue there is no item to escalate, but the failure is bounded the
     // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
     // the episode stays armed and retries next tick; at the cap Foreman gives up on it,
-    // and only a new human prompt (which moves the goal, resetting the strikes) re-arms
-    // it. Retired durably as well, so the give-up survives a worker restart; the
-    // in-memory count is what holds the line when that write is the thing that's broken.
-    const failures = promptedFailures.onFailure(session.id, candidate.goal);
+    // and only a newly reconciled human prompt (which advances the intent key and resets
+    // the strikes) re-arms it. Retired durably as well, so the give-up survives a worker
+    // restart; the in-memory count is what holds the line when that write is the thing
+    // that's broken.
+    const failures = promptedFailures.onFailure(session.id, candidate.episodeKey);
     if (failures >= VERIFY_FAILURE_CAP) {
-      await retirePromptedEpisode(client, session, candidate.goal);
+      await retirePromptedEpisode(client, session, candidate.episodeKey);
       log(
         `${session.name}: prompted wrap-up gave up - verify failed ${failures}x (${result.reason})`,
       );
@@ -1192,7 +1267,13 @@ async function processPromptedWrapup(
   const currentGoal = currentSession && currentSession.id === session.id
     ? await client.goal(currentSession.id).catch(() => null)
     : null;
-  if (currentGoal?.prompt?.trim() !== candidate.goal) return false;
+  const intentGuard = {
+    objective: candidate.objective,
+    objectiveVersion: candidate.objectiveVersion,
+    promptRevision: candidate.promptRevision,
+    episodeKey: candidate.episodeKey,
+  };
+  if (!sessionIntentMatches(currentGoal, intentGuard)) return false;
 
   if (
     result.verdict.complete
@@ -1207,7 +1288,7 @@ async function processPromptedWrapup(
       withNoMistakesFallback(
         promptedCompletionClaim({
           noteKey: noteKeyOf(session),
-          goal: candidate.goal,
+          intent: intentGuard,
           headSha: diff.headSha,
           transcriptAnchor,
           summary: result.verdict.summary,
@@ -1232,7 +1313,7 @@ async function processPromptedWrapup(
       // `false` below selects `ask-wrapup`, which retires this verified episode without
       // typing the no-mistakes skill alongside that binding.
       const plan = planPromptedWrapup(
-        candidate.goal,
+        candidate.episodeKey,
         result.verdict,
         pcfg,
         false,
@@ -1247,7 +1328,7 @@ async function processPromptedWrapup(
     }
   }
   const plan = planPromptedWrapup(
-    candidate.goal,
+    candidate.episodeKey,
     result.verdict,
     pcfg,
     foremanMayActLive(cfg, session.cwd, session.repoRoot),
@@ -1987,7 +2068,11 @@ function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
     runModel: (prompt, model) =>
-      llmRunner(triageRunnerId).run(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
+      llmRunner(triageRunnerId).run(prompt, {
+        model,
+        timeoutMs: TRIAGE_TIMEOUT_MS,
+        role: "foreman:triage",
+      }),
   };
 }
 

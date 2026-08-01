@@ -55,7 +55,12 @@ import { goalLine } from "@shared/goal.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
-import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
+import type {
+  PersonaView,
+  SessionAction,
+  WorkflowRunSummary,
+  WorkflowSummary,
+} from "@shared/workflow.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -109,6 +114,9 @@ import {
   recordEpisode as dbRecordEpisode,
   resolveEpisode as dbResolveEpisode,
   episodesFor,
+  automationEstimatedCostSince,
+  automationSpendSince,
+  automationTokensSince,
   fleetEstimatedCostSince,
   fleetTokensSince,
   firstWorkEpisodePromptAfter,
@@ -397,6 +405,17 @@ export class Registry extends EventEmitter {
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
   private personas = new Map<string, PersonaView>();
+  /**
+   * Reusable SessionActions, including archived rows for durable history links.
+   *
+   * The FULL record rides the snapshot, prompt Markdown included, exactly as a Persona's
+   * guidance does. Measured against that precedent rather than assumed: the four shipped
+   * Personas already carry roughly 60 KB of guidance in every snapshot, and one shipped
+   * action's prompt is under 2 KB. A detail-only fetch is the right answer if this catalog
+   * ever grows large, and `session-action-sse.test.ts` pins the current size so making that
+   * switch has to be a decision rather than an accident.
+   */
+  private sessionActions = new Map<string, SessionAction>();
   /** Bounded catalog projections only; full drafts and guidance stay on HTTP. */
   private workflowSummaries = new Map<string, WorkflowSummary>();
   /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
@@ -560,6 +579,7 @@ export class Registry extends EventEmitter {
     reviews: ReviewItem[];
     tasks: Task[];
     personas: PersonaView[];
+    sessionActions: SessionAction[];
     workflowSummaries: WorkflowSummary[];
     workflowRunSummaries: WorkflowRunSummary[];
     ensembleSummaries: EnsembleSummary[];
@@ -572,6 +592,7 @@ export class Registry extends EventEmitter {
       reviews: [...this.reviews.values()],
       tasks: [...this.tasks.values()],
       personas: [...this.personas.values()],
+      sessionActions: [...this.sessionActions.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
       workflowRunSummaries: [...this.workflowRuns.values()],
       ensembleSummaries: [...this.ensembles.values()],
@@ -777,6 +798,27 @@ export class Registry extends EventEmitter {
     if (this.personas.delete(id)) this.emitEvent({ type: "persona_remove", id });
   }
 
+  // ---- workflow SessionAction catalog ----
+
+  /** Boot-time catalog install. It precedes serving SSE, so no incremental emit is needed. */
+  initializeSessionActions(actions: SessionAction[]): void {
+    this.sessionActions = new Map(actions.map((action) => [action.id, action]));
+  }
+
+  /**
+   * Archive comes through HERE and not through `removeSessionAction`. An archived action is
+   * still addressable - drafts and published versions name its id, and history reports it -
+   * so dropping it from the browser's map would make an existing node's source unnameable.
+   */
+  upsertSessionAction(action: SessionAction): void {
+    this.sessionActions.set(action.id, action);
+    this.emitEvent({ type: "session_action_upsert", action });
+  }
+
+  removeSessionAction(id: string): void {
+    if (this.sessionActions.delete(id)) this.emitEvent({ type: "session_action_remove", id });
+  }
+
   // ---- workflow definition catalog ----
 
   initializeWorkflows(workflows: WorkflowSummary[]): void {
@@ -903,13 +945,13 @@ export class Registry extends EventEmitter {
     // out"), and makes the two ways a session can be marked exited converge here.
     //
     // SCOPED TO PANE-BACKED SESSIONS, and that scope is load-bearing rather than tidy.
-    // "Unseen" here means "no process on a tty matched", which is a statement about the
-    // process table - and an SDK session has no tty by construction (discovery's own rule
-    // is that an interactive session requires one), so this loop would have evicted every
-    // one of them on the very first sweep after it was registered. Their lifecycle has an
-    // authority that cannot be wrong about it: the supervisor holds the handle, and its
-    // `exited` event goes through `beginEviction` below - the same sequence, so
-    // `session_remove` reaches WorkflowManager and TaskManager identically.
+    // "Unseen" here means terminal discovery produced no matching process. An SDK session
+    // has no terminal-discovery identity by construction, and `groupAgentsByTty` excludes
+    // its daemon-owned subprocesses, so this loop would have evicted every one of them on
+    // the very first sweep after registration. Their lifecycle has an authority that cannot
+    // be wrong about it: the supervisor holds the handle, and its `exited` event goes through
+    // `beginEviction` below - the same sequence, so `session_remove` reaches WorkflowManager
+    // and TaskManager identically.
     for (const [id, s] of this.sessions) {
       if (s.runtime !== "terminal") continue;
       if (seen.has(id) || this.exitTimers.has(id)) continue;
@@ -1172,12 +1214,12 @@ export class Registry extends EventEmitter {
 
   // ---- sdk-driven sessions ----
   //
-  // The counterpart of passive discovery for sessions no `ps` sweep will ever see. Two
-  // methods, mirroring the two the terminal axis has: one that puts a session in the map,
-  // one that ingests what the thing running it says about it. Everything else about an SDK
-  // session - its note, goal, queue, task, cost, eviction - goes through the SAME machinery
-  // a pane-backed session does, which is the entire point of making this a runtime axis
-  // rather than a second kind of card.
+  // The counterpart of passive discovery for sessions terminal discovery deliberately does
+  // not produce. Two methods, mirroring the two the terminal axis has: one that puts a
+  // session in the map, one that ingests what the thing running it says about it. Everything
+  // else about an SDK session - its note, goal, queue, task, cost, eviction - goes through
+  // the SAME machinery a pane-backed session does, which is the entire point of making this
+  // a runtime axis rather than a second kind of card.
 
   /**
    * Put a driver-run session in the map, as `applyDiscovery` does for a pane-backed one.
@@ -1189,8 +1231,8 @@ export class Registry extends EventEmitter {
    *
    * No attribution guard, unlike `applyHook`: the supervisor started the subprocess it is
    * reporting, which is a stronger claim than any hook can make. `discoveredIdentity` stays
-   * exactly as it is - it holds what `lsof` read off a live process, and there is no process
-   * on a tty here to read.
+   * exactly as it is - it holds what `lsof` read off a terminal session's live process, and
+   * the daemon-owned subprocess behind this session is deliberately excluded from discovery.
    */
   registerSdkSession(input: SdkSessionRegistration): Session {
     const refusal = this.sdkRegistrationRefusal(input.id);
@@ -3581,7 +3623,7 @@ export class Registry extends EventEmitter {
     if (!sessionEqual(s, next)) this.emitSession(next);
   }
 
-  // ---- cost telemetry (OpenTelemetry ingest + fleet roll-up) ----
+  // ---- cost telemetry ingest + fleet roll-up ----
 
   /**
    * Record the subscription's rate-limit windows from either live Claude transport.
@@ -3718,6 +3760,18 @@ export class Registry extends EventEmitter {
     this.recomputeFleetCost();
   }
 
+  /**
+   * Refresh the fleet strip after a headless run was recorded.
+   *
+   * No `syncSessionsForCost`, and that absence is the point rather than an omission: an
+   * automation row's note key is a ROLE, so no session holds it and there is no card
+   * whose denormalized cost could have changed. Calling the session sync with a role key
+   * would walk every session to match a key none of them can ever have.
+   */
+  applyAutomationUsage(): void {
+    this.recomputeFleetCost();
+  }
+
   /** The fleet figures as of now, read straight from the ledger. */
   private fleetCostNow(now = Date.now()): FleetCost {
     const dayStart = startOfLocalDay(now);
@@ -3736,6 +3790,13 @@ export class Registry extends EventEmitter {
       rateLimitSources: [...this.latestRateLimitSources.values()]
         .map((source) => ({ ...source, windows: source.windows.filter((w) => w.resetsAt * 1000 > now) }))
         .filter((source) => source.windows.length > 0),
+      // The app's own spend, on the same local-midnight boundary as everything above so the
+      // two lines are comparable, and kept out of every figure above so they are distinct.
+      automation: {
+        estimatedCostToday: automationEstimatedCostSince(dayStart),
+        tokensToday: automationTokensSince(dayStart),
+        roles: automationSpendSince(dayStart),
+      },
       updatedAt: now,
     };
   }
@@ -3758,6 +3819,13 @@ export class Registry extends EventEmitter {
       this.lastFleetCost.estimatedBurnPerHour === fleet.estimatedBurnPerHour &&
       this.lastFleetCost.tokensToday === fleet.tokensToday &&
       this.lastFleetCost.prsToday === fleet.prsToday &&
+      // Compared through the same `JSON.stringify` shortcut `syncSessionsForCost` uses on
+      // `SessionCost`, and for the same reason: the roles array is a handful of flat
+      // records built in a fixed order by one SQL ORDER BY, so structural equality and
+      // string equality coincide, and a hand-rolled comparator would be a third place the
+      // shape has to be kept in step. Without this the strip would sit on a stale
+      // automation line whenever the loops spent but the fleet did not.
+      JSON.stringify(this.lastFleetCost.automation) === JSON.stringify(fleet.automation) &&
       rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits) &&
       rateLimitSourcesEqual(this.lastFleetCost.rateLimitSources, fleet.rateLimitSources);
     this.lastFleetCost = fleet;
@@ -4694,11 +4762,11 @@ export class Registry extends EventEmitter {
    * nothing then is what keeps a goal describing the last thing a human actually asked for,
    * rather than being overwritten by machinery every time a task finishes.
    *
-   * Writes BOTH the stored prompt (the refiner's input) and Tier 1's provisional goal: the
-   * human's own words, shortened to a line. Rough, but instant, free, and true - and it means
-   * a card is never blank while waiting on a model. `source: "heuristic"` is also the
-   * refiner's queue: it says "this prompt has not been summarised yet", so re-stamping it on
-   * every new prompt is what makes the goal refresh at all.
+   * The first prompt establishes an immediate provisional objective. Later prompts update the
+   * tactical focus but deliberately leave that objective standing until the intent reconciler
+   * classifies them. This is the safety boundary between "fix this small thing next" and "the
+   * whole session is now about this small thing". Prompt revisions, not `source`, are the
+   * reconciler's durable queue.
    *
    * WHICH event carries a prompt and WHAT inside it a human actually typed are both the
    * harness's to answer - `UserPromptSubmit` is Claude's event name and the scaffolding
@@ -4709,11 +4777,26 @@ export class Registry extends EventEmitter {
   private captureGoalPrompt(s: Session, spec: HookSpec, evt: HookIngest, now: number): void {
     const prompt = spec.promptText(evt);
     if (!prompt) return;
-    this.upsertGoal(
-      s.id,
-      { prompt: clampPrompt(prompt), text: goalLine(prompt), source: "heuristic" },
-      now,
-    );
+    const raw = clampPrompt(prompt);
+    const prev = this.getGoal(s.id);
+    const firstObjective = !prev?.objective;
+    const revision = (prev?.promptRevision ?? 0) + 1;
+    this.upsertGoal(s.id, {
+      prompt: raw,
+      focus: goalLine(raw),
+      relationship: null,
+      rationale: null,
+      promptRevision: revision,
+      pendingPrompts: [...(prev?.pendingPrompts ?? []), { revision, prompt: raw }],
+      ...(firstObjective
+        ? {
+            objective: raw,
+            text: goalLine(raw),
+            source: "heuristic" as const,
+            objectiveVersion: Math.max(1, prev?.objectiveVersion ?? 0),
+          }
+        : {}),
+    }, now);
   }
 
   /** The compact goal view denormalized onto a session card. */
@@ -4723,7 +4806,16 @@ export class Registry extends EventEmitter {
     // from it. Reporting that as a goal would put an empty line on the card, so a goal with
     // no text is reported as no goal.
     if (!g || !g.text) return null;
-    return { text: g.text, source: g.source, updatedAt: g.updatedAt };
+    return {
+      text: g.text,
+      source: g.source,
+      focus: g.focus,
+      relationship: g.relationship,
+      objectiveVersion: g.objectiveVersion,
+      promptRevision: g.promptRevision,
+      resolvedPromptRevision: g.resolvedPromptRevision,
+      updatedAt: g.updatedAt,
+    };
   }
 
   /** A session's full goal record, including the refiner's stored input. */
@@ -4735,14 +4827,11 @@ export class Registry extends EventEmitter {
 
   /**
    * Patch a session's goal (create on first write), merging like `upsertNote` so capturing
-   * a prompt never clears the sentence derived from an earlier one - and so a refinement
-   * never drops the prompt it was derived from.
+   * a prompt never clears the durable objective from an earlier one, and intent
+   * reconciliation never drops the latest prompt it classified.
    *
-   * `updatedAt` moves only when the SENTENCE changes. A re-derived identical goal is the
-   * common case (most follow-up prompts refine what a session is doing rather than redefine
-   * it), and letting those bump the stamp would make "when did this session last change
-   * course" unanswerable. Capturing a prompt alone never moves it either: that is input,
-   * not a change of goal.
+   * `updatedAt` moves only when the effective objective changes. A steering prompt moves the
+   * focus and prompt revision, but not the "when did this session change course" timestamp.
    */
   upsertGoal(id: string, patch: SetGoal, now = Date.now()): SessionGoal | null {
     const s = this.sessions.get(id);
@@ -4750,12 +4839,32 @@ export class Registry extends EventEmitter {
     const key = noteKeyFor(s);
     const prev = this.goals.get(key) ?? getSessionGoal(key);
     const text = patch.text !== undefined ? patch.text : prev?.text ?? null;
-    const changed = text !== (prev?.text ?? null);
+    const objective = patch.objective !== undefined ? patch.objective : prev?.objective ?? null;
+    const changed = text !== (prev?.text ?? null) || objective !== (prev?.objective ?? null);
     const next: SessionGoal = {
       noteKey: key,
       text,
       source: patch.source !== undefined ? patch.source : prev?.source ?? null,
+      objective,
       prompt: patch.prompt !== undefined ? patch.prompt : prev?.prompt ?? null,
+      focus: patch.focus !== undefined ? patch.focus : prev?.focus ?? null,
+      relationship:
+        patch.relationship !== undefined ? patch.relationship : prev?.relationship ?? null,
+      rationale: patch.rationale !== undefined ? patch.rationale : prev?.rationale ?? null,
+      objectiveVersion:
+        patch.objectiveVersion !== undefined
+          ? patch.objectiveVersion
+          : prev?.objectiveVersion ?? (objective ? 1 : 0),
+      promptRevision:
+        patch.promptRevision !== undefined ? patch.promptRevision : prev?.promptRevision ?? 0,
+      resolvedPromptRevision:
+        patch.resolvedPromptRevision !== undefined
+          ? patch.resolvedPromptRevision
+          : prev?.resolvedPromptRevision ?? 0,
+      pendingPrompts:
+        patch.pendingPrompts !== undefined
+          ? patch.pendingPrompts
+          : prev?.pendingPrompts ?? [],
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
     this.goals.set(key, next);

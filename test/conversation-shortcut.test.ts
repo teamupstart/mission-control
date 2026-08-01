@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { conversationReveal } from "../src/web/lib/conversationReveal.ts";
 import { LAYOUT_MODES } from "../src/shared/protocol.ts";
 import { ACTIONS } from "../src/web/lib/keybindings.ts";
+import { detailTabs } from "../src/web/lib/detailTabs.ts";
 
 const read = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
@@ -125,10 +126,16 @@ test("the detail honours the request, and the tab wears the chord it answers to"
   assert.match(detail, /view\.conversationTabRequest\?\.sessionId === session\.id/);
   assert.match(detail, /setTab\("conversation"\)/);
   // The keycap on the tab is the same registry entry the handler matches on, so the tab
-  // cannot advertise a key that does nothing.
-  assert.match(detail, /label: "Conversation"[\s\S]{0,80}action: "conversation"/);
+  // cannot advertise a key that does nothing. Asserted against the tab table itself rather
+  // than ConsoleDetail's source: the table moved out to `detailTabs` when the Workflows tab
+  // was added, and this pair is a fact about the tab, not about where it happens to be
+  // written down.
+  const conversation = detailTabs({ queueCount: 0, gateNeedsYou: false })[0];
+  assert.equal(conversation?.id, "conversation", "the conversation is still the first tab");
+  assert.equal(conversation.label, "Conversation");
+  assert.equal(conversation.action, "conversation");
   assert.ok(
-    ACTIONS.some((a) => a.id === "conversation"),
+    ACTIONS.some((a) => a.id === conversation.action),
     "the tab names an action id that must exist in the registry",
   );
 });

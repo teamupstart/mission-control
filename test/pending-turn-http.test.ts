@@ -63,6 +63,7 @@ function fixture() {
     supervisor,
     undefined,
     undefined,
+    undefined,
     pending,
   );
   return { registry, session, direct, pending, app };

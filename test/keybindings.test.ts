@@ -215,6 +215,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("p")),
     chordFromEvent(key("P", { shift: true })),
     chordFromEvent(key("q")),
+    chordFromEvent(key("y")),
     chordFromEvent(key("Tab", { shift: true })),
     chordFromEvent(key("R", { shift: true })),
     chordFromEvent(key("c")),

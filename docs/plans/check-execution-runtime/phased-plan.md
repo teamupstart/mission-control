@@ -283,6 +283,14 @@ export interface CheckProcessRegistry {
 }
 ```
 
+**This interface is closed.** Phase 3 consumes it exactly as published and adds nothing to it.
+Recovery needs to READ back an identity, which Contract P does not offer, and Phase 3 therefore
+declares that need as its own narrow seam - `CheckSupervisorLookup` in `check-supervisor.ts` -
+for Phase 4 to supply from an accessor it already holds. Recorded in Phase 3's audit, after a
+first implementation added a `read` here and was corrected: widening an earlier phase's
+published contract to serve a later phase's consumer turns a consumer's need into an owner's
+obligation, and it is the wrong direction even when the addition is purely additive.
+
 Phase 2 defines this interface and implements it against `workflow_check_leases`. Phase 3
 consumes it and must not reach the table directly.
 
@@ -401,6 +409,51 @@ After Phase 1, these hold and no later phase may weaken them:
   run's gate state, because every path that opens a round nulls `gate_state_json`. It is derived
   from the event log instead, which keeps the no-schema-change constraint intact. No phase
   boundary, dependency edge or cross-phase contract moved.
+- **2026-07-31, Phase 4 implemented; the unit is complete and the headline defect is closed.**
+  A configured, authorised check now leases a pooled worktree pinned to the captured commit,
+  runs the operator's argv in it, and **fails the submission on a non-zero exit** - verified end
+  to end on a real repository with a real pool and a real session, not by inspection. Phase 4's
+  own audit record carries the detail; two items belong at index level because they are about
+  the plan rather than about one phase.
+
+  **One finding contradicts nothing in this plan but was invisible to all of it.** Evidence
+  capture records an ABBREVIATED head sha (`diff.ts`), and a pin requires a full 40-hex id. Every
+  phase's contracts were honoured and the two halves still did not fit, because each was tested
+  against the shape the other was assumed to produce - and every automated test passed, because
+  every one of them supplied a full sha. The first real submission failed three times as
+  infrastructure and blocked, with the gate still never running. Fixed in Phase 4 by resolving
+  the abbreviation through `git rev-parse --verify` before the lease, never by relaxing the pin.
+  This is the concrete vindication of the instruction that a phase may not be reported done on
+  the strength of its diff.
+
+  **Contract E survived, but not in the shape Phase 4 described.** `CheckExecutionRequest`
+  describes a command and carries no attempt identity, while the runtime's resources are keyed
+  by attempt id and Contract R needs the submission and node ids. Phase 4's literal instruction -
+  a plain `checkDeps?: CheckRunDeps` - is therefore unimplementable. Resolved by BINDING the
+  identity (`checkDeps` is now `(attempt) => CheckRunDeps`, with `CheckAttemptRef` declared in
+  Phase 4's own module) rather than by widening the published request, so `checks.ts` is
+  unmodified and no existing caller of `runCheck` changed. That is the seam direction Phase 3
+  established with `CheckSupervisorLookup`, applied a second time; it is now the settled answer
+  in this unit for "a later phase needs something an earlier contract does not offer".
+
+  Contracts L, P and R were consumed exactly as published. **One member was added to an earlier
+  phase's module, and it took an operator decision to keep it:** `handOffForReclaim` on
+  `CheckLeaseManager`, because `releaseForAttempt` couples dropping the ownership claim to
+  issuing the return, and an unprovable process group forbids the return while `reclaimLeaked`
+  skips anything still owned - so without it a pool slot leaks for the life of the daemon. The
+  operator chose working behaviour over the planned interface shape. Recorded because the "add
+  no interface" constraint was a real constraint and this is the one place it did not survive
+  contact.
+
+- **2026-07-31, Phase 4 review round 1.** One defect worth recording at index level because it
+  is about how this unit's seams compose rather than about one phase: the executor resolved its
+  lease before returning, exactly as specified, and then returned the COMMAND's result whatever
+  the cleanup had said. A check that exited 0 leaving a process group behind therefore reported
+  `passed` and held a pooled worktree silently - and, worse, made Contract R's retry gate nearly
+  unreachable, since that gate only sees an attempt through the infrastructure path. Cleanup
+  failures now outrank the command's result. The lesson generalises: "cleanup precedes
+  classification" was written as an ordering rule, and it also needed to be a precedence rule.
+
 - **2026-07-30, Inspector rounds 5 and 6 (PR #326):** two majors, both accepted, both about the
   same seam between ownership and liveness. Round 5: Phase 2's startup reconciliation would have
   returned a lease on ownership alone, hard-resetting a tree a live check was still writing into

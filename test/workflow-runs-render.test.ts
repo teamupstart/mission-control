@@ -168,6 +168,10 @@ const submission = (
   id,
   runId: "run",
   round,
+  segment: 0,
+  parentSubmissionId: null,
+  continuationNodeId: null,
+  continuationNodeAttemptId: null,
   mode: "full_workflow",
   triggerSource: "manual",
   triggerKey: `manual:binding:${id}`,
@@ -195,6 +199,7 @@ const attempt = (
   attempt: 1,
   state: "completed",
   persona,
+  sessionAction: null,
   runner: "claude",
   model: "reviewer",
   verdict: null,
@@ -1206,4 +1211,70 @@ test("the three passing check statuses each say something different about why", 
   }));
   assert.match(passed, /Passed/);
   assert.match(passed, /ran in this repository and exited zero/);
+});
+
+test("a disabled reviewer renders red with the Disabled chip and a whole-row toggle", () => {
+  const detail = runningDetail();
+  detail.run.disabledNodeIds = [NODE.security];
+  const html = render(detail, { onToggleNodesDisabled: () => {} });
+  // The row carries the red treatment and its own mark, and the chip states the claim.
+  assert.match(html, /is-disabled/);
+  assert.match(html, /⊘/);
+  assert.match(html, />Disabled</);
+  // The whole row is a real button, pressed for the disabled member.
+  assert.match(html, /wf-pipeline-toggle/);
+  assert.match(html, /aria-pressed="true"/);
+  assert.match(html, /Enable Security reviewer for this run/);
+  assert.match(html, /Disable Quality reviewer for this run/);
+  // A stage disables member-by-member from its header too.
+  assert.match(html, /wf-pipeline-stage-hit/);
+  // The disabled member's red chip must not fold its stage to Failed: with its sibling
+  // still reviewing, the stage reads Running - the toggle changed one member, not the gate.
+  assert.doesNotMatch(html, />Failed</);
+  // Node ids stay out of the markup even though the toggle addresses nodes.
+  assertNoGraphIds(html);
+});
+
+test("an outcome the viewed round already reached keeps its real chip under the red row", () => {
+  // Quality is disabled AFTER it already failed round 1 and while round 2 is reviewing it.
+  // The disable is a promise about work that has not happened yet, so neither round's
+  // recorded truth may repaint: the row goes red (the control's state), the chips do not.
+  const detail = runningDetail();
+  detail.run.disabledNodeIds = [NODE.quality];
+
+  // Latest round: the review is LIVE, so the chip stays "Reviewing", never "Disabled".
+  const latest = render(detail, { onToggleNodesDisabled: () => {} });
+  assert.match(latest, /is-disabled/);
+  assert.match(latest, /⊘/);
+  assert.match(latest, /aria-pressed="true"/);
+  assert.match(latest, /Reviewing/);
+  assert.doesNotMatch(latest, />Disabled</);
+
+  // Round 1: the recorded failure stands - chip "Changes requested", stage folds Failed -
+  // which is exactly what the round scrubber promises about history.
+  const earlier = render(detail, {
+    onToggleNodesDisabled: () => {},
+    roundId: "submission-1",
+  });
+  assert.match(earlier, /is-disabled/);
+  assert.match(earlier, /Changes requested/);
+  assert.match(earlier, />Failed</);
+  assert.doesNotMatch(earlier, />Disabled</);
+});
+
+test("without a toggle handler the disabled set still renders, read-only", () => {
+  const detail = runningDetail();
+  detail.run.disabledNodeIds = [NODE.security];
+  const html = render(detail);
+  assert.match(html, /is-disabled/);
+  assert.match(html, />Disabled</);
+  assert.doesNotMatch(html, /wf-pipeline-toggle/);
+});
+
+test("a finished run withholds the toggle even when the host supplies one", () => {
+  const detail = runningDetail();
+  detail.run = { ...detail.run, status: "completed", disabledNodeIds: [NODE.security] };
+  const html = render(detail, { onToggleNodesDisabled: () => {} });
+  assert.match(html, /is-disabled/);
+  assert.doesNotMatch(html, /wf-pipeline-toggle/);
 });

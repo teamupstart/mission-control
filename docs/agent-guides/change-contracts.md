@@ -43,11 +43,137 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Skill directory prefixes
 - Task source kinds
 - LLM job IDs
+- LLM spend roles (`LLM_SPEND_ROLES`) - these are written into `usage_ledger.note_key` and
+  queried back by exact value, so a rename orphans every historical row it wrote
 - Schedule enum values
 - Ensemble strategy, driver, artifact, source, run, and member values
 - Inspector marker versions
+- Workflow graph node kinds, source and target ports, and SessionAction completion kinds
+  (`SESSION_ACTION_COMPLETION_KINDS`) - these reach draft graphs, immutable published
+  versions, and `session_actions.completion_kind`, and a completion kind is read STRICTLY:
+  an unknown value fails its row rather than degrading, so renaming one makes history
+  unreadable instead of migrating it
+- Workflow run statuses, node-attempt states, and delivery kinds
+  (`WORKFLOW_RUN_STATUSES`, `WORKFLOW_NODE_ATTEMPT_STATES`, `WORKFLOW_DELIVERY_KINDS`) -
+  these are `workflow_runs.status`, `workflow_node_attempts.state` and
+  `workflow_deliveries.kind` on operators' machines
+- SessionAction wait reasons and block codes (`SESSION_ACTION_WAIT_REASONS`,
+  `SESSION_ACTION_BLOCK_CODES`) - these reach a waiting attempt's `output_json`
 
 Search for the owning constant and its contract tests before extending a tuple.
+
+## Workflow evidence identity
+
+A workflow submission is identified by `(round, segment)`, and the two answer to different
+budgets:
+
+- `round` counts REPAIR. Only a fail/repair transition increments it, it restarts the graph at
+  Session, and `maxRepairRounds` compares this and nothing else.
+- `segment` counts the immutable evidence snapshots inside one repair round. A completed
+  SessionAction creates `segment + 1`, captures fresh evidence, and activates only the routes
+  reachable from that action's `complete` port. It never spends repair budget.
+
+Every attempt, receipt, context snapshot and verdict is scoped to exactly one submission. Order
+submissions by `(round, segment)` and never by insertion time - a continuation is reserved
+before its evidence is captured, so `created_at` says when work started, not which evidence is
+current. Use `submissionForRepairRound`, `submissionForSegment` or `latestSubmissionForRun`
+rather than an ambiguous latest-by-run query.
+
+One receipt may cross submissions, and only one: the attempt a child segment names in
+`continuation_node_attempt_id`. `WorkflowStore.addReceipt` enforces that, because any other
+cross-submission source would let a node activated on one evidence snapshot advance a graph
+running on another.
+
+## Session actions
+
+A SessionAction is a durable side effect, not an evaluator:
+
+- The engine activates it as one `waiting` attempt carrying its published snapshot. It enqueues
+  no runnable work, occupies no model execution slot, and writes no receipt until its
+  continuation is captured.
+- The manager owns the one delivery, through the existing Workflows switch, repository
+  allowlist, note identity, pane lock and uncertain-write policy. Preview prepares and never
+  types.
+- Idle is not proof of completion. The target session is normally idle at the instant the
+  packet is typed, so a confirmed send persists an anchor, a pickup signal newer than that
+  anchor is required, and only then does `settledIdle` count. `needs-you` is an operator wait,
+  never a settled turn.
+- Completion is adapter-owned. `src/server/workflows/session-action-adapters.ts` is the closed
+  registry; `SESSION_ACTION_COMPLETION_CAPABILITIES` in `src/shared/workflow.ts` is the one
+  answer the validator, the daemon and the browser all read. An adapter reported unavailable
+  refuses at Publish and again before anything is typed.
+- Refusal, lost authorization, an exited session or an infrastructure failure BLOCK the run with
+  an action-specific code. They never become a Persona verdict, a repair packet, or a spent
+  repair round. A REFUSED packet blocks (`delivery_refused`) because nothing was typed and
+  waiting cannot change that; an UNCERTAIN one blocks (`delivery_uncertain`) because an
+  action's contract is that its exact instruction ran once, and the runtime will not guess in
+  either direction. `resolveDelivery`'s `mark_delivered` is the operator's answer and reopens
+  the attempt. Recovery never re-prepares a refused packet - that would retry, on every daemon
+  start, a write nobody re-authorized.
+- The authored prompt ceiling is DERIVED (`sessionActionPromptBytes` = `sessionActionPacketBytes`
+  less `sessionActionEnvelopeBytes`), never set beside it. An action packet is the operator's
+  own instruction frozen into an immutable version, so it is refused when it cannot be sent
+  whole rather than truncated - a prefix of an instruction is a different instruction, and
+  delivering one would change the requested operation without failing the run. Stored rows keep
+  a looser read bound (`sessionActionPromptReadBytes`) so nothing already written becomes
+  unreadable; the snapshot schema is what keeps an undeliverable prompt out of every version.
+- Two actions ready at ONCE are refused, not serialized. Running one and holding the other
+  looks safe and silently loses it: the continuation seeds the child segment with only the
+  completed action's routes, so the held sibling's activating receipt stays behind in the
+  parent. A chain (`A -> B`) is supported and is the shape a pipeline authors.
+
+### What the browser may and may not decide about one
+
+- **Addability is the daemon's answer, never the bundle's.** Every add control filters through
+  `addableSessionActions(catalog, available)`, and `available` comes from
+  `GET /api/session-actions/capabilities`. Reading `SESSION_ACTION_COMPLETION_CAPABILITIES`
+  directly in a component would make the offer a property of the loaded JavaScript rather than
+  of the process that will refuse the publish. A failed capability read offers **nothing**; it
+  must never fall back to the shared table.
+- **Nameable is wider than addable.** An archived source, a shadowed built-in, or an adapter
+  this build cannot run stays in a picker as a RETAINED option when a node already names it. A
+  `<select>` whose value is absent from its options paints something else as chosen, and the
+  next change event rewrites a draft nobody meant to edit.
+- **An action never borrows an evaluator's vocabulary.** `sessionActionStatus` is its own chip
+  table beside `reviewerStatus` and `checkStatus`, and no arm of it says Passed, Failed or
+  Changes requested. `stageStatus` takes the stage kind for the same reason: folding a
+  singleton action stage through the all-pass logic headed it "Passed" one line above a member
+  chip that refuses to make that claim.
+- **A CAS conflict offers three routes, and Reapply is a three-way merge.** Reload discards
+  the draft, Duplicate keeps it on a different row, and Reapply lands it on the same row at
+  the revision that now exists. The merge is what makes the third one safe: the patch is
+  measured from `baselineRef` - the seed the draft STARTED at - not from the row the conflict
+  reported and not from the `action` prop, which the raising SSE upsert has already replaced
+  with the other tab's state. Measured either of those ways, a reapply sends back every field
+  the other tab changed at the values this editor loaded before they changed them, silently
+  reverting their save. `sessionActionSaveTarget` states the whole rule: Save and Reapply
+  differ in exactly one thing, the expected revision.
+- **Wait state is read, not derived.** `actionWait` and the durable `SessionActionAttemptState`
+  in the attempt's `output_json` are the runtime's own answers. The distinction between a stale
+  idle and a finished turn is a transcript byte offset the daemon recorded; nothing in a
+  summary can reconstruct it, and no surface may try.
+- **Round and segment are different facts and are displayed as such.** The repair budget counts
+  `round` only. A surface that derived a round by counting submissions would report a run as
+  closer to its limit every time an action finished.
+- **A continuation's source action is shown with the child segment.** The attempt stays on the
+  parent - that is what keeps upstream work from claiming it reviewed evidence it never saw -
+  so `continuationSourceAttempt` reads the submission's own `continuationNodeId` /
+  `continuationNodeAttemptId` columns and verifies both ends. This is the one deliberate
+  cross-submission read, and it is provenance the runtime wrote rather than a relationship
+  inferred from ordering.
+
+## The Inspector footer
+
+Inspector is `WorkflowCompletionPolicy`, and it gains no node, no id and no edge. `InspectorFooter`
+in `src/web/workflows/pipeline-bits.tsx` is the one projection of it, rendered after End by the
+Pipeline editor, the run pipeline, published version detail and the Board ladder. It returns
+`null` for a `none` policy, which is why every call site passes the policy unconditionally.
+
+Two things about it are load-bearing. It reads the **version's** policy on a run surface and the
+**workflow's** on a draft surface, so a run pinned to an older version shows the gate that
+version was published with. And `none` beneath an Inspector policy means "the run has not
+reached the gate", not "there is no gate" - `inspectorFooterStatus` exists so the footer does
+not contradict its own sentence for most of a live run's life.
 
 ## Harness changes
 
@@ -162,6 +288,10 @@ Update README in the same change:
 - New command: Commands
 - New shortcut: Keyboard table
 
-Built-in personas are generated from `docs/personas/*.md`. Edit the Markdown and run the generator instead of editing `builtin-personas.generated.ts`.
+Built-in personas are generated from `docs/personas/*.md`, and built-in session actions from
+`docs/session-actions/*.md`. Edit the Markdown and run the generator (`npm run personas`,
+`npm run session-actions`) instead of editing the `.generated.ts` module. Both share the
+reader and renderer in `scripts/builtin-markdown.ts`, and both have a drift test that
+imports the generator rather than re-implementing it.
 
 Plans live at `docs/plans/<name>/plan.md` with a self-contained HTML companion when the planning workflow requires it.

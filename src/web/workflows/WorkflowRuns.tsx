@@ -12,10 +12,16 @@ import type {
   WorkflowEventPage,
   WorkflowLlmCallPage,
 } from "@shared/workflow.ts";
-import { formatCheckCommand } from "@shared/workflow.ts";
+import {
+  formatCheckCommand,
+  sessionActionCompletionLabel,
+  sessionActionSkillLabel,
+} from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
+import type { PipelineStatus } from "./pipeline-bits.tsx";
+import type { SessionActionProgress } from "./run-model.ts";
 import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
@@ -27,9 +33,13 @@ import { relativeTime } from "../lib/format.ts";
 import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
 import {
+  actionBlockSentence,
+  actionWaitSentence,
   attemptStateLabel,
   checkOutcomeOf,
   checkStatusView,
+  continuationSourceAttempt,
+  disabledStatusFor,
   endStatus,
   errorView,
   eventLine,
@@ -38,12 +48,16 @@ import {
   deliveryStateView,
   gateSummaryStatus,
   gateWaitSentence,
+  inspectorFooterStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
   readCapturedContext,
   runRounds,
   runStatusLabel,
+  segmentProvenanceSentence,
   selectedSubmission,
+  sessionActionProgress,
+  sessionActionStatus,
   shortSha,
   submissionStatus,
   verdictMeta,
@@ -237,6 +251,96 @@ function CheckCard({
   );
 }
 
+/**
+ * How much of an authored instruction the run view will print inline.
+ *
+ * The prompt is bounded at authoring time, but 58,000 bytes inside a run card is a wall an
+ * operator has to scroll past to reach the delivery beneath it. The whole text is one click
+ * away in the version's snapshot detail, which is the surface that exists to be exact.
+ */
+const ACTION_PREVIEW_CHARS = 1200;
+
+/**
+ * One session action attempt.
+ *
+ * Its own card, not a Persona card with the words changed, because every field a verdict card
+ * carries is a claim this one must not make: there is no verdict, no confidence, no requested
+ * change and no repair packet. What it reports instead is a LIFECYCLE - what was sent, what
+ * proved the session read it, and what the run is waiting for - plus the immutable snapshot
+ * that says which instruction was sent, so an audit trail does not stop at "an action ran".
+ */
+function SessionActionCard({
+  attempt,
+  status,
+  state,
+}: {
+  attempt: WorkflowNodeAttempt;
+  status: PipelineStatus;
+  state: SessionActionProgress | null;
+}): React.JSX.Element {
+  const snapshot = attempt.sessionAction;
+  const blocked = state?.blocked ?? null;
+  const prompt = snapshot?.promptMarkdown ?? "";
+  const clipped = prompt.length > ACTION_PREVIEW_CHARS;
+  return (
+    <article className="wf-run-card wf-run-action">
+      <header className="wf-run-card-head">
+        <span className={`workflow-chip workflow-${status.tone}`}>{status.label}</span>
+        <strong>{snapshot?.name ?? "Session action"}</strong>
+      </header>
+      {/* The wait reason first: it is the answer to "why is nothing happening", which is the
+          question that brought the reader here. A block replaces it, because a blocked action
+          is not waiting for anything. */}
+      {/* The wait, the block, or - once it is over - what it accomplished. The last arm is
+          the one every finished action shows, and the first draft of this card fell through
+          it to `attemptStateLabel`, which printed the bare word "completed" under a heading
+          that had just said the same thing. */}
+      <p className="wf-run-summary">
+        {blocked
+          ? actionBlockSentence(blocked.code)
+          : state?.wait
+            ? actionWaitSentence(state.wait)
+            : state?.complete
+              ? "The turn finished, and the fresh evidence the stages below it review was"
+                + " captured."
+              : attemptStateLabel(attempt.state)}
+      </p>
+      {blocked && <ErrorLine raw={blocked.detail} />}
+      <p className="wf-run-meta">
+        {[
+          snapshot ? sessionActionSkillLabel(snapshot.requiredSkillId) : null,
+          snapshot ? `Completes when ${sessionActionCompletionLabel(snapshot.completion)
+            .toLocaleLowerCase("en-US")}` : null,
+          snapshot ? `Snapshot revision ${snapshot.sourceRevision}` : null,
+          `attempt ${attempt.attempt}`,
+        ].filter(Boolean).join(" · ")}
+      </p>
+      {state?.anchor && (
+        <p className="wf-run-meta">
+          Sent {when(state.anchor.deliveredAt)}
+          {state.pickedUpAt === null ? "" : ` · picked up ${when(state.pickedUpAt)}`}
+          {state.settledAt === null ? "" : ` · turn finished ${when(state.settledAt)}`}
+        </p>
+      )}
+      {snapshot && (
+        <details className="wf-run-packet">
+          <Tooltip label="Show the exact instruction this version froze for this action">
+            <summary>Instruction sent</summary>
+          </Tooltip>
+          <pre>{clipped ? `${prompt.slice(0, ACTION_PREVIEW_CHARS)}…` : prompt}</pre>
+          {clipped && (
+            <p className="wf-run-meta">
+              First {ACTION_PREVIEW_CHARS} characters. The published version carries the exact
+              text.
+            </p>
+          )}
+        </details>
+      )}
+      <ErrorLine raw={attempt.error} />
+    </article>
+  );
+}
+
 function VerdictCard({
   attempt,
   verdict,
@@ -307,6 +411,7 @@ export function WorkflowRunView({
   onResolveDelivery = async () => {},
   onLoadEvents = async () => {},
   onLoadCalls = async () => {},
+  onToggleNodesDisabled,
   isActionPending = () => false,
 }: {
   detail: WorkflowRunDetail;
@@ -332,11 +437,27 @@ export function WorkflowRunView({
   ) => Promise<void>;
   onLoadEvents?: () => Promise<void>;
   onLoadCalls?: () => Promise<void>;
+  /**
+   * Toggle the per-run auto-pass on verdict nodes. Optional so read-only hosts render the
+   * disabled set without offering the switch; the view itself withholds it once the run is
+   * terminal, because a finished run can no longer be affected.
+   */
+  onToggleNodesDisabled?: (nodeIds: string[], disabled: boolean) => void;
   isActionPending?: (id: RunActionId) => boolean;
 }): React.JSX.Element {
   const version = detail.version;
-  const rounds = runRounds(detail);
+  // Declared before the scrubber rather than beside the timeline, because a continuation
+  // entry names the action it came from and a published action node carries its own snapshot
+  // name - so the resolver is the one thing standing between "evidence 2" and "evidence 2,
+  // after Open the pull request".
+  const nodeById = new Map((version?.graph.nodes ?? []).map((node) => [node.id, node]));
+  const nameOfNode = (nodeId: string): string | null => {
+    const node = nodeById.get(nodeId);
+    return node && version ? nodeLabel(version.graph, node, []) : null;
+  };
+  const rounds = runRounds(detail, nameOfNode);
   const viewed = selectedSubmission(detail, roundId);
+  const viewedRound = rounds.find((round) => round.submissionId === viewed?.id) ?? null;
   const latest = rounds.at(-1) ?? null;
   const isLatest = viewed === null || viewed.id === latest?.submissionId;
   /**
@@ -373,6 +494,20 @@ export function WorkflowRunView({
   const inspectorGate = detail.inspectorGate;
   const failedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.state === "error");
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
+  // Split by what the attempt IS, read off the durable snapshot column the runtime writes for
+  // exactly this kind - never guessed from the absence of a verdict, which is also what an
+  // errored reviewer looks like.
+  //
+  // The action that AUTHORIZED this segment is shown with it even though it belongs to the
+  // parent, because a segment whose own provenance is invisible reads as a round that started
+  // from nowhere. It is the one deliberate cross-submission read, and the runtime wrote the
+  // link.
+  const continuationSource = continuationSourceAttempt(detail, viewed?.id ?? null);
+  const actionAttempts = [
+    ...(continuationSource ? [continuationSource] : []),
+    ...roundAttempts.filter((attempt) => attempt.sessionAction !== null),
+  ];
+  const reviewAttempts = roundAttempts.filter((attempt) => attempt.sessionAction === null);
   const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
   const statuses = nodeStatusesForSubmission(detail, viewed?.id ?? null);
   const calls = detail.llmCalls ?? [];
@@ -404,11 +539,6 @@ export function WorkflowRunView({
     detail.nextLlmCallAfter,
   );
   const timeline = eventsByRound(detail);
-  const nodeById = new Map((version?.graph.nodes ?? []).map((node) => [node.id, node]));
-  const nameOfNode = (nodeId: string): string | null => {
-    const node = nodeById.get(nodeId);
-    return node && version ? nodeLabel(version.graph, node, []) : null;
-  };
   const roundOfSubmission = (submissionId: string): number | null =>
     detail.submissions.find((submission) => submission.id === submissionId)?.round ?? null;
   const uncertainDeliveries = detail.deliveries.filter((delivery) => delivery.state === "uncertain");
@@ -653,7 +783,12 @@ export function WorkflowRunView({
             {rounds.map((round) => (
               <Tooltip
                 key={round.submissionId}
-                label={`${round.label}: ${round.status.label}`}
+                // The provenance ADDS to the round and its status rather than replacing
+                // them: a continuation entry is still an entry whose state a reader wants.
+                label={[
+                  `${round.label}: ${round.status.label}`,
+                  segmentProvenanceSentence(round),
+                ].filter(Boolean).join(". ")}
               >
                 <button
                   className={`wf-run-round workflow-${round.status.tone}${
@@ -667,6 +802,14 @@ export function WorkflowRunView({
               </Tooltip>
             ))}
           </div>
+          {/* Said under the scrubber rather than only in a tooltip: a second entry under one
+              round looks exactly like a repair, and the whole point of the segment model is
+              that it is not one. */}
+          {viewedRound && segmentProvenanceSentence(viewedRound) && (
+            <p className="wf-run-notice" role="status">
+              {segmentProvenanceSentence(viewedRound)}
+            </p>
+          )}
           {!isLatest && (
             <p className="wf-run-stale" role="status">
               Viewing an earlier round. The pipeline, verdicts and timeline below are that
@@ -699,9 +842,29 @@ export function WorkflowRunView({
             const attempt = latestAttemptByNode.get(nodeId);
             return attempt ? checkOutcomeOf(attempt)?.status ?? null : null;
           }}
+          actionWaitFor={(nodeId) => {
+            // The attempt's OWN durable state, not `summary.actionWait`. A repair round can
+            // run several actions in turn and the summary carries one; scrubbing to an
+            // earlier segment would otherwise paint the live wait onto a finished action.
+            const attempt = latestAttemptByNode.get(nodeId);
+            return attempt ? sessionActionProgress(attempt)?.wait ?? null : null;
+          }}
+          inspectorStatus={isLatest ? inspectorFooterStatus(detail.summary.gate) : null}
+          inspectorDetail={isLatest && inspectorGate
+            ? gateWaitSentence(inspectorGate.state.waitReason)
+            : null}
           repair={detail.summary.maxRepairRounds > 0
             ? "Any fail returns the submission to Session for repair, then the whole pipeline runs again."
             : null}
+          disabledNodeIds={detail.run.disabledNodeIds ?? []}
+          disabledChipFor={(nodeId) =>
+            // Scoped to the VIEWED round via `latestAttemptByNode`: scrubbing to an
+            // earlier round shows that round's real outcomes under the red row treatment.
+            disabledStatusFor(detail.run.disabledNodeIds, nodeId, latestAttemptByNode.get(nodeId))}
+          onToggleNodes={onToggleNodesDisabled
+            && !["completed", "cancelled", "failed"].includes(detail.run.status)
+            ? onToggleNodesDisabled
+            : undefined}
         />
       ) : (
         <p className="wf-run-error" role="alert">
@@ -717,9 +880,31 @@ export function WorkflowRunView({
         </p>
       )}
 
+      {/* Its own section, above the verdicts. An action is what a round DID rather than what
+          it decided, and folding it in under "Reviewer verdicts" would file a stage that
+          returns no verdict under a heading that promises one. */}
+      {actionAttempts.length > 0 && (
+        <section className="wf-run-section">
+          <h4>Session actions</h4>
+          <div className="wf-run-cards">
+            {actionAttempts.map((attempt) => {
+              const state = sessionActionProgress(attempt);
+              return (
+                <SessionActionCard
+                  key={attempt.id}
+                  attempt={attempt}
+                  state={state}
+                  status={sessionActionStatus(attempt.state, state?.wait ?? null)}
+                />
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <section className="wf-run-section">
         <h4>Reviewer verdicts</h4>
-        {roundAttempts.length === 0 ? (
+        {reviewAttempts.length === 0 ? (
           <p className="wf-run-empty">
             {inspectorOnly
               ? "This Inspector repair round ran no Personas."
@@ -727,7 +912,7 @@ export function WorkflowRunView({
           </p>
         ) : (
           <div className="wf-run-cards">
-            {roundAttempts.flatMap((attempt) => {
+            {reviewAttempts.flatMap((attempt) => {
               // A check is asked FIRST, because it also carries a verdict - a synthetic one,
               // so the Join and the repair packet need no special case. Asking the verdict
               // first would draw every check as a Persona card with no Persona in it.
@@ -745,7 +930,7 @@ export function WorkflowRunView({
                   )]
                 : [];
             })}
-            {roundAttempts.filter((attempt) => !verdictOf(attempt) && !checkOutcomeOf(attempt)).map((attempt) => (
+            {reviewAttempts.filter((attempt) => !verdictOf(attempt) && !checkOutcomeOf(attempt)).map((attempt) => (
               <article className="wf-run-card wf-run-attempt" key={`attempt:${attempt.id}`}>
                 <header className="wf-run-card-head">
                   <strong>{attempt.persona?.name ?? nameOfNode(attempt.nodeId) ?? "Reviewer"}</strong>
@@ -869,7 +1054,14 @@ export function WorkflowRunView({
 
       {detail.deliveries.length > 0 && (
         <section className="wf-run-section">
-          <h4>Repair delivery</h4>
+          {/* "Repair delivery" was true while every packet was a repair. A session action's
+              instruction travels this same path and is the opposite of a repair, so the
+              heading follows what is actually in the list rather than naming one kind of it. */}
+          <h4>
+            {detail.deliveries.some((delivery) => delivery.kind === "session_action")
+              ? "Deliveries to the session"
+              : "Repair delivery"}
+          </h4>
           <div className="wf-run-cards">
             {detail.deliveries.map((delivery) => {
               const view = deliveryStateView(delivery.state);
@@ -1641,6 +1833,21 @@ export function WorkflowRuns({
                       : {}),
                   }),
                 }));
+            }}
+            onToggleNodesDisabled={(nodeIds, disabled) => {
+              // One action id per target set AND direction. The action store retains a
+              // request id across a failed response so a retry of the SAME intent replays
+              // idempotently - but disable and enable are different intents, and a shared
+              // key would replay the old request id, which the daemon would then correctly
+              // ignore as already applied.
+              actionController.run(
+                `set-nodes-disabled:${disabled}:${nodeIds.join(",")}`,
+                (requestId) =>
+                  workflowRequest(`/api/workflow-runs/${detail.run.id}/set-nodes-disabled`, {
+                    method: "POST",
+                    body: JSON.stringify({ requestId, nodeIds, disabled }),
+                  }),
+              );
             }}
             isActionPending={actionController.isPending}
             onOpenSession={() => {

@@ -3,6 +3,8 @@ import type { WorkflowRunDetail, WorkflowRunSummary } from "@shared/workflow.ts"
 import {
   nodeLabel,
   projectStages,
+  stageMemberKey,
+  stageMembers,
   stageName,
   stageSummary,
 } from "@shared/workflow-stages.ts";
@@ -15,19 +17,24 @@ import {
 import { Tooltip } from "../components/Tooltip.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import {
+  actionBlockSentence,
+  actionWaitSentence,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
   deliveryStateView,
+  disabledStatusFor,
   endStatus,
-  gateSummaryStatus,
   gateWaitSentence,
+  inspectorFooterStatus,
   inspectorOnlyRoundSentence,
   latestAttemptsFor,
   nodeStatusesForSubmission,
   reviewerStatus,
   runStatusLabel,
   selectedSubmission,
+  sessionActionProgress,
+  sessionActionStatus,
   shortSha,
   stageStatus,
   submissionStatus,
@@ -127,6 +134,7 @@ function Rung({
   status,
   terminal = false,
   pending = false,
+  fixed = false,
   children = null,
 }: {
   name: string;
@@ -134,6 +142,13 @@ function Rung({
   status: PipelineStatus;
   terminal?: boolean;
   pending?: boolean;
+  /**
+   * This rung is the completion POLICY, not an authored stage: it sits after the End and
+   * nothing about it can be edited from any surface. A word rather than only a class, for
+   * the reason the pipeline footer's badge is one - the distinction has to survive a reader
+   * who never sees the styling.
+   */
+  fixed?: boolean;
   children?: React.ReactNode;
 }): React.JSX.Element {
   return (
@@ -143,11 +158,13 @@ function Rung({
         `workflow-${status.tone}`,
         rungState(status, pending),
         terminal ? "is-terminal" : "",
+        fixed ? "is-fixed" : "",
       ].filter(Boolean).join(" ")}
     >
       <div className="wf-ladder-row">
         <span className="wf-ladder-title">
           <strong>{name}</strong>
+          {fixed && <span className="wf-ladder-fixed">Fixed</span>}
           {sub && <span className="wf-ladder-sub">{sub}</span>}
         </span>
         <span className="wf-ladder-state">{status.label}</span>
@@ -201,6 +218,10 @@ export function WorkflowLadder({
     node.kind === "persona" && "persona" in node
       ? [{ id: node.persona.sourcePersonaId, name: node.persona.name }]
       : []);
+  const actionNames = graph.nodes.flatMap((node) =>
+    node.kind === "session_action" && "action" in node
+      ? [{ id: node.action.sourceSessionActionId, name: node.action.name }]
+      : []);
   const calls = detail.llmCalls ?? [];
   const changesRequested = [...attempts.values()]
     .some((attempt) => verdictOf(attempt)?.verdict === "fail");
@@ -211,6 +232,10 @@ export function WorkflowLadder({
     && detail.inspectorGate.state.waitReason !== null
     ? detail.inspectorGate
     : null;
+  // The VERSION's policy, not the workflow's and not the gate's liveness: a run is pinned to
+  // the version it was published from, so the footer it shows is the one that version ends
+  // with, whatever the draft has since become.
+  const inspectorPolicy = detail.version?.completionPolicy.kind === "inspector";
   const uncertain = detail.deliveries.find((delivery) => delivery.state === "uncertain");
   const delivery = uncertain ? deliveryStateView(uncertain.state) : null;
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
@@ -226,6 +251,10 @@ export function WorkflowLadder({
         </span>
         <span className="wf-ladder-round">
           round {summary.round} / {summary.maxRepairRounds}
+          {/* Only when there IS one, and stated as evidence rather than folded into the
+              round counter: a segment costs no repair budget, so adding it to the left of
+              that slash would report a run as closer to its limit than it is. */}
+          {(summary.segment ?? 0) > 0 && ` · evidence ${(summary.segment ?? 0) + 1}`}
         </span>
       </header>
 
@@ -237,45 +266,81 @@ export function WorkflowLadder({
         <Rung name="Session" status={session} terminal />
 
         {pipeline.stages.map((stage, index) => {
-          const members = stage.members.map((member) => {
+          const members = stageMembers(stage).map((member) => {
             const nodeId = member.nodeId;
             const node = nodeId ? nodes.get(nodeId) : undefined;
             const attempt = nodeId ? attempts.get(nodeId) : undefined;
             const outcome = attempt ? checkOutcomeOf(attempt) : null;
-            const status = member.kind === "check"
-              ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
-              : reviewerStatus(nodeId ? statuses[nodeId] : undefined);
+            // The runs monitor's override, read-only here and under the same boundary: a
+            // switched-off gate the round has not reached reads Disabled, while an outcome
+            // this round already recorded keeps its real chip on the session tile too. An
+            // action is never in that set - the feature is scoped to `isVerdictNode` - so
+            // asking is skipped rather than relying on it to answer null.
+            //
+            // A session action then reads its OWN lifecycle table, which is the same one the
+            // run monitor uses: it has no pass/fail outcome to colour, and either evaluator's
+            // table would print an earned-looking word for a node that judged nothing.
+            // Not gated on `waiting`. A BLOCK is recorded as `state: "error"` carrying the
+            // same observation record plus its code, so gating here on the waiting state
+            // made the one sentence explaining why an action stopped unreachable on the
+            // surface whose whole job is to carry it.
+            const actionState = member.kind === "session_action" && attempt
+              ? sessionActionProgress(attempt)
+              : null;
+            const status = (member.kind === "session_action"
+              ? null
+              : disabledStatusFor(detail.run.disabledNodeIds, nodeId, attempt))
+              ?? (member.kind === "session_action"
+                ? sessionActionStatus(
+                    nodeId ? statuses[nodeId] : undefined,
+                    actionState?.wait ?? null,
+                  )
+                : member.kind === "check"
+                  ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
+                  : reviewerStatus(nodeId ? statuses[nodeId] : undefined));
             const name = node
-              ? nodeLabel(graph, node, personaNames)
-              : member.kind === "check" ? `Check · ${member.slot}` : "Missing persona";
+              ? nodeLabel(graph, node, personaNames, actionNames)
+              : member.kind === "check"
+                ? `Check · ${member.slot}`
+                : member.kind === "session_action" ? "Missing session action" : "Missing persona";
             const verdict = attempt ? verdictOf(attempt) : null;
             const meta = attempt ? verdictMeta(attempt, calls) : null;
-            return { member, name, attempt, outcome, status, verdict, meta };
+            return { member, name, attempt, outcome, status, verdict, meta, actionState };
           });
-          const status = stageStatus(members.map((member) => member.status));
+          const status = stageStatus(members.map((member) => member.status), stage.kind);
           const expanded = status.tone === "running"
             || status.tone === "failed"
             || members.some((member) => member.status.degraded);
           const objection = members.find((member) => member.verdict?.verdict === "fail");
           const repeatOffenders = status.tone === "failed"
             ? (detail.repeatOffenders ?? []).filter((offender) =>
-                stage.members.some((member) => member.nodeId === offender.nodeId))
+                stageMembers(stage).some((member) => member.nodeId === offender.nodeId))
             : [];
 
           return (
             <Rung
-              key={stage.joinId ?? `stage:${index}`}
-              name={stageName(stage, index, personaNames)}
+              key={stage.kind === "evaluation" && stage.joinId !== null
+                ? stage.joinId
+                : `stage:${index}`}
+              name={stageName(stage, index, personaNames, actionNames)}
               sub={stageSummary(stage)}
               status={status}
             >
               {expanded && (
                 <ul className="wf-ladder-members">
                   {members.map((member) => {
+                    // One note slot, two sources. A check explains a gate that advanced
+                    // without running; an action explains what the run is waiting for, or
+                    // why it stopped. The ladder is the Board's compact view, so this is
+                    // often the only place an operator sees the reason at all.
                     const checkExplanation = member.status.degraded
                       && member.outcome
                       ? checkStatusView(member.outcome.status).sentence
-                      : null;
+                      : member.actionState?.blocked
+                        ? actionBlockSentence(member.actionState.blocked.code)
+                        : member.actionState?.wait
+                          ? actionWaitSentence(member.actionState.wait)
+                          : null;
                     const meta = member.meta
                       ? [
                           member.verdict
@@ -292,10 +357,7 @@ export function WorkflowLadder({
                     return (
                       <li
                         className={`wf-ladder-member workflow-${member.status.tone}`}
-                        key={member.member.nodeId
-                          ?? `${index}:${member.member.kind === "check"
-                            ? member.member.slot
-                            : member.member.personaId}`}
+                        key={member.member.nodeId ?? `${index}:${stageMemberKey(member.member)}`}
                       >
                         <span className="wf-ladder-member-row">
                           <span className="wf-ladder-member-mark" aria-hidden>
@@ -336,54 +398,9 @@ export function WorkflowLadder({
           );
         })}
 
-        {gate && (
-          <Rung
-            name="Inspector gate"
-            status={gateSummaryStatus(summary.gate)}
-          >
-            <p className="wf-ladder-sentence">
-              {gateWaitSentence(gate.state.waitReason)}
-            </p>
-            <dl className="wf-ladder-meta">
-              <div>
-                <dt>pull request</dt>
-                <dd>{summary.gatePrNumber ? `#${summary.gatePrNumber}` : "not resolved"}</dd>
-              </div>
-              <div>
-                <dt>target head</dt>
-                <dd>{shortSha(summary.gateHeadShort) ?? "not pinned"}</dd>
-              </div>
-              <div>
-                <dt>posture</dt>
-                <dd>{summary.reviewPosture ?? "unknown"}</dd>
-              </div>
-            </dl>
-            {(onPreparePr || onRecheckInspector || onOpenPr) && (
-              <div className="wf-ladder-actrow">
-                {gateActions.map((action) => {
-                  const callback = action.kind === "prepare-pr"
-                    ? onPreparePr
-                    : action.kind === "recheck-inspector"
-                      ? onRecheckInspector
-                      : onOpenPr;
-                  if (!callback) return null;
-                  return (
-                    <LadderAction
-                      key={action.id}
-                      descriptor={action}
-                      pending={isPending(action.id)}
-                      onClick={callback}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </Rung>
-        )}
-
         {delivery && uncertain && (
           <Rung
-            name="Repair delivery"
+            name={uncertain.kind === "session_action" ? "Session action delivery" : "Repair delivery"}
             status={{ tone: "waiting", label: delivery.label }}
           >
             <p className="wf-ladder-sentence">{delivery.sentence}</p>
@@ -409,6 +426,73 @@ export function WorkflowLadder({
           terminal
           pending={end.tone === "waiting"}
         />
+
+        {/* AFTER the End, and drawn from the version's completion policy rather than from
+            whether the gate currently has something to say. Inspector claims a run that has
+            already reached graph success, so a ladder that showed it above End told the
+            reader the two happen the other way round - and one that appeared only while the
+            gate was waiting made the final step of an approved run vanish the moment it
+            passed.
+
+            It carries no `sub`. Every other rung's sub says what the stage HOLDS; this one
+            would say "completion policy", which the Fixed badge beside it and the sentence
+            below it already say twice - and a third label is what pushed this row past the
+            Board's ~200px column at the Electron window's minimum width. */}
+        {inspectorPolicy && (
+          <Rung
+            name="Inspector"
+            status={inspectorFooterStatus(summary.gate)}
+            fixed
+          >
+            <p className="wf-ladder-sentence">
+              {gate
+                ? gateWaitSentence(gate.state.waitReason)
+                : "Reviews the finished pull request once the workflow succeeds."}
+            </p>
+            {/* The FACTS and the buttons stay gated on a live gate, even though the rung no
+                longer is. Making the rung unconditional was the point of the footer; moving
+                its body with it printed `pull request: not resolved · target head: not
+                pinned · posture: unknown` beside a permanently disabled Open PR from the
+                first submission of every Inspector workflow - three unknowns and a dead
+                control, for a gate the run has not reached. */}
+            {gate && (
+              <dl className="wf-ladder-meta">
+                <div>
+                  <dt>pull request</dt>
+                  <dd>{summary.gatePrNumber ? `#${summary.gatePrNumber}` : "not resolved"}</dd>
+                </div>
+                <div>
+                  <dt>target head</dt>
+                  <dd>{shortSha(summary.gateHeadShort) ?? "not pinned"}</dd>
+                </div>
+                <div>
+                  <dt>posture</dt>
+                  <dd>{summary.reviewPosture ?? "unknown"}</dd>
+                </div>
+              </dl>
+            )}
+            {gate && (onPreparePr || onRecheckInspector || onOpenPr) && (
+              <div className="wf-ladder-actrow">
+                {gateActions.map((action) => {
+                  const callback = action.kind === "prepare-pr"
+                    ? onPreparePr
+                    : action.kind === "recheck-inspector"
+                      ? onRecheckInspector
+                      : onOpenPr;
+                  if (!callback) return null;
+                  return (
+                    <LadderAction
+                      key={action.id}
+                      descriptor={action}
+                      pending={isPending(action.id)}
+                      onClick={callback}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </Rung>
+        )}
       </ul>
 
       {actionError && (

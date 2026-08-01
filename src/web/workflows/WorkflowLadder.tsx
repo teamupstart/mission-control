@@ -32,6 +32,8 @@ import {
   inspectorOnlySkipStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
+  previousFullWorkflowAttempts,
+  priorAttemptPassed,
   reviewerStatus,
   runStatusLabel,
   selectedSubmission,
@@ -238,6 +240,9 @@ export function WorkflowLadder({
   const session = submissionStatus(submission, changesRequested);
   const end = endStatus(detail, submission, true);
   const inspectorOnly = submission?.mode === "inspector_only";
+  const previousFullAttempts = inspectorOnly
+    ? previousFullWorkflowAttempts(detail, submission)
+    : new Map();
   const gate = detail.inspectorGate
     && detail.inspectorGate.state.waitReason !== null
     ? detail.inspectorGate
@@ -280,7 +285,10 @@ export function WorkflowLadder({
             const nodeId = member.nodeId;
             const node = nodeId ? nodes.get(nodeId) : undefined;
             const attempt = nodeId ? attempts.get(nodeId) : undefined;
-            const outcome = attempt ? checkOutcomeOf(attempt) : null;
+            const priorAttempt = nodeId ? previousFullAttempts.get(nodeId) : undefined;
+            const outcome = attempt
+              ? checkOutcomeOf(attempt)
+              : inspectorOnly && priorAttempt ? checkOutcomeOf(priorAttempt) : null;
             // The runs monitor's override, read-only here and under the same boundary: a
             // switched-off gate the round has not reached reads Disabled, while an outcome
             // this round already recorded keeps its real chip on the session tile too. An
@@ -302,6 +310,7 @@ export function WorkflowLadder({
               nodeId,
               node !== undefined,
               attempt !== undefined,
+              priorAttemptPassed(member.kind, priorAttempt),
             )
               ? inspectorOnlySkipStatus()
               : (member.kind === "session_action"

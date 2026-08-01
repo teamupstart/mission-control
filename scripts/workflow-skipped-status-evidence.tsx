@@ -20,11 +20,13 @@ const scenario = (new URLSearchParams(window.location.search).get("scenario")
 
 function inspectorDetail(): WorkflowRunDetail {
   const detail = ladderDetail("gate");
-  detail.submissions = [{
-    ...detail.submissions[0]!,
+  const prior = detail.submissions[0]!;
+  detail.submissions = [prior, {
+    ...prior,
+    id: "inspector-only-evidence",
+    round: prior.round + 1,
     mode: "inspector_only",
   }];
-  detail.attempts = [];
   detail.summary.bypassedPersonaReview = true;
   return detail;
 }

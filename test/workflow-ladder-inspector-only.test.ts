@@ -12,11 +12,13 @@ import { tooltipLabels } from "./helpers/markup.ts";
 
 test("an Inspector-only round keeps every authored stage before the gate", () => {
   const detail = ladderDetail("gate");
-  detail.submissions = [{
-    ...detail.submissions[0]!,
+  const prior = detail.submissions[0]!;
+  detail.submissions = [prior, {
+    ...prior,
+    id: "inspector-only",
+    round: prior.round + 1,
     mode: "inspector_only",
   }];
-  detail.attempts = [];
   detail.summary.bypassedPersonaReview = true;
   const html = renderToStaticMarkup(createElement(WorkflowLadder, {
     summary: detail.summary,

@@ -165,6 +165,31 @@ export function latestAttemptsFor(
   return newest;
 }
 
+/** The newest full-workflow submission before the round being viewed, by node id. */
+export function previousFullWorkflowAttempts(
+  detail: WorkflowRunDetail,
+  submission: WorkflowSubmission | null,
+): Map<string, WorkflowNodeAttempt> {
+  if (!submission) return new Map();
+  const ordered = orderedSubmissions(detail);
+  const index = ordered.findIndex((candidate) => candidate.id === submission.id);
+  if (index < 1) return new Map();
+  const previous = ordered.slice(0, index).reverse()
+    .find((candidate) => candidate.mode === "full_workflow");
+  return latestAttemptsFor(detail, previous?.id ?? null);
+}
+
+/** Whether a prior attempt earned the green Inspector-repair bypass treatment. */
+export function priorAttemptPassed(
+  kind: "persona" | "check" | "session_action",
+  attempt: WorkflowNodeAttempt | undefined,
+): boolean {
+  if (!attempt) return false;
+  if (kind === "check") return checkOutcomeOf(attempt)?.status === "passed";
+  if (kind === "session_action") return sessionActionProgress(attempt)?.complete === true;
+  return verdictOf(attempt)?.verdict === "pass";
+}
+
 export function verdictOf(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
   return attempt.verdict as unknown as PersonaVerdict | null;
 }
@@ -354,11 +379,13 @@ export function canShowInspectorOnlySkip(
   memberNodeId: string | null,
   nodeExists: boolean,
   hasCurrentAttempt: boolean,
+  passedPriorFullRound: boolean,
 ): boolean {
   return inspectorOnly
     && memberNodeId !== null
     && nodeExists
-    && !hasCurrentAttempt;
+    && !hasCurrentAttempt
+    && passedPriorFullRound;
 }
 
 const REVIEWER_STATUSES: Record<

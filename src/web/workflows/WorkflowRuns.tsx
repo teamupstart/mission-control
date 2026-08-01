@@ -51,6 +51,8 @@ import {
   inspectorFooterStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
+  previousFullWorkflowAttempts,
+  priorAttemptPassed,
   readCapturedContext,
   runRounds,
   runStatusLabel,
@@ -509,6 +511,17 @@ export function WorkflowRunView({
   ];
   const reviewAttempts = roundAttempts.filter((attempt) => attempt.sessionAction === null);
   const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
+  const previousFullAttempts = inspectorOnly
+    ? previousFullWorkflowAttempts(detail, viewed)
+    : new Map<string, WorkflowNodeAttempt>();
+  const priorPassedNodeIds = inspectorOnly && version
+    ? version.graph.nodes.flatMap((node) => {
+        if (node.kind !== "persona" && node.kind !== "check" && node.kind !== "session_action") {
+          return [];
+        }
+        return priorAttemptPassed(node.kind, previousFullAttempts.get(node.id)) ? [node.id] : [];
+      })
+    : [];
   const statuses = nodeStatusesForSubmission(detail, viewed?.id ?? null);
   const calls = detail.llmCalls ?? [];
   const completionClaims = detail.events.flatMap((event) => {
@@ -840,9 +853,13 @@ export function WorkflowRunView({
             // check that was skipped or could not run passes the gate, so the verdict says
             // "pass" for a command that never executed.
             const attempt = latestAttemptByNode.get(nodeId);
-            return attempt ? checkOutcomeOf(attempt)?.status ?? null : null;
+            const prior = inspectorOnly ? previousFullAttempts.get(nodeId) : undefined;
+            return attempt
+              ? checkOutcomeOf(attempt)?.status ?? null
+              : prior ? checkOutcomeOf(prior)?.status ?? null : null;
           }}
           inspectorOnly={inspectorOnly}
+          priorPassedNodeIds={priorPassedNodeIds}
           actionWaitFor={(nodeId) => {
             // The attempt's OWN durable state, not `summary.actionWait`. A repair round can
             // run several actions in turn and the summary carries one; scrubbing to an

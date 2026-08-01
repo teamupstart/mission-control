@@ -30,6 +30,8 @@ import {
   inspectorOnlySkipStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
+  previousFullWorkflowAttempts,
+  priorAttemptPassed,
   readCapturedContext,
   reviewerStatus,
   runRounds,
@@ -290,11 +292,43 @@ test("an Inspector-only repair marks previously passed stages as green skipped",
 });
 
 test("an Inspector-only repair never treats a missing pipeline member as previously passed", () => {
-  assert.equal(canShowInspectorOnlySkip(true, null, false, false), false);
-  assert.equal(canShowInspectorOnlySkip(true, "stale-node", false, false), false);
-  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, false), true);
-  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, true), false);
-  assert.equal(canShowInspectorOnlySkip(false, "authored-node", true, false), false);
+  assert.equal(canShowInspectorOnlySkip(true, null, false, false, true), false);
+  assert.equal(canShowInspectorOnlySkip(true, "stale-node", false, false, true), false);
+  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, false, true), true);
+  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, true, true), false);
+  assert.equal(canShowInspectorOnlySkip(false, "authored-node", true, false, true), false);
+  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, false, false), false);
+});
+
+test("Inspector-only skips inherit only earned outcomes from the preceding full round", () => {
+  const first = submission("full-1", 1);
+  const previous = submission("full-2", 2);
+  const inspector = submission("inspector", 3, { mode: "inspector_only" });
+  const passedPersona = attempt("persona", previous.id, "persona-node", {
+    verdict: { verdict: "pass" } as never,
+  });
+  const skippedCheck = attempt("check", previous.id, "check-node", {
+    verdict: { verdict: "pass" } as never,
+    output: {
+      status: "skipped",
+      slot: "test",
+      command: null,
+      exitCode: null,
+      output: "",
+      truncatedBytes: 0,
+      note: "No command is configured.",
+    },
+  });
+  const stale = attempt("stale", first.id, "stale-node", {
+    verdict: { verdict: "pass" } as never,
+  });
+  const prior = previousFullWorkflowAttempts(
+    detail([first, previous, inspector], [stale, passedPersona, skippedCheck]),
+    inspector,
+  );
+  assert.deepEqual([...prior.keys()].sort(), ["check-node", "persona-node"]);
+  assert.equal(priorAttemptPassed("persona", prior.get("persona-node")), true);
+  assert.equal(priorAttemptPassed("check", prior.get("check-node")), false);
 });
 
 test("the Disabled chip follows the engine's claim-time boundary, never a reached outcome", () => {

@@ -55,6 +55,7 @@ export function RunPipeline({
   metaFor,
   checkOutcomeFor,
   inspectorOnly = false,
+  priorPassedNodeIds,
   actionWaitFor,
   inspectorDetail = null,
   inspectorStatus = null,
@@ -81,6 +82,8 @@ export function RunPipeline({
   checkOutcomeFor?: (nodeId: string) => WorkflowCheckStatus | null;
   /** This round bypassed stages that passed before an Inspector-requested repair. */
   inspectorOnly?: boolean;
+  /** Nodes with an earned pass in the preceding full-workflow round. */
+  priorPassedNodeIds?: readonly string[];
   /**
    * What a session action node is waiting FOR, when it is waiting.
    *
@@ -130,6 +133,10 @@ export function RunPipeline({
   const disabledSet = useMemo(
     () => new Set(disabledNodeIds ?? []),
     [disabledNodeIds],
+  );
+  const priorPassedSet = useMemo(
+    () => new Set(priorPassedNodeIds ?? []),
+    [priorPassedNodeIds],
   );
 
   if (!pipeline) {
@@ -201,6 +208,7 @@ export function RunPipeline({
               member.nodeId,
               node !== undefined,
               member.nodeId !== null && statuses[member.nodeId] !== undefined,
+              member.nodeId !== null && priorPassedSet.has(member.nodeId),
             )
               ? inspectorOnlySkipStatus()
               // The chip is the viewed round's history: Disabled only when the auto-pass

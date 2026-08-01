@@ -12,18 +12,44 @@ npm run test:e2e
 Useful flags:
 
 ```sh
-npm run test:e2e -- --headed          # watch it run
-npm run test:e2e -- --debug           # step through with the inspector
-npm run test:e2e -- -g "conversation" # one spec
+npm run test:e2e -- --headed                        # watch it run
+npm run test:e2e -- --debug                         # step through with the inspector
+npm run test:e2e -- -g "conversation"               # one test, matched by title
+npm run test:e2e -- e2e/specs/dispatch-and-converse.spec.ts   # one spec file
 npx playwright show-trace test-results/<dir>/trace.zip
 ```
 
 ## Evidence
 
-[`evidence/conversation.png`](evidence/conversation.png) is a committed capture of a green
-run: a dispatched session's expanded conversation carrying the seeded dispatch turn plus the
-three messages the spec types and the three mocked replies that came back, with the
-`Agent SDK` runtime badge and the `Claude e2e Mock` model line the driver reported.
+Two artifacts are committed for the dispatch-and-converse suite, because a green Playwright
+run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all configured
+`on-failure`, so success is exactly the case with no record.
+
+### The run
+
+Focused run of `specs/dispatch-and-converse.spec.ts`, verbatim:
+
+```
+$ npx playwright test --config e2e/playwright.config.ts e2e/specs/dispatch-and-converse.spec.ts --reporter=list
+
+Running 3 tests using 3 workers
+
+  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:61:1 › dispatching an agent puts a live session on the fleet (5.5s)
+  ✓  2 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:142:1 › the dispatched agent was launched headless, without the daemon's terminal identity (5.5s)
+  ✓  3 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:84:1 › typing into the conversation gets a reply back from the agent (8.1s)
+
+  3 passed (8.6s)
+```
+
+Reproduce it with that command, or `npm run test:e2e` for the whole suite. Both need a
+successful `npm run build` first.
+
+### The conversation
+
+[`evidence/conversation.png`](evidence/conversation.png) is a capture from a green run: a
+dispatched session's expanded conversation carrying the seeded dispatch turn plus the three
+messages the spec types and the three mocked replies that came back, with the `Agent SDK`
+runtime badge and the `Claude e2e Mock` model line the driver reported.
 
 Regenerate it with:
 
@@ -33,8 +59,7 @@ MC_E2E_EVIDENCE=1 npm run test:e2e
 
 It is behind that flag rather than captured on every run because the card carries a relative
 timestamp and a fresh worktree uuid, so an unconditional capture would rewrite a binary on
-every run for no added signal. Playwright's own `screenshot`/`video`/`trace` settings still
-fire automatically on failure; this covers the success path, which they do not.
+every run for no added signal.
 
 ## What this layer is for
 

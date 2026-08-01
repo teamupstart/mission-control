@@ -41,23 +41,31 @@ runtime must be designed and estimated explicitly during implementation. If it i
 larger than the rest of Phase 2, split it into its own dependency-linked implementation unit
 before coding rather than hiding that scope inside this phase.
 
-**Split recorded:** that escape hatch was taken. The first implementation unit lands the
+**Split recorded:** that escape hatch was taken. The first implementation unit landed the
 graph, configuration, validation, presentation, scheduler boundary, and a tested execution
-seam. Its production executor is deliberately `null`: no command is spawned, and a configured,
-authorized Check records `unavailable` and passes with a sentence. The pooled lease, process
-supervisor, durable lease table, pool pins, environment scrubbing, and startup recovery
-specified below are the dependency-linked execution-runtime unit. The runtime-specific tests,
-manual checks, and exit criteria below apply to that follow-up rather than to the first unit.
+seam, with its production executor deliberately `null` - no command was spawned, and a
+configured, authorized Check recorded `unavailable` and passed with a sentence. The pooled
+lease, process supervisor, durable lease table, pool pins, environment scrubbing, and startup
+recovery specified below were the dependency-linked execution-runtime unit, and the
+runtime-specific tests, manual checks, and exit criteria below applied to that follow-up rather
+than to the first unit.
 
-**That follow-up is now decomposed:** `docs/plans/check-execution-runtime/phased-plan.md`
-(rendered page beside it) breaks the runtime unit into four merge-aware phases and records two
-findings this document could not have known. `treehouse return` accepts no holder argument, so
-the "holder-verified idempotent return" specified at lines 291-301 is reached by exclusive
-coordination plus a distinct holder token rather than by asking the CLI. And a distinct holder
-token makes the shared pool reaper refuse a check lease outright, which is a stronger
-protection than the `PoolPins` entry specified at lines 281-289 - both ship, and the
-consequence, that leaked check leases need their own collector, is new work that directory
-owns. The "deliberately null" sentence above stops being true when that unit's Phase 4 merges.
+**That follow-up has now shipped**, decomposed and implemented in
+`docs/plans/check-execution-runtime/` (`phased-plan.md`, with a rendered page beside it) as four
+merge-aware phases: the lease foundation, the streaming process supervisor, the check executor
+that composes them, and the automatic repair loop the operator asked for in the same breath.
+**The "deliberately null" executor is gone as of that unit's Phase 4** - a configured,
+authorized check now leases a pooled worktree pinned to the captured commit, runs its argv, and
+fails the submission on a non-zero exit. Read that directory rather than this document for how
+the runtime actually behaves; what remains below is the specification it was built against.
+
+That decomposition also recorded two findings this document could not have known. `treehouse
+return` accepts no holder argument, so the "holder-verified idempotent return" specified at
+lines 291-301 is reached by exclusive coordination plus a distinct holder token rather than by
+asking the CLI. And a distinct holder token makes the shared pool reaper refuse a check lease
+outright, which is a stronger protection than the `PoolPins` entry specified at lines 281-289 -
+both ship, and the consequence, that leaked check leases need their own collector, is new work
+that directory owns.
 
 Explicit non-goals:
 

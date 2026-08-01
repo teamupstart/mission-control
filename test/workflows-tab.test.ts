@@ -109,6 +109,7 @@ function view(session: Session, over: Partial<SessionViewProps> = {}): SessionVi
     foremanAllowlist: [],
     inputReviewBySession: new Map<string, string>(),
     pendingReviewIds: new Set<string>(),
+    reviews: [],
     workflowRunBySession: new Map([[session.id, { ...LADDER_SUMMARY, sessionId: session.id }]]),
     onOpenWorkflowRun: () => {},
     ...over,

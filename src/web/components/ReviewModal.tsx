@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ReviewItem, Session } from "@shared/types.ts";
+import type { PlanDecisionAnswer, ReviewItem, Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
@@ -76,10 +76,11 @@ export function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Elemen
   async function resolve(
     action: "approve" | "reject" | "answer" | "dismiss",
     response: string | null,
+    selections: PlanDecisionAnswer[] | null = null,
   ) {
     setBusy(true);
     setErr(null);
-    const r = await api.resolveReview(review.id, action, response);
+    const r = await api.resolveReview(review.id, action, response, selections);
     setBusy(false);
     if (!r.ok) setErr(r.error ?? "failed");
   }
@@ -138,7 +139,7 @@ export function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Elemen
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           onDismiss={() => void resolve("dismiss", null)}
-          onSubmit={(response) => void resolve("answer", response)}
+          onSubmit={(response, selections) => void resolve("answer", response, selections)}
         />
       ) : review.kind === "plan-decisions" ? null : review.kind === "input" ? (
         <div className="review-actions">

@@ -921,7 +921,11 @@ function Wrapup({
     // The human's "yes" arrives long after the drain, so this goes through the
     // same delivery path a queue item does - and the daemon's inject fails loudly
     // rather than silently dropping a multi-line instruction.
-    const r = await api.injectPrompt(sessionId, body);
+    // This is the work-queue state machine's explicit delivery boundary, not a free-form
+    // conversation draft. It records the wrap-up answer immediately after acceptance, so
+    // it must keep the direct acknowledged path instead of returning while an outbox row
+    // is still editable.
+    const r = await api.injectPrompt(sessionId, body, false);
     if (!r.ok) {
       setBusy(false);
       setErr(r.error ?? "could not send that");

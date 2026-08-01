@@ -10,3 +10,6 @@ release/
 .env.*
 .claude/settings.local.json
 .claude/worktrees
+test-results/
+playwright-report/
+e2e/.probe/

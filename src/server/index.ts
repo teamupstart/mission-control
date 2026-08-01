@@ -23,12 +23,14 @@ import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
+import { PendingTurnManager } from "./pending-turns.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPoolReaper } from "./pool.ts";
 import { installCheckLeasePins } from "./pool-lease.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
+import { CheckRuntime } from "./workflows/check-runtime.ts";
 import { startPrPoller } from "./pr.ts";
 import { startInspector } from "./inspector/worker.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
@@ -48,6 +50,7 @@ import { ScheduleManager } from "./schedules/manager.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
+import { SessionActionManager } from "./workflows/session-actions.ts";
 import { WorkflowManager } from "./workflows/manager.ts";
 import { EnsembleManager } from "./ensembles/manager.ts";
 import { TaskManagerGateway } from "./ensembles/member-launch.ts";
@@ -83,9 +86,13 @@ const reviews = new ReviewManager(registry);
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
 const sdkSessions = new SdkSupervisor(registry);
-const tasks = new TaskManager(registry, undefined, sdkSessions);
+const pendingTurns = new PendingTurnManager(registry, sdkSessions);
+const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
+// Shares the Persona manager's store handle, so both catalogs and the workflow family are
+// read through one connection and one transaction boundary.
+const sessionActions = new SessionActionManager(registry, personas.store);
 // One ceiling on tool-less review work for the whole daemon, constructed here and injected,
 // never reached for as a module global. Workflow Persona attempts and context compaction
 // share it today. The Foreman is a separate process and unrelated background jobs keep
@@ -97,6 +104,37 @@ const reviewScheduler = createReviewScheduler();
 // Persona reviews it exists to pace. Constructed here and injected for the same reason: a
 // subsystem reaching for its own limiter is a subsystem whose "two" quietly becomes four.
 const checkScheduler = createCheckScheduler();
+// Workflow check leases and the runtime that takes them. The ORDERING here is the whole
+// protection, not tidiness, and it runs ABOVE the WorkflowManager for a second reason on top
+// of the reaper one: `workflows.start()` recovers runs and can schedule a check attempt
+// immediately, and a check must not be able to lease a tree before the daemon knows which
+// trees it already holds.
+//
+// A check holds a pooled worktree with no session, no task and - between the lease and the
+// spawn - no processes, so every liveness signal the reaper trusts reads "idle" on a tree
+// that is about to be built in. Two things stop it being reaped, and both have to be in
+// place before the reaper's first sweep: the pin source below, and the durable rows
+// reconciliation restores into it. A pin registered after that sweep is invisible to it -
+// the same rule that makes `sdkSessions.restore()` run before `startPoller`.
+//
+// Reconciliation resolves only what it can prove safe. It returns a tree whose supervisor
+// gate was never released, and otherwise asks the supervisor's group recovery whether
+// anything is still running in it: proving the tree is OURS is not proving that nothing is
+// still writing in it, and only the second authorises a `return --force`. That seam is
+// injected here - it is declared with a refusing default, so a daemon that forgot this line
+// would keep every non-sentinel lease across a restart and quietly lose a pool slot each time.
+//
+// Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
+// daemon that refused to start over one unreconcilable lease would be worse than one
+// running without it.
+const checkLeases = new CheckLeaseManager();
+const checkRuntime = new CheckRuntime(checkLeases);
+installCheckLeasePins(() => checkLeases.pinnedPaths());
+try {
+  await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
+} catch (err) {
+  console.error("[mission-control] could not reconcile check leases:", err);
+}
 // Assigned below. The Workflow binding guard reaches it through this reference, and the reference
 // is safe because the guard fires only at bind time - long after `ensembles` is constructed. This
 // is the two-way seam the plan requires: Workflow asks Ensemble whether a session may be bound,
@@ -107,6 +145,14 @@ const workflows = new WorkflowManager(registry, personas.store, {
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
+  // The gate stops being a formality here. A configured, allowlisted check now leases a
+  // pooled worktree pinned to the captured commit, runs the operator's argv in it, and a
+  // non-zero exit FAILS the submission - where before it recorded "not run" and passed.
+  checkDeps: (attempt) => ({ execute: checkRuntime.executorFor(attempt) }),
+  // And its other half: no check node may be retried onto a second worktree while the first
+  // attempt's lease is still unresolved.
+  unresolvedCheckLease: (submissionId, nodeId) =>
+    checkRuntime.unresolvedLeaseForNode(submissionId, nodeId),
   inject: runtimePromptInjector(sdkSessions),
   canBindSessionToWorkflow: (sessionId) => ensembles.canBindSessionToWorkflow(sessionId),
   externalBindingEligibility: ({ sessionId }) => ensembles.canBindSessionToWorkflow(sessionId),
@@ -163,7 +209,13 @@ ensembles = new EnsembleManager(registry, undefined, {
   // materialization through TaskManager, guarded pane injection, and the Workflow external
   // boundary. This is what lets a human-confirmed decision reap losers, preserve one exact winner,
   // and optionally submit its clean snapshot into a published Workflow - all restart-safe.
-  finalize: createFinalizeDeps({ registry, tasks, workflows, sdk: sdkSessions }),
+  finalize: createFinalizeDeps({
+    registry,
+    tasks,
+    workflows,
+    sdk: sdkSessions,
+    pendingTurns,
+  }),
   // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
   // selection is a typed refusal here, never a Preview downgrade.
   resolveWorkflowVersion: (workflowId, version) => resolveEnsembleWorkflowVersion(workflows, workflowId, version),
@@ -215,38 +267,17 @@ const away = startAwayWatcher(registry, undefined, {
   workflowRepeatOffenders: () => workflows.repeatOffenderSignals(),
 });
 const stopHeadlessPruner = startHeadlessPruner();
-// Workflow check leases, and the ORDERING here is the whole protection, not tidiness.
-//
-// A check holds a pooled worktree with no session, no task and - between the lease and the
-// spawn - no processes, so every liveness signal the reaper trusts reads "idle" on a tree
-// that is about to be built in. Two things stop it being reaped, and both have to be in
-// place before the reaper's first sweep: the pin source below, and the durable rows
-// reconciliation restores into it. A pin registered after that sweep is invisible to it -
-// the same rule that makes `sdkSessions.restore()` run before `startPoller`.
-//
-// Reconciliation resolves only what it can prove safe. It returns a tree whose supervisor
-// gate was never released, and otherwise keeps the lease: proving the tree is OURS is not
-// proving that nothing is still writing in it, and only the second authorises a
-// `return --force`. The group-emptiness seam that can answer that is injected by a later
-// change; until then the default refuses and the lease is kept, which is the fail-closed
-// direction. Inert today either way - nothing acquires a check lease yet.
-//
-// Awaited rather than fire-and-forget for the ordering itself, and best-effort because a
-// daemon that refused to start over one unreconcilable lease would be worse than one
-// running without it.
-const checkLeases = new CheckLeaseManager();
-installCheckLeasePins(() => checkLeases.pinnedPaths());
-try {
-  await checkLeases.reconcileOnStartup();
-} catch (err) {
-  console.error("[mission-control] could not reconcile check leases:", err);
-}
 // The reclamation pass rides the reaper's tick: same cadence, same lock, and it collects
 // what the reaper structurally cannot see. A check lease is held under a token outside
 // LEASE_HOLDERS precisely so the reaper refuses it, which means the reaper can never
 // collect a leaked one either - so this is an obligation that comes with that protection.
+//
+// It gets the SAME group-recovery seam startup reconciliation got, and for the same reason:
+// ownership is not emptiness, and a pass that returned a tree on ownership alone would
+// hard-reset one a build is still writing into. Left uninjected here, every non-sentinel
+// lease would be kept forever - fail closed, but a pool slot per crashed check.
 const stopPoolReaper = startPoolReaper(registry, {
-  reclaimLeases: () => checkLeases.reclaimLeaked(),
+  reclaimLeases: () => checkLeases.reclaimLeaked(checkRuntime.groupRecovery),
 });
 const stopSkillsReloader = startSkillsReloader(registry);
 // Pulls work INTO the backlog from systems that already hold it. In the daemon because
@@ -272,7 +303,20 @@ const schedules = new ScheduleManager({
 let stopSchedules = () => {};
 
 const app = buildApp(
-  registry, reviews, tasks, queues, away, personas, workflows, schedules, ensembles, sdkSessions,
+  registry,
+  reviews,
+  tasks,
+  queues,
+  away,
+  personas,
+  workflows,
+  schedules,
+  ensembles,
+  sdkSessions,
+  undefined,
+  undefined,
+  sessionActions,
+  pendingTurns,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -292,6 +336,9 @@ if (hasDist) {
 }
 
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
+  // Startup recovery changes durable rows, so it starts only after this process wins the
+  // loopback port and is therefore the daemon's sole SQLite writer.
+  pendingTurns.start();
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
@@ -325,7 +372,13 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  pendingTurns.stop();
   await sdkSessions.stopAll();
+  // `workflows.stop()` cancels any live check process group and then waits for its attempt to
+  // hand the pooled worktree back. It MUST stay above `stopPoolReaper()` below: those returns
+  // run through the pool adapter and its lock, and stopping the reaper first would leave the
+  // last thing that could collect a lease already shut down while leases were still being
+  // returned. Do not reorder.
   await workflows.stop();
   ensembles.stop();
   away.stop();

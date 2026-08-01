@@ -1,7 +1,7 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 
 export type WorkflowCanvasNodeData = {
-  kind: "session" | "persona" | "all_pass" | "check" | "end";
+  kind: "session" | "persona" | "all_pass" | "check" | "session_action" | "end";
   label: string;
   subtitle: string;
   readOnly: boolean;
@@ -24,6 +24,7 @@ const INPUT_PORT_LABELS: Record<WorkflowCanvasNodeData["kind"], string> = {
   persona: "activate",
   all_pass: "result",
   check: "activate",
+  session_action: "activate",
   end: "terminal",
 };
 
@@ -33,6 +34,7 @@ const KIND_WORDS: Record<WorkflowCanvasNodeData["kind"], string> = {
   persona: "persona",
   all_pass: "All-pass Join",
   check: "check",
+  session_action: "session action",
   end: "end",
 };
 
@@ -45,7 +47,7 @@ export function WorkflowNode({ data }: NodeProps<WorkflowCanvasNode>): React.JSX
       aria-description={`${data.incomingCount ?? 0} incoming and ${data.outgoingCount ?? 0} outgoing connections`}
     >
       {data.kind === "session" && <Handle aria-label="Return for changes input" type="target" id="return_for_changes" position={Position.Left} isConnectable={!data.readOnly} />}
-      {(data.kind === "persona" || data.kind === "check") && <Handle aria-label="Activate input" type="target" id="activate" position={Position.Left} isConnectable={!data.readOnly} />}
+      {(data.kind === "persona" || data.kind === "check" || data.kind === "session_action") && <Handle aria-label="Activate input" type="target" id="activate" position={Position.Left} isConnectable={!data.readOnly} />}
       {data.kind === "all_pass" && <Handle aria-label="Result input" type="target" id="result" position={Position.Left} isConnectable={!data.readOnly} />}
       {data.kind === "end" && <Handle aria-label="Terminal input" type="target" id="terminal" position={Position.Left} isConnectable={!data.readOnly} />}
       <span className="workflow-port-label workflow-port-input">
@@ -73,6 +75,15 @@ export function WorkflowNode({ data }: NodeProps<WorkflowCanvasNode>): React.JSX
           <span className="workflow-port-label workflow-port-fail">fail</span>
         </>
       )}
+      {/* ONE source handle, and deliberately not a pass/fail pair. An action reports that a
+          turn it asked for finished; it does not judge the work, and a `fail` handle here
+          would invite a route back to Session asking for a change nobody requested. */}
+      {data.kind === "session_action" && (
+        <>
+          <Handle aria-label="Complete output" type="source" id="complete" position={Position.Right} isConnectable={!data.readOnly} />
+          <span className="workflow-port-label workflow-port-complete">complete</span>
+        </>
+      )}
     </article>
   );
 }
@@ -82,5 +93,6 @@ export const WORKFLOW_NODE_TYPES: Record<WorkflowCanvasNodeData["kind"], typeof 
   persona: WorkflowNode,
   all_pass: WorkflowNode,
   check: WorkflowNode,
+  session_action: WorkflowNode,
   end: WorkflowNode,
 };

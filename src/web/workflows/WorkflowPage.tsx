@@ -1,5 +1,6 @@
 import type {
   PersonaView,
+  SessionAction,
   WorkflowRunSummary,
   WorkflowSummary,
   WorkflowVersion,
@@ -9,6 +10,7 @@ import type { ReviewItem, Session } from "@shared/types.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { WorkflowRunFilters, WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
+import { SessionActionLibrary } from "./SessionActionLibrary.tsx";
 import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
 import { WorkflowRuns } from "./WorkflowRuns.tsx";
 import { EnsembleRuns } from "./EnsembleRuns.tsx";
@@ -17,6 +19,10 @@ import { Tooltip } from "../components/Tooltip.tsx";
 const WORKFLOW_TABS = [
   ["workflows", "Author the review workflows agents are bound to"],
   ["personas", "Author the reviewer Personas workflow nodes run"],
+  // Beside Personas rather than under Workflows, because it is the same kind of thing: a
+  // reusable library a stage points at. The hint says what an action DOES, since the one
+  // mistake to prevent is reading it as a second kind of reviewer.
+  ["actions", "Author the instructions a workflow stage sends to its bound session"],
   ["runs", "Watch workflow runs and their verdicts"],
   ["ensembles", "Watch multi-agent ensembles, their evidence, and decisions"],
 ] as const;
@@ -24,6 +30,7 @@ const WORKFLOW_TABS = [
 export function WorkflowPage({
   tab,
   personas,
+  sessionActions = [],
   workflowSummaries = [],
   workflowRuns = [],
   selectedRunId = null,
@@ -50,6 +57,15 @@ export function WorkflowPage({
 }: {
   tab: WorkflowTab;
   personas: PersonaView[];
+  /**
+   * The SessionAction catalog, archived rows included.
+   *
+   * One list for three jobs: the Actions tab lists it, the builder's add controls pick from
+   * the addressable part of it, and every surface that draws a stage names its action from
+   * it. Archived rows stay in because a draft may already point at one - dropping them here
+   * would make an existing stage read "Missing session action".
+   */
+  sessionActions?: SessionAction[];
   workflowSummaries?: WorkflowSummary[];
   workflowRuns?: WorkflowRunSummary[];
   selectedRunId?: string | null;
@@ -167,6 +183,20 @@ export function WorkflowPage({
           />
         </section>
       )}
+      {tab === "actions" && (
+        <section
+          id="workflow-panel-actions"
+          role="tabpanel"
+          aria-labelledby="workflow-tab-actions"
+        >
+          <SessionActionLibrary
+            sessionActions={sessionActions}
+            hasSnapshot={hasSnapshot}
+            isOverlayOpen={isOverlayOpen}
+            onDirtyChange={onDirtyChange}
+          />
+        </section>
+      )}
       {tab === "workflows" && (
         <section
           id="workflow-panel-workflows"
@@ -176,6 +206,7 @@ export function WorkflowPage({
           <WorkflowLibrary
             summaries={workflowSummaries}
             personas={personas}
+            sessionActions={sessionActions}
             hasSnapshot={hasSnapshot}
             onDirtyChange={onDirtyChange}
             onBindVersion={onBindVersion}

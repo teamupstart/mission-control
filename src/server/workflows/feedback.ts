@@ -66,6 +66,29 @@ export interface PrHandoffInput {
   skillCommand: string;
 }
 
+/**
+ * A rendered action packet, or the refusal that it cannot be sent whole.
+ *
+ * A discriminated result rather than a `truncated` flag, because there is no useful truncated
+ * action packet: the caller's only correct response to "it does not fit" is to block, and a
+ * boolean beside a usable-looking payload invites shipping the prefix.
+ */
+export type RenderedSessionAction =
+  | { ok: true; payload: string; payloadSha256: string }
+  | { ok: false; bytes: number; limit: number };
+
+export interface SessionActionPacketInput {
+  workflowName: string;
+  workflowVersion: number;
+  runId: string;
+  /** The snapshot's name, for the envelope. Never re-read from the live library. */
+  actionName: string;
+  /** The snapshot's exact prompt Markdown. */
+  promptMarkdown: string;
+  /** Resolved from the bound harness at preparation, or null when none is required. */
+  skillCommand: string | null;
+}
+
 export interface UnchangedEvidenceNudgeInput {
   workflowName: string;
   workflowVersion: number;
@@ -338,6 +361,54 @@ export function renderUnchangedEvidenceNudge(
   return {
     ...finalizePacket(body, truncated, instruction),
     failedPersonaCount: 0,
+  };
+}
+
+/**
+ * Render one authored SessionAction packet: a small envelope plus the exact prompt.
+ *
+ * Deliberately NOT routed through `finalizePacket`, and the difference is the whole point.
+ * Every other packet is prose the DAEMON composed from verdicts or findings, so clipping it
+ * to the review budget and appending a house instruction loses nothing an operator wrote.
+ * This one carries the operator's own instruction, frozen into an immutable version, so the
+ * ceiling is the delivery row's bound rather than the review budget, and nothing is appended
+ * after it - a trailing house sentence would be an instruction nobody authored, arriving
+ * after the one they did.
+ *
+ * The prompt is still sanitized. `sanitizeWorkflowFeedback` removes bytes a terminal would
+ * read as controls and leaves plain line breaks, and that is a safety property of writing
+ * into somebody's pane rather than an edit of the text: it is the same treatment every other
+ * packet gets, applied to text that is otherwise passed through verbatim.
+ */
+export function renderSessionAction(input: SessionActionPacketInput): RenderedSessionAction {
+  const header = [
+    `Mission Control session action: ${sanitizeWorkflowFeedback(input.actionName)}`,
+    `Workflow: ${sanitizeWorkflowFeedback(input.workflowName)} v${input.workflowVersion}`,
+    `Run: ${input.runId}`,
+    "",
+  ];
+  // The skill invocation leads, exactly as the PR handoff's does, so the harness resolves it
+  // as the turn's first line. `deliveryBlock` re-checks this prefix immediately before the
+  // write, which is what stops a prepared packet invoking a link that has since drifted.
+  const lines = input.skillCommand
+    ? [sanitizeWorkflowFeedback(input.skillCommand), "", ...header]
+    : header;
+  const payload = `${lines.join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
+  // REFUSED, never truncated. Every other packet in this file clips, because every other
+  // packet is prose the daemon composed and a shorter summary is still a true summary. This
+  // one is the operator's own instruction, frozen into an immutable version: a prefix of
+  // "delete the old adapter and keep the new one" is a different request, and delivering it
+  // would change the operation without failing the run. `sessionActionPromptBytes` is derived
+  // from this budget so an authored action cannot reach here, and a version minted by some
+  // other build blocks instead of typing half a sentence.
+  const bytes = encoder.encode(payload).byteLength;
+  if (bytes > WORKFLOW_LIMITS.sessionActionPacketBytes) {
+    return { ok: false, bytes, limit: WORKFLOW_LIMITS.sessionActionPacketBytes };
+  }
+  return {
+    ok: true,
+    payload,
+    payloadSha256: createHash("sha256").update(Buffer.from(payload, "utf8")).digest("hex"),
   };
 }
 

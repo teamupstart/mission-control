@@ -10,6 +10,7 @@ import type {
   FleetCost,
   OrphanedQueueHint,
   PaneDialog,
+  PendingTurn,
   PermissionMode,
   RateLimits,
   RateLimitWindow,
@@ -54,7 +55,12 @@ import { goalLine } from "@shared/goal.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
-import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
+import type {
+  PersonaView,
+  SessionAction,
+  WorkflowRunSummary,
+  WorkflowSummary,
+} from "@shared/workflow.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -76,6 +82,7 @@ import type { HookSpec } from "./harness/types.ts";
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
 import { clampPrompt } from "./util/prompt-text.ts";
 import {
+  clearPendingTurns as clearPendingTurnsDb,
   clearQueue as clearQueueDb,
   deleteQueueItem,
   deleteTask as dbDeleteTask,
@@ -85,6 +92,7 @@ import {
   getSessionNote,
   listQueueItems,
   listQueueRows,
+  listPendingTurns,
   loadActiveTasks,
   loadResourceHoldingTerminalTasks,
   loadPrPendingTerminalTasks,
@@ -397,6 +405,17 @@ export class Registry extends EventEmitter {
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
   private personas = new Map<string, PersonaView>();
+  /**
+   * Reusable SessionActions, including archived rows for durable history links.
+   *
+   * The FULL record rides the snapshot, prompt Markdown included, exactly as a Persona's
+   * guidance does. Measured against that precedent rather than assumed: the four shipped
+   * Personas already carry roughly 60 KB of guidance in every snapshot, and one shipped
+   * action's prompt is under 2 KB. A detail-only fetch is the right answer if this catalog
+   * ever grows large, and `session-action-sse.test.ts` pins the current size so making that
+   * switch has to be a decision rather than an accident.
+   */
+  private sessionActions = new Map<string, SessionAction>();
   /** Bounded catalog projections only; full drafts and guidance stay on HTTP. */
   private workflowSummaries = new Map<string, WorkflowSummary>();
   /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
@@ -422,7 +441,7 @@ export class Registry extends EventEmitter {
   private ensembleProjection: ((taskId: string) => TaskEnsembleLink | null) | null = null;
   private workflowReset: ((noteKey: string) => void) | null = null;
   /** A terminal side effect must not cross the asynchronous reset boundary. */
-  private resettingSessionIds = new Set<string>();
+  private resettingSessionCounts = new Map<string, number>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
   private notes = new Map<string, SessionNote>();
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
@@ -560,6 +579,7 @@ export class Registry extends EventEmitter {
     reviews: ReviewItem[];
     tasks: Task[];
     personas: PersonaView[];
+    sessionActions: SessionAction[];
     workflowSummaries: WorkflowSummary[];
     workflowRunSummaries: WorkflowRunSummary[];
     ensembleSummaries: EnsembleSummary[];
@@ -572,6 +592,7 @@ export class Registry extends EventEmitter {
       reviews: [...this.reviews.values()],
       tasks: [...this.tasks.values()],
       personas: [...this.personas.values()],
+      sessionActions: [...this.sessionActions.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
       workflowRunSummaries: [...this.workflowRuns.values()],
       ensembleSummaries: [...this.ensembles.values()],
@@ -612,16 +633,32 @@ export class Registry extends EventEmitter {
     return this.sessions.get(id);
   }
 
+  /** Resolve a durable conversation key back to its current live session. */
+  sessionForNoteKey(noteKey: string): Session | undefined {
+    let owner: Session | undefined;
+    for (const session of this.sessions.values()) {
+      if (session.state === "exited" || noteKeyFor(session) !== noteKey) continue;
+      if (owner) return undefined;
+      owner = session;
+    }
+    return owner;
+  }
+
   beginSessionReset(id: string): void {
-    this.resettingSessionIds.add(id);
+    this.resettingSessionCounts.set(id, (this.resettingSessionCounts.get(id) ?? 0) + 1);
   }
 
   endSessionReset(id: string): void {
-    this.resettingSessionIds.delete(id);
+    const count = this.resettingSessionCounts.get(id);
+    if (!count || count === 1) {
+      this.resettingSessionCounts.delete(id);
+      return;
+    }
+    this.resettingSessionCounts.set(id, count - 1);
   }
 
   sessionResetInProgress(id: string): boolean {
-    return this.resettingSessionIds.has(id);
+    return this.resettingSessionCounts.has(id);
   }
 
   subscribe(fn: (e: ServerEvent) => void): () => void {
@@ -759,6 +796,27 @@ export class Registry extends EventEmitter {
 
   removePersona(id: string): void {
     if (this.personas.delete(id)) this.emitEvent({ type: "persona_remove", id });
+  }
+
+  // ---- workflow SessionAction catalog ----
+
+  /** Boot-time catalog install. It precedes serving SSE, so no incremental emit is needed. */
+  initializeSessionActions(actions: SessionAction[]): void {
+    this.sessionActions = new Map(actions.map((action) => [action.id, action]));
+  }
+
+  /**
+   * Archive comes through HERE and not through `removeSessionAction`. An archived action is
+   * still addressable - drafts and published versions name its id, and history reports it -
+   * so dropping it from the browser's map would make an existing node's source unnameable.
+   */
+  upsertSessionAction(action: SessionAction): void {
+    this.sessionActions.set(action.id, action);
+    this.emitEvent({ type: "session_action_upsert", action });
+  }
+
+  removeSessionAction(id: string): void {
+    if (this.sessionActions.delete(id)) this.emitEvent({ type: "session_action_remove", id });
   }
 
   // ---- workflow definition catalog ----
@@ -1063,6 +1121,7 @@ export class Registry extends EventEmitter {
       note: null,
       goal: null,
       queue: null,
+      pendingTurns: prev?.pendingTurns ?? [],
       orphanedQueue: null,
     };
     const overlay = this.overlayFor(base);
@@ -1118,6 +1177,7 @@ export class Registry extends EventEmitter {
     base.cost =
       prev && noteKeyFor(prev) === noteKeyFor(base) ? prev.cost : sessionCostFor(noteKeyFor(base));
     base.queue = this.queueSummaryFor(base);
+    base.pendingTurns = this.pendingTurnsFor(base);
     base.inspector = this.inspectorSummaryFor(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about every session ("no live session holds that key"), and this
@@ -1229,6 +1289,7 @@ export class Registry extends EventEmitter {
       note: null,
       goal: null,
       queue: null,
+      pendingTurns: [],
       orphanedQueue: null,
       inspector: null,
       paneDialog: null,
@@ -1238,6 +1299,7 @@ export class Registry extends EventEmitter {
     s.goal = this.goalSummaryFor(s);
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
+    s.pendingTurns = this.pendingTurnsFor(s);
     s.inspector = this.inspectorSummaryFor(s);
     this.sessions.set(s.id, s);
     this.emitSession(s);
@@ -1402,6 +1464,7 @@ export class Registry extends EventEmitter {
     next.goal = this.goalSummaryFor(next);
     if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
+    next.pendingTurns = this.pendingTurnsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
     next.inspector = this.inspectorSummaryFor(next);
     this.sessions.set(next.id, next);
@@ -1630,6 +1693,7 @@ export class Registry extends EventEmitter {
       // through `syncSessionsForCost`.
       if (noteKeyFor(next) !== noteKeyFor(target)) next.cost = sessionCostFor(noteKeyFor(next));
       next.queue = this.queueSummaryFor(next);
+      next.pendingTurns = this.pendingTurnsFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
       // A hook is how a PR url first reaches a card, and the summary is keyed on it -
       // so resolving here is what makes the chip appear on the same event that
@@ -1751,6 +1815,7 @@ export class Registry extends EventEmitter {
     next.goal = this.goalSummaryFor(next);
     next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
+    next.pendingTurns = this.pendingTurnsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
     this.rememberAgentSession(next, s.agentSessionId);
     this.ensureWorkEpisode(next);
@@ -4697,11 +4762,11 @@ export class Registry extends EventEmitter {
    * nothing then is what keeps a goal describing the last thing a human actually asked for,
    * rather than being overwritten by machinery every time a task finishes.
    *
-   * Writes BOTH the stored prompt (the refiner's input) and Tier 1's provisional goal: the
-   * human's own words, shortened to a line. Rough, but instant, free, and true - and it means
-   * a card is never blank while waiting on a model. `source: "heuristic"` is also the
-   * refiner's queue: it says "this prompt has not been summarised yet", so re-stamping it on
-   * every new prompt is what makes the goal refresh at all.
+   * The first prompt establishes an immediate provisional objective. Later prompts update the
+   * tactical focus but deliberately leave that objective standing until the intent reconciler
+   * classifies them. This is the safety boundary between "fix this small thing next" and "the
+   * whole session is now about this small thing". Prompt revisions, not `source`, are the
+   * reconciler's durable queue.
    *
    * WHICH event carries a prompt and WHAT inside it a human actually typed are both the
    * harness's to answer - `UserPromptSubmit` is Claude's event name and the scaffolding
@@ -4712,11 +4777,26 @@ export class Registry extends EventEmitter {
   private captureGoalPrompt(s: Session, spec: HookSpec, evt: HookIngest, now: number): void {
     const prompt = spec.promptText(evt);
     if (!prompt) return;
-    this.upsertGoal(
-      s.id,
-      { prompt: clampPrompt(prompt), text: goalLine(prompt), source: "heuristic" },
-      now,
-    );
+    const raw = clampPrompt(prompt);
+    const prev = this.getGoal(s.id);
+    const firstObjective = !prev?.objective;
+    const revision = (prev?.promptRevision ?? 0) + 1;
+    this.upsertGoal(s.id, {
+      prompt: raw,
+      focus: goalLine(raw),
+      relationship: null,
+      rationale: null,
+      promptRevision: revision,
+      pendingPrompts: [...(prev?.pendingPrompts ?? []), { revision, prompt: raw }],
+      ...(firstObjective
+        ? {
+            objective: raw,
+            text: goalLine(raw),
+            source: "heuristic" as const,
+            objectiveVersion: Math.max(1, prev?.objectiveVersion ?? 0),
+          }
+        : {}),
+    }, now);
   }
 
   /** The compact goal view denormalized onto a session card. */
@@ -4726,7 +4806,16 @@ export class Registry extends EventEmitter {
     // from it. Reporting that as a goal would put an empty line on the card, so a goal with
     // no text is reported as no goal.
     if (!g || !g.text) return null;
-    return { text: g.text, source: g.source, updatedAt: g.updatedAt };
+    return {
+      text: g.text,
+      source: g.source,
+      focus: g.focus,
+      relationship: g.relationship,
+      objectiveVersion: g.objectiveVersion,
+      promptRevision: g.promptRevision,
+      resolvedPromptRevision: g.resolvedPromptRevision,
+      updatedAt: g.updatedAt,
+    };
   }
 
   /** A session's full goal record, including the refiner's stored input. */
@@ -4738,14 +4827,11 @@ export class Registry extends EventEmitter {
 
   /**
    * Patch a session's goal (create on first write), merging like `upsertNote` so capturing
-   * a prompt never clears the sentence derived from an earlier one - and so a refinement
-   * never drops the prompt it was derived from.
+   * a prompt never clears the durable objective from an earlier one, and intent
+   * reconciliation never drops the latest prompt it classified.
    *
-   * `updatedAt` moves only when the SENTENCE changes. A re-derived identical goal is the
-   * common case (most follow-up prompts refine what a session is doing rather than redefine
-   * it), and letting those bump the stamp would make "when did this session last change
-   * course" unanswerable. Capturing a prompt alone never moves it either: that is input,
-   * not a change of goal.
+   * `updatedAt` moves only when the effective objective changes. A steering prompt moves the
+   * focus and prompt revision, but not the "when did this session change course" timestamp.
    */
   upsertGoal(id: string, patch: SetGoal, now = Date.now()): SessionGoal | null {
     const s = this.sessions.get(id);
@@ -4753,12 +4839,32 @@ export class Registry extends EventEmitter {
     const key = noteKeyFor(s);
     const prev = this.goals.get(key) ?? getSessionGoal(key);
     const text = patch.text !== undefined ? patch.text : prev?.text ?? null;
-    const changed = text !== (prev?.text ?? null);
+    const objective = patch.objective !== undefined ? patch.objective : prev?.objective ?? null;
+    const changed = text !== (prev?.text ?? null) || objective !== (prev?.objective ?? null);
     const next: SessionGoal = {
       noteKey: key,
       text,
       source: patch.source !== undefined ? patch.source : prev?.source ?? null,
+      objective,
       prompt: patch.prompt !== undefined ? patch.prompt : prev?.prompt ?? null,
+      focus: patch.focus !== undefined ? patch.focus : prev?.focus ?? null,
+      relationship:
+        patch.relationship !== undefined ? patch.relationship : prev?.relationship ?? null,
+      rationale: patch.rationale !== undefined ? patch.rationale : prev?.rationale ?? null,
+      objectiveVersion:
+        patch.objectiveVersion !== undefined
+          ? patch.objectiveVersion
+          : prev?.objectiveVersion ?? (objective ? 1 : 0),
+      promptRevision:
+        patch.promptRevision !== undefined ? patch.promptRevision : prev?.promptRevision ?? 0,
+      resolvedPromptRevision:
+        patch.resolvedPromptRevision !== undefined
+          ? patch.resolvedPromptRevision
+          : prev?.resolvedPromptRevision ?? 0,
+      pendingPrompts:
+        patch.pendingPrompts !== undefined
+          ? patch.pendingPrompts
+          : prev?.pendingPrompts ?? [],
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
     this.goals.set(key, next);
@@ -4823,6 +4929,18 @@ export class Registry extends EventEmitter {
 
   // ---- Foreman work queues ----
 
+  /** Re-read pending turns after the outbox manager commits a lifecycle transition. */
+  refreshPendingTurns(key: string): void {
+    this.syncSessionsForPendingTurns(key);
+  }
+
+  /** Reset cleanup for human turns authored against discarded conversation state. */
+  clearPendingTurns(key: string, preserveIds: readonly string[] = []): boolean {
+    const changed = clearPendingTurnsDb(key, preserveIds) > 0;
+    if (changed) this.syncSessionsForPendingTurns(key);
+    return changed;
+  }
+
   /** The compact queue view denormalized onto a session card. */
   private queueSummaryFor(s: Session): SessionQueueSummary | null {
     const key = noteKeyFor(s);
@@ -4834,6 +4952,11 @@ export class Registry extends EventEmitter {
       { askedAt: row?.wrapupAskedAt ?? null, answer: row?.wrapupAnswer ?? null },
       row?.updatedAt ?? 0,
     );
+  }
+
+  /** The complete editable outbox projection for one conversation. */
+  private pendingTurnsFor(s: Session): PendingTurn[] {
+    return listPendingTurns(noteKeyFor(s));
   }
 
   /**
@@ -5259,6 +5382,17 @@ export class Registry extends EventEmitter {
     }
   }
 
+  private syncSessionsForPendingTurns(key: string): void {
+    const pendingTurns = listPendingTurns(key);
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      if (JSON.stringify(s.pendingTurns) === JSON.stringify(pendingTurns)) continue;
+      const next = { ...s, pendingTurns };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
   /** Re-resolve every card's orphan hint (after a re-attach changes who's orphaned). */
   private syncAllOrphanHints(): void {
     for (const [id, s] of this.sessions) {
@@ -5643,6 +5777,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // in any way of its own - an idle sibling is equal by every other field, stays
   // quiet, and never surfaces the stranded batch.
   queue: byJson,
+  pendingTurns: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp

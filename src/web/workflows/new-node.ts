@@ -15,6 +15,7 @@ export type NewWorkflowNode =
   | { kind: "persona"; personaId: string }
   | { kind: "all_pass" }
   | { kind: "check"; slot: WorkflowCheckSlot }
+  | { kind: "session_action"; sessionActionId: string }
   | { kind: "end" };
 
 /** The `dataTransfer` type the palette writes and the canvas reads. */
@@ -34,11 +35,25 @@ export function parseDroppedNode(raw: string): NewWorkflowNode | null {
     return null;
   }
   if (!value || typeof value !== "object") return null;
-  const spec = value as { kind?: unknown; personaId?: unknown; slot?: unknown };
+  const spec = value as {
+    kind?: unknown;
+    personaId?: unknown;
+    sessionActionId?: unknown;
+    slot?: unknown;
+  };
   if (spec.kind === "all_pass" || spec.kind === "end") return { kind: spec.kind };
   if (spec.kind === "persona") {
     return typeof spec.personaId === "string" && spec.personaId
       ? { kind: "persona", personaId: spec.personaId }
+      : null;
+  }
+  if (spec.kind === "session_action") {
+    // The id is checked for shape and nothing else, exactly as a Persona's is. WHICH actions
+    // may be dropped is the palette's question and it has already answered it by only
+    // offering addable ones; re-deciding it here from a payload would need the catalog and
+    // the daemon's capability answer, neither of which a parser should hold.
+    return typeof spec.sessionActionId === "string" && spec.sessionActionId
+      ? { kind: "session_action", sessionActionId: spec.sessionActionId }
       : null;
   }
   if (spec.kind === "check") {

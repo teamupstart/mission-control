@@ -368,6 +368,13 @@ class CodexSdkSession implements SdkSessionHandle {
     return "started";
   }
 
+  async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
+    const threadId = this.requireThread();
+    if (this.activeTurnId) return null;
+    await this.startTurn(threadId, turnInput(turn));
+    return "started";
+  }
+
   /**
    * Begin a turn, carrying whatever overrides the operator has changed since the last one.
    *

@@ -18,7 +18,11 @@ import type {
   NmFixReplySource,
   NoteDisposition,
   PaneDialogSummary,
+  PendingTurn,
+  PendingTurnState,
   PlanDecision,
+  PlanDecisionAnswer,
+  ReviewActor,
   ReviewItem,
   ReviewKind,
   ReviewStatus,
@@ -36,6 +40,7 @@ import type {
   WorkItemState,
   WorktreeProvider,
 } from "@shared/types.ts";
+import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import { readCheapAction, readDivergence } from "@shared/foreman.ts";
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
@@ -344,11 +349,19 @@ export function openDb(): DatabaseSync {
     -- in its own row: the note has one disposition and one updated_at that mean "what
     -- Foreman decided, and when", and a second writer sharing them would corrupt both.
     CREATE TABLE IF NOT EXISTS session_goals (
-      note_key   TEXT PRIMARY KEY,
-      text       TEXT,              -- the sentence; null while only a prompt is captured
-      source     TEXT,              -- 'heuristic' (the raw prompt) | 'model' (refined)
-      prompt     TEXT,              -- the filtered prompt it came from; the refiner's input
-      updated_at INTEGER NOT NULL
+      note_key                TEXT PRIMARY KEY,
+      text                    TEXT,              -- compact durable objective for the card
+      source                  TEXT,              -- 'heuristic' (initial raw ask) | 'model'
+      objective               TEXT,              -- durable completion contract
+      prompt                  TEXT,              -- latest filtered human instruction
+      focus                   TEXT,              -- compact latest instruction
+      relationship            TEXT,              -- initial | steer | amend | replace | unclear
+      rationale               TEXT,              -- why the latest relationship was chosen
+      objective_version       INTEGER NOT NULL DEFAULT 0,
+      prompt_revision         INTEGER NOT NULL DEFAULT 0,
+      resolved_prompt_revision INTEGER NOT NULL DEFAULT 0,
+      pending_prompts         TEXT NOT NULL DEFAULT '[]', -- unresolved revisions, oldest first
+      updated_at              INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS app_config (
@@ -373,6 +386,39 @@ export function openDb(): DatabaseSync {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_personas_normalized_name
       ON personas(normalized_name);
+
+    -- Reusable instructions a workflow types into its bound session. prompt_md is exact
+    -- operator-authored Markdown: no normalized copy exists and every write names this
+    -- column directly, because this text is DELIVERED verbatim rather than summarized.
+    --
+    -- A table of its own rather than columns on personas, because the two answer different
+    -- questions: a Persona picks a model and returns a verdict, an action picks a prompt and
+    -- a proof. Sharing a row would give every Persona reader a nullable completion kind to
+    -- ignore and every action a runner it never uses.
+    --
+    -- completion_kind is a closed, server-owned adapter id (see
+    -- SESSION_ACTION_COMPLETION_KINDS). It is deliberately NOT tolerant on read: a value this
+    -- build cannot interpret fails the row rather than degrading to session_turn, which would
+    -- complete a historical action under a weaker proof than it was written with.
+    --
+    -- required_skill_id names a skill CAPABILITY and never a command. The harness-native
+    -- invocation is resolved immediately before send, so an argv can never be persisted here
+    -- and can never reach an exported published version.
+    CREATE TABLE IF NOT EXISTS session_actions (
+      id                TEXT PRIMARY KEY,
+      name              TEXT NOT NULL,
+      normalized_name   TEXT NOT NULL,
+      description       TEXT NOT NULL DEFAULT '',
+      prompt_md         TEXT NOT NULL,
+      required_skill_id TEXT,
+      completion_kind   TEXT NOT NULL,
+      revision          INTEGER NOT NULL DEFAULT 1,
+      archived_at       INTEGER,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_actions_normalized_name
+      ON session_actions(normalized_name);
 
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,
     -- executions, delivery identity and later audit data all share one migration boundary.
@@ -446,17 +492,34 @@ export function openDb(): DatabaseSync {
       started_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL,
       completed_at          INTEGER,
-      evidence_pruned_at    INTEGER
+      evidence_pruned_at    INTEGER,
+      disabled_nodes_json   TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
       ON workflow_runs(trigger_key);
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_binding
       ON workflow_runs(binding_id, updated_at);
 
+    -- One immutable evidence snapshot, identified by (round, segment).
+    --
+    -- round counts REPAIR and nothing else, so max_repair_rounds compares it alone.
+    -- segment counts the successive evidence snapshots inside one repair round that a
+    -- completed session action creates. The two are separate columns rather than one
+    -- ordinal because they answer to different budgets: an arbitrary number of actions must
+    -- never consume a repair round, and a repair must always restart the graph at Session.
+    --
+    -- The three continuation columns are all-or-nothing with a nonzero segment, enforced at
+    -- the row boundary in store.ts. continuation_node_attempt_id deliberately names an
+    -- attempt in the PARENT submission: that attempt ran against the parent evidence and its
+    -- completion is what authorized downstream work against this one.
     CREATE TABLE IF NOT EXISTS workflow_submissions (
       id                   TEXT PRIMARY KEY,
       run_id               TEXT NOT NULL,
       round                INTEGER NOT NULL,
+      segment              INTEGER NOT NULL DEFAULT 0,
+      parent_submission_id TEXT,
+      continuation_node_id TEXT,
+      continuation_node_attempt_id TEXT,
       mode                 TEXT NOT NULL,
       trigger_source       TEXT NOT NULL,
       trigger_key          TEXT NOT NULL,
@@ -469,8 +532,11 @@ export function openDb(): DatabaseSync {
       updated_at           INTEGER NOT NULL,
       completed_at         INTEGER
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_round
-      ON workflow_submissions(run_id, round);
+    -- idx_workflow_submissions_segment is created by migrate(), NOT here. This block runs
+    -- before migrate(), and on an upgraded database the CREATE TABLE above is a no-op - so
+    -- an index over the segment column here would be built against a table that lacks the
+    -- column yet, and every daemon start on an existing machine would fail to open the
+    -- database. It lives beside its ALTER, which is the house rule for exactly this reason.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
       ON workflow_submissions(trigger_key);
 
@@ -481,6 +547,10 @@ export function openDb(): DatabaseSync {
       attempt               INTEGER NOT NULL,
       state                 TEXT NOT NULL,
       persona_snapshot_json TEXT,
+      -- The action this attempt executes, frozen from the run's immutable version. Its own
+      -- column rather than a reuse of persona_snapshot_json: every reader of that column
+      -- treats the record as something that produces a verdict, and an action produces none.
+      session_action_snapshot_json TEXT,
       runner_id             TEXT,
       model_id              TEXT,
       verdict_json          TEXT,
@@ -516,6 +586,12 @@ export function openDb(): DatabaseSync {
       run_id         TEXT NOT NULL,
       submission_id  TEXT NOT NULL,
       kind           TEXT NOT NULL,
+      -- The node attempt that owns this packet, for 'session_action' only. NULL for every
+      -- other kind, including every historical pr_handoff row, and required for an action -
+      -- both enforced at the row boundary in store.ts. Two action nodes in one submission
+      -- could legitimately render the same payload, so (submission_id, kind, payload_sha256)
+      -- alone would deduplicate two genuinely distinct packets into one.
+      node_attempt_id TEXT,
       session_id     TEXT NOT NULL,
       note_key       TEXT NOT NULL,
       payload        TEXT NOT NULL,
@@ -531,6 +607,8 @@ export function openDb(): DatabaseSync {
       ON workflow_deliveries(submission_id, kind, payload_sha256);
     CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_run
       ON workflow_deliveries(run_id, created_at);
+    -- The two node_attempt_id indexes are created by migrate() beside their ALTER, for the
+    -- reason spelled out on workflow_submissions above.
 
     CREATE TABLE IF NOT EXISTS workflow_llm_calls (
       id               TEXT PRIMARY KEY,
@@ -809,6 +887,27 @@ export function openDb(): DatabaseSync {
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL
     );
+
+    -- Human turns the daemon still owns. Unlike a harness's internal queue, rows here have
+    -- not been accepted by Claude or Codex and can therefore be recalled into the composer.
+    -- note_key follows session notes and work queues so a transient pane replacement does
+    -- not strand the outbox. A claimed row remains durable until delivery is acknowledged.
+    CREATE TABLE IF NOT EXISTS pending_turns (
+      id          TEXT PRIMARY KEY NOT NULL,
+      note_key    TEXT NOT NULL,
+      seq         INTEGER NOT NULL,
+      text        TEXT NOT NULL,
+      state       TEXT NOT NULL,
+      revision    INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      claimed_at  INTEGER,
+      last_error  TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_order
+      ON pending_turns(note_key, seq);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_sending
+      ON pending_turns(note_key) WHERE state = 'sending';
 
     CREATE TABLE IF NOT EXISTS foreman_queues (
       note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
@@ -1347,6 +1446,61 @@ function migrate(d: DatabaseSync): void {
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
+  // Per-run operator-disabled verdict nodes (auto-pass). Nullable with no default: a run
+  // written before the column existed genuinely had nothing disabled, and NULL is exactly
+  // that. It lives on the run rather than the immutable version because the disable is
+  // scoped to one run and must never leak into other runs of the same published workflow.
+  addColumn(d, "workflow_runs", "disabled_nodes_json", "TEXT");
+
+  // ---- SessionAction continuation segments -------------------------------------------
+  //
+  // `segment` splits one repair round into successive immutable evidence snapshots. NOT
+  // NULL DEFAULT 0 is exact rather than convenient: every submission written before this
+  // column existed WAS the round's only evidence, so zero is what it genuinely is, and no
+  // id changes. The three continuation columns are nullable with no default for the mirror
+  // reason - a pre-feature row continued nothing.
+  addColumn(d, "workflow_submissions", "segment", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "workflow_submissions", "parent_submission_id", "TEXT");
+  addColumn(d, "workflow_submissions", "continuation_node_id", "TEXT");
+  addColumn(d, "workflow_submissions", "continuation_node_attempt_id", "TEXT");
+  // The one verified index replacement, both halves, in this order and only here.
+  //
+  // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
+  // makes a second evidence snapshot inside a repair round impossible - so it is dropped by
+  // that exact name, after the column exists. The replacement is created here rather than in
+  // the schema block above because that block runs FIRST and its CREATE TABLE is a no-op on
+  // an existing database: an index over `segment` there would be built against a table that
+  // does not have the column yet, and the daemon would fail to open every upgraded database.
+  //
+  // Both statements are idempotent, as every start of the daemon requires: on a fresh
+  // database the dropped name was never used, and on an upgraded one it cannot come back.
+  d.exec(`DROP INDEX IF EXISTS idx_workflow_submissions_round;`);
+  d.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_segment
+      ON workflow_submissions(run_id, round, segment);
+  `);
+
+  // The action a waiting attempt is executing, frozen from the run's immutable version.
+  addColumn(d, "workflow_node_attempts", "session_action_snapshot_json", "TEXT");
+
+  // The delivery-to-attempt link. Nullable with no default so every historical row - every
+  // persona_feedback, inspector_feedback, unchanged_evidence_nudge and pr_handoff ever
+  // written - stays valid and recoverable exactly as it is.
+  addColumn(d, "workflow_deliveries", "node_attempt_id", "TEXT");
+  d.exec(`
+    -- Recovery reads "does this waiting attempt already own a delivery, and in what state?"
+    CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_attempt
+      ON workflow_deliveries(node_attempt_id, state);
+    -- At most ONE live packet per action attempt, enforced by the database rather than by
+    -- whichever caller happened to check first. 'uncertain' counts as live on purpose: an
+    -- uncertain write may have landed, so preparing a second packet for the same attempt is
+    -- exactly the double-type this index exists to prevent. Refused and cancelled rows are
+    -- excluded so an explicit retry can prepare again.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_deliveries_action_live
+      ON workflow_deliveries(node_attempt_id)
+      WHERE node_attempt_id IS NOT NULL
+        AND state IN ('prepared', 'sending', 'delivered', 'uncertain');
+  `);
   // The optional post-selection Workflow handoff snapshot. Editing the CREATE TABLE block above
   // is not enough - it is IF NOT EXISTS, so an operator upgrading from a Phase 3-5 build keeps
   // the ensemble_runs they already have, and every run write would fail on a column that never
@@ -1462,8 +1616,9 @@ function migrate(d: DatabaseSync): void {
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
 
-  // `prompted_goal`: the session goal the `prompted` wrap-up trigger last fired on -
-  // its once-per-episode guard, and what re-arms it when a genuinely new prompt lands.
+  // `prompted_goal`: the resolved intent episode the `prompted` wrap-up trigger last
+  // handled. The historical column name remains, but new writes store an opaque
+  // `intent:<objectiveVersion>:<promptRevision>` guard rather than goal text.
   // Same exposure as the two ALTERs above: added to the CREATE TABLE after
   // `foreman_queues` shipped, and CREATE TABLE IF NOT EXISTS will not add a column to
   // an existing table, so without this every queue write on an upgraded db would fail.
@@ -1480,6 +1635,21 @@ function migrate(d: DatabaseSync): void {
   // this ALTER. Nullable with no default: every existing review, and every review of
   // another kind, reads as "no decisions" - which is exactly what they are.
   addColumn(d, "reviews", "decisions", "TEXT");
+
+  // `selections`: which option ids the human actually picked, as a JSON array of
+  // `PlanDecisionAnswer`. The `response` beside it has always held the FLATTENED answer the
+  // agent reads, which names the chosen labels and nothing else - so the conversation
+  // cannot replay the question from it. Nullable with no default: an existing row, and
+  // every resolution with no form behind it, reads as "no selections", and the transcript
+  // falls back to showing the response prose.
+  addColumn(d, "reviews", "selections", "TEXT");
+
+  // `resolved_by`: who settled the review. Needed because Foreman resolves through the same
+  // route the dashboard does, and only the human's answers belong in the conversation -
+  // Foreman's are already there as its own episode. Nullable with no default, so a row
+  // written before this column reads as "unattributed" rather than being credited to the
+  // operator on the strength of its status alone.
+  addColumn(d, "reviews", "resolved_by", "TEXT");
 
   // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
   // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
@@ -1618,12 +1788,17 @@ function migrate(d: DatabaseSync): void {
   // every INSERT names its columns, so a leftover one is inert.
   d.exec(`DROP INDEX IF EXISTS idx_inspector_comments_pr;`);
 
-  // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
-  // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
-  // goals until its sessions take their next prompt, which is the truthful answer for a
-  // session whose prompts were all seen before goals existed. (This is the payoff of a
-  // separate table over columns on `session_notes`: no ALTER, and no row written before
-  // this build that has to be reasoned about.)
+  // Goal intent was originally one sentence plus the latest prompt. Keep the existing row as
+  // the best recoverable objective and let the next prompt reconcile it. Numeric defaults make
+  // legacy rows explicitly pre-versioned rather than inventing a prompt history they never had.
+  addColumn(d, "session_goals", "objective", "TEXT");
+  addColumn(d, "session_goals", "focus", "TEXT");
+  addColumn(d, "session_goals", "relationship", "TEXT");
+  addColumn(d, "session_goals", "rationale", "TEXT");
+  addColumn(d, "session_goals", "objective_version", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_goals", "prompt_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_goals", "resolved_prompt_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_goals", "pending_prompts", "TEXT NOT NULL DEFAULT '[]'");
   //
   // `usage_sources` is new; its defensive cursor-state migrations above also make
   // intermediate development databases safe to reopen. `usage_ledger` does need a user
@@ -1730,6 +1905,8 @@ interface ReviewRow {
   status: string;
   response: string | null;
   decisions: string | null;
+  selections: string | null;
+  resolved_by: string | null;
   created_at: number;
   resolved_at: number | null;
 }
@@ -1743,22 +1920,26 @@ function rowToReview(r: ReviewRow): ReviewItem {
     body: r.body,
     status: r.status as ReviewStatus,
     response: r.response,
-    decisions: parseDecisions(r.decisions),
+    decisions: parseJsonArray<PlanDecision>(r.decisions),
+    selections: parseJsonArray<PlanDecisionAnswer>(r.selections),
+    resolvedBy: (r.resolved_by as ReviewActor | null) ?? null,
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
   };
 }
 
 /**
- * Decode the `decisions` column. A malformed blob returns null rather than throwing:
- * one corrupt row must not take down `loadPendingReviews` and every review with it, and
- * "no decisions" is the safe degradation - the card renders as a plain plan.
+ * Decode one of the review table's JSON array columns (`decisions`, `selections`). A
+ * malformed blob returns null rather than throwing: one corrupt row must not take down
+ * `loadPendingReviews` and every review with it, and "absent" is the safe degradation for
+ * both - the card renders as a plain plan, and the transcript falls back to the response
+ * prose instead of replaying a form it cannot trust.
  */
-function parseDecisions(raw: string | null): PlanDecision[] | null {
+function parseJsonArray<T>(raw: string | null): T[] | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as PlanDecision[]) : null;
+    return Array.isArray(parsed) ? (parsed as T[]) : null;
   } catch {
     return null;
   }
@@ -1778,21 +1959,39 @@ export function insertReview(r: ReviewItem): void {
       r.body,
       r.status,
       r.response,
-      r.decisions && r.decisions.length ? JSON.stringify(r.decisions) : null,
+      jsonArrayColumn(r.decisions),
       r.createdAt,
       r.resolvedAt,
     );
 }
 
+/**
+ * Settle a review: its status, what the human said, what they picked, and who they were.
+ *
+ * All five move together in one statement because they describe a single event. Splitting
+ * the two new columns into a second UPDATE would leave a window in which the row is
+ * `answered` but unattributed, and the conversation reads that as "not a human's answer".
+ */
 export function updateReviewStatus(
   id: string,
   status: ReviewStatus,
   response: string | null,
   resolvedAt: number | null,
+  selections: PlanDecisionAnswer[] | null = null,
+  resolvedBy: ReviewActor | null = null,
 ): void {
   openDb()
-    .prepare(`UPDATE reviews SET status = ?, response = ?, resolved_at = ? WHERE id = ?`)
-    .run(status, response, resolvedAt, id);
+    .prepare(
+      `UPDATE reviews
+          SET status = ?, response = ?, resolved_at = ?, selections = ?, resolved_by = ?
+        WHERE id = ?`,
+    )
+    .run(status, response, resolvedAt, jsonArrayColumn(selections), resolvedBy, id);
+}
+
+/** Store a JSON array column, collapsing both "absent" and "empty" to NULL. */
+function jsonArrayColumn(rows: unknown[] | null | undefined): string | null {
+  return rows && rows.length ? JSON.stringify(rows) : null;
 }
 
 /** Reviews still awaiting a human decision - reloaded into the registry on start. */
@@ -1801,6 +2000,47 @@ export function loadPendingReviews(): ReviewItem[] {
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
   return rows.map(rowToReview);
+}
+
+/**
+ * The reviews a session's conversation replays: the ones a HUMAN settled, oldest first.
+ *
+ * Separate from `loadResolvedWorkflowReviews` rather than sharing its query, because the
+ * two ask different questions of the same table. That one gathers evidence of intent, so it
+ * takes only the kinds that carry a plan or an answer and drops a dismissal outright. This
+ * one reconstructs a conversation, so it takes every kind - an approved `diff` is a thing
+ * you said - and keeps dismissals, which are the record of a question closed unanswered.
+ *
+ * The status/actor filter is `isHumanResolvedReview` expressed in SQL, and the predicate is
+ * asserted over the result so the two can be shown to agree rather than assumed to.
+ *
+ * The bound is applied to the NEWEST rows and the page is then flipped back to ascending, so
+ * the two orders in play are kept apart: the conversation is READ oldest-first, but when a
+ * session has more answers than the cap, the ones worth keeping are the recent ones.
+ *
+ * Selecting ascending and then limiting - which this did first - keeps the oldest page
+ * instead, so past the cap the newest answer silently stops appearing. That is the one
+ * failure this whole feature exists to prevent, and it lands on the answer a reader is most
+ * likely to have opened the session to check. It cannot be waved off as unreachable either:
+ * these rows are never restored to the live registry (`loadPendingReviews` reloads only
+ * pending ones), so this query IS the conversation after a restart, with no live half to
+ * paper over the gap.
+ */
+export function loadHumanResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
+  const statuses = [...HUMAN_REVIEW_STATUSES];
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM (
+         SELECT * FROM reviews
+          WHERE session_id = ?
+            AND resolved_by = 'human'
+            AND status IN (${statuses.map(() => "?").join(", ")})
+          ORDER BY resolved_at DESC, created_at DESC
+          LIMIT ?
+       ) ORDER BY resolved_at ASC, created_at ASC`,
+    )
+    .all(sessionId, ...statuses, limit) as unknown as ReviewRow[];
+  return rows.map(rowToReview).filter(isHumanResolvedReview);
 }
 
 /** Human-resolved plan/input records retained as workflow intent evidence. */
@@ -3512,8 +3752,55 @@ interface SessionGoalRow {
   note_key: string;
   text: string | null;
   source: string | null;
+  objective: string | null;
   prompt: string | null;
+  focus: string | null;
+  relationship: string | null;
+  rationale: string | null;
+  objective_version: number;
+  prompt_revision: number;
+  resolved_prompt_revision: number;
+  pending_prompts: string;
   updated_at: number;
+}
+
+function pendingGoalPrompts(r: SessionGoalRow): SessionGoal["pendingPrompts"] {
+  const promptRevision = r.prompt_revision || (r.prompt ? 1 : 0);
+  const resolvedRevision =
+    r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0);
+  try {
+    const parsed = JSON.parse(r.pending_prompts || "[]") as unknown;
+    if (Array.isArray(parsed)) {
+      const valid = parsed.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") return [];
+        const revision = (entry as { revision?: unknown }).revision;
+        const prompt = (entry as { prompt?: unknown }).prompt;
+        return Number.isInteger(revision) && Number(revision) > 0 &&
+          (typeof prompt === "string" || prompt === null)
+          ? [{ revision: Number(revision), prompt }]
+          : [];
+      });
+      const unresolved = valid
+        .filter((entry) => entry.revision > resolvedRevision && entry.revision <= promptRevision)
+        .sort((a, b) => a.revision - b.revision)
+        .filter((entry, index, entries) => index === 0 || entry.revision !== entries[index - 1]!.revision);
+      if (unresolved.length > 0) return unresolved;
+    }
+  } catch {
+    // Fall through to the conservative legacy reconstruction below.
+  }
+
+  if (promptRevision <= resolvedRevision) return [];
+  if (promptRevision === resolvedRevision + 1) {
+    return [{ revision: promptRevision, prompt: r.prompt }];
+  }
+  // Older builds retained only the latest prompt. The missing earlier instruction cannot be
+  // reconstructed safely, so preserve an unresolved barrier instead of allowing the latest
+  // prompt to mark the whole gap complete against a potentially stale objective.
+  return [
+    { revision: resolvedRevision + 1, prompt: null },
+    ...(r.prompt ? [{ revision: promptRevision, prompt: r.prompt }] : []),
+  ];
 }
 
 function rowToGoal(r: SessionGoalRow): SessionGoal {
@@ -3524,7 +3811,21 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
     // a source this build doesn't know, and typing it as one we do would put an unrenderable
     // value on a card. An unknown source reads as "no source", which the UI handles already.
     source: r.source === "heuristic" || r.source === "model" ? r.source : null,
+    objective: r.objective ?? r.text ?? r.prompt,
     prompt: r.prompt,
+    focus: r.focus,
+    relationship:
+      r.relationship === "initial" || r.relationship === "steer" ||
+        r.relationship === "amend" || r.relationship === "replace" ||
+        r.relationship === "unclear"
+        ? r.relationship
+        : null,
+    rationale: r.rationale,
+    objectiveVersion: r.objective_version || (r.text || r.prompt ? 1 : 0),
+    promptRevision: r.prompt_revision || (r.prompt ? 1 : 0),
+    resolvedPromptRevision:
+      r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0),
+    pendingPrompts: pendingGoalPrompts(r),
     updatedAt: r.updated_at,
   };
 }
@@ -3532,13 +3833,24 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
 export function upsertSessionGoal(g: SessionGoal): void {
   openDb()
     .prepare(
-      `INSERT INTO session_goals (note_key, text, source, prompt, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO session_goals
+         (note_key, text, source, objective, prompt, focus, relationship, rationale,
+          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
-         text=excluded.text, source=excluded.source, prompt=excluded.prompt,
+         text=excluded.text, source=excluded.source, objective=excluded.objective,
+         prompt=excluded.prompt, focus=excluded.focus, relationship=excluded.relationship,
+         rationale=excluded.rationale, objective_version=excluded.objective_version,
+         prompt_revision=excluded.prompt_revision,
+         resolved_prompt_revision=excluded.resolved_prompt_revision,
+         pending_prompts=excluded.pending_prompts,
          updated_at=excluded.updated_at`,
     )
-    .run(g.noteKey, g.text, g.source, g.prompt, g.updatedAt);
+    .run(
+      g.noteKey, g.text, g.source, g.objective, g.prompt, g.focus, g.relationship,
+      g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
+      JSON.stringify(g.pendingPrompts), g.updatedAt,
+    );
 }
 
 export function getSessionGoal(noteKey: string): SessionGoal | undefined {
@@ -4093,6 +4405,314 @@ export function pruneUsageLedger(cutoff: number): number {
 /** Cursor retention is independent of event retention and deliberately age-only. */
 export function pruneUsageSources(cutoff: number): number {
   return Number(openDb().prepare(`DELETE FROM usage_sources WHERE updated_at < ?`).run(cutoff).changes);
+}
+
+// ---- Editable pending conversation turns ----
+
+interface PendingTurnRow {
+  id: string;
+  note_key: string;
+  seq: number;
+  text: string;
+  state: string;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+  claimed_at: number | null;
+  last_error: string | null;
+}
+
+const PENDING_TURN_STATE_SET = new Set<PendingTurnState>(["queued", "sending", "uncertain"]);
+
+function rowToPendingTurn(row: PendingTurnRow): PendingTurn {
+  const state = PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
+    ? (row.state as PendingTurnState)
+    : "uncertain";
+  return {
+    id: row.id,
+    noteKey: row.note_key,
+    seq: row.seq,
+    text: row.text,
+    state,
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    claimedAt: row.claimed_at,
+    lastError:
+      state === "uncertain" && !PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
+        ? `unrecognized pending-turn state: ${row.state}`
+        : row.last_error,
+  };
+}
+
+export function listPendingTurns(noteKey: string): PendingTurn[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM pending_turns WHERE note_key = ? ORDER BY seq ASC`)
+    .all(noteKey) as unknown as PendingTurnRow[];
+  return rows.map(rowToPendingTurn);
+}
+
+export function createPendingTurn(input: {
+  id: string;
+  noteKey: string;
+  text: string;
+  now: number;
+}): PendingTurn {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(input.noteKey) as unknown as { seq: number };
+    d.prepare(
+      `INSERT INTO pending_turns
+         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
+    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now);
+    d.exec("COMMIT");
+    return {
+      id: input.id,
+      noteKey: input.noteKey,
+      seq: row.seq,
+      text: input.text,
+      state: "queued",
+      revision: 0,
+      createdAt: input.now,
+      updatedAt: input.now,
+      claimedAt: null,
+      lastError: null,
+    };
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** Claim only the FIFO head, and only while no delivery for this conversation is unresolved. */
+export function claimNextPendingTurn(noteKey: string, now: number): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const unresolved = d
+      .prepare(
+        `SELECT 1 AS present FROM pending_turns
+          WHERE note_key = ? AND state <> 'queued' LIMIT 1`,
+      )
+      .get(noteKey) as unknown as { present: number } | undefined;
+    if (unresolved) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const row = d
+      .prepare(
+        `SELECT * FROM pending_turns
+          WHERE note_key = ? AND state = 'queued' ORDER BY seq ASC LIMIT 1`,
+      )
+      .get(noteKey) as unknown as PendingTurnRow | undefined;
+    if (!row) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const changed = d
+      .prepare(
+        `UPDATE pending_turns
+            SET state = 'sending', revision = revision + 1, updated_at = ?,
+                claimed_at = ?, last_error = NULL
+          WHERE id = ? AND state = 'queued' AND revision = ?`,
+      )
+      .run(now, now, row.id, row.revision).changes;
+    if (changed !== 1) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    d.exec("COMMIT");
+    return {
+      ...rowToPendingTurn(row),
+      state: "sending",
+      revision: row.revision + 1,
+      updatedAt: now,
+      claimedAt: now,
+      lastError: null,
+    };
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** Move the newest still-editable row back to the composer. */
+export function recallPendingTurn(
+  noteKey: string,
+  id: string,
+  revision: number,
+): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const newest = d
+      .prepare(
+        `SELECT * FROM pending_turns
+          WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1`,
+      )
+      .get(noteKey) as unknown as PendingTurnRow | undefined;
+    if (!newest || newest.id !== id || newest.revision !== revision) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const changed = d
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND revision = ?`)
+      .run(id, revision).changes;
+    if (changed !== 1) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    d.exec("COMMIT");
+    return rowToPendingTurn(newest);
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+function transitionPendingTurn(
+  id: string,
+  revision: number,
+  from: PendingTurnState,
+  to: PendingTurnState,
+  now: number,
+  lastError: string | null,
+): PendingTurn | null {
+  const d = openDb();
+  const changed = d
+    .prepare(
+      `UPDATE pending_turns
+          SET state = ?, revision = revision + 1, updated_at = ?,
+              claimed_at = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_at END,
+              last_error = ?
+        WHERE id = ? AND state = ? AND revision = ?`,
+    )
+    .run(to, now, to, lastError, id, from, revision).changes;
+  if (changed !== 1) return null;
+  const row = d.prepare(`SELECT * FROM pending_turns WHERE id = ?`).get(id) as
+    | unknown as PendingTurnRow
+    | undefined;
+  return row ? rowToPendingTurn(row) : null;
+}
+
+export function releasePendingTurn(
+  id: string,
+  revision: number,
+  error: string,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "sending", "queued", now, error);
+}
+
+export function markPendingTurnUncertain(
+  id: string,
+  revision: number,
+  error: string,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "sending", "uncertain", now, error);
+}
+
+export function retryPendingTurn(
+  id: string,
+  revision: number,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "uncertain", "queued", now, null);
+}
+
+export function deleteClaimedPendingTurn(id: string, revision: number): boolean {
+  return (
+    openDb()
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'sending' AND revision = ?`)
+      .run(id, revision).changes === 1
+  );
+}
+
+export function resolveUncertainPendingTurn(id: string, revision: number): boolean {
+  return (
+    openDb()
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'uncertain' AND revision = ?`)
+      .run(id, revision).changes === 1
+  );
+}
+
+export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): number {
+  const d = openDb();
+  if (preserveIds.length === 0) {
+    return Number(d.prepare(`DELETE FROM pending_turns WHERE note_key = ?`).run(noteKey).changes);
+  }
+  const placeholders = preserveIds.map(() => "?").join(", ");
+  return Number(
+    d.prepare(
+      `DELETE FROM pending_turns WHERE note_key = ? AND id NOT IN (${placeholders})`,
+    ).run(noteKey, ...preserveIds).changes,
+  );
+}
+
+/** Carry pre-binding outbox rows from a synthetic session id onto the real conversation. */
+export function rekeyPendingTurns(fromKey: string, toKey: string, now: number): boolean {
+  if (fromKey === toKey) return true;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const source = d
+      .prepare(`SELECT COUNT(*) AS n FROM pending_turns WHERE note_key = ?`)
+      .get(fromKey) as unknown as { n: number };
+    if (source.n === 0) {
+      d.exec("COMMIT");
+      return true;
+    }
+    const sending = d
+      .prepare(
+        `SELECT note_key FROM pending_turns
+          WHERE note_key IN (?, ?) AND state = 'sending' GROUP BY note_key`,
+      )
+      .all(fromKey, toKey) as unknown as Array<{ note_key: string }>;
+    if (sending.length > 1) {
+      d.exec("COMMIT");
+      return false;
+    }
+    const target = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(toKey) as unknown as { seq: number };
+    d.prepare(
+      `UPDATE pending_turns
+          SET note_key = ?, seq = seq + ?, updated_at = ?
+        WHERE note_key = ?`,
+    ).run(toKey, target.seq, now, fromKey);
+    d.exec("COMMIT");
+    return true;
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** A daemon crash can leave delivery possible but unacknowledged, so never auto-resend it. */
+export function recoverSendingPendingTurns(now: number): number {
+  return Number(
+    openDb()
+      .prepare(
+        `UPDATE pending_turns
+            SET state = 'uncertain', revision = revision + 1, updated_at = ?,
+                last_error = 'Mission Control restarted during delivery; confirm before retrying.'
+          WHERE state = 'sending'`,
+      )
+      .run(now).changes,
+  );
 }
 
 // ---- Foreman session work queues ----

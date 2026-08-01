@@ -123,16 +123,22 @@ async function capture(window, scenario) {
 async function run() {
   mkdirSync(outDir, { recursive: true });
   buildHarness();
-  const window = new BrowserWindow({
+  const evidence = {};
+  // A fresh viewport per scenario prevents Chromium from carrying the first document's
+  // scroll offset into the next navigation and cropping the second evidence header. Keep
+  // both windows alive until capture completes so destroying one renderer cannot race the
+  // next window's initial navigation.
+  const windows = scenarios.map(() => new BrowserWindow({
     width: 760,
     height: 760,
     show: false,
     backgroundColor: "#0a0c0f",
-  });
-  const evidence = {};
-  for (const scenario of scenarios) evidence[scenario.id] = await capture(window, scenario);
+  }));
+  for (const [index, scenario] of scenarios.entries()) {
+    evidence[scenario.id] = await capture(windows[index], scenario);
+  }
+  for (const window of windows) window.destroy();
   console.log(JSON.stringify(evidence, null, 2));
-  window.destroy();
 }
 
 app.disableHardwareAcceleration();

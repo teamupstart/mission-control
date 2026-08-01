@@ -33,6 +33,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     activity: null,
     pendingReviews: 0,
     nomistakesFixes: [],
+    pendingTurns: [],
     ...over,
   } as Session;
 }

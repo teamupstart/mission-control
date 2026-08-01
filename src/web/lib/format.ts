@@ -16,15 +16,20 @@ export function relativeTime(ms: number | null, now = Date.now()): string {
 }
 
 /**
- * A conversation turn's compact local timestamp.
+ * A conversation turn's compact local timestamp: the clock time alone.
  *
  * The transcript stores an instant, not a display zone. Mission Control is local software,
  * so the browser's locale and timezone are the useful default: the operator reads the time
  * in the same clock as the terminal beside it. Locale and zone stay injectable for tests.
+ *
+ * The date is deliberately absent. A transcript is read as one session's vertical run of
+ * work, where the calendar date is the same on row after row and the clock is the only
+ * part that separates them - so repeating "Jul 31" down the whole log spends width on the
+ * one field that never distinguishes anything. The complete instant is never lost: the
+ * long form below carries weekday, date, seconds, and zone, and it is what every row
+ * exposes on hover and to assistive technology.
  */
 const CONVERSATION_TIMESTAMP_OPTIONS: Intl.DateTimeFormatOptions = {
-  month: "short",
-  day: "numeric",
   hour: "numeric",
   minute: "2-digit",
 };

@@ -141,6 +141,11 @@ export type WorkflowRunTone = "running" | "waiting" | "blocked" | "passed" | "fa
 
 export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
   if (run.status === "completed") return "passed";
+  // `waiting_for_action` is deliberately NOT in this list. Every status here is a run that
+  // owes something to a human - repair the work, open a PR, wait out a review - and the
+  // chip's waiting tone is the fleet's mark for "your move". An action turn is the daemon's
+  // own instruction being worked on by the session, so it tones as running, and the label
+  // below says which of the two it is.
   if ([
     "waiting_for_session",
     "waiting_for_pr",
@@ -161,6 +166,10 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
   if (tone === "waiting") return "Review changes";
   if (tone === "blocked") return "Workflow blocked";
   if (tone === "failed") return run.status === "cancelled" ? "Preview cancelled" : "Preview failed";
+  // Named rather than folded into the round counter beside it. A run parked on an action is
+  // not a review in progress, and `Preview · R1` beside a session that has just been handed
+  // an instruction tells an operator nothing about why nothing is moving.
+  if (run.status === "waiting_for_action") return "Session action";
   return `Preview · R${run.round}`;
 }
 
@@ -892,15 +901,20 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
     );
   }
   if (!session.goal?.text) return null;
+  const resolving =
+    (session.goal.resolvedPromptRevision ?? 0) < (session.goal.promptRevision ?? 0);
+  const unclear = session.goal.relationship === "unclear";
+  const stateClass = resolving ? "resolving" : unclear ? "unclear" : session.goal.source ?? "heuristic";
+  const detail = resolving
+    ? `${session.goal.text} (reconciling the latest instruction with this objective)`
+    : unclear
+      ? `${session.goal.text} (latest instruction may change this objective; automatic wrap-up is paused)`
+      : session.goal.source === "heuristic"
+        ? `${session.goal.text} (initial objective, being refined)`
+        : session.goal.text;
   return (
-    <Tooltip
-      label={
-        session.goal.source === "heuristic"
-          ? `${session.goal.text} (your prompt, verbatim - being summarised)`
-          : session.goal.text
-      }
-    >
-      <p className={`goal goal-${session.goal.source ?? "heuristic"}`}>{session.goal.text}</p>
+    <Tooltip label={detail}>
+      <p className={`goal goal-${stateClass}`}>{session.goal.text}</p>
     </Tooltip>
   );
 }

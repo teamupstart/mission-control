@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import type {
   ForemanEpisode,
+  PendingTurn,
+  ReviewItem,
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
@@ -11,6 +13,13 @@ import { withAttachments } from "@shared/attachments.ts";
 import { api, fetchTranscriptBefore } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
+import {
+  latestEditablePendingTurn,
+  pendingTurnStatus,
+  RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
+  recallPendingTurnIntoDraft,
+  shouldRecallPendingTurn,
+} from "../lib/pending-turns.ts";
 import {
   appendLive,
   backAnchor,
@@ -23,7 +32,7 @@ import {
 } from "../lib/transcript-history.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
-import { mergeEpisodes } from "../lib/episodes.ts";
+import { mergeConversation } from "../lib/episodes.ts";
 import {
   collectHits,
   hitsInScope,
@@ -39,6 +48,7 @@ import {
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
+import { ReviewAnswerCard } from "./ReviewAnswer.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { Markdown } from "./Markdown.tsx";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
@@ -113,6 +123,7 @@ export function TranscriptPanel({
   canSend,
   dialogOpen = false,
   episodes = [],
+  reviews = [],
   onReplyBox,
   onOpenFile,
   files,
@@ -152,6 +163,18 @@ export function TranscriptPanel({
    * the note moves.
    */
   episodes?: ForemanEpisode[];
+  /**
+   * The human's answers to this session's reviews, interleaved into the log by the time
+   * they were GIVEN.
+   *
+   * A prop for the same reason the episodes are: they are not in the transcript and the SSE
+   * stream this panel opens could not carry them. A review's answer travels to the agent as
+   * an MCP tool result, which every harness parser drops as machine noise - so without this
+   * the log shows the agent's question as a grey tool chip and then nothing at all where the
+   * decision was made. The owner supplies them (`useTimelineReviews`) and re-renders when
+   * one is answered.
+   */
+  reviews?: ReviewItem[];
   /**
    * Bumped whenever this session is reset. The reply box is uncontrolled - its text
    * lives in the draft map, re-read only on mount - so a reset that clears the draft
@@ -210,6 +233,7 @@ export function TranscriptPanel({
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   /**
@@ -245,7 +269,7 @@ export function TranscriptPanel({
    * search. Both MUST walk the same list: hits are addressed by row id and offset,
    * so a search over a differently-folded list would highlight the wrong span.
    */
-  const rows = mergeEpisodes(transcriptRows(messages), episodes);
+  const rows = mergeConversation(transcriptRows(messages), episodes, reviews);
   const agentLabel = AGENT_IDENTITY[agent].speaker;
 
   // Derived, never stored. A streamed turn arriving re-runs the search, which is what
@@ -524,7 +548,7 @@ export function TranscriptPanel({
       return;
     }
     if (atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [messages, session.pendingTurns]);
 
   // Deliberately don't grab focus when the panel opens. Focus mode is opened with
   // `e` and closed with `e`, and the grid's global keys (including that toggle)
@@ -578,6 +602,59 @@ export function TranscriptPanel({
       showFlash({ text: r.error ?? "send failed", ok: false }, 3500);
     }
   }
+
+  async function recall(turn: PendingTurn): Promise<void> {
+    const input = inputRef.current;
+    if (!input || pendingAction) return;
+    if (input.value.length > 0 || attachments.length > 0) {
+      showFlash({ text: "Clear the current reply before editing a queued message.", ok: false }, 3500);
+      return;
+    }
+    setPendingAction(turn.id);
+    const result = await recallPendingTurnIntoDraft({
+      client: api,
+      sessionId,
+      turn,
+      restore: (text) => {
+        input.value = text;
+        writeDraft(sessionId, "reply", text);
+        input.focus();
+        input.setSelectionRange(text.length, text.length);
+      },
+    });
+    setPendingAction(null);
+    if (!result.ok) {
+      showFlash({ text: result.error ?? "That message is no longer editable.", ok: false }, 3500);
+      return;
+    }
+    if (result.acknowledgementLost) {
+      showFlash(
+        {
+          text: RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
+          ok: false,
+        },
+        6000,
+      );
+    }
+  }
+
+  async function retry(turn: PendingTurn): Promise<void> {
+    if (pendingAction) return;
+    setPendingAction(turn.id);
+    const result = await api.retryPendingTurn(sessionId, turn.id, turn.revision);
+    setPendingAction(null);
+    if (!result.ok) showFlash({ text: result.error ?? "Retry failed.", ok: false }, 3500);
+  }
+
+  async function markSent(turn: PendingTurn): Promise<void> {
+    if (pendingAction) return;
+    setPendingAction(turn.id);
+    const result = await api.resolvePendingTurn(sessionId, turn.id, turn.revision);
+    setPendingAction(null);
+    if (!result.ok) showFlash({ text: result.error ?? "Could not resolve message.", ok: false }, 3500);
+  }
+
+  const latestEditable = latestEditablePendingTurn(session.pendingTurns);
 
   return (
     // Stop clicks inside the panel from re-selecting / collapsing the card. The accent
@@ -634,7 +711,7 @@ export function TranscriptPanel({
             )}
           </div>
         )}
-        {status !== "unavailable" && messages.length === 0 && episodes.length === 0 && (
+        {status !== "unavailable" && rows.length === 0 && (
           <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
         )}
         {rows.map((row) =>
@@ -646,6 +723,8 @@ export function TranscriptPanel({
                 >
                   <ForemanEpisodeCard episode={row.episode} absoluteTime />
                 </div>
+              ) : row.kind === "review" ? (
+                <ReviewAnswerCard key={`rv-${row.review.id}`} review={row.review} />
               ) : row.kind === "tools" ? (
                 <ToolRun
                   key={row.id}
@@ -665,6 +744,17 @@ export function TranscriptPanel({
                 />
               ),
         )}
+        {session.pendingTurns.map((turn) => (
+          <PendingTurnView
+            key={turn.id}
+            turn={turn}
+            editable={latestEditable?.id === turn.id}
+            busy={pendingAction === turn.id}
+            onEdit={() => void recall(turn)}
+            onRetry={() => void retry(turn)}
+            onMarkSent={() => void markSent(turn)}
+          />
+        ))}
           </div>
         </div>
         {/* Sibling of the log wrapper, not a child of it: `.find-split` is the flex row
@@ -712,6 +802,23 @@ export function TranscriptPanel({
             onChange={(e) => writeDraft(sessionId, "reply", e.currentTarget.value)}
             onPaste={drop.onPaste}
             onKeyDown={(e) => {
+              if (
+                latestEditable &&
+                shouldRecallPendingTurn({
+                  key: e.key,
+                  value: e.currentTarget.value,
+                  selectionStart: e.currentTarget.selectionStart,
+                  selectionEnd: e.currentTarget.selectionEnd,
+                  composing: e.nativeEvent.isComposing,
+                  modified: e.altKey || e.ctrlKey || e.metaKey || e.shiftKey,
+                  busy: sending || pendingAction !== null,
+                  hasAttachments: attachments.length > 0,
+                })
+              ) {
+                e.preventDefault();
+                void recall(latestEditable);
+                return;
+              }
               // The Enter that commits an IME candidate (Japanese/Chinese/Korean) is
               // the same keystroke as the one that sends, and the browser tells them
               // apart only by `isComposing`. Without this, picking a candidate fires
@@ -831,6 +938,61 @@ function Highlighted({
   );
 }
 
+export function PendingTurnView({
+  turn,
+  editable,
+  busy = false,
+  onEdit,
+  onRetry,
+  onMarkSent,
+}: {
+  turn: PendingTurn;
+  editable: boolean;
+  busy?: boolean;
+  onEdit?: () => void;
+  onRetry?: () => void;
+  onMarkSent?: () => void;
+}): React.JSX.Element {
+  return (
+    <div className={`turn turn-user pending-turn is-${turn.state}`} data-pending-state={turn.state}>
+      <div className="turn-role pending-turn-role">
+        <span>You</span>
+        <span className="pending-turn-state" role="status">
+          {pendingTurnStatus(turn)}
+        </span>
+      </div>
+      <div className="turn-text">{turn.text}</div>
+      <div className="pending-turn-actions">
+        {turn.state === "queued" && editable && (
+          <Tooltip label="Move this queued message back into the reply box">
+            <button type="button" className="pending-turn-action" disabled={busy} onClick={onEdit}>
+              Edit
+            </button>
+          </Tooltip>
+        )}
+        {turn.state === "uncertain" && (
+          <>
+            <Tooltip label="Queue this message again because it was not delivered">
+              <button type="button" className="pending-turn-action" disabled={busy} onClick={onRetry}>
+                Retry
+              </button>
+            </Tooltip>
+            <Tooltip label="Remove this warning because the agent already received the message">
+              <button type="button" className="pending-turn-action" disabled={busy} onClick={onMarkSent}>
+                Mark sent
+              </button>
+            </Tooltip>
+          </>
+        )}
+        {turn.state === "queued" && editable && (
+          <span className="pending-turn-hint">Up Arrow in an empty reply box</span>
+        )}
+        {turn.lastError && <span className="pending-turn-error">{turn.lastError}</span>}
+      </div>
+    </div>
+  );
+}
+
 function Turn({
   m,
   agentLabel,
@@ -912,11 +1074,12 @@ function ToolRun({
 }): React.JSX.Element {
   return (
     <div className="turn turn-assistant turn-toolrun">
-      <div className="turn-role">
-        {agentLabel} executed
-        <ConversationTimestamp at={ts} className="turn-time" />
-      </div>
+      <div className="turn-role">{agentLabel} executed</div>
       <ToolChips tools={tools} find={find} />
+      {/* The same byline time as a prose turn, but a child of the row rather than of the
+          label: a folded run lays its label and its chips along one line, so the right
+          edge the timestamp is pinned to belongs to the row, not to the byline. */}
+      <ConversationTimestamp at={ts} className="turn-time" />
     </div>
   );
 }

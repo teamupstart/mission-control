@@ -1,6 +1,8 @@
 import type {
   GapSeverity,
   Session,
+  SessionGoal,
+  SessionIntentGuard,
   SessionQueue,
   TrackedGap,
   WorkItem,
@@ -9,14 +11,13 @@ import type {
 import { reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
-import { foremanAutomationAuthorized } from "../harness/index.ts";
+import { resolvedSessionIntent } from "@shared/goal.ts";
 import { foremanTriageAuthorized } from "./authorization.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import {
   autoWrapupPayload,
   inFlightItem,
   isTerminalState,
-  isWrapupPayload,
   wrapupTriggerOn,
 } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
@@ -83,13 +84,19 @@ export type QueueAction =
    * the apply step holds no policy - and so the decision about WHAT to send is made
    * in the same pure, table-tested place as the decision about whether to send.
    */
-  | { kind: "auto-wrapup"; queue: SessionQueue; payload: string };
+  | {
+      kind: "auto-wrapup";
+      queue: SessionQueue;
+      payload: string;
+      intentGuard: SessionIntentGuard;
+    };
 
 export interface QueueTickInput {
   session: Session;
   /** The session's bucket, computed cross-session (a parked gate needs the other sessions). */
   bucket: ReportBucket;
   queue: SessionQueue;
+  intent: SessionGoal | null;
   cfg: QueueConfig;
   /** Whether Foreman is cleared to SEND for this session (live + allowlisted). */
   mayActLive: boolean;
@@ -223,11 +230,9 @@ export function tickTargets(
  * drain trigger's), sessions with no hooks or no fresh signal, sessions still working,
  * and sessions that have never taken a real prompt.
  *
- * Note it checks the goal's SENTENCE, while the machine checks the verbatim PROMPT.
- * That asymmetry is forced - the card summary carries no prompt - and it is safe in
- * this direction only: a session with a derived sentence always has a prompt behind it,
- * so this over-selects and never under-selects. Nothing here may be tightened by
- * reading `goal.text` for meaning; the refiner rewrites it on its own schedule.
+ * It checks only that the compact Goal exists. The machine then reads the full durable
+ * intent and rejects any unresolved revision gap or unclear relationship. Keeping this
+ * selector loose can over-select but cannot make an unsafe completion eligible.
  */
 function promptedWantsATick(s: Session, triggers: readonly WrapupTrigger[]): boolean {
   if (!wrapupTriggerOn(triggers, "prompted")) return false;
@@ -286,7 +291,7 @@ function queueWantsATick(s: Session, triggers: readonly WrapupTrigger[]): boolea
  * policy - see the individual comments for why each one sits where it does.
  */
 export function decideQueueTick(input: QueueTickInput): QueueAction {
-  const { session, bucket, queue, cfg, mayActLive, now } = input;
+  const { session, bucket, queue, intent, cfg, mayActLive, now } = input;
   const items = queue.items;
 
   // 1. The session is gone. Escalate ONLY what was mid-flight; nothing else can
@@ -389,7 +394,10 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // (`queueWantsATick` stays true while drained and unasked).
     if (!settledIdle(session, now, cfg.settleMs)) return { kind: "none" };
 
-    return { kind: "auto-wrapup", queue, payload };
+    const intentGuard = resolvedSessionIntent(intent);
+    if (!intentGuard) return { kind: "none" };
+
+    return { kind: "auto-wrapup", queue, payload, intentGuard };
   }
 
   // 6. The agent is still busy (or hasn't settled): don't interrupt it.
@@ -812,9 +820,10 @@ export function sanitizeIntentText(raw: string, cap = GAP_FIELD_CAP * 4): string
   const stripped = raw
     // The paste terminator, spelled out before the generic control-char strip so
     // it's obvious what this is defending.
-    .replace(/\x1b\[20[01]~/g, "")
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    // oxlint-disable-next-line eslint/no-control-regex -- Control bytes are the attack surface.
+    .replace(/\u001b\[20[01]~/g, "")
+    // oxlint-disable-next-line eslint/no-control-regex -- Deliberately strips unsafe control bytes.
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .trim();
   return stripped.length > cap ? `${stripped.slice(0, cap - 1)}…` : stripped;
 }

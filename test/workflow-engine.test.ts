@@ -14,11 +14,20 @@ const home = mkdtempSync(join(tmpdir(), "mission-workflow-engine-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
+// A directory for the one test that needs a real one, kept OUTSIDE the state dir. The daemon
+// owns what lives under `MISSION_HOME` and sweeps parts of it at startup; a test's stand-in
+// worktree planted in there passes or fails depending on what ran before it.
+const checkTree = mkdtempSync(join(tmpdir(), "mission-workflow-engine-tree-"));
+after(() => rmSync(checkTree, { recursive: true, force: true }));
+
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { runSupervisedCheck } = await import("../src/server/workflows/check-supervisor.ts");
+const { liveCheckGroupCount } = await import("../src/server/workflows/check-group.ts");
+const { checkRuntimeSupport } = await import("../src/server/workflows/check-identity.ts");
 
 function persona(
   id: string,
@@ -835,9 +844,9 @@ test("a passing check advances the graph and reaches the End through the Join", 
     resolveExecution: passingExecution,
     retryBaseMs: 1,
     workflowConfig: () => checkConfig(),
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => ({ kind: "exited", exitCode: 0, output: "42 passing\n", truncatedBytes: 0 }),
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-check-pass");
@@ -876,14 +885,14 @@ test("a failing check returns a repair packet to the Session, citing its own out
       resolveExecution: passingExecution,
       retryBaseMs: 1,
       workflowConfig: () => checkConfig(),
-      checkDeps: {
+      checkDeps: () => ({
         execute: async () => ({
           kind: "exited",
           exitCode: 1,
           output: "src/thing.ts(4,1): error TS2345: nope\n",
           truncatedBytes: 0,
         }),
-      },
+      }),
     },
   });
   manager.engine.start();
@@ -959,12 +968,12 @@ test("an unconfigured slot passes without the executor ever being asked", async 
     resolveExecution: passingExecution,
     retryBaseMs: 1,
     workflowConfig: () => checkConfig({ checkCommands: [] }),
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => {
         asked += 1;
         return { kind: "exited", exitCode: 1, output: "should never run", truncatedBytes: 0 };
       },
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-check-skip");
@@ -986,12 +995,12 @@ test("a check that could not run is an infrastructure retry, never a fail verdic
     resolveExecution: passingExecution,
     retryBaseMs: 1,
     workflowConfig: () => checkConfig(),
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => {
         calls += 1;
         return { kind: "infrastructure", reason: "timed out after 600000ms" };
       },
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-check-infra");
@@ -1042,14 +1051,14 @@ test("a check does not spend a review slot, and a review does not spend a check 
         checkBusy.active -= 1;
       }
     },
-    checkDeps: {
+    checkDeps: () => ({
       execute: async () => {
         // While the check runs, no review slot may be held by it.
         assert.equal(reviewBusy.active, 0, "a check must not occupy a review slot");
         await holdOne();
         return { kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 };
       },
-    },
+    }),
   });
   engine.start();
   engine.activateSubmission("submission-check-budget");
@@ -1108,7 +1117,7 @@ test("the shipped v3 gate fails a broken build at stage 1 with zero Persona call
           { repoRoot: "/repo", slot: "test" as const, command: ["npm", "test"] },
         ],
       }),
-      checkDeps: {
+      checkDeps: () => ({
         execute: async (request) => {
           spawned.push(request.slot);
           // Typecheck is broken; the test command would have passed. One failing gate is
@@ -1122,7 +1131,7 @@ test("the shipped v3 gate fails a broken build at stage 1 with zero Persona call
               }
             : { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 };
         },
-      },
+      }),
     },
   });
   manager.engine.start();
@@ -1173,11 +1182,11 @@ test("the shipped v3 gate passes untouched on a machine that configured no comma
       retryBaseMs: 1,
       // Checks enabled and the repository authorized, but NO command for either slot.
       workflowConfig: () => checkConfig({ checkCommands: [] }),
-      checkDeps: {
+      checkDeps: () => ({
         execute: async () => {
           throw new Error("an unconfigured slot must never reach the execution runtime");
         },
-      },
+      }),
     },
   });
   manager.engine.start();
@@ -1195,4 +1204,240 @@ test("the shipped v3 gate passes untouched on a machine that configured no comma
     assert.ok(attempts.some((item) => item.nodeId === id), `${id} did not run`);
   }
   assert.equal(store.getRun("run-nmr-unconfigured")?.status, "completed");
+});
+
+// --- Operator-disabled nodes: the per-run auto-pass toggle ---
+
+/** Two reviewers where the second is authored to FAIL: if a disable does not hold, the
+ *  round returns to Session instead of completing, so these tests cannot pass by accident. */
+function disableGraph(): PublishedWorkflowGraph {
+  return {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p1", kind: "persona", persona: persona("p1", "Honest reviewer", "claude", "PASS_PERSONA"), position: { x: 100, y: 0 } },
+      { id: "p2", kind: "persona", persona: persona("p2", "Blocking reviewer", "codex", "FAIL_PERSONA"), position: { x: 100, y: 170 } },
+      { id: "join", kind: "all_pass", position: { x: 200, y: 85 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 85 } },
+    ],
+    edges: [
+      { id: "s-p1", source: "session", sourcePort: "submitted", target: "p1", targetPort: "activate" },
+      { id: "s-p2", source: "session", sourcePort: "submitted", target: "p2", targetPort: "activate" },
+      { id: "p1-pass", source: "p1", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "p1-fail", source: "p1", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "p2-pass", source: "p2", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "p2-fail", source: "p2", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+}
+
+/** A runner that records who was asked and fails any Persona whose guidance says so. */
+function verdictRunner(reviewed: string[]) {
+  return (id: LlmRunnerId): LlmRunner => ({
+    ...passingRunner(id),
+    async run(prompt: string) {
+      reviewed.push(prompt.includes("FAIL_PERSONA") ? "blocking" : "honest");
+      return prompt.includes("FAIL_PERSONA")
+        ? JSON.stringify({
+            verdict: "fail",
+            summary: "Needs repair",
+            requestedChanges: [{
+              title: "Fix it",
+              rationale: "Intent is not met",
+              evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
+            }],
+            confidence: 0.8,
+          })
+        : JSON.stringify({
+            verdict: "pass",
+            summary: "Approved",
+            approvalDetails: { reason: "Intent is met", evidence: [] },
+            confidence: 0.9,
+          });
+    },
+  });
+}
+
+test("a disabled reviewer auto-passes at claim time without a provider call", async () => {
+  const store = seedSubmission("disable-claim", disableGraph());
+  store.setRunDisabledNodes("run-disable-claim", ["p2"], [], 4);
+  const reviewed: string[] = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: verdictRunner(reviewed),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-disable-claim");
+  await waitFor(() => store.getRun("run-disable-claim")?.status === "completed");
+  await engine.stop();
+
+  // The failing reviewer was never asked; the honest one still ran.
+  assert.deepEqual(reviewed, ["honest"]);
+  const attempts = store.listAttempts("submission-disable-claim");
+  const skipped = attempts.find((attempt) => attempt.nodeId === "p2")!;
+  assert.equal(skipped.state, "completed");
+  // No provider is stamped onto a call that never happened.
+  assert.equal(skipped.runner, null);
+  assert.equal(skipped.model, null);
+  assert.equal((skipped.verdict as { verdict: string }).verdict, "pass");
+  // The verdict says plainly that nothing ran, and output carries the machine-readable flag.
+  assert.match(JSON.stringify(skipped.verdict), /disabled/i);
+  assert.deepEqual(skipped.output, { outcome: "pass", disabled: true });
+  assert.ok(store.listEvents("run-disable-claim").some((event) =>
+    event.kind === "disabled_node_auto_passed"
+    && !Array.isArray(event.payload)
+    && typeof event.payload === "object"
+    && event.payload?.nodeId === "p2"));
+});
+
+test("disabling a reviewer after a failed round makes the repair round auto-pass it", async () => {
+  const store = seedSubmission("disable-rerun", disableGraph());
+  const reviewed: string[] = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: verdictRunner(reviewed),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-disable-rerun");
+  await waitFor(() => store.getRun("run-disable-rerun")?.status === "waiting_for_session");
+
+  // Round 1 genuinely failed on the blocking reviewer. The operator disables it and
+  // resubmits; round 2 must complete without asking that reviewer again.
+  assert.deepEqual([...reviewed].sort(), ["blocking", "honest"]);
+  store.setRunDisabledNodes("run-disable-rerun", ["p2"], [], 20);
+  const repair = store.createRepairSubmission({
+    id: "submission-disable-rerun-2",
+    runId: "run-disable-rerun",
+    round: 2,
+    triggerSource: "manual",
+    triggerKey: "manual:disable-rerun:round-2",
+    context: {},
+    evidence: {},
+    now: 21,
+  });
+  store.updateSubmissionCapture(repair.submission.id, {
+    context: workflowJson(context),
+    evidence: workflowJson(context.evidence),
+    fingerprint: "fingerprint-disable-rerun-2",
+    status: "running",
+  }, 22);
+  engine.activateSubmission("submission-disable-rerun-2");
+  await waitFor(() => store.getRun("run-disable-rerun")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual([...reviewed].sort(), ["blocking", "honest", "honest"]);
+  const skipped = store.listAttempts("submission-disable-rerun-2")
+    .find((attempt) => attempt.nodeId === "p2")!;
+  assert.equal(skipped.state, "completed");
+  assert.equal((skipped.verdict as { verdict: string }).verdict, "pass");
+  assert.deepEqual(skipped.output, { outcome: "pass", disabled: true });
+  // Round 1's honest fail is history and stays exactly as it ran.
+  const original = store.listAttempts("submission-disable-rerun")
+    .find((attempt) => attempt.nodeId === "p2")!;
+  assert.equal((original.verdict as { verdict: string }).verdict, "fail");
+});
+
+test("a disabled check auto-passes without reaching the execution runtime", async () => {
+  const disabledCheckGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "gate", kind: "check", slot: "test", position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 0 } },
+    ],
+    edges: [
+      { id: "s-gate", source: "session", sourcePort: "submitted", target: "gate", targetPort: "activate" },
+      { id: "gate-pass", source: "gate", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "gate-fail", source: "gate", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("disable-check", disabledCheckGraph);
+  store.setRunDisabledNodes("run-disable-check", ["gate"], [], 4);
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowConfig: () => checkConfig(),
+    checkDeps: () => ({
+      execute: async () => {
+        throw new Error("a disabled check must never reach the execution runtime");
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-disable-check");
+  await waitFor(() => store.getRun("run-disable-check")?.status === "completed");
+  await engine.stop();
+
+  const gate = store.listAttempts("submission-disable-check")
+    .find((attempt) => attempt.nodeId === "gate")!;
+  assert.equal(gate.state, "completed");
+  assert.deepEqual(gate.output, { outcome: "pass", disabled: true });
+});
+
+/**
+ * A daemon restart must not wait out somebody's test suite.
+ *
+ * Before this, `stop()` set a flag and awaited every in-flight attempt - and a check attempt
+ * is a build with up to its whole timeout left to run. The command below would have held
+ * shutdown for a minute; a real `npm test` would hold it for the ten-minute default. Nothing
+ * about that is visible from the outside: the daemon simply appears to hang on exit.
+ *
+ * The assertion is the WALL CLOCK, deliberately, because that is the defect. A test that only
+ * checked "the group is gone afterwards" would pass against the unfixed code too - it would
+ * just take a minute to say so.
+ */
+test("stop() cancels a live check group instead of waiting out its command", {
+  skip: !checkRuntimeSupport().supported,
+}, async () => {
+  const store = seedSubmission("check-stop", checkGraph);
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowConfig: () => checkConfig(),
+    // The REAL supervisor, because the thing under test is whether `stop()` reaches the
+    // process group it registered. A stubbed executor would register nothing and the test
+    // would prove that stopping an engine with no check running is fast.
+    checkDeps: (attempt) => ({
+      execute: async () => {
+        const outcome = await runSupervisedCheck({
+          attemptId: attempt.attemptId,
+          command: [process.execPath, "-e", "setTimeout(() => {}, 60000)"],
+          leasePath: checkTree,
+          workingSubpath: "",
+          timeoutMs: 60_000,
+        }, {
+          // No lease in this test: the question is the process group, and Contract P's
+          // implementation is exercised where the lease is.
+          registry: { record: () => {}, clear: () => {} },
+          teardown: { graceMs: 300, confirmMs: 3_000, pollMs: 20 },
+        });
+        return outcome.result;
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-stop");
+  await waitFor(() => liveCheckGroupCount() > 0, 15_000);
+
+  const started = Date.now();
+  await engine.stop();
+  const elapsed = Date.now() - started;
+
+  // Generous, because what it has to exclude is a 60-second wait rather than a slow machine:
+  // measured at 15-70ms, and 15 seconds still fails loudly against a stop() that awaits the
+  // command. The bound is the defect, not the performance.
+  assert.ok(elapsed < 15_000, `stop() waited ${elapsed}ms for a 60s command`);
+  assert.equal(liveCheckGroupCount(), 0, "a check group survived the stop that cancelled it");
+  // And the cancellation is infrastructure, never a fail verdict about the submission.
+  const attempt = store.listAttempts("submission-check-stop").find((item) => item.nodeId === "gate")!;
+  assert.equal(attempt.state, "error");
+  assert.equal(attempt.verdict, null);
 });

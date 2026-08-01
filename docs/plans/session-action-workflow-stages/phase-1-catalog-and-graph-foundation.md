@@ -368,6 +368,25 @@ Phase 2 may rely on:
 - built-in Pull Request's stable source id and required skill;
 - publish refusing action graphs only because the runtime capability is absent.
 
+As built, those live at these names:
+
+| Contract | Where |
+|---|---|
+| Completion registry | `SESSION_ACTION_COMPLETION_KINDS` in `src/shared/workflow.ts` |
+| Node capabilities (ports, required routes, Join eligibility, role, label) | `WORKFLOW_NODE_CAPABILITIES` in `src/shared/workflow-graph.ts` |
+| Snapshot projections, stated once for both publishers | `personaSnapshotOf` / `sessionActionSnapshotOf` in `src/shared/workflow.ts` |
+| Stage union and its shared readers | `Stage`, `stageMembers`, `stageNodeIds`, `stageSeamGate`, `stageMemberKey` in `src/shared/workflow-stages.ts` |
+| The one draft validation | `WorkflowStore.validateDraft` - the library card, the diagnostics route and Publish all call it |
+| Catalog CAS and transactional publish | `WorkflowStore.listSessionActionsInTransaction`, used inside `publishWorkflow`'s transaction |
+| Registry/SSE | `Registry.upsertSessionAction`, `session_action_upsert` / `session_action_remove` |
+
+The publish gate is **one boolean**, `SESSION_ACTION_RUNTIME_AVAILABLE` in
+`src/shared/workflow-graph.ts`, read through `WorkflowGraphValidationInput.sessionActionRuntimeAvailable`
+and injected into `WorkflowStore` as its last constructor argument (defaulting to the constant, the
+way `builtins` does). Phase 2 replaces it with the per-adapter availability check that document
+already specifies; the injection point is what let Phase 1 prove the snapshot and transaction rules
+without a runtime, and it is the seam to widen rather than a flag to leave behind.
+
 Phase 2 must not:
 
 - widen `WorkflowVerdictNode` to include SessionAction;
@@ -388,3 +407,30 @@ Phase 2 must not:
   so this phase leaves no user-visible dead control.
 - Reconcile this record after review if Phase 1 changes a shared name, migration, or publish gate;
   every downstream phase file must be updated before scheduling its implementation.
+
+Reconciled after implementation:
+
+- The publish gate is a VALIDATION diagnostic rather than a store-only refusal, so the Publish
+  control is disabled where an operator can read the reason instead of becoming a 409 against a
+  button that looked enabled. It is injectable for the same reason `builtins` is, which is what
+  makes the snapshot and publish-transaction rules provable before a runtime exists.
+- Two shared helpers were extracted rather than added: `personaSnapshotOf` beside
+  `sessionActionSnapshotOf`, because the store and the built-in workflow catalog are two publishers
+  of the same snapshot shape, and `WorkflowStore.validateDraft`, because three call sites were
+  independently assembling the same validation input.
+- The generator was split into `scripts/builtin-markdown.ts`, shared by `npm run personas` and the
+  new `npm run session-actions`. `npm run personas` writes byte-identical output, pinned by its
+  existing drift test.
+- NO affordance for an action node is offered anywhere in the browser: not add, not configure,
+  not reorder, not remove. An earlier attempt kept `Delete node` in Graph view on the argument
+  that deletion is an escape hatch for a graph that arrived through the raw draft API; review
+  rejected that, correctly - this phase's constraint names removal explicitly, and half an
+  authoring loop is still authoring. The refusal is enforced in three places, because an
+  affordance withheld in one and left open in another is the same affordance: the rail omits
+  the button, `removeSelection` refuses the node, and the canvas marks it `deletable: false`
+  so React Flow's delete key cannot reach it either. `duplicateNodes` refuses one for the
+  related reason - duplicating is an add control by another name. A graph that arrived through
+  the raw API leaves the same way it came, or with the workflow.
+- Driving the real builder found two dead controls the unit tests did not: an "Add reviewer or
+  check" picker on an action stage, and a Duplicate button that lit up for a selected action and
+  then did nothing. Both are fixed and pinned in `test/session-action-render.test.ts`.

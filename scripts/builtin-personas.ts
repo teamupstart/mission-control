@@ -10,25 +10,26 @@
 //
 // Run this after editing, adding or removing a Persona document, and commit the result.
 //
-// ## Why the Markdown is compiled in rather than read at runtime
-//
-// The built-in Personas are app data: every build serves exactly the guidance it was made
-// from. `docs/personas/` is not in the packaged app, and esbuild collapses the daemon into
-// `dist/server/index.mjs`, so any module that read those files at runtime would resolve a
-// path that exists in the checkout and not in a packaged build - the failure that looks
-// like a feature quietly missing rather than a build that breaks.
-//
-// This script therefore does one thing and no interpretation: it embeds the exact bytes of
-// each document. `builtin-personas.ts` derives the name and description at load time and
-// derives the durable id from the filename slug. **Import .md** shares the name helper; its
-// description remains empty.
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+// The reading and rendering live in `builtin-markdown.ts`, which also states why the
+// Markdown is compiled in rather than read at runtime. This file owns only the two facts
+// that are this generator's own: where the documents are, and what the module is called.
+import { writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { builtinMarkdownSources, renderBuiltinMarkdownModule } from "./builtin-markdown.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = join(root, "docs", "personas");
 const outFile = join(root, "src", "server", "workflows", "builtin-personas.generated.ts");
+
+const SPEC = {
+  script: "scripts/builtin-personas.ts",
+  sourceGlob: "docs/personas/*.md",
+  command: "npm run personas",
+  constName: "BUILTIN_PERSONA_SOURCES",
+  field: "guidanceMarkdown",
+  doc: "/** The exact bytes of each shipped Persona document, in filename order. */",
+} as const;
 
 export interface BuiltinPersonaSource {
   slug: string;
@@ -37,27 +38,15 @@ export interface BuiltinPersonaSource {
 
 /** The slug is the filename, and it is the durable half of the built-in's id. */
 export function builtinPersonaSources(dir = sourceDir): BuiltinPersonaSource[] {
-  return readdirSync(dir)
-    .filter((entry) => entry.endsWith(".md"))
-    .sort((a, b) => a.localeCompare(b, "en-US"))
-    .map((entry) => ({
-      slug: entry.slice(0, -".md".length),
-      guidanceMarkdown: readFileSync(join(dir, entry), "utf8"),
-    }));
+  return builtinMarkdownSources(dir)
+    .map((source) => ({ slug: source.slug, guidanceMarkdown: source.markdown }));
 }
 
 export function renderBuiltinPersonaModule(sources: readonly BuiltinPersonaSource[]): string {
-  const entries = sources
-    .map((source) => `  {\n    slug: ${JSON.stringify(source.slug)},\n`
-      + `    guidanceMarkdown: ${JSON.stringify(source.guidanceMarkdown)},\n  },`)
-    .join("\n");
-  return `// GENERATED FILE - do not edit by hand.\n`
-    + `//\n`
-    + `// Written by \`scripts/builtin-personas.ts\` from \`docs/personas/*.md\`, which are the\n`
-    + `// authored source. Edit the Markdown there and run \`npm run personas\`.\n`
-    + `\n`
-    + `/** The exact bytes of each shipped Persona document, in filename order. */\n`
-    + `export const BUILTIN_PERSONA_SOURCES = [\n${entries}\n] as const;\n`;
+  return renderBuiltinMarkdownModule(
+    SPEC,
+    sources.map((source) => ({ slug: source.slug, markdown: source.guidanceMarkdown })),
+  );
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

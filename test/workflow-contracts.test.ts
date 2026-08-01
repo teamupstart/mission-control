@@ -8,6 +8,7 @@ import {
   PublishedWorkflowGraphSchema,
   ReattachWorkflowBindingSchema,
   RestartFullWorkflowSchema,
+  SetWorkflowNodesDisabledSchema,
   UpdatePersonaSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowCompletionPolicySchema,
@@ -40,6 +41,23 @@ test("workflow limits are finite front-door contracts", () => {
     personaName: 100,
     personaDescription: 500,
     personaGuidanceBytes: 100_000,
+    sessionActionName: 100,
+    sessionActionDescription: 500,
+    // DERIVED, not chosen: the packet budget less the envelope allowance. The two used to be
+    // set independently, and the gap between them was a published action that types only a
+    // prefix of its immutable instruction.
+    sessionActionPromptBytes: 58_000,
+    sessionActionEnvelopeBytes: 2_000,
+    // Looser than the authoring bound on purpose, so a row written before the ceiling was
+    // tied to the packet budget stays readable and therefore fixable. It still cannot be
+    // published - the snapshot schema holds it to `sessionActionPromptBytes`.
+    sessionActionPromptReadBytes: 100_000,
+    sessionActionSkillId: 200,
+    // Deliberately NOT `feedbackPayloadBytes`. That budget bounds prose the daemon composes
+    // from verdicts; this bounds the operator's own authored instruction, so it is the
+    // delivery row's own ceiling less envelope headroom - the widest prompt that can be
+    // stored is the widest that can be sent.
+    sessionActionPacketBytes: 60_000,
     workflowName: 120,
     graphNodes: 100,
     graphEdges: 300,
@@ -154,11 +172,12 @@ test("graph vocabulary has one Session concept and no checkpoint, Inspector, or 
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
       { id: "persona", kind: "persona", personaId: "p1", position: { x: 100, y: 0 } },
       { id: "join", kind: "all_pass", position: { x: 200, y: 0 } },
+      { id: "action", kind: "session_action", sessionActionId: "a1", position: { x: 250, y: 0 } },
       { id: "end", kind: "end", outcome: "Approved", position: { x: 300, y: 0 } },
     ],
     edges: [],
   };
-  assert.equal(WorkflowDraftGraphSchema.parse(base).nodes.length, 4);
+  assert.equal(WorkflowDraftGraphSchema.parse(base).nodes.length, 5);
   for (const kind of ["checkpoint", "inspector", "ensemble"]) {
     assert.throws(() =>
       WorkflowDraftGraphSchema.parse({
@@ -176,6 +195,14 @@ test("graph vocabulary has one Session concept and no checkpoint, Inspector, or 
   assert.throws(() =>
     PublishedWorkflowGraphSchema.parse({
       nodes: [{ id: "p", kind: "persona", personaId: "live-id", position: { x: 0, y: 0 } }],
+      edges: [],
+    }),
+  );
+  // The same refusal for the second kind whose published form differs: a version holding a
+  // live action id would let a library edit change what an in-flight run types.
+  assert.throws(() =>
+    PublishedWorkflowGraphSchema.parse({
+      nodes: [{ id: "a", kind: "session_action", sessionActionId: "live-id", position: { x: 0, y: 0 } }],
       edges: [],
     }),
   );
@@ -305,6 +332,39 @@ test("Inspector run actions require parsed request identity and bound restart co
   });
   assert.throws(() => WorkflowRunActionSchema.parse({ requestId: "" }));
   assert.throws(() => RestartFullWorkflowSchema.parse({}));
+});
+
+test("the per-run node disable toggle names its nodes, its direction, and its request", () => {
+  assert.deepEqual(SetWorkflowNodesDisabledSchema.parse({
+    requestId: "toggle-1",
+    nodeIds: ["judge-node"],
+    disabled: true,
+  }), {
+    requestId: "toggle-1",
+    nodeIds: ["judge-node"],
+    disabled: true,
+  });
+  // Both halves of the toggle are explicit; there is no "flip whatever it was" request,
+  // which would race a second operator's click.
+  assert.equal(SetWorkflowNodesDisabledSchema.parse({
+    requestId: "toggle-2",
+    nodeIds: ["a", "b"],
+    disabled: false,
+  }).disabled, false);
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ requestId: "toggle-3", nodeIds: [], disabled: true }));
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ requestId: "toggle-4", nodeIds: ["a"] }));
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ nodeIds: ["a"], disabled: true }));
+  // A repeated id would drive the same audit event twice, so the schema refuses it.
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({
+    requestId: "toggle-6",
+    nodeIds: ["a", "a"],
+    disabled: true,
+  }));
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({
+    requestId: "toggle-5",
+    nodeIds: Array.from({ length: WORKFLOW_LIMITS.graphNodes + 1 }, (_, index) => `node-${index}`),
+    disabled: true,
+  }));
 });
 
 test("Persona model role names the working environment variable and balanced fallback", () => {

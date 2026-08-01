@@ -549,6 +549,20 @@ test("the verifier gets the operator's instructions ABOVE the evidence fence", (
   assert.ok(p.indexOf(PREFS) < p.indexOf("BEGIN UNTRUSTED EVIDENCE"));
 });
 
+test("the verifier keeps the durable objective separate from the latest tactical focus", () => {
+  const objective = "Implement objective-aware completion across the whole Foreman lifecycle";
+  const focus = "First fix the drawer snapshot test";
+  const p = buildVerifyPrompt(verifyInput({ intent: objective, focus }));
+  const objectiveAt = p.indexOf(objective);
+  const focusHeadingAt = p.indexOf("Latest tactical focus");
+  const focusAt = p.indexOf(focus);
+
+  assert.ok(objectiveAt !== -1);
+  assert.ok(focusHeadingAt > objectiveAt);
+  assert.ok(focusAt > focusHeadingAt);
+  assert.match(p, /NOT sufficient for completion/);
+});
+
 test("standards docs stay BELOW the fence, on the far side of the operator's doc", () => {
   // The other half of the same boundary. Both are markdown read out of the same repo
   // by the same reader; only their side of the fence distinguishes direction from

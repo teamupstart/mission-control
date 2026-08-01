@@ -1,7 +1,12 @@
 import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
-import type { InspectorComment, InspectorInspection, InspectorMode } from "./types.ts";
+import type {
+  InspectorComment,
+  InspectorInspection,
+  InspectorMode,
+  SessionIntentGuard,
+} from "./types.ts";
 import { providerModelDefault } from "./model.ts";
 import { repoAllowlisted } from "./allowlist.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
@@ -11,6 +16,7 @@ import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 // shapes. Nothing here may acquire a node: import.
 
 export type PersonaId = string;
+export type SessionActionId = string;
 export type WorkflowId = string;
 export type WorkflowVersionId = string;
 export type WorkflowBindingId = string;
@@ -24,6 +30,58 @@ export const WORKFLOW_LIMITS = {
   personaName: 100,
   personaDescription: 500,
   personaGuidanceBytes: 100_000,
+  sessionActionName: 100,
+  sessionActionDescription: 500,
+  /**
+   * The exact instruction a SessionAction types into a session, in UTF-8 bytes.
+   *
+   * DERIVED from what can actually be delivered, not chosen: `sessionActionPacketBytes` less
+   * `sessionActionEnvelopeBytes`. The two used to be set independently - a 100,000-byte
+   * prompt against a 60,000-byte packet - and the gap between them was a published action
+   * that types only a PREFIX of its immutable instruction. Truncating a repair packet loses
+   * some of the daemon's own prose; truncating this changes the operation an operator asked
+   * for, without failing the run. So the ceiling on what may be authored is exactly the
+   * ceiling on what may be sent intact, and it is computed rather than restated.
+   *
+   * Enforced on create, on update, and on the published SNAPSHOT, so no version can carry a
+   * prompt that cannot be delivered whole.
+   */
+  sessionActionPromptBytes: 58_000,
+  /**
+   * Headroom for everything the packet wraps the prompt in: the skill invocation, the action
+   * and workflow names, the version and the run id.
+   *
+   * Every one of those is separately bounded and their sum is well under a kilobyte, so this
+   * is deliberately generous - it is a guarantee, not a measurement, and the cost of being
+   * generous is prompt bytes nobody was going to use.
+   */
+  sessionActionEnvelopeBytes: 2_000,
+  /**
+   * What may be STORED, which is looser than what may be authored or published.
+   *
+   * A row written before the prompt ceiling was tied to the packet budget stays readable, so
+   * an operator can still see it, rename it, and shorten it. It simply cannot be published:
+   * the snapshot schema holds it to `sessionActionPromptBytes`, which is what keeps an
+   * undeliverable prompt out of every immutable version.
+   */
+  sessionActionPromptReadBytes: 100_000,
+  /**
+   * A skill id is a catalog NAME (`pull-request`), never an argv and never a path, so the
+   * bound is conservative on purpose: anything long enough to hide a command line in is
+   * already longer than any id the skills catalog can produce.
+   */
+  sessionActionSkillId: 200,
+  /**
+   * The delivered action packet, in UTF-8 bytes.
+   *
+   * Deliberately NOT `feedbackPayloadBytes`. A repair packet is a SUMMARY the daemon writes
+   * from verdicts, so eight kilobytes is a design budget; an action packet carries the
+   * operator's own authored instruction, and clipping that at the review budget would
+   * silently deliver a different instruction from the one the version was published with.
+   * The ceiling is instead the delivery row's own bound (`eventPayloadBytes`) less headroom,
+   * and `sessionActionPromptBytes` is derived FROM this so the two cannot drift apart.
+   */
+  sessionActionPacketBytes: 60_000,
   workflowName: 120,
   graphNodes: 100,
   graphEdges: 300,
@@ -208,7 +266,10 @@ export function personaNameFromMarkdown(markdown: string, fallback: string): str
  * Derived rather than stored so the description cannot drift from the document it describes.
  * A file with nothing but headings has no summary, and an empty description is a legal answer.
  */
-export function personaDescriptionFromMarkdown(markdown: string): string {
+export function personaDescriptionFromMarkdown(
+  markdown: string,
+  maxLength: number = WORKFLOW_LIMITS.personaDescription,
+): string {
   const body = markdown.replace(/^[\s\S]*?^#[^\S\r\n]+.*?$/m, "");
   const paragraph = (body === markdown ? markdown : body)
     .split(/(?:\r?\n){2,}/)
@@ -216,10 +277,391 @@ export function personaDescriptionFromMarkdown(markdown: string): string {
     .find((block) => block.length > 0 && !block.startsWith("#"));
   if (paragraph === undefined) return "";
   const collapsed = paragraph.replace(/\s+/gu, " ");
-  if (collapsed.length <= WORKFLOW_LIMITS.personaDescription) return collapsed;
-  const cut = collapsed.slice(0, WORKFLOW_LIMITS.personaDescription - 1);
+  if (collapsed.length <= maxLength) return collapsed;
+  const cut = collapsed.slice(0, maxLength - 1);
   const lastSpace = cut.lastIndexOf(" ");
   return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+// ---- SessionActions ---------------------------------------------------------
+//
+// A SessionAction is NOT a Persona with a different verb, and the two types are kept apart
+// deliberately. A Persona selects an LLM runner and model, reads one immutable submission
+// and returns a verdict. A SessionAction selects an instruction, an optional skill and a
+// completion adapter, is typed into the BOUND session, and returns only "this finished".
+// Widening `Persona` to carry both would make every reader of `PersonaSnapshot` - the
+// engine's verdict path included - responsible for a record that produces no verdict.
+
+/**
+ * What the daemon must OBSERVE before an action counts as finished.
+ *
+ * APPEND-ONLY: these strings reach operator rows (`session_actions.completion_kind`) and
+ * immutable published graphs, so renaming one does not migrate a version, it makes it
+ * unreadable - and reading an unknown kind as `session_turn` would complete a historical
+ * action under a weaker proof contract than the one it was published with.
+ *
+ * A completion kind names a CLOSED, server-owned adapter and never a script:
+ *  - `session_turn`  - verified pickup followed by a settled idle turn.
+ *  - `pull_request`  - the same turn boundary plus durable matching PR provenance.
+ */
+export const SESSION_ACTION_COMPLETION_KINDS = ["session_turn", "pull_request"] as const;
+export type SessionActionCompletionKind = (typeof SESSION_ACTION_COMPLETION_KINDS)[number];
+
+/**
+ * An OBJECT rather than the bare kind string, so an adapter that later needs a parameter
+ * gains one without reshaping every stored row and published snapshot that names it.
+ */
+export type SessionActionCompletion =
+  | { kind: "session_turn" }
+  | { kind: "pull_request" };
+
+export interface SessionAction {
+  id: SessionActionId;
+  name: string;
+  normalizedName: string;
+  description: string;
+  /**
+   * Exact Markdown after UTF-8 decoding, whether operator-authored or shipped.
+   *
+   * Never trimmed, never newline-normalized, never variable-expanded, and never treated as
+   * a template. Validation may look at its length and its emptiness and nothing else: this
+   * is the literal text a session receives, and a boundary that "helpfully" rewrote it
+   * would deliver an instruction nobody authored.
+   */
+  promptMarkdown: string;
+  /**
+   * A skill CAPABILITY id, never a command.
+   *
+   * The daemon resolves the harness-native invocation for this id immediately before it
+   * sends, so a missing, disabled or drifted skill blocks before any write. Storing the
+   * resolved command instead would put an argv into an exportable published version and
+   * pin it to whatever the harness happened to spell it as on the publishing machine.
+   */
+  requiredSkillId: string | null;
+  completion: SessionActionCompletion;
+  revision: number;
+  archivedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  /**
+   * Shipped with the application rather than authored here. Exactly `Persona.builtin`:
+   * app data, never a row, neither editable nor archivable, and Duplicate is the path to
+   * a customized copy.
+   */
+  builtin: boolean;
+}
+
+/** SessionAction names use the same durable Unicode spelling rule as Persona names. */
+export const normalizeSessionActionName = normalizePersonaName;
+
+/** The name a SessionAction Markdown document carries: its first level-one heading. */
+export const sessionActionNameFromMarkdown = personaNameFromMarkdown;
+
+/** The one-line summary a SessionAction Markdown document carries. */
+export function sessionActionDescriptionFromMarkdown(markdown: string): string {
+  return personaDescriptionFromMarkdown(markdown, WORKFLOW_LIMITS.sessionActionDescription);
+}
+
+/**
+ * The SessionActions a human is offered, with a live operator row SHADOWING a same-named
+ * built-in. Deliberately the same rule as `personasForDisplay`, so the two libraries cannot
+ * disagree about what a name collision means.
+ */
+export function sessionActionsForDisplay<
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "normalizedName">,
+>(actions: readonly T[]): T[] {
+  const liveOperatorNames = new Set(
+    actions
+      .filter((action) => !action.builtin && action.archivedAt === null)
+      .map((action) => action.normalizedName),
+  );
+  return actions.filter(
+    (action) => !action.builtin || !liveOperatorNames.has(action.normalizedName),
+  );
+}
+
+/**
+ * The actions an ADD control may offer, which is a narrower question than what the library
+ * lists.
+ *
+ * Two filters, and neither one is optional. `sessionActionsForDisplay` drops a built-in an
+ * operator's row is shadowing and the archived rows go with it, because adding either would
+ * bind a draft to a source the publish transaction is about to refuse. The second filter is
+ * `available`, and it is passed IN rather than read from
+ * `SESSION_ACTION_COMPLETION_CAPABILITIES` here on purpose: the daemon is the only thing
+ * that knows which adapters this build can execute, and a browser that answered from its own
+ * copy of the table would offer a stage whose graph the server then refuses to publish. The
+ * caller hands over what `GET /api/session-actions/capabilities` said, and an empty set is an
+ * honest "nothing is addable yet" rather than a silent fallback to everything.
+ */
+export function addableSessionActions<
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName">,
+>(actions: readonly T[], available: ReadonlySet<SessionActionCompletionKind>): T[] {
+  return sessionActionsForDisplay(actions)
+    .filter((action) => action.archivedAt === null && available.has(action.completion.kind));
+}
+
+/**
+ * A picker's options: everything addable, plus a RETAINED entry for whatever a draft already
+ * names.
+ *
+ * The retained arm is the whole reason this is not just `addableSessionActions`. A node may
+ * point at an action that has since been archived, been shadowed by an operator's row of the
+ * same name, or - as the built-in Pull Request does until its adapter ships - name a
+ * completion this build cannot prove. In every one of those cases the option has to stay in
+ * the list, because a `<select>` whose value is absent from its options renders as though
+ * something else were selected, and the next change event would rewrite a draft nobody meant
+ * to edit.
+ */
+export function sessionActionChoicesForDisplay<
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "id" | "normalizedName">,
+>(
+  actions: readonly T[],
+  retainedIds: readonly string[],
+  available: ReadonlySet<SessionActionCompletionKind>,
+): Array<{ action: T; retained: boolean }> {
+  const addable = addableSessionActions(actions, available);
+  const addableIds = new Set(addable.map((action) => action.id));
+  const retained = new Set(retainedIds);
+  return [
+    ...actions
+      .filter((action) => retained.has(action.id) && !addableIds.has(action.id))
+      .map((action) => ({ action, retained: true })),
+    ...addable.map((action) => ({ action, retained: false })),
+  ];
+}
+
+/**
+ * What a retained option says about itself, in the order an operator needs to hear it.
+ *
+ * Unavailability comes FIRST because it is the only reason that is about this build rather
+ * than about the catalog: the shipped Pull Request action is neither archived nor shadowed,
+ * and labelling it "shadowed by your action" - which is what checking `builtin` first did -
+ * would send an operator looking for a row of theirs that does not exist.
+ */
+export function sessionActionChoiceLabel(
+  action: Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "name">,
+  retained: boolean,
+  available: ReadonlySet<SessionActionCompletionKind>,
+): string {
+  if (!retained) return action.name;
+  if (!available.has(action.completion.kind)) return `${action.name} (Not available in this build)`;
+  if (action.archivedAt !== null) return `${action.name} (Archived)`;
+  if (action.builtin) return `${action.name} (Built-in, shadowed by your action)`;
+  return action.name;
+}
+
+/**
+ * What an action's completion adapter proves, as the phrase a row or a rail prints.
+ *
+ * One function rather than the `kind === "pull_request" ? … : …` ternary that had started
+ * appearing at every surface: the pipeline card, the graph rail, the version snapshot and
+ * now the library each need this sentence, and four copies of a two-armed conditional is
+ * four places to forget when a third adapter arrives. Reading the capability table's own
+ * `label` keeps the wording the same as the selector an operator chose it from.
+ */
+export function sessionActionCompletionLabel(completion: SessionActionCompletion): string {
+  // Falls back to the wire spelling rather than indexing into `undefined`. Catalog rows and
+  // published snapshots reach the browser from a daemon that may be a version ahead, and the
+  // kinds are explicitly append-only - so a third adapter would otherwise turn every list
+  // row, stage card and run card that names one into a TypeError.
+  return SESSION_ACTION_COMPLETION_CAPABILITIES[completion.kind]?.label ?? completion.kind;
+}
+
+/** The required skill as a phrase, including the honest answer when there is none. */
+export function sessionActionSkillLabel(requiredSkillId: string | null): string {
+  return requiredSkillId === null ? "No required skill" : `Skill · ${requiredSkillId}`;
+}
+
+/**
+ * What a completion adapter PROVES, and whether this build can prove it.
+ *
+ * Shared rather than server-owned because three readers need the same answer and none of
+ * them may invent one: graph validation refuses to publish a version naming an adapter this
+ * build cannot run, the daemon's registry executes it, and the browser labels it. A second
+ * list in any of the three is a surface offering a guarantee the runtime does not keep.
+ *
+ * `label` says what the runtime observes, never the wire spelling: an operator choosing
+ * between adapters is choosing between proofs, not between identifiers.
+ */
+export interface SessionActionCompletionCapability {
+  kind: SessionActionCompletionKind;
+  available: boolean;
+  label: string;
+  /** One sentence a human can act on, or null when the adapter is available. */
+  unavailableReason: string | null;
+}
+
+export const SESSION_ACTION_COMPLETION_CAPABILITIES: Record<
+  SessionActionCompletionKind,
+  SessionActionCompletionCapability
+> = {
+  session_turn: {
+    kind: "session_turn",
+    available: true,
+    label: "Session turn finishes",
+    unavailableReason: null,
+  },
+  pull_request: {
+    kind: "pull_request",
+    available: false,
+    label: "Pull request is opened and verified",
+    // A stable refusal rather than a placeholder that returns success. Completing a
+    // `pull_request` action on the generic turn boundary alone would claim durable PR
+    // provenance nobody checked, which is the one guarantee this adapter exists to make.
+    unavailableReason:
+      "This build cannot verify a pull request yet, so a workflow using this action cannot be published.",
+  },
+};
+
+/**
+ * Why a session action is still waiting. APPEND-ONLY: these strings reach a durable attempt's
+ * `output_json` and a run's public projection, so a build that cannot read one fails the row
+ * rather than guessing.
+ *
+ * Every one of them is a WAIT and not a failure: none of them may become a Persona verdict,
+ * a repair packet, or a spent repair round.
+ */
+export const SESSION_ACTION_WAIT_REASONS = [
+  /** The attempt exists and its one delivery has not been prepared yet. */
+  "preparing",
+  /** Prepared, and nothing has been typed - Preview, or Live waiting on authorization. */
+  "awaiting_send",
+  /** Sent, and nothing newer than the send anchor proves the session read it. */
+  "awaiting_pickup",
+  /** Proven picked up, and the turn has not settled. */
+  "working",
+  /** Picked up and parked on a question a human has to answer. Never a settled turn. */
+  "needs_operator",
+  /** Settled, and the completion adapter wants durable evidence it does not have yet. */
+  "awaiting_proof",
+  /** The adapter completed and the continuation segment is being captured. */
+  "capturing",
+] as const;
+export type SessionActionWaitReason = (typeof SESSION_ACTION_WAIT_REASONS)[number];
+
+/**
+ * Why a session action can no longer proceed. APPEND-ONLY for `SESSION_ACTION_WAIT_REASONS`'
+ * reason.
+ *
+ * A block is a RUN state and never a graph outcome: it blocks the run with an action-specific
+ * diagnostic, spends no repair round, and never routes back to Session as a requested change.
+ */
+export const SESSION_ACTION_BLOCK_CODES = [
+  "adapter_unavailable",
+  "prompt_too_large",
+  "required_skill_unavailable",
+  "session_lost",
+  "conversation_changed",
+  "delivery_refused",
+  "delivery_uncertain",
+  "capture_failed",
+  "expectation_unmet",
+] as const;
+export type SessionActionBlockCode = (typeof SESSION_ACTION_BLOCK_CODES)[number];
+
+/**
+ * What an adapter may require of the continuation capture, as a CLOSED union.
+ *
+ * Deliberately not an opaque JSON escape hatch. This value is persisted on the waiting
+ * attempt and re-validated against a capture that may happen after a daemon restart, so an
+ * unvalidated shape would be a durable field nothing can safely read back. Phase 4's PR
+ * adapter adds its arm here rather than smuggling one through `unknown`.
+ */
+export type SessionActionContinuationExpectation =
+  | { kind: "none" }
+  | { kind: "head"; headSha: string };
+
+/**
+ * One adapter's answer once the generic observer has proven pickup and a settled turn.
+ *
+ * `complete` is the ONLY arm that advances the graph, and it always states its continuation
+ * expectation explicitly so a capture cannot silently skip a check the adapter meant to make.
+ */
+export type SessionActionCompletionDecision =
+  | { kind: "complete"; continuationExpectation: SessionActionContinuationExpectation }
+  | { kind: "waiting"; reason: SessionActionWaitReason }
+  | { kind: "blocked"; code: SessionActionBlockCode; detail: string };
+
+/**
+ * What the daemon proved about the packet it actually sent.
+ *
+ * Persisted so a restart can tell PRE-send session state from POST-send activity. Without it
+ * the target session's ordinary idleness - which is the normal state immediately before a
+ * packet is typed - would read as a finished turn on the very first observation.
+ */
+export interface SessionActionDeliveryAnchor {
+  deliveryId: WorkflowDeliveryId;
+  sessionId: string;
+  noteKey: string;
+  deliveredAt: number;
+  /** Transcript bytes at confirmed send, or null when this harness exposes no transcript. */
+  transcriptBytes: number | null;
+}
+
+/**
+ * A waiting action attempt's durable observation state, carried in its `output_json`.
+ *
+ * On the ATTEMPT rather than the run, because a run holds at most one gate state while a
+ * repair round may execute several actions in turn, and each one's anchor has to survive
+ * independently for audit and recovery.
+ */
+export interface SessionActionAttemptState {
+  wait: SessionActionWaitReason;
+  deliveryId: WorkflowDeliveryId | null;
+  anchor: SessionActionDeliveryAnchor | null;
+  pickedUpAt: number | null;
+  settledAt: number | null;
+  expectation: SessionActionContinuationExpectation | null;
+  continuationSubmissionId: WorkflowSubmissionId | null;
+  blocked: { code: SessionActionBlockCode; detail: string } | null;
+}
+
+/**
+ * The immutable copy a published version carries. Runtime code reads ONLY this: resolving
+ * live library text during a run would let an edit change what an in-flight run types.
+ */
+export interface SessionActionSnapshot {
+  sourceSessionActionId: SessionActionId;
+  sourceRevision: number;
+  name: string;
+  description: string;
+  promptMarkdown: string;
+  requiredSkillId: string | null;
+  completion: SessionActionCompletion;
+}
+
+/** The action half of `personaSnapshotOf`, and stated once for the same reason. */
+export function sessionActionSnapshotOf(action: SessionAction): SessionActionSnapshot {
+  return {
+    sourceSessionActionId: action.id,
+    sourceRevision: action.revision,
+    name: action.name,
+    description: action.description,
+    promptMarkdown: action.promptMarkdown,
+    requiredSkillId: action.requiredSkillId,
+    completion: action.completion,
+  };
+}
+
+/**
+ * Whether history should report this snapshot's source as having moved on.
+ *
+ * A built-in is compared by its TEXT rather than its revision, exactly as
+ * `personaSnapshotIsOutdated` does: a built-in's revision is a synthetic constant, so a
+ * build shipping edited Markdown under the same revision would otherwise report as current.
+ */
+export function sessionActionSnapshotIsOutdated(
+  snapshot: SessionActionSnapshot,
+  current: SessionAction | null | undefined,
+): boolean {
+  if (!current) return true;
+  if (current.builtin) {
+    return snapshot.promptMarkdown !== current.promptMarkdown
+      || snapshot.requiredSkillId !== current.requiredSkillId
+      || snapshot.completion.kind !== current.completion.kind;
+  }
+  return snapshot.sourceRevision !== current.revision;
 }
 
 export interface Point {
@@ -227,7 +669,17 @@ export interface Point {
   y: number;
 }
 
-export const WORKFLOW_SOURCE_PORTS = ["submitted", "pass", "fail"] as const;
+/**
+ * APPEND-ONLY, for `WORKFLOW_CHECK_SLOTS`' reason: a port spelling reaches durable draft
+ * and published edges, so renaming one orphans every version naming the old spelling.
+ *
+ * `complete` is a SessionAction's only source port, and it is deliberately not `pass`. A
+ * pass says an evaluator judged the work acceptable; a complete says a turn the daemon
+ * asked for finished. Reusing `pass` would let a Join treat "the session did the thing" as
+ * a favourable verdict, and would invite a `fail` route back to Session for what is really
+ * a delivery or infrastructure problem rather than a requested code change.
+ */
+export const WORKFLOW_SOURCE_PORTS = ["submitted", "pass", "fail", "complete"] as const;
 export type WorkflowSourcePort = (typeof WORKFLOW_SOURCE_PORTS)[number];
 
 export const WORKFLOW_TARGET_PORTS = [
@@ -258,6 +710,10 @@ export type WorkflowDraftNode =
   | { id: string; kind: "persona"; personaId: PersonaId; position: Point }
   | { id: string; kind: "all_pass"; position: Point }
   | { id: string; kind: "check"; slot: WorkflowCheckSlot; position: Point }
+  // A draft names the LIVE action; Publish resolves it to a snapshot. Same split as
+  // `persona`, and for the same reason: a draft has to follow library edits, a version
+  // must never see one.
+  | { id: string; kind: "session_action"; sessionActionId: SessionActionId; position: Point }
   | { id: string; kind: "end"; outcome: string; position: Point };
 
 export interface WorkflowEdge {
@@ -283,6 +739,26 @@ export interface PersonaSnapshot {
   model: string | null;
 }
 
+/**
+ * The immutable copy Publish freezes into a version.
+ *
+ * One function rather than an object literal at each publisher, because there are two - the
+ * store's `publishWorkflow` and the built-in catalog's compile-time projection - and a field
+ * added to the snapshot type but to only one of them is a version that silently ships
+ * without it.
+ */
+export function personaSnapshotOf(persona: Persona): PersonaSnapshot {
+  return {
+    sourcePersonaId: persona.id,
+    sourceRevision: persona.revision,
+    name: persona.name,
+    description: persona.description,
+    guidanceMarkdown: persona.guidanceMarkdown,
+    runner: persona.runner,
+    model: persona.model,
+  };
+}
+
 export function personaSnapshotIsOutdated(
   snapshot: PersonaSnapshot,
   current: Persona | null | undefined,
@@ -293,15 +769,21 @@ export function personaSnapshotIsOutdated(
 }
 
 /**
- * Persona is the only kind whose published form differs, so every other kind - including
- * `check` - is carried through by the `Exclude`. A check node is byte-identical in draft
- * and published form because it snapshots nothing: its command is deliberately not part of
- * the version, which is the whole point of naming a slot.
+ * Persona and SessionAction are the two kinds whose published form differs, so every other
+ * kind - including `check` - is carried through by the `Exclude`. A check node is
+ * byte-identical in draft and published form because it snapshots nothing: its command is
+ * deliberately not part of the version, which is the whole point of naming a slot.
  */
 export type PublishedWorkflowNode =
-  | Exclude<WorkflowDraftNode, { kind: "persona" }>
-  | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point };
+  | Exclude<WorkflowDraftNode, { kind: "persona" | "session_action" }>
+  | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point }
+  | { id: string; kind: "session_action"; action: SessionActionSnapshot; position: Point };
 
+/**
+ * The kinds that return a `PersonaVerdict`. SessionAction is deliberately NOT one of them
+ * and must never be added: every reader of this type treats its node as something that
+ * passed or failed a review, and an action that finished has done neither.
+ */
 export type WorkflowVerdictNode = Extract<PublishedWorkflowNode, { kind: "persona" | "check" }>;
 
 export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerdictNode {
@@ -310,6 +792,20 @@ export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerd
 
 export function verdictAuthor(node: WorkflowVerdictNode): string {
   return node.kind === "persona" ? node.persona.name : `Check · ${node.slot}`;
+}
+
+export type WorkflowSessionActionNode = Extract<PublishedWorkflowNode, { kind: "session_action" }>;
+
+/**
+ * A NARROW guard beside `isVerdictNode` rather than a widening of it. Callers that ask
+ * "did this node judge the work?" and callers that ask "did this node write to the
+ * session?" are asking different questions, and one predicate answering both is how an
+ * action's completion ends up rendered as a verdict.
+ */
+export function isSessionActionNode(
+  node: PublishedWorkflowNode,
+): node is WorkflowSessionActionNode {
+  return node.kind === "session_action";
 }
 
 export interface PublishedWorkflowGraph {
@@ -345,6 +841,11 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "missing_persona",
   "archived_persona",
   "invalid_completion_policy",
+  "missing_complete_route",
+  "session_action_join",
+  "missing_session_action",
+  "archived_session_action",
+  "session_action_runtime_unavailable",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 
@@ -431,6 +932,16 @@ export const DEFAULT_WORKFLOW_BINDING_DEFAULTS: WorkflowBindingDefaults = {
 export const WORKFLOW_BINDING_STATES = ["active", "paused", "orphaned", "archived"] as const;
 export type WorkflowBindingState = (typeof WORKFLOW_BINDING_STATES)[number];
 
+/**
+ * APPEND-ONLY: persisted in `workflow_runs.status` on operators' machines.
+ *
+ * `waiting_for_action` is deliberately NOT `waiting_for_session`, even though both mean the
+ * daemon is watching the same pane. `waiting_for_session` is a parked REPAIR round: the
+ * resumption observer picks it up, the round budget applies, and a resubmission starts the
+ * graph again from Session. An action wait is none of those - it resumes only the completed
+ * action's downstream route, on fresh evidence, without spending a repair round - so sharing
+ * the status would hand every action turn to the resumption observer to resubmit.
+ */
 export const WORKFLOW_RUN_STATUSES = [
   "capturing",
   "running",
@@ -442,6 +953,7 @@ export const WORKFLOW_RUN_STATUSES = [
   "completed",
   "cancelled",
   "failed",
+  "waiting_for_action",
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 
@@ -496,7 +1008,18 @@ export const WORKFLOW_SUBMISSION_STATUSES = [
 ] as const;
 export type WorkflowSubmissionStatus = (typeof WORKFLOW_SUBMISSION_STATUSES)[number];
 
-/** Infrastructure lifecycle only. Persona pass/fail is stored separately as a verdict. */
+/**
+ * Infrastructure lifecycle only. Persona pass/fail is stored separately as a verdict.
+ *
+ * APPEND-ONLY: persisted in `workflow_node_attempts.state`.
+ *
+ * `waiting` is a session action's own state and belongs to none of the others. It is not
+ * `queued` (nothing will claim it from the runnable list and it occupies no model execution
+ * slot), not `running` (no provider call is in flight and a restart must not retry it), and
+ * not `completed` (its outgoing receipt has not been written). Collapsing it into any of
+ * them would either spend a review slot on a session that is typing, or advance the graph
+ * before the action turn finished.
+ */
 export const WORKFLOW_NODE_ATTEMPT_STATES = [
   "queued",
   "running",
@@ -504,6 +1027,7 @@ export const WORKFLOW_NODE_ATTEMPT_STATES = [
   "completed",
   "error",
   "cancelled",
+  "waiting",
 ] as const;
 export type WorkflowNodeAttemptState = (typeof WORKFLOW_NODE_ATTEMPT_STATES)[number];
 
@@ -524,6 +1048,11 @@ export const WORKFLOW_DELIVERY_KINDS = [
   "inspector_feedback",
   "pr_handoff",
   "unchanged_evidence_nudge",
+  // An authored graph node's instruction, linked to the ONE attempt that owns it. Appended
+  // beside `pr_handoff` rather than replacing it: every version published from 5 through 7
+  // reaches its pull request through the legacy post-End path, and those rows have to stay
+  // readable and recoverable exactly as they are.
+  "session_action",
 ] as const;
 export type WorkflowDeliveryKind = (typeof WORKFLOW_DELIVERY_KINDS)[number];
 
@@ -1021,13 +1550,7 @@ export interface WorkflowCompletionClaim {
    * completion reaches a conversation with no active binding. Existing bindings always win.
    */
   fallbackWorkflow: "no-mistakes" | null;
-  /**
-   * The prompted episode the verifier judged. Null for drain claims.
-   *
-   * The daemon compares this with its current goal at the same synchronous boundary
-   * that retires the guard, so a newer human prompt cannot inherit an older verdict.
-   */
-  expectedGoal: string | null;
+  expectedIntent: SessionIntentGuard | null;
 }
 
 export type WorkflowCompletionClaimResult =
@@ -1145,6 +1668,16 @@ export interface WorkflowRun {
   inspectorPrKey: string | null;
   inspectorHeadSha: string | null;
   gateState: WorkflowJson | null;
+  /**
+   * Verdict node ids (Persona or Check) the operator disabled FOR THIS RUN ONLY.
+   *
+   * A disabled node auto-passes instead of running - the operator's way of forcing a gate
+   * past a reviewer that keeps failing for reasons outside the work under review. It lives
+   * on the run rather than the version because the version is immutable and shared: other
+   * runs of the same workflow must keep running the gate. Optional so a detail payload
+   * written by an older daemon still parses; absent reads as "nothing disabled".
+   */
+  disabledNodeIds?: string[];
   startedAt: number;
   updatedAt: number;
   completedAt: number | null;
@@ -1154,7 +1687,34 @@ export interface WorkflowRun {
 export interface WorkflowSubmission {
   id: WorkflowSubmissionId;
   runId: WorkflowRunId;
+  /**
+   * Which REPAIR round this evidence belongs to. Only a fail/repair transition increments
+   * it, and `maxRepairRounds` compares this and nothing else.
+   */
   round: number;
+  /**
+   * Which immutable evidence snapshot within that round. Zero for every initial and repair
+   * submission; a completed session action creates `segment + 1`.
+   *
+   * Continuation is NOT repair, and this is the field that keeps the two apart. Reusing the
+   * parent submission would make upstream and downstream attempts claim they reviewed the
+   * same evidence when the action turn changed it; creating a repair round instead would
+   * restart the graph at Session and burn budget an action never earned.
+   */
+  segment: number;
+  /** The segment this one continues from, or null at segment zero. */
+  parentSubmissionId: WorkflowSubmissionId | null;
+  /** The action node whose completion authorized this segment, or null at segment zero. */
+  continuationNodeId: string | null;
+  /**
+   * The action ATTEMPT whose completion authorized this segment, or null at segment zero.
+   *
+   * That attempt belongs to the PARENT submission. The cross-submission link is deliberate
+   * provenance - the action ran against the parent evidence and its completion authorized
+   * downstream work against this one - and it is the only cross-submission receipt source
+   * the store admits.
+   */
+  continuationNodeAttemptId: WorkflowNodeAttemptId | null;
   mode: WorkflowSubmissionMode;
   triggerSource: WorkflowTriggerSource;
   triggerKey: string;
@@ -1175,6 +1735,15 @@ export interface WorkflowNodeAttempt {
   attempt: number;
   state: WorkflowNodeAttemptState;
   persona: PersonaSnapshot | null;
+  /**
+   * The action this attempt is executing, copied from the run's immutable version.
+   *
+   * Its OWN field rather than a widening of `persona`, for the reason `SessionAction` is not
+   * a `Persona`: every reader of `persona` treats the record as something that produces a
+   * verdict. The copy exists so history, recovery diagnostics and retention stay readable
+   * without re-resolving a live library entity, exactly as the Persona snapshot does.
+   */
+  sessionAction: SessionActionSnapshot | null;
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
@@ -1203,6 +1772,17 @@ export interface WorkflowDelivery {
   runId: WorkflowRunId;
   submissionId: WorkflowSubmissionId;
   kind: WorkflowDeliveryKind;
+  /**
+   * The node attempt that owns this packet, for `session_action` only; null for every other
+   * kind, including every historical `pr_handoff` row.
+   *
+   * Required for an action because two action nodes in one submission would otherwise be
+   * indistinguishable to the delivery ledger - the packet identity is `(submission, kind,
+   * payload sha)`, and two actions could legitimately share a payload. It is also what makes
+   * recovery able to ask "does this waiting attempt already own a delivery?" without
+   * guessing from timestamps.
+   */
+  nodeAttemptId: WorkflowNodeAttemptId | null;
   sessionId: string;
   noteKey: string;
   payload: string;
@@ -1414,6 +1994,18 @@ export interface WorkflowRunSummary {
   status: WorkflowRunStatus;
   phase: string;
   round: number;
+  /**
+   * The latest evidence segment inside `round`. Optional so a summary written by an older
+   * daemon still parses in a newer browser; absent reads as zero, which is what every run
+   * predating continuations genuinely was.
+   */
+  segment?: number;
+  /**
+   * Why the run's session action is waiting, when one is. Detail lives on run detail; this
+   * is the one compact fact a fleet-wide summary carries so a surface never has to re-derive
+   * it from attempts or live session activity.
+   */
+  actionWait?: SessionActionWaitReason | null;
   maxRepairRounds: number;
   activePersonaNames: string[];
   failedPersonaCount: number;

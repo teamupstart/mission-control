@@ -2,13 +2,10 @@ import { z } from "zod";
 import { GOAL_MAX_CHARS, goalLine } from "@shared/goal.ts";
 import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { TranscriptWindow } from "../harness/types.ts";
+import { clampPrompt } from "../util/prompt-text.ts";
 
-// The Tier 2 prompt: rewrite a session's raw ask into the one sentence a card shows.
-//
-// The narrowest thing any model does in this codebase, and priced accordingly (Haiku, a
-// ~12-turn window). It is not asked to judge, solve, or decide anything - only to say what
-// the session is trying to solve, which is the one question a human scanning twenty cards is
-// actually asking.
+// The Tier 2 prompt: reconcile the next unresolved human instruction with the durable session
+// objective, then derive the compact card sentence and tactical focus from that one decision.
 
 /**
  * What the model must return.
@@ -27,38 +24,57 @@ import type { TranscriptWindow } from "../harness/types.ts";
  * standing - a failure must never be stamped as a judgment.
  */
 export const GoalSchema = z.object({
+  relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]),
+  objective: z.string().transform((s) => clampPrompt(s)).pipe(z.string().min(1)),
   goal: z.string().transform((s) => goalLine(s)).pipe(z.string().min(1)),
+  focus: z.string().transform((s) => goalLine(s)).pipe(z.string().min(1)),
+  reason: z.string().transform((s) => goalLine(s, 480)).pipe(z.string().min(1)),
 });
 export type GoalReply = z.infer<typeof GoalSchema>;
 
-const RULES = `You summarize what an AI coding session is trying to solve, for a one-line status card on a
-dashboard. The human reading it is scanning twenty cards at once and wants to know, at a glance, what
-each session is FOR.
+const RULES = `You reconcile the intent of an AI coding session after each new human instruction. Keep
+the session's durable OBJECTIVE separate from its current tactical FOCUS. The objective is a completion
+contract: another system may push code and open a pull request only after the whole objective is done.
 
 Respond with ONLY a single JSON object - no prose, no markdown fences - of this shape:
 {
-  "goal": string   // ONE sentence, under ${GOAL_MAX_CHARS} characters
+  "relationship": "initial" | "steer" | "amend" | "replace" | "unclear",
+  "objective": string, // the effective durable completion contract, preserving important detail
+  "goal": string,      // objective as ONE card sentence, under ${GOAL_MAX_CHARS} characters
+  "focus": string,     // latest instruction as ONE short sentence
+  "reason": string     // why this relationship was chosen, under 480 characters
 }
 
 RULES:
-- Say what the session is trying to SOLVE, not what it is doing this second. "Fix the flaky worktree
-  cleanup on Reset" is a goal; "running the test suite" is not - the card already shows that separately.
-- Lead with the outcome, in plain language. No markdown, no quotes around it, no trailing period needed.
-- Base it on what the HUMAN asked for. The agent's own commentary is evidence of the goal, never the
-  goal itself.
-- If the session has moved on to something else, describe what it moved to - this is a live status, not
-  a record of how the session opened.
-- If the current goal below still describes the work, repeat it back unchanged. Most follow-up
-  instructions refine a goal rather than replace it, and a card that rewords itself every minute reads
-  as churn.
-- Never invent detail that isn't there. If all you have is a slash command, say what that command does
-  for this repo and no more.`;
+- "initial": this is the first substantive human instruction. Establish the objective from it.
+- "steer": the new instruction changes method, priority, sequence, or an intermediate step. Keep the
+  objective unchanged. Completing the focus alone does NOT complete the objective.
+- "amend": the new instruction materially changes acceptance criteria while preserving the same main
+  outcome. Begin objective with the current durable objective exactly, then append the amendment without
+  dropping, paraphrasing, or negating existing requirements. Runtime validation rejects an amendment that
+  does not retain that explicit prefix.
+- "replace": new information causes the human to abandon or supersede the old outcome. Replace the
+  objective even when the human used no special command or stock phrase.
+- "unclear": there is real ambiguity between steering and changing the objective. Keep the old objective;
+  automated completion will pause until later context resolves it.
+- Infer relationships semantically from the conversation, not from keywords. "Fix that test first" is
+  normally steering; "the API cannot support this, build the import path instead" can be replacement.
+- This call targets ONE unresolved instruction. The conversation can contain newer human turns for
+  context, but do not skip, merge, or reinterpret the target as only the newest turn. Newer instructions
+  receive their own ordered reconciliation after this one.
+- Never shrink an objective merely because the newest instruction is narrower.
+- Base intent on HUMAN turns. Agent commentary is context, never authority to change the objective.
+- Preserve concrete requirements in objective. The goal field is only its compact display form.
+- Lead goal and focus with outcomes in plain language. No markdown or trailing period.
+- Never invent detail. If the existing objective remains correct, repeat it exactly.`;
 
 export interface GoalInput {
   session: Session;
-  /** The sentence currently on the card, so "unchanged" is a cheap answer. */
-  currentGoal: string | null;
-  /** The human's most recent substantive ask, already filtered and clamped. */
+  /** The detailed completion contract currently in force. */
+  currentObjective: string | null;
+  /** Whether the target prompt is the first substantive instruction in this session. */
+  initial: boolean;
+  /** The next unresolved human instruction, already filtered and clamped. */
   prompt: string | null;
   /** Recent conversation, or null when there is no readable transcript. */
   window: TranscriptWindow | null;
@@ -87,7 +103,7 @@ function formatForGoal(messages: TranscriptMessage[]): string {
 
 /** Assemble the Tier 2 prompt for one session. */
 export function buildGoalPrompt(input: GoalInput): string {
-  const { session, currentGoal, prompt, window } = input;
+  const { session, currentObjective, initial, prompt, window } = input;
   const parts = [
     RULES,
     "",
@@ -96,10 +112,12 @@ export function buildGoalPrompt(input: GoalInput): string {
     `repo: ${session.cwd ?? "(unknown)"}`,
     `branch: ${session.gitBranch ?? "(none)"}`,
     "",
-    "## Current goal on the card",
-    currentGoal || "(none yet)",
+    "## Current durable objective",
+    currentObjective || "(none yet)",
     "",
-    "## The human's most recent instruction",
+    `## Is this the first substantive instruction? ${initial ? "yes" : "no"}`,
+    "",
+    "## The specific unresolved instruction to classify now",
     prompt || "(none captured - infer the goal from the conversation below)",
   ];
   if (window) {
@@ -113,7 +131,7 @@ export function buildGoalPrompt(input: GoalInput): string {
   }
   parts.push(
     "",
-    "Now output the goal as a single raw JSON object and NOTHING else - no prose, no markdown",
+    "Now output the intent decision as a single raw JSON object and NOTHING else - no prose, no markdown",
     "fences. Begin your reply with { and end it with }.",
   );
   return parts.join("\n");

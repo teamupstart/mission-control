@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { WorkflowCompletionClaimResultSchema } from "@shared/protocol.ts";
 import type { WorkflowCompletionClaim, WorkflowCompletionClaimResult } from "@shared/workflow.ts";
-import type { SessionQueue } from "@shared/types.ts";
+import type { SessionIntentGuard, SessionQueue } from "@shared/types.ts";
 
 export interface WorkflowClaimActions {
   claimWorkflowCompletion(
@@ -23,6 +23,7 @@ export function drainCompletionClaim(
   queue: SessionQueue,
   headSha: string | null,
   transcriptAnchor: number | null,
+  expectedIntent: SessionIntentGuard | null = null,
 ): WorkflowCompletionClaim {
   const proof = {
     noteKey: queue.noteKey,
@@ -37,13 +38,13 @@ export function drainCompletionClaim(
     summary: `Foreman queue drained after ${queue.items.length} terminal item${queue.items.length === 1 ? "" : "s"}.`,
     evidenceFingerprint: sha256({ headSha, transcriptAnchor, items: proof.items }),
     fallbackWorkflow: null,
-    expectedGoal: null,
+    expectedIntent,
   };
 }
 
 export function promptedCompletionClaim(input: {
   noteKey: string;
-  goal: string;
+  intent: SessionIntentGuard;
   headSha: string | null;
   transcriptAnchor: number | null;
   summary: string;
@@ -52,7 +53,7 @@ export function promptedCompletionClaim(input: {
     completionKind: "prompted",
     marker: sha256({
       noteKey: input.noteKey,
-      goal: input.goal,
+      intent: input.intent,
       headSha: input.headSha,
       transcriptAnchor: input.transcriptAnchor,
     }),
@@ -63,7 +64,7 @@ export function promptedCompletionClaim(input: {
       summary: input.summary,
     }),
     fallbackWorkflow: null,
-    expectedGoal: input.goal,
+    expectedIntent: input.intent,
   };
 }
 

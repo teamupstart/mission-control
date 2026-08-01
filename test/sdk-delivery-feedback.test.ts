@@ -6,6 +6,10 @@ import { sdkDeliveryConfirmation } from "../src/web/lib/sdk-delivery.ts";
 
 test("SDK delivery acknowledgements explain where a busy-session message went", () => {
   assert.equal(
+    sdkDeliveryConfirmation("pending"),
+    "Queued. Press Up Arrow in an empty reply box to edit.",
+  );
+  assert.equal(
     sdkDeliveryConfirmation("queued"),
     "Accepted — queued behind the agent’s current turn.",
   );

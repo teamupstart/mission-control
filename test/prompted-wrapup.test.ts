@@ -17,6 +17,7 @@ import type { ReportBucket } from "../src/shared/session.ts";
 import type {
   GapSeverity,
   Session,
+  SessionGoal,
   SessionQueue,
   SessionQueueSummary,
   WorkItem,
@@ -34,6 +35,25 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 const NOW = 1_000_000;
 const GOAL = "add retry handling to the uploader";
+
+function mkIntent(over: Partial<SessionGoal> = {}): SessionGoal {
+  return {
+    noteKey: "agent-1",
+    text: "Add retry handling.",
+    source: "model",
+    objective: GOAL,
+    prompt: GOAL,
+    focus: "Add retry handling",
+    relationship: "initial",
+    rationale: "This is the first substantive instruction.",
+    objectiveVersion: 1,
+    promptRevision: 1,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
+    updatedAt: NOW,
+    ...over,
+  };
+}
 
 const CFG: PromptedConfig = {
   triggers: ["prompted"],
@@ -84,6 +104,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     cost: null,
     goal: { text: "Add retry handling.", source: "model", updatedAt: NOW },
     queue: null,
+    pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
     paneDialog: null,
@@ -136,7 +157,7 @@ function decide(over: Partial<PromptedInput> = {}) {
     session: mkSession(),
     bucket: "idle" as ReportBucket,
     queue: null,
-    goalPrompt: GOAL,
+    intent: mkIntent(),
     cfg: CFG,
     now: NOW,
     ...over,
@@ -157,7 +178,7 @@ function mkGap(severity: GapSeverity) {
 test("a settled, instrumented, goal-carrying session with no queue is a candidate", () => {
   const r = decide();
   assert.equal(r.kind, "check");
-  assert.equal(r.kind === "check" && r.goal, GOAL);
+  assert.equal(r.kind === "check" && r.objective, GOAL);
 });
 
 test("the trigger being off is decided FIRST, before anything that could write", () => {
@@ -231,8 +252,16 @@ test("an exited session is skipped while a supported Codex session is checked", 
 });
 
 test("no captured goal means nothing to verify the work AGAINST", () => {
-  assert.equal(decide({ goalPrompt: null }).kind, "skip");
-  assert.equal(decide({ goalPrompt: "   " }).kind, "skip");
+  assert.equal(decide({ intent: null }).kind, "skip");
+  assert.equal(decide({ intent: mkIntent({ objective: "   " }) }).kind, "skip");
+});
+
+test("an unresolved or unclear instruction pauses automatic completion", () => {
+  assert.equal(
+    decide({ intent: mkIntent({ promptRevision: 2, resolvedPromptRevision: 1, relationship: null }) }).kind,
+    "skip",
+  );
+  assert.equal(decide({ intent: mkIntent({ relationship: "unclear" }) }).kind, "skip");
 });
 
 // ---- the two guards that make this trigger terminate ----
@@ -243,12 +272,12 @@ test("THE LOOP GUARD: a goal that is Foreman's own wrap-up never re-fires", () =
   // and /compact, so a slash command sails through) -> the run finishes and parks ->
   // re-armed. Without this the cycle is infinite, on a live repo, opening a PR each lap.
   for (const payload of [NM_CLAUDE, WRAPUP_PR]) {
-    const r = decide({ goalPrompt: payload });
+    const r = decide({ intent: mkIntent({ prompt: payload }) });
     assert.equal(r.kind, "skip", payload);
     assert.match(r.kind === "skip" ? r.why : "", /Foreman's own wrap-up/);
   }
   // Whitespace must not smuggle it past - the pane echo is not byte-exact.
-  assert.equal(decide({ goalPrompt: `  ${NM_CLAUDE}  ` }).kind, "skip");
+  assert.equal(decide({ intent: mkIntent({ prompt: `  ${NM_CLAUDE}  ` }) }).kind, "skip");
 
   // EVERY harness's spelling, on a session of ANY harness. The guard is asked about a
   // goal, and a goal outlives the harness that captured it: a `/clear` re-keys it and a
@@ -257,7 +286,7 @@ test("THE LOOP GUARD: a goal that is Foreman's own wrap-up never re-fires", () =
   for (const agent of AGENT_TYPES) {
     const payload = wrapupNoMistakes(agent);
     if (!payload) continue;
-    assert.equal(decide({ goalPrompt: payload }).kind, "skip", agent);
+    assert.equal(decide({ intent: mkIntent({ prompt: payload }) }).kind, "skip", agent);
   }
 });
 
@@ -276,7 +305,7 @@ test("THE LOOP GUARD holds for wrap-up text we no longer send", () => {
   for (const payload of retired) {
     assert.notEqual(payload, WRAPUP_PR, "reword a fixture only by ADDING to the retired list");
     assert.ok(isWrapupPayload(payload));
-    assert.equal(decide({ goalPrompt: payload }).kind, "skip");
+    assert.equal(decide({ intent: mkIntent({ prompt: payload }) }).kind, "skip");
   }
 });
 
@@ -302,23 +331,34 @@ test("both payloads are ONE line - a newline is a premature submit", () => {
 });
 
 test("THE RE-ARM: the same goal is decided once; a new prompt arms it again", () => {
-  const done = mkQueue({ promptedGoal: GOAL });
+  const done = mkQueue({ promptedGoal: "intent:1:1" });
   assert.equal(decide({ queue: done }).kind, "skip", "already handled this prompt");
 
   // The human types something else. Note the trigger re-arms on the PROMPT changing,
   // which is the only thing that moves when a person acts.
-  const next = decide({ queue: done, goalPrompt: "now add metrics" });
+  const next = decide({
+    queue: done,
+    intent: mkIntent({
+      prompt: "now add metrics",
+      focus: "Add metrics",
+      relationship: "amend",
+      objective: `${GOAL} and add metrics`,
+      objectiveVersion: 2,
+      promptRevision: 2,
+      resolvedPromptRevision: 2,
+    }),
+  });
   assert.equal(next.kind, "check");
-  assert.equal(next.kind === "check" && next.goal, "now add metrics");
+  assert.equal(next.kind === "check" && next.episodeKey, "intent:2:2");
+  assert.equal(next.kind === "check" && next.objective, `${GOAL} and add metrics`);
 });
 
-test("the re-arm key is the verbatim prompt, NOT the refined goal sentence", () => {
-  // The card's `goal.text` is rewritten by a debounced Haiku call minutes after the
-  // prompt. Keying on it would re-arm this trigger with no human involved at all - a
-  // second wrap-up fired because a model reworded its own summary.
+test("the re-arm key is the intent revision, NOT the card's display sentence", () => {
+  // Rewording the compact card text must not produce another completion episode. Only the
+  // durable objective/prompt revision pair is allowed to re-arm it.
   const rewritten = mkSession({ goal: { text: "COMPLETELY DIFFERENT", source: "model", updatedAt: NOW } });
   assert.equal(
-    decide({ session: rewritten, queue: mkQueue({ promptedGoal: GOAL }) }).kind,
+    decide({ session: rewritten, queue: mkQueue({ promptedGoal: "intent:1:1" }) }).kind,
     "skip",
     "the sentence moved but the prompt did not",
   );

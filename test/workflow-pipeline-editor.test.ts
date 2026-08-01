@@ -16,7 +16,7 @@ import {
 import { workflowEditorMode } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { pipelineValidationSentences } from "../src/web/workflows/WorkflowProperties.tsx";
 import { compileStages, projectStages, stageBlockers } from "../src/shared/workflow-stages.ts";
-import type { StagePipeline } from "../src/shared/workflow-stages.ts";
+import type { EvaluationStage, Stage, StagePipeline } from "../src/shared/workflow-stages.ts";
 import { validateWorkflowGraph } from "../src/shared/workflow-graph.ts";
 import type { PersonaView, WorkflowDraftGraph } from "../src/shared/workflow.ts";
 
@@ -86,9 +86,19 @@ const validate = (graph: WorkflowDraftGraph): ReturnType<typeof validateWorkflow
 const R = (personaId: string) => ({ kind: "persona" as const, personaId });
 const C = (slot: "test" | "lint" | "typecheck" | "build") => ({ kind: "check" as const, slot });
 
+/**
+ * Narrow to the evaluation arm with an assertion rather than a cast. Every edit in this file
+ * builds evaluation stages, so a stage that is not one means an edit produced a shape it was
+ * never asked for - which should fail loudly rather than read `undefined.members`.
+ */
+const evaluation = (stage: Stage | undefined): EvaluationStage => {
+  assert.ok(stage && stage.kind === "evaluation", "expected an evaluation stage");
+  return stage;
+};
+
 /** Each stage's members, named by Persona id or by slot, so a mixed stage reads in one list. */
 const memberIdsOf = (pipeline: StagePipeline): string[][] =>
-  pipeline.stages.map((stage) => stage.members.map((member) =>
+  pipeline.stages.map((stage) => evaluation(stage).members.map((member) =>
     member.kind === "persona" ? member.personaId : member.slot));
 
 test("adding the first reviewer to a fresh draft publishes-valid, and adding a second parallelizes it", () => {
@@ -105,7 +115,7 @@ test("adding the first reviewer to a fresh draft publishes-valid, and adding a s
   const submitted = second.graph.edges.filter((edge) => edge.sourcePort === "submitted");
   assert.equal(submitted.length, 2);
   assert.equal(second.graph.nodes.filter((node) => node.kind === "all_pass").length, 1);
-  assert.ok(second.pipeline.stages[0]!.joinId);
+  assert.ok(evaluation(second.pipeline.stages[0]).joinId);
 });
 
 test("every edit keeps the ids of everything it did not touch", () => {
@@ -136,8 +146,14 @@ test("every edit keeps the ids of everything it did not touch", () => {
   // Removing a reviewer keeps every id that is still in the pipeline.
   const trimmed = edit(base.graph, (p) => removeMember(p, { stage: 0, member: 1 }));
   assert.deepEqual(memberIdsOf(trimmed.pipeline), [[P1], [P3]]);
-  assert.equal(trimmed.pipeline.stages[0]!.members[0]!.nodeId, before.stages[0]!.members[0]!.nodeId);
-  assert.equal(trimmed.pipeline.stages[1]!.members[0]!.nodeId, before.stages[1]!.members[0]!.nodeId);
+  assert.equal(
+    evaluation(trimmed.pipeline.stages[0]).members[0]!.nodeId,
+    evaluation(before.stages[0]).members[0]!.nodeId,
+  );
+  assert.equal(
+    evaluation(trimmed.pipeline.stages[1]).members[0]!.nodeId,
+    evaluation(before.stages[1]).members[0]!.nodeId,
+  );
   // Down to one member the stage needs no join, so the join node is gone from the graph.
   assert.equal(trimmed.graph.nodes.filter((node) => node.kind === "all_pass").length, 0);
   assert.deepEqual(validate(trimmed.graph), { valid: true, diagnostics: [] });
@@ -153,7 +169,10 @@ test("a reviewer dragged between stages leaves no empty stage behind", () => {
   assert.deepEqual(memberIdsOf(merged.pipeline), [[P1, P2]]);
   assert.deepEqual(validate(merged.graph), { valid: true, diagnostics: [] });
   // The moved reviewer keeps its node; only its routes changed.
-  assert.equal(merged.pipeline.stages[0]!.members[1]!.nodeId, base.pipeline.stages[1]!.members[0]!.nodeId);
+  assert.equal(
+    evaluation(merged.pipeline.stages[0]).members[1]!.nodeId,
+    evaluation(base.pipeline.stages[1]).members[0]!.nodeId,
+  );
 });
 
 test("a drag that empties its source stage names the destination it actually landed in", () => {
@@ -281,7 +300,7 @@ test("a check is added, reordered and removed by the same handlers a reviewer is
   // the shape No-Mistakes Review v2 ships, so the validator has to accept a Check as a Join
   // predecessor for it.
   assert.equal(gated.graph.nodes.filter((node) => node.kind === "all_pass").length, 1);
-  assert.ok(gated.pipeline.stages[0]!.joinId);
+  assert.ok(evaluation(gated.pipeline.stages[0]).joinId);
 
   // Reorder: ⌥↑ / ⌥↓ moves a check within its stage, with no identity re-minted.
   const swapped = edit(gated.graph, (p) => moveMember(p, { stage: 0, member: 0 }, { stage: 0, member: 1 }));
@@ -300,8 +319,8 @@ test("a check is added, reordered and removed by the same handlers a reviewer is
   const trimmed = edit(mixed.graph, (p) => removeMember(p, { stage: 0, member: 1 }));
   assert.deepEqual(memberIdsOf(trimmed.pipeline), [["typecheck", P1]]);
   assert.equal(
-    trimmed.pipeline.stages[0]!.members[0]!.nodeId,
-    mixed.pipeline.stages[0]!.members[0]!.nodeId,
+    evaluation(trimmed.pipeline.stages[0]).members[0]!.nodeId,
+    evaluation(mixed.pipeline.stages[0]).members[0]!.nodeId,
   );
   assert.deepEqual(validate(trimmed.graph), { valid: true, diagnostics: [] });
 });
@@ -314,7 +333,7 @@ test("a check moves between stages, and a stage of only checks is a stage", () =
   assert.deepEqual(memberIdsOf(base.pipeline), [["typecheck"], [P1]]);
   assert.deepEqual(validate(base.graph), { valid: true, diagnostics: [] });
   // The deterministic gate stands alone in front of the reviewer, which is v2's shape.
-  assert.equal(base.pipeline.stages[0]!.joinId, null, "one member needs no join");
+  assert.equal(evaluation(base.pipeline.stages[0]).joinId, null, "one member needs no join");
 
   const merged = edit(base.graph, (p) => moveMember(p, { stage: 0, member: 0 }, { stage: 1, member: 0 }));
   assert.deepEqual(memberIdsOf(merged.pipeline), [["typecheck", P1]]);

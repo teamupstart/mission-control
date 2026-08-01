@@ -8,14 +8,18 @@ import type {
   InspectorInspection,
   InspectorStatus,
   LlmStatus,
+  MessageSendDisposition,
   NmFixDetail,
+  PendingTurn,
   PermissionMode,
+  PlanDecisionAnswer,
   ResetPreview,
+  ReviewItem,
   SessionDiff,
+  SessionGoal,
   SessionFileDocument,
   SessionFileEntry,
   SessionFileSaveResult,
-  SdkSendDisposition,
   SessionQueue,
   SkillsView,
   TaskPriority,
@@ -80,8 +84,10 @@ import type { PersonaDefaultsView } from "@shared/workflow.ts";
 export interface ActionResult {
   ok: boolean;
   error?: string;
-  /** Present when an embedded driver acknowledged where it put the submitted turn. */
-  delivery?: SdkSendDisposition;
+  /** Present when Mission Control or an embedded driver acknowledges the submission. */
+  delivery?: MessageSendDisposition;
+  /** The durable outbox row created for an editable submission. */
+  pendingTurn?: PendingTurn;
   /** HTTP status, so a caller can tell a CAS conflict (409) from a real failure. */
   status?: number;
 }
@@ -755,6 +761,21 @@ export const api = {
     ),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
+  recallPendingTurn: (id: string, turnId: string, revision: number) =>
+    post<ActionResult & { text?: string }>(
+      `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/recall`,
+      { revision },
+    ),
+  retryPendingTurn: (id: string, turnId: string, revision: number) =>
+    post(
+      `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/retry`,
+      { revision },
+    ),
+  resolvePendingTurn: (id: string, turnId: string, revision: number) =>
+    post(
+      `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/resolve`,
+      { revision },
+    ),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
   /**
    * Open a terminal on this session's checkout - a shell, or its own agent CLI resumed on
@@ -836,12 +857,19 @@ export const api = {
     id: string,
   ): Promise<ActionResult & { homeName?: string; sessionId?: string | null }> =>
     post(`/api/sessions/${encodeURIComponent(id)}/handoff`),
+  /**
+   * `selections` rides along only when a decision form was filled in. It is what the
+   * conversation replays afterwards - `response` is the flattened string the agent reads,
+   * which cannot say which options went untaken. The route attributes this to the human;
+   * only the Foreman worker declares otherwise.
+   */
   resolveReview: (
     id: string,
     action: "approve" | "reject" | "answer" | "dismiss",
     response?: string | null,
+    selections?: PlanDecisionAnswer[] | null,
   ) =>
-    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response }),
+    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
   nomistakesRespond: (
     id: string,
     action: "approve" | "fix" | "skip",
@@ -960,6 +988,18 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/foreman-episode/resolve`, p),
   episodes: (id: string) =>
     fetchJson<ForemanEpisode[]>(`/api/sessions/${encodeURIComponent(id)}/foreman-episodes`),
+  /** Full resolved intent for the Foreman drawer; the session snapshot carries only its summary. */
+  goal: (id: string) =>
+    fetchJson<SessionGoal>(`/api/sessions/${encodeURIComponent(id)}/goal`),
+
+  /**
+   * The answers this session's human gave, oldest first - the durable half of the
+   * conversation's review entries. Served from SQLite, so a reopened dashboard or a
+   * restarted daemon still shows what was decided; the live SSE reviews are folded in on
+   * top of these for immediacy (see `useTimelineReviews`).
+   */
+  resolvedReviews: (id: string) =>
+    fetchJson<ReviewItem[]>(`/api/sessions/${encodeURIComponent(id)}/resolved-reviews`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>
@@ -981,6 +1021,6 @@ export const api = {
   reattachQueue: (id: string, noteKey: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),
   /** Deliver a whole multi-line prompt as one bracketed-paste submission. */
-  injectPrompt: (id: string, text: string) =>
-    post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text }),
+  injectPrompt: (id: string, text: string, buffer = true) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text, buffer }),
 };

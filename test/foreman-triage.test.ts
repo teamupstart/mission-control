@@ -578,7 +578,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
     nomistakesFixes: [],
     nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null, meta: null, effortBaselineReady: false, note: null, cost: null, goal: null,
-    queue: null, orphanedQueue: null, paneDialog: null,
+    queue: null, pendingTurns: [], orphanedQueue: null, paneDialog: null,
     ...over,
   };
 }

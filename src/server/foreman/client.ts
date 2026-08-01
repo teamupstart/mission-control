@@ -1250,7 +1250,7 @@ export class ForemanClient implements ForemanActions {
     if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);
   }
 
-  /** The full goal record - the verbatim prompt, which the card summary never carries. */
+  /** The full reconciled intent, whose objective and raw prompt the card summary omits. */
   async goal(sessionId: string): Promise<SessionGoal | null> {
     const res = await send("GET", `/api/sessions/${enc(sessionId)}/goal`);
     if (!res.ok) return null;
@@ -1310,8 +1310,19 @@ export class ForemanClient implements ForemanActions {
     return res.json();
   }
 
+  /**
+   * `by: "foreman"` is not decoration - it is what keeps this answer out of the session's
+   * conversation as if the operator had given it. The route defaults to the human because
+   * its other caller is the dashboard, so the worker has to say who it is; without that,
+   * every Foreman auto-answer would render twice in the log, once as its own episode and
+   * once as a gold "you answered" card nobody clicked.
+   */
   async resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown> {
-    const res = await send("POST", `/api/reviews/${enc(reviewId)}/resolve`, { action, response });
+    const res = await send("POST", `/api/reviews/${enc(reviewId)}/resolve`, {
+      action,
+      response,
+      by: "foreman",
+    });
     if (!res.ok) throw new Error(`resolveReview ${reviewId} -> ${res.status}`);
     return res.json();
   }

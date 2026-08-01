@@ -9,6 +9,9 @@ import {
   BacklogPlanSchema,
   CompleteTaskSchema,
   CreatePersonaSchema,
+  CreateSessionActionSchema,
+  UpdateSessionActionSchema,
+  ArchiveSessionActionSchema,
   CostConfigPatchSchema,
   CreateReviewSchema,
   DispatchBacklogTaskSchema,
@@ -30,6 +33,7 @@ import {
   MarkItemSentSchema,
   NomistakesRespondSchema,
   OtlpMetricsSchema,
+  PendingTurnRevisionSchema,
   ReattachQueueSchema,
   RescheduleTaskSchema,
   RenameSchema,
@@ -85,6 +89,7 @@ import {
   RetryWorkflowRunSchema,
   RetryWorkflowDeliverySchema,
   ResolveWorkflowDeliverySchema,
+  SetWorkflowNodesDisabledSchema,
   WorkflowCompletionClaimSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
@@ -128,6 +133,7 @@ import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
@@ -163,6 +169,7 @@ import {
   dropGateReply,
   forgetTaskSourceSeen,
   getSkillsAcks,
+  loadHumanResolvedReviews,
   loadInspectorInspections,
   logGateReply,
   recentEpisodes,
@@ -208,6 +215,8 @@ import {
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
+import type { SessionActionManager, SessionActionMutation } from "./workflows/session-actions.ts";
+import { sessionActionCapabilities } from "./workflows/session-action-adapters.ts";
 import type {
   WorkflowManager,
   WorkflowDeleteMutation,
@@ -247,6 +256,21 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+/**
+ * The same ×6 headroom as a Persona's, and derived from the prompt ceiling rather than
+ * copied from it: JSON string escaping can expand a UTF-8 byte several times over, so a
+ * limit set to the ceiling itself would reject prompts the schema accepts.
+ */
+const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes * 6 + 16 * 1024;
+/**
+ * Archive carries one integer, so it gets its own much smaller ceiling.
+ *
+ * Sizing it from the PROMPT ceiling like the two writes above would let a caller stream
+ * ~600 KB at a route whose entire schema is `{ expectedRevision }` - a body limit in name
+ * only. A kilobyte is already orders of magnitude more than the largest legal request and
+ * leaves room for whitespace, so the cap refuses abuse without ever refusing a real client.
+ */
+const SESSION_ACTION_ARCHIVE_BODY_MAX_BYTES = 1024;
 const WORKFLOW_BODY_MAX_BYTES = WORKFLOW_LIMITS.graphJsonBytes * 6 + 32 * 1024;
 
 /**
@@ -503,6 +527,10 @@ export function buildApp(
   handoffDeps?: HandoffDeps,
   /** The selected terminal launcher. Injected so route tests never open a real window. */
   launchSessionTerminal?: typeof launchTerminal,
+  /** Optional for existing route-unit stubs; the daemon always supplies it. */
+  sessionActions?: SessionActionManager,
+  /** Durable editable outbox. Optional only for legacy route-unit construction. */
+  pendingTurns?: PendingTurnManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -669,6 +697,94 @@ export function buildApp(
     const result = manager.archive(c.req.param("id"), parsed.data.expectedRevision);
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona) : personaFailure(c, result);
+  });
+
+  // --- SessionActions: exact prompt Markdown plus revision/CAS writes ---
+  //
+  // Deliberately the Persona block's shape, refusal vocabulary and status codes. The two
+  // catalogs obey the same CAS and built-in rules, and a second dialect of "409 conflict"
+  // for the same cause is how a browser ends up handling one and not the other.
+  const sessionActionManager = (): SessionActionManager | null => sessionActions ?? null;
+  const sessionActionFailure = (
+    c: Context,
+    result: Exclude<SessionActionMutation, { ok: true }>,
+  ) => {
+    const code = `session_action_${result.reason}`;
+    if (result.reason === "not_found") {
+      return c.json({ error: "no such session action", code }, 404);
+    }
+    if (result.reason === "builtin") {
+      return c.json({
+        error: "this session action ships with Mission Control and cannot be edited or "
+          + "archived. Duplicate it to make a copy you own.",
+        code,
+        current: result.current,
+      }, 409);
+    }
+    return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
+  };
+
+  app.get("/api/session-actions", (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const raw = c.req.query("includeArchived");
+    if (raw !== undefined && raw !== "true" && raw !== "false") {
+      return c.json({ error: "includeArchived must be true or false" }, 400);
+    }
+    return c.json(manager.list(raw === "true"));
+  });
+  /**
+   * What this build can actually PROVE, per completion adapter.
+   *
+   * Served from the daemon's own registry rather than derived in the browser, and registered
+   * BEFORE `/:id` so the literal path is not swallowed as an action id. A surface that
+   * offered a completion the daemon then refuses would be a workflow an operator can author
+   * and never run, so there is exactly one answer and this is where it comes from.
+   */
+  app.get("/api/session-actions/capabilities", (c) =>
+    c.json({ completions: sessionActionCapabilities() }));
+  app.get("/api/session-actions/:id", (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const action = manager.get(c.req.param("id"));
+    return action ? c.json(action) : c.json({ error: "no such session action" }, 404);
+  });
+  app.post("/api/session-actions", bodyLimit({
+    maxSize: SESSION_ACTION_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, CreateSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.create(parsed.data);
+    // A draft naming a missing action carries a diagnostic, so creating one can clear it.
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action, 201) : sessionActionFailure(c, result);
+  });
+  app.patch("/api/session-actions/:id", bodyLimit({
+    maxSize: SESSION_ACTION_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.update(c.req.param("id"), parsed.data);
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
+  });
+  app.delete("/api/session-actions/:id", bodyLimit({
+    maxSize: SESSION_ACTION_ARCHIVE_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.archive(c.req.param("id"), parsed.data.expectedRevision);
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
   });
 
   // --- Workflow definitions: CAS drafts and immutable published versions ---
@@ -1055,6 +1171,16 @@ export function buildApp(
     const parsed = await parseBody(c, WorkflowRunActionSchema);
     if (!parsed.ok) return parsed.res;
     const result = manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
+    return result.ok
+      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/workflow-runs/:id/set-nodes-disabled", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, SetWorkflowNodesDisabledSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.setNodesDisabled(c.req.param("id"), parsed.data);
     return result.ok
       ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
@@ -1800,7 +1926,13 @@ export function buildApp(
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
     try {
-      const updated = reviews.resolve(c.req.param("id"), parsed.data.action, parsed.data.response);
+      const updated = reviews.resolve(
+        c.req.param("id"),
+        parsed.data.action,
+        parsed.data.response,
+        parsed.data.by,
+        parsed.data.selections,
+      );
       if (!updated) return c.json({ error: "no such review" }, 404);
       return c.json(updated);
     } catch (error) {
@@ -1815,6 +1947,10 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.submit && pendingTurns) {
+      const result = pendingTurns.submit(session.id, parsed.data.text);
+      return c.json(result, result.ok ? 200 : 409);
+    }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -1964,6 +2100,10 @@ export function buildApp(
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
+    if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
+      const result = pendingTurns.submit(session.id, parsed.data.text);
+      return c.json(result, result.ok ? 200 : 409);
+    }
     // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
     // here is positive evidence that nothing landed, which is the only state a caller may
@@ -1979,6 +2119,42 @@ export function buildApp(
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
     return c.json(r, r.ok ? 200 : 500);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/recall", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const turn = pendingTurns.recall(session.id, c.req.param("turnId"), parsed.data.revision);
+    return turn
+      ? c.json({ ok: true as const, text: turn.text })
+      : c.json({ ok: false as const, error: "that queued message is no longer editable" }, 409);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/retry", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const turn = pendingTurns.retry(session.id, c.req.param("turnId"), parsed.data.revision);
+    return turn
+      ? c.json({ ok: true as const })
+      : c.json({ ok: false as const, error: "that message can no longer be retried" }, 409);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/resolve", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = pendingTurns.resolve(session.id, c.req.param("turnId"), parsed.data.revision);
+    return resolved
+      ? c.json({ ok: true as const })
+      : c.json({ ok: false as const, error: "that message can no longer be resolved" }, 409);
   });
 
   // Park a dropped image on disk and hand back its path, which the caller pastes
@@ -2192,6 +2368,7 @@ export function buildApp(
       parsed.data.clear,
       undefined,
       driverClearFor(sdkSessions),
+      pendingTurns,
     );
     return c.json(r, r.ok ? 200 : 500);
   });
@@ -2337,6 +2514,22 @@ export function buildApp(
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     return c.json(registry.listEpisodes(session.id));
+  });
+
+  /**
+   * The answers this session's human gave, for the conversation to replay.
+   *
+   * Read from SQLite rather than from the registry's review map, which is the live one the
+   * SSE stream publishes. That map holds a resolved review only until the daemon restarts -
+   * `loadPendingReviews` restores exactly the pending rows at boot, by design - so serving
+   * the conversation from it would quietly empty every answer out of the log on restart,
+   * while the transcript beside them survived. The dashboard folds the live reviews in on
+   * top of this for immediacy; this is the half that is still there tomorrow.
+   */
+  app.get("/api/sessions/:id/resolved-reviews", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(loadHumanResolvedReviews(session.id));
   });
 
   // --- Foreman session work queues (localhost only) ---
@@ -2496,11 +2689,10 @@ export function buildApp(
     return c.json(queues.get(session.id));
   });
 
-  // The full goal record, including the verbatim prompt the refiner derived from.
+  // The full intent record, including its durable objective and latest human prompt.
   // Loopback-only like the rest of the worker's surface: `SessionGoal.prompt` is
   // deliberately never denormalized onto a card (it can be 4KB of someone's paste),
-  // so this is the only way the out-of-process worker can read the ask it needs to
-  // verify work against.
+  // so this is how the worker and intent drawer inspect the full completion contract.
   app.get("/api/sessions/:id/goal", (c) => {
     const goal = registry.getGoal(c.req.param("id"));
     if (!goal) return c.json({ error: "no goal for this session" }, 404);

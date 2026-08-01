@@ -17,6 +17,7 @@ import type {
   WorkflowCheckOutcome,
   WorkflowConfig,
 } from "@shared/workflow.ts";
+import type { WorkflowVerdictNode } from "@shared/workflow.ts";
 import {
   WORKFLOW_EXECUTION_LIMITS,
   checkOutcomePasses,
@@ -42,10 +43,24 @@ import {
   type CheckRunDeps,
   type CheckScheduler,
 } from "./checks.ts";
+import { killLiveCheckGroups } from "./check-group.ts";
+import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
 const PERSONA_TIMEOUT_MS = 120_000;
 const RETRY_BASE_MS = 1_000;
+
+/**
+ * The phase a run blocks in when a check node cannot be retried because its lease is still
+ * unresolved.
+ *
+ * Distinct from `infrastructure_error` on purpose: that phase says "we tried three times and
+ * gave up", and this one says "we did not try, because trying would have taken a second pooled
+ * worktree while something may still be writing into the first". The operator's next move
+ * differs too - this one clears itself once reclamation proves the group gone, and the run is
+ * resubmitted rather than debugged.
+ */
+export const CHECK_CLEANUP_UNRESOLVED_PHASE = "check_cleanup_unresolved";
 
 export interface WorkflowEngineOptions {
   /**
@@ -61,6 +76,14 @@ export interface WorkflowEngineOptions {
   resolveExecution?: (persona: Extract<PublishedWorkflowNode, { kind: "persona" }>["persona"]) => PersonaExecutionView;
   /** Called after the wait boundary is durable and before any later graph work can advance. */
   onSubmissionWaiting?: (submissionId: string) => void;
+  /**
+   * Called once, after a session action's waiting attempt is durable.
+   *
+   * The engine deliberately does not deliver: an action packet is a terminal write with a
+   * consent gate, a repository allowlist, a pane lock and an uncertainty policy, all of which
+   * the manager owns. The engine's whole job is to make the wait durable and say so.
+   */
+  onSessionActionWaiting?: (attemptId: string) => void;
   /** Claims a successful End for an external final gate. Returns true when claimed. */
   onSubmissionSucceeded?: (submissionId: string) => boolean;
   /**
@@ -73,8 +96,31 @@ export interface WorkflowEngineOptions {
   checkSchedule?: CheckScheduler;
   /** Only consulted when no check scheduler is injected. */
   checkConcurrency?: number;
-  /** The execution runtime a Check reaches, absent in a build that ships none. */
-  checkDeps?: CheckRunDeps;
+  /**
+   * The execution runtime a Check reaches, bound to the attempt it will run for.
+   *
+   * A factory rather than a value because a check's resources - its pooled worktree lease and
+   * its supervisor's durable identity - are keyed by attempt id, and Contract E's
+   * `CheckExecutionRequest` describes a COMMAND rather than an attempt. Binding at the call
+   * site keeps the published request unchanged and keeps every other caller of `runCheck` from
+   * having to supply an identity it has no reason to know.
+   *
+   * Absent in a build that ships no runtime, which is the shipped default: every configured
+   * check then reports `unavailable` and passes with a note saying so.
+   */
+  checkDeps?: (attempt: CheckAttemptRef) => CheckRunDeps;
+  /**
+   * Contract R: does this check node still own a lease that has not resolved?
+   *
+   * Consulted before a retry is CREATED, not afterwards. A retry is a fresh attempt id, so it
+   * carries a fresh holder token and would happily lease a DIFFERENT pooled worktree while the
+   * first attempt's process group may still be writing into the first - there is no natural
+   * collision to rely on, which is why this gate has to be explicit.
+   *
+   * Defaults to "no lease", which is correct for every build with no execution runtime and for
+   * every persona node in every build.
+   */
+  unresolvedCheckLease?: (submissionId: string, nodeId: string) => boolean;
   /** Read per attempt, never cached, so a Settings edit lands on the next check. */
   workflowConfig?: () => WorkflowConfig;
 }
@@ -107,8 +153,23 @@ function requestedChangePacket(
   };
 }
 
-function edgesFrom(graph: PublishedWorkflowGraph, nodeId: string, port: "submitted" | "pass" | "fail"): WorkflowEdge[] {
+function edgesFrom(
+  graph: PublishedWorkflowGraph,
+  nodeId: string,
+  port: "submitted" | "pass" | "fail" | "complete",
+): WorkflowEdge[] {
   return graph.edges.filter((edge) => edge.source === nodeId && edge.sourcePort === port);
+}
+
+/**
+ * The `complete` routes one action node authorizes, exported so the manager can seed exactly
+ * these edges into the child segment rather than re-deriving the rule.
+ */
+export function sessionActionCompleteEdges(
+  graph: PublishedWorkflowGraph,
+  nodeId: string,
+): WorkflowEdge[] {
+  return edgesFrom(graph, nodeId, "complete");
 }
 
 /**
@@ -158,6 +219,35 @@ function checkVerdict(outcome: WorkflowCheckOutcome): PersonaVerdict | null {
   });
 }
 
+/**
+ * The synthetic pass an operator-disabled node records instead of running.
+ *
+ * A real `PersonaVerdict`, for the reason `checkVerdict` is one: the Join reads outcomes,
+ * the repair packet reads requested changes, and run detail reads both, so a disabled gate
+ * that advanced through any other shape would need all three taught about it. The summary
+ * says plainly that nothing ran - the verdict must never read as an earned approval - and
+ * `confidence: 1` is honest here too: there is no doubt about what a disabled gate did.
+ *
+ * Routed through `normalizePersonaVerdict` like every other verdict so the strict schema
+ * is the single door; with fixed prose the normalization cannot refuse, but the null arm
+ * is still handled by every caller rather than asserted away.
+ */
+function disabledVerdict(node: WorkflowVerdictNode): PersonaVerdict | null {
+  const summary =
+    `${verdictAuthor(node)} is disabled for this run, so this gate auto-passed without running.`;
+  return normalizePersonaVerdict({
+    verdict: "pass",
+    summary,
+    approvalDetails: { reason: summary, evidence: [] },
+    confidence: 1,
+  });
+}
+
+/** The operator-disabled set, tolerant of rows written before the column existed. */
+function disabledNodes(run: WorkflowRun): readonly string[] {
+  return run.disabledNodeIds ?? [];
+}
+
 export class WorkflowEngine {
   private readonly limit: ReviewScheduler;
   private readonly now: () => number;
@@ -165,9 +255,12 @@ export class WorkflowEngine {
   private readonly runnerFor: (id: LlmRunner["id"]) => LlmRunner;
   private readonly resolveExecution: NonNullable<WorkflowEngineOptions["resolveExecution"]>;
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
+  private readonly onSessionActionWaiting:
+    NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private readonly checkLimit: CheckScheduler;
-  private readonly checkDeps: CheckRunDeps;
+  private readonly checkDeps: NonNullable<WorkflowEngineOptions["checkDeps"]>;
+  private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowConfig: () => WorkflowConfig;
   private stopped = true;
   private pumping = false;
@@ -187,10 +280,12 @@ export class WorkflowEngine {
     this.runnerFor = options.runnerFor ?? llmRunner;
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
+    this.onSessionActionWaiting = options.onSessionActionWaiting ?? (() => {});
     this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
     this.checkLimit = options.checkSchedule
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
-    this.checkDeps = options.checkDeps ?? {};
+    this.checkDeps = options.checkDeps ?? (() => ({}));
+    this.unresolvedCheckLease = options.unresolvedCheckLease ?? (() => false);
     this.workflowConfig = options.workflowConfig ?? getWorkflowConfig;
   }
 
@@ -205,6 +300,23 @@ export class WorkflowEngine {
     this.stopped = true;
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.wakeTimer = null;
+    // Cancel live check groups BEFORE awaiting the attempts that own them. A check attempt is
+    // a build, and `allSettled` on its own would wait out the command's whole timeout - up to
+    // ten minutes of daemon shutdown for one test suite somebody left running.
+    //
+    // This is the supervisor's own hard-exit teardown, called deliberately early rather than a
+    // gentler variant of it: the same signal is going to reach these groups from the `exit`
+    // hook moments later whatever we do here, and the only thing a grace period would buy at
+    // shutdown is flushed output nobody is left to read. Signalling is all it does - each
+    // attempt then settles through the ordinary path, proves its group empty, and hands its
+    // pooled worktree back, which is what the `allSettled` below is waiting for.
+    //
+    // Inert in every build with no execution runtime, and in every daemon with no check
+    // running: the watched set is empty and this returns immediately.
+    //
+    // `src/server/index.ts` calls this from `shutdown()` BEFORE it stops the pool reaper, so
+    // the returns issued here still run under a live reaper and its lock. Do not reorder that.
+    killLiveCheckGroups();
     await Promise.allSettled([...this.inFlight]);
   }
 
@@ -242,35 +354,43 @@ export class WorkflowEngine {
       this.blockSubmission(submission, "invalid_version", "Published workflow has no Session node");
       return;
     }
+    // A CONTINUATION segment does not re-submit from Session. Its evidence was captured
+    // because one action finished, and the only work it authorizes is that action's own
+    // downstream route - already seeded as a receipt by the continuation transaction.
+    // Seeding Session here would activate the whole first wave again on the child evidence,
+    // which is exactly the "restart the graph" behaviour a repair round means and a
+    // continuation must not.
+    const seedSession = submission.segment === 0;
     let changed = true;
     while (changed) {
       changed = false;
       const latestSubmission = this.store.getSubmission(submission.id);
       const run = this.store.getRun(submission.runId);
       if (!latestSubmission || !run || latestSubmission.status !== "running" || run.status !== "running") return;
-      const receipts = this.store.listReceipts(submission.id);
 
-      let sessionAttempt = this.store.latestAttemptForNode(submission.id, sessionNode.id);
-      if (!sessionAttempt) {
-        sessionAttempt = this.store.insertAttempt({
-          id: randomUUID(),
-          submissionId: submission.id,
-          nodeId: sessionNode.id,
-          attempt: 1,
-          state: "completed",
-          persona: null,
-          inputFingerprint: submission.evidenceFingerprint,
-          now: this.now(),
-        });
-        this.store.finishAttempt(sessionAttempt.id, {
-          state: "completed",
-          output: { outcome: "submitted" },
-        }, this.now());
-      }
-      for (const edge of edgesFrom(graph, sessionNode.id, "submitted")) {
-        if (this.store.addReceipt(submission.id, edge.id, sessionAttempt.id, {
-          outcome: "submitted",
-        }, this.now())) changed = true;
+      if (seedSession) {
+        let sessionAttempt = this.store.latestAttemptForNode(submission.id, sessionNode.id);
+        if (!sessionAttempt) {
+          sessionAttempt = this.store.insertAttempt({
+            id: randomUUID(),
+            submissionId: submission.id,
+            nodeId: sessionNode.id,
+            attempt: 1,
+            state: "completed",
+            persona: null,
+            inputFingerprint: submission.evidenceFingerprint,
+            now: this.now(),
+          });
+          this.store.finishAttempt(sessionAttempt.id, {
+            state: "completed",
+            output: { outcome: "submitted" },
+          }, this.now());
+        }
+        for (const edge of edgesFrom(graph, sessionNode.id, "submitted")) {
+          if (this.store.addReceipt(submission.id, edge.id, sessionAttempt.id, {
+            outcome: "submitted",
+          }, this.now())) changed = true;
+        }
       }
 
       // A completed verdict and its matching receipts normally commit together.
@@ -295,11 +415,27 @@ export class WorkflowEngine {
       }
 
       const currentReceipts = this.store.listReceipts(submission.id);
+      // At most ONE action attempt waits per submission at a time. The bound session has one
+      // pane and one turn, so two concurrently delivered instructions would interleave into
+      // a conversation neither of them expects. Serialized by the version's stable node
+      // order below, so which one goes first is a property of the published graph rather
+      // than of whichever edge this loop reached first.
+      const activatedActions: string[] = [];
       for (const edge of graph.edges) {
         const receipt = currentReceipts.find((item) => item.edgeId === edge.id);
         if (!receipt) continue;
         const target = graph.nodes.find((node) => node.id === edge.target);
         if (!target) continue;
+        // A session action activates as ONE waiting attempt and nothing else: no runnable
+        // work is enqueued, no verdict is written, and no outgoing receipt exists until the
+        // action turn finishes and its continuation segment is captured. The manager owns
+        // the delivery that follows.
+        if (target.kind === "session_action") {
+          const latest = this.store.latestAttemptForNode(submission.id, target.id);
+          if (latest && latest.state !== "cancelled") continue;
+          activatedActions.push(target.id);
+          continue;
+        }
         // One arm for both runnable kinds: they differ only in whether the attempt row
         // carries a Persona snapshot. A Check has none, because its command is not part of
         // the version and there is nothing about it to freeze.
@@ -343,6 +479,88 @@ export class WorkflowEngine {
           this.onSubmissionWaiting(submission.id);
           this.onRunChanged(submission.runId);
           return;
+        }
+      }
+
+      // Re-read AFTER the receipt loop, which may have queued this wave's reviewers a few
+      // lines ago. Two conditions have to hold before an action may take the pane:
+      //
+      //  - no action is already waiting, because the bound session has one turn and two
+      //    delivered instructions would interleave into a conversation neither expects;
+      //  - no evaluator is still pending, because once the action's packet is live the run
+      //    parks in `waiting_for_action` and a queued reviewer would sit there unclaimed
+      //    until the continuation - reviewing evidence that has since changed, if it ever
+      //    ran at all.
+      //
+      // Deferring costs nothing: `advanceStructure` runs again after every attempt finishes,
+      // so the action activates the moment the wave drains.
+      const pending = this.store.listAttempts(submission.id);
+      const actionBusy = pending.some((attempt) =>
+        ["waiting", "queued", "running", "retry_wait"].includes(attempt.state));
+      if (!actionBusy && activatedActions.length > 0) {
+        // Stable node order, and the graph's own array IS that order: node ids are reused
+        // across every publish of a workflow, so two authors of the same pipeline get the
+        // same sequence. Sorting by id or by edge order would make the sequence depend on a
+        // spelling or on which receipt landed first.
+        const ordered = graph.nodes
+          .filter((node) => activatedActions.includes(node.id))
+          .filter((node) => node.kind === "session_action");
+        // Two actions ready AT ONCE is a branching shape this phase does not execute, and it
+        // is REFUSED rather than serialized. Running the first and holding the rest looks
+        // safe and silently loses them: the continuation seeds the child segment with only
+        // the completed action's `complete` edges, so the held sibling's activating receipt
+        // stays behind in the parent and it is never delivered at all. A linear pipeline
+        // cannot produce this - `A -> B` in sequence is fine, and covered - so the honest
+        // answer is a diagnosable block naming both nodes.
+        if (ordered.length > 1) {
+          this.blockSubmission(
+            submission,
+            "session_action_parallel_unsupported",
+            "Two session actions became ready at the same time. One bound session has one "
+            + "turn, and this build runs them one after another rather than at once, so a "
+            + `graph that activates ${ordered.map((node) => node.id).join(" and ")} together `
+            + "cannot be executed. Chain them instead, so each one's completion activates the "
+            + "next.",
+          );
+          return;
+        }
+        const first = ordered[0];
+        if (first && first.kind === "session_action") {
+          const previous = this.store.latestAttemptForNode(submission.id, first.id);
+          const attempt = this.store.insertAttempt({
+            id: randomUUID(),
+            submissionId: submission.id,
+            nodeId: first.id,
+            attempt: (previous?.attempt ?? 0) + 1,
+            state: "waiting",
+            persona: null,
+            sessionAction: first.action,
+            sessionActionState: {
+              wait: "preparing",
+              deliveryId: null,
+              anchor: null,
+              pickedUpAt: null,
+              settledAt: null,
+              expectation: null,
+              continuationSubmissionId: null,
+              blocked: null,
+            },
+            inputFingerprint: `${submission.evidenceFingerprint}:${first.id}`,
+            now: this.now(),
+          });
+          this.store.appendEvent(submission.runId, "session_action_waiting", {
+            submissionId: submission.id,
+            nodeId: first.id,
+            attemptId: attempt.id,
+            action: first.action.name,
+            completion: first.action.completion.kind,
+            // Named rather than silently dropped: a branching graph that made two actions
+            // ready at once is a shape this phase does not execute in parallel, and a reader
+            // has to be able to see that one of them is being held rather than lost.
+            deferred: ordered.slice(1).map((node) => node.id),
+          }, this.now());
+          changed = true;
+          this.onSessionActionWaiting(attempt.id);
         }
       }
 
@@ -556,6 +774,19 @@ export class WorkflowEngine {
     const resolved = this.resolveAttempt(initial);
     if (!resolved) return;
     const { submission, run, version, node } = resolved;
+    // The operator disabled this node for this run: auto-pass instead of running it.
+    // Checked HERE, at claim time, rather than at attempt creation, so ONE synthesis site
+    // covers both halves of the promise - a node disabled before a round starts and a node
+    // disabled while its attempt is already queued. `resolveAttempt` re-read the run just
+    // now, so the set is current; an attempt that already started keeps its real outcome,
+    // which is exactly the "has not reached that phase yet" boundary.
+    if (isVerdictNode(node) && disabledNodes(run).includes(node.id)) {
+      const verdict = disabledVerdict(node);
+      if (verdict) {
+        this.runDisabledAttempt(initial, submission, run, version, node, verdict);
+        return;
+      }
+    }
     if (isCheck(node)) {
       await this.runCheckAttempt(initial, submission, run, version, node);
       return;
@@ -675,6 +906,60 @@ export class WorkflowEngine {
   }
 
   /**
+   * Record the auto-pass for an operator-disabled node without running anything.
+   *
+   * The same claim -> stopped-submission guard -> atomic verdict-plus-receipts sequence a
+   * real attempt follows, so recovery, the round scrubber, and the repair packet read a
+   * disabled gate exactly the way they read every other finished attempt. `output_json`
+   * carries `disabled: true` beside the outcome so run detail can say why this "pass"
+   * exists without parsing the verdict's prose back apart.
+   */
+  private runDisabledAttempt(
+    initial: WorkflowNodeAttempt,
+    submission: WorkflowSubmission,
+    run: WorkflowRun,
+    version: WorkflowVersion,
+    node: WorkflowVerdictNode,
+    verdict: PersonaVerdict,
+  ): void {
+    // Null runner and model, as a Check records: no provider was ever asked.
+    const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
+    if (!claimed) return;
+    const author = verdictAuthor(node);
+    const latestRun = this.store.getRun(run.id);
+    const latestSubmission = this.store.getSubmission(submission.id);
+    if (latestRun?.status !== "running" || latestSubmission?.status !== "running") {
+      this.store.finishAttempt(claimed.id, {
+        state: "cancelled",
+        verdict: jsonValue(verdict),
+        error: "Audit-only result after the submission stopped",
+      }, this.now());
+      this.onRunChanged(run.id);
+      return;
+    }
+    const receiptPayload = jsonValue({
+      outcome: verdict.verdict,
+      persona: author,
+      verdict,
+    });
+    this.store.finishAttemptWithReceipts(claimed.id, {
+      verdict: jsonValue(verdict),
+      output: jsonValue({ outcome: verdict.verdict, disabled: true }),
+      receipts: edgesFrom(version.graph, node.id, verdict.verdict).map((edge) => ({
+        edgeId: edge.id,
+        payload: receiptPayload,
+      })),
+    }, this.now());
+    this.store.appendEvent(run.id, "disabled_node_auto_passed", {
+      nodeId: node.id,
+      persona: author,
+      submissionId: submission.id,
+    }, this.now());
+    this.advanceStructure(submission, version);
+    this.onRunChanged(run.id);
+  }
+
+  /**
    * Run one Check node and write its outcome as an ordinary verdict.
    *
    * A SYNTHETIC `PersonaVerdict`, deliberately, rather than a second verdict shape: the
@@ -715,7 +1000,13 @@ export class WorkflowEngine {
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,
-      }, this.checkDeps);
+        // Bound to THIS attempt: the execution runtime keys its pooled lease and its
+        // supervisor's durable identity by attempt id, and `claimed.id` is that id.
+      }, this.checkDeps({
+        attemptId: claimed.id,
+        submissionId: submission.id,
+        nodeId: node.id,
+      }));
     } catch (error) {
       // A throw out of the runner is infrastructure by definition: nothing about the change
       // under review can be concluded from a gate that could not be asked.
@@ -793,6 +1084,7 @@ export class WorkflowEngine {
       state: "error",
       error: reason,
     }, this.now());
+    if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
     if (attempt.attempt < MAX_INFRA_ATTEMPTS) {
       const retryAt = this.now() + this.retryBaseMs * 4 ** (attempt.attempt - 1);
       this.store.insertAttempt({
@@ -830,6 +1122,41 @@ export class WorkflowEngine {
       error: reason,
     }, this.now());
     this.onRunChanged(runId);
+  }
+
+  /**
+   * Contract R's gate: refuse to retry a check node that still owns an unresolved lease.
+   *
+   * Placed where the RETRY is created rather than inside the execution runtime, because the
+   * runtime's published result type has three variants and none of them is "do not retry me" -
+   * and inventing a fourth would put a retry policy inside an executor. The rule it enforces
+   * is not conservative housekeeping: a retry is a fresh attempt id, therefore a fresh holder
+   * token, therefore a lease on a DIFFERENT pooled worktree - so nothing about the pool would
+   * stop the second attempt building while the first attempt's process group is still writing
+   * into the first tree. Two writers, two trees, and a verdict from whichever finished last.
+   *
+   * Blocking is visible and self-clearing rather than terminal: the reclamation pass keeps
+   * asking whether that group has gone, hands the tree back when it can prove it, and the run
+   * is resubmitted. Answering "no lease" is the whole of the cost in every build with no
+   * execution runtime and for every persona node in every build.
+   */
+  private blockedByUnresolvedLease(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    reason: string,
+  ): boolean {
+    if (!this.unresolvedCheckLease(attempt.submissionId, attempt.nodeId)) return false;
+    const now = this.now();
+    const detail = {
+      nodeId: attempt.nodeId,
+      attempts: attempt.attempt,
+      error: reason,
+    };
+    this.store.setSubmissionState(attempt.submissionId, "failed", now);
+    this.store.setRunState(runId, "blocked", CHECK_CLEANUP_UNRESOLVED_PHASE, detail, now);
+    this.store.appendEvent(runId, "check_cleanup_unresolved", detail, now);
+    this.onRunChanged(runId);
+    return true;
   }
 
   private blockSubmission(submission: WorkflowSubmission, phase: string, error: string): void {
@@ -872,6 +1199,13 @@ export class WorkflowEngine {
             state: "error",
             error: "Interrupted by daemon restart",
           }, this.now());
+          // The same gate as the live path, and this is where it matters most: a daemon that
+          // died mid-check leaves a lease its startup reconciliation could not prove empty,
+          // and rolling the attempt over here is exactly how a second tree would be leased
+          // behind a build that outlived us.
+          if (this.blockedByUnresolvedLease(attempt, run.id, "Interrupted by daemon restart")) {
+            continue;
+          }
           if (attempt.attempt < MAX_INFRA_ATTEMPTS) {
             this.store.insertAttempt({
               id: randomUUID(),
@@ -920,6 +1254,9 @@ export class WorkflowEngine {
           continue;
         }
         for (const attempt of errored) {
+          if (this.blockedByUnresolvedLease(attempt, run.id, attempt.error ?? "Recovered infrastructure failure")) {
+            break;
+          }
           const now = this.now();
           this.store.insertAttempt({
             id: randomUUID(),

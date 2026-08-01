@@ -355,6 +355,18 @@ class ClaudeSdkSession implements SdkSessionHandle {
   async send(turn: SdkTurn): Promise<SdkSendDisposition> {
     if (this.stopped) throw new Error("this session's driver has stopped");
     const disposition: SdkSendDisposition = this.uncompletedTurns > 0 ? "queued" : "started";
+    this.acceptTurn(turn);
+    return disposition;
+  }
+
+  async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
+    if (this.stopped) throw new Error("this session's driver has stopped");
+    if (this.uncompletedTurns > 0) return null;
+    this.acceptTurn(turn);
+    return "started";
+  }
+
+  private acceptTurn(turn: SdkTurn): void {
     this.turns.push({
       type: "user",
       message: { role: "user", content: turnContent(turn) },
@@ -366,7 +378,6 @@ class ClaudeSdkSession implements SdkSessionHandle {
     // for the first assistant frame is what keeps the card honest during the seconds a
     // model spends thinking before it emits anything. `turn_done` is the other end.
     this.out.emit({ kind: "state", state: "working", activity: null });
-    return disposition;
   }
 
   async interrupt(): Promise<void> {

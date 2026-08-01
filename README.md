@@ -347,11 +347,34 @@ through a pane. That is a session's **runtime**, and there are two.
   is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
   `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
-  There is no pane. A submitted message is *acknowledged* as a new turn, added to Codex's
-  current turn, or queued behind Claude's current turn. Both the conversation reply box and
-  the compact Send box show that disposition, so accepted input does not disappear while an
-  agent is busy. A permission prompt or an approval arrives as data - what is being asked,
-  and the exact rows to offer - which the card renders directly.
+  There is no pane. A permission prompt or an approval arrives as data, including what is
+  being asked and the exact rows to offer, which the card renders directly.
+
+Human messages from either conversation composer first enter Mission Control's **editable
+outbox**, on both runtimes. The full message appears as a `You · queued` turn instead of a
+count or a hidden driver queue. Press <kbd>↑</kbd> in an empty composer, or choose **Edit**,
+to remove the newest queued message atomically and put its exact text back in the box. Other
+queued messages stay in FIFO order.
+
+Delivery begins only after the session positively reports idle and no question is covering
+its input. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
+Codex message never becomes an implicit steer and a Claude message never enters Claude's
+private follow-up FIFO while it is still shown as editable. A terminal session uses the
+same Stop and task-complete lifecycle signals, plus passive transcript or rollout state,
+then waits for prompt-pickup evidence after pasting. A refusal before any terminal text was
+written returns the row to `queued`. If text may have landed but pickup cannot be proved,
+the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
+risking a duplicate.
+
+The outbox is stored in SQLite under the native conversation id when Mission Control knows
+it, and otherwise under the discovered session id. It survives browser and daemon restarts.
+A row that was being delivered when the daemon stopped recovers as `delivery uncertain` and
+is never resent automatically. Reset discards rows that are still safely queued along with
+the conversation drafts and work they described. If a claimed row may already have crossed
+the runtime boundary, reset retains it as `delivery uncertain` for explicit resolution.
+Work Queue automation, its explicit wrap-up send, and a human-approved Foreman draft retain
+their direct acknowledged delivery path because their durable audit records claim the text
+was delivered.
 
 For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
@@ -635,10 +658,11 @@ with `MISSION_CODEX_HOOK`), and passes them on the command line. So a **dispatch
 session is instrumented from its first breath, and a Codex session **you** started
 yourself sends nothing but still reports confirmed **working** and **idle** states from
 explicit lifecycle markers in its rollout file. That passive evidence is enough to place
-the session in the right board column; it does not enable readiness, prompt delivery,
-task handover, queues, or other safeguards that specifically require live hooks. If the
-bridge bundle is missing - `npm run build` never ran - the launch drops the overrides and
-runs uninstrumented rather than failing.
+the session in the right board column and lets the editable outbox wait for confirmed idle
+before delivering a human message. It does not enable task handover, work queues, or other
+safeguards that specifically require live hooks. If the bridge bundle is missing because
+`npm run build` never ran, the launch drops the overrides and runs uninstrumented rather
+than failing.
 
 Those overrides ride with `--dangerously-bypass-hook-trust`, and never without them.
 Codex would otherwise stop at a trust prompt for hooks the dashboard itself just injected,
@@ -787,8 +811,9 @@ few sweeps rather than lingering as rows nothing can reach.
 
 **The reply box is closed while a menu is up**, deliberately. A dialog isn't a text box: it
 discards typed characters, and the Enter that follows confirms whichever row was already
-highlighted - so a reply sent at a menu doesn't fail, it silently answers with the default
-under your name. The buttons are the only safe way to answer one.
+highlighted. The outbox rechecks for a dialog at the terminal write boundary, so a queued
+reply waits if a menu appears after the card's last refresh. The buttons are the only way to
+answer one.
 
 Because the card's copy of the menu is up to one sweep old, a click sends back the **label**
 you were shown and the daemon re-reads the pane before pressing anything: if the screen has
@@ -940,6 +965,10 @@ later instructions also update the tactical focus immediately. The daemon then r
 queue in capture order, one instruction at a time, using the prompt and a small conversation
 window. Rapid prompts are never coalesced, so an objective change cannot disappear behind later
 steering.
+
+An instruction still in the editable pending-turn outbox has not reached this pipeline. Once
+the agent accepts it, the instruction leaves the outbox, enters the reconciliation queue, and
+can update the card's tactical focus immediately.
 
 Each reconciliation records one of five relationships:
 
@@ -3756,8 +3785,8 @@ answerable without reading a log.
 
 ## Half-written text is kept
 
-A session card **keeps what you've typed** until it's actually delivered. Three of its
-boxes hold a draft:
+A session card **keeps what you've typed** until it is successfully submitted. Conversation
+messages then remain visible in the editable outbox until delivery. Three boxes hold a draft:
 
 - the **Work queue** panel's add box,
 - the **reply** box under the transcript on an expanded card, and
@@ -3779,14 +3808,24 @@ card, and **Cancel** / <kbd>Esc</kbd> on the send box. Glance at the grid mid-se
 come back - your text is still there, exactly as the [dispatch form](#dispatch-an-agent)
 treats a half-written task.
 
-A draft is forgotten on **successful delivery**: a send that lands for the reply and
-send boxes, an **Add** that lands for the queue box. **Resetting the session** also forgets
-the reply and send drafts - a reset discards the task those boxes were replying to, so their
-half-written text goes with it, and an open reply box empties on the spot rather than keeping
-stale text behind the closing modal. The **queue add box is kept** through a reset, since it
-composes new work rather than a reply to the discarded task. A send that *fails* deliberately
-keeps your text - it's all you have and you're about to retry it. Drafts are per session and
-never bleed from one card into another.
+A draft is forgotten on **successful submission**: a send that creates a durable pending
+turn for the reply and send boxes, or an **Add** that lands for the queue box. **Resetting
+the session** also forgets the reply and send drafts - a reset discards the task those boxes
+were replying to, so their half-written text goes with it, and an open reply box empties on
+the spot rather than keeping stale text behind the closing modal. The **queue add box is
+kept** through a reset, since it composes new work rather than a reply to the discarded task.
+A send that *fails* deliberately keeps your text - it's all you have and you're about to retry
+it. Drafts are per session and never bleed from one card into another.
+
+Once **Send** succeeds, the composer draft becomes a durable queued turn. The full conversation
+turn stays visible beneath the conversation while Mission Control owns it. The compact Send
+surface shows a single-line, ellipsized preview of that same queued text. Recalling it with
+<kbd>↑</kbd> moves the full text back into the same draft system with the caret at the end.
+If the recall response is lost after the daemon may have committed it, the browser restores
+the exact text it already held and warns you to confirm the queued copy disappears before
+sending; an explicit stale-revision conflict leaves the composer untouched.
+Recalled attachment uploads return as their already-inserted file paths; the thumbnail strip
+is not reconstructed.
 
 Two things worth knowing:
 
@@ -4321,6 +4360,7 @@ shortcut works in every layout:
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
+| <kbd>↑</kbd> | Recall the newest editable queued message into the box, with the caret at the end. The box must be empty and have no attachments | Empty message composer |
 | <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. If its conversation is not visible, reveals it first, then opens the terminal chooser | Selected session |
 | <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or reveal the conversation and choose a terminal in which to resume it | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
@@ -4636,11 +4676,11 @@ task's durable record, so a later prompt cannot outrun it; if several of the age
 episodes merged, the **most recent** merge is the one recorded.
 
 An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
-that conclusion is **reversible**: if you send a follow-up prompt, the task goes back to
-running and drops the outcome. Only conclusions Mission Control drew from idleness are
-undone this way - an outcome you recorded yourself is never overwritten. This correction
-is deliberately limited to the current daemon run; after a restart, a completed task
-stays done.
+that conclusion is **reversible**: once a follow-up prompt is delivered, the task goes back
+to running and drops the outcome. Only conclusions Mission Control drew from idleness are
+undone this way - an outcome you recorded yourself is never overwritten. This correction is
+deliberately limited to the current daemon run; after a restart, a completed task stays
+done.
 
 #### A merge that lands when nobody is watching
 

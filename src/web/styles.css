@@ -3603,11 +3603,61 @@ body {
 }
 .compose {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   width: 100%;
 }
+.compose-pending-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.compose-pending {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-left: 2px dashed color-mix(in oklab, var(--working) 48%, var(--border));
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in oklab, var(--working) 7%, var(--bg-2));
+  font: 11px/1.35 var(--sans);
+}
+.compose-pending.is-uncertain {
+  border-left-color: var(--attention);
+}
+.compose-pending-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.compose-pending-state {
+  flex: none;
+  color: var(--dim);
+}
+.compose-pending button {
+  flex: none;
+  border: 0;
+  padding: 0;
+  color: var(--working);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.compose-pending button:hover:not(:disabled),
+.compose-pending button:focus-visible {
+  color: var(--fg);
+  text-decoration: underline;
+  outline: none;
+}
 .compose-input {
   flex: 1;
+  min-width: 0;
+  resize: vertical;
   font: inherit;
   font-size: 12.5px;
   color: var(--fg);
@@ -4769,6 +4819,60 @@ kbd {
 .turn-user .turn-text {
   background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
   border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft));
+}
+.pending-turn {
+  border-left: 2px dashed color-mix(in oklab, var(--working) 48%, var(--border));
+  padding-left: 9px;
+}
+.pending-turn.is-sending {
+  opacity: 0.72;
+}
+.pending-turn.is-uncertain {
+  border-left-color: var(--attention);
+}
+.pending-turn-role {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.pending-turn-state {
+  color: var(--working);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.pending-turn.is-uncertain .pending-turn-state,
+.pending-turn-error {
+  color: var(--attention);
+}
+.pending-turn-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-height: 18px;
+  font: 10.5px/1.3 var(--sans);
+  color: var(--dim);
+}
+.pending-turn-action {
+  font: inherit;
+  color: var(--working);
+  background: transparent;
+  border: 0;
+  padding: 1px 0;
+  cursor: pointer;
+}
+.pending-turn-action:hover:not(:disabled),
+.pending-turn-action:focus-visible {
+  color: var(--fg);
+  text-decoration: underline;
+  outline: none;
+}
+.pending-turn-action:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+.pending-turn-error {
+  flex-basis: 100%;
 }
 /* Foreman's turns, told apart from the human's at a glance - in a supervised session
    most of the "user" side of the conversation is Foreman, and a reader who can't see

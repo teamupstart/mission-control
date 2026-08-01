@@ -96,6 +96,10 @@ function fakeHandle(): FakeHandle {
       sent.push(turn);
       return "started" as const;
     },
+    async sendIfIdle(turn: SdkTurn) {
+      sent.push(turn);
+      return "started" as const;
+    },
     async interrupt() {},
     async answer() {},
     setPermissionMode: null,
@@ -308,6 +312,34 @@ test("a queued send rechecks its target inside session serialization", async () 
     assert.equal(await first, "started");
     await assert.rejects(second, /conversation_changed/);
     assert.deepEqual(handle.sent, [{ text: "first" }]);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("idle-only delivery rolls back its durable reservation when the driver became busy", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    handle.sendIfIdle = async () => {
+      assert.equal(
+        getSdkSession(session.id)?.turnInProgress,
+        true,
+        "the crash-recovery reservation crosses before the adapter check",
+      );
+      return null;
+    };
+
+    assert.equal(
+      await supervisor.sendWhenIdle(session.id, { text: "do not steer" }),
+      null,
+    );
+    assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+    assert.deepEqual(handle.sent, [], "the driver did not accept an idle-only turn");
   } finally {
     fake.restore();
   }

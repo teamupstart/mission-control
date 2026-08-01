@@ -41,7 +41,11 @@ import {
   historicalTaskWorkEpisodeBindingsForTask,
   taskWorkEpisodeForTask,
 } from "./db.ts";
-import { driverClearFor, resetSession } from "./reset.ts";
+import {
+  driverClearFor,
+  resetSession,
+  type PendingTurnResetBoundary,
+} from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -276,6 +280,8 @@ export class TaskManager {
      * `homeName` means "keep the worktree", the safe direction.
      */
     private supervisor?: SdkSupervisor,
+    /** Coordinates claimed message delivery with every task-assignment reset. */
+    private pendingTurns?: PendingTurnResetBoundary,
   ) {
     this.dispatcher = new Dispatcher(registry, undefined, { supervisor });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
@@ -1435,7 +1441,14 @@ export class TaskManager {
         // `cleared: false`, `workIdentityReady` stays false, and `assignReserved` correctly
         // refuses to hand the task over - so this is the difference between an SDK session
         // taking a second task and never taking one.
-        resetSession(this.registry, session, true, undefined, driverClearFor(this.supervisor)));
+        resetSession(
+          this.registry,
+          session,
+          true,
+          undefined,
+          driverClearFor(this.supervisor),
+          this.pendingTurns,
+        ));
     const doRename = opts.rename ?? rename;
 
     if (s.state !== "idle") {

@@ -37,6 +37,8 @@ import { createInterface } from "node:readline";
 /** Fixed so a test can assert against a known id; the driver only cares that it is stable. */
 const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? "e2e00000-0000-4000-8000-000000000001";
 const MODEL = "claude-e2e-mock";
+const HELD_TURN = "hold the current turn open";
+const HELD_TURN_MS = 5_000;
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
@@ -208,15 +210,24 @@ rl.on("line", (line) => {
           : "";
 
     appendTurn("user", prompt);
-    const answer = replyTo(prompt);
-    appendTurn("assistant", [{ type: "text", text: answer }]);
+    const finish = () => {
+      const answer = replyTo(prompt);
+      appendTurn("assistant", [{ type: "text", text: answer }]);
 
-    emit({
-      type: "assistant",
-      session_id: SESSION_ID,
-      message: { role: "assistant", content: [{ type: "text", text: answer }] },
-    });
-    emit({ type: "result", subtype: "success", session_id: SESSION_ID });
+      emit({
+        type: "assistant",
+        session_id: SESSION_ID,
+        message: { role: "assistant", content: [{ type: "text", text: answer }] },
+      });
+      emit({ type: "result", subtype: "success", session_id: SESSION_ID });
+    };
+
+    // One deterministic busy window for the queued-turn browser spec. Ordinary prompts
+    // still answer synchronously, so existing conversation specs keep their fast path. The
+    // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
+    // the real SDK busy state and pending-turn route without spending model tokens.
+    if (prompt === HELD_TURN) setTimeout(finish, HELD_TURN_MS);
+    else finish();
   }
 });
 

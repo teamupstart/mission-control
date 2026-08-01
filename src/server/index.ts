@@ -23,6 +23,7 @@ import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
+import { PendingTurnManager } from "./pending-turns.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
@@ -85,7 +86,8 @@ const reviews = new ReviewManager(registry);
 // embedded task's agent survived. `restore()` is a separate step further down, and its
 // ordering against `startPoller` is the contract - see the comment there.
 const sdkSessions = new SdkSupervisor(registry);
-const tasks = new TaskManager(registry, undefined, sdkSessions);
+const pendingTurns = new PendingTurnManager(registry, sdkSessions);
+const tasks = new TaskManager(registry, undefined, sdkSessions, pendingTurns);
 const queues = new QueueManager(registry);
 const personas = new PersonaManager(registry);
 // Shares the Persona manager's store handle, so both catalogs and the workflow family are
@@ -207,7 +209,13 @@ ensembles = new EnsembleManager(registry, undefined, {
   // materialization through TaskManager, guarded pane injection, and the Workflow external
   // boundary. This is what lets a human-confirmed decision reap losers, preserve one exact winner,
   // and optionally submit its clean snapshot into a published Workflow - all restart-safe.
-  finalize: createFinalizeDeps({ registry, tasks, workflows, sdk: sdkSessions }),
+  finalize: createFinalizeDeps({
+    registry,
+    tasks,
+    workflows,
+    sdk: sdkSessions,
+    pendingTurns,
+  }),
   // Resolve an operator's Workflow placement to an immutable version at creation; a Live/Foreman
   // selection is a typed refusal here, never a Preview downgrade.
   resolveWorkflowVersion: (workflowId, version) => resolveEnsembleWorkflowVersion(workflows, workflowId, version),
@@ -295,8 +303,20 @@ const schedules = new ScheduleManager({
 let stopSchedules = () => {};
 
 const app = buildApp(
-  registry, reviews, tasks, queues, away, personas, workflows, schedules, ensembles, sdkSessions,
-  undefined, undefined, sessionActions,
+  registry,
+  reviews,
+  tasks,
+  queues,
+  away,
+  personas,
+  workflows,
+  schedules,
+  ensembles,
+  sdkSessions,
+  undefined,
+  undefined,
+  sessionActions,
+  pendingTurns,
 );
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
@@ -316,6 +336,9 @@ if (hasDist) {
 }
 
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
+  // Startup recovery changes durable rows, so it starts only after this process wins the
+  // loopback port and is therefore the daemon's sole SQLite writer.
+  pendingTurns.start();
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
@@ -349,6 +372,7 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  pendingTurns.stop();
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
   // hand the pooled worktree back. It MUST stay above `stopPoolReaper()` below: those returns

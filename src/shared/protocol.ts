@@ -2139,6 +2139,8 @@ export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
  */
 export const InjectPromptSchema = z.object({
   text: z.string().min(1).max(INTENT_MAX),
+  /** Human conversation composers opt into the editable outbox by default. */
+  buffer: z.boolean().optional().default(true),
   /**
    * Who is typing. Defaults to the human, because that's who almost every caller is and
    * because claiming to be Foreman is the answer that colours a turn - a caller that
@@ -2152,6 +2154,12 @@ export const InjectPromptSchema = z.object({
   origin: z.enum(["human", "foreman", "workflow"]).default("human"),
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
+
+/** CAS guard for a pending-turn action selected from the current session projection. */
+export const PendingTurnRevisionSchema = z.object({
+  revision: z.number().int().min(0),
+});
+export type PendingTurnRevision = z.infer<typeof PendingTurnRevisionSchema>;
 
 /** A checkout-relative file path. The daemon still performs canonical containment checks. */
 export const SessionFilePathSchema = z.object({

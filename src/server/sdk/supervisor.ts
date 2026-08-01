@@ -326,6 +326,45 @@ export class SdkSupervisor {
     });
   }
 
+  /**
+   * Start a turn only if the driver remains idle at its own acceptance boundary.
+   *
+   * This is intentionally not implemented as `registry says idle` followed by `send`:
+   * Codex would steer if work began in that gap, and Claude would accept into its private
+   * queue. A null rolls back the durable reservation and leaves the caller's outbox row
+   * untouched for the next confirmed idle transition.
+   */
+  sendWhenIdle(
+    id: string,
+    turn: SdkTurn,
+    beforeSend?: () => string | null,
+  ): Promise<"started" | null> {
+    return this.serialize(id, async (handle) => {
+      const blocked = beforeSend?.();
+      if (blocked) throw new Error(blocked);
+      const unfinished = this.unfinishedTurns.get(id) ?? 0;
+      setSdkSessionTurnInProgress(id, true);
+      this.unfinishedTurns.set(id, unfinished + 1);
+      this.acceptingTurns.add(id);
+      try {
+        const disposition = await handle.sendIfIdle(turn);
+        if (disposition === null) {
+          const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
+          this.unfinishedTurns.set(id, remaining);
+          this.recordTurnInProgress(id, remaining > 0);
+        }
+        return disposition;
+      } catch (err) {
+        const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
+        this.unfinishedTurns.set(id, remaining);
+        this.recordTurnInProgress(id, remaining > 0);
+        throw err;
+      } finally {
+        this.acceptingTurns.delete(id);
+      }
+    });
+  }
+
   /** Resolve a pending request. Serialized with sends - it is input to the same turn. */
   answer(id: string, requestId: string, answer: SessionRequestAnswer): Promise<void> {
     return this.serialize(id, (handle) => handle.answer(requestId, answer));

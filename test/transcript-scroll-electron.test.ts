@@ -85,7 +85,38 @@ function panelMarkup(): string {
   }));
   seedTail("s1", { messages, start: 0, atStart: true, pos: 1000 });
   return renderToStaticMarkup(
-    createElement(TranscriptPanel, { session: mkSession({ id: "s1" }), canSend: true }),
+    createElement(TranscriptPanel, {
+      session: mkSession({
+        id: "s1",
+        pendingTurns: [
+          {
+            id: "pending-editable",
+            noteKey: "agent-1",
+            seq: 0,
+            text: "A queued follow-up remains visible and editable below the live conversation.",
+            state: "queued",
+            revision: 0,
+            createdAt: 1,
+            updatedAt: 1,
+            claimedAt: null,
+            lastError: null,
+          },
+          {
+            id: "pending-uncertain",
+            noteKey: "agent-1",
+            seq: 1,
+            text: "A terminal message whose pickup could not be confirmed.",
+            state: "uncertain",
+            revision: 2,
+            createdAt: 2,
+            updatedAt: 3,
+            claimedAt: 2,
+            lastError: "Mission Control could not confirm terminal pickup.",
+          },
+        ],
+      }),
+      canSend: true,
+    }),
   );
 }
 

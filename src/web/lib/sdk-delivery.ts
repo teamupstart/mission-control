@@ -1,4 +1,4 @@
-import type { SdkSendDisposition } from "@shared/types.ts";
+import type { MessageSendDisposition } from "@shared/types.ts";
 
 /**
  * Turn an embedded driver's acknowledgement into the feedback the composer shows.
@@ -8,9 +8,11 @@ import type { SdkSendDisposition } from "@shared/types.ts";
  * transcript until the active turn finishes.
  */
 export function sdkDeliveryConfirmation(
-  disposition: SdkSendDisposition | undefined,
+  disposition: MessageSendDisposition | undefined,
 ): string | null {
   switch (disposition) {
+    case "pending":
+      return "Queued. Press Up Arrow in an empty reply box to edit.";
     case "started":
       return "Sent — the agent started a new turn.";
     case "steered":

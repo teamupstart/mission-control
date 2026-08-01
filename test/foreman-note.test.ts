@@ -4,7 +4,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session, SessionNoteSummary } from "../src/shared/types.ts";
 import { ForemanNote } from "../src/web/components/ForemanNote.tsx";
-import { closeForemanNote } from "../src/web/lib/foreman.ts";
+import {
+  approveForemanRecommendation,
+  closeForemanNote,
+} from "../src/web/lib/foreman.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Rendered rather than checked as a pure rule, because the bug WAS the render: the
@@ -189,4 +192,78 @@ test("a note with no marker still writes the note - the audit row never blocks y
     sentText: "ok",
   });
   assert.deepEqual(r.calls, ["setNote"]);
+});
+
+test("Foreman approval records sentText only after direct delivery is acknowledged", async () => {
+  const calls: string[] = [];
+  const payloads: unknown[] = [];
+  let acknowledge!: (result: { ok: boolean }) => void;
+  const delivered = new Promise<{ ok: boolean }>((resolve) => {
+    acknowledge = resolve;
+  });
+  const approval = approveForemanRecommendation(
+    {
+      injectPrompt: (id, text, buffer) => {
+        calls.push("injectPrompt");
+        payloads.push({ id, text, buffer });
+        return delivered;
+      },
+      resolveReview: async () => ({ ok: true }),
+      resolveEpisode: async (_id, p) => {
+        calls.push("resolveEpisode");
+        payloads.push(p);
+      },
+      setNote: async (_id, note) => {
+        calls.push("setNote");
+        payloads.push(note);
+      },
+    },
+    "s1",
+    { kind: "send" },
+    {
+      marker: "await:1",
+      recommendation: "First line.\nSecond line.",
+    },
+  );
+
+  await Promise.resolve();
+  assert.deepEqual(calls, ["injectPrompt"], "the audit waits for delivery acknowledgement");
+  assert.deepEqual(payloads[0], {
+    id: "s1",
+    text: "First line.\nSecond line.",
+    buffer: false,
+  });
+
+  acknowledge({ ok: true });
+  assert.equal((await approval).ok, true);
+  assert.deepEqual(calls, ["injectPrompt", "resolveEpisode", "setNote"]);
+  assert.equal(
+    (payloads[1] as { sentText: string }).sentText,
+    "First line.\nSecond line.",
+  );
+});
+
+test("a refused Foreman delivery does not resolve the episode or clear the note", async () => {
+  const calls: string[] = [];
+  const result = await approveForemanRecommendation(
+    {
+      injectPrompt: async () => {
+        calls.push("injectPrompt");
+        return { ok: false, error: "session became busy" };
+      },
+      resolveReview: async () => ({ ok: true }),
+      resolveEpisode: async () => {
+        calls.push("resolveEpisode");
+      },
+      setNote: async () => {
+        calls.push("setNote");
+      },
+    },
+    "s1",
+    { kind: "send" },
+    { marker: "await:1", recommendation: "Do not record this yet." },
+  );
+
+  assert.deepEqual(result, { ok: false, error: "session became busy" });
+  assert.deepEqual(calls, ["injectPrompt"]);
 });

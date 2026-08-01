@@ -1,14 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  SESSION_ACTION_COMPLETION_CAPABILITIES,
   SESSION_ACTION_COMPLETION_KINDS,
   WORKFLOW_LIMITS,
   WORKFLOW_SOURCE_PORTS,
+  addableSessionActions,
   normalizeSessionActionName,
   sessionActionChoiceLabel,
   sessionActionChoicesForDisplay,
+  sessionActionCompletionLabel,
   sessionActionDescriptionFromMarkdown,
   sessionActionNameFromMarkdown,
+  sessionActionSkillLabel,
   sessionActionSnapshotIsOutdated,
   sessionActionsForDisplay,
   isSessionActionNode,
@@ -17,6 +21,8 @@ import {
 import type {
   PublishedWorkflowNode,
   SessionAction,
+  SessionActionCompletion,
+  SessionActionCompletionKind,
   SessionActionSnapshot,
 } from "../src/shared/workflow.ts";
 import {
@@ -311,13 +317,71 @@ test("a live operator row shadows a same-named built-in, and the built-in stays 
 
   // A shadowed or archived source a node already names is RETAINED in the choice list, so a
   // draft pointing at it can still say which action it means.
-  const choices = sessionActionChoicesForDisplay([builtin, mine], ["builtin:pull-request"]);
+  const all = new Set(SESSION_ACTION_COMPLETION_KINDS);
+  const choices = sessionActionChoicesForDisplay([builtin, mine], ["builtin:pull-request"], all);
   assert.deepEqual(choices.map(({ action: a }) => a.id), ["builtin:pull-request", "mine"]);
   assert.deepEqual(choices.map(({ retained }) => retained), [true, false]);
   assert.equal(
-    sessionActionChoiceLabel(builtin, true),
+    sessionActionChoiceLabel(builtin, true, all),
     "Pull Request (Built-in, shadowed by your action)",
   );
-  assert.equal(sessionActionChoiceLabel(archivedMine, true), "Pull Request (Archived)");
-  assert.equal(sessionActionChoiceLabel(mine, false), "Pull Request");
+  assert.equal(sessionActionChoiceLabel(archivedMine, true, all), "Pull Request (Archived)");
+  assert.equal(sessionActionChoiceLabel(mine, false, all), "Pull Request");
+});
+
+test("an add control is filtered by what the DAEMON says it can prove", () => {
+  // What is at stake: the browser must never offer a stage whose graph the server will then
+  // refuse at Publish. The availability set is the daemon's answer, passed in - a client
+  // constant here would make the dashboard's offer a property of the bundle instead.
+  const turn = action({
+    id: "turn",
+    name: "Tidy",
+    normalizedName: "tidy",
+    completion: { kind: "session_turn" },
+  });
+  const pr = action({ id: "pr", completion: { kind: "pull_request" } });
+  const archived = action({
+    id: "old",
+    name: "Old",
+    normalizedName: "old",
+    completion: { kind: "session_turn" },
+    archivedAt: 9,
+  });
+  const onlyTurn = new Set<SessionActionCompletionKind>(["session_turn"]);
+
+  assert.deepEqual(
+    addableSessionActions([turn, pr, archived], onlyTurn).map((a) => a.id),
+    ["turn"],
+    "an unavailable adapter and an archived row are both unaddable",
+  );
+  assert.deepEqual(
+    addableSessionActions([turn, pr], new Set()).map((a) => a.id),
+    [],
+    "no reported adapter offers nothing at all, rather than falling back to everything",
+  );
+
+  // The node ALREADY pointing at the unavailable one keeps its option, and says why. Without
+  // the retained arm a `<select>` would paint some other action as chosen and the next change
+  // event would silently rewrite the draft.
+  const choices = sessionActionChoicesForDisplay([turn, pr], ["pr"], onlyTurn);
+  assert.deepEqual(choices.map(({ action: a }) => a.id), ["pr", "turn"]);
+  assert.equal(
+    sessionActionChoiceLabel(pr, true, onlyTurn),
+    "Pull Request (Not available in this build)",
+    "unavailability is named before shadowing - the shipped action is not shadowed by anything",
+  );
+});
+
+test("the two label helpers say what a row needs and what proves it, and never a verdict", () => {
+  assert.equal(sessionActionSkillLabel(null), "No required skill");
+  assert.equal(sessionActionSkillLabel("pull-request"), "Skill · pull-request");
+  assert.equal(
+    sessionActionCompletionLabel({ kind: "session_turn" }),
+    SESSION_ACTION_COMPLETION_CAPABILITIES.session_turn.label,
+    "the label an operator chose from is the label they read back",
+  );
+  for (const kind of SESSION_ACTION_COMPLETION_KINDS) {
+    const label = sessionActionCompletionLabel({ kind } as SessionActionCompletion);
+    assert.doesNotMatch(label, /\bpass|fail|verdict|approve|reject\b/i);
+  }
 });

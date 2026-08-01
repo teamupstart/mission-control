@@ -86,8 +86,12 @@ test("keyboard editing covers move, connect, confirmed delete, undo, redo, and d
   // Session is never duplicated - a graph has exactly one. The rule moved into
   // `duplicableIds`, which is also what GATES the control, so the button can no longer light
   // up for a selection it would then refuse.
+  //
+  // Session is now the ONLY exclusion. A session action was refused here while nothing could
+  // create one, because duplicating is an add control by another name; both halves ship
+  // together, so the copy is a legitimate second node naming the same catalog row.
   assert.match(librarySource, /const duplicableIds = selectedIds\.filter/);
-  assert.match(librarySource, /kind !== "session" && kind !== "session_action"/);
+  assert.match(librarySource, /return kind !== undefined && kind !== "session";/);
   assert.match(draftSource, /slice\(-49\)/);
   assert.match(canvasSource, /workflow-alignment-guide is-vertical/);
   assert.match(canvasSource, /workflow-alignment-guide is-horizontal/);

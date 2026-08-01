@@ -245,6 +245,42 @@ test("Live types the authored instruction once and resumes on a fresh child segm
   await expect(card.getByText("Remove the stray scratch file and say so.").first())
     .toBeVisible({ timeout: 20_000 });
   expect(sessionId).not.toBe("");
+
+  // What the RUN VIEW makes of all that. Everything above is durable truth; this is the half
+  // an operator reads, and it is the half that can lie by borrowing a reviewer's vocabulary.
+  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${runId}`);
+
+  // Two entries under ONE repair round, named as evidence rather than as a second attempt at
+  // the same thing. A scrubber that showed "Round 1, Round 2" would say the run had spent
+  // half its repair budget on an action that spends none.
+  const scrubber = dashboard.getByRole("group", { name: "Select a round" });
+  await expect(scrubber.locator(".wf-run-round-name")).toHaveText([
+    "Round 1 · evidence 1",
+    "Round 1 · evidence 2",
+  ]);
+  await expect(dashboard.locator(".wf-run-notice"))
+    .toContainText("does not spend a repair round");
+  await expect(dashboard.locator(".wf-run-notice")).toContainText(`captured after ${actionName}`);
+
+  // The stage reports that it FINISHED, never that it passed - it judged nothing.
+  const strip = dashboard.locator(".wf-pipeline-strip");
+  await expect(strip.locator("li.wf-pipeline-reviewer")).toContainText(actionName);
+  await expect(strip.locator("li.wf-pipeline-reviewer .wf-pipeline-status")).toHaveText("Complete");
+
+  // Its own card, under its own heading, carrying the exact instruction the version froze.
+  // Filed under "Reviewer verdicts" it would promise a verdict that does not exist.
+  const actionCard = dashboard.locator("article.wf-run-action");
+  await expect(actionCard).toHaveCount(1);
+  await expect(actionCard).toContainText(actionName);
+  await expect(actionCard).toContainText("No required skill");
+  await expect(actionCard).toContainText("Completes when session turn finishes");
+  // A `<summary>`, not a button - `getByRole("button")` would never resolve it, and the
+  // tooltip beside it is a `.tt-desc` span that `getByText` would match twice.
+  await actionCard.locator("summary").click();
+  await expect(actionCard.locator("pre")).toContainText("Remove the stray scratch file and say so.");
+
+  // And the delivery section names what is in it rather than calling an action a repair.
+  await expect(dashboard.getByRole("heading", { name: "Deliveries to the session" })).toBeVisible();
 });
 
 test("Preview prepares the identical packet and types nothing at all", async ({
@@ -291,6 +327,27 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   expect(still.submissions).toHaveLength(1);
   expect(still.attempts.find((item) => item.nodeId === NODE.action)!.state).toBe("waiting");
   expect(still.run.status).toBe("waiting_for_action");
+
+  // The run view says what it is waiting FOR, in words that claim no progress the runtime has
+  // not proven: "ready" is not "sent", and neither is a verdict. A generic "Waiting" chip here
+  // - which is what routing an action through the reviewer table produces - would leave an
+  // operator with no way to tell a Preview packet nobody sent from a turn in flight.
+  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${runId}`);
+  const strip = dashboard.locator(".wf-pipeline-strip");
+  await expect(strip.locator("li.wf-pipeline-reviewer .wf-pipeline-status"))
+    .toHaveText("Ready to send");
+  const actionCard = dashboard.locator("article.wf-run-action");
+  await expect(actionCard)
+    .toContainText("The instruction is ready and has not been sent to the session yet.");
+  // One repair round, one evidence snapshot: no continuation happened, so the scrubber draws
+  // no evidence suffix at all.
+  await expect(dashboard.getByRole("group", { name: "Select a round" }).locator(".wf-run-round-name"))
+    .toHaveText(["Round 1"]);
+  // Never filed under the heading that promises a verdict. The Session node's own attempt
+  // still sits there, which is what makes this assertion mean something: the section is
+  // populated, and the action is deliberately not in it.
+  await expect(dashboard.getByRole("heading", { name: "Reviewer verdicts" })).toBeVisible();
+  await expect(dashboard.locator(".wf-run-attempt")).not.toContainText(actionName);
 
   // And the conversation carries no trace of the instruction. This is the assertion the
   // Preview promise actually reduces to: not "the delivery row says prepared", but "nothing

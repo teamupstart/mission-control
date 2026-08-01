@@ -10,6 +10,7 @@ import type { ReviewItem, Session } from "@shared/types.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { WorkflowRunFilters, WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
+import { SessionActionLibrary } from "./SessionActionLibrary.tsx";
 import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
 import { WorkflowRuns } from "./WorkflowRuns.tsx";
 import { EnsembleRuns } from "./EnsembleRuns.tsx";
@@ -18,6 +19,10 @@ import { Tooltip } from "../components/Tooltip.tsx";
 const WORKFLOW_TABS = [
   ["workflows", "Author the review workflows agents are bound to"],
   ["personas", "Author the reviewer Personas workflow nodes run"],
+  // Beside Personas rather than under Workflows, because it is the same kind of thing: a
+  // reusable library a stage points at. The hint says what an action DOES, since the one
+  // mistake to prevent is reading it as a second kind of reviewer.
+  ["actions", "Author the instructions a workflow stage sends to its bound session"],
   ["runs", "Watch workflow runs and their verdicts"],
   ["ensembles", "Watch multi-agent ensembles, their evidence, and decisions"],
 ] as const;
@@ -53,9 +58,12 @@ export function WorkflowPage({
   tab: WorkflowTab;
   personas: PersonaView[];
   /**
-   * The SessionAction catalog. Threaded for NAMING only in this build: there is no actions
-   * tab and no picker, but a draft that already contains an action node has to be able to
-   * say which action it is.
+   * The SessionAction catalog, archived rows included.
+   *
+   * One list for three jobs: the Actions tab lists it, the builder's add controls pick from
+   * the addressable part of it, and every surface that draws a stage names its action from
+   * it. Archived rows stay in because a draft may already point at one - dropping them here
+   * would make an existing stage read "Missing session action".
    */
   sessionActions?: SessionAction[];
   workflowSummaries?: WorkflowSummary[];
@@ -170,6 +178,20 @@ export function WorkflowPage({
             personas={personas}
             providers={llm.status?.runners ?? []}
             defaults={llm.personaDefaults}
+            isOverlayOpen={isOverlayOpen}
+            onDirtyChange={onDirtyChange}
+          />
+        </section>
+      )}
+      {tab === "actions" && (
+        <section
+          id="workflow-panel-actions"
+          role="tabpanel"
+          aria-labelledby="workflow-tab-actions"
+        >
+          <SessionActionLibrary
+            sessionActions={sessionActions}
+            hasSnapshot={hasSnapshot}
             isOverlayOpen={isOverlayOpen}
             onDirtyChange={onDirtyChange}
           />

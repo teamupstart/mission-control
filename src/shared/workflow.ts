@@ -380,32 +380,97 @@ export function sessionActionsForDisplay<
   );
 }
 
+/**
+ * The actions an ADD control may offer, which is a narrower question than what the library
+ * lists.
+ *
+ * Two filters, and neither one is optional. `sessionActionsForDisplay` drops a built-in an
+ * operator's row is shadowing and the archived rows go with it, because adding either would
+ * bind a draft to a source the publish transaction is about to refuse. The second filter is
+ * `available`, and it is passed IN rather than read from
+ * `SESSION_ACTION_COMPLETION_CAPABILITIES` here on purpose: the daemon is the only thing
+ * that knows which adapters this build can execute, and a browser that answered from its own
+ * copy of the table would offer a stage whose graph the server then refuses to publish. The
+ * caller hands over what `GET /api/session-actions/capabilities` said, and an empty set is an
+ * honest "nothing is addable yet" rather than a silent fallback to everything.
+ */
+export function addableSessionActions<
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "normalizedName">,
+>(actions: readonly T[], available: ReadonlySet<SessionActionCompletionKind>): T[] {
+  return sessionActionsForDisplay(actions)
+    .filter((action) => action.archivedAt === null && available.has(action.completion.kind));
+}
+
+/**
+ * A picker's options: everything addable, plus a RETAINED entry for whatever a draft already
+ * names.
+ *
+ * The retained arm is the whole reason this is not just `addableSessionActions`. A node may
+ * point at an action that has since been archived, been shadowed by an operator's row of the
+ * same name, or - as the built-in Pull Request does until its adapter ships - name a
+ * completion this build cannot prove. In every one of those cases the option has to stay in
+ * the list, because a `<select>` whose value is absent from its options renders as though
+ * something else were selected, and the next change event would rewrite a draft nobody meant
+ * to edit.
+ */
 export function sessionActionChoicesForDisplay<
-  T extends Pick<SessionAction, "archivedAt" | "builtin" | "id" | "normalizedName">,
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "id" | "normalizedName">,
 >(
   actions: readonly T[],
   retainedIds: readonly string[],
+  available: ReadonlySet<SessionActionCompletionKind>,
 ): Array<{ action: T; retained: boolean }> {
-  const visible = sessionActionsForDisplay(actions)
-    .filter((action) => action.archivedAt === null);
-  const visibleIds = new Set(visible.map((action) => action.id));
+  const addable = addableSessionActions(actions, available);
+  const addableIds = new Set(addable.map((action) => action.id));
   const retained = new Set(retainedIds);
   return [
     ...actions
-      .filter((action) => retained.has(action.id) && !visibleIds.has(action.id))
+      .filter((action) => retained.has(action.id) && !addableIds.has(action.id))
       .map((action) => ({ action, retained: true })),
-    ...visible.map((action) => ({ action, retained: false })),
+    ...addable.map((action) => ({ action, retained: false })),
   ];
 }
 
+/**
+ * What a retained option says about itself, in the order an operator needs to hear it.
+ *
+ * Unavailability comes FIRST because it is the only reason that is about this build rather
+ * than about the catalog: the shipped Pull Request action is neither archived nor shadowed,
+ * and labelling it "shadowed by your action" - which is what checking `builtin` first did -
+ * would send an operator looking for a row of theirs that does not exist.
+ */
 export function sessionActionChoiceLabel(
-  action: Pick<SessionAction, "archivedAt" | "builtin" | "name">,
+  action: Pick<SessionAction, "archivedAt" | "builtin" | "completion" | "name">,
   retained: boolean,
+  available: ReadonlySet<SessionActionCompletionKind>,
 ): string {
   if (!retained) return action.name;
-  if (action.builtin) return `${action.name} (Built-in, shadowed by your action)`;
+  if (!available.has(action.completion.kind)) return `${action.name} (Not available in this build)`;
   if (action.archivedAt !== null) return `${action.name} (Archived)`;
+  if (action.builtin) return `${action.name} (Built-in, shadowed by your action)`;
   return action.name;
+}
+
+/**
+ * What an action's completion adapter proves, as the phrase a row or a rail prints.
+ *
+ * One function rather than the `kind === "pull_request" ? … : …` ternary that had started
+ * appearing at every surface: the pipeline card, the graph rail, the version snapshot and
+ * now the library each need this sentence, and four copies of a two-armed conditional is
+ * four places to forget when a third adapter arrives. Reading the capability table's own
+ * `label` keeps the wording the same as the selector an operator chose it from.
+ */
+export function sessionActionCompletionLabel(completion: SessionActionCompletion): string {
+  // Falls back to the wire spelling rather than indexing into `undefined`. Catalog rows and
+  // published snapshots reach the browser from a daemon that may be a version ahead, and the
+  // kinds are explicitly append-only - so a third adapter would otherwise turn every list
+  // row, stage card and run card that names one into a TypeError.
+  return SESSION_ACTION_COMPLETION_CAPABILITIES[completion.kind]?.label ?? completion.kind;
+}
+
+/** The required skill as a phrase, including the honest answer when there is none. */
+export function sessionActionSkillLabel(requiredSkillId: string | null): string {
+  return requiredSkillId === null ? "No required skill" : `Skill · ${requiredSkillId}`;
 }
 
 /**

@@ -67,12 +67,14 @@ and get your decision back.
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
 - **Builds reusable review workflows**: open **Workflows** in the top bar to author exact
-  Markdown Personas, then arrange Session, Persona, all-pass Join, Check, and End nodes on a
-  validated canvas. Drafts autosave with conflict protection and Publish captures immutable
-  Persona snapshots. Bind a published version to a session and start a manual **Preview** to
-  run concurrent, read-only Persona reviews against one immutable evidence snapshot. A
-  published Inspector final gate can then require the exact clean PR head to pass before the
-  workflow completes.
+  Markdown Personas and [session actions](#session-actions), then arrange Session, Persona,
+  all-pass Join, Check, Session action, and End nodes on a validated canvas. Drafts autosave
+  with conflict protection and Publish captures immutable Persona and action snapshots. Bind a
+  published version to a session and start a manual **Preview** to run concurrent, read-only
+  Persona reviews against one immutable evidence snapshot. A session action stage instead
+  *sends* one authored instruction to the bound session, waits for that turn, and captures
+  fresh evidence for everything below it. A published Inspector final gate can then require
+  the exact clean PR head to pass before the workflow completes.
 - **Equips** every session with [skills](#skills-every-session-mixed-reload-behavior): switch
   a skill on in Settings and it is linked into each harness's own skills directory, including
   sessions this app never launched. Claude reloads when idle, Codex watches automatically,
@@ -2263,7 +2265,8 @@ The **Workflows** button in the top bar changes only the dashboard body. The fle
 live SSE connection, and Cards, Console, or Board selection stay mounted, so returning to
 **Fleet** does not reconnect or discard the fleet view. The page uses bookmarkable hashes:
 `#/workflows` for the graph library and builder, `#/workflows/personas` for the Persona
-library, `#/workflows/runs` for run history, `#/workflows/runs/:id` for one run's evidence
+library, `#/workflows/actions` for the [session action](#session-actions) library,
+`#/workflows/runs` for run history, `#/workflows/runs/:id` for one run's evidence
 and timeline, and `#/fleet` to return.
 The top-bar button opens the graph library and restores the last active workflow selected
 in this browser when it is still available.
@@ -2407,12 +2410,21 @@ a seeding step that could half-run. It is compiled into the build beside the Per
 
 ### Workflow drafts and published versions
 
-A workflow is **stages of members** - Persona reviewers and deterministic Checks - and the
-**Pipeline** view is where you author one. It draws Session, the stages between it, and the End
-outcome; you add, remove and reorder members and stages, and everything structural is generated
-for you. A stage holding two or more members gets its all-pass Join, every fail returns to
-Session for repair, and the last stage's pass reaches End. Nothing is hand-drawn, so none of it
-can be got wrong.
+A workflow is a chain of **stages**, and the **Pipeline** view is where you author one. It
+draws Session, the stages between it, and the End outcome; you add, remove and reorder stages,
+and everything structural is generated for you. Every fail returns to Session for repair, and
+the last stage's pass reaches End. Nothing is hand-drawn, so none of it can be got wrong.
+
+There are two kinds of stage, and the difference is what they do to the run:
+
+- An **evaluation** stage holds one or more Persona reviewers and deterministic Checks. They
+  all read the same submission, a stage of two or more gets its all-pass Join, and the stage
+  moves on only when every member passes.
+- A **[session action](#session-actions)** stage holds exactly one action and no members. It
+  does not judge the work - it *sends* an instruction to the bound session, waits for that
+  turn to finish, and captures fresh evidence. Its outgoing seam says `complete`, never
+  `pass`, and everything after it reviews the new evidence rather than the evidence the
+  stages above it saw.
 
 A brand-new workflow opens on Session, one empty stage affordance, and End - opening it never
 edits it. Picking a Persona from the stage's inline list makes it stage 1; picking a second
@@ -2429,14 +2441,16 @@ Announcements and labels name members and stages; no surface prints a node id. A
 is derived, not stored: one member names its own stage, and a parallel stage reads "Stage N".
 
 **Graph** is the other half of the toolbar toggle, and it still edits anything. Add Persona,
-**All-pass Join**, **Check** and End nodes from the left palette, then connect the directional
-handles: Session emits `submitted`; a Persona, Check or Join emits `pass` and `fail`; failures
-may return to Session for changes. Session needs at least one `submitted` route and may fan
-out to several. A Join needs both outcomes from at least two distinct predecessors, waits for
-one result from each, and passes only when all passed; a predecessor may be a Persona, a Check
-or another Join. Cycles are legal only when they include Session. Persona-only cycles are
-rejected because they could spend repeatedly against unchanged work. There is no checkpoint
-node and Inspector is not a graph node.
+**All-pass Join**, **Check**, **Session action** and End nodes from the left palette, then
+connect the directional handles: Session emits `submitted`; a Persona, Check or Join emits
+`pass` and `fail`; a session action emits only `complete`; failures may return to Session for
+changes. Session needs at least one `submitted` route and may fan out to several. A Join needs
+both outcomes from at least two distinct predecessors, waits for one result from each, and
+passes only when all passed; a predecessor may be a Persona, a Check or another Join, and
+never a session action - an action produces no verdict for a join to aggregate. Cycles are
+legal only when they include Session. Persona-only cycles are rejected because they could
+spend repeatedly against unchanged work. There is no checkpoint node and Inspector is not a
+graph node.
 
 The Pipeline view is offered exactly when a draft *is* a pipeline: one Session, a linear chain
 of stages, one End, and nothing else. A graph drawn freehand that is not - two End nodes, a
@@ -2444,10 +2458,60 @@ fail routed somewhere other than Session, a Join fed from two different stages -
 Graph with a banner naming each reason in a sentence. Both views write ordinary draft graphs,
 so a draft moves between them freely and existing workflows need no migration.
 
-The add control on every stage offers your Personas and the four check slots in one list. A
-check appears as a row marked `Check` and named by its slot. Checks are offered even before
-you have authored a Persona, because the slots are a fixed vocabulary rather than something
-you configure here.
+There are two add controls, because they answer two different questions. **＋ Stage**, on the
+seam between cards, creates a stage and offers all three things a stage can be: your Personas,
+the four check slots, and your addable session actions, grouped. The picker inside an
+evaluation stage adds another *member* to it, so it offers Personas and checks only. A session
+action stage has neither - it holds exactly one action by construction - so its own control
+chooses **which** action it sends. Checks are offered even before you have authored a Persona,
+because the slots are a fixed vocabulary rather than something you configure here.
+
+Immediately after End, the Pipeline draws a fixed **Inspector** footer whenever the workflow's
+final gate is Inspector. It is a projection of the completion policy and not a stage: it has
+no drag handle, no member list, no graph edge and no delete, it is marked `Fixed`, and its
+switches are the ones in the settings rail. End is still where the graph succeeds; Inspector
+claims that success afterwards. A workflow whose final gate is None shows no footer at all.
+
+### Session actions
+
+A **session action** is a reusable instruction a workflow stage sends to the session it is
+bound to. It is not a third kind of reviewer. A Persona reads one immutable submission and
+returns a verdict; an action writes to the bound conversation, may change the repository, and
+returns only "this finished". `#/workflows/actions` is its library, beside Personas.
+
+An action's fields are its name, description, the **exact Markdown instruction** the session
+receives, an optional **required skill**, and the **completion** Mission Control must observe
+before the stages below it run. The instruction is exact in the same sense Persona guidance
+is: nothing trims it, re-wraps it or normalizes its newlines between the editor and SQLite,
+because it is typed into somebody's conversation verbatim. Its ceiling is what one delivery
+packet can actually carry, so an action that would be truncated on the way out is refused at
+authoring rather than half-sent at run time.
+
+Saves are revisioned and use compare-and-swap, so a second tab editing an older revision gets
+an explicit conflict and keeps its local text - **Reload latest** takes theirs, **Save as
+duplicate** keeps yours. Archive is soft: an archived action is read-only, leaves the add
+controls, keeps reserving its normalized name, and stays readable because drafts and published
+versions name its id. Built-in actions ship with the application, are marked `Built-in`, and
+are read-only; **Duplicate** is the way to a copy you own.
+
+The completion selector offers what **this build can prove**, read from the daemon rather than
+from the browser's own copy of the list:
+
+| Completion | What the daemon must observe |
+|---|---|
+| Session turn finishes | The session verifiably picked the instruction up, then settled. A pre-existing idle never counts. |
+| Pull request is opened and verified | The same turn boundary plus durable matching pull-request provenance. **Not available yet** - the verified adapter is a later change, so this build offers it nowhere and refuses to publish a workflow that names it. |
+
+An action stage may sit anywhere a stage may sit, and a pipeline may hold more than one. When
+the turn finishes, Mission Control captures **fresh evidence** and resumes from that action's
+`complete` route. This is not a repair: it spends no repair round, and the stages *above* it
+keep their attempts on the evidence they actually reviewed. Only a real evaluation failure
+starts round *N+1* back at Session.
+
+Publishing snapshots the action exactly as it snapshots a Persona - name, description,
+instruction, required skill, completion, source id and source revision. Editing or archiving
+the source afterwards cannot reach a version already published; version history marks the
+snapshot outdated or its source archived and shows the exact instruction that version froze.
 
 ### Check nodes
 
@@ -2609,8 +2673,10 @@ same workflow status.
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
 ladder in the **Workflows** tab (<kbd>y</kbd>), alongside the no-mistakes gate for the same
 session. Passed stages collapse, the active or failed stage names its
-members, and an objection, Inspector wait, or uncertain delivery opens in place. Preview
-feedback can be copied there. The failing rung also reports a member that has failed consecutive
+members, and an objection, Inspector wait, session-action wait, or uncertain delivery opens in
+place. A workflow whose final gate is Inspector ends the ladder with a fixed `Inspector` rung
+*after* the End outcome, marked `Fixed`, reading `Not reached` until the run gets there.
+Preview feedback can be copied there. The failing rung also reports a member that has failed consecutive
 repair rounds, the signal of a non-converging repair loop. At the Inspector gate, **Recheck
 Inspector** evaluates the wait again and **Open PR** opens the adopted pull request. A waiting
 run with a missing or unadopted PR also offers **Prepare PR in session** when its immutable run
@@ -2632,7 +2698,29 @@ stages and End the Pipeline view draws, with a live status on every member. Revi
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
 state. A stage of two or more members shows each one and passes only when all do. A version
 drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
-read-only, carrying the same statuses. No surface prints a node id.
+read-only, carrying the same statuses. No surface prints a node id. The same fixed
+**Inspector** footer the author saw follows End here, carrying the gate's live state.
+
+A **session action** reports a lifecycle rather than an outcome, and its vocabulary is
+deliberately its own - nothing about it ever reads Passed, Failed or Changes requested,
+because it judged nothing:
+
+| Chip | What has been proven |
+|---|---|
+| Preparing | The attempt exists; its one packet has not been composed yet. |
+| Ready to send | Composed, and nothing has been typed - Preview, or Live awaiting authorization. |
+| Sent | Typed into the pane. Nothing newer than the send anchor proves the session read it. |
+| Session working | Pickup proven, and the turn has not settled. |
+| Needs you | Picked up and parked on a question. Never a settled turn. |
+| Verifying | Settled, and the completion this action asks for wants evidence it does not have yet. |
+| Capturing evidence | The completion is satisfied and the fresh evidence is being captured. |
+| Complete | The turn finished and the downstream evidence exists. |
+| Could not run | A delivery or infrastructure problem, stated as a sentence. Never a repair packet, never a spent round. |
+
+Each waiting or blocked action also carries the sentence behind its chip, and its own card
+under **Session actions** - separate from **Reviewer verdicts**, which promises a verdict an
+action does not produce. The card names the snapshot the version froze, what the action
+required, and a bounded preview of the exact instruction that was sent.
 
 The rail lists history newest first with a state chip, the bound conversation and a relative
 time. Four chips - **All**, **Running**, **Needs you**, **Done** - are shortcuts onto the
@@ -2640,13 +2728,23 @@ same single-state filter the **State** dropdown offers in full; the dropdown sti
 every state, and workflow id and session filters sit beside it. Filters and the selected run
 are part of the bookmarkable hash, and history pages 50 rows at a time.
 
-A run is read one **round** at a time. The scrubber lists every submission with the round it
-is - Inspector-only repair rounds marked as such - and the round that asked for changes is
-marked even though its submission is a healthy `waiting for the session`. Selecting a round
-scopes the pipeline statuses, the verdicts, the join packets and the timeline to it; the
-latest round is selected by default. The Inspector gate, completion claims, deliveries and
-every recovery action always reflect the live run whatever round is on screen, and a note
-says so while an earlier one is selected.
+A run is read one **submission** at a time. The scrubber lists every one with the round it
+belongs to - Inspector-only repair rounds marked as such - and the round that asked for
+changes is marked even though its submission is a healthy `waiting for the session`.
+Selecting one scopes the pipeline statuses, the verdicts, the join packets and the timeline to
+it; the latest is selected by default. The Inspector gate, completion claims, deliveries and
+every recovery action always reflect the live run whatever is on screen, and a note says so
+while an earlier one is selected.
+
+**A repair round and an evidence segment are different things.** A round is a repair: an
+evaluator asked for changes, the work came back, and the whole pipeline runs again from
+Session against the repair budget. A segment is a session action finishing: fresh evidence,
+only the stages after the action, and no budget spent. A round that holds more than one
+segment labels each of them - `Round 1 · evidence 1`, `Round 1 · evidence 2` - and selecting
+a continuation says in a sentence which action produced it and that it cost no repair round. A
+round with a single segment is just `Round 1`, because there is no distinction to draw. The
+action that authorized a segment is shown *with* that segment even though its attempt belongs
+to the parent, so a continuation never reads as evidence that arrived from nowhere.
 
 On a run that has not finished, **clicking a reviewer or check disables it for that run** -
 the row turns red with a ⊘ mark - and clicking it again re-enables it. Clicking a stage

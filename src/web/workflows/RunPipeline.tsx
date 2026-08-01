@@ -1,5 +1,9 @@
 import { useCallback, useMemo } from "react";
-import type { WorkflowCheckStatus, WorkflowVersion } from "@shared/workflow.ts";
+import type {
+  SessionActionWaitReason,
+  WorkflowCheckStatus,
+  WorkflowVersion,
+} from "@shared/workflow.ts";
 import {
   nodeLabel,
   projectStages,
@@ -11,6 +15,7 @@ import {
   type StageNode,
 } from "@shared/workflow-stages.ts";
 import {
+  InspectorFooter,
   PipelineFrame,
   ReviewerRow,
   StageCard,
@@ -19,7 +24,7 @@ import {
   type PipelineStatus,
 } from "./pipeline-bits.tsx";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
-import { checkStatus, reviewerStatus, stageStatus } from "./run-model.ts";
+import { checkStatus, reviewerStatus, sessionActionStatus, stageStatus } from "./run-model.ts";
 
 /**
  * The run, drawn on the pipeline its author drew.
@@ -42,6 +47,9 @@ export function RunPipeline({
   end,
   metaFor,
   checkOutcomeFor,
+  actionWaitFor,
+  inspectorDetail = null,
+  inspectorStatus = null,
   repair,
   disabledNodeIds,
   disabledChipFor,
@@ -63,6 +71,19 @@ export function RunPipeline({
    * distinction rather than asserting the wrong half of it.
    */
   checkOutcomeFor?: (nodeId: string) => WorkflowCheckStatus | null;
+  /**
+   * What a session action node is waiting FOR, when it is waiting.
+   *
+   * Read off the durable attempt by the caller rather than derived here, because it is the
+   * runtime's own answer: the difference between "sent" and "the session read it" is a
+   * transcript byte offset the daemon recorded, and nothing in a node status map can
+   * reconstruct it.
+   */
+  actionWaitFor?: (nodeId: string) => SessionActionWaitReason | null;
+  /** The Inspector wait sentence for the fixed footer, or null when there is no gate. */
+  inspectorDetail?: string | null;
+  /** The gate's chip for the footer. Absent draws the footer without one. */
+  inspectorStatus?: PipelineStatus | null;
   repair: string | null;
   /**
    * Verdict node ids the operator disabled FOR THIS RUN. Absent reads as none. Drives the
@@ -170,16 +191,23 @@ export function RunPipeline({
             // round already reached - a recorded failure painted as Disabled would claim
             // the toggle rewrote it. The row's red treatment carries the control's state.
             //
-            // An action reports LIFECYCLE, never a verdict, so it reads the same attempt
-            // status a reviewer does but must never be routed through `checkStatus` - a
-            // "Passed" chip on a node that judged nothing is the failure this split avoids.
+            // An action reports LIFECYCLE, never a verdict, and gets its OWN status table
+            // rather than borrowing either evaluator's. A "Passed" chip on a node that judged
+            // nothing is the failure this third branch avoids, and routing it through
+            // `reviewerStatus` would also flatten every stage of a waiting turn into the one
+            // word "Waiting".
             status: (togglable && member.nodeId ? disabledChipFor?.(member.nodeId) ?? null : null)
-              ?? (member.kind === "check"
-                ? checkStatus(
+              ?? (member.kind === "session_action"
+                ? sessionActionStatus(
                     member.nodeId ? statuses[member.nodeId] : undefined,
-                    member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
+                    member.nodeId ? actionWaitFor?.(member.nodeId) ?? null : null,
                   )
-                : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined)),
+                : member.kind === "check"
+                  ? checkStatus(
+                      member.nodeId ? statuses[member.nodeId] : undefined,
+                      member.nodeId ? checkOutcomeFor?.(member.nodeId) ?? null : null,
+                    )
+                  : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined)),
           };
         });
         // The stage toggle needs every member addressable AND switchable; a projection member
@@ -194,7 +222,7 @@ export function RunPipeline({
             <StageCard
               name={stageTitle}
               subtitle={stageSummary(stage)}
-              status={stageStatus(members.map((member) => member.status))}
+              status={stageStatus(members.map((member) => member.status), stage.kind)}
               disabled={stageDisabled}
               onToggleDisabled={onToggleNodes && stageNodeIds.length === members.length
                 ? () => onToggleNodes(stageNodeIds, !stageDisabled)
@@ -232,6 +260,14 @@ export function RunPipeline({
         name={pipeline.endOutcome}
         subtitle="Terminal outcome"
         status={end}
+      />
+      {/* The same footer the author saw, now carrying the run's own gate state. Drawn from
+          the VERSION's policy rather than the workflow's, so a run pinned to an older version
+          shows the gate that version was published with. */}
+      <InspectorFooter
+        policy={version.completionPolicy}
+        status={inspectorStatus}
+        detail={inspectorDetail}
       />
     </PipelineFrame>
   );

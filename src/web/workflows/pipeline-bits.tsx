@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { WorkflowCompletionPolicy } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 
 /**
@@ -282,6 +283,68 @@ export function TerminusCard({
       </span>
       {status && <PipelineStatusChip status={status} />}
     </section>
+  );
+}
+
+/**
+ * Inspector, drawn after End as a FIXED footer.
+ *
+ * A projection of `WorkflowCompletionPolicy` and never a stage. It carries no drag handle, no
+ * focus stop in the strip's roving order, no member list, no edge and no delete, because
+ * there is nothing in the persisted graph for any of those to act on: Inspector is a property
+ * of the workflow, End is still the graph's success boundary, and the completion policy
+ * claims that boundary afterwards.
+ *
+ * Rendering it here rather than at each surface is what stops the three places it appears -
+ * the editor, a run, and the Board ladder - from drawing three different pictures of the same
+ * immutable rule. Returning `null` for a `none` policy is the whole visibility contract: a
+ * workflow that does not end at Inspector shows no footer at all, which is why every caller
+ * can hand this the policy unconditionally.
+ *
+ * `status` and `detail` are the RUN's answers - the gate chip and the sentence saying what it
+ * is waiting on. Absent in the editor, where there is no run to have an opinion.
+ */
+export function InspectorFooter({
+  policy,
+  status = null,
+  detail = null,
+}: {
+  policy: WorkflowCompletionPolicy;
+  status?: PipelineStatus | null;
+  detail?: string | null;
+}): React.JSX.Element | null {
+  if (policy.kind !== "inspector") return null;
+  return (
+    <>
+      {/* The seam says what has to have happened, and it is deliberately not a gate an
+          author can change: End is reached, and only then does Inspector look at the work. */}
+      <StageSeam gate="workflow succeeded" />
+      <section
+        className="wf-pipeline-inspector"
+        aria-label="Inspector, the fixed completion policy after End"
+      >
+        <span className="wf-pipeline-inspector-mark" aria-hidden>✦</span>
+        <span className="wf-pipeline-inspector-body">
+          <span className="wf-pipeline-inspector-name">
+            Inspector
+            {/* A word, not a colour. The point of this badge is that the card is not part of
+                the pipeline an author is editing, and that has to survive a greyscale
+                screenshot and a reader who never sees the styling. */}
+            <span className="wf-pipeline-inspector-fixed">Fixed</span>
+          </span>
+          {/* Two facts and no more. A strip card is read at a glance beside four others, and
+              the first draft of this spent eight lines restating what the Fixed badge and
+              the absent controls already say. What is left is what an operator cannot see
+              from the card: what Inspector looks at, and where its switches actually live. */}
+          <span className="wf-pipeline-inspector-sub">
+            Reviews the finished pull request once the workflow succeeds. Set in Workflow
+            settings, not on the graph.
+          </span>
+          {detail && <span className="wf-pipeline-inspector-detail">{detail}</span>}
+        </span>
+        {status && <PipelineStatusChip status={status} />}
+      </section>
+    </>
   );
 }
 

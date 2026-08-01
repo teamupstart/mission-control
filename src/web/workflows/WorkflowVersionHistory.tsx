@@ -7,6 +7,7 @@ import type {
 } from "@shared/workflow.ts";
 import { personaSnapshotIsOutdated, sessionActionSnapshotIsOutdated } from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
+import { InspectorFooter } from "./pipeline-bits.tsx";
 import { workflowRequest } from "./workflowApi.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import {
@@ -42,6 +43,10 @@ export function WorkflowVersionDetail({
         sessionActions={sessionActions}
         readOnly
       />
+      {/* OUTSIDE the canvas, deliberately. Inspector is not in the persisted graph and gains
+          no node here; this is the compact non-interactive note that says the version ends
+          with it, drawn from the same policy projection the pipeline footer reads. */}
+      <InspectorFooter policy={version.completionPolicy} />
       <dl>
         <div><dt>Trigger</dt><dd>{version.bindingDefaults.triggerMode}</dd></div>
         <div><dt>Delivery</dt><dd>{version.bindingDefaults.deliveryMode}</dd></div>

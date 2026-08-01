@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  addableSessionActions,
   normalizeWorkflowName,
   personasForDisplay,
   WORKFLOW_CHECK_SLOTS,
@@ -40,6 +41,7 @@ import {
 } from "./WorkflowConfirmModal.tsx";
 import { WorkflowVersionHistory } from "./WorkflowVersionHistory.tsx";
 import { NEW_NODE_MIME, type NewWorkflowNode } from "./new-node.ts";
+import { useSessionActionCapabilities } from "./sessionActionApi.ts";
 import {
   useWorkflowDraft,
   workflowArchiveBlocked,
@@ -208,9 +210,9 @@ export function WorkflowLibrary({
   summaries: WorkflowSummary[];
   personas: PersonaView[];
   /**
-   * The SessionAction catalog, for NAMING only. This build ships no palette entry, no
-   * picker and no properties editor for an action node, because nothing can execute one yet -
-   * but a draft that already carries one has to name it rather than show an id.
+   * The whole SessionAction catalog, archived rows included: it names whatever a draft
+   * already points at, and the add controls narrow it to what is addressable and runnable
+   * before offering anything.
    */
   sessionActions?: SessionAction[];
   hasSnapshot: boolean;
@@ -274,6 +276,15 @@ export function WorkflowLibrary({
     () => personasForDisplay(personas).filter((persona) => persona.archivedAt === null),
     [personas],
   );
+  // Read ONCE here, at the surface that hosts both editing modes, and passed down. The
+  // Pipeline picker, the Graph palette and the properties rail all have to agree about which
+  // adapters this daemon can run, and three independent reads is three chances to disagree
+  // while one of them is still in flight.
+  const capabilities = useSessionActionCapabilities();
+  const addableActions = useMemo(
+    () => addableSessionActions(sessionActions, capabilities.available),
+    [capabilities.available, sessionActions],
+  );
   // One walk answers both questions: the sentences the Graph-view banner shows, and whether
   // the Pipeline can draw this graph at all. Passing the live Personas is what keeps a draft
   // reviewer's blocker from reading "Missing persona".
@@ -294,6 +305,14 @@ export function WorkflowLibrary({
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
   const [paletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
+  // Held as a raw id and RESOLVED against the addable list at render, not seeded from it: the
+  // catalog and the capability answer both arrive after first paint, so a `useState`
+  // initializer would pin an empty string and never recover.
+  const [paletteActionId, setPaletteActionId] = useState<string | null>(null);
+  const paletteAction = addableActions.some((action) => action.id === paletteActionId)
+    ? paletteActionId!
+    : addableActions[0]?.id ?? "";
+  const setPaletteAction = (id: string): void => setPaletteActionId(id);
   const canvasRef = useRef<WorkflowCanvasHandle | null>(null);
   const connectTrigger = useRef<HTMLButtonElement | null>(null);
   const [connectSource, setConnectSource] = useState<string | null>(null);
@@ -469,6 +488,12 @@ export function WorkflowLibrary({
   const addNode = (spec: NewWorkflowNode, at?: { x: number; y: number }): void => {
     if (!workflow || readOnly) return;
     if (spec.kind === "persona" && !spec.personaId) return;
+    // The same guard a Persona gets, plus the capability question a Persona does not have.
+    // A drop payload can name an action this daemon cannot run - a stale drag from a tab
+    // opened before the catalog changed - and the honest answer is to do nothing rather than
+    // to add a node whose graph the server will refuse at Publish.
+    if (spec.kind === "session_action"
+      && !addableActions.some((action) => action.id === spec.sessionActionId)) return;
     const offset = workflow.draft.nodes.length * 26;
     const id = crypto.randomUUID();
     const center = canvasRef.current?.viewportCenter();
@@ -489,7 +514,9 @@ export function WorkflowLibrary({
         ? { id, kind: "all_pass", position }
         : spec.kind === "check"
           ? { id, kind: "check", slot: spec.slot, position }
-          : { id, kind: "end", outcome: "Complete", position };
+          : spec.kind === "session_action"
+            ? { id, kind: "session_action", sessionActionId: spec.sessionActionId, position }
+            : { id, kind: "end", outcome: "Complete", position };
     draft.update({ draft: { ...workflow.draft, nodes: [...workflow.draft.nodes, node] } });
     setSelection({ kind: "node", id });
     setAnnouncement(
@@ -506,13 +533,17 @@ export function WorkflowLibrary({
    * The selected nodes Duplicate can actually copy.
    *
    * The control is gated on THIS rather than on "something is selected", because the two
-   * differ for exactly the kinds it refuses - Session, of which a graph has one, and a
-   * session action, which this build offers no way to create. A button that lit up and then
-   * did nothing would be indistinguishable from a bug.
+   * differ for the one kind it refuses: Session, of which a graph has exactly one. A button
+   * that lit up and then did nothing would be indistinguishable from a bug.
+   *
+   * A session action is duplicable now that it is authorable. The copy is a second node
+   * naming the same catalog row, which is a legitimate pipeline - two actions in one repair
+   * round each capture their own evidence segment - and it arrives unrouted, exactly like a
+   * duplicated Persona.
    */
   const duplicableIds = selectedIds.filter((id) => {
     const kind = workflow?.draft.nodes.find((node) => node.id === id)?.kind;
-    return kind !== undefined && kind !== "session" && kind !== "session_action";
+    return kind !== undefined && kind !== "session";
   });
 
   const removeCanvasSelection = (nodeIds: string[], edgeIds: string[]): void => {
@@ -552,9 +583,7 @@ export function WorkflowLibrary({
 
   const duplicateNodes = (): void => {
     if (!workflow || readOnly) return;
-    // Session is excluded because a graph has exactly one. A session action is excluded
-    // because duplicating one is an ADD control by another name, and this build ships no way
-    // to create an action node - nothing can execute the result yet.
+    // Session is excluded because a graph has exactly one; `duplicableIds` is the rule.
     const originals = workflow.draft.nodes.filter((node) => duplicableIds.includes(node.id));
     if (originals.length === 0) return;
     const ids = new Map(originals.map((node) => [node.id, crypto.randomUUID()]));
@@ -734,6 +763,22 @@ export function WorkflowLibrary({
             <Tooltip label="Add a gate on the command this repository configures for that slot - or drag it onto the canvas">
               <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "check", slot: paletteSlot }))} onClick={() => addNode({ kind: "check", slot: paletteSlot })}>＋ Check</button>
             </Tooltip>
+            {/* The whole entry is absent when nothing is addable, rather than a disabled
+                button beside an empty select. There are two reasons an operator can be in
+                that state - no action authored, or none this daemon can run - and neither is
+                answered by a control that is present and refuses. */}
+            {addableActions.length > 0 && (
+              <>
+                <Tooltip label="Which instruction a new session action node sends to the bound session">
+                  <select aria-label="Session action for new node" disabled={transitioning} value={paletteAction} onChange={(event) => setPaletteAction(event.target.value)}>
+                    {addableActions.map((action) => <option key={action.id} value={action.id}>{action.name}</option>)}
+                  </select>
+                </Tooltip>
+                <Tooltip label={paletteAction ? "Add a node that sends the chosen instruction and waits for that turn to finish - or drag it onto the canvas" : "Choose a session action above first"}>
+                  <button disabled={transitioning || !paletteAction} draggable={!transitioning && Boolean(paletteAction)} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "session_action", sessionActionId: paletteAction }))} onClick={() => addNode({ kind: "session_action", sessionActionId: paletteAction })}>＋ Session action</button>
+                </Tooltip>
+              </>
+            )}
             <Tooltip label="Add a terminal outcome node - or drag it onto the canvas">
               <button disabled={transitioning} draggable={!transitioning} onDragStart={(event) => event.dataTransfer.setData(NEW_NODE_MIME, JSON.stringify({ kind: "end" }))} onClick={() => addNode({ kind: "end" })}>＋ End</button>
             </Tooltip>
@@ -1021,6 +1066,8 @@ export function WorkflowLibrary({
                 graph={workflow.draft}
                 personas={personas}
                 sessionActions={sessionActions}
+                availableCompletions={capabilities.available}
+                completionPolicy={workflow.completionPolicy}
                 readOnly={transitioning || readOnly}
                 onChange={(graph) => draft.update({ draft: graph })}
                 onConfirm={setConfirm}
@@ -1064,6 +1111,7 @@ export function WorkflowLibrary({
               workflow={workflow}
               personas={personas}
               sessionActions={sessionActions}
+              availableCompletions={capabilities.available}
               diagnostics={validation.diagnostics}
               selection={selection}
               readOnly={transitioning || readOnly}

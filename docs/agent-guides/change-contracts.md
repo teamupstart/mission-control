@@ -53,8 +53,58 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   versions, and `session_actions.completion_kind`, and a completion kind is read STRICTLY:
   an unknown value fails its row rather than degrading, so renaming one makes history
   unreadable instead of migrating it
+- Workflow run statuses, node-attempt states, and delivery kinds
+  (`WORKFLOW_RUN_STATUSES`, `WORKFLOW_NODE_ATTEMPT_STATES`, `WORKFLOW_DELIVERY_KINDS`) -
+  these are `workflow_runs.status`, `workflow_node_attempts.state` and
+  `workflow_deliveries.kind` on operators' machines
+- SessionAction wait reasons and block codes (`SESSION_ACTION_WAIT_REASONS`,
+  `SESSION_ACTION_BLOCK_CODES`) - these reach a waiting attempt's `output_json`
 
 Search for the owning constant and its contract tests before extending a tuple.
+
+## Workflow evidence identity
+
+A workflow submission is identified by `(round, segment)`, and the two answer to different
+budgets:
+
+- `round` counts REPAIR. Only a fail/repair transition increments it, it restarts the graph at
+  Session, and `maxRepairRounds` compares this and nothing else.
+- `segment` counts the immutable evidence snapshots inside one repair round. A completed
+  SessionAction creates `segment + 1`, captures fresh evidence, and activates only the routes
+  reachable from that action's `complete` port. It never spends repair budget.
+
+Every attempt, receipt, context snapshot and verdict is scoped to exactly one submission. Order
+submissions by `(round, segment)` and never by insertion time - a continuation is reserved
+before its evidence is captured, so `created_at` says when work started, not which evidence is
+current. Use `submissionForRepairRound`, `submissionForSegment` or `latestSubmissionForRun`
+rather than an ambiguous latest-by-run query.
+
+One receipt may cross submissions, and only one: the attempt a child segment names in
+`continuation_node_attempt_id`. `WorkflowStore.addReceipt` enforces that, because any other
+cross-submission source would let a node activated on one evidence snapshot advance a graph
+running on another.
+
+## Session actions
+
+A SessionAction is a durable side effect, not an evaluator:
+
+- The engine activates it as one `waiting` attempt carrying its published snapshot. It enqueues
+  no runnable work, occupies no model execution slot, and writes no receipt until its
+  continuation is captured.
+- The manager owns the one delivery, through the existing Workflows switch, repository
+  allowlist, note identity, pane lock and uncertain-write policy. Preview prepares and never
+  types.
+- Idle is not proof of completion. The target session is normally idle at the instant the
+  packet is typed, so a confirmed send persists an anchor, a pickup signal newer than that
+  anchor is required, and only then does `settledIdle` count. `needs-you` is an operator wait,
+  never a settled turn.
+- Completion is adapter-owned. `src/server/workflows/session-action-adapters.ts` is the closed
+  registry; `SESSION_ACTION_COMPLETION_CAPABILITIES` in `src/shared/workflow.ts` is the one
+  answer the validator, the daemon and the browser all read. An adapter reported unavailable
+  refuses at Publish and again before anything is typed.
+- Refusal, lost authorization, an exited session or an infrastructure failure BLOCK the run with
+  an action-specific code. They never become a Persona verdict, a repair packet, or a spent
+  repair round.
 
 ## Harness changes
 

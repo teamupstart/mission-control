@@ -46,6 +46,17 @@ export const WORKFLOW_LIMITS = {
    * already longer than any id the skills catalog can produce.
    */
   sessionActionSkillId: 200,
+  /**
+   * The delivered action packet, in UTF-8 bytes.
+   *
+   * Deliberately NOT `feedbackPayloadBytes`. A repair packet is a SUMMARY the daemon writes
+   * from verdicts, so eight kilobytes is a design budget; an action packet carries the
+   * operator's own authored instruction, and clipping that at the review budget would
+   * silently deliver a different instruction from the one the version was published with.
+   * The ceiling is instead the delivery row's own bound (`eventPayloadBytes`) less headroom
+   * for the envelope, so the widest prompt that can be stored is the widest that can be sent.
+   */
+  sessionActionPacketBytes: 60_000,
   workflowName: 120,
   graphNodes: 100,
   graphEdges: 300,
@@ -373,6 +384,149 @@ export function sessionActionChoiceLabel(
 }
 
 /**
+ * What a completion adapter PROVES, and whether this build can prove it.
+ *
+ * Shared rather than server-owned because three readers need the same answer and none of
+ * them may invent one: graph validation refuses to publish a version naming an adapter this
+ * build cannot run, the daemon's registry executes it, and the browser labels it. A second
+ * list in any of the three is a surface offering a guarantee the runtime does not keep.
+ *
+ * `label` says what the runtime observes, never the wire spelling: an operator choosing
+ * between adapters is choosing between proofs, not between identifiers.
+ */
+export interface SessionActionCompletionCapability {
+  kind: SessionActionCompletionKind;
+  available: boolean;
+  label: string;
+  /** One sentence a human can act on, or null when the adapter is available. */
+  unavailableReason: string | null;
+}
+
+export const SESSION_ACTION_COMPLETION_CAPABILITIES: Record<
+  SessionActionCompletionKind,
+  SessionActionCompletionCapability
+> = {
+  session_turn: {
+    kind: "session_turn",
+    available: true,
+    label: "Session turn finishes",
+    unavailableReason: null,
+  },
+  pull_request: {
+    kind: "pull_request",
+    available: false,
+    label: "Pull request is opened and verified",
+    // A stable refusal rather than a placeholder that returns success. Completing a
+    // `pull_request` action on the generic turn boundary alone would claim durable PR
+    // provenance nobody checked, which is the one guarantee this adapter exists to make.
+    unavailableReason:
+      "This build cannot verify a pull request yet, so a workflow using this action cannot be published.",
+  },
+};
+
+/**
+ * Why a session action is still waiting. APPEND-ONLY: these strings reach a durable attempt's
+ * `output_json` and a run's public projection, so a build that cannot read one fails the row
+ * rather than guessing.
+ *
+ * Every one of them is a WAIT and not a failure: none of them may become a Persona verdict,
+ * a repair packet, or a spent repair round.
+ */
+export const SESSION_ACTION_WAIT_REASONS = [
+  /** The attempt exists and its one delivery has not been prepared yet. */
+  "preparing",
+  /** Prepared, and nothing has been typed - Preview, or Live waiting on authorization. */
+  "awaiting_send",
+  /** Sent, and nothing newer than the send anchor proves the session read it. */
+  "awaiting_pickup",
+  /** Proven picked up, and the turn has not settled. */
+  "working",
+  /** Picked up and parked on a question a human has to answer. Never a settled turn. */
+  "needs_operator",
+  /** Settled, and the completion adapter wants durable evidence it does not have yet. */
+  "awaiting_proof",
+  /** The adapter completed and the continuation segment is being captured. */
+  "capturing",
+] as const;
+export type SessionActionWaitReason = (typeof SESSION_ACTION_WAIT_REASONS)[number];
+
+/**
+ * Why a session action can no longer proceed. APPEND-ONLY for `SESSION_ACTION_WAIT_REASONS`'
+ * reason.
+ *
+ * A block is a RUN state and never a graph outcome: it blocks the run with an action-specific
+ * diagnostic, spends no repair round, and never routes back to Session as a requested change.
+ */
+export const SESSION_ACTION_BLOCK_CODES = [
+  "adapter_unavailable",
+  "required_skill_unavailable",
+  "session_lost",
+  "conversation_changed",
+  "delivery_refused",
+  "delivery_uncertain",
+  "capture_failed",
+  "expectation_unmet",
+] as const;
+export type SessionActionBlockCode = (typeof SESSION_ACTION_BLOCK_CODES)[number];
+
+/**
+ * What an adapter may require of the continuation capture, as a CLOSED union.
+ *
+ * Deliberately not an opaque JSON escape hatch. This value is persisted on the waiting
+ * attempt and re-validated against a capture that may happen after a daemon restart, so an
+ * unvalidated shape would be a durable field nothing can safely read back. Phase 4's PR
+ * adapter adds its arm here rather than smuggling one through `unknown`.
+ */
+export type SessionActionContinuationExpectation =
+  | { kind: "none" }
+  | { kind: "head"; headSha: string };
+
+/**
+ * One adapter's answer once the generic observer has proven pickup and a settled turn.
+ *
+ * `complete` is the ONLY arm that advances the graph, and it always states its continuation
+ * expectation explicitly so a capture cannot silently skip a check the adapter meant to make.
+ */
+export type SessionActionCompletionDecision =
+  | { kind: "complete"; continuationExpectation: SessionActionContinuationExpectation }
+  | { kind: "waiting"; reason: SessionActionWaitReason }
+  | { kind: "blocked"; code: SessionActionBlockCode; detail: string };
+
+/**
+ * What the daemon proved about the packet it actually sent.
+ *
+ * Persisted so a restart can tell PRE-send session state from POST-send activity. Without it
+ * the target session's ordinary idleness - which is the normal state immediately before a
+ * packet is typed - would read as a finished turn on the very first observation.
+ */
+export interface SessionActionDeliveryAnchor {
+  deliveryId: WorkflowDeliveryId;
+  sessionId: string;
+  noteKey: string;
+  deliveredAt: number;
+  /** Transcript bytes at confirmed send, or null when this harness exposes no transcript. */
+  transcriptBytes: number | null;
+}
+
+/**
+ * A waiting action attempt's durable observation state, carried in its `output_json`.
+ *
+ * On the ATTEMPT rather than the run, because a run holds at most one gate state while a
+ * repair round may execute several actions in turn, and each one's anchor has to survive
+ * independently for audit and recovery.
+ */
+export interface SessionActionAttemptState {
+  wait: SessionActionWaitReason;
+  deliveryId: WorkflowDeliveryId | null;
+  anchor: SessionActionDeliveryAnchor | null;
+  pickedUpAt: number | null;
+  settledAt: number | null;
+  expectation: SessionActionContinuationExpectation | null;
+  continuationSubmissionId: WorkflowSubmissionId | null;
+  blocked: { code: SessionActionBlockCode; detail: string } | null;
+}
+
+/**
  * The immutable copy a published version carries. Runtime code reads ONLY this: resolving
  * live library text during a run would let an edit change what an in-flight run types.
  */
@@ -687,6 +841,16 @@ export const DEFAULT_WORKFLOW_BINDING_DEFAULTS: WorkflowBindingDefaults = {
 export const WORKFLOW_BINDING_STATES = ["active", "paused", "orphaned", "archived"] as const;
 export type WorkflowBindingState = (typeof WORKFLOW_BINDING_STATES)[number];
 
+/**
+ * APPEND-ONLY: persisted in `workflow_runs.status` on operators' machines.
+ *
+ * `waiting_for_action` is deliberately NOT `waiting_for_session`, even though both mean the
+ * daemon is watching the same pane. `waiting_for_session` is a parked REPAIR round: the
+ * resumption observer picks it up, the round budget applies, and a resubmission starts the
+ * graph again from Session. An action wait is none of those - it resumes only the completed
+ * action's downstream route, on fresh evidence, without spending a repair round - so sharing
+ * the status would hand every action turn to the resumption observer to resubmit.
+ */
 export const WORKFLOW_RUN_STATUSES = [
   "capturing",
   "running",
@@ -698,6 +862,7 @@ export const WORKFLOW_RUN_STATUSES = [
   "completed",
   "cancelled",
   "failed",
+  "waiting_for_action",
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 
@@ -752,7 +917,18 @@ export const WORKFLOW_SUBMISSION_STATUSES = [
 ] as const;
 export type WorkflowSubmissionStatus = (typeof WORKFLOW_SUBMISSION_STATUSES)[number];
 
-/** Infrastructure lifecycle only. Persona pass/fail is stored separately as a verdict. */
+/**
+ * Infrastructure lifecycle only. Persona pass/fail is stored separately as a verdict.
+ *
+ * APPEND-ONLY: persisted in `workflow_node_attempts.state`.
+ *
+ * `waiting` is a session action's own state and belongs to none of the others. It is not
+ * `queued` (nothing will claim it from the runnable list and it occupies no model execution
+ * slot), not `running` (no provider call is in flight and a restart must not retry it), and
+ * not `completed` (its outgoing receipt has not been written). Collapsing it into any of
+ * them would either spend a review slot on a session that is typing, or advance the graph
+ * before the action turn finished.
+ */
 export const WORKFLOW_NODE_ATTEMPT_STATES = [
   "queued",
   "running",
@@ -760,6 +936,7 @@ export const WORKFLOW_NODE_ATTEMPT_STATES = [
   "completed",
   "error",
   "cancelled",
+  "waiting",
 ] as const;
 export type WorkflowNodeAttemptState = (typeof WORKFLOW_NODE_ATTEMPT_STATES)[number];
 
@@ -780,6 +957,11 @@ export const WORKFLOW_DELIVERY_KINDS = [
   "inspector_feedback",
   "pr_handoff",
   "unchanged_evidence_nudge",
+  // An authored graph node's instruction, linked to the ONE attempt that owns it. Appended
+  // beside `pr_handoff` rather than replacing it: every version published from 5 through 7
+  // reaches its pull request through the legacy post-End path, and those rows have to stay
+  // readable and recoverable exactly as they are.
+  "session_action",
 ] as const;
 export type WorkflowDeliveryKind = (typeof WORKFLOW_DELIVERY_KINDS)[number];
 
@@ -1414,7 +1596,34 @@ export interface WorkflowRun {
 export interface WorkflowSubmission {
   id: WorkflowSubmissionId;
   runId: WorkflowRunId;
+  /**
+   * Which REPAIR round this evidence belongs to. Only a fail/repair transition increments
+   * it, and `maxRepairRounds` compares this and nothing else.
+   */
   round: number;
+  /**
+   * Which immutable evidence snapshot within that round. Zero for every initial and repair
+   * submission; a completed session action creates `segment + 1`.
+   *
+   * Continuation is NOT repair, and this is the field that keeps the two apart. Reusing the
+   * parent submission would make upstream and downstream attempts claim they reviewed the
+   * same evidence when the action turn changed it; creating a repair round instead would
+   * restart the graph at Session and burn budget an action never earned.
+   */
+  segment: number;
+  /** The segment this one continues from, or null at segment zero. */
+  parentSubmissionId: WorkflowSubmissionId | null;
+  /** The action node whose completion authorized this segment, or null at segment zero. */
+  continuationNodeId: string | null;
+  /**
+   * The action ATTEMPT whose completion authorized this segment, or null at segment zero.
+   *
+   * That attempt belongs to the PARENT submission. The cross-submission link is deliberate
+   * provenance - the action ran against the parent evidence and its completion authorized
+   * downstream work against this one - and it is the only cross-submission receipt source
+   * the store admits.
+   */
+  continuationNodeAttemptId: WorkflowNodeAttemptId | null;
   mode: WorkflowSubmissionMode;
   triggerSource: WorkflowTriggerSource;
   triggerKey: string;
@@ -1435,6 +1644,15 @@ export interface WorkflowNodeAttempt {
   attempt: number;
   state: WorkflowNodeAttemptState;
   persona: PersonaSnapshot | null;
+  /**
+   * The action this attempt is executing, copied from the run's immutable version.
+   *
+   * Its OWN field rather than a widening of `persona`, for the reason `SessionAction` is not
+   * a `Persona`: every reader of `persona` treats the record as something that produces a
+   * verdict. The copy exists so history, recovery diagnostics and retention stay readable
+   * without re-resolving a live library entity, exactly as the Persona snapshot does.
+   */
+  sessionAction: SessionActionSnapshot | null;
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
@@ -1463,6 +1681,17 @@ export interface WorkflowDelivery {
   runId: WorkflowRunId;
   submissionId: WorkflowSubmissionId;
   kind: WorkflowDeliveryKind;
+  /**
+   * The node attempt that owns this packet, for `session_action` only; null for every other
+   * kind, including every historical `pr_handoff` row.
+   *
+   * Required for an action because two action nodes in one submission would otherwise be
+   * indistinguishable to the delivery ledger - the packet identity is `(submission, kind,
+   * payload sha)`, and two actions could legitimately share a payload. It is also what makes
+   * recovery able to ask "does this waiting attempt already own a delivery?" without
+   * guessing from timestamps.
+   */
+  nodeAttemptId: WorkflowNodeAttemptId | null;
   sessionId: string;
   noteKey: string;
   payload: string;
@@ -1674,6 +1903,18 @@ export interface WorkflowRunSummary {
   status: WorkflowRunStatus;
   phase: string;
   round: number;
+  /**
+   * The latest evidence segment inside `round`. Optional so a summary written by an older
+   * daemon still parses in a newer browser; absent reads as zero, which is what every run
+   * predating continuations genuinely was.
+   */
+  segment?: number;
+  /**
+   * Why the run's session action is waiting, when one is. Detail lives on run detail; this
+   * is the one compact fact a fleet-wide summary carries so a surface never has to re-derive
+   * it from attempts or live session activity.
+   */
+  actionWait?: SessionActionWaitReason | null;
   maxRepairRounds: number;
   activePersonaNames: string[];
   failedPersonaCount: number;

@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Persona, SessionAction, WorkflowDraftGraph } from "../src/shared/workflow.ts";
+import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "../src/shared/workflow.ts";
 import {
-  SESSION_ACTION_RUNTIME_AVAILABLE,
   WORKFLOW_NODE_CAPABILITIES,
   WORKFLOW_NODE_SOURCE_PORTS,
   WORKFLOW_NODE_TARGET_PORTS,
@@ -209,17 +209,33 @@ test("an action participates in reachability and cycle rules like any other node
   assert.ok(codes(selfLoop).includes("cycle_without_session"));
 });
 
-test("this build refuses to publish an action graph, and says why on the node", () => {
-  // The gate is a DIAGNOSTIC rather than a store-only refusal so the Publish control is
-  // disabled where the operator can read the reason, instead of becoming a 409 on a button
-  // that looked enabled. Phase 2 deletes this by flipping one constant.
-  assert.equal(SESSION_ACTION_RUNTIME_AVAILABLE, false);
+test("the publish gate is per ADAPTER, and says why on the node", () => {
+  // The gate asks about the PROOF an action selected, not about the runtime as a whole. A
+  // `session_turn` graph publishes and runs in this build while a `pull_request` graph is
+  // still refused, and one boolean could not have expressed both. It stays a DIAGNOSTIC
+  // rather than a store-only refusal so the Publish control is disabled where the operator
+  // can read the reason, instead of becoming a 409 on a button that looked enabled.
+  assert.equal(SESSION_ACTION_COMPLETION_CAPABILITIES.pull_request.available, false);
+  assert.equal(SESSION_ACTION_COMPLETION_CAPABILITIES.session_turn.available, true);
   const result = validate(graph());
   assert.equal(result.valid, false);
   const gate = result.diagnostics.find((item) => item.code === "session_action_runtime_unavailable");
   assert.ok(gate);
   assert.equal(gate.nodeId, "act");
   assert.match(gate.message, /cannot be published/);
+
+  // The same graph pointing at a `session_turn` action carries no gate at all.
+  const turnOnly = validateWorkflowGraph({
+    graph: graph(),
+    personas,
+    sessionActions: actions.map((action) => ({ ...action, completion: { kind: "session_turn" } })),
+    completionPolicy: { kind: "none" },
+  });
+  assert.equal(turnOnly.valid, true);
+  assert.deepEqual(
+    turnOnly.diagnostics.filter((item) => item.code === "session_action_runtime_unavailable"),
+    [],
+  );
 
   // And a graph with no action node is entirely unaffected by the gate.
   const withoutAction: WorkflowDraftGraph = {

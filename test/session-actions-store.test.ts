@@ -262,7 +262,10 @@ function draftWithAction(sessionActionId: string): string {
   return "w1";
 }
 
-test("publishing an action graph is refused while this build has no runtime for it", () => {
+test("publishing an action graph is refused while its ADAPTER has no runtime here", () => {
+  // The default fixture selects `pull_request`, whose durable proof this build does not
+  // have. The refusal is about that adapter and not about action nodes in general - see the
+  // `session_turn` case below, which publishes.
   assert.equal(create().ok, true);
   const id = draftWithAction("a1");
   const published = store.publishWorkflow(id, 1, "v1", 900);
@@ -300,12 +303,28 @@ test("a draft summary counts the action's refusal as an error the library can se
   assert.ok(summary.errorCount > 0, "the Publish control must be refused where it is offered");
 });
 
+test("an action whose adapter IS available publishes, and freezes its snapshot", () => {
+  assert.equal(create({ completion: { kind: "session_turn" }, requiredSkillId: null }).ok, true);
+  const id = draftWithAction("a1");
+  const published = store.publishWorkflow(id, 1, "v1", 900);
+  assert.equal(published.ok, true);
+  if (!published.ok) return;
+  const node = published.version.graph.nodes.find((item) => item.id === "act");
+  assert.equal(node?.kind, "session_action");
+  if (node?.kind !== "session_action") return;
+  assert.equal(node.action.completion.kind, "session_turn");
+  assert.equal(node.action.sourceSessionActionId, "a1");
+});
+
 /**
- * A store that believes the action runtime exists, so the SNAPSHOT contract is provable now
- * rather than only once Phase 2 ships. `builtins` is injected for exactly this reason too:
- * a durable rule should not depend on which phase happens to be building.
+ * A store told that EVERY adapter is available, so the SNAPSHOT contract is provable for the
+ * `pull_request` arm too rather than only for whichever adapters happen to have shipped.
+ * `builtins` is injected for exactly this reason.
  */
-const runnable = new WorkflowStore(db, [], [], [], true);
+const runnable = new WorkflowStore(db, [], [], [], {
+  session_turn: { available: true, unavailableReason: null },
+  pull_request: { available: true, unavailableReason: null },
+});
 
 test("Publish replaces the live reference with a complete, exact snapshot", () => {
   const exact = "# Pull Request\r\n\r\nExact  \r\n";

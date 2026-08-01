@@ -62,6 +62,14 @@ export interface WorkflowEngineOptions {
   resolveExecution?: (persona: Extract<PublishedWorkflowNode, { kind: "persona" }>["persona"]) => PersonaExecutionView;
   /** Called after the wait boundary is durable and before any later graph work can advance. */
   onSubmissionWaiting?: (submissionId: string) => void;
+  /**
+   * Called once, after a session action's waiting attempt is durable.
+   *
+   * The engine deliberately does not deliver: an action packet is a terminal write with a
+   * consent gate, a repository allowlist, a pane lock and an uncertainty policy, all of which
+   * the manager owns. The engine's whole job is to make the wait durable and say so.
+   */
+  onSessionActionWaiting?: (attemptId: string) => void;
   /** Claims a successful End for an external final gate. Returns true when claimed. */
   onSubmissionSucceeded?: (submissionId: string) => boolean;
   /**
@@ -108,8 +116,23 @@ function requestedChangePacket(
   };
 }
 
-function edgesFrom(graph: PublishedWorkflowGraph, nodeId: string, port: "submitted" | "pass" | "fail"): WorkflowEdge[] {
+function edgesFrom(
+  graph: PublishedWorkflowGraph,
+  nodeId: string,
+  port: "submitted" | "pass" | "fail" | "complete",
+): WorkflowEdge[] {
   return graph.edges.filter((edge) => edge.source === nodeId && edge.sourcePort === port);
+}
+
+/**
+ * The `complete` routes one action node authorizes, exported so the manager can seed exactly
+ * these edges into the child segment rather than re-deriving the rule.
+ */
+export function sessionActionCompleteEdges(
+  graph: PublishedWorkflowGraph,
+  nodeId: string,
+): WorkflowEdge[] {
+  return edgesFrom(graph, nodeId, "complete");
 }
 
 /**
@@ -195,6 +218,8 @@ export class WorkflowEngine {
   private readonly runnerFor: (id: LlmRunner["id"]) => LlmRunner;
   private readonly resolveExecution: NonNullable<WorkflowEngineOptions["resolveExecution"]>;
   private readonly onSubmissionWaiting: NonNullable<WorkflowEngineOptions["onSubmissionWaiting"]>;
+  private readonly onSessionActionWaiting:
+    NonNullable<WorkflowEngineOptions["onSessionActionWaiting"]>;
   private readonly onSubmissionSucceeded: NonNullable<WorkflowEngineOptions["onSubmissionSucceeded"]>;
   private readonly checkLimit: CheckScheduler;
   private readonly checkDeps: CheckRunDeps;
@@ -217,6 +242,7 @@ export class WorkflowEngine {
     this.runnerFor = options.runnerFor ?? llmRunner;
     this.resolveExecution = options.resolveExecution ?? resolvePersonaExecution;
     this.onSubmissionWaiting = options.onSubmissionWaiting ?? (() => {});
+    this.onSessionActionWaiting = options.onSessionActionWaiting ?? (() => {});
     this.onSubmissionSucceeded = options.onSubmissionSucceeded ?? (() => false);
     this.checkLimit = options.checkSchedule
       ?? createCheckScheduler(options.checkConcurrency ?? DEFAULT_CHECK_CONCURRENCY);
@@ -272,35 +298,43 @@ export class WorkflowEngine {
       this.blockSubmission(submission, "invalid_version", "Published workflow has no Session node");
       return;
     }
+    // A CONTINUATION segment does not re-submit from Session. Its evidence was captured
+    // because one action finished, and the only work it authorizes is that action's own
+    // downstream route - already seeded as a receipt by the continuation transaction.
+    // Seeding Session here would activate the whole first wave again on the child evidence,
+    // which is exactly the "restart the graph" behaviour a repair round means and a
+    // continuation must not.
+    const seedSession = submission.segment === 0;
     let changed = true;
     while (changed) {
       changed = false;
       const latestSubmission = this.store.getSubmission(submission.id);
       const run = this.store.getRun(submission.runId);
       if (!latestSubmission || !run || latestSubmission.status !== "running" || run.status !== "running") return;
-      const receipts = this.store.listReceipts(submission.id);
 
-      let sessionAttempt = this.store.latestAttemptForNode(submission.id, sessionNode.id);
-      if (!sessionAttempt) {
-        sessionAttempt = this.store.insertAttempt({
-          id: randomUUID(),
-          submissionId: submission.id,
-          nodeId: sessionNode.id,
-          attempt: 1,
-          state: "completed",
-          persona: null,
-          inputFingerprint: submission.evidenceFingerprint,
-          now: this.now(),
-        });
-        this.store.finishAttempt(sessionAttempt.id, {
-          state: "completed",
-          output: { outcome: "submitted" },
-        }, this.now());
-      }
-      for (const edge of edgesFrom(graph, sessionNode.id, "submitted")) {
-        if (this.store.addReceipt(submission.id, edge.id, sessionAttempt.id, {
-          outcome: "submitted",
-        }, this.now())) changed = true;
+      if (seedSession) {
+        let sessionAttempt = this.store.latestAttemptForNode(submission.id, sessionNode.id);
+        if (!sessionAttempt) {
+          sessionAttempt = this.store.insertAttempt({
+            id: randomUUID(),
+            submissionId: submission.id,
+            nodeId: sessionNode.id,
+            attempt: 1,
+            state: "completed",
+            persona: null,
+            inputFingerprint: submission.evidenceFingerprint,
+            now: this.now(),
+          });
+          this.store.finishAttempt(sessionAttempt.id, {
+            state: "completed",
+            output: { outcome: "submitted" },
+          }, this.now());
+        }
+        for (const edge of edgesFrom(graph, sessionNode.id, "submitted")) {
+          if (this.store.addReceipt(submission.id, edge.id, sessionAttempt.id, {
+            outcome: "submitted",
+          }, this.now())) changed = true;
+        }
       }
 
       // A completed verdict and its matching receipts normally commit together.
@@ -325,11 +359,27 @@ export class WorkflowEngine {
       }
 
       const currentReceipts = this.store.listReceipts(submission.id);
+      // At most ONE action attempt waits per submission at a time. The bound session has one
+      // pane and one turn, so two concurrently delivered instructions would interleave into
+      // a conversation neither of them expects. Serialized by the version's stable node
+      // order below, so which one goes first is a property of the published graph rather
+      // than of whichever edge this loop reached first.
+      const activatedActions: string[] = [];
       for (const edge of graph.edges) {
         const receipt = currentReceipts.find((item) => item.edgeId === edge.id);
         if (!receipt) continue;
         const target = graph.nodes.find((node) => node.id === edge.target);
         if (!target) continue;
+        // A session action activates as ONE waiting attempt and nothing else: no runnable
+        // work is enqueued, no verdict is written, and no outgoing receipt exists until the
+        // action turn finishes and its continuation segment is captured. The manager owns
+        // the delivery that follows.
+        if (target.kind === "session_action") {
+          const latest = this.store.latestAttemptForNode(submission.id, target.id);
+          if (latest && latest.state !== "cancelled") continue;
+          activatedActions.push(target.id);
+          continue;
+        }
         // One arm for both runnable kinds: they differ only in whether the attempt row
         // carries a Persona snapshot. A Check has none, because its command is not part of
         // the version and there is nothing about it to freeze.
@@ -373,6 +423,69 @@ export class WorkflowEngine {
           this.onSubmissionWaiting(submission.id);
           this.onRunChanged(submission.runId);
           return;
+        }
+      }
+
+      // Re-read AFTER the receipt loop, which may have queued this wave's reviewers a few
+      // lines ago. Two conditions have to hold before an action may take the pane:
+      //
+      //  - no action is already waiting, because the bound session has one turn and two
+      //    delivered instructions would interleave into a conversation neither expects;
+      //  - no evaluator is still pending, because once the action's packet is live the run
+      //    parks in `waiting_for_action` and a queued reviewer would sit there unclaimed
+      //    until the continuation - reviewing evidence that has since changed, if it ever
+      //    ran at all.
+      //
+      // Deferring costs nothing: `advanceStructure` runs again after every attempt finishes,
+      // so the action activates the moment the wave drains.
+      const pending = this.store.listAttempts(submission.id);
+      const actionBusy = pending.some((attempt) =>
+        ["waiting", "queued", "running", "retry_wait"].includes(attempt.state));
+      if (!actionBusy && activatedActions.length > 0) {
+        // Stable node order decides, and the graph's own array IS that order: node ids are
+        // reused across every publish of a workflow, so two authors of the same pipeline get
+        // the same sequence. Sorting by id or by edge order would make the sequence depend
+        // on a spelling or on which receipt landed first.
+        const ordered = graph.nodes
+          .filter((node) => activatedActions.includes(node.id))
+          .filter((node) => node.kind === "session_action");
+        const first = ordered[0];
+        if (first && first.kind === "session_action") {
+          const previous = this.store.latestAttemptForNode(submission.id, first.id);
+          const attempt = this.store.insertAttempt({
+            id: randomUUID(),
+            submissionId: submission.id,
+            nodeId: first.id,
+            attempt: (previous?.attempt ?? 0) + 1,
+            state: "waiting",
+            persona: null,
+            sessionAction: first.action,
+            sessionActionState: {
+              wait: "preparing",
+              deliveryId: null,
+              anchor: null,
+              pickedUpAt: null,
+              settledAt: null,
+              expectation: null,
+              continuationSubmissionId: null,
+              blocked: null,
+            },
+            inputFingerprint: `${submission.evidenceFingerprint}:${first.id}`,
+            now: this.now(),
+          });
+          this.store.appendEvent(submission.runId, "session_action_waiting", {
+            submissionId: submission.id,
+            nodeId: first.id,
+            attemptId: attempt.id,
+            action: first.action.name,
+            completion: first.action.completion.kind,
+            // Named rather than silently dropped: a branching graph that made two actions
+            // ready at once is a shape this phase does not execute in parallel, and a reader
+            // has to be able to see that one of them is being held rather than lost.
+            deferred: ordered.slice(1).map((node) => node.id),
+          }, this.now());
+          changed = true;
+          this.onSessionActionWaiting(attempt.id);
         }
       }
 

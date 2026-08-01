@@ -10,6 +10,7 @@ import type {
   WorkflowGateWaitReason,
   WorkflowLlmCall,
   WorkflowNodeAttempt,
+  SessionActionWaitReason,
   WorkflowNodeAttemptState,
   WorkflowRunDetail,
   WorkflowRunStatus,
@@ -245,6 +246,10 @@ const REVIEWER_STATUSES: Record<
   queued: { tone: "waiting", label: "Queued" },
   running: { tone: "running", label: "Reviewing" },
   retry_wait: { tone: "waiting", label: "Retrying" },
+  // A reviewer never waits on a session, so this row exists only because the state tuple is
+  // shared. It reads as a wait rather than an outcome so a mislabelled row can never appear
+  // to be an earned pass.
+  waiting: { tone: "waiting", label: "Waiting" },
   // Completed with no verdict is a reply the verdict parser rejected; the attempt row below
   // the strip carries the reason, so the chip only has to stop claiming an outcome.
   completed: { tone: "waiting", label: "No verdict" },
@@ -261,6 +266,7 @@ const CHECK_STATUSES: Record<
   queued: { tone: "waiting", label: "Queued" },
   running: { tone: "running", label: "Running" },
   retry_wait: { tone: "waiting", label: "Retrying" },
+  waiting: { tone: "waiting", label: "Waiting" },
   completed: { tone: "waiting", label: "No result" },
   error: { tone: "failed", label: "Check failed to run" },
   cancelled: { tone: "waiting", label: "Cancelled" },
@@ -431,6 +437,11 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
   completed: "Completed",
   cancelled: "Cancelled",
   failed: "Failed",
+  // Deliberately distinct from "Waiting for the session": that one is a parked repair round
+  // a human can resubmit, while this is one authored instruction the daemon is watching to
+  // finish. A reader who cannot tell them apart cannot tell whether the run owes them
+  // anything.
+  waiting_for_action: "Waiting for a session action",
 };
 
 export function runStatusLabel(status: WorkflowRunStatus): string {
@@ -507,6 +518,7 @@ const DELIVERY_KIND_LABELS: Record<WorkflowDeliveryKind, string> = {
   inspector_feedback: "Inspector findings",
   pr_handoff: "PR handoff",
   unchanged_evidence_nudge: "Nothing changed",
+  session_action: "Session action",
 };
 
 export function deliveryKindLabel(kind: WorkflowDeliveryKind): string {
@@ -520,7 +532,30 @@ const ATTEMPT_STATE_LABELS: Record<WorkflowNodeAttemptState, string> = {
   completed: "completed",
   error: "errored",
   cancelled: "cancelled",
+  waiting: "waiting for the session action",
 };
+
+/**
+ * What a waiting session action is waiting FOR, as the sentence a reader gets.
+ *
+ * A `Record` over the durable enum for `DELIVERY_KIND_LABELS`' reason: a wait reason added
+ * to the runtime fails typecheck here until somebody says what it means to a human. The
+ * wording never claims progress the runtime has not proven - "sent" is not "read", and
+ * "read" is not "finished".
+ */
+const ACTION_WAIT_SENTENCES: Record<SessionActionWaitReason, string> = {
+  preparing: "Preparing the instruction for the bound session.",
+  awaiting_send: "The instruction is ready and has not been sent to the session yet.",
+  awaiting_pickup: "Sent. Waiting for the session to pick the instruction up.",
+  working: "The session is working on the instruction.",
+  needs_operator: "The session is waiting on an answer from you before it can continue.",
+  awaiting_proof: "The turn finished. Waiting for the proof this action requires.",
+  capturing: "Capturing fresh evidence before the downstream stages run.",
+};
+
+export function actionWaitSentence(reason: SessionActionWaitReason): string {
+  return ACTION_WAIT_SENTENCES[reason];
+}
 
 export function attemptStateLabel(state: WorkflowNodeAttemptState): string {
   return ATTEMPT_STATE_LABELS[state];

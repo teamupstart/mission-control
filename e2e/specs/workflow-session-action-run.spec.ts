@@ -1,0 +1,303 @@
+import type { Page } from "@playwright/test";
+
+import { expect, test } from "../fixtures/test.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+
+/**
+ * A published session action, executed end to end against a real daemon and a real session.
+ *
+ * This is the proof no other layer can give. The `node:test` runtime suite drives the real
+ * Registry, store, engine and manager - but it stubs the pane, so the packet never leaves the
+ * process. Here the dispatch cuts a real git worktree, the session is a real SDK-runtime
+ * session with a real child process behind it, the action's instruction is really typed into
+ * it through the real delivery path, and the continuation segment is captured from a real
+ * `git` read of that worktree.
+ *
+ * Two things are being proved, and they are the two the phase turns on:
+ *
+ *  - LIVE types the exact authored instruction once, the session's turn is observed, and the
+ *    run resumes downstream on a fresh child segment inside the same repair round;
+ *  - PREVIEW prepares the identical packet and types NOTHING, however settled the session
+ *    afterwards becomes.
+ *
+ * The action is a `session_turn` one, because that is the adapter this build can prove. A
+ * `pull_request` graph is still refused at Publish, which `workflow-session-action.spec.ts`
+ * pins beside its hidden-authoring assertions.
+ */
+
+const NODE = { session: "session-node", action: "action-node", end: "end-node" };
+const PROMPT = "# Tidy the workspace\n\nRemove the stray scratch file and say so.\n";
+
+async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {
+  const response = await fetch(`${daemon.baseURL}${path}`, {
+    method: method ?? (body === undefined ? "GET" : "POST"),
+    headers: { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  if (!response.ok) {
+    throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
+  }
+  return (await response.json()) as T;
+}
+
+/** Dispatch one agent from the modal - the sanctioned way to get a live, bindable session. */
+async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
+  await page.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("hold a session for the action spec");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+
+  // IDLE, not merely alive: evidence capture aborts with `conversation_changed` if the
+  // transcript moves under it, and the dispatch's seeded first turn is still being answered
+  // right after the card appears.
+  let sessionId = "";
+  await expect
+    .poll(async () => {
+      const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
+      const live = sessions.find((session) => session.state !== "exited");
+      sessionId = live?.id ?? "";
+      return live?.state ?? "";
+    }, { message: "the dispatched session should settle to idle before evidence capture" })
+    .toBe("idle");
+  return sessionId;
+}
+
+interface RunHandle {
+  runId: string;
+  sessionId: string;
+  actionName: string;
+}
+
+/**
+ * Publish `Session -> action -> End`, bind the live session, and submit.
+ *
+ * Every step goes through the routes the dashboard uses. Nothing is seeded into SQLite: a
+ * fixture that writes a row proves the row, not the path an operator takes to it.
+ */
+async function seedActionRun(
+  page: Page,
+  daemon: DaemonHandle,
+  deliveryMode: "live" | "preview",
+): Promise<RunHandle> {
+  const sessionId = await dispatch(page, daemon);
+  const actionName = `Tidy ${deliveryMode}`;
+  const action = await api<{ id: string }>(daemon, "/api/session-actions", {
+    name: actionName,
+    description: "Tidy the workspace",
+    promptMarkdown: PROMPT,
+    // The only adapter this build can prove. `pull_request` remains unpublishable.
+    completion: { kind: "session_turn" },
+  });
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: `E2E action run ${deliveryMode}`,
+    draft: {
+      nodes: [
+        { id: NODE.session, kind: "session", position: { x: 0, y: 0 } },
+        { id: NODE.action, kind: "session_action", sessionActionId: action.id, position: { x: 240, y: 0 } },
+        { id: NODE.end, kind: "end", outcome: "Approved", position: { x: 480, y: 0 } },
+      ],
+      edges: [
+        { id: "e-submit", source: NODE.session, sourcePort: "submitted", target: NODE.action, targetPort: "activate" },
+        { id: "e-complete", source: NODE.action, sourcePort: "complete", target: NODE.end, targetPort: "terminal" },
+      ],
+    },
+  });
+  // The gate this phase opens: a `session_turn` graph publishes where a `pull_request` one
+  // is still refused.
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: published.version.id,
+    sessionId,
+    deliveryMode,
+  });
+  const submitted = await api<{ run: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${binding.id}/submit`,
+    { requestId: `e2e-action-${deliveryMode}` },
+  );
+  return { runId: submitted.run.id, sessionId, actionName };
+}
+
+interface RunDetail {
+  run: { status: string; currentPhase: string };
+  summary: { round: number; segment?: number; actionWait?: string | null };
+  submissions: Array<{
+    id: string;
+    round: number;
+    segment: number;
+    parentSubmissionId: string | null;
+    continuationNodeId: string | null;
+    continuationNodeAttemptId: string | null;
+  }>;
+  attempts: Array<{ id: string; nodeId: string; state: string; submissionId: string }>;
+  receipts: Array<{ submissionId: string; edgeId: string; sourceAttemptId: string }>;
+  deliveries: Array<{ id: string; kind: string; state: string; payload: string; nodeAttemptId: string | null }>;
+}
+
+const detail = (daemon: DaemonHandle, runId: string): Promise<RunDetail> =>
+  api<RunDetail>(daemon, `/api/workflow-runs/${runId}`);
+
+/** Attach the daemon's own structured log on a miss: server-side failures are invisible to a trace. */
+async function withDaemonLog<T>(daemon: DaemonHandle, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (caught) {
+    // eslint-disable-next-line no-console
+    console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-80).join("\n")}`);
+    throw caught;
+  }
+}
+
+test("Live types the authored instruction once and resumes on a fresh child segment", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Live delivery is two gates, and both are real: the machine-wide switch, and this exact
+  // repository being named. Without the allowlist the packet is prepared and refused with
+  // `live_not_authorized`, which is the correct behaviour and not the one under test.
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true,
+    repoAllowlist: [daemon.repo],
+  }, "PUT");
+
+  const { runId, sessionId, actionName } = await seedActionRun(dashboard, daemon, "live");
+
+  await withDaemonLog(daemon, async () => {
+    await expect
+      .poll(async () => (await detail(daemon, runId)).deliveries
+        .filter((item) => item.kind === "session_action" && item.state === "delivered").length,
+      { message: "the action packet should be typed into the bound session", timeout: 30_000 })
+      .toBe(1);
+  });
+
+  const sent = await detail(daemon, runId);
+  const packet = sent.deliveries.find((item) => item.kind === "session_action")!;
+  const waiting = sent.attempts.find((item) => item.nodeId === NODE.action)!;
+  // Durably linked to the attempt that owns it, and carrying the exact authored Markdown
+  // after a small envelope - not a summary the daemon composed.
+  expect(packet.nodeAttemptId).toBe(waiting.id);
+  expect(packet.payload).toContain(`Mission Control session action: ${actionName}`);
+  expect(packet.payload.endsWith(PROMPT)).toBe(true);
+  // Its own run status, so nothing mistakes an action turn for a parked repair round.
+  expect(sent.run.status).toBe("waiting_for_action");
+  expect(sent.run.currentPhase).toBe("session_action");
+
+  // The real session really picks it up and finishes the turn, which is what the observer
+  // waits for. Nothing here nudges the daemon: the pickup comes off the session's own
+  // lifecycle, and the settle off `settledIdle`.
+  // Polled on the action attempt CLOSING, not on the child row appearing. The continuation
+  // reserves its segment before it captures - deliberately, so "exactly one child" is a
+  // database fact rather than a promise about timing - so a poll on `submissions.length`
+  // would win the moment the row is reserved and read the attempt mid-capture.
+  await withDaemonLog(daemon, async () => {
+    await expect
+      .poll(async () => (await detail(daemon, runId)).attempts
+        .find((item) => item.nodeId === NODE.action)?.state,
+      { message: "the finished action turn should complete its attempt", timeout: 60_000 })
+      .toBe("completed");
+  });
+
+  const continued = await detail(daemon, runId);
+  const [parent, child] = continued.submissions;
+  // A SEGMENT inside the same repair round, never a new round: an action spends no budget.
+  expect(child!.round).toBe(parent!.round);
+  expect(child!.segment).toBe(1);
+  expect(parent!.segment).toBe(0);
+  expect(child!.parentSubmissionId).toBe(parent!.id);
+  expect(child!.continuationNodeId).toBe(NODE.action);
+  expect(child!.continuationNodeAttemptId).toBe(waiting.id);
+  expect(continued.summary.round).toBe(1);
+  expect(continued.summary.segment).toBe(1);
+
+  // ONE completed action attempt, still scoped to the parent evidence it ran against.
+  const actionAttempts = continued.attempts.filter((item) => item.nodeId === NODE.action);
+  expect(actionAttempts).toHaveLength(1);
+  expect(actionAttempts[0]!.state).toBe("completed");
+  expect(actionAttempts[0]!.submissionId).toBe(parent!.id);
+
+  // Only the action's own `complete` route is seeded into the child, sourced from the parent's
+  // attempt - the one deliberate cross-submission link - and Session is NOT re-submitted.
+  const childReceipts = continued.receipts.filter((item) => item.submissionId === child!.id);
+  expect(childReceipts.map((item) => item.edgeId)).toEqual(["e-complete"]);
+  expect(childReceipts[0]!.sourceAttemptId).toBe(waiting.id);
+
+  // Exactly one packet ever reached the pane, and the run finished past the action.
+  expect(continued.deliveries.filter((item) => item.kind === "session_action")).toHaveLength(1);
+  await expect
+    .poll(async () => (await detail(daemon, runId)).run.status, { timeout: 30_000 })
+    .toBe("completed");
+
+  // And the instruction is really in that session's conversation, where the operator reads
+  // it. The delivery row above proves the daemon wrote it; this proves the SESSION received
+  // it, which is the difference between a packet sent and a packet delivered.
+  await dashboard.goto(`${daemon.baseURL}/#/`);
+  const card = dashboard.locator("article.card").first();
+  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await expect(card.getByText("Remove the stray scratch file and say so.").first())
+    .toBeVisible({ timeout: 20_000 });
+  expect(sessionId).not.toBe("");
+});
+
+test("Preview prepares the identical packet and types nothing at all", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Live is fully authorized, so nothing here is refused for want of consent. The ONLY
+  // reason no text is typed is that the binding is Preview - which is the whole promise.
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true,
+    repoAllowlist: [daemon.repo],
+  }, "PUT");
+
+  const { runId, actionName } = await seedActionRun(dashboard, daemon, "preview");
+
+  await withDaemonLog(daemon, async () => {
+    await expect
+      .poll(async () => (await detail(daemon, runId)).deliveries
+        .filter((item) => item.kind === "session_action").length,
+      { message: "Preview must still prepare the packet so an operator can read it", timeout: 30_000 })
+      .toBe(1);
+  });
+
+  const prepared = await detail(daemon, runId);
+  const packet = prepared.deliveries.find((item) => item.kind === "session_action")!;
+  // Prepared, readable, byte-identical to what Live would send - and never sent.
+  expect(packet.state).toBe("prepared");
+  expect(packet.payload).toContain(`Mission Control session action: ${actionName}`);
+  expect(packet.payload.endsWith(PROMPT)).toBe(true);
+  expect(prepared.summary.actionWait).toBe("awaiting_send");
+
+  // The session settles, repeatedly, with nothing to do. A Preview action must not complete
+  // from activity nobody attributed to a packet it never received.
+  await expect
+    .poll(async () => {
+      const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
+      return sessions.find((session) => session.state !== "exited")?.state ?? "";
+    }, { message: "the session should settle back to idle", timeout: 30_000 })
+    .toBe("idle");
+  await new Promise((resolve) => setTimeout(resolve, 20_000));
+
+  const still = await detail(daemon, runId);
+  expect(still.deliveries.find((item) => item.kind === "session_action")!.state).toBe("prepared");
+  expect(still.submissions).toHaveLength(1);
+  expect(still.attempts.find((item) => item.nodeId === NODE.action)!.state).toBe("waiting");
+  expect(still.run.status).toBe("waiting_for_action");
+
+  // And the conversation carries no trace of the instruction. This is the assertion the
+  // Preview promise actually reduces to: not "the delivery row says prepared", but "nothing
+  // reached the human's screen".
+  await dashboard.goto(`${daemon.baseURL}/#/`);
+  const card = dashboard.locator("article.card").first();
+  await card.getByRole("button", { name: "Expand conversation" }).click();
+  await expect(card.getByPlaceholder(/^Reply to this session/)).toBeEnabled();
+  await expect(card.getByText("Remove the stray scratch file and say so.")).toHaveCount(0);
+});

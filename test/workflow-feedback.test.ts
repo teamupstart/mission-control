@@ -93,6 +93,10 @@ const submission = {
   evidenceFingerprint: "1234567890abcdefmore",
   context: context as unknown as WorkflowJson,
   evidence: context.evidence as unknown as WorkflowJson,
+  segment: 0,
+  parentSubmissionId: null,
+  continuationNodeId: null,
+  continuationNodeAttemptId: null,
   prHeadSha: null,
   status: "waiting_for_session",
   createdAt: 1,
@@ -108,6 +112,7 @@ function attempt(nodeId: string, name: string, summary: string): WorkflowNodeAtt
     attempt: 1,
     state: "completed",
     persona: (version.graph.nodes.find((node) => node.id === nodeId) as ReturnType<typeof persona>).persona,
+    sessionAction: null,
     runner: "claude",
     model: "review",
     verdict: {

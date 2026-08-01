@@ -45,6 +45,11 @@ test("workflow limits are finite front-door contracts", () => {
     sessionActionDescription: 500,
     sessionActionPromptBytes: 100_000,
     sessionActionSkillId: 200,
+    // Deliberately NOT `feedbackPayloadBytes`. That budget bounds prose the daemon composes
+    // from verdicts; this bounds the operator's own authored instruction, so it is the
+    // delivery row's own ceiling less envelope headroom - the widest prompt that can be
+    // stored is the widest that can be sent.
+    sessionActionPacketBytes: 60_000,
     workflowName: 120,
     graphNodes: 100,
     graphEdges: 300,

@@ -96,10 +96,13 @@ test("the Pipeline draws a session action stage, and says why it cannot be publi
   await expect(pipeline.locator(".wf-pipeline-gate")).toHaveText(["submitted", "complete"]);
   await expect(pipeline).toContainText("later stages review new evidence");
 
-  // Publish is OFF, and the reason is in the same panel rather than behind a 409.
+  // Publish is OFF, and the reason is in the same panel rather than behind a 409. The
+  // sentence names the ADAPTER's missing proof rather than actions in general: this build
+  // runs a `session_turn` action, and it is the pull request's durable provenance it cannot
+  // yet verify.
   await expect(dashboard.getByRole("button", { name: "Publish" })).toBeDisabled();
   await expect(dashboard.locator(".workflow-validation")).toContainText(
-    "This build cannot run a session action yet, so a workflow containing one cannot be published.",
+    "This build cannot verify a pull request yet, so a workflow using this action cannot be published.",
   );
 
   // No id may reach the screen. The whole builder migration exists to stop that.

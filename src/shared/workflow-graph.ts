@@ -1,6 +1,8 @@
 import type {
   Persona,
   SessionAction,
+  SessionActionCompletionCapability,
+  SessionActionCompletionKind,
   WorkflowCompletionPolicy,
   WorkflowDiagnostic,
   WorkflowDiagnosticCode,
@@ -11,7 +13,11 @@ import type {
   WorkflowTargetPort,
   WorkflowValidationResult,
 } from "./workflow.ts";
-import { WORKFLOW_LIMITS, WORKFLOW_MISSING_PR_ACTIONS } from "./workflow.ts";
+import {
+  SESSION_ACTION_COMPLETION_CAPABILITIES,
+  WORKFLOW_LIMITS,
+  WORKFLOW_MISSING_PR_ACTIONS,
+} from "./workflow.ts";
 
 export interface WorkflowGraphValidationInput {
   graph: WorkflowDraftGraph;
@@ -20,33 +26,26 @@ export interface WorkflowGraphValidationInput {
    * Optional for `personas`' reason: a caller that only wants structural answers should not
    * have to hold a catalog, and reference diagnostics must not fire merely because nobody
    * supplied one. Pass it wherever a missing or archived source should block a publish.
+   *
+   * `completion` rides along because the publish gate is now per-adapter: a draft node names
+   * only a live action id, so the catalog is the only place the proof it selected is written
+   * down. Without it the validator would have to assume, and assuming available is how a
+   * version naming an unrunnable adapter gets published.
    */
-  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt">[];
+  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt" | "completion">[];
   completionPolicy?: WorkflowCompletionPolicy;
   /**
-   * Whether the CALLER's build can execute an action node. Defaults to this build's answer.
+   * Which completion adapters the CALLER's build can execute. Defaults to this build's answer.
    *
    * A parameter rather than a bare module read for the reason `WorkflowStore.builtins` is
    * injectable: the snapshot and transaction rules have to be provable without depending on
    * which phase happens to be shipping. Production callers omit it.
    */
-  sessionActionRuntimeAvailable?: boolean;
+  sessionActionCompletionCapabilities?: Record<
+    SessionActionCompletionKind,
+    Pick<SessionActionCompletionCapability, "available" | "unavailableReason">
+  >;
 }
-
-/**
- * Whether this build can EXECUTE a published `session_action` node.
- *
- * Phase 1 ships the durable representation - catalog, snapshot, node, ports, stage shape -
- * and deliberately not the runtime that delivers an action turn, waits for it, and captures
- * the continuation evidence. Publishing a graph containing one would mint an immutable
- * version that no daemon in this build can run: every run binding it would park forever with
- * nothing on screen to say why.
- *
- * A single named constant rather than a condition spread across the validator, the store and
- * the browser, so Phase 2 turns the capability on by flipping ONE value and deleting the
- * diagnostic it feeds. Drafts still save, so API round trips and fixtures keep working.
- */
-export const SESSION_ACTION_RUNTIME_AVAILABLE = false;
 
 /**
  * What one node kind can do, in one place.
@@ -358,27 +357,35 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
   // Conditional on the catalog exactly as Persona references are: a caller that supplied no
   // catalog is asking a structural question, and inventing "no longer exists" for every
   // action node would make that question unanswerable.
+  //
+  // The runtime gate rides the SAME condition, and for a stronger version of that reason: a
+  // draft node names only a live action id, so without the catalog there is no way to know
+  // which proof it selected. Publish always supplies one (`WorkflowStore.validateDraft`), so
+  // an unrunnable adapter is still refused where the operator can read why rather than as a
+  // 409 against a button that looked enabled.
   if (input.sessionActions) {
+    const capabilities =
+      input.sessionActionCompletionCapabilities ?? SESSION_ACTION_COMPLETION_CAPABILITIES;
     const actions = new Map(input.sessionActions.map((action) => [action.id, action]));
     for (const node of graph.nodes) {
       if (node.kind !== "session_action") continue;
       const action = actions.get(node.sessionActionId);
-      if (!action) diagnostics.push(diagnostic("missing_session_action", "Session action no longer exists.", { nodeId: node.id }));
-      else if (action.archivedAt !== null) diagnostics.push(diagnostic("archived_session_action", "Archived session actions cannot be published in a new version.", { nodeId: node.id }));
-    }
-  }
-
-  // The temporary Phase 1 gate. Unconditional on purpose: it has to reach the draft's own
-  // error count so the Publish control is refused where the operator can see why, rather
-  // than only at the store where it becomes a 409 against a button that looked enabled.
-  if (!(input.sessionActionRuntimeAvailable ?? SESSION_ACTION_RUNTIME_AVAILABLE)) {
-    for (const node of graph.nodes) {
-      if (node.kind !== "session_action") continue;
-      diagnostics.push(diagnostic(
-        "session_action_runtime_unavailable",
-        "This build cannot run a session action yet, so a workflow containing one cannot be published.",
-        { nodeId: node.id },
-      ));
+      if (!action) {
+        diagnostics.push(diagnostic("missing_session_action", "Session action no longer exists.", { nodeId: node.id }));
+        continue;
+      }
+      if (action.archivedAt !== null) {
+        diagnostics.push(diagnostic("archived_session_action", "Archived session actions cannot be published in a new version.", { nodeId: node.id }));
+      }
+      const capability = capabilities[action.completion.kind];
+      if (capability && !capability.available) {
+        diagnostics.push(diagnostic(
+          "session_action_runtime_unavailable",
+          capability.unavailableReason
+            ?? "This build cannot run this session action yet, so a workflow containing one cannot be published.",
+          { nodeId: node.id },
+        ));
+      }
     }
   }
 

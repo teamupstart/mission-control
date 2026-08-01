@@ -29,10 +29,16 @@ The seams say `PASS` before it and `COMPLETE` after it. That is the whole distin
 port exists for, drawn: a pass carries the same evidence onward, a complete means everything
 downstream reads evidence captured once the action had run.
 
-On the right, **Publish** is disabled and the Validation panel says why in a sentence:
-*This build cannot run a session action yet, so a workflow containing one cannot be
-published.* The refusal is a validation diagnostic rather than a store-only 409 precisely so
-it can appear here, beside the control it disables.
+On the right, **Publish** is disabled and the Validation panel says why in a sentence. The
+refusal is a validation diagnostic rather than a store-only 409 precisely so it can appear
+here, beside the control it disables.
+
+Phase 2 narrowed that sentence, and this capture predates it. The gate became a question
+about the ADAPTER an action selected rather than about the runtime as a whole: this build
+executes a `session_turn` action, and it is the pull request's durable provenance it cannot
+yet verify. The image shows the built-in Pull Request action, so it is still refused - now
+reading *This build cannot verify a pull request yet, so a workflow using this action cannot
+be published.* The live sentence is asserted, not merely described, by the spec named below.
 
 ## graph-action-node.png
 

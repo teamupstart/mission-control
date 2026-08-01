@@ -48,10 +48,11 @@ Join read "the session did the thing" as a favourable verdict. Its violet edge a
 its own, distinct from the Session node's blue - the two nodes that write to the conversation
 were indistinguishable when they shared it.
 
-The selected-node rail is read-only, with no picker: it explains what the node does, what it
-requires, and what proves it finished, and offers **Delete node** as the escape hatch for a
-graph that arrived through the raw API. The Connections list names the route by its real
-port: `Pull Request (complete) → Complete (terminal)`.
+The selected-node rail is read-only and offers **nothing** for the node - no picker to
+configure it and no **Delete node** to remove it, where a selected Persona or Check has one.
+It explains what the node does, what it requires and what proves it finished, and stops
+there. The Connections list names the route by its real port: `Pull Request (complete) →
+Complete (terminal)`.
 
 ## Reproducing
 

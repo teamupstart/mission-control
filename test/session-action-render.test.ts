@@ -169,8 +169,38 @@ test("the Graph rail describes a selected action read-only, with no picker", () 
   assert.match(html, /Every stage after it reviews evidence captured once it has/);
   // No select element for the action: choosing one is not offered in this build.
   assert.doesNotMatch(html, /<select[^>]*>[\s\S]*Pull Request[\s\S]*<\/select>/);
+  // And no Delete node. This build offers NO affordance for an action - not add, not
+  // configure, not reorder, not remove - because half an authoring loop is still authoring.
+  assert.doesNotMatch(html, /Delete node/);
   // The refusal is stated in the same panel that would otherwise offer Publish.
   assert.match(html, /cannot be published/);
+});
+
+test("a Persona node still offers Delete, so the refusal is the action's and not the panel's", () => {
+  // The negative above would pass just as well if the rail had lost its Delete button
+  // entirely. This is the control case that makes it mean something.
+  const personaNodeId = "ffffffff-0000-4000-8000-000000000006";
+  const withPersona: WorkflowDefinition = {
+    ...workflow,
+    draft: {
+      nodes: [
+        ...graph.nodes,
+        { id: personaNodeId, kind: "persona", personaId: "p1", position: { x: 0, y: 400 } },
+      ],
+      edges: graph.edges,
+    },
+  };
+  const html = renderToStaticMarkup(createElement(WorkflowProperties, {
+    workflow: withPersona,
+    personas: [],
+    sessionActions: [action],
+    diagnostics: [],
+    selection: { kind: "node", id: personaNodeId },
+    readOnly: false,
+    onUpdate: () => {},
+    onConfirm: () => {},
+  }));
+  assert.match(html, /Delete node/);
 });
 
 test("a published version shows the exact instruction it froze", () => {

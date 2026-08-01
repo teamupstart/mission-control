@@ -256,7 +256,10 @@ export function WorkflowProperties({
     }
     if (selection.kind === "multi") return;
     const node = workflow.draft.nodes.find((candidate) => candidate.id === selection.id);
-    if (!node || node.kind === "session") return;
+    // Refused at the model layer too, not only by hiding the button: the canvas delete key
+    // routes here as well, and an affordance withheld in one place and left open in the
+    // other is the same affordance.
+    if (!node || node.kind === "session" || node.kind === "session_action") return;
     const edgeCount = workflow.draft.edges.filter((edge) =>
       edge.source === selection.id || edge.target === selection.id).length;
     onConfirm({
@@ -346,7 +349,12 @@ export function WorkflowProperties({
               </p>
             </>
           )}
-          {!readOnly && selectedNode.kind !== "session" && (
+          {/* Session is excluded because a graph has exactly one. A session action is
+              excluded because this build offers NO affordance for one at all - no way to add
+              it, configure it, reorder it or remove it. Half an authoring loop is still
+              authoring, and the node can only have arrived through the raw draft API, which
+              is also where it can be taken back out. */}
+          {!readOnly && selectedNode.kind !== "session" && selectedNode.kind !== "session_action" && (
             <Tooltip label="Remove this node and every route touching it">
               <button className="btn btn-danger" onClick={removeSelection}>Delete node</button>
             </Tooltip>

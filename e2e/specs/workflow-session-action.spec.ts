@@ -156,6 +156,15 @@ test("the Graph draws the node with one complete port, and the daemon refuses to
   await expect(node.getByLabel("Pass output")).toHaveCount(0);
   await expect(node.getByLabel("Activate input")).toHaveCount(1);
 
+  // Selecting it opens a read-only rail with NO affordance for the node: nothing to
+  // configure it with, and no Delete to remove it. Half an authoring loop is still
+  // authoring, and this node can only have arrived through the raw draft API.
+  await node.click();
+  const rail = dashboard.getByRole("complementary", { name: "Workflow properties and validation" });
+  await expect(rail).toContainText("Pull Request");
+  await expect(rail).toContainText("Requires the pull-request skill");
+  await expect(rail.getByRole("button", { name: "Delete node" })).toHaveCount(0);
+
   // The rail names the route by its real port rather than folding it into pass.
   await expect(dashboard.getByRole("region", { name: "Workflow connections" }))
     .toContainText("Pull Request (complete) → Complete (terminal)");

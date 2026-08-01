@@ -235,7 +235,9 @@ function canvasNodes(
       id: node.id,
       type: node.kind,
       position: node.position,
-      deletable: !readOnly && node.kind !== "session",
+      // Session has exactly one instance; a session action has no affordance in this build,
+      // and React Flow's own delete key is one of them.
+      deletable: !readOnly && node.kind !== "session" && node.kind !== "session_action",
       draggable: !readOnly,
       selectable: true,
       focusable: node.id === focusNodeId,

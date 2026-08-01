@@ -421,10 +421,16 @@ Reconciled after implementation:
 - The generator was split into `scripts/builtin-markdown.ts`, shared by `npm run personas` and the
   new `npm run session-actions`. `npm run personas` writes byte-identical output, pinned by its
   existing drift test.
-- Graph view keeps `Delete node` for an action, and the Pipeline does not. Deletion is the escape
-  hatch for a graph that arrived through the raw API; creation and configuration are offered
-  nowhere, which is the property that matters - `duplicateNodes` refuses an action for the same
-  reason, since duplicating one is an add control by another name.
+- NO affordance for an action node is offered anywhere in the browser: not add, not configure,
+  not reorder, not remove. An earlier attempt kept `Delete node` in Graph view on the argument
+  that deletion is an escape hatch for a graph that arrived through the raw draft API; review
+  rejected that, correctly - this phase's constraint names removal explicitly, and half an
+  authoring loop is still authoring. The refusal is enforced in three places, because an
+  affordance withheld in one and left open in another is the same affordance: the rail omits
+  the button, `removeSelection` refuses the node, and the canvas marks it `deletable: false`
+  so React Flow's delete key cannot reach it either. `duplicateNodes` refuses one for the
+  related reason - duplicating is an add control by another name. A graph that arrived through
+  the raw API leaves the same way it came, or with the workflow.
 - Driving the real builder found two dead controls the unit tests did not: an "Add reviewer or
   check" picker on an action stage, and a Duplicate button that lit up for a selected action and
   then did nothing. Both are fixed and pinned in `test/session-action-render.test.ts`.

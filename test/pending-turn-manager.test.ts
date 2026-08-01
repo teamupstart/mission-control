@@ -284,6 +284,109 @@ test("a driver rejection is positive non-delivery and remains safely retryable",
   clearPendingTurns(f.key);
 });
 
+test("SDK ownership changes before acceptance preserve uncertainty", async () => {
+  const registry = new Registry();
+  const id = "sdk:owner-before-acceptance";
+  const key = "agent:owner-before-acceptance";
+  registry.registerSdkSession({
+    id,
+    agent: "claude",
+    name: "owner-before-acceptance",
+    cwd: "/repo/owner-before-acceptance",
+    agentSessionId: key,
+  });
+  let deliveryReached!: () => void;
+  const deliveryReady = new Promise<void>((resolve) => (deliveryReached = resolve));
+  let continueAcceptance!: () => void;
+  const acceptanceMayContinue = new Promise<void>((resolve) => (continueAcceptance = resolve));
+  let accepted = 0;
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
+        deliveryReached();
+        await acceptanceMayContinue;
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
+        accepted += 1;
+        return "started";
+      },
+    },
+    { idleSettleMs: 0 },
+  );
+  manager.start();
+  idle(registry, id);
+  manager.submit(id, "do not accept through an ambiguous owner");
+  await deliveryReady;
+
+  registry.registerSdkSession({
+    id: "sdk:owner-before-acceptance-other",
+    agent: "claude",
+    name: "owner-before-acceptance-other",
+    cwd: "/repo/owner-before-acceptance",
+    agentSessionId: key,
+  });
+  continueAcceptance();
+  await tick();
+
+  const turn = listPendingTurns(key)[0];
+  assert.equal(accepted, 0);
+  assert.equal(turn?.state, "uncertain");
+  assert.match(turn?.lastError ?? "", /ownership changed/);
+  manager.stop();
+  clearPendingTurns(key);
+});
+
+test("SDK ownership changes during acknowledgement preserve uncertainty", async () => {
+  const registry = new Registry();
+  const id = "sdk:owner-during-ack";
+  const key = "agent:owner-during-ack";
+  registry.registerSdkSession({
+    id,
+    agent: "claude",
+    name: "owner-during-ack",
+    cwd: "/repo/owner-during-ack",
+    agentSessionId: key,
+  });
+  let acceptanceReached!: () => void;
+  const acceptanceBoundary = new Promise<void>((resolve) => (acceptanceReached = resolve));
+  let acknowledge!: () => void;
+  const acknowledgement = new Promise<void>((resolve) => (acknowledge = resolve));
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      sendWhenIdle: async (_sessionId, _turn, beforeSend) => {
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
+        acceptanceReached();
+        await acknowledgement;
+        return "started";
+      },
+    },
+    { idleSettleMs: 0 },
+  );
+  manager.start();
+  idle(registry, id);
+  manager.submit(id, "retain this accepted handoff when ownership overlaps");
+  await acceptanceBoundary;
+
+  registry.registerSdkSession({
+    id: "sdk:owner-during-ack-other",
+    agent: "claude",
+    name: "owner-during-ack-other",
+    cwd: "/repo/owner-during-ack",
+    agentSessionId: key,
+  });
+  acknowledge();
+  await tick();
+
+  const turn = listPendingTurns(key)[0];
+  assert.equal(turn?.state, "uncertain");
+  assert.match(turn?.lastError ?? "", /ownership changed/);
+  manager.stop();
+  clearPendingTurns(key);
+});
+
 test("an open driver dialog blocks delivery until the dialog resolves", async () => {
   const f = sdkFixture("dialog", async () => "started");
   idle(f.registry, f.id);

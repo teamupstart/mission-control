@@ -57,6 +57,13 @@ interface PickupCandidate {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+interface SdkHandoff {
+  sessionId: string;
+  turn: PendingTurn;
+  acceptanceBoundaryCrossed: boolean;
+  ownershipUncertain: boolean;
+}
+
 /**
  * Durable human-turn outbox shared by embedded and terminal conversations.
  *
@@ -71,6 +78,7 @@ export class PendingTurnManager {
   private readonly draining = new Set<string>();
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pickup = new Map<string, PickupCandidate>();
+  private readonly sdkHandoffs = new Map<string, SdkHandoff>();
   private readonly activeDeliveries = new Map<string, Promise<void>>();
   private readonly resetPreserve = new Map<string, Set<string>>();
   private readonly knownKeys = new Map<string, string>();
@@ -115,6 +123,7 @@ export class PendingTurnManager {
     }
     this.idleTimers.clear();
     this.pickup.clear();
+    this.sdkHandoffs.clear();
   }
 
   /**
@@ -153,6 +162,19 @@ export class PendingTurnManager {
       } else {
         candidate.ownershipUncertain = true;
         preserve.add(candidate.turn.id);
+      }
+    }
+    const sdkHandoff = this.sdkHandoffs.get(key);
+    if (sdkHandoff) {
+      if (sdkHandoff.sessionId === sessionId) {
+        this.markResetUncertain(
+          sessionId,
+          sdkHandoff.turn,
+          "Session reset began while the SDK was accepting this message.",
+        );
+      } else {
+        sdkHandoff.ownershipUncertain = true;
+        preserve.add(sdkHandoff.turn.id);
       }
     }
     return [...preserve];
@@ -267,6 +289,10 @@ export class PendingTurnManager {
     if (previousKey && previousKey !== key) {
       this.moveConversationKey(session.id, previousKey, key);
     }
+    const sdkHandoff = this.sdkHandoffs.get(key);
+    if (sdkHandoff && sdkHandoff.sessionId !== session.id && session.state !== "exited") {
+      sdkHandoff.ownershipUncertain = true;
+    }
     const candidate = this.pickup.get(key);
     if (candidate && candidate.sessionId !== session.id && session.state !== "exited") {
       candidate.ownershipUncertain = true;
@@ -297,8 +323,13 @@ export class PendingTurnManager {
   private moveConversationKey(sessionId: string, fromKey: string, toKey: string): void {
     this.cancelIdleTimer(fromKey);
     const candidate = this.pickup.get(fromKey);
-    if (candidate && candidate.sessionId !== sessionId) {
-      candidate.ownershipUncertain = true;
+    const sdkHandoff = this.sdkHandoffs.get(fromKey);
+    if (
+      (candidate && candidate.sessionId !== sessionId) ||
+      (sdkHandoff && sdkHandoff.sessionId !== sessionId)
+    ) {
+      if (candidate) candidate.ownershipUncertain = true;
+      if (sdkHandoff) sdkHandoff.ownershipUncertain = true;
       return;
     }
     if (!rekeyPendingTurns(fromKey, toKey, this.deps.now())) return;
@@ -306,6 +337,11 @@ export class PendingTurnManager {
       this.pickup.delete(fromKey);
       candidate.turn.noteKey = toKey;
       this.pickup.set(toKey, candidate);
+    }
+    if (sdkHandoff) {
+      this.sdkHandoffs.delete(fromKey);
+      sdkHandoff.turn.noteKey = toKey;
+      this.sdkHandoffs.set(toKey, sdkHandoff);
     }
     this.registry.refreshPendingTurns(fromKey);
     this.registry.refreshPendingTurns(toKey);
@@ -384,14 +420,29 @@ export class PendingTurnManager {
   }
 
   private async deliverSdk(session: Session, turn: PendingTurn): Promise<void> {
-    let acceptanceBoundaryCrossed = false;
+    const handoff: SdkHandoff = {
+      sessionId: session.id,
+      turn,
+      acceptanceBoundaryCrossed: false,
+      ownershipUncertain: false,
+    };
+    this.sdkHandoffs.set(turn.noteKey, handoff);
     try {
       const accepted = await this.sdk.sendWhenIdle(session.id, { text: turn.text }, () => {
-        const blocker = this.acceptanceBlocker(session.id, turn.noteKey);
-        if (!blocker) acceptanceBoundaryCrossed = true;
+        const blocker = this.acceptanceBlocker(handoff);
+        if (!blocker) handoff.acceptanceBoundaryCrossed = true;
         return blocker;
       });
-      if (accepted === null) {
+      if (
+        handoff.ownershipUncertain ||
+        this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id
+      ) {
+        this.markDeliveryUncertain(
+          session.id,
+          turn,
+          "SDK conversation ownership changed during delivery.",
+        );
+      } else if (accepted === null) {
         releasePendingTurn(
           turn.id,
           turn.revision,
@@ -409,7 +460,16 @@ export class PendingTurnManager {
       }
     } catch (err) {
       if (
-        acceptanceBoundaryCrossed &&
+        handoff.ownershipUncertain ||
+        this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id
+      ) {
+        this.markDeliveryUncertain(
+          session.id,
+          turn,
+          `SDK conversation ownership changed during delivery: ${errorMessage(err)}`,
+        );
+      } else if (
+        handoff.acceptanceBoundaryCrossed &&
         this.registry.sessionResetInProgress(session.id)
       ) {
         this.markResetUncertain(
@@ -419,6 +479,10 @@ export class PendingTurnManager {
         );
       } else {
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
+      }
+    } finally {
+      if (this.sdkHandoffs.get(turn.noteKey) === handoff) {
+        this.sdkHandoffs.delete(turn.noteKey);
       }
     }
     this.registry.refreshPendingTurns(turn.noteKey);
@@ -498,7 +562,7 @@ export class PendingTurnManager {
       candidate.ownershipUncertain ||
       this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id
     ) {
-      this.markPickupUncertain(
+      this.markDeliveryUncertain(
         session.id,
         turn,
         "Terminal conversation ownership changed during delivery.",
@@ -557,24 +621,29 @@ export class PendingTurnManager {
     this.registry.refreshPendingTurns(turn.noteKey);
   }
 
-  private acceptanceBlocker(sessionId: string, noteKey: string): string | null {
-    const current = this.registry.getSession(sessionId);
+  private acceptanceBlocker(handoff: SdkHandoff): string | null {
+    const current = this.registry.getSession(handoff.sessionId);
     if (
+      handoff.ownershipUncertain ||
       !current ||
-      noteKeyFor(current) !== noteKey ||
-      !this.readyToDrain(current)
+      noteKeyFor(current) !== handoff.turn.noteKey ||
+      this.registry.sessionForNoteKey(handoff.turn.noteKey)?.id !== handoff.sessionId
     ) {
+      handoff.ownershipUncertain = true;
+      return "The SDK conversation owner changed before delivery.";
+    }
+    if (!this.readyToDrain(current)) {
       return "The session reset, became busy, or opened a dialog before delivery.";
     }
     return null;
   }
 
   private markResetUncertain(sessionId: string, turn: PendingTurn, error: string): void {
-    const uncertain = this.markPickupUncertain(sessionId, turn, error);
+    const uncertain = this.markDeliveryUncertain(sessionId, turn, error);
     if (uncertain) this.resetPreserve.get(sessionId)?.add(turn.id);
   }
 
-  private markPickupUncertain(sessionId: string, turn: PendingTurn, error: string): PendingTurn | null {
+  private markDeliveryUncertain(sessionId: string, turn: PendingTurn, error: string): PendingTurn | null {
     const candidate = this.pickup.get(turn.noteKey);
     if (candidate?.turn.id === turn.id && candidate.sessionId === sessionId) {
       if (candidate.timer) clearTimeout(candidate.timer);

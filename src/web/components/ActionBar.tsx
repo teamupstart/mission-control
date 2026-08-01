@@ -116,7 +116,7 @@ export function ActionBar({
   const [composing, setComposing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showFlash(next: { text: string; ok: boolean }, duration: number): void {
@@ -343,10 +343,11 @@ export function ActionBar({
               ))}
             </div>
           )}
-          <input
+          <textarea
             ref={inputRef}
             className="compose-input"
             placeholder="Message to send…"
+            rows={1}
             autoFocus
             // Cancel and Escape only close this box - they unmount the input, so
             // without these the text died with it and reopening Send showed a blank.
@@ -369,7 +370,8 @@ export function ActionBar({
               ) {
                 e.preventDefault();
                 void recallPending();
-              } else if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              } else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
                 void submitMessage();
               }
               if (e.key === "Escape") setComposing(false);

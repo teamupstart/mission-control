@@ -259,7 +259,13 @@ const GOAL = "make the uploader retry on a 500";
  * would make the assertions flaky rather than just slow.
  */
 async function runWorker(
-  opts: { port: number; claudeBin: string; claudeLog: string; ms: number },
+  opts: {
+    port: number;
+    claudeBin: string;
+    claudeLog: string;
+    ms: number;
+    until?: () => boolean;
+  },
 ): Promise<string> {
   let out = "";
   const child: ChildProcess = spawn(
@@ -285,7 +291,10 @@ async function runWorker(
   child.stderr?.setEncoding("utf8");
   child.stdout?.on("data", (d: string) => (out += d));
   child.stderr?.on("data", (d: string) => (out += d));
-  await sleep(opts.ms);
+  const deadline = Date.now() + opts.ms;
+  do {
+    await sleep(Math.min(50, Math.max(1, deadline - Date.now())));
+  } while (Date.now() < deadline && !opts.until?.());
   child.kill("SIGTERM");
   await new Promise<void>((resolve) => {
     const hard = setTimeout(() => child.kill("SIGKILL"), 3000);
@@ -407,7 +416,17 @@ test("the real worker answers a parked no-mistakes gate on hookless Codex withou
     return { status: 200, json: null };
   });
 
-  const out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 6500 });
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 15_000,
+    until: () =>
+      stub.to("POST", "/api/sessions/operator-codex-gate/inject").length === 1 &&
+      stub.to("POST", "/api/sessions/operator-codex-gate/gate-reply").length === 1 &&
+      stub.to("POST", "/api/sessions/operator-codex-gate/foreman-episode").length === 1 &&
+      (note as { disposition?: string } | null)?.disposition === "answered",
+  });
   await stub.close();
 
   const sends = stub.to("POST", "/api/sessions/operator-codex-gate/inject");

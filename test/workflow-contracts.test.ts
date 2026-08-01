@@ -328,6 +328,12 @@ test("the per-run node disable toggle names its nodes, its direction, and its re
   assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ requestId: "toggle-3", nodeIds: [], disabled: true }));
   assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ requestId: "toggle-4", nodeIds: ["a"] }));
   assert.throws(() => SetWorkflowNodesDisabledSchema.parse({ nodeIds: ["a"], disabled: true }));
+  // A repeated id would drive the same audit event twice, so the schema refuses it.
+  assert.throws(() => SetWorkflowNodesDisabledSchema.parse({
+    requestId: "toggle-6",
+    nodeIds: ["a", "a"],
+    disabled: true,
+  }));
   assert.throws(() => SetWorkflowNodesDisabledSchema.parse({
     requestId: "toggle-5",
     nodeIds: Array.from({ length: WORKFLOW_LIMITS.graphNodes + 1 }, (_, index) => `node-${index}`),

@@ -499,6 +499,11 @@ test("per-run node disable validates ids, replays idempotently, and refuses fini
 
   // Shared parseBody schema, unknown run, and non-verdict node all refuse cleanly.
   assert.equal((await toggle({})).status, 400);
+  // A repeated id is refused at the boundary: one request drives one event per gate.
+  assert.equal(
+    (await toggle({ requestId: "r-dup", nodeIds: ["judge", "judge"], disabled: true })).status,
+    400,
+  );
   assert.equal((await request("/api/workflow-runs/missing/set-nodes-disabled", {
     method: "POST",
     body: JSON.stringify({ requestId: "r-0", nodeIds: ["judge"], disabled: true }),

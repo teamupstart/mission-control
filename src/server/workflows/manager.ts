@@ -1272,8 +1272,12 @@ export class WorkflowManager {
         message: "Only a Persona or Check node of this run's pinned workflow version can be disabled",
       };
     }
+    // The schema refuses duplicates, and this dedupes again anyway: the list below drives
+    // one audit event per named gate, so a repeated id surviving any future schema change
+    // would put the same toggle on the timeline twice.
+    const requested = [...new Set(input.nodeIds)];
     const next = new Set(run.disabledNodeIds ?? []);
-    for (const nodeId of input.nodeIds) {
+    for (const nodeId of requested) {
       if (input.disabled) next.add(nodeId);
       else next.delete(nodeId);
     }
@@ -1284,7 +1288,7 @@ export class WorkflowManager {
       run.id,
       version.graph.nodes.filter(isVerdictNode).map((node) => node.id)
         .filter((nodeId) => next.has(nodeId)),
-      input.nodeIds.map((nodeId) => ({
+      requested.map((nodeId) => ({
         kind: input.disabled ? "node_disabled" : "node_enabled",
         payload: {
           nodeId,

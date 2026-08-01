@@ -48,10 +48,12 @@ interface PendingTurnDeps {
 }
 
 interface PickupCandidate {
+  sessionId: string;
   turn: PendingTurn;
   boundaryAt: number;
   injectionSucceeded: boolean;
   pickupObserved: boolean;
+  ownershipUncertain: boolean;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -142,11 +144,16 @@ export class PendingTurnManager {
 
     const candidate = this.pickup.get(key);
     if (candidate) {
-      this.markResetUncertain(
-        sessionId,
-        candidate.turn,
-        "Session reset began after terminal delivery may have crossed its write boundary.",
-      );
+      if (candidate.sessionId === sessionId) {
+        this.markResetUncertain(
+          sessionId,
+          candidate.turn,
+          "Session reset began after terminal delivery may have crossed its write boundary.",
+        );
+      } else {
+        candidate.ownershipUncertain = true;
+        preserve.add(candidate.turn.id);
+      }
     }
     return [...preserve];
   }
@@ -257,10 +264,17 @@ export class PendingTurnManager {
     const key = noteKeyFor(session);
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);
-    if (previousKey && previousKey !== key) this.moveConversationKey(previousKey, key);
+    if (previousKey && previousKey !== key) {
+      this.moveConversationKey(session.id, previousKey, key);
+    }
     const candidate = this.pickup.get(key);
+    if (candidate && candidate.sessionId !== session.id && session.state !== "exited") {
+      candidate.ownershipUncertain = true;
+      return;
+    }
     if (
       candidate &&
+      candidate.sessionId === session.id &&
       session.state === "working" &&
       session.stateConfirmed &&
       (session.lastActivity ?? 0) >= candidate.boundaryAt
@@ -272,7 +286,7 @@ export class PendingTurnManager {
         candidate.injectionSucceeded &&
         !this.registry.sessionResetInProgress(session.id)
       ) {
-        this.completePickup(candidate.turn);
+        this.completePickup(session.id, candidate.turn);
       }
       return;
     }
@@ -280,10 +294,14 @@ export class PendingTurnManager {
     else this.cancelIdleTimer(key);
   }
 
-  private moveConversationKey(fromKey: string, toKey: string): void {
+  private moveConversationKey(sessionId: string, fromKey: string, toKey: string): void {
     this.cancelIdleTimer(fromKey);
-    if (!rekeyPendingTurns(fromKey, toKey, this.deps.now())) return;
     const candidate = this.pickup.get(fromKey);
+    if (candidate && candidate.sessionId !== sessionId) {
+      candidate.ownershipUncertain = true;
+      return;
+    }
+    if (!rekeyPendingTurns(fromKey, toKey, this.deps.now())) return;
     if (candidate) {
       this.pickup.delete(fromKey);
       candidate.turn.noteKey = toKey;
@@ -418,6 +436,7 @@ export class PendingTurnManager {
         !current ||
         current.runtime !== "terminal" ||
         noteKeyFor(current) !== turn.noteKey ||
+        this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id ||
         !this.readyToDrain(current)
       ) {
         return "The agent became busy or opened a dialog before delivery.";
@@ -427,10 +446,12 @@ export class PendingTurnManager {
       if (!boundaryCrossed) {
         boundaryCrossed = true;
         this.pickup.set(turn.noteKey, {
+          sessionId: session.id,
           turn,
           boundaryAt: this.deps.now(),
           injectionSucceeded: false,
           pickupObserved: false,
+          ownershipUncertain: false,
           timer: null,
         });
       }
@@ -450,13 +471,16 @@ export class PendingTurnManager {
     }
 
     const candidate = this.pickup.get(turn.noteKey);
-    if (!candidate || candidate.turn.id !== turn.id) {
-      if (boundaryCrossed) return;
-      if (result.pasted || result.ok) {
+    if (
+      !candidate ||
+      candidate.turn.id !== turn.id ||
+      candidate.sessionId !== session.id
+    ) {
+      if (boundaryCrossed || result.pasted || result.ok) {
         markPendingTurnUncertain(
           turn.id,
           turn.revision,
-          result.error ?? "The terminal delivery outcome is unknown.",
+          result.error ?? "The terminal delivery owner or outcome is unknown.",
           this.deps.now(),
         );
       } else {
@@ -468,6 +492,17 @@ export class PendingTurnManager {
         );
       }
       this.registry.refreshPendingTurns(turn.noteKey);
+      return;
+    }
+    if (
+      candidate.ownershipUncertain ||
+      this.registry.sessionForNoteKey(turn.noteKey)?.id !== session.id
+    ) {
+      this.markPickupUncertain(
+        session.id,
+        turn,
+        "Terminal conversation ownership changed during delivery.",
+      );
       return;
     }
     if (result.ok) {
@@ -484,12 +519,12 @@ export class PendingTurnManager {
       // prompt-pickup evidence. Do not wait for a second hook/passive state signal that may
       // never exist on an otherwise readable terminal session.
       if (result.submitVerified || candidate.pickupObserved) {
-        this.completePickup(turn);
+        this.completePickup(session.id, turn);
         return;
       }
       const latest = this.registry.getSession(session.id);
       if (latest) this.observeSession(latest);
-      this.armPickupTimeout(turn);
+      this.armPickupTimeout(session.id, turn);
       return;
     }
 
@@ -535,8 +570,13 @@ export class PendingTurnManager {
   }
 
   private markResetUncertain(sessionId: string, turn: PendingTurn, error: string): void {
+    const uncertain = this.markPickupUncertain(sessionId, turn, error);
+    if (uncertain) this.resetPreserve.get(sessionId)?.add(turn.id);
+  }
+
+  private markPickupUncertain(sessionId: string, turn: PendingTurn, error: string): PendingTurn | null {
     const candidate = this.pickup.get(turn.noteKey);
-    if (candidate?.turn.id === turn.id) {
+    if (candidate?.turn.id === turn.id && candidate.sessionId === sessionId) {
       if (candidate.timer) clearTimeout(candidate.timer);
       this.pickup.delete(turn.noteKey);
     }
@@ -546,26 +586,40 @@ export class PendingTurnManager {
       error,
       this.deps.now(),
     );
-    if (uncertain) this.resetPreserve.get(sessionId)?.add(turn.id);
     this.registry.refreshPendingTurns(turn.noteKey);
+    return uncertain;
   }
 
-  private completePickup(turn: PendingTurn): void {
+  private completePickup(sessionId: string, turn: PendingTurn): void {
     const candidate = this.pickup.get(turn.noteKey);
-    if (!candidate || candidate.turn.id !== turn.id) return;
+    if (
+      !candidate ||
+      candidate.turn.id !== turn.id ||
+      candidate.sessionId !== sessionId ||
+      candidate.ownershipUncertain
+    ) return;
     if (candidate.timer) clearTimeout(candidate.timer);
     this.pickup.delete(turn.noteKey);
     deleteClaimedPendingTurn(turn.id, turn.revision);
     this.registry.refreshPendingTurns(turn.noteKey);
   }
 
-  private armPickupTimeout(turn: PendingTurn): void {
+  private armPickupTimeout(sessionId: string, turn: PendingTurn): void {
     const candidate = this.pickup.get(turn.noteKey);
-    if (!candidate || candidate.turn.id !== turn.id || candidate.timer) return;
+    if (
+      !candidate ||
+      candidate.turn.id !== turn.id ||
+      candidate.sessionId !== sessionId ||
+      candidate.timer
+    ) return;
     candidate.timer = unref(
       setTimeout(() => {
         const current = this.pickup.get(turn.noteKey);
-        if (!current || current.turn.id !== turn.id) return;
+        if (
+          !current ||
+          current.turn.id !== turn.id ||
+          current.sessionId !== sessionId
+        ) return;
         this.pickup.delete(turn.noteKey);
         markPendingTurnUncertain(
           turn.id,

@@ -465,6 +465,49 @@ test("in-flight pickup evidence stays provisional until injection succeeds", asy
   }
 });
 
+test("cross-owner activity during injection preserves uncertainty", async () => {
+  let finishInjection!: () => void;
+  const injectionMayFinish = new Promise<void>((resolve) => (finishInjection = resolve));
+  let injectionStarted!: () => void;
+  const started = new Promise<void>((resolve) => (injectionStarted = resolve));
+  const f = terminalFixture(
+    "cross-owner-source",
+    async () => {
+      injectionStarted();
+      await injectionMayFinish;
+      return { ok: true, pasted: true, submitVerified: false };
+    },
+    100,
+  );
+
+  f.manager.submit(f.id, "keep this turn when another owner becomes active");
+  await started;
+
+  const other = "cross-owner-other";
+  f.registry.applyDiscovery([
+    { ...discovered("cross-owner-source"), agentSessionId: f.key },
+    { ...discovered(other), agentSessionId: f.key },
+  ]);
+  f.registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: f.key,
+    cwd: `/repo/${other}`,
+    transcriptPath: null,
+    env: { tmuxPane: `%${other}` },
+  });
+  assert.equal(f.registry.getSession(f.id)?.pendingTurns[0]?.state, "sending");
+
+  finishInjection();
+  await tick();
+
+  const turn = f.registry.getSession(f.id)?.pendingTurns[0];
+  assert.equal(turn?.state, "uncertain");
+  assert.match(turn?.lastError ?? "", /ownership changed/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
 test("Codex terminal delivery follows passive rollout completion and pickup markers", async () => {
   const registry = new Registry();
   const name = "codex-passive";

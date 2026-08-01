@@ -42,6 +42,9 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method
 
 async function shoot(page: Page, name: string): Promise<void> {
   mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first. `Tooltip` portals a visible bubble on hover, and a capture taken
+  // with the pointer resting where the last click left it covers the thing being photographed.
+  await page.mouse.move(0, 0);
   for (const [suffix, width] of [["wide", 1440], ["narrow", 720]] as const) {
     await page.setViewportSize({ width, height: 900 });
     // One frame for the layout to settle after the resize; the strip re-measures its scroll.
@@ -80,6 +83,28 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
   await dashboard.getByRole("button", { name: /Tidy the workspace/ }).click();
   await expect(dashboard.locator(".wf-action-editor")).toBeVisible();
   await shoot(dashboard, "01-actions-library");
+
+  // 1b. The revision conflict, mid-recovery. Photographed rather than described because the
+  //     claim is about what an operator can SEE at the moment two tabs disagree: their own
+  //     text still in the editor, the revision that overtook them named, and all three ways
+  //     out offered rather than the two that cannot land an edit on this row.
+  const promptEditor = dashboard.locator(".wf-action-editor-host .cm-content");
+  await promptEditor.click();
+  await dashboard.keyboard.press("ControlOrMeta+a");
+  await promptEditor.pressSequentially("# My unsaved instruction");
+  await expect(dashboard.locator(".wf-state.dirty")).toHaveText("Unsaved changes");
+  // The other tab saves first, touching a DIFFERENT field - which is what makes the reapply
+  // below a merge rather than an overwrite.
+  await api(daemon, `/api/session-actions/${action.id}`, {
+    expectedRevision: 1,
+    description: "edited in another tab",
+  }, "PATCH");
+  await expect(dashboard.locator(".wf-state.conflict")).toContainText("r2");
+  await shoot(dashboard, "01b-conflict-recovery");
+
+  // Left resolved, so the frames that follow are not photographed through a stale banner.
+  await dashboard.getByRole("button", { name: "Reload latest" }).click();
+  await expect(dashboard.locator(".wf-state.conflict")).toHaveCount(0);
 
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "Ship it",

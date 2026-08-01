@@ -15,7 +15,7 @@ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
 ```
 
 It is behind that flag for `dispatch-and-converse.spec.ts`' reason: each capture carries a
-fresh worktree uuid and a relative timestamp, so an unconditional run would rewrite twelve
+fresh worktree uuid and a relative timestamp, so an unconditional run would rewrite fourteen
 binaries on every `npm run test:e2e` for no added signal.
 
 Nothing here is operator data. The repository, the session, the two actions, the Persona and
@@ -42,6 +42,30 @@ and nothing else, because that is what this daemon reported through
 `GET /api/session-actions/capabilities`; `pull_request` has no verified adapter until Phase 4.
 The instruction is a real CodeMirror editor over the exact Markdown, with the byte counter
 reading against the ceiling one delivery packet can carry.
+
+## 1b. A revision conflict, mid-recovery
+
+`01b-conflict-recovery-wide.png`, `01b-conflict-recovery-narrow.png`
+
+Two tabs disagreeing about the same action, photographed at the moment the operator has to
+choose. Four things are in one frame:
+
+- **The draft is preserved.** `# My unsaved instruction` is still in the editor. Nothing about
+  a conflict rewrites a byte of it; the banner reports, it does not resolve.
+- **The current server revision is named** - "A newer revision (r2) exists" - beside an eyebrow
+  still reading `REVISION 1`, which is what this editor loaded.
+- **Three ways out are offered.** **Reload latest** discards the edits. **Reapply my changes**
+  writes them onto r2, on this same action. **Save as duplicate** keeps them as a new one.
+  Only the middle one lands an edit on the row a workflow already points at, which is why it
+  exists.
+- **The divergence is visible side by side.** The sidebar row shows the other tab's state -
+  description "edited in another tab", Revision 2 - while the editor still holds r1 plus this
+  operator's change. That is exactly the input to the three-way merge: Reapply sends the
+  prompt and not the description, so the other tab's edit survives.
+
+The banner is toned rather than plain, which it was not until this frame was generated:
+`.wf-state` carried only the base box, so a `role="alert"` drew as ordinary bordered prose.
+At 720px the sentence takes its own line and all three controls stay reachable.
 
 ## 2. A session action stage in the Pipeline
 

@@ -10130,6 +10130,31 @@ select.ensemble-judge-persona {
 .persona-state.conflict span {
   flex: 1;
 }
+/* The same two toned states for `.wf-state`, which had only the base box: an editor holding
+   unsaved text read as ordinary prose, and a `role="alert"` conflict banner - the one moment
+   the surface has something urgent to say - drew as a plain bordered paragraph.
+   Its own rules rather than a second selector on the Persona ones, which is this file's
+   convention and also the safe call here: this banner carries THREE ways out where the
+   Persona one carries two, so it needs `flex-wrap` that Personas do not, and retuning either
+   name should keep changing exactly what it is named after. */
+.wf-state.dirty {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.wf-state.conflict {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 55%, var(--border));
+  background: color-mix(in oklab, var(--attention) 8%, var(--panel));
+}
+/* The sentence takes the row and pushes the buttons onto their own line when the three of
+   them no longer fit - at the Electron window's 720px minimum they do not. */
+.wf-state.conflict > span:first-child {
+  flex: 1 1 100%;
+}
 /* One boxed failure sentence, shared by the Persona library and the workflow surfaces
    around it. Two selectors rather than one class used everywhere: `persona-error` was being
    read by the binding dialog, the workflow library and version history, which made a Persona

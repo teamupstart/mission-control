@@ -185,3 +185,65 @@ That is `parent evidence -> action turn -> fresh evidence -> downstream stages`,
 screen. Nothing in it is stubbed: a real git worktree, a real SDK session with a real child
 process behind it, the instruction really typed into that session's pane, and the child segment
 captured from a real `git` read of the worktree. Only the model is a fake.
+
+## 9. The shipped Pull Request action
+
+`09-builtin-pull-request-action-*.png`
+
+The built-in read-only, so the two contract fields it exists for are visible together:
+`Required skill · pull-request` and `Completes when · Pull request is opened and verified`,
+both disabled because a built-in has no save. The editor carries the exact shipped Markdown -
+the same bytes a run types - and the byte counter beside it is what refuses an instruction that
+could not be delivered whole.
+
+Duplicate is the only lit control, which is the whole affordance: a copy you own keeps that
+completion and that skill, so a customized instruction does not quietly lose its verification.
+
+## 10. No-Mistakes Review v8, at the end of the strip
+
+`10-no-mistakes-v8-pull-request-stage-*.png`
+
+Read left to right: the **Pull Request** session action stage, the `COMPLETE` seam, **Complete**
+(End), the `WORKFLOW SUCCEEDED` seam, and only then the fixed **Inspector** footer. That order
+is the feature - the action opens the pull request and reaches End, and the Inspector reviews it
+afterwards. The two are deliberately separate cards, and the footer is dashed and badged `FIXED`
+so it cannot read as a stage the author placed.
+
+The settings rail shows the other half - **Missing PR: Wait** - which is correct only because
+the graph cannot reach End without a pull request. A version whose gate had to prepare one would
+say `Prepare PR` here.
+
+**This frame caught a real defect.** The Inspector footer was the one card in the strip
+declaring a `width` without `flex: none`. The strip is a flex row that scrolls rather than
+reflows, so flex-shrink runs before `overflow-x` ever applies: the card collapsed toward
+min-content and its grid let the sentence spill out past the border, drawing the dashed edge as
+a ~40px sliver beside its own text. Invisible until a pipeline was long enough to overflow -
+which is exactly what a fourth stage produced. Fixed in `styles.css` and pinned by
+`test/workflow-pipeline-label-width.test.ts`, which now asserts the property for every strip
+card rather than for the one that happened to break.
+
+## 11 and 12. A pull request opened somewhere else
+
+`11-pr-on-another-branch-*.png`, `12-pr-on-another-repo-*.png`
+
+Captured by `e2e/specs/workflow-pull-request-mismatch.spec.ts`, which runs a real Pull Request
+action against a real dispatched session and parks it on each state in turn. The chip appears in
+three places at once - the stage card, the member row, and the Session actions card - and the
+sentence beside it names the remedy, because the two mistakes are fixed differently.
+
+These are the states that must not read as *Awaiting PR*. "No pull request yet" and "a pull
+request was opened somewhere else" look identical from the outside and are opposite problems,
+and an operator told only "awaiting" keeps watching for something that already exists.
+
+**Both frames caught real defects, and neither was reachable from a unit test.**
+
+- The bound checkout's repository was compared as `git rev-parse --show-toplevel`, which is the
+  WORKING TREE. Mission Control dispatches every agent into a linked worktree, so that path is
+  per-session while the pull request is adopted against the repository the worktree was cut
+  from - and a correct pull request therefore compared as belonging to a different repository
+  on the ordinary path. Both sides now normalise to the resolved `--git-common-dir`, which is
+  one string for a main checkout and all of its worktrees.
+- A wait-reason change was durable but never published, so the run detail page kept rendering
+  the label it first drew. Completion and every block already published; the waits - the states
+  an operator sits and watches - did not. `setSessionActionWait` now publishes when the reason
+  actually changes.

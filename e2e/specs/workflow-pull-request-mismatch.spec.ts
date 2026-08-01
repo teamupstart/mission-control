@@ -220,7 +220,7 @@ test("a stray pull request is named on screen, and never read as having none", a
   await expect(card).toContainText("PR on another branch");
   await expect(card).toContainText("opened a pull request from a different branch");
   await expect(card).not.toContainText("Awaiting PR");
-  await shoot(dashboard, "09-pr-on-another-branch");
+  await shoot(dashboard, "11-pr-on-another-branch");
 
   // The same run, with the pull request found in another repository entirely.
   //
@@ -239,7 +239,7 @@ test("a stray pull request is named on screen, and never read as having none", a
 
   await expect(card).toContainText("PR on another repo");
   await expect(card).toContainText("in a different repository");
-  await shoot(dashboard, "10-pr-on-another-repo");
+  await shoot(dashboard, "12-pr-on-another-repo");
 
   // A WAIT throughout, never a block: the run is still live and the action is still waiting,
   // which is what lets a turn that opened a stray first and the right one second recover.

@@ -14563,22 +14563,15 @@ select.sc-input {
   min-height: 0;
   max-height: none;
 }
-/* The fix log lives above the transcript in the conversation tab, so letting it
-   shrink to zero means its rollup survives while the fix the person asked to read
-   is clipped behind the transcript. Keep an opened log large enough to remain a
-   real reading surface, but let it give back space before the transcript falls
-   below its own 120px floor.
+/* The opened fix log is a reading surface, so it gets a scroll cap that scales with
+   the available screen height: a short laptop keeps it compact, while a taller
+   display spends the extra vertical room on the response, findings and diff link
+   instead of making each of those require a few lines of scrolling.
 
-   The scroll cap scales with the available screen height: a short laptop keeps a
-   compact log and a visible conversation, while a taller display spends the extra
-   vertical room on the response, findings, and diff link instead of making each
-   of those require a few lines of scrolling. The Gate tab shares the responsive
-   cap, where its outer pane can use the same extra space without a transcript to
-   protect. */
-.detail-conv > .nm-log-open {
-  flex: 0 1 auto;
-  min-height: min(260px, 34dvh);
-}
+   It used to sit above the transcript in the conversation tab and had to be talked
+   out of starving it - a `min-height` floor here, a 120px floor there. It lives in
+   the Workflows pane now, with nothing underneath to protect, so that negotiation
+   is gone and only the cap remains. */
 .detail-body .nm-log-open > .nm-rollup,
 .detail-body .nm-log-open > .nm-log-foot {
   flex: none;
@@ -14599,13 +14592,11 @@ select.sc-input {
 
 /* ---- workflow stage ladder ---- */
 
-/* The detail pane's cheap axis is height, but the transcript still owns the remaining room.
-   A long workflow scrolls inside its reading surface instead of pushing the composer away. */
-.detail-conv > .wf-ladder-panel {
-  flex: 0 1 auto;
-  max-height: min(52dvh, 560px);
-  overflow-y: auto;
-}
+/* The ladder used to sit above the transcript and had to be capped and given its own
+   scrollbar so a long workflow could not push the composer off the bottom. In the
+   Workflows pane it is the content rather than a tenant above it, so it keeps the base
+   `flex: none` below and the pane's single scrollbar carries the whole thing - one
+   scrolling surface, not a short scroller nested inside a taller one. */
 .wf-ladder-panel,
 .wf-ladder-feedback,
 .wf-ladder-fallback {

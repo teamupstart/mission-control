@@ -78,6 +78,12 @@ export interface SessionViewProps {
    * without one a second press after walking to Files would be a no-op.
    */
   conversationTabRequest: { sessionId: string; nonce: number } | null;
+  /**
+   * One-shot request from the session-workflows shortcut to reveal a session's Workflows
+   * tab - its workflow ladder and no-mistakes gate. Nonce for the same reason the others
+   * carry one: the request is consumed by a mounted detail, not stored as a tab preference.
+   */
+  workflowsTabRequest: { sessionId: string; nonce: number } | null;
   files: SessionFilesController;
   onReset: (id: string) => void;
   /** Open the complete-and-close confirm for this session (app-level modal). */

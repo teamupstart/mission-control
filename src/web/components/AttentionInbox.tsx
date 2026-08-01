@@ -49,8 +49,13 @@ export function AttentionInbox({
   onClose: () => void;
   /** Open a run's detail (the dossier, when it is parked on a decision). */
   onOpenEnsemble: (runId: string) => void;
-  /** Focus a session on the fleet. */
-  onOpenSession: (sessionId: string) => void;
+  /**
+   * Focus a session on the fleet, optionally landing on the surface that answers this
+   * item. A parked gate asks for `"workflows"`: in Cards the strip is on the card, but in
+   * Console and the Board drill-in it is a tab, and a deep link that dropped the operator
+   * on the Conversation instead would be a link to the wrong half of the answer.
+   */
+  onOpenSession: (sessionId: string, reveal?: "workflows") => void;
 }): React.JSX.Element {
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
@@ -94,7 +99,9 @@ export function AttentionInbox({
               <InboxItem
                 item={item}
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
-                onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
+                onOpenSession={(sessionId, reveal) =>
+                  leave(() => onOpenSession(sessionId, reveal))()
+                }
               />
             </div>
           );
@@ -111,7 +118,7 @@ function InboxItem({
 }: {
   item: AttentionItem;
   onOpenEnsemble: (runId: string) => void;
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession: (sessionId: string, reveal?: "workflows") => void;
 }): React.JSX.Element {
   switch (item.kind) {
     case "ensemble_decision":
@@ -206,8 +213,11 @@ function InboxItem({
             <strong>{item.session.name || "(unnamed)"}</strong>
             <span className="inbox-meta">shipping gate</span>
             <span className="inbox-spacer" />
-            <Tooltip label="Focus this session - the gate is answered on its card">
-              <button className="btn btn-ghost" onClick={() => onOpenSession(item.session.id)}>
+            <Tooltip label="Focus this session - the gate is answered on its card, or its Workflows tab">
+              <button
+                className="btn btn-ghost"
+                onClick={() => onOpenSession(item.session.id, "workflows")}
+              >
                 Open session
               </button>
             </Tooltip>

@@ -422,7 +422,7 @@ export class Registry extends EventEmitter {
   private ensembleProjection: ((taskId: string) => TaskEnsembleLink | null) | null = null;
   private workflowReset: ((noteKey: string) => void) | null = null;
   /** A terminal side effect must not cross the asynchronous reset boundary. */
-  private resettingSessionIds = new Set<string>();
+  private resettingSessionCounts = new Map<string, number>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
   private notes = new Map<string, SessionNote>();
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
@@ -624,15 +624,20 @@ export class Registry extends EventEmitter {
   }
 
   beginSessionReset(id: string): void {
-    this.resettingSessionIds.add(id);
+    this.resettingSessionCounts.set(id, (this.resettingSessionCounts.get(id) ?? 0) + 1);
   }
 
   endSessionReset(id: string): void {
-    this.resettingSessionIds.delete(id);
+    const count = this.resettingSessionCounts.get(id);
+    if (!count || count === 1) {
+      this.resettingSessionCounts.delete(id);
+      return;
+    }
+    this.resettingSessionCounts.set(id, count - 1);
   }
 
   sessionResetInProgress(id: string): boolean {
-    return this.resettingSessionIds.has(id);
+    return this.resettingSessionCounts.has(id);
   }
 
   subscribe(fn: (e: ServerEvent) => void): () => void {

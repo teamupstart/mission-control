@@ -10,8 +10,13 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-pending-turn-manager-"));
 process.env.MISSION_HOME = home;
 
-const { claimNextPendingTurn, createPendingTurn, listPendingTurns, clearPendingTurns } =
-  await import("../src/server/db.ts");
+const {
+  claimNextPendingTurn,
+  createPendingTurn,
+  listPendingTurns,
+  clearPendingTurns,
+  markPendingTurnUncertain,
+} = await import("../src/server/db.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { resetSession } = await import("../src/server/reset.ts");
@@ -1127,6 +1132,105 @@ test("a terminal ownership race during reset retains the injected row", async ()
   assert.equal(retained[0]?.text, "possibly injected during the terminal ownership race");
   assert.equal(retained[0]?.state, "uncertain");
   assert.match(retained[0]?.lastError ?? "", /ownership changed/);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+test("overlapping resets hold delivery until the final reset finishes", async () => {
+  const f = sdkFixture("overlapping-resets", async () => "started");
+  idle(f.registry, f.id);
+  const retained = createPendingTurn({
+    id: "possibly-delivered-before-overlapping-resets",
+    noteKey: f.key,
+    text: "possibly delivered before overlapping resets",
+    now: 1,
+  });
+  const claimed = claimNextPendingTurn(f.key, 2);
+  assert.equal(claimed?.id, retained.id);
+  markPendingTurnUncertain(claimed!.id, claimed!.revision, "delivery was ambiguous", 3);
+  f.registry.refreshPendingTurns(f.key);
+
+  let firstResetEntered!: () => void;
+  const firstResetStarted = new Promise<void>((resolve) => (firstResetEntered = resolve));
+  let finishFirstReset!: () => void;
+  const firstResetMayFinish = new Promise<void>((resolve) => (finishFirstReset = resolve));
+  const firstReset = resetSession(
+    f.registry,
+    f.registry.getSession(f.id)!,
+    false,
+    async () => {
+      firstResetEntered();
+      await firstResetMayFinish;
+      return {
+        ok: true,
+        error: null,
+        root: "/repo/overlapping-resets",
+        cleared: false,
+        detached: false,
+      };
+    },
+    undefined,
+    f.manager,
+  );
+  await firstResetStarted;
+
+  let secondResetEntered!: () => void;
+  const secondResetStarted = new Promise<void>((resolve) => (secondResetEntered = resolve));
+  let finishSecondReset!: () => void;
+  const secondResetMayFinish = new Promise<void>((resolve) => (finishSecondReset = resolve));
+  const secondReset = resetSession(
+    f.registry,
+    f.registry.getSession(f.id)!,
+    false,
+    async () => {
+      secondResetEntered();
+      await secondResetMayFinish;
+      return {
+        ok: false,
+        error: "second reset failed",
+        root: "/repo/overlapping-resets",
+        cleared: false,
+        detached: false,
+      };
+    },
+    undefined,
+    f.manager,
+  );
+  await secondResetStarted;
+
+  finishFirstReset();
+  assert.equal((await firstReset).ok, true);
+  assert.equal(f.registry.sessionResetInProgress(f.id), true);
+  assert.equal(listPendingTurns(f.key)[0]?.id, retained.id);
+
+  f.manager.submit(f.id, "queued between reset completions");
+  await tick();
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(
+    listPendingTurns(f.key).map((turn) => [turn.text, turn.state]),
+    [
+      ["possibly delivered before overlapping resets", "uncertain"],
+      ["queued between reset completions", "queued"],
+    ],
+  );
+
+  finishSecondReset();
+  assert.equal((await secondReset).ok, false);
+  assert.equal(f.registry.sessionResetInProgress(f.id), false);
+  await tick();
+  assert.deepEqual(f.calls, []);
+  const afterResets = listPendingTurns(f.key);
+  assert.deepEqual(
+    afterResets.map((turn) => [turn.text, turn.state]),
+    [
+      ["possibly delivered before overlapping resets", "uncertain"],
+      ["queued between reset completions", "queued"],
+    ],
+  );
+  assert.equal(f.manager.resolve(f.id, afterResets[0]!.id, afterResets[0]!.revision), true);
+  await tick();
+  assert.deepEqual(f.calls, ["queued between reset completions"]);
+  assert.deepEqual(listPendingTurns(f.key), []);
   f.manager.stop();
   clearPendingTurns(f.key);
 });

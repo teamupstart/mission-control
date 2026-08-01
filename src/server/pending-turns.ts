@@ -137,7 +137,7 @@ export class PendingTurnManager {
     const session = this.registry.getSession(sessionId);
     if (!session) return [];
     const key = noteKeyFor(session);
-    const preserve = new Set<string>();
+    const preserve = this.resetPreserve.get(sessionId) ?? new Set<string>();
     for (const turn of session.pendingTurns) {
       if (turn.state === "uncertain") preserve.add(turn.id);
     }
@@ -190,6 +190,7 @@ export class PendingTurnManager {
 
   /** Resume a safely refused queued row only after reset's registry marker is gone. */
   finishReset(sessionId: string): void {
+    if (this.registry.sessionResetInProgress(sessionId)) return;
     this.resetPreserve.delete(sessionId);
     const session = this.registry.getSession(sessionId);
     if (session && this.readyToDrain(session)) this.scheduleDrain(noteKeyFor(session));

@@ -17,10 +17,11 @@ import { readGoalWindow } from "./source.ts";
 // `resolvedPromptRevision` when it has classified one - so a restart resumes correctly,
 // and rapid prompts remain a durable ordered queue across debounce windows and restarts.
 //
-// There is still no kill switch (Q3). The silent fallback is error handling, not
-// configuration: if the provider is missing, logged out, or slow, the card quietly keeps its
-// Tier 1 goal and nothing breaks. What IS configurable is which provider and which model -
-// the `goal` job in `@shared/llm-jobs.ts`, edited in Settings, resolved per call.
+// There is still no kill switch (Q3). Failure handling is fail-closed, not configuration: if
+// the provider is missing, logged out, or slow, the card keeps its last durable objective and
+// automatic completion stays paused at the unresolved revision. What IS configurable is which
+// provider and which model - the `goal` job in `@shared/llm-jobs.ts`, edited in Settings,
+// resolved per call.
 
 /** How often to look for a goal needing refinement. Cheap: a map lookup per live session. */
 const GOAL_POLL_MS = Number(envVar("GOAL_POLL_MS") ?? 5000);

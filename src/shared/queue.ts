@@ -152,12 +152,12 @@ export const WRAPUP_PR =
  * Wrap-up payloads we have sent in the past and no longer send. APPEND-ONLY.
  *
  * `isWrapupPayload` is the prompted trigger's loop-breaker: it recognises Foreman's own
- * instruction coming back as the session goal. That comparison is against text living on
- * a machine we do not control - a session captured its goal before the upgrade, and the
- * daemon reads it after. Drop an old spelling and that session is a goal Foreman no
- * longer recognises as its own, which re-arms the trigger and opens a second PR for work
- * it already shipped. Retiring a payload therefore means moving it here, never deleting
- * it.
+ * instruction coming back as the latest captured prompt. That comparison is against text
+ * living on a machine we do not control - a session may capture the prompt before an
+ * upgrade and the daemon may read it after. Drop an old spelling and Foreman no longer
+ * recognises that instruction as its own, which can re-arm the trigger and open a second
+ * PR for work it already shipped. Retiring a payload therefore means moving it here,
+ * never deleting it.
  *
  * A harness's `SkillsSpec.invoke` is now one of the things that can retire a payload:
  * `isWrapupPayload` composes the gate instruction per agent, so re-spelling an invocation

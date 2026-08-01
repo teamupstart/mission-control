@@ -169,7 +169,9 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   //    still being reconciled is equally ineligible: shipping against the previous objective
   //    would race the very decision that says whether the human replaced it.
   const resolvedIntent = resolvedSessionIntent(intent);
-  if (!resolvedIntent) return { kind: "skip", why: "the latest instruction has unresolved intent" };
+  if (!intent || !resolvedIntent) {
+    return { kind: "skip", why: "the latest instruction has unresolved intent" };
+  }
   const objective = resolvedIntent.objective;
 
   // 9. THE LOOP GUARD. The goal is one of our own wrap-up instructions, which means
@@ -184,7 +186,8 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   // 10. THE RE-ARM. This episode has already been decided - fired, or verified and
   //     held - and nothing has changed since: the session is idle, so the goal is the
   //     same goal, and re-verifying would spend a `claude -p` per tick to re-learn an
-  //     unchanged answer. A new prompt from the human moves the goal and re-arms this.
+  //     unchanged answer. A newly reconciled human prompt advances the intent key and
+  //     re-arms this.
   const episodeKey = resolvedIntent.episodeKey;
   if (queue?.promptedGoal === episodeKey) {
     return { kind: "skip", why: "already wrapped up this prompt" };
@@ -221,8 +224,8 @@ export type PromptedPlan =
  *
  * `hold` still RETIRES the episode (the caller stamps `promptedGoal` for it, same as a
  * fire). The alternative is re-verifying an idle session every tick forever: nothing
- * about it will change until the human prompts again, and when they do, the new goal
- * re-arms this from the top.
+ * about it will change until the human prompts again, and once that instruction is
+ * reconciled its new intent episode re-arms this from the top.
  */
 export function planPromptedWrapup(
   goal: string,
@@ -274,7 +277,8 @@ export function planPromptedWrapup(
  * cap that ends one. The queue path bounds the same thing with `failVerify` and the
  * item's durable `verifyFailures`; this path has no item to hold a count, so it keeps
  * one here - in memory, exactly like `ReviewFailureTracker`, and for the same reason: a
- * new human prompt moves the goal, which is precisely when the strikes should reset.
+ * newly reconciled human prompt changes the intent episode key, which is precisely when
+ * the strikes should reset.
  *
  * WHAT COUNTS AS AN ATTEMPT is the load-bearing part, and it is deliberately wider than
  * "the verifier failed". An episode stays armed until `promptedGoal` is stamped, so the
@@ -286,9 +290,9 @@ export function planPromptedWrapup(
  * that - which is why the count is cleared only by `onRetired`, the one event that makes
  * the next tick cheap (it is what `decidePromptedWrapup` step 10 reads to skip).
  *
- * Keyed by SESSION with the goal stored beside it rather than by session+goal, so the
- * re-arm falls out of the comparison instead of needing a sweep, and the map holds one
- * entry per session rather than one per episode ever seen.
+ * Keyed by SESSION with the episode key stored beside it rather than by session+episode,
+ * so the re-arm falls out of the comparison instead of needing a sweep, and the map holds
+ * one entry per session rather than one per episode ever seen.
  */
 export class PromptedFailureTracker {
   private bySession = new Map<string, { goal: string; failures: number }>();

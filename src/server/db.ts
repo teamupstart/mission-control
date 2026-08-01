@@ -1470,8 +1470,9 @@ function migrate(d: DatabaseSync): void {
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
 
-  // `prompted_goal`: the session goal the `prompted` wrap-up trigger last fired on -
-  // its once-per-episode guard, and what re-arms it when a genuinely new prompt lands.
+  // `prompted_goal`: the resolved intent episode the `prompted` wrap-up trigger last
+  // handled. The historical column name remains, but new writes store an opaque
+  // `intent:<objectiveVersion>:<promptRevision>` guard rather than goal text.
   // Same exposure as the two ALTERs above: added to the CREATE TABLE after
   // `foreman_queues` shipped, and CREATE TABLE IF NOT EXISTS will not add a column to
   // an existing table, so without this every queue write on an upgraded db would fail.

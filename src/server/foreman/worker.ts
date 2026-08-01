@@ -1214,8 +1214,9 @@ async function processPromptedWrapup(
 
   const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
-  // The SAME verifier the queue uses, deliberately. "Did this diff satisfy this ask?"
-  // is one question, and a second prompt for it would be a second thing to keep true.
+  // The SAME verifier the queue uses, deliberately. "Did this diff satisfy the durable
+  // objective, in light of the latest focus?" is one question, and a second prompt for it
+  // would be a second thing to keep true.
   const result = await verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: candidate.objective,
@@ -1224,8 +1225,8 @@ async function processPromptedWrapup(
     diff: diff.patch,
     diffTruncated: diff.truncated,
     // Always true here: with no per-item base sha the diff is the whole branch, which
-    // may well carry work from before this prompt. Telling the verifier so is what
-    // stops it crediting - or blaming - this ask for someone else's commits.
+    // may well carry work from before this intent episode. Telling the verifier so is
+    // what stops it crediting - or blaming - this objective for someone else's commits.
     diffMayIncludeOtherWork: true,
     transcript: window.messages,
     transcriptTruncated: window.truncated,
@@ -1238,9 +1239,10 @@ async function processPromptedWrapup(
     // Unlike the queue there is no item to escalate, but the failure is bounded the
     // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
     // the episode stays armed and retries next tick; at the cap Foreman gives up on it,
-    // and only a new human prompt (which moves the goal, resetting the strikes) re-arms
-    // it. Retired durably as well, so the give-up survives a worker restart; the
-    // in-memory count is what holds the line when that write is the thing that's broken.
+    // and only a newly reconciled human prompt (which advances the intent key and resets
+    // the strikes) re-arms it. Retired durably as well, so the give-up survives a worker
+    // restart; the in-memory count is what holds the line when that write is the thing
+    // that's broken.
     const failures = promptedFailures.onFailure(session.id, candidate.episodeKey);
     if (failures >= VERIFY_FAILURE_CAP) {
       await retirePromptedEpisode(client, session, candidate.episodeKey);

@@ -4332,8 +4332,8 @@ export class WorkflowStore {
    * `rearmDrainCompletionForDelivery` above can only speak for a session that has queue
    * items - its `EXISTS` clause is what makes "the queue drained again" a true statement.
    * A session driven by a human prompt has no items at all, so before this existed a
-   * confirmed repair packet re-armed nothing and the loop depended on the session's goal
-   * text happening to move. Clearing `prompted_goal` is the exact inverse of what
+   * confirmed repair packet re-armed nothing and the loop depended on a new human prompt.
+   * Clearing `prompted_goal` is the exact inverse of what
    * `retirePromptedGuard` writes, so `decidePromptedWrapup` step 10 stops matching and the
    * episode is armed again.
    *

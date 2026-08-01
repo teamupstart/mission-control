@@ -34,11 +34,11 @@ $ npx playwright test --config e2e/playwright.config.ts e2e/specs/dispatch-and-c
 
 Running 3 tests using 3 workers
 
-  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:61:1 › dispatching an agent puts a live session on the fleet (5.5s)
-  ✓  2 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:142:1 › the dispatched agent was launched headless, without the daemon's terminal identity (5.5s)
-  ✓  3 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:84:1 › typing into the conversation gets a reply back from the agent (8.1s)
+  ✓  3 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:61:1 › dispatching an agent puts a live session on the fleet (3.5s)
+  ✓  2 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:142:1 › the dispatched agent was launched headless, without the daemon's terminal identity (4.1s)
+  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:84:1 › typing into the conversation gets a reply back from the agent (7.0s)
 
-  3 passed (8.6s)
+  3 passed (7.6s)
 ```
 
 Reproduce it with that command, or `npm run test:e2e` for the whole suite. Both need a

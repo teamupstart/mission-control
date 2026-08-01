@@ -139,6 +139,15 @@ A SessionAction is a durable side effect, not an evaluator:
   Changes requested. `stageStatus` takes the stage kind for the same reason: folding a
   singleton action stage through the all-pass logic headed it "Passed" one line above a member
   chip that refuses to make that claim.
+- **A CAS conflict offers three routes, and Reapply is a three-way merge.** Reload discards
+  the draft, Duplicate keeps it on a different row, and Reapply lands it on the same row at
+  the revision that now exists. The merge is what makes the third one safe: the patch is
+  measured from `baselineRef` - the seed the draft STARTED at - not from the row the conflict
+  reported and not from the `action` prop, which the raising SSE upsert has already replaced
+  with the other tab's state. Measured either of those ways, a reapply sends back every field
+  the other tab changed at the values this editor loaded before they changed them, silently
+  reverting their save. `sessionActionSaveTarget` states the whole rule: Save and Reapply
+  differ in exactly one thing, the expected revision.
 - **Wait state is read, not derived.** `actionWait` and the durable `SessionActionAttemptState`
   in the attempt's `output_json` are the runtime's own answers. The distinction between a stale
   idle and a finished turn is a transcript byte offset the daemon recorded; nothing in a

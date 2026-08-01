@@ -174,10 +174,62 @@ test("a second tab's edit is a conflict that preserves the local draft", async (
     .toContainText("Your instruction has not been changed");
   await expect(fields.getByLabel("Description")).toHaveValue("mine, typed locally");
 
-  // Reload is the explicit way out, and only then does the local text go.
+  // Reload is one explicit way out, and only then does the local text go.
   await dashboard.getByRole("button", { name: "Reload latest" }).click();
   await expect(fields.getByLabel("Description")).toHaveValue("theirs, saved first");
   await expect(dashboard.locator(".wf-state.conflict")).toHaveCount(0);
+});
+
+test("reapply lands the preserved draft on the same action, keeping the other tab's fields", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The route Reload and Duplicate between them cannot offer. Reload throws the operator's
+  // edits away; Duplicate keeps them on a DIFFERENT action, leaving every workflow that
+  // already points at this one unchanged. Reapply is the one that lands the edits here.
+  const created = await api<ActionRow>(daemon, "/api/session-actions", {
+    name: "Tidy the workspace",
+    description: "the original blurb",
+    promptMarkdown: PROMPT,
+    completion: { kind: "session_turn" },
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/workflows/actions`);
+  await dashboard.getByRole("button", { name: /Tidy the workspace/ }).click();
+
+  // This operator edits the INSTRUCTION and nothing else.
+  const promptEditor = dashboard.locator(".wf-action-editor-host .cm-content");
+  await promptEditor.click();
+  await dashboard.keyboard.press("ControlOrMeta+a");
+  await promptEditor.pressSequentially("# Mine");
+  await expect(dashboard.locator(".wf-state.dirty")).toHaveText("Unsaved changes");
+
+  // Another tab saves first, editing the DESCRIPTION and nothing else.
+  await api(daemon, `/api/session-actions/${created.id}`, {
+    expectedRevision: 1,
+    description: "their newer blurb",
+  }, "PATCH");
+  await expect(dashboard.locator(".wf-state.conflict")).toContainText("r2");
+
+  await dashboard.getByRole("button", { name: "Reapply my changes" }).click();
+  await expect(dashboard.locator(".wf-state.conflict")).toHaveCount(0);
+  await expect(dashboard.locator(".wf-action-editor-head .workflow-eyebrow"))
+    .toHaveText("Revision 3");
+
+  const merged = await api<ActionRow>(daemon, `/api/session-actions/${created.id}`);
+  // The SAME row - the id a workflow would already be pointing at, not a copy.
+  expect(merged.id).toBe(created.id);
+  expect(merged.revision).toBe(3);
+  // Mine landed.
+  expect(merged.promptMarkdown).toBe("# Mine");
+  // And theirs survived. A reapply that wrote the whole draft, or that diffed against the row
+  // the conflict reported, would have sent the description back to "the original blurb" -
+  // reverting a save the banner was in the middle of reporting.
+  expect(merged.description).toBe("their newer blurb");
+
+  // One row in the library, still. Duplicate would have made two.
+  await expect(dashboard.locator(".wf-action-list-item").filter({ hasText: "Tidy the workspace" }))
+    .toHaveCount(1);
 });
 
 test("an authored action becomes a pipeline stage, publishes, and freezes its instruction", async ({

@@ -110,15 +110,31 @@ export function sessionActionUpdatePatch(
   draft: SessionActionDraftSeed,
   expectedRevision: number,
 ): Record<string, unknown> {
-  const original = sessionActionSeed(action);
+  return sessionActionPatchFrom(sessionActionSeed(action), draft, expectedRevision);
+}
+
+/**
+ * The same patch, measured from a BASELINE rather than from a row.
+ *
+ * The distinction is what makes Reapply a three-way merge instead of an overwrite. "My
+ * changes" are the fields where the draft differs from the seed it started at - not the
+ * fields where it differs from whatever the server currently holds. A patch built the second
+ * way sends back every field the OTHER tab changed, at the values this editor loaded before
+ * they changed them, silently reverting their save under the banner that was reporting it.
+ */
+export function sessionActionPatchFrom(
+  baseline: SessionActionDraftSeed,
+  draft: SessionActionDraftSeed,
+  expectedRevision: number,
+): Record<string, unknown> {
   const patch: Record<string, unknown> = { expectedRevision };
-  if (draft.name !== original.name) patch.name = draft.name;
-  if (draft.description !== original.description) patch.description = draft.description;
-  if (draft.promptMarkdown !== original.promptMarkdown) patch.promptMarkdown = draft.promptMarkdown;
-  if (draft.requiredSkillId !== original.requiredSkillId) {
+  if (draft.name !== baseline.name) patch.name = draft.name;
+  if (draft.description !== baseline.description) patch.description = draft.description;
+  if (draft.promptMarkdown !== baseline.promptMarkdown) patch.promptMarkdown = draft.promptMarkdown;
+  if (draft.requiredSkillId !== baseline.requiredSkillId) {
     patch.requiredSkillId = draft.requiredSkillId;
   }
-  if (draft.completionKind !== original.completionKind) {
+  if (draft.completionKind !== baseline.completionKind) {
     patch.completion = { kind: draft.completionKind };
   }
   return patch;
@@ -133,6 +149,58 @@ export function sessionActionCreateBody(draft: SessionActionDraftSeed): Record<s
     requiredSkillId: draft.requiredSkillId,
     completion: { kind: draft.completionKind },
   };
+}
+
+/** Which gesture is being made. All three write; only the first is the ordinary one. */
+export type SessionActionSaveMode = "save" | "reapply" | "duplicate";
+
+/**
+ * Which row a write lands on, what its changes are measured from, and which revision it
+ * expects to find there.
+ *
+ * Save and Reapply differ in exactly ONE of those three - the expected revision - and saying
+ * so here is the point. Both write the operator's own changes, measured from the seed the
+ * draft started at; Reapply simply aims them at the revision that now exists instead of the
+ * one that no longer does. That is what makes it a three-way merge rather than an overwrite:
+ * a field the operator never touched is absent from the patch, so the other tab's value for
+ * it survives.
+ *
+ * `duplicate` measures against nothing - it is a create, and the copy is a new row.
+ *
+ * `null` means the gesture is not available in this state, which the caller treats as a
+ * no-op rather than an error: a Reapply with no conflict is a button that should not have
+ * been reachable.
+ */
+export type SessionActionSaveTarget =
+  | { kind: "create" }
+  | {
+      kind: "update";
+      id: string;
+      baseline: SessionActionDraftSeed;
+      expectedRevision: number;
+    };
+
+export function sessionActionSaveTarget(input: {
+  mode: SessionActionSaveMode;
+  action: SessionAction | null;
+  conflict: SessionAction | null;
+  loadedRevision: number | null;
+  /** The seed the current draft started from: what "my changes" are measured against. */
+  baseline: SessionActionDraftSeed;
+}): SessionActionSaveTarget | null {
+  const { mode, action, conflict, loadedRevision, baseline } = input;
+  if (mode === "duplicate") return { kind: "create" };
+  if (mode === "reapply") {
+    // The conflict row IS the same action - a CAS refusal reports the current state of the
+    // row that was written to - so this lands where a workflow already points.
+    return conflict === null
+      ? null
+      : { kind: "update", id: conflict.id, baseline, expectedRevision: conflict.revision };
+  }
+  if (action === null) return { kind: "create" };
+  return loadedRevision === null
+    ? null
+    : { kind: "update", id: action.id, baseline, expectedRevision: loadedRevision };
 }
 
 /**
@@ -240,6 +308,7 @@ export function SessionActionEditorStatus({
   archived,
   builtin = false,
   onReload,
+  onReapply,
   onDuplicate,
 }: {
   dirty: boolean;
@@ -247,6 +316,8 @@ export function SessionActionEditorStatus({
   archived: boolean;
   builtin?: boolean;
   onReload: () => void;
+  /** Write the preserved draft onto the revision the conflict reported. */
+  onReapply: () => void;
   onDuplicate: () => void;
 }): React.JSX.Element | null {
   if (builtin) {
@@ -266,6 +337,16 @@ export function SessionActionEditorStatus({
     );
   }
   if (conflict) {
+    /**
+     * Three ways out, and they are three genuinely different decisions about the SAME
+     * action - which is why Reapply has to be one of them rather than being folded into
+     * Duplicate. Duplicate keeps the edits by making a DIFFERENT action, so an operator who
+     * wanted their change on the row a workflow already points at is left with no route
+     * except retyping it over a reload.
+     *
+     * Nothing here writes until one of the three is pressed, and none of them touches the
+     * draft on the way in: the banner reports, it does not resolve.
+     */
     return (
       <div className="wf-state conflict" role="alert">
         <span>
@@ -273,6 +354,11 @@ export function SessionActionEditorStatus({
         </span>
         <Tooltip label="Discard your unsaved edits and load the newer revision">
           <button className="btn" onClick={onReload}>Reload latest</button>
+        </Tooltip>
+        <Tooltip
+          label={`Write your edits onto revision ${conflict.revision}, keeping this the same session action`}
+        >
+          <button className="btn" onClick={onReapply}>Reapply my changes</button>
         </Tooltip>
         <Tooltip label="Keep your edits by saving them as a new session action">
           <button className="btn" onClick={onDuplicate}>Save as duplicate</button>
@@ -315,9 +401,39 @@ export function SessionActionEditor({
     () => action ? sessionActionSeed(action) : seed ?? EMPTY_SESSION_ACTION_SEED,
   );
   const draftRef = useRef(draft);
+  /**
+   * The seed the current draft STARTED from, which is what "my changes" are measured against.
+   *
+   * A separate ref because the `action` prop cannot answer it: the SSE upsert that raises a
+   * conflict replaces `action` with the newer row, so by the time an operator presses Reapply
+   * the prop holds the other tab's state rather than the one this draft diverged from.
+   */
+  const baselineRef = useRef(draft);
   const editGeneration = useRef(0);
-  const [loadedRevision, setLoadedRevision] = useState(action?.revision ?? null);
-  const [dirty, setDirty] = useState(false);
+  const [loadedRevision, setLoadedRevisionState] = useState(action?.revision ?? null);
+  const [dirty, setDirtyState] = useState(false);
+  /**
+   * The revision this editor has ACCEPTED, and whether it holds unsaved text - both mirrored
+   * in refs the reconciling effect below reads instead of its own closure.
+   *
+   * A passive effect runs after its render commits, and it keeps that render's values. A save
+   * that finishes while an SSE upsert for the same write is in flight therefore leaves an
+   * effect scheduled from BEFORE the save landed: it wakes holding the old revision, decides
+   * the incoming row is newer, and raises a conflict against a revision the save has already
+   * adopted. Nothing afterwards clears it, because every later run of the effect correctly
+   * finds nothing new to report. Reading the refs makes the effect reconcile against what is
+   * true now rather than against what was true when it was scheduled.
+   */
+  const loadedRevisionRef = useRef(loadedRevision);
+  const dirtyRef = useRef(false);
+  const setLoadedRevision = (next: number | null): void => {
+    loadedRevisionRef.current = next;
+    setLoadedRevisionState(next);
+  };
+  const setDirty = (next: boolean): void => {
+    dirtyRef.current = next;
+    setDirtyState(next);
+  };
   const [conflict, setConflict] = useState<SessionAction | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -333,13 +449,16 @@ export function SessionActionEditor({
   // follows it; a dirty one freezes and raises an explicit conflict without replacing a byte
   // of the instruction the operator is writing.
   useEffect(() => {
-    if (!action || action.revision === loadedRevision) return;
-    if (dirty) {
+    // `<=`, and read from the ref: a row at or below what this editor has already accepted
+    // reports nothing, whichever render scheduled this effect.
+    if (!action || action.revision <= (loadedRevisionRef.current ?? 0)) return;
+    if (dirtyRef.current) {
       setConflict(action);
       return;
     }
     const next = sessionActionSeed(action);
     draftRef.current = next;
+    baselineRef.current = next;
     setDraft(next);
     setLoadedRevision(action.revision);
     setConflict(null);
@@ -372,8 +491,32 @@ export function SessionActionEditor({
     setError(null);
   }
 
-  async function save(asDuplicate = false): Promise<void> {
-    if (readOnly || saving || (action !== null && !dirty && !asDuplicate)) return;
+  /** Adopt a server row wholesale: the draft becomes it, and there is nothing left in conflict. */
+  function adopt(row: SessionAction): void {
+    const next = sessionActionSeed(row);
+    draftRef.current = next;
+    baselineRef.current = next;
+    setDraft(next);
+    setLoadedRevision(row.revision);
+    setDirty(false);
+    setConflict(null);
+    setError(null);
+  }
+
+  async function save(mode: SessionActionSaveMode = "save"): Promise<void> {
+    if (readOnly || saving) return;
+    // Only the ORDINARY save is suppressed when nothing changed. Reapply and Duplicate are
+    // deliberate gestures on a conflicted editor, and the draft they act on is precisely the
+    // one `dirty` is reporting.
+    if (mode === "save" && action !== null && !dirty) return;
+    const target = sessionActionSaveTarget({
+      mode,
+      action,
+      conflict,
+      loadedRevision,
+      baseline: baselineRef.current,
+    });
+    if (!target) return;
     const submitted = draftRef.current;
     const submittedGeneration = editGeneration.current;
     // Measured from the text being SENT rather than from `promptBytes`, which is a memo over
@@ -388,29 +531,41 @@ export function SessionActionEditor({
       setError(blocked);
       return;
     }
-    const create = action === null || asDuplicate;
-    const updateBody = create ? null : sessionActionUpdatePatch(action, submitted, loadedRevision!);
-    // A patch carrying only `expectedRevision` is a save of nothing; the route refuses it,
-    // and sending it would turn "no changes" into an error banner.
-    if (updateBody && Object.keys(updateBody).length === 1) {
-      setDirty(false);
-      setConflict(null);
-      return;
+    let updateBody: Record<string, unknown> | null = null;
+    if (target.kind === "update") {
+      updateBody = sessionActionPatchFrom(target.baseline, submitted, target.expectedRevision);
+      // A patch carrying only `expectedRevision` is a save of nothing; the route refuses it,
+      // and sending it would turn "no changes" into an error banner.
+      if (Object.keys(updateBody).length === 1) {
+        // For a REAPPLY that means the draft already says exactly what the newer revision
+        // holds - the two tabs agreed - so adopting that revision IS the reapply, and it is
+        // also the only thing that clears the conflict truthfully.
+        // Nothing of the operator's survives as a difference, so the newer revision is
+        // already what they wanted; adopting it IS the reapply.
+        if (mode === "reapply") adopt(conflict!);
+        else {
+          setDirty(false);
+          setConflict(null);
+        }
+        return;
+      }
     }
     setSaving(true);
     setError(null);
     try {
-      const body = create
+      const body = target.kind === "create"
         // `sessionActionDraftProblem` already refused an empty name above, so the duplicate
         // suffix has a real name to attach to.
         ? sessionActionCreateBody({
             ...submitted,
-            name: asDuplicate ? `${submitted.name} copy` : submitted.name,
+            name: mode === "duplicate" ? `${submitted.name} copy` : submitted.name,
           })
         : updateBody!;
       const saved = await sessionActionRequest<SessionAction>(
-        create ? "/api/session-actions" : `/api/session-actions/${action!.id}`,
-        { method: create ? "POST" : "PATCH", body: JSON.stringify(body) },
+        target.kind === "create"
+          ? "/api/session-actions"
+          : `/api/session-actions/${target.id}`,
+        { method: target.kind === "create" ? "POST" : "PATCH", body: JSON.stringify(body) },
       );
       const reconciled = reconcileSessionActionSave(
         saved,
@@ -420,6 +575,7 @@ export function SessionActionEditor({
         editGeneration.current,
       );
       draftRef.current = reconciled.draft;
+      baselineRef.current = sessionActionSeed(saved);
       setDraft(reconciled.draft);
       setLoadedRevision(saved.revision);
       setDirty(reconciled.dirty);
@@ -445,14 +601,7 @@ export function SessionActionEditor({
   });
 
   function reload(): void {
-    if (!conflict) return;
-    const next = sessionActionSeed(conflict);
-    draftRef.current = next;
-    setDraft(next);
-    setLoadedRevision(conflict.revision);
-    setDirty(false);
-    setConflict(null);
-    setError(null);
+    if (conflict) adopt(conflict);
   }
 
   const saveHint = builtin
@@ -518,7 +667,8 @@ export function SessionActionEditor({
         archived={archived}
         builtin={builtin}
         onReload={reload}
-        onDuplicate={() => void save(true)}
+        onReapply={() => void save("reapply")}
+        onDuplicate={() => void save("duplicate")}
       />
       {error && <p className="wf-error" role="alert">{error}</p>}
       {capabilityError && (

@@ -2488,8 +2488,16 @@ packet can actually carry, so an action that would be truncated on the way out i
 authoring rather than half-sent at run time.
 
 Saves are revisioned and use compare-and-swap, so a second tab editing an older revision gets
-an explicit conflict and keeps its local text - **Reload latest** takes theirs, **Save as
-duplicate** keeps yours. Archive is soft: an archived action is read-only, leaves the add
+an explicit conflict and keeps its local text. Nothing is resolved until you pick one of
+three:
+
+| Choice | What it writes |
+|---|---|
+| **Reload latest** | Nothing. Your edits are discarded and the newer revision is loaded. |
+| **Reapply my changes** | Your edits, onto the newer revision, on **this same action** - so a workflow already pointing at it gets them. This is a three-way merge: only the fields you actually changed are sent, so a field the other tab edited and you did not keeps their value. |
+| **Save as duplicate** | Your edits, as a **new** action. The original is untouched. |
+
+Archive is soft: an archived action is read-only, leaves the add
 controls, keeps reserving its normalized name, and stays readable because drafts and published
 versions name its id. Built-in actions ship with the application, are marked `Built-in`, and
 are read-only; **Duplicate** is the way to a copy you own.

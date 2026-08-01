@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
@@ -22,7 +24,9 @@ import {
   SessionActionEditorStatus,
   sessionActionCreateBody,
   sessionActionDraftProblem,
+  sessionActionPatchFrom,
   sessionActionPromptPath,
+  sessionActionSaveTarget,
   sessionActionSeed,
   sessionActionUpdatePatch,
   type SessionActionDraftSeed,
@@ -253,18 +257,124 @@ test("a built-in and an archived action are read-only, and say which and why", (
   assert.match(archived, /Every published version keeps the instruction it was published with/);
 });
 
-test("the conflict banner preserves the draft and offers both ways out", () => {
+test("reapply is a three-way merge: my changes, onto the revision that now exists", () => {
+  // The trap this exists to avoid is silent, and it is the one a first pass walked into.
+  // An operator loaded r4 and changed the prompt; another tab saved r5 changing the
+  // description. A "reapply" that wrote the whole draft - or that diffed against the row the
+  // conflict reported - sends the description back to its r4 value, reverting a save the
+  // banner was in the middle of reporting.
+  const loaded = action({ revision: 4, description: "old blurb", promptMarkdown: "# Old\n" });
+  const theirs = action({ revision: 5, description: "their newer blurb", promptMarkdown: "# Old\n" });
+  const baseline = sessionActionSeed(loaded);
+  const mine: SessionActionDraftSeed = { ...baseline, promptMarkdown: "# Mine\n" };
+
+  const target = sessionActionSaveTarget({
+    mode: "reapply",
+    action: theirs,
+    conflict: theirs,
+    loadedRevision: 4,
+    baseline,
+  })!;
+  assert.equal(target.kind, "update");
+  assert.equal(target.kind === "update" ? target.expectedRevision : null, 5);
+  // The SAME action - the whole difference from Duplicate, which is the only other way to
+  // keep the draft and leaves every workflow pointing at the original.
+  assert.equal(target.kind === "update" ? target.id : null, loaded.id);
+
+  const patch = sessionActionPatchFrom(
+    target.kind === "update" ? target.baseline : baseline,
+    mine,
+    target.kind === "update" ? target.expectedRevision : 4,
+  );
+  assert.deepEqual(Object.keys(patch).sort(), ["expectedRevision", "promptMarkdown"]);
+  assert.equal(patch.expectedRevision, 5, "aimed at the revision that now exists");
+  assert.equal(patch.promptMarkdown, "# Mine\n");
+  assert.equal(
+    patch.description,
+    undefined,
+    "a field the operator never touched is absent, so the other tab's value survives",
+  );
+});
+
+test("the three conflict routes are three different writes", () => {
+  const loaded = action({ revision: 4 });
+  const theirs = action({ revision: 5 });
+  const baseline = sessionActionSeed(loaded);
+
+  // Save and Reapply differ in exactly one thing: which revision they expect to find.
+  assert.deepEqual(
+    sessionActionSaveTarget({ mode: "save", action: loaded, conflict: theirs, loadedRevision: 4, baseline }),
+    { kind: "update", id: loaded.id, baseline, expectedRevision: 4 },
+  );
+  assert.deepEqual(
+    sessionActionSaveTarget({ mode: "reapply", action: loaded, conflict: theirs, loadedRevision: 4, baseline }),
+    { kind: "update", id: loaded.id, baseline, expectedRevision: 5 },
+  );
+  // Duplicate measures against nothing: it is a create, so the copy carries no revision.
+  assert.deepEqual(
+    sessionActionSaveTarget({ mode: "duplicate", action: loaded, conflict: theirs, loadedRevision: 4, baseline }),
+    { kind: "create" },
+  );
+  // A brand-new action is a create however it is saved.
+  assert.deepEqual(
+    sessionActionSaveTarget({ mode: "save", action: null, conflict: null, loadedRevision: null, baseline }),
+    { kind: "create" },
+  );
+  // And a gesture with nothing to act on is a no-op rather than an error: a Reapply with no
+  // conflict is a button that should not have been reachable.
+  assert.equal(
+    sessionActionSaveTarget({ mode: "reapply", action: loaded, conflict: null, loadedRevision: 4, baseline }),
+    null,
+  );
+});
+
+test("the conflict effect reconciles against what is true NOW, not against its own render", () => {
+  // A passive effect keeps the values of the render that scheduled it. A save landing while
+  // an SSE upsert for that same write is in flight therefore leaves an effect holding the
+  // pre-save revision: it wakes, decides the incoming row is newer, and raises a conflict
+  // against a revision the save has already adopted - and every later run correctly finds
+  // nothing new to report, so the banner never clears. Reproduced 5/5 in the browser before
+  // the refs went in; pinned here because a `useEffect` closure is not renderable to markup.
+  const source = readFileSync(
+    resolve(import.meta.dirname, "..", "src", "web", "workflows", "SessionActionEditor.tsx"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /if \(!action \|\| action\.revision <= \(loadedRevisionRef\.current \?\? 0\)\) return;/,
+    "the reconciling effect must read the accepted revision from the ref, and `<=` it",
+  );
+  assert.match(source, /if \(dirtyRef\.current\) \{/);
+  // Both refs are written by wrappers, so no `setLoadedRevision`/`setDirty` call site can
+  // update the state and leave the ref behind.
+  assert.match(source, /loadedRevisionRef\.current = next;\s*\n\s*setLoadedRevisionState\(next\);/);
+  assert.match(source, /dirtyRef\.current = next;\s*\n\s*setDirtyState\(next\);/);
+  assert.doesNotMatch(
+    source,
+    /useState\(false\);\s*\n\s*const \[conflict/,
+    "`dirty` must go through the wrapper, not a bare setter",
+  );
+});
+
+test("the conflict banner preserves the draft and offers every way out", () => {
   const html = renderToStaticMarkup(createElement(SessionActionEditorStatus, {
     dirty: true,
     conflict: action({ revision: 7 }),
     archived: false,
     onReload: () => {},
+    onReapply: () => {},
     onDuplicate: () => {},
   }));
   // The load-bearing sentence: nothing the operator typed has been touched.
   assert.match(html, /Your instruction has not been changed/);
   assert.match(html, /r7/, "the operator is told which revision is now current");
   assert.match(html, /Reload latest/);
+  // The route the review found missing: keeping the draft WITHOUT making a different action.
+  // Reload discards the edits and Duplicate keeps them somewhere else, so without this an
+  // operator whose change belongs on the row a workflow already points at had no way there
+  // except retyping it over a reload.
+  assert.match(html, /Reapply my changes/);
+  assert.match(html, /Write your edits onto revision 7, keeping this the same session action/);
   assert.match(html, /Save as duplicate/);
   assert.match(html, /role="alert"/);
 });

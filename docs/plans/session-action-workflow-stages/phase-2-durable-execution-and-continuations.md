@@ -404,7 +404,13 @@ Phase 3 must not:
 - `WORKFLOW_LIMITS.sessionActionPacketBytes` was added rather than reusing
   `feedbackPayloadBytes`. That budget bounds prose the daemon composes from verdicts; an
   action packet carries the operator's own authored instruction, so its ceiling is the
-  delivery row's own bound less envelope headroom.
+  delivery row's own bound less envelope headroom. Review then caught that Phase 1's
+  `sessionActionPromptBytes` of 100,000 sat above that 60,000-byte packet, so an action
+  authored between the two would publish and then type only a PREFIX of its immutable
+  instruction. The authoring ceiling is now derived from the packet budget rather than set
+  beside it, the renderer refuses instead of truncating, and the manager blocks with
+  `prompt_too_large`. Stored rows keep the old looser read bound so none became unreadable -
+  the snapshot schema is what keeps an undeliverable prompt out of a version.
 - `repeatOffenders` now folds submissions to one entry per ROUND. Walking submissions would
   see two rows of the same round, decide the sequence had broken, and report a reviewer that
   has failed five rounds running as having failed one.

@@ -43,7 +43,15 @@ test("workflow limits are finite front-door contracts", () => {
     personaGuidanceBytes: 100_000,
     sessionActionName: 100,
     sessionActionDescription: 500,
-    sessionActionPromptBytes: 100_000,
+    // DERIVED, not chosen: the packet budget less the envelope allowance. The two used to be
+    // set independently, and the gap between them was a published action that types only a
+    // prefix of its immutable instruction.
+    sessionActionPromptBytes: 58_000,
+    sessionActionEnvelopeBytes: 2_000,
+    // Looser than the authoring bound on purpose, so a row written before the ceiling was
+    // tied to the packet budget stays readable and therefore fixable. It still cannot be
+    // published - the snapshot schema holds it to `sessionActionPromptBytes`.
+    sessionActionPromptReadBytes: 100_000,
     sessionActionSkillId: 200,
     // Deliberately NOT `feedbackPayloadBytes`. That budget bounds prose the daemon composes
     // from verdicts; this bounds the operator's own authored instruction, so it is the

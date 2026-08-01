@@ -67,8 +67,20 @@ test("the durable spellings are exactly the ones later phases were promised", ()
   // version - it makes them unreadable, and Phase 2 consumes these literal strings.
   assert.deepEqual(SESSION_ACTION_COMPLETION_KINDS, ["session_turn", "pull_request"]);
   assert.deepEqual(WORKFLOW_SOURCE_PORTS, ["submitted", "pass", "fail", "complete"]);
-  assert.equal(WORKFLOW_LIMITS.sessionActionPromptBytes, 100_000);
   assert.equal(WORKFLOW_LIMITS.sessionActionSkillId, 200);
+  // The prompt CEILING is deliberately not pinned here any more, and the distinction is the
+  // point of this test. A spelling is append-only because renaming it makes stored rows and
+  // published versions unreadable; a byte bound is not an identifier, and this one had to
+  // move once the runtime existed to say what could actually be delivered. Phase 1 set it to
+  // 100,000 beside a 60,000-byte packet, so a published action between the two would have
+  // typed only a prefix of its immutable instruction. It is now DERIVED from the packet
+  // budget, and `session-action-durability.test.ts` pins that relationship rather than the
+  // number. Stored rows keep their old, looser read bound so none became unreadable.
+  assert.equal(
+    WORKFLOW_LIMITS.sessionActionPromptBytes,
+    WORKFLOW_LIMITS.sessionActionPacketBytes - WORKFLOW_LIMITS.sessionActionEnvelopeBytes,
+  );
+  assert.equal(WORKFLOW_LIMITS.sessionActionPromptReadBytes, 100_000);
 });
 
 test("the completion schema admits exactly the closed registry and nothing else", () => {

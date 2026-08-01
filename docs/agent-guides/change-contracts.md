@@ -110,6 +110,13 @@ A SessionAction is a durable side effect, not an evaluator:
   either direction. `resolveDelivery`'s `mark_delivered` is the operator's answer and reopens
   the attempt. Recovery never re-prepares a refused packet - that would retry, on every daemon
   start, a write nobody re-authorized.
+- The authored prompt ceiling is DERIVED (`sessionActionPromptBytes` = `sessionActionPacketBytes`
+  less `sessionActionEnvelopeBytes`), never set beside it. An action packet is the operator's
+  own instruction frozen into an immutable version, so it is refused when it cannot be sent
+  whole rather than truncated - a prefix of an instruction is a different instruction, and
+  delivering one would change the requested operation without failing the run. Stored rows keep
+  a looser read bound (`sessionActionPromptReadBytes`) so nothing already written becomes
+  unreadable; the snapshot schema is what keeps an undeliverable prompt out of every version.
 - Two actions ready at ONCE are refused, not serialized. Running one and holding the other
   looks safe and silently loses it: the continuation seeds the child segment with only the
   completed action's routes, so the held sibling's activating receipt stays behind in the

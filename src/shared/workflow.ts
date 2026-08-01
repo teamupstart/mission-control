@@ -35,11 +35,36 @@ export const WORKFLOW_LIMITS = {
   /**
    * The exact instruction a SessionAction types into a session, in UTF-8 bytes.
    *
-   * The same ceiling as a Persona's guidance, and for a stronger reason: this text is not
-   * read by a model that summarizes it, it is DELIVERED verbatim into an operator's pane.
-   * A limit is what keeps one library row from becoming a packet no session can receive.
+   * DERIVED from what can actually be delivered, not chosen: `sessionActionPacketBytes` less
+   * `sessionActionEnvelopeBytes`. The two used to be set independently - a 100,000-byte
+   * prompt against a 60,000-byte packet - and the gap between them was a published action
+   * that types only a PREFIX of its immutable instruction. Truncating a repair packet loses
+   * some of the daemon's own prose; truncating this changes the operation an operator asked
+   * for, without failing the run. So the ceiling on what may be authored is exactly the
+   * ceiling on what may be sent intact, and it is computed rather than restated.
+   *
+   * Enforced on create, on update, and on the published SNAPSHOT, so no version can carry a
+   * prompt that cannot be delivered whole.
    */
-  sessionActionPromptBytes: 100_000,
+  sessionActionPromptBytes: 58_000,
+  /**
+   * Headroom for everything the packet wraps the prompt in: the skill invocation, the action
+   * and workflow names, the version and the run id.
+   *
+   * Every one of those is separately bounded and their sum is well under a kilobyte, so this
+   * is deliberately generous - it is a guarantee, not a measurement, and the cost of being
+   * generous is prompt bytes nobody was going to use.
+   */
+  sessionActionEnvelopeBytes: 2_000,
+  /**
+   * What may be STORED, which is looser than what may be authored or published.
+   *
+   * A row written before the prompt ceiling was tied to the packet budget stays readable, so
+   * an operator can still see it, rename it, and shorten it. It simply cannot be published:
+   * the snapshot schema holds it to `sessionActionPromptBytes`, which is what keeps an
+   * undeliverable prompt out of every immutable version.
+   */
+  sessionActionPromptReadBytes: 100_000,
   /**
    * A skill id is a catalog NAME (`pull-request`), never an argv and never a path, so the
    * bound is conservative on purpose: anything long enough to hide a command line in is
@@ -53,8 +78,8 @@ export const WORKFLOW_LIMITS = {
    * from verdicts, so eight kilobytes is a design budget; an action packet carries the
    * operator's own authored instruction, and clipping that at the review budget would
    * silently deliver a different instruction from the one the version was published with.
-   * The ceiling is instead the delivery row's own bound (`eventPayloadBytes`) less headroom
-   * for the envelope, so the widest prompt that can be stored is the widest that can be sent.
+   * The ceiling is instead the delivery row's own bound (`eventPayloadBytes`) less headroom,
+   * and `sessionActionPromptBytes` is derived FROM this so the two cannot drift apart.
    */
   sessionActionPacketBytes: 60_000,
   workflowName: 120,
@@ -459,6 +484,7 @@ export type SessionActionWaitReason = (typeof SESSION_ACTION_WAIT_REASONS)[numbe
  */
 export const SESSION_ACTION_BLOCK_CODES = [
   "adapter_unavailable",
+  "prompt_too_large",
   "required_skill_unavailable",
   "session_lost",
   "conversation_changed",

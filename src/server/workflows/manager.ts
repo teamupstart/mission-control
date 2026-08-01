@@ -3339,6 +3339,18 @@ export class WorkflowManager {
       promptMarkdown: snapshot.promptMarkdown,
       skillCommand,
     });
+    // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
+    // is derived from the packet budget, so an action authored through this build cannot
+    // reach here; a version minted by another one blocks with a reason rather than typing a
+    // prefix of somebody's instruction.
+    if (!rendered.ok) {
+      this.blockSessionAction(attempt.id, "prompt_too_large",
+        `This action's instruction is ${rendered.bytes} bytes once addressed to the session, `
+        + `over the ${rendered.limit} a single packet can carry. Shorten the action and `
+        + "publish it again.",
+        now);
+      return;
+    }
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
       runId: run.id,
@@ -3354,7 +3366,6 @@ export class WorkflowManager {
       this.store.appendEvent(run.id, "delivery_prepared", {
         deliveryId: prepared.delivery.id,
         payloadSha256: rendered.payloadSha256,
-        truncated: rendered.truncated,
         kind: "session_action",
         nodeId: attempt.nodeId,
         attemptId: attempt.id,

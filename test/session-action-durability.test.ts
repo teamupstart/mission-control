@@ -15,11 +15,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionActionSnapshot, WorkflowJson } from "../src/shared/workflow.ts";
+import { SessionActionPromptSchema, SessionActionSnapshotSchema } from "../src/shared/protocol.ts";
 import {
   SESSION_ACTION_BLOCK_CODES,
   SESSION_ACTION_COMPLETION_CAPABILITIES,
   SESSION_ACTION_WAIT_REASONS,
   WORKFLOW_DELIVERY_KINDS,
+  WORKFLOW_LIMITS,
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RUN_STATUSES,
 } from "../src/shared/workflow.ts";
@@ -33,6 +35,7 @@ const { WorkflowStore, WorkflowRowError, clearWorkflowTables, parseWorkflowSubmi
   await import("../src/server/workflows/store.ts");
 const { SESSION_ACTION_ADAPTERS, sessionActionAdapter, sessionActionCapabilities } =
   await import("../src/server/workflows/session-action-adapters.ts");
+const { renderSessionAction } = await import("../src/server/workflows/feedback.ts");
 
 const db = openDb();
 const store = new WorkflowStore(db, [], [], []);
@@ -576,4 +579,89 @@ test("every wait reason is a WAIT, and every block code is closed", () => {
       `${reason} is both a wait and a block`,
     );
   }
+});
+
+// ---- the prompt must be deliverable WHOLE -------------------------------------------------
+
+test("what may be authored is derived from what can be delivered, not chosen beside it", () => {
+  // The two used to be set independently - a 100,000-byte prompt against a 60,000-byte
+  // packet - and the gap between them was a published action that types only a PREFIX of its
+  // immutable instruction. A prefix of "delete the old adapter and keep the new one" is a
+  // different request, and it would have been delivered without failing the run.
+  assert.equal(
+    WORKFLOW_LIMITS.sessionActionPromptBytes,
+    WORKFLOW_LIMITS.sessionActionPacketBytes - WORKFLOW_LIMITS.sessionActionEnvelopeBytes,
+  );
+  // The envelope allowance really does cover everything wrapped around the prompt.
+  const envelope = WORKFLOW_LIMITS.sessionActionName
+    + WORKFLOW_LIMITS.workflowName
+    + WORKFLOW_LIMITS.sessionActionSkillId
+    + 200; // run id, version, labels and newlines
+  assert.ok(
+    envelope < WORKFLOW_LIMITS.sessionActionEnvelopeBytes,
+    "the envelope allowance must bound every part the packet wraps the prompt in",
+  );
+  // And a stored row may be LOOSER than either, so a prompt written before the ceiling was
+  // tied to the packet budget stays readable and therefore fixable.
+  assert.ok(
+    WORKFLOW_LIMITS.sessionActionPromptReadBytes > WORKFLOW_LIMITS.sessionActionPromptBytes,
+  );
+});
+
+test("an over-long prompt is refused at authoring and at the published snapshot", () => {
+  const tooLong = "x".repeat(WORKFLOW_LIMITS.sessionActionPromptBytes + 1);
+  assert.equal(SessionActionPromptSchema.safeParse(tooLong).success, false);
+  const snapshot = {
+    sourceSessionActionId: "sa1",
+    sourceRevision: 1,
+    name: "Tidy",
+    description: "",
+    promptMarkdown: tooLong,
+    requiredSkillId: null,
+    completion: { kind: "session_turn" },
+  };
+  // The snapshot boundary is the one that matters: it is what keeps an undeliverable prompt
+  // out of every immutable version, including one whose row predates the derived ceiling.
+  assert.equal(SessionActionSnapshotSchema.safeParse(snapshot).success, false);
+  const fits = "x".repeat(WORKFLOW_LIMITS.sessionActionPromptBytes);
+  assert.equal(SessionActionPromptSchema.safeParse(fits).success, true);
+  assert.equal(
+    SessionActionSnapshotSchema.safeParse({ ...snapshot, promptMarkdown: fits }).success,
+    true,
+  );
+});
+
+test("a packet that cannot be sent whole is REFUSED, never truncated to a prefix", () => {
+  const packet = renderSessionAction({
+    workflowName: "Review",
+    workflowVersion: 3,
+    runId: "run-1",
+    actionName: "Tidy",
+    promptMarkdown: "# Tidy\n\nRemove the scratch file.\n",
+    skillCommand: null,
+  });
+  assert.equal(packet.ok, true);
+  if (!packet.ok) return;
+  // The exact authored bytes survive to the end of the payload: nothing is appended after
+  // the operator's instruction, because a trailing house sentence would be an instruction
+  // nobody authored arriving after the one they did.
+  assert.ok(packet.payload.endsWith("# Tidy\n\nRemove the scratch file.\n"));
+  assert.equal(packet.payloadSha256.length, 64);
+
+  // A version minted by some other build, carrying a prompt this one cannot send whole.
+  const oversize = renderSessionAction({
+    workflowName: "Review",
+    workflowVersion: 3,
+    runId: "run-1",
+    actionName: "Tidy",
+    promptMarkdown: "y".repeat(WORKFLOW_LIMITS.sessionActionPacketBytes + 1),
+    skillCommand: null,
+  });
+  assert.equal(oversize.ok, false);
+  if (oversize.ok) return;
+  assert.ok(oversize.bytes > oversize.limit);
+  assert.equal(oversize.limit, WORKFLOW_LIMITS.sessionActionPacketBytes);
+  // `prompt_too_large` is how the manager turns that into a blocked run rather than a
+  // half-typed instruction.
+  assert.ok(SESSION_ACTION_BLOCK_CODES.includes("prompt_too_large"));
 });

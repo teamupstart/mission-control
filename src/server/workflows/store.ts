@@ -321,7 +321,11 @@ const SessionActionRowSchema = z.object({
 
 export function parseSessionActionRow(value: unknown): SessionAction {
   const row = parseShape("session_actions", SessionActionRowSchema, value);
-  if (utf8.encode(row.prompt_md).byteLength > WORKFLOW_LIMITS.sessionActionPromptBytes) {
+  // The READ bound, which is looser than the authoring one on purpose: a row written before
+  // the prompt ceiling was tied to the deliverable packet budget stays visible and editable
+  // rather than becoming a row nobody can read in order to shorten. It still cannot be
+  // published - the snapshot schema holds it to `sessionActionPromptBytes`.
+  if (utf8.encode(row.prompt_md).byteLength > WORKFLOW_LIMITS.sessionActionPromptReadBytes) {
     throw new WorkflowRowError("session_actions", row.id, "prompt_md exceeds the prompt byte limit");
   }
   if (row.prompt_md.trim().length === 0) {
@@ -699,7 +703,7 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       "session_action_snapshot_json",
       row.session_action_snapshot_json ?? null,
       SessionActionSnapshotSchema,
-      WORKFLOW_LIMITS.sessionActionPromptBytes + WORKFLOW_LIMITS.eventPayloadBytes,
+      WORKFLOW_LIMITS.sessionActionPromptReadBytes + WORKFLOW_LIMITS.eventPayloadBytes,
     ),
     runner: row.runner_id ?? null,
     model: row.model_id ?? null,

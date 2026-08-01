@@ -66,6 +66,17 @@ export interface PrHandoffInput {
   skillCommand: string;
 }
 
+/**
+ * A rendered action packet, or the refusal that it cannot be sent whole.
+ *
+ * A discriminated result rather than a `truncated` flag, because there is no useful truncated
+ * action packet: the caller's only correct response to "it does not fit" is to block, and a
+ * boolean beside a usable-looking payload invites shipping the prefix.
+ */
+export type RenderedSessionAction =
+  | { ok: true; payload: string; payloadSha256: string }
+  | { ok: false; bytes: number; limit: number };
+
 export interface SessionActionPacketInput {
   workflowName: string;
   workflowVersion: number;
@@ -369,7 +380,7 @@ export function renderUnchangedEvidenceNudge(
  * into somebody's pane rather than an edit of the text: it is the same treatment every other
  * packet gets, applied to text that is otherwise passed through verbatim.
  */
-export function renderSessionAction(input: SessionActionPacketInput): RenderedWorkflowFeedback {
+export function renderSessionAction(input: SessionActionPacketInput): RenderedSessionAction {
   const header = [
     `Mission Control session action: ${sanitizeWorkflowFeedback(input.actionName)}`,
     `Workflow: ${sanitizeWorkflowFeedback(input.workflowName)} v${input.workflowVersion}`,
@@ -382,14 +393,22 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedWo
   const lines = input.skillCommand
     ? [sanitizeWorkflowFeedback(input.skillCommand), "", ...header]
     : header;
-  const body = `${lines.join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
-  const clipped = clipUtf8(body, WORKFLOW_LIMITS.sessionActionPacketBytes);
-  const payload = clipped.truncated ? `${clipped.value}${TRUNCATION_NOTICE}` : clipped.value;
+  const payload = `${lines.join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
+  // REFUSED, never truncated. Every other packet in this file clips, because every other
+  // packet is prose the daemon composed and a shorter summary is still a true summary. This
+  // one is the operator's own instruction, frozen into an immutable version: a prefix of
+  // "delete the old adapter and keep the new one" is a different request, and delivering it
+  // would change the operation without failing the run. `sessionActionPromptBytes` is derived
+  // from this budget so an authored action cannot reach here, and a version minted by some
+  // other build blocks instead of typing half a sentence.
+  const bytes = encoder.encode(payload).byteLength;
+  if (bytes > WORKFLOW_LIMITS.sessionActionPacketBytes) {
+    return { ok: false, bytes, limit: WORKFLOW_LIMITS.sessionActionPacketBytes };
+  }
   return {
+    ok: true,
     payload,
     payloadSha256: createHash("sha256").update(Buffer.from(payload, "utf8")).digest("hex"),
-    truncated: clipped.truncated,
-    failedPersonaCount: 0,
   };
 }
 

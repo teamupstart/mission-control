@@ -22,29 +22,46 @@ function failedPersona(attempt: WorkflowNodeAttempt | undefined): boolean {
     && normalizePersonaVerdict(attempt?.verdict)?.verdict === "fail";
 }
 
-/** Consecutive persona failures, anchored at the run's latest submission. */
+/**
+ * Consecutive persona failures, anchored at the run's latest submission.
+ *
+ * A REPAIR ROUND is the unit, not a submission, and the two stopped being the same thing
+ * once a session action could split one round into several evidence segments. Walking
+ * submissions would see two rows of the same round, decide the sequence had broken, and
+ * report a reviewer that has failed five rounds running as having failed one - which is
+ * precisely the loop the alert exists to surface. So the rows are folded to one entry per
+ * round first, keeping each node's NEWEST attempt across that round's segments: a node
+ * re-run after an action within the same round ends the round on that later answer.
+ */
 export function repeatOffenders(
   submissions: WorkflowSubmission[],
   attempts: WorkflowNodeAttempt[],
 ): WorkflowRepeatOffender[] {
   const ordered = [...submissions].sort((left, right) =>
     right.round - left.round
+    || right.segment - left.segment
     || right.createdAt - left.createdAt
     || right.id.localeCompare(left.id));
   const latest = ordered[0];
   if (!latest) return [];
 
-  const attemptsBySubmission = new Map<string, Map<string, WorkflowNodeAttempt>>();
-  for (const submission of ordered) {
-    attemptsBySubmission.set(
-      submission.id,
-      newestAttemptsByNode(
-        attempts.filter((attempt) => attempt.submissionId === submission.id),
-      ),
-    );
+  const submissionRound = new Map(ordered.map((submission) => [submission.id, submission.round]));
+  const segmentOf = new Map(ordered.map((submission) => [submission.id, submission.segment]));
+  // Newest-first per round, so `newestAttemptsByNode` keeps the highest segment's answer.
+  const byRound = new Map<number, WorkflowNodeAttempt[]>();
+  for (const attempt of attempts) {
+    const round = submissionRound.get(attempt.submissionId);
+    if (round === undefined) continue;
+    byRound.set(round, [...(byRound.get(round) ?? []), attempt]);
+  }
+  const attemptsByRound = new Map<number, Map<string, WorkflowNodeAttempt>>();
+  for (const [round, roundAttempts] of byRound) {
+    attemptsByRound.set(round, newestAttemptsByNode([...roundAttempts].sort((left, right) =>
+      (segmentOf.get(left.submissionId) ?? 0) - (segmentOf.get(right.submissionId) ?? 0)
+      || left.attempt - right.attempt)));
   }
 
-  const latestAttempts = attemptsBySubmission.get(latest.id);
+  const latestAttempts = attemptsByRound.get(latest.round);
   if (!latestAttempts) return [];
 
   return [...latestAttempts.values()]
@@ -52,13 +69,10 @@ export function repeatOffenders(
     .sort((left, right) => left.nodeId.localeCompare(right.nodeId))
     .flatMap((candidate): WorkflowRepeatOffender[] => {
       let rounds = 0;
-      let expectedRound = latest.round;
-      for (const submission of ordered) {
-        if (submission.round !== expectedRound) break;
-        const attempt = attemptsBySubmission.get(submission.id)?.get(candidate.nodeId);
+      for (let round = latest.round; round >= 1; round -= 1) {
+        const attempt = attemptsByRound.get(round)?.get(candidate.nodeId);
         if (!failedPersona(attempt)) break;
         rounds++;
-        expectedRound--;
       }
       if (rounds < 2) return [];
       return [{

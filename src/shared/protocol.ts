@@ -17,6 +17,9 @@ import {
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   EVIDENCE_REF_KINDS,
   INSPECTOR_FINDINGS_POLICIES,
+  SESSION_ACTION_BLOCK_CODES,
+  SESSION_ACTION_COMPLETION_KINDS,
+  SESSION_ACTION_WAIT_REASONS,
   WORKFLOW_BINDING_STATES,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_CHECK_STATUSES,
@@ -2361,6 +2364,58 @@ export const SessionActionSnapshotSchema = z.object({
   requiredSkillId: SessionActionSkillIdSchema.nullable(),
   completion: SessionActionCompletionSchema,
 });
+
+/**
+ * What an adapter may require of a continuation capture, as a CLOSED discriminated union.
+ *
+ * This value is persisted on a waiting attempt and re-validated against a capture that may
+ * happen after a daemon restart, so an `unknown` escape hatch would be a durable field
+ * nothing can read back safely. Phase 4's PR adapter adds its arm here.
+ */
+export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({ kind: z.literal("head"), headSha: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/) }),
+]);
+
+export const SessionActionDeliveryAnchorSchema = z.object({
+  deliveryId: WorkflowIdSchema,
+  sessionId: z.string().min(1).max(200),
+  noteKey: z.string().min(1).max(1_000),
+  deliveredAt: z.number().int(),
+  transcriptBytes: z.number().int().nonnegative().nullable(),
+});
+
+/**
+ * A waiting action attempt's durable observation state, as it is stored in `output_json`.
+ *
+ * Strict rather than permissive: this is what a restart reads to decide whether a packet was
+ * sent, whether the session picked it up, and whether a child segment already exists. A
+ * shape that degraded on a malformed field could re-send a packet somebody already received.
+ */
+export const SessionActionAttemptStateSchema = z.object({
+  wait: z.enum(SESSION_ACTION_WAIT_REASONS),
+  deliveryId: WorkflowIdSchema.nullable(),
+  anchor: SessionActionDeliveryAnchorSchema.nullable(),
+  pickedUpAt: z.number().int().nullable(),
+  settledAt: z.number().int().nullable(),
+  expectation: SessionActionContinuationExpectationSchema.nullable(),
+  continuationSubmissionId: WorkflowIdSchema.nullable(),
+  blocked: z
+    .object({ code: z.enum(SESSION_ACTION_BLOCK_CODES), detail: z.string().max(2_000) })
+    .nullable(),
+});
+
+/** The build's per-adapter answer, as the browser receives it. Never re-derived client-side. */
+export const SessionActionCompletionCapabilitySchema = z.object({
+  kind: z.enum(SESSION_ACTION_COMPLETION_KINDS),
+  available: z.boolean(),
+  label: z.string().min(1).max(200),
+  unavailableReason: z.string().max(1_000).nullable(),
+});
+export const SessionActionCapabilitiesSchema = z.object({
+  completions: z.array(SessionActionCompletionCapabilitySchema),
+});
+export type SessionActionCapabilities = z.infer<typeof SessionActionCapabilitiesSchema>;
 
 export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("session"), position: WorkflowPointSchema }),

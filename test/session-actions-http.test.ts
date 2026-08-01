@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
+import { SessionActionCapabilitiesSchema } from "../src/shared/protocol.ts";
 
 // What is at stake: HTTP is the only write boundary for a SessionAction. Every mutation must
 // pass the shared Zod schema, a stale revision must preserve both tabs' text, archive must
@@ -212,6 +213,27 @@ test("unknown ids, bad query values, and oversized bodies are refused at the doo
     body: body({ name: "Big", promptMarkdown: overSchema }),
   });
   assert.equal(refused.status, 400);
+});
+
+test("the capabilities route serves the daemon's OWN registry, before the id route", async () => {
+  const { request } = fixture();
+  const res = await request("/api/session-actions/capabilities");
+  assert.equal(res.status, 200, "the literal path was swallowed as a session action id");
+  const parsed = SessionActionCapabilitiesSchema.safeParse(await res.json());
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  // The client never invents support: whatever this says is what the runtime will do, and a
+  // published version naming an unavailable adapter is refused at Publish for the same reason.
+  assert.deepEqual(
+    parsed.data.completions.map((item) => [item.kind, item.available]),
+    [["session_turn", true], ["pull_request", false]],
+  );
+  const pr = parsed.data.completions.find((item) => item.kind === "pull_request")!;
+  assert.ok(pr.unavailableReason, "an unavailable adapter must say why");
+  assert.equal(
+    parsed.data.completions.find((item) => item.kind === "session_turn")!.unavailableReason,
+    null,
+  );
 });
 
 test("the routes answer honestly when the daemon supplied no manager", async () => {

@@ -355,6 +355,79 @@ Phase 3 must consume the runtime's segment and wait-state projections rather tha
 from attempts or session activity. It must not add browser polling, direct action delivery, or a
 client-owned adapter list.
 
+As built, those live at these names:
+
+| Contract | Where |
+|---|---|
+| Adapter availability, read by the validator, the daemon and the browser alike | `SESSION_ACTION_COMPLETION_CAPABILITIES` in `src/shared/workflow.ts` |
+| The server registry that executes them | `SESSION_ACTION_ADAPTERS` / `sessionActionCapabilities()` in `src/server/workflows/session-action-adapters.ts` |
+| The capability response | `GET /api/session-actions/capabilities`, schema `SessionActionCapabilitiesSchema` |
+| Evidence identity | `WorkflowSubmission.segment`, `parentSubmissionId`, `continuationNodeId`, `continuationNodeAttemptId` |
+| Explicit submission queries | `submissionForRepairRound`, `submissionForSegment`, `latestSubmissionForRun` |
+| Wait-state projections | `WorkflowRunSummary.segment` and `WorkflowRunSummary.actionWait`; sentences in `actionWaitSentence` (`src/web/workflows/run-model.ts`) |
+| The durable wait vocabulary | `SESSION_ACTION_WAIT_REASONS` and `SESSION_ACTION_BLOCK_CODES` in `src/shared/workflow.ts` |
+| The one action run status | `waiting_for_action`, distinct from `waiting_for_session` |
+
+Phase 3 must not:
+
+- read `waiting_for_action` as a parked repair round, or offer Resubmit against it;
+- count submissions to derive a round - a repair round now holds several segments, so the
+  round is `WorkflowRunSummary.round` and nothing else;
+- re-derive pickup or settledness from session activity. `actionWait` is the runtime's own
+  answer, and the distinction between a stale idle and a finished turn is not reconstructible
+  from a summary.
+
+## Reconciled after implementation
+
+- The Phase 1 publish gate was a single boolean, `SESSION_ACTION_RUNTIME_AVAILABLE`. It is
+  gone, replaced by the per-adapter capability table above and injected into `WorkflowStore`
+  as its last constructor argument for the same reason `builtins` is. One flag could not
+  express the state this phase actually reaches: a `session_turn` graph publishes and runs
+  while a `pull_request` graph is still refused. `WorkflowGraphValidationInput.sessionActions`
+  therefore also carries each action's `completion`, because a draft node names only a live
+  id and the catalog is the only place the selected proof is written down. The
+  `session_action_runtime_unavailable` diagnostic code is unchanged; its message is now the
+  adapter's own sentence.
+- Pickup is recorded from the registry's session stream (`noteSessionActionActivity`), not
+  from the sweep. An activity timestamp after the anchor is deliberately NOT accepted as
+  proof on its own: a turn already in flight when the packet was typed ends with its own
+  activity update and its own idle transition, which would satisfy pickup and settle in the
+  same instant and complete an action nobody had read. The sweep's own signal is transcript
+  growth past the recorded byte offset, which is durable and restart-safe.
+- An action node activates only once the current evaluation wave has drained. Once its packet
+  is live the run parks in `waiting_for_action`, and a queued reviewer would sit there
+  unclaimed - so deferring costs nothing and starving one would be silent.
+- The continuation reservation resolves idempotency BEFORE checking that the parent is still
+  the latest submission. A successful reservation makes the child the latest, so the other
+  order made every resume after a crash - the path the reservation exists to survive - look
+  like a stale completion.
+- `WORKFLOW_LIMITS.sessionActionPacketBytes` was added rather than reusing
+  `feedbackPayloadBytes`. That budget bounds prose the daemon composes from verdicts; an
+  action packet carries the operator's own authored instruction, so its ceiling is the
+  delivery row's own bound less envelope headroom. Review then caught that Phase 1's
+  `sessionActionPromptBytes` of 100,000 sat above that 60,000-byte packet, so an action
+  authored between the two would publish and then type only a PREFIX of its immutable
+  instruction. The authoring ceiling is now derived from the packet budget rather than set
+  beside it, the renderer refuses instead of truncating, and the manager blocks with
+  `prompt_too_large`. Stored rows keep the old looser read bound so none became unreadable -
+  the snapshot schema is what keeps an undeliverable prompt out of a version.
+- `repeatOffenders` now folds submissions to one entry per ROUND. Walking submissions would
+  see two rows of the same round, decide the sequence had broken, and report a reviewer that
+  has failed five rounds running as having failed one.
+- Review found two gaps, both fixed. A refused or uncertain packet left the attempt waiting
+  forever behind a generic delivery diagnostic, and startup recovery re-prepared a refused one
+  on every restart; both delivery states now block with their declared codes, `mark_delivered`
+  reopens the attempt, and recovery only prepares when the attempt owns no packet at all.
+  Concurrently ready actions were serialized with the rest recorded as deferred, which
+  silently lost them - the continuation seeds the child with only the completed action's
+  routes, so a deferred sibling's activating receipt stays behind in the parent. That shape is
+  now refused with a diagnostic naming both nodes, which matches this phase's stated non-goal
+  of parallel action execution. A chain is unaffected and remains the shape a pipeline authors.
+- The `(run_id, round, segment)` index is created in `migrate()` and not in the schema block.
+  That block runs first and its `CREATE TABLE` is a no-op on an existing database, so an index
+  over `segment` there fails to open every upgraded database. `test/session-action-migration.test.ts`
+  caught this against a realistic mid-flight fixture and now pins it.
+
 ## Cross-phase audit
 
 - Phase 1 contracts are consumed without renaming identifiers.

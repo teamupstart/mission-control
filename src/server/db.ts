@@ -498,10 +498,26 @@ export function openDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_binding
       ON workflow_runs(binding_id, updated_at);
 
+    -- One immutable evidence snapshot, identified by (round, segment).
+    --
+    -- round counts REPAIR and nothing else, so max_repair_rounds compares it alone.
+    -- segment counts the successive evidence snapshots inside one repair round that a
+    -- completed session action creates. The two are separate columns rather than one
+    -- ordinal because they answer to different budgets: an arbitrary number of actions must
+    -- never consume a repair round, and a repair must always restart the graph at Session.
+    --
+    -- The three continuation columns are all-or-nothing with a nonzero segment, enforced at
+    -- the row boundary in store.ts. continuation_node_attempt_id deliberately names an
+    -- attempt in the PARENT submission: that attempt ran against the parent evidence and its
+    -- completion is what authorized downstream work against this one.
     CREATE TABLE IF NOT EXISTS workflow_submissions (
       id                   TEXT PRIMARY KEY,
       run_id               TEXT NOT NULL,
       round                INTEGER NOT NULL,
+      segment              INTEGER NOT NULL DEFAULT 0,
+      parent_submission_id TEXT,
+      continuation_node_id TEXT,
+      continuation_node_attempt_id TEXT,
       mode                 TEXT NOT NULL,
       trigger_source       TEXT NOT NULL,
       trigger_key          TEXT NOT NULL,
@@ -514,8 +530,11 @@ export function openDb(): DatabaseSync {
       updated_at           INTEGER NOT NULL,
       completed_at         INTEGER
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_round
-      ON workflow_submissions(run_id, round);
+    -- idx_workflow_submissions_segment is created by migrate(), NOT here. This block runs
+    -- before migrate(), and on an upgraded database the CREATE TABLE above is a no-op - so
+    -- an index over the segment column here would be built against a table that lacks the
+    -- column yet, and every daemon start on an existing machine would fail to open the
+    -- database. It lives beside its ALTER, which is the house rule for exactly this reason.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
       ON workflow_submissions(trigger_key);
 
@@ -526,6 +545,10 @@ export function openDb(): DatabaseSync {
       attempt               INTEGER NOT NULL,
       state                 TEXT NOT NULL,
       persona_snapshot_json TEXT,
+      -- The action this attempt executes, frozen from the run's immutable version. Its own
+      -- column rather than a reuse of persona_snapshot_json: every reader of that column
+      -- treats the record as something that produces a verdict, and an action produces none.
+      session_action_snapshot_json TEXT,
       runner_id             TEXT,
       model_id              TEXT,
       verdict_json          TEXT,
@@ -561,6 +584,12 @@ export function openDb(): DatabaseSync {
       run_id         TEXT NOT NULL,
       submission_id  TEXT NOT NULL,
       kind           TEXT NOT NULL,
+      -- The node attempt that owns this packet, for 'session_action' only. NULL for every
+      -- other kind, including every historical pr_handoff row, and required for an action -
+      -- both enforced at the row boundary in store.ts. Two action nodes in one submission
+      -- could legitimately render the same payload, so (submission_id, kind, payload_sha256)
+      -- alone would deduplicate two genuinely distinct packets into one.
+      node_attempt_id TEXT,
       session_id     TEXT NOT NULL,
       note_key       TEXT NOT NULL,
       payload        TEXT NOT NULL,
@@ -576,6 +605,8 @@ export function openDb(): DatabaseSync {
       ON workflow_deliveries(submission_id, kind, payload_sha256);
     CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_run
       ON workflow_deliveries(run_id, created_at);
+    -- The two node_attempt_id indexes are created by migrate() beside their ALTER, for the
+    -- reason spelled out on workflow_submissions above.
 
     CREATE TABLE IF NOT EXISTS workflow_llm_calls (
       id               TEXT PRIMARY KEY,
@@ -1397,6 +1428,56 @@ function migrate(d: DatabaseSync): void {
   // that. It lives on the run rather than the immutable version because the disable is
   // scoped to one run and must never leak into other runs of the same published workflow.
   addColumn(d, "workflow_runs", "disabled_nodes_json", "TEXT");
+
+  // ---- SessionAction continuation segments -------------------------------------------
+  //
+  // `segment` splits one repair round into successive immutable evidence snapshots. NOT
+  // NULL DEFAULT 0 is exact rather than convenient: every submission written before this
+  // column existed WAS the round's only evidence, so zero is what it genuinely is, and no
+  // id changes. The three continuation columns are nullable with no default for the mirror
+  // reason - a pre-feature row continued nothing.
+  addColumn(d, "workflow_submissions", "segment", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "workflow_submissions", "parent_submission_id", "TEXT");
+  addColumn(d, "workflow_submissions", "continuation_node_id", "TEXT");
+  addColumn(d, "workflow_submissions", "continuation_node_attempt_id", "TEXT");
+  // The one verified index replacement, both halves, in this order and only here.
+  //
+  // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
+  // makes a second evidence snapshot inside a repair round impossible - so it is dropped by
+  // that exact name, after the column exists. The replacement is created here rather than in
+  // the schema block above because that block runs FIRST and its CREATE TABLE is a no-op on
+  // an existing database: an index over `segment` there would be built against a table that
+  // does not have the column yet, and the daemon would fail to open every upgraded database.
+  //
+  // Both statements are idempotent, as every start of the daemon requires: on a fresh
+  // database the dropped name was never used, and on an upgraded one it cannot come back.
+  d.exec(`DROP INDEX IF EXISTS idx_workflow_submissions_round;`);
+  d.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_segment
+      ON workflow_submissions(run_id, round, segment);
+  `);
+
+  // The action a waiting attempt is executing, frozen from the run's immutable version.
+  addColumn(d, "workflow_node_attempts", "session_action_snapshot_json", "TEXT");
+
+  // The delivery-to-attempt link. Nullable with no default so every historical row - every
+  // persona_feedback, inspector_feedback, unchanged_evidence_nudge and pr_handoff ever
+  // written - stays valid and recoverable exactly as it is.
+  addColumn(d, "workflow_deliveries", "node_attempt_id", "TEXT");
+  d.exec(`
+    -- Recovery reads "does this waiting attempt already own a delivery, and in what state?"
+    CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_attempt
+      ON workflow_deliveries(node_attempt_id, state);
+    -- At most ONE live packet per action attempt, enforced by the database rather than by
+    -- whichever caller happened to check first. 'uncertain' counts as live on purpose: an
+    -- uncertain write may have landed, so preparing a second packet for the same attempt is
+    -- exactly the double-type this index exists to prevent. Refused and cancelled rows are
+    -- excluded so an explicit retry can prepare again.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_deliveries_action_live
+      ON workflow_deliveries(node_attempt_id)
+      WHERE node_attempt_id IS NOT NULL
+        AND state IN ('prepared', 'sending', 'delivered', 'uncertain');
+  `);
   // The optional post-selection Workflow handoff snapshot. Editing the CREATE TABLE block above
   // is not enough - it is IF NOT EXISTS, so an operator upgrading from a Phase 3-5 build keeps
   // the ensemble_runs they already have, and every run write would fail on a column that never

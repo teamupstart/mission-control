@@ -214,6 +214,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
 import type { SessionActionManager, SessionActionMutation } from "./workflows/session-actions.ts";
+import { sessionActionCapabilities } from "./workflows/session-action-adapters.ts";
 import type {
   WorkflowManager,
   WorkflowDeleteMutation,
@@ -728,6 +729,16 @@ export function buildApp(
     }
     return c.json(manager.list(raw === "true"));
   });
+  /**
+   * What this build can actually PROVE, per completion adapter.
+   *
+   * Served from the daemon's own registry rather than derived in the browser, and registered
+   * BEFORE `/:id` so the literal path is not swallowed as an action id. A surface that
+   * offered a completion the daemon then refuses would be a workflow an operator can author
+   * and never run, so there is exactly one answer and this is where it comes from.
+   */
+  app.get("/api/session-actions/capabilities", (c) =>
+    c.json({ completions: sessionActionCapabilities() }));
   app.get("/api/session-actions/:id", (c) => {
     const manager = sessionActionManager();
     if (!manager) return c.json({ error: "session action manager unavailable" }, 503);

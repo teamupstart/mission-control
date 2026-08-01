@@ -9,8 +9,8 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
- * A real Pull Request action run, parked on each of the two stray-pull-request states, read in
- * the browser.
+ * A real Pull Request action run, read in the browser: parked on each of the two
+ * stray-pull-request states in turn, then recovered and completed.
  *
  * These two states are the ones an operator most needs told apart from "no pull request yet",
  * and until this spec existed the only thing proving their labels was a unit test calling
@@ -18,6 +18,11 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * daemon computes the state, that it survives the SSE projection, or that either label ever
  * reaches a screen - which is the whole reason this repository requires a browser spec for a
  * UI change.
+ *
+ * The completion at the end is the other half, and it is what proves the two mismatch states
+ * are WAITS rather than blocks: the same run recovers from both and finishes, and the card
+ * then carries the provenance a finished action leaves behind - which pull request, on which
+ * branch, at which commit. Nothing else asserts that provenance renders at all.
  *
  * ## What is real here and what is stood in for
  *
@@ -140,7 +145,7 @@ const actionWait = async (daemon: DaemonHandle, runId: string): Promise<string |
   (await api<{ summary: { actionWait?: string | null } }>(daemon, `/api/workflow-runs/${runId}`))
     .summary.actionWait ?? null;
 
-test("a stray pull request is named on screen, and never read as having none", async ({
+test("a pull request action names each stray, then completes with its provenance", async ({
   dashboard,
   daemon,
 }) => {
@@ -249,6 +254,44 @@ test("a stray pull request is named on screen, and never read as having none", a
   );
   expect(state.run.status).toBe("waiting_for_action");
   expect(state.attempts.some((attempt) => attempt.state === "waiting")).toBe(true);
+
+  // And the run RECOVERS from both, which is what makes them waits rather than blocks. The
+  // pull request is found on the right branch, at the commit this session's checkout is
+  // actually on, and the action completes.
+  const session = (await api<Array<{ id: string; cwd: string; gitBranch: string | null }>>(
+    daemon,
+    "/api/sessions",
+  )).find((item) => item.id === sessionId)!;
+  const head = execFileSync("git", ["-C", session.cwd, "rev-parse", "HEAD"], { encoding: "utf8" })
+    .trim();
+  observePullRequest(daemon, {
+    branch: session.gitBranch!,
+    repoRoot: session.cwd,
+    headSha: head,
+  });
+
+  await expect.poll(async () =>
+    (await api<{ attempts: Array<{ nodeId: string; state: string }> }>(
+      daemon,
+      `/api/workflow-runs/${runId}`,
+    )).attempts.some((attempt) => attempt.nodeId === NODE.action && attempt.state === "completed"),
+    { message: "a matching pull request never completed the action", timeout: 90_000 },
+  ).toBe(true);
+
+  // The PROVENANCE, in the browser. This is the audit trail a finished action leaves - which
+  // pull request, on which branch, at which commit - and nothing else asserts that it renders.
+  // A regression could drop the link or the commit after completion and every other check here
+  // would still pass, because they all read waiting states.
+  await expect(card).toContainText("Complete");
+  const link = card.getByRole("link", { name: "#77" });
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute("href", "https://github.com/owner/repo/pull/77");
+  await expect(card).toContainText(`on ${session.gitBranch}, verified at ${head.slice(0, 8)}`);
+  // The commit is the one the CONTINUATION captured, not merely the one the pull request is at.
+  // Those are the same here, and the point of printing it is that a reader can tell when they
+  // are not.
+  await expect(card).not.toContainText("Awaiting");
+  await shoot(dashboard, "13-pr-verified-provenance");
 });
 
 /** Both widths, for `workflow-session-action-evidence.spec.ts`' reason. */

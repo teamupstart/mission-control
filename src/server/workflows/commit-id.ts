@@ -81,15 +81,40 @@ const ABBREVIATED_SHA = /^[0-9a-f]{4,64}$/;
  * ambiguous abbreviation that nothing here is entitled to guess at.
  *
  * A full id short-circuits, which is the shape `submission.prHeadSha` already arrives in - and
- * it is safe to short-circuit because git ignores a ref that is 40 hex characters long, by
+ * it is safe to short-circuit because git ignores a ref whose name is a full object id, by
  * construction and by its own warning. That asymmetry is why the two lengths are treated
  * differently, and it is pinned by test.
+ *
+ * "Full" means full FOR THIS REPOSITORY, which is why `fullIdWidth` asks git rather than
+ * reading the id's length. Accepting either width on the string alone would let a
+ * 64-character value short-circuit in a SHA-1 repository - returned as a resolved commit
+ * having been verified by nothing, which is precisely the invalid id this function exists to
+ * keep away from a pin.
  *
  * Every refusal here is infrastructure, never a verdict: a commit we cannot identify is a gate
  * we could not run, not a statement about the change under review.
  */
+/**
+ * The full object-id width THIS repository uses: 64 for SHA-256, 40 for SHA-1.
+ *
+ * Asked rather than inferred from the id's own length, and that is the whole point. The
+ * short-circuit below returns a "full" id without consulting git at all, so deciding fullness
+ * from the string means a 64-character value in a SHA-1 repository is handed downstream as a
+ * resolved commit having been verified by nothing - which is exactly the invalid id a pin must
+ * never receive. Width is a property of the repository, so the repository is what is asked.
+ *
+ * An unreadable answer falls back to SHA-1's 40, which is the conservative direction: it makes
+ * a 64-character id take the disambiguation path, where a value naming no object is refused
+ * rather than trusted.
+ */
+async function fullIdWidth(repoRoot: string): Promise<number> {
+  const result = await run("git", ["-C", repoRoot, "rev-parse", "--show-object-format"]);
+  return result.code === 0 && result.stdout.trim() === "sha256" ? 64 : 40;
+}
+
 export async function resolveCapturedCommit(repoRoot: string, headSha: string): Promise<string> {
-  if (FULL_SHA.test(headSha)) return headSha;
+  // Full for THIS repository, not merely full-looking. See `fullIdWidth`.
+  if (FULL_SHA.test(headSha) && headSha.length === await fullIdWidth(repoRoot)) return headSha;
   if (!ABBREVIATED_SHA.test(headSha)) {
     throw new Error(
       `the captured commit ${JSON.stringify(headSha)} is not a commit id - a check is pinned to `

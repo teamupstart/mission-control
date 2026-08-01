@@ -222,9 +222,9 @@ which is exactly what a fourth stage produced. Fixed in `styles.css` and pinned 
 `test/workflow-pipeline-label-width.test.ts`, which now asserts the property for every strip
 card rather than for the one that happened to break.
 
-## 11 and 12. A pull request opened somewhere else
+## 11, 12 and 13. A pull request opened somewhere else, then found
 
-`11-pr-on-another-branch-*.png`, `12-pr-on-another-repo-*.png`
+`11-pr-on-another-branch-*.png`, `12-pr-on-another-repo-*.png`, `13-pr-verified-provenance-*.png`
 
 Captured by `e2e/specs/workflow-pull-request-mismatch.spec.ts`, which runs a real Pull Request
 action against a real dispatched session and parks it on each state in turn. The chip appears in
@@ -247,3 +247,13 @@ and an operator told only "awaiting" keeps watching for something that already e
   the label it first drew. Completion and every block already published; the waits - the states
   an operator sits and watches - did not. `setSessionActionWait` now publishes when the reason
   actually changes.
+
+Capture 13 is the same run recovered and finished, and it is what makes the two states above
+**waits rather than blocks**: the pull request is found on the right branch at the commit the
+continuation captured, and the action completes. The card then carries the audit trail a
+finished action leaves - the chip reads `Complete` (never Passed; it judged nothing), and
+beneath the turn's timeline sits `#77 on <branch>, verified at <commit>`.
+
+That line appears only once the proof exists. Offering to open a pull request nothing has
+verified is the claim this whole completion refuses to make - which is also why the header's
+**Open PR** control is dark in captures 11 and 12 and lit here.

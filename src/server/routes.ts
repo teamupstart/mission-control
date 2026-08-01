@@ -9,6 +9,9 @@ import {
   BacklogPlanSchema,
   CompleteTaskSchema,
   CreatePersonaSchema,
+  CreateSessionActionSchema,
+  UpdateSessionActionSchema,
+  ArchiveSessionActionSchema,
   CostConfigPatchSchema,
   CreateReviewSchema,
   DispatchBacklogTaskSchema,
@@ -210,6 +213,7 @@ import {
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
+import type { SessionActionManager, SessionActionMutation } from "./workflows/session-actions.ts";
 import type {
   WorkflowManager,
   WorkflowDeleteMutation,
@@ -249,6 +253,21 @@ const WAIT_TIMEOUT_MS = 30000;
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
+/**
+ * The same ×6 headroom as a Persona's, and derived from the prompt ceiling rather than
+ * copied from it: JSON string escaping can expand a UTF-8 byte several times over, so a
+ * limit set to the ceiling itself would reject prompts the schema accepts.
+ */
+const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes * 6 + 16 * 1024;
+/**
+ * Archive carries one integer, so it gets its own much smaller ceiling.
+ *
+ * Sizing it from the PROMPT ceiling like the two writes above would let a caller stream
+ * ~600 KB at a route whose entire schema is `{ expectedRevision }` - a body limit in name
+ * only. A kilobyte is already orders of magnitude more than the largest legal request and
+ * leaves room for whitespace, so the cap refuses abuse without ever refusing a real client.
+ */
+const SESSION_ACTION_ARCHIVE_BODY_MAX_BYTES = 1024;
 const WORKFLOW_BODY_MAX_BYTES = WORKFLOW_LIMITS.graphJsonBytes * 6 + 32 * 1024;
 
 /**
@@ -505,6 +524,8 @@ export function buildApp(
   handoffDeps?: HandoffDeps,
   /** The selected terminal launcher. Injected so route tests never open a real window. */
   launchSessionTerminal?: typeof launchTerminal,
+  /** Optional for existing route-unit stubs; the daemon always supplies it. */
+  sessionActions?: SessionActionManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -671,6 +692,84 @@ export function buildApp(
     const result = manager.archive(c.req.param("id"), parsed.data.expectedRevision);
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona) : personaFailure(c, result);
+  });
+
+  // --- SessionActions: exact prompt Markdown plus revision/CAS writes ---
+  //
+  // Deliberately the Persona block's shape, refusal vocabulary and status codes. The two
+  // catalogs obey the same CAS and built-in rules, and a second dialect of "409 conflict"
+  // for the same cause is how a browser ends up handling one and not the other.
+  const sessionActionManager = (): SessionActionManager | null => sessionActions ?? null;
+  const sessionActionFailure = (
+    c: Context,
+    result: Exclude<SessionActionMutation, { ok: true }>,
+  ) => {
+    const code = `session_action_${result.reason}`;
+    if (result.reason === "not_found") {
+      return c.json({ error: "no such session action", code }, 404);
+    }
+    if (result.reason === "builtin") {
+      return c.json({
+        error: "this session action ships with Mission Control and cannot be edited or "
+          + "archived. Duplicate it to make a copy you own.",
+        code,
+        current: result.current,
+      }, 409);
+    }
+    return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
+  };
+
+  app.get("/api/session-actions", (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const raw = c.req.query("includeArchived");
+    if (raw !== undefined && raw !== "true" && raw !== "false") {
+      return c.json({ error: "includeArchived must be true or false" }, 400);
+    }
+    return c.json(manager.list(raw === "true"));
+  });
+  app.get("/api/session-actions/:id", (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const action = manager.get(c.req.param("id"));
+    return action ? c.json(action) : c.json({ error: "no such session action" }, 404);
+  });
+  app.post("/api/session-actions", bodyLimit({
+    maxSize: SESSION_ACTION_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, CreateSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.create(parsed.data);
+    // A draft naming a missing action carries a diagnostic, so creating one can clear it.
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action, 201) : sessionActionFailure(c, result);
+  });
+  app.patch("/api/session-actions/:id", bodyLimit({
+    maxSize: SESSION_ACTION_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.update(c.req.param("id"), parsed.data);
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
+  });
+  app.delete("/api/session-actions/:id", bodyLimit({
+    maxSize: SESSION_ACTION_ARCHIVE_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "session action request is too large" }, 413),
+  }), async (c) => {
+    const manager = sessionActionManager();
+    if (!manager) return c.json({ error: "session action manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveSessionActionSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.archive(c.req.param("id"), parsed.data.expectedRevision);
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
   });
 
   // --- Workflow definitions: CAS drafts and immutable published versions ---

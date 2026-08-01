@@ -1,7 +1,9 @@
 import type {
   Persona,
+  SessionAction,
   WorkflowCompletionPolicy,
   WorkflowDiagnostic,
+  WorkflowDiagnosticCode,
   WorkflowDraftGraph,
   WorkflowDraftNode,
   WorkflowEdge,
@@ -14,48 +16,152 @@ import { WORKFLOW_LIMITS, WORKFLOW_MISSING_PR_ACTIONS } from "./workflow.ts";
 export interface WorkflowGraphValidationInput {
   graph: WorkflowDraftGraph;
   personas?: readonly Pick<Persona, "id" | "archivedAt">[];
+  /**
+   * Optional for `personas`' reason: a caller that only wants structural answers should not
+   * have to hold a catalog, and reference diagnostics must not fire merely because nobody
+   * supplied one. Pass it wherever a missing or archived source should block a publish.
+   */
+  sessionActions?: readonly Pick<SessionAction, "id" | "archivedAt">[];
   completionPolicy?: WorkflowCompletionPolicy;
+  /**
+   * Whether the CALLER's build can execute an action node. Defaults to this build's answer.
+   *
+   * A parameter rather than a bare module read for the reason `WorkflowStore.builtins` is
+   * injectable: the snapshot and transaction rules have to be provable without depending on
+   * which phase happens to be shipping. Production callers omit it.
+   */
+  sessionActionRuntimeAvailable?: boolean;
 }
 
+/**
+ * Whether this build can EXECUTE a published `session_action` node.
+ *
+ * Phase 1 ships the durable representation - catalog, snapshot, node, ports, stage shape -
+ * and deliberately not the runtime that delivers an action turn, waits for it, and captures
+ * the continuation evidence. Publishing a graph containing one would mint an immutable
+ * version that no daemon in this build can run: every run binding it would park forever with
+ * nothing on screen to say why.
+ *
+ * A single named constant rather than a condition spread across the validator, the store and
+ * the browser, so Phase 2 turns the capability on by flipping ONE value and deleting the
+ * diagnostic it feeds. Drafts still save, so API round trips and fixtures keep working.
+ */
+export const SESSION_ACTION_RUNTIME_AVAILABLE = false;
+
+/**
+ * What one node kind can do, in one place.
+ *
+ * This replaced three parallel `Record<kind, …>` tables plus an `OUTCOME_KINDS` array, and
+ * the reason is the failure they shared: adding a kind meant remembering all four, and
+ * forgetting one was silent. A Check that had been left out of `OUTCOME_KINDS` would have
+ * published with no fail route and dead-ended a submission at runtime; a SessionAction left
+ * in it would be required to emit a `pass` it has no port for.
+ *
+ * `requiredSourcePorts` is the honest generalisation of "both routes off an outcome node
+ * have to exist": Session must route `submitted`, an evaluator must route both `pass` and
+ * `fail`, and an action must route `complete`. `joinPredecessor` is separate from having
+ * pass/fail ports because they are separate questions - a Join has both and may feed
+ * another Join, while an action has neither and must never reach one.
+ */
+export interface WorkflowNodeCapability {
+  /** How this kind is spoken to a human in a diagnostic. Never the wire spelling. */
+  label: string;
+  /**
+   * What the node IS, for readers that group kinds rather than name them.
+   * `structural` is Session, Join and End; `evaluation` produces a verdict; `action`
+   * writes to the bound session and produces only completion.
+   */
+  role: "structural" | "evaluation" | "action";
+  sourcePorts: readonly WorkflowSourcePort[];
+  targetPorts: readonly WorkflowTargetPort[];
+  /** Ports this kind must route somewhere, or the graph dead-ends at runtime. */
+  requiredSourcePorts: readonly WorkflowSourcePort[];
+  /** Whether this kind may feed an all-pass Join's `result` input. */
+  joinPredecessor: boolean;
+}
+
+export const WORKFLOW_NODE_CAPABILITIES: Record<
+  WorkflowDraftNode["kind"],
+  WorkflowNodeCapability
+> = {
+  session: {
+    label: "Session",
+    role: "structural",
+    sourcePorts: ["submitted"],
+    targetPorts: ["return_for_changes"],
+    requiredSourcePorts: ["submitted"],
+    joinPredecessor: false,
+  },
+  persona: {
+    label: "Persona",
+    role: "evaluation",
+    sourcePorts: ["pass", "fail"],
+    targetPorts: ["activate"],
+    requiredSourcePorts: ["pass", "fail"],
+    joinPredecessor: true,
+  },
+  all_pass: {
+    label: "Join",
+    role: "structural",
+    sourcePorts: ["pass", "fail"],
+    targetPorts: ["result"],
+    requiredSourcePorts: ["pass", "fail"],
+    joinPredecessor: true,
+  },
+  check: {
+    label: "Check",
+    role: "evaluation",
+    sourcePorts: ["pass", "fail"],
+    targetPorts: ["activate"],
+    requiredSourcePorts: ["pass", "fail"],
+    joinPredecessor: true,
+  },
+  session_action: {
+    label: "Session action",
+    role: "action",
+    // One port, and no `fail`. Delivery refusal, an uncertain write, a lost session or a
+    // failed verifier are ATTEMPT and RUN states, not graph outcomes: routing them back to
+    // Session would ask the agent to fix a code problem that does not exist.
+    sourcePorts: ["complete"],
+    targetPorts: ["activate"],
+    requiredSourcePorts: ["complete"],
+    joinPredecessor: false,
+  },
+  end: {
+    label: "End",
+    role: "structural",
+    sourcePorts: [],
+    targetPorts: ["terminal"],
+    requiredSourcePorts: [],
+    joinPredecessor: false,
+  },
+};
+
+/**
+ * Kept as their own exports because the builder's connect controls enumerate ports per
+ * kind, and a projection off the registry is one source of truth rather than two tables.
+ */
 export const WORKFLOW_NODE_SOURCE_PORTS: Record<
   WorkflowDraftNode["kind"],
   readonly WorkflowSourcePort[]
-> = {
-  session: ["submitted"],
-  persona: ["pass", "fail"],
-  all_pass: ["pass", "fail"],
-  check: ["pass", "fail"],
-  end: [],
-};
+> = Object.fromEntries(
+  Object.entries(WORKFLOW_NODE_CAPABILITIES).map(([kind, capability]) => [kind, capability.sourcePorts]),
+) as Record<WorkflowDraftNode["kind"], readonly WorkflowSourcePort[]>;
 
 export const WORKFLOW_NODE_TARGET_PORTS: Record<
   WorkflowDraftNode["kind"],
   readonly WorkflowTargetPort[]
-> = {
-  session: ["return_for_changes"],
-  persona: ["activate"],
-  all_pass: ["result"],
-  check: ["activate"],
-  end: ["terminal"],
-};
+> = Object.fromEntries(
+  Object.entries(WORKFLOW_NODE_CAPABILITIES).map(([kind, capability]) => [kind, capability.targetPorts]),
+) as Record<WorkflowDraftNode["kind"], readonly WorkflowTargetPort[]>;
 
-/**
- * How each kind is spoken to a human in a diagnostic.
- *
- * A lookup rather than the two-way ternary this replaced: that ternary said "Persona" for
- * everything that was not a Join, so the third kind to route through it would have been
- * diagnosed under another kind's name.
- */
-const NODE_LABELS: Record<WorkflowDraftNode["kind"], string> = {
-  session: "Session",
-  persona: "Persona",
-  all_pass: "Join",
-  check: "Check",
-  end: "End",
+/** The diagnostic a missing required route reports, per port. */
+const MISSING_ROUTE_CODES: Record<WorkflowSourcePort, WorkflowDiagnosticCode> = {
+  submitted: "session_submitted_route",
+  pass: "missing_pass_route",
+  fail: "missing_fail_route",
+  complete: "missing_complete_route",
 };
-
-/** Kinds that decide an outcome, so both routes off them have to exist. */
-const OUTCOME_KINDS: readonly WorkflowDraftNode["kind"][] = ["persona", "all_pass", "check"];
 
 const diagnostic = (
   code: WorkflowDiagnostic["code"],
@@ -177,11 +283,11 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
       continue;
     }
     let valid = true;
-    if (!WORKFLOW_NODE_SOURCE_PORTS[source.kind].includes(edge.sourcePort)) {
+    if (!WORKFLOW_NODE_CAPABILITIES[source.kind].sourcePorts.includes(edge.sourcePort)) {
       diagnostics.push(diagnostic("invalid_source_port", `${source.kind} cannot emit “${edge.sourcePort}”.`, { edgeId: edge.id, nodeId: source.id }));
       valid = false;
     }
-    if (!WORKFLOW_NODE_TARGET_PORTS[target.kind].includes(edge.targetPort)) {
+    if (!WORKFLOW_NODE_CAPABILITIES[target.kind].targetPorts.includes(edge.targetPort)) {
       diagnostics.push(diagnostic("invalid_target_port", `${target.kind} cannot receive “${edge.targetPort}”.`, { edgeId: edge.id, nodeId: target.id }));
       valid = false;
     }
@@ -193,23 +299,20 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
   }
 
   const outgoingEdges = (id: string): WorkflowEdge[] => validEdges.filter((edge) => edge.source === id);
-  for (const session of sessions) {
-    // At-least-one, not exactly-one: parallel first-wave review is N reviewers on one submission,
-    // and the engine already writes one idempotent receipt per outgoing edge. Zero routes is still
-    // an error - nothing would ever run.
-    const submitted = outgoingEdges(session.id).filter((edge) => edge.sourcePort === "submitted");
-    if (submitted.length === 0) {
-      diagnostics.push(diagnostic("session_submitted_route", "Session needs a submitted route.", { nodeId: session.id }));
-    }
-  }
+  // One loop for every required route, driven by the capability registry. Session's
+  // at-least-one `submitted` rule is the same rule as a Persona's pass/fail pair - parallel
+  // first-wave review is N reviewers on one submission, and the engine already writes one
+  // idempotent receipt per outgoing edge - so it is stated once here rather than twice.
   for (const node of graph.nodes) {
-    if (!OUTCOME_KINDS.includes(node.kind)) continue;
+    const capability = WORKFLOW_NODE_CAPABILITIES[node.kind];
     const outgoing = outgoingEdges(node.id);
-    if (!outgoing.some((edge) => edge.sourcePort === "pass")) {
-      diagnostics.push(diagnostic("missing_pass_route", `${NODE_LABELS[node.kind]} needs a pass route.`, { nodeId: node.id }));
-    }
-    if (!outgoing.some((edge) => edge.sourcePort === "fail")) {
-      diagnostics.push(diagnostic("missing_fail_route", `${NODE_LABELS[node.kind]} needs a fail route.`, { nodeId: node.id }));
+    for (const port of capability.requiredSourcePorts) {
+      if (outgoing.some((edge) => edge.sourcePort === port)) continue;
+      diagnostics.push(diagnostic(
+        MISSING_ROUTE_CODES[port],
+        `${capability.label} needs a ${port} route.`,
+        { nodeId: node.id },
+      ));
     }
   }
 
@@ -221,10 +324,17 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
     }
     for (const predecessorId of predecessorIds) {
       const predecessor = nodes.get(predecessorId)!;
+      // A SessionAction is refused with its OWN sentence and nothing else. It has no pass or
+      // fail port, so the generic rules below would bury the real reason under two
+      // "missing its pass route" complaints about routes it can never have.
+      if (WORKFLOW_NODE_CAPABILITIES[predecessor.kind].role === "action") {
+        diagnostics.push(diagnostic("session_action_join", "A session action runs alone and cannot join an all-pass stage.", { nodeId: join.id }));
+        continue;
+      }
       // Anything that decides a pass/fail outcome may feed a Join, which is now three kinds.
       // Session and End are still refused: one produces a submission rather than a verdict,
       // and the other consumes one.
-      if (!OUTCOME_KINDS.includes(predecessor.kind)) {
+      if (!WORKFLOW_NODE_CAPABILITIES[predecessor.kind].joinPredecessor) {
         diagnostics.push(diagnostic("join_predecessor_kind", "A Join predecessor must be a Persona, a Check, or another Join.", { nodeId: join.id }));
       }
       for (const port of ["pass", "fail"] as const) {
@@ -242,6 +352,33 @@ export function validateWorkflowGraph(input: WorkflowGraphValidationInput): Work
       const persona = personas.get(node.personaId);
       if (!persona) diagnostics.push(diagnostic("missing_persona", "Persona no longer exists.", { nodeId: node.id }));
       else if (persona.archivedAt !== null) diagnostics.push(diagnostic("archived_persona", "Archived Personas cannot be published in a new version.", { nodeId: node.id }));
+    }
+  }
+
+  // Conditional on the catalog exactly as Persona references are: a caller that supplied no
+  // catalog is asking a structural question, and inventing "no longer exists" for every
+  // action node would make that question unanswerable.
+  if (input.sessionActions) {
+    const actions = new Map(input.sessionActions.map((action) => [action.id, action]));
+    for (const node of graph.nodes) {
+      if (node.kind !== "session_action") continue;
+      const action = actions.get(node.sessionActionId);
+      if (!action) diagnostics.push(diagnostic("missing_session_action", "Session action no longer exists.", { nodeId: node.id }));
+      else if (action.archivedAt !== null) diagnostics.push(diagnostic("archived_session_action", "Archived session actions cannot be published in a new version.", { nodeId: node.id }));
+    }
+  }
+
+  // The temporary Phase 1 gate. Unconditional on purpose: it has to reach the draft's own
+  // error count so the Publish control is refused where the operator can see why, rather
+  // than only at the store where it becomes a 409 against a button that looked enabled.
+  if (!(input.sessionActionRuntimeAvailable ?? SESSION_ACTION_RUNTIME_AVAILABLE)) {
+    for (const node of graph.nodes) {
+      if (node.kind !== "session_action") continue;
+      diagnostics.push(diagnostic(
+        "session_action_runtime_unavailable",
+        "This build cannot run a session action yet, so a workflow containing one cannot be published.",
+        { nodeId: node.id },
+      ));
     }
   }
 
@@ -300,7 +437,10 @@ export function connectionAllowed(
   target: WorkflowDraftNode,
   targetPort: WorkflowTargetPort,
 ): boolean {
-  return WORKFLOW_NODE_SOURCE_PORTS[source.kind].includes(sourcePort) &&
-    WORKFLOW_NODE_TARGET_PORTS[target.kind].includes(targetPort) &&
-    (target.kind !== "session" || (sourcePort === "fail" && targetPort === "return_for_changes"));
+  return WORKFLOW_NODE_CAPABILITIES[source.kind].sourcePorts.includes(sourcePort) &&
+    WORKFLOW_NODE_CAPABILITIES[target.kind].targetPorts.includes(targetPort) &&
+    (target.kind !== "session" || (sourcePort === "fail" && targetPort === "return_for_changes")) &&
+    // An action never joins a stage. Refused at drop time as well as in validation, so the
+    // canvas declines the connection instead of drawing an edge the validator then rejects.
+    (target.kind !== "all_pass" || WORKFLOW_NODE_CAPABILITIES[source.kind].joinPredecessor);
 }

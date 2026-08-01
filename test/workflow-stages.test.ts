@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import type {
   Persona,
   PublishedWorkflowGraph,
+  PublishedWorkflowNode,
   WorkflowCheckSlot,
   WorkflowDraftGraph,
 } from "../src/shared/workflow.ts";
@@ -22,6 +23,7 @@ import {
   stageContents,
   stageName,
   stageSummary,
+  type EvaluationStage,
   type Stage,
   type StagePipeline,
 } from "../src/shared/workflow-stages.ts";
@@ -55,22 +57,42 @@ const pipeline = (stages: StagePipeline["stages"]): StagePipeline => ({
 });
 
 const solo = (personaId: string, nodeId: string | null = personaId): Stage => ({
+  kind: "evaluation",
   joinId: null,
   members: [{ nodeId, kind: "persona", personaId }],
 });
 
 const parallel = (joinId: string | null, ids: readonly string[]): Stage => ({
+  kind: "evaluation",
   joinId,
   members: ids.map((id) => ({ nodeId: id, kind: "persona", personaId: id })),
 });
 
 /** A check member, named by its slot the way `solo` is named by its Persona. */
 const gate = (slot: WorkflowCheckSlot, nodeId: string | null = `check-${slot}`): Stage => ({
+  kind: "evaluation",
   joinId: null,
   members: [{ nodeId, kind: "check", slot }],
 });
 
-const mixed = (joinId: string | null, members: Stage["members"]): Stage => ({ joinId, members });
+const mixed = (joinId: string | null, members: EvaluationStage["members"]): Stage =>
+  ({ kind: "evaluation", joinId, members });
+
+/** A singleton session action stage, the only shape the union allows for one. */
+const action = (sessionActionId: string, nodeId: string | null = sessionActionId): Stage => ({
+  kind: "session_action",
+  member: { nodeId, kind: "session_action", sessionActionId },
+});
+
+/**
+ * Narrow to the evaluation arm with an assertion rather than a cast, so a test that reads
+ * `.members` off a stage the projection decided was an action fails loudly instead of
+ * silently reading `undefined`.
+ */
+const evaluation = (stage: Stage | undefined): EvaluationStage => {
+  assert.ok(stage && stage.kind === "evaluation", "expected an evaluation stage");
+  return stage;
+};
 
 const validation = (graph: WorkflowDraftGraph) =>
   validateWorkflowGraph({ graph, personas, completionPolicy: { kind: "none" } });
@@ -113,7 +135,7 @@ test("a fresh Session-plus-End draft is the zero-stage pipeline, canonicalized o
 
   // A stage with no members is not a stage. Emitting it would mean an edge with no source, which
   // persists as a graph whose diagnostics describe none of what the operator actually did.
-  const emptied = compileStages(pipeline([{ joinId: null, members: [] }]), compiled);
+  const emptied = compileStages(pipeline([{ kind: "evaluation", joinId: null, members: [] }]), compiled);
   assert.deepEqual(emptied, compiled);
 });
 
@@ -121,7 +143,7 @@ test("adding a reviewer reuses every id the edit did not touch", () => {
   const before = compileStages(pipeline([solo("intent")]), empty);
   const previousKeys = edgeKeys(before);
   const after = compileStages(
-    pipeline([{ joinId: null, members: [
+    pipeline([{ kind: "evaluation", joinId: null, members: [
       { nodeId: "intent", kind: "persona", personaId: "intent" },
       { nodeId: null, kind: "persona", personaId: "security" },
     ] }]),
@@ -134,8 +156,8 @@ test("adding a reviewer reuses every id the edit did not touch", () => {
   const keys = edgeKeys(after);
   assert.equal(keys.get("session submitted intent activate"), previousKeys.get("session submitted intent activate"));
   const projected = projectStages(after)!;
-  assert.equal(projected.stages[0]!.members[0]!.nodeId, "intent");
-  const minted = projected.stages[0]!.members[1]!.nodeId!;
+  assert.equal(evaluation(projected.stages[0]).members[0]!.nodeId, "intent");
+  const minted = evaluation(projected.stages[0]).members[1]!.nodeId!;
   assert.ok(!before.nodes.some((node) => node.id === minted));
   assert.ok(!before.edges.some((edge) => edge.id === minted));
   assert.deepEqual(validation(after), { valid: true, diagnostics: [] });
@@ -169,7 +191,7 @@ test("reordering stages keeps node ids and every route that still means the same
   }
   assert.deepEqual(
     projectStages(after)!.stages.map((stage) => {
-      const member = stage.members[0]!;
+      const member = evaluation(stage).members[0]!;
       return member.kind === "persona" ? member.personaId : member.slot;
     }),
     ["security", "intent"],
@@ -182,7 +204,7 @@ test("a brand-new stage mints its own join without disturbing the stage before i
   const after = compileStages(
     pipeline([
       solo("intent"),
-      { joinId: null, members: [
+      { kind: "evaluation", joinId: null, members: [
         { nodeId: null, kind: "persona", personaId: "security" },
         { nodeId: null, kind: "persona", personaId: "style" },
       ] },
@@ -190,12 +212,12 @@ test("a brand-new stage mints its own join without disturbing the stage before i
     before,
   );
   const projected = projectStages(after)!;
-  assert.equal(projected.stages[0]!.members[0]!.nodeId, "intent");
-  const gate = projected.stages[1]!.joinId!;
-  const minted = projected.stages[1]!.members.map((member) => member.nodeId!);
+  assert.equal(evaluation(projected.stages[0]).members[0]!.nodeId, "intent");
+  const gate = evaluation(projected.stages[1]).joinId!;
+  const minted = evaluation(projected.stages[1]).members.map((member) => member.nodeId!);
   assert.equal(new Set([gate, ...minted, "intent", "session", "end"]).size, 6);
   assert.deepEqual(
-    projected.stages[1]!.members.map((member) => member.kind === "persona" ? member.personaId : member.slot),
+    evaluation(projected.stages[1]).members.map((member) => member.kind === "persona" ? member.personaId : member.slot),
     ["security", "style"],
   );
   assert.deepEqual(validation(after), { valid: true, diagnostics: [] });
@@ -332,7 +354,7 @@ test("names come from Personas and stages, and never from an id", () => {
 
   // A published graph resolves names from its immutable snapshots, with no live Persona list.
   const published: PublishedWorkflowGraph = {
-    nodes: draft.nodes.map((node) => node.kind === "persona"
+    nodes: draft.nodes.map((node): PublishedWorkflowNode => node.kind === "persona"
       ? {
           id: node.id,
           kind: "persona" as const,
@@ -347,7 +369,8 @@ test("names come from Personas and stages, and never from an id", () => {
           },
           position: node.position,
         }
-      : node),
+      // This fixture draft has no action node, so every other arm carries through.
+      : node as PublishedWorkflowNode),
     edges: draft.edges,
   };
   assert.deepEqual(projectStages(published), projectStages(draft));
@@ -428,7 +451,7 @@ test("adding and removing a check reuses every id the edit did not touch", () =>
     before,
   );
   assert.deepEqual(validation(withCheck), { valid: true, diagnostics: [] });
-  const minted = projectStages(withCheck)!.stages[0]!.members[1]!.nodeId!;
+  const minted = evaluation(projectStages(withCheck)!.stages[0]).members[1]!.nodeId!;
   assert.ok(minted, "the compiler mints the id for a member the editor added");
   assert.ok(withCheck.nodes.some((node) => node.id === "intent"), "the Persona kept its identity");
   // Every route that existed before and still means the same thing keeps its edge id.

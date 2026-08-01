@@ -63,7 +63,6 @@ import {
   WorkflowInspectorGateStateSchema,
 } from "@shared/protocol.ts";
 import type { InspectionUpdated, InspectorComment } from "@shared/types.ts";
-import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
 import { injectPrompt, type InjectResult } from "../actions.ts";
@@ -684,11 +683,9 @@ export class WorkflowManager {
     if (workflow.draftRevision !== expectedDraftRevision) {
       return { ok: false, reason: "revision_conflict", current: workflow };
     }
-    const result = validateWorkflowGraph({
-      graph: workflow.draft,
-      personas: this.store.personaCatalog(),
-      completionPolicy: workflow.completionPolicy,
-    });
+    // The store's own validation, so the library card, this route and Publish cannot
+    // disagree about the same draft - including about whether this build can run its nodes.
+    const result = this.store.validateDraft(workflow);
     return { ok: true, workflow, ...result };
   }
 
@@ -716,11 +713,7 @@ export class WorkflowManager {
   diagnostics(id: string): WorkflowDiagnostic[] | null {
     const workflow = this.store.getWorkflow(id);
     if (!workflow) return null;
-    return validateWorkflowGraph({
-      graph: workflow.draft,
-      personas: this.store.personaCatalog(),
-      completionPolicy: workflow.completionPolicy,
-    }).diagnostics;
+    return this.store.validateDraft(workflow).diagnostics;
   }
 
   bindings(): WorkflowBinding[] {

@@ -2,6 +2,8 @@ import type {
   Persona,
   PersonaId,
   PublishedWorkflowNode,
+  SessionAction,
+  SessionActionId,
   WorkflowDraftGraph,
   WorkflowCheckSlot,
   WorkflowDraftNode,
@@ -29,6 +31,9 @@ export type StageNode = WorkflowDraftNode | PublishedWorkflowNode;
 /** Only the two fields naming resolution needs, so a `PersonaView[]` passes unchanged. */
 export type StagePersonaNames = readonly Pick<Persona, "id" | "name">[];
 
+/** The same narrow shape for session actions, so a `SessionAction[]` passes unchanged. */
+export type StageSessionActionNames = readonly Pick<SessionAction, "id" | "name">[];
+
 /**
  * One thing a stage runs: a Persona reviewing, or a Check gating.
  *
@@ -45,8 +50,25 @@ export type StageMember =
   | { nodeId: string | null; kind: "persona"; personaId: PersonaId }
   | { nodeId: string | null; kind: "check"; slot: WorkflowCheckSlot };
 
-/** The node kinds a stage member is drawn from. Session, End and Join are structure. */
+/**
+ * The one thing a SessionAction stage runs.
+ *
+ * Its own type rather than a third arm of `StageMember`, because a stage member is
+ * something an evaluation wave holds N of and an action is something a stage holds exactly
+ * one of. A third arm would compile everywhere and be wrong wherever a caller put it beside
+ * a reviewer - which is precisely the shape the runtime cannot execute.
+ */
+export type SessionActionStageMember = {
+  nodeId: string | null;
+  kind: "session_action";
+  sessionActionId: SessionActionId;
+};
+
+/** The node kinds an evaluation member is drawn from. Session, End and Join are structure. */
 export type StageMemberNode = Extract<StageNode, { kind: "persona" | "check" }>;
+
+/** The node kind a SessionAction stage is drawn from. */
+export type SessionActionStageNode = Extract<StageNode, { kind: "session_action" }>;
 
 const isMemberKind = (kind: StageNode["kind"]): kind is "persona" | "check" =>
   kind === "persona" || kind === "check";
@@ -58,7 +80,20 @@ function memberOf(node: StageMemberNode): StageMember {
     : { nodeId: node.id, kind: "persona", personaId: personaIdOf(node) };
 }
 
-export interface Stage {
+function actionMemberOf(node: SessionActionStageNode): SessionActionStageMember {
+  return {
+    nodeId: node.id,
+    kind: "session_action",
+    sessionActionId: sessionActionIdOf(node),
+  };
+}
+
+/**
+ * An all-pass wave: one or more Personas and Checks reading the SAME evidence, agreeing
+ * before the pipeline moves on, and returning to Session together when any of them fails.
+ */
+export interface EvaluationStage {
+  kind: "evaluation";
   /**
    * The stage's `all_pass` node. `null` means no join node is bound: the stage has one member
    * (a single member needs no join), or the stage is new and `compileStages` will mint one.
@@ -66,6 +101,75 @@ export interface Stage {
    */
   joinId: string | null;
   members: StageMember[];
+}
+
+/**
+ * One session action, alone.
+ *
+ * `member` is singular and there is no `joinId`, and both are the type saying what the
+ * runtime requires rather than a convention a caller has to remember. An action writes to
+ * the bound conversation and may change the repository, so it cannot run beside an evaluator
+ * reading the evidence it is about to invalidate, and it emits completion rather than a
+ * verdict, so there is nothing for a join to aggregate.
+ */
+export interface SessionActionStage {
+  kind: "session_action";
+  member: SessionActionStageMember;
+}
+
+/**
+ * A DISCRIMINATED UNION rather than one shape with an optional field. The two kinds of
+ * stage differ in arity, in what they emit and in what happens after them, and a single
+ * `members` array carrying an action that only works when it is alone would compile at
+ * every call site and be honest at almost none of them.
+ */
+export type Stage = EvaluationStage | SessionActionStage;
+
+export const isEvaluationStage = (stage: Stage): stage is EvaluationStage =>
+  stage.kind === "evaluation";
+
+export const isSessionActionStage = (stage: Stage): stage is SessionActionStage =>
+  stage.kind === "session_action";
+
+/**
+ * Every member of a stage as one ordered list, whichever kind of stage it is.
+ *
+ * Shared so the surfaces that walk members for FOCUS ORDER, counting, or keyboard reorder
+ * do not each grow their own `stage.kind === …` fork and then disagree about whether an
+ * action stage has one member or none.
+ */
+export function stageMembers(stage: Stage): Array<StageMember | SessionActionStageMember> {
+  return stage.kind === "session_action" ? [stage.member] : stage.members;
+}
+
+/**
+ * What the seam AFTER a stage says about the gate its predecessor cleared.
+ *
+ * Shared rather than spelled at the editor and the run monitor, because "complete" is a
+ * distinction both surfaces have to draw and neither can derive from a member count: a
+ * pass carries the same evidence onward, a complete means everything after it reads
+ * evidence captured once the action had run.
+ */
+export function stageSeamGate(stage: Stage): string {
+  if (stage.kind === "session_action") return "complete";
+  return stage.members.length > 1 ? "all pass" : "pass";
+}
+
+/**
+ * A stable render key for a member that has no node id yet, or whose id a caller would
+ * rather not use. Prefixed so a Persona whose id spells a check slot cannot collide with one.
+ */
+export function stageMemberKey(member: StageMember | SessionActionStageMember): string {
+  if (member.kind === "check") return `check:${member.slot}`;
+  if (member.kind === "session_action") return `session_action:${member.sessionActionId}`;
+  return `persona:${member.personaId}`;
+}
+
+/** Every graph node id a stage owns, members first and its join - if any - last. */
+export function stageNodeIds(stage: Stage): string[] {
+  const ids = stageMembers(stage).flatMap((member) => member.nodeId === null ? [] : [member.nodeId]);
+  const joinId = stage.kind === "evaluation" ? stage.joinId : null;
+  return joinId === null ? ids : [...ids, joinId];
 }
 
 export interface StagePipeline {
@@ -82,10 +186,16 @@ const LAYOUT = { originX: 60, originY: 60, columnStride: 280, rowStride: 170 } a
 const isKind = <K extends StageNode["kind"]>(kind: K) =>
   (node: StageNode): node is Extract<StageNode, { kind: K }> => node.kind === kind;
 const isPersonaNode = isKind("persona");
+const isSessionActionNode = isKind("session_action");
 
 /** A published Persona node carries its snapshot; a draft node points at a live Persona. */
 function personaIdOf(node: Extract<StageNode, { kind: "persona" }>): PersonaId {
   return "persona" in node ? node.persona.sourcePersonaId : node.personaId;
+}
+
+/** The same split for actions: a published node carries its snapshot's source id. */
+function sessionActionIdOf(node: SessionActionStageNode): SessionActionId {
+  return "action" in node ? node.action.sourceSessionActionId : node.sessionActionId;
 }
 
 function personaName(
@@ -94,6 +204,15 @@ function personaName(
 ): string {
   if ("persona" in node) return node.persona.name;
   return personas.find((persona) => persona.id === node.personaId)?.name ?? "Missing persona";
+}
+
+function sessionActionName(
+  node: SessionActionStageNode,
+  actions: StageSessionActionNames,
+): string {
+  if ("action" in node) return node.action.name;
+  return actions.find((action) => action.id === node.sessionActionId)?.name
+    ?? "Missing session action";
 }
 
 function joinLabel(graph: StageGraph, node: StageNode): string {
@@ -106,11 +225,17 @@ function joinLabel(graph: StageGraph, node: StageNode): string {
 }
 
 /** The label a node carries with no stage context - what blockers and Graph view fall back to. */
-function baseLabel(graph: StageGraph, node: StageNode, personas: StagePersonaNames): string {
+function baseLabel(
+  graph: StageGraph,
+  node: StageNode,
+  personas: StagePersonaNames,
+  actions: StageSessionActionNames,
+): string {
   if (node.kind === "session") return "Session";
   if (node.kind === "end") return node.outcome;
   if (node.kind === "all_pass") return joinLabel(graph, node);
   if (node.kind === "check") return checkLabel(node.slot);
+  if (node.kind === "session_action") return sessionActionName(node, actions);
   return personaName(node, personas);
 }
 
@@ -129,6 +254,15 @@ function withSnapshotNames(graph: StageGraph, personas: StagePersonaNames): Stag
   return snapshots.length === 0 ? personas : [...snapshots, ...personas];
 }
 
+function withSnapshotActionNames(
+  graph: StageGraph,
+  actions: StageSessionActionNames,
+): StageSessionActionNames {
+  const snapshots = graph.nodes.filter(isSessionActionNode).flatMap((node) =>
+    "action" in node ? [{ id: node.action.sourceSessionActionId, name: node.action.name }] : []);
+  return snapshots.length === 0 ? actions : [...snapshots, ...actions];
+}
+
 /**
  * Derived stage naming (plan decision 3: no persisted stage label). A single member names its
  * own stage; a parallel stage is "Stage N", 1-based as an operator counts.
@@ -136,7 +270,18 @@ function withSnapshotNames(graph: StageGraph, personas: StagePersonaNames): Stag
  * A pipeline projected from a PUBLISHED graph carries the snapshot's `sourcePersonaId`, so a
  * caller naming published stages passes the snapshot names - `nodeLabel` already does.
  */
-export function stageName(stage: Stage, index: number, personas: StagePersonaNames): string {
+export function stageName(
+  stage: Stage,
+  index: number,
+  personas: StagePersonaNames,
+  actions: StageSessionActionNames = [],
+): string {
+  // An action stage is always a singleton, so it always names itself - there is no
+  // "Stage N" fallback for it, because there is nothing else in it to disagree with.
+  if (stage.kind === "session_action") {
+    return actions.find((action) => action.id === stage.member.sessionActionId)?.name
+      ?? "Missing session action";
+  }
   const only = stage.members.length === 1 ? stage.members[0] : null;
   if (!only) return `Stage ${index + 1}`;
   if (only.kind === "check") return checkLabel(only.slot);
@@ -150,8 +295,13 @@ export function stageName(stage: Stage, index: number, personas: StagePersonaNam
  * same stage: "2 reviewers" was correct only while a member could not be anything else, and
  * two surfaces each growing their own check-aware variant of it is how the same stage starts
  * describing itself two ways.
+ *
+ * The action arm is a separate return rather than a third counter, because the union already
+ * says the count is one. The subtraction below - "everything that is not a reviewer is a
+ * check" - would otherwise have quietly reported a session action as a check.
  */
 export function stageContents(stage: Stage): string {
+  if (stage.kind === "session_action") return "1 session action";
   const reviewers = stage.members.filter((member) => member.kind === "persona").length;
   const checks = stage.members.length - reviewers;
   return [
@@ -167,9 +317,15 @@ export function stageContents(stage: Stage): string {
  * the count - a caller doing string surgery on this suffix would silently stop trimming the
  * day the wording changed, and say "and its 3 reviewers · all must pass:" in the middle of a
  * confirmation sentence.
+ *
+ * The action's rule is the one an operator most needs stated: everything after it reviews
+ * evidence captured AFTER the action ran, not the evidence the stages above it saw.
  */
 export function stageSummary(stage: Stage): string {
   const contents = stageContents(stage);
+  if (stage.kind === "session_action") {
+    return `${contents} · later stages review new evidence`;
+  }
   return stage.members.length > 1 ? `${contents} · all must pass` : contents;
 }
 
@@ -184,12 +340,19 @@ export function nodeLabel(
   graph: StageGraph,
   node: StageNode,
   personas: StagePersonaNames,
+  actions: StageSessionActionNames = [],
 ): string {
-  if (node.kind !== "all_pass") return baseLabel(graph, node, personas);
+  if (node.kind !== "all_pass") return baseLabel(graph, node, personas, actions);
   const pipeline = projectStages(graph);
-  const index = pipeline?.stages.findIndex((stage) => stage.joinId === node.id) ?? -1;
+  const index = pipeline?.stages.findIndex((stage) =>
+    stage.kind === "evaluation" && stage.joinId === node.id) ?? -1;
   if (!pipeline || index < 0) return joinLabel(graph, node);
-  return stageName(pipeline.stages[index]!, index, withSnapshotNames(graph, personas));
+  return stageName(
+    pipeline.stages[index]!,
+    index,
+    withSnapshotNames(graph, personas),
+    withSnapshotActionNames(graph, actions),
+  );
 }
 
 interface Analysis {
@@ -200,13 +363,18 @@ interface Analysis {
 type Entry =
   | { kind: "end" }
   | { kind: "members"; ids: string[] }
+  | { kind: "action"; id: string }
   | { kind: "blocked"; blocker: string };
 
 /**
  * One walk answering both public questions, so `projectStages` returns non-null exactly when
  * `stageBlockers` is empty. Two implementations would agree only by luck.
  */
-function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
+function analyze(
+  graph: StageGraph,
+  personas: StagePersonaNames,
+  actions: StageSessionActionNames = [],
+): Analysis {
   const blocked = (blocker: string): Analysis => ({ pipeline: null, blockers: [blocker] });
   const sessions = graph.nodes.filter(isKind("session"));
   const ends = graph.nodes.filter(isKind("end"));
@@ -230,13 +398,20 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
   const session = sessions[0]!;
   const end = ends[0]!;
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
-  const label = (node: StageNode): string => baseLabel(graph, node, personas);
+  const label = (node: StageNode): string => baseLabel(graph, node, personas, actions);
   const outgoing = (id: string, port: WorkflowEdge["sourcePort"]): WorkflowEdge[] =>
     graph.edges.filter((edge) => edge.source === id && edge.sourcePort === port);
   const used = new Set<string>();
   const visited = new Set<string>([session.id, end.id]);
 
-  /** Where a `submitted` or `pass` port leads: the next stage's members, or the End. */
+  /**
+   * Where a `submitted`, `pass` or `complete` port leads: the next stage, or the End.
+   *
+   * "The next stage" is now two answers, and the split is deliberate rather than a shape the
+   * caller has to detect afterwards - a route reaching an action and an evaluator at once is
+   * a stage the runtime cannot execute, and it has to be refused HERE, where the fan-out is
+   * still visible, rather than at the loop below where only a list of ids remains.
+   */
   const entryFrom = (edges: WorkflowEdge[], from: string, noRoute: string): Entry => {
     if (edges.length === 0) return { kind: "blocked", blocker: noRoute };
     const targets = edges.map((edge) => byId.get(edge.target));
@@ -259,6 +434,18 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
         return { kind: "blocked", blocker: `${from} does not reach the End node's terminal input.` };
       }
       return { kind: "end" };
+    }
+    if (kinds.has("session_action")) {
+      // A session action writes to the conversation and may change the repository, so
+      // anything running beside it would be reviewing evidence the action is about to
+      // invalidate. Fanning out to two actions is refused for the same reason.
+      if (edges.length > 1) {
+        return { kind: "blocked", blocker: `${from} routes to a session action alongside another node; a session action runs on its own.` };
+      }
+      if (edges[0]!.targetPort !== "activate") {
+        return { kind: "blocked", blocker: `${from} routes to ${label(targets[0]!)} without activating it.` };
+      }
+      return { kind: "action", id: edges[0]!.target };
     }
     const stranger = targets.find((target) => !isMemberKind(target!.kind));
     if (stranger) {
@@ -286,7 +473,20 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
     : entryFrom(submitted, "Session", "Session has no submitted route.");
 
   const stages: Stage[] = [];
-  while (entry.kind === "members") {
+  while (entry.kind === "members" || entry.kind === "action") {
+    if (entry.kind === "action") {
+      const node = byId.get(entry.id) as SessionActionStageNode;
+      if (visited.has(node.id)) {
+        return blocked(`${label(node)} appears more than once in the pipeline.`);
+      }
+      visited.add(node.id);
+      // No fail route to demand and no join to reconcile. An action emits `complete` and
+      // nothing else, so the only onward question is where completion goes.
+      stages.push({ kind: "session_action", member: actionMemberOf(node) });
+      const onward = `${label(node)}'s complete route`;
+      entry = entryFrom(outgoing(node.id, "complete"), onward, `${onward} leads nowhere.`);
+      continue;
+    }
     const members = entry.ids.map((id) => byId.get(id) as StageMemberNode);
     const repeated = members.find((node) => visited.has(node.id));
     if (repeated) return blocked(`${label(repeated)} appears more than once in the pipeline.`);
@@ -301,7 +501,7 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
         return blocked(`${label(only)}'s fail route does not return to Session.`);
       }
       used.add(fail[0]!.id);
-      stages.push({ joinId: null, members: [memberOf(only)] });
+      stages.push({ kind: "evaluation", joinId: null, members: [memberOf(only)] });
       onwardEdges = outgoing(only.id, "pass");
       onwardFrom = `${label(only)}'s pass route`;
     } else {
@@ -340,7 +540,7 @@ function analyze(graph: StageGraph, personas: StagePersonaNames): Analysis {
       }
       used.add(joinFail[0]!.id);
       visited.add(join.id);
-      stages.push({ joinId: join.id, members: members.map(memberOf) });
+      stages.push({ kind: "evaluation", joinId: join.id, members: members.map(memberOf) });
       onwardEdges = outgoing(join.id, "pass");
       onwardFrom = `${stageLabel}'s pass route`;
     }
@@ -379,11 +579,16 @@ export function projectStages(graph: StageGraph): StagePipeline | null {
 
 /**
  * Why the Graph view is showing instead of the Pipeline editor, as sentences an operator can act
- * on. `personas` is optional only so `stageExpressible` needs no name resolution; pass the live
- * list wherever the reason is shown to a human, or a draft reviewer reads "Missing persona".
+ * on. `personas` and `actions` are optional only so `stageExpressible` needs no name resolution;
+ * pass the live lists wherever the reason is shown to a human, or a draft reviewer reads
+ * "Missing persona".
  */
-export function stageBlockers(graph: StageGraph, personas: StagePersonaNames = []): string[] {
-  return analyze(graph, personas).blockers;
+export function stageBlockers(
+  graph: StageGraph,
+  personas: StagePersonaNames = [],
+  actions: StageSessionActionNames = [],
+): string[] {
+  return analyze(graph, personas, actions).blockers;
 }
 
 export function stageExpressible(graph: StageGraph): boolean {
@@ -394,6 +599,21 @@ const positionAt = (column: number, row: number): { x: number; y: number } => ({
   x: LAYOUT.originX + column * LAYOUT.columnStride,
   y: LAYOUT.originY + row * LAYOUT.rowStride,
 });
+
+/** A stage after its nodes exist, reduced to the ids the wiring pass needs. */
+type CompiledStage =
+  | { kind: "evaluation"; members: string[]; joinId: string | null }
+  | { kind: "session_action"; id: string };
+
+/** The nodes a preceding stage activates to enter this one. */
+function entryIds(stage: CompiledStage): string[] {
+  return stage.kind === "session_action" ? [stage.id] : stage.members;
+}
+
+/** The node whose onward port carries the pipeline past this stage. */
+function exitId(stage: CompiledStage): string {
+  return stage.kind === "session_action" ? stage.id : stage.joinId ?? stage.members[0]!;
+}
 
 /**
  * The graph a pipeline means, emitted deterministically.
@@ -440,8 +660,22 @@ export function compileStages(
   let column = 1;
   // Nodes first, so a stage's onward routes can be written once the NEXT stage's ids exist. A
   // stage with no members is not a stage: it is dropped rather than emitted as a source-less edge.
-  const compiled: { members: string[]; joinId: string | null }[] = [];
+  const compiled: CompiledStage[] = [];
   for (const stage of pipeline.stages) {
+    if (stage.kind === "session_action") {
+      const id = stage.member.nodeId ?? crypto.randomUUID();
+      nodes.push({
+        id,
+        kind: "session_action",
+        sessionActionId: stage.member.sessionActionId,
+        position: positionAt(column, 0),
+      });
+      // One column and no join column: an action is a singleton by construction, so there
+      // is never a second row to centre a gate between.
+      column += 1;
+      compiled.push({ kind: "session_action", id });
+      continue;
+    }
     if (stage.members.length === 0) continue;
     const members = stage.members.map((member, row) => {
       const id = member.nodeId ?? crypto.randomUUID();
@@ -464,7 +698,7 @@ export function compileStages(
       });
     }
     column += joinId ? 2 : 1;
-    compiled.push({ members, joinId });
+    compiled.push({ kind: "evaluation", members, joinId });
   }
   const endId = pipeline.endId;
   nodes.push({
@@ -474,16 +708,29 @@ export function compileStages(
     position: positionAt(column, 0),
   });
 
-  const activate = (targets: readonly string[], source: string, port: "submitted" | "pass"): void => {
+  const activate = (
+    targets: readonly string[],
+    source: string,
+    port: "submitted" | "pass" | "complete",
+  ): void => {
     for (const target of targets) connect(source, port, target, "activate");
   };
   if (compiled.length === 0) {
     connect(pipeline.sessionId, "submitted", endId, "terminal");
   } else {
-    activate(compiled[0]!.members, pipeline.sessionId, "submitted");
+    activate(entryIds(compiled[0]!), pipeline.sessionId, "submitted");
   }
   compiled.forEach((stage, index) => {
     const next = compiled[index + 1];
+    // The onward port is the ONE thing that differs between the two stage kinds, and it is
+    // read off the stage rather than assumed: an action emits `complete` and has no fail
+    // route to write, so the repair wiring below is skipped entirely rather than emitted
+    // with a port the node does not have.
+    if (stage.kind === "session_action") {
+      if (next) activate(entryIds(next), stage.id, "complete");
+      else connect(stage.id, "complete", endId, "terminal");
+      return;
+    }
     const gate = stage.joinId;
     if (gate) {
       for (const member of stage.members) {
@@ -494,8 +741,8 @@ export function compileStages(
     } else {
       connect(stage.members[0]!, "fail", pipeline.sessionId, "return_for_changes");
     }
-    const source = gate ?? stage.members[0]!;
-    if (next) activate(next.members, source, "pass");
+    const source = exitId(stage);
+    if (next) activate(entryIds(next), source, "pass");
     else connect(source, "pass", endId, "terminal");
   });
 

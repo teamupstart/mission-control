@@ -385,6 +385,39 @@ export function openDb(): DatabaseSync {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_personas_normalized_name
       ON personas(normalized_name);
 
+    -- Reusable instructions a workflow types into its bound session. prompt_md is exact
+    -- operator-authored Markdown: no normalized copy exists and every write names this
+    -- column directly, because this text is DELIVERED verbatim rather than summarized.
+    --
+    -- A table of its own rather than columns on personas, because the two answer different
+    -- questions: a Persona picks a model and returns a verdict, an action picks a prompt and
+    -- a proof. Sharing a row would give every Persona reader a nullable completion kind to
+    -- ignore and every action a runner it never uses.
+    --
+    -- completion_kind is a closed, server-owned adapter id (see
+    -- SESSION_ACTION_COMPLETION_KINDS). It is deliberately NOT tolerant on read: a value this
+    -- build cannot interpret fails the row rather than degrading to session_turn, which would
+    -- complete a historical action under a weaker proof than it was written with.
+    --
+    -- required_skill_id names a skill CAPABILITY and never a command. The harness-native
+    -- invocation is resolved immediately before send, so an argv can never be persisted here
+    -- and can never reach an exported published version.
+    CREATE TABLE IF NOT EXISTS session_actions (
+      id                TEXT PRIMARY KEY,
+      name              TEXT NOT NULL,
+      normalized_name   TEXT NOT NULL,
+      description       TEXT NOT NULL DEFAULT '',
+      prompt_md         TEXT NOT NULL,
+      required_skill_id TEXT,
+      completion_kind   TEXT NOT NULL,
+      revision          INTEGER NOT NULL DEFAULT 1,
+      archived_at       INTEGER,
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_actions_normalized_name
+      ON session_actions(normalized_name);
+
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,
     -- executions, delivery identity and later audit data all share one migration boundary.
     CREATE TABLE IF NOT EXISTS workflow_definitions (

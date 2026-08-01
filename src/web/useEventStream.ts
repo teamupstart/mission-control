@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { FleetCost, ReviewItem, ServerEvent, Session, SettingsStatus, Task } from "@shared/types.ts";
-import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
+import type {
+  PersonaView,
+  SessionAction,
+  WorkflowRunSummary,
+  WorkflowSummary,
+} from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
@@ -20,6 +25,8 @@ export interface MissionState {
   reviews: ReviewItem[];
   tasks: Task[];
   personas: PersonaView[];
+  /** The SessionAction catalog, archived rows included so a node can always name its source. */
+  sessionActions: SessionAction[];
   workflowSummaries: WorkflowSummary[];
   workflowRunSummaries: WorkflowRunSummary[];
   /**
@@ -67,6 +74,7 @@ export function useEventStream(): MissionState {
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [personas, setPersonas] = useState<Map<string, PersonaView>>(new Map());
+  const [sessionActions, setSessionActions] = useState<Map<string, SessionAction>>(new Map());
   const [workflowSummaries, setWorkflowSummaries] = useState<Map<string, WorkflowSummary>>(new Map());
   const [workflowRuns, setWorkflowRuns] = useState<Map<string, WorkflowRunSummary>>(new Map());
   const [ensembles, setEnsembles] = useState<Map<string, EnsembleSummary>>(new Map());
@@ -109,6 +117,7 @@ export function useEventStream(): MissionState {
           setReviews(new Map(msg.reviews.map((r) => [r.id, r])));
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setPersonas(new Map(msg.personas.map((persona) => [persona.id, persona])));
+          setSessionActions(new Map(msg.sessionActions.map((action) => [action.id, action])));
           setWorkflowSummaries(new Map(msg.workflowSummaries.map((workflow) => [workflow.id, workflow])));
           setWorkflowRuns(new Map(msg.workflowRunSummaries.map((run) => [run.id, run])));
           setEnsembles(new Map(msg.ensembleSummaries.map((ensemble) => [ensemble.id, ensemble])));
@@ -167,6 +176,18 @@ export function useEventStream(): MissionState {
           break;
         case "persona_remove":
           setPersonas((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
+        // Archive arrives here, not at `session_action_remove`: the row stays addressable
+        // because drafts and published versions name its id.
+        case "session_action_upsert":
+          setSessionActions((prev) => new Map(prev).set(msg.action.id, msg.action));
+          break;
+        case "session_action_remove":
+          setSessionActions((prev) => {
             const next = new Map(prev);
             next.delete(msg.id);
             return next;
@@ -250,6 +271,7 @@ export function useEventStream(): MissionState {
     reviews: [...reviews.values()],
     tasks: [...tasks.values()],
     personas: [...personas.values()],
+    sessionActions: [...sessionActions.values()],
     workflowSummaries: [...workflowSummaries.values()],
     workflowRunSummaries: [...workflowRuns.values()],
     ensembleSummaries: [...ensembles.values()],

@@ -41,6 +41,10 @@ test("workflow limits are finite front-door contracts", () => {
     personaName: 100,
     personaDescription: 500,
     personaGuidanceBytes: 100_000,
+    sessionActionName: 100,
+    sessionActionDescription: 500,
+    sessionActionPromptBytes: 100_000,
+    sessionActionSkillId: 200,
     workflowName: 120,
     graphNodes: 100,
     graphEdges: 300,
@@ -155,11 +159,12 @@ test("graph vocabulary has one Session concept and no checkpoint, Inspector, or 
       { id: "session", kind: "session", position: { x: 0, y: 0 } },
       { id: "persona", kind: "persona", personaId: "p1", position: { x: 100, y: 0 } },
       { id: "join", kind: "all_pass", position: { x: 200, y: 0 } },
+      { id: "action", kind: "session_action", sessionActionId: "a1", position: { x: 250, y: 0 } },
       { id: "end", kind: "end", outcome: "Approved", position: { x: 300, y: 0 } },
     ],
     edges: [],
   };
-  assert.equal(WorkflowDraftGraphSchema.parse(base).nodes.length, 4);
+  assert.equal(WorkflowDraftGraphSchema.parse(base).nodes.length, 5);
   for (const kind of ["checkpoint", "inspector", "ensemble"]) {
     assert.throws(() =>
       WorkflowDraftGraphSchema.parse({
@@ -177,6 +182,14 @@ test("graph vocabulary has one Session concept and no checkpoint, Inspector, or 
   assert.throws(() =>
     PublishedWorkflowGraphSchema.parse({
       nodes: [{ id: "p", kind: "persona", personaId: "live-id", position: { x: 0, y: 0 } }],
+      edges: [],
+    }),
+  );
+  // The same refusal for the second kind whose published form differs: a version holding a
+  // live action id would let a library edit change what an in-flight run types.
+  assert.throws(() =>
+    PublishedWorkflowGraphSchema.parse({
+      nodes: [{ id: "a", kind: "session_action", sessionActionId: "live-id", position: { x: 0, y: 0 } }],
       edges: [],
     }),
   );

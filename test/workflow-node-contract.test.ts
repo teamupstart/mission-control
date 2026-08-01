@@ -9,13 +9,24 @@ const librarySource = readFileSync(fileURLToPath(new URL("../src/web/workflows/W
 const propertiesSource = readFileSync(fileURLToPath(new URL("../src/web/workflows/WorkflowProperties.tsx", import.meta.url)), "utf8");
 const newNodeSource = readFileSync(fileURLToPath(new URL("../src/web/workflows/new-node.ts", import.meta.url)), "utf8");
 
-test("all five node kinds route through one shared custom node leaf", () => {
+test("every node kind routes through one shared custom node leaf", () => {
   assert.match(nodeSource, /export function WorkflowNode/);
-  assert.match(nodeSource, /session: WorkflowNode/);
-  assert.match(nodeSource, /persona: WorkflowNode/);
-  assert.match(nodeSource, /all_pass: WorkflowNode/);
-  assert.match(nodeSource, /check: WorkflowNode/);
-  assert.match(nodeSource, /end: WorkflowNode/);
+  for (const kind of ["session", "persona", "all_pass", "check", "session_action", "end"]) {
+    assert.match(nodeSource, new RegExp(`${kind}: WorkflowNode`));
+  }
+});
+
+test("a session action draws one complete handle and no pass/fail pair", () => {
+  // The whole reason it is a separate branch. A `fail` handle here would invite a route back
+  // to Session for what is a delivery or infrastructure problem, and a `pass` handle would
+  // let a Join treat "the session did the thing" as a favourable verdict.
+  assert.match(nodeSource, /data\.kind === "session_action"/);
+  assert.match(nodeSource, /id="complete"/);
+  assert.doesNotMatch(
+    nodeSource,
+    /data\.kind === "session_action"[\s\S]{0,400}id="fail"/,
+    "an action has no fail port to draw",
+  );
 });
 
 test("the palette has no checkpoint or Inspector graph node", () => {
@@ -81,6 +92,14 @@ test("a dropped node is parsed strictly, and anything else is declined without t
   assert.equal(parseDroppedNode(JSON.stringify({ kind: "check" })), null);
   assert.equal(parseDroppedNode(JSON.stringify({ kind: "persona" })), null);
   assert.equal(parseDroppedNode(JSON.stringify({ kind: "session" })), null);
+  // A session action is NOT a palette kind in this build: nothing can execute one yet, so
+  // the drag route must not be a way to author what the palette deliberately does not offer.
+  assert.equal(parseDroppedNode(JSON.stringify({ kind: "session_action" })), null);
+  assert.equal(
+    parseDroppedNode(JSON.stringify({ kind: "session_action", sessionActionId: "a1" })),
+    null,
+  );
+  assert.doesNotMatch(librarySource, /addNode\(\{ kind: "session_action"/);
   // Not ours, and not an error: a canvas is handed other applications' payloads routinely.
   assert.equal(parseDroppedNode(""), null);
   assert.equal(parseDroppedNode("not json"), null);

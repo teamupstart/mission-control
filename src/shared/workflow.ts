@@ -16,6 +16,7 @@ import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 // shapes. Nothing here may acquire a node: import.
 
 export type PersonaId = string;
+export type SessionActionId = string;
 export type WorkflowId = string;
 export type WorkflowVersionId = string;
 export type WorkflowBindingId = string;
@@ -29,6 +30,22 @@ export const WORKFLOW_LIMITS = {
   personaName: 100,
   personaDescription: 500,
   personaGuidanceBytes: 100_000,
+  sessionActionName: 100,
+  sessionActionDescription: 500,
+  /**
+   * The exact instruction a SessionAction types into a session, in UTF-8 bytes.
+   *
+   * The same ceiling as a Persona's guidance, and for a stronger reason: this text is not
+   * read by a model that summarizes it, it is DELIVERED verbatim into an operator's pane.
+   * A limit is what keeps one library row from becoming a packet no session can receive.
+   */
+  sessionActionPromptBytes: 100_000,
+  /**
+   * A skill id is a catalog NAME (`pull-request`), never an argv and never a path, so the
+   * bound is conservative on purpose: anything long enough to hide a command line in is
+   * already longer than any id the skills catalog can produce.
+   */
+  sessionActionSkillId: 200,
   workflowName: 120,
   graphNodes: 100,
   graphEdges: 300,
@@ -213,7 +230,10 @@ export function personaNameFromMarkdown(markdown: string, fallback: string): str
  * Derived rather than stored so the description cannot drift from the document it describes.
  * A file with nothing but headings has no summary, and an empty description is a legal answer.
  */
-export function personaDescriptionFromMarkdown(markdown: string): string {
+export function personaDescriptionFromMarkdown(
+  markdown: string,
+  maxLength: number = WORKFLOW_LIMITS.personaDescription,
+): string {
   const body = markdown.replace(/^[\s\S]*?^#[^\S\r\n]+.*?$/m, "");
   const paragraph = (body === markdown ? markdown : body)
     .split(/(?:\r?\n){2,}/)
@@ -221,10 +241,182 @@ export function personaDescriptionFromMarkdown(markdown: string): string {
     .find((block) => block.length > 0 && !block.startsWith("#"));
   if (paragraph === undefined) return "";
   const collapsed = paragraph.replace(/\s+/gu, " ");
-  if (collapsed.length <= WORKFLOW_LIMITS.personaDescription) return collapsed;
-  const cut = collapsed.slice(0, WORKFLOW_LIMITS.personaDescription - 1);
+  if (collapsed.length <= maxLength) return collapsed;
+  const cut = collapsed.slice(0, maxLength - 1);
   const lastSpace = cut.lastIndexOf(" ");
   return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+// ---- SessionActions ---------------------------------------------------------
+//
+// A SessionAction is NOT a Persona with a different verb, and the two types are kept apart
+// deliberately. A Persona selects an LLM runner and model, reads one immutable submission
+// and returns a verdict. A SessionAction selects an instruction, an optional skill and a
+// completion adapter, is typed into the BOUND session, and returns only "this finished".
+// Widening `Persona` to carry both would make every reader of `PersonaSnapshot` - the
+// engine's verdict path included - responsible for a record that produces no verdict.
+
+/**
+ * What the daemon must OBSERVE before an action counts as finished.
+ *
+ * APPEND-ONLY: these strings reach operator rows (`session_actions.completion_kind`) and
+ * immutable published graphs, so renaming one does not migrate a version, it makes it
+ * unreadable - and reading an unknown kind as `session_turn` would complete a historical
+ * action under a weaker proof contract than the one it was published with.
+ *
+ * A completion kind names a CLOSED, server-owned adapter and never a script:
+ *  - `session_turn`  - verified pickup followed by a settled idle turn.
+ *  - `pull_request`  - the same turn boundary plus durable matching PR provenance.
+ */
+export const SESSION_ACTION_COMPLETION_KINDS = ["session_turn", "pull_request"] as const;
+export type SessionActionCompletionKind = (typeof SESSION_ACTION_COMPLETION_KINDS)[number];
+
+/**
+ * An OBJECT rather than the bare kind string, so an adapter that later needs a parameter
+ * gains one without reshaping every stored row and published snapshot that names it.
+ */
+export type SessionActionCompletion =
+  | { kind: "session_turn" }
+  | { kind: "pull_request" };
+
+export interface SessionAction {
+  id: SessionActionId;
+  name: string;
+  normalizedName: string;
+  description: string;
+  /**
+   * Exact Markdown after UTF-8 decoding, whether operator-authored or shipped.
+   *
+   * Never trimmed, never newline-normalized, never variable-expanded, and never treated as
+   * a template. Validation may look at its length and its emptiness and nothing else: this
+   * is the literal text a session receives, and a boundary that "helpfully" rewrote it
+   * would deliver an instruction nobody authored.
+   */
+  promptMarkdown: string;
+  /**
+   * A skill CAPABILITY id, never a command.
+   *
+   * The daemon resolves the harness-native invocation for this id immediately before it
+   * sends, so a missing, disabled or drifted skill blocks before any write. Storing the
+   * resolved command instead would put an argv into an exportable published version and
+   * pin it to whatever the harness happened to spell it as on the publishing machine.
+   */
+  requiredSkillId: string | null;
+  completion: SessionActionCompletion;
+  revision: number;
+  archivedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  /**
+   * Shipped with the application rather than authored here. Exactly `Persona.builtin`:
+   * app data, never a row, neither editable nor archivable, and Duplicate is the path to
+   * a customized copy.
+   */
+  builtin: boolean;
+}
+
+/** SessionAction names use the same durable Unicode spelling rule as Persona names. */
+export const normalizeSessionActionName = normalizePersonaName;
+
+/** The name a SessionAction Markdown document carries: its first level-one heading. */
+export const sessionActionNameFromMarkdown = personaNameFromMarkdown;
+
+/** The one-line summary a SessionAction Markdown document carries. */
+export function sessionActionDescriptionFromMarkdown(markdown: string): string {
+  return personaDescriptionFromMarkdown(markdown, WORKFLOW_LIMITS.sessionActionDescription);
+}
+
+/**
+ * The SessionActions a human is offered, with a live operator row SHADOWING a same-named
+ * built-in. Deliberately the same rule as `personasForDisplay`, so the two libraries cannot
+ * disagree about what a name collision means.
+ */
+export function sessionActionsForDisplay<
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "normalizedName">,
+>(actions: readonly T[]): T[] {
+  const liveOperatorNames = new Set(
+    actions
+      .filter((action) => !action.builtin && action.archivedAt === null)
+      .map((action) => action.normalizedName),
+  );
+  return actions.filter(
+    (action) => !action.builtin || !liveOperatorNames.has(action.normalizedName),
+  );
+}
+
+export function sessionActionChoicesForDisplay<
+  T extends Pick<SessionAction, "archivedAt" | "builtin" | "id" | "normalizedName">,
+>(
+  actions: readonly T[],
+  retainedIds: readonly string[],
+): Array<{ action: T; retained: boolean }> {
+  const visible = sessionActionsForDisplay(actions)
+    .filter((action) => action.archivedAt === null);
+  const visibleIds = new Set(visible.map((action) => action.id));
+  const retained = new Set(retainedIds);
+  return [
+    ...actions
+      .filter((action) => retained.has(action.id) && !visibleIds.has(action.id))
+      .map((action) => ({ action, retained: true })),
+    ...visible.map((action) => ({ action, retained: false })),
+  ];
+}
+
+export function sessionActionChoiceLabel(
+  action: Pick<SessionAction, "archivedAt" | "builtin" | "name">,
+  retained: boolean,
+): string {
+  if (!retained) return action.name;
+  if (action.builtin) return `${action.name} (Built-in, shadowed by your action)`;
+  if (action.archivedAt !== null) return `${action.name} (Archived)`;
+  return action.name;
+}
+
+/**
+ * The immutable copy a published version carries. Runtime code reads ONLY this: resolving
+ * live library text during a run would let an edit change what an in-flight run types.
+ */
+export interface SessionActionSnapshot {
+  sourceSessionActionId: SessionActionId;
+  sourceRevision: number;
+  name: string;
+  description: string;
+  promptMarkdown: string;
+  requiredSkillId: string | null;
+  completion: SessionActionCompletion;
+}
+
+/** The action half of `personaSnapshotOf`, and stated once for the same reason. */
+export function sessionActionSnapshotOf(action: SessionAction): SessionActionSnapshot {
+  return {
+    sourceSessionActionId: action.id,
+    sourceRevision: action.revision,
+    name: action.name,
+    description: action.description,
+    promptMarkdown: action.promptMarkdown,
+    requiredSkillId: action.requiredSkillId,
+    completion: action.completion,
+  };
+}
+
+/**
+ * Whether history should report this snapshot's source as having moved on.
+ *
+ * A built-in is compared by its TEXT rather than its revision, exactly as
+ * `personaSnapshotIsOutdated` does: a built-in's revision is a synthetic constant, so a
+ * build shipping edited Markdown under the same revision would otherwise report as current.
+ */
+export function sessionActionSnapshotIsOutdated(
+  snapshot: SessionActionSnapshot,
+  current: SessionAction | null | undefined,
+): boolean {
+  if (!current) return true;
+  if (current.builtin) {
+    return snapshot.promptMarkdown !== current.promptMarkdown
+      || snapshot.requiredSkillId !== current.requiredSkillId
+      || snapshot.completion.kind !== current.completion.kind;
+  }
+  return snapshot.sourceRevision !== current.revision;
 }
 
 export interface Point {
@@ -232,7 +424,17 @@ export interface Point {
   y: number;
 }
 
-export const WORKFLOW_SOURCE_PORTS = ["submitted", "pass", "fail"] as const;
+/**
+ * APPEND-ONLY, for `WORKFLOW_CHECK_SLOTS`' reason: a port spelling reaches durable draft
+ * and published edges, so renaming one orphans every version naming the old spelling.
+ *
+ * `complete` is a SessionAction's only source port, and it is deliberately not `pass`. A
+ * pass says an evaluator judged the work acceptable; a complete says a turn the daemon
+ * asked for finished. Reusing `pass` would let a Join treat "the session did the thing" as
+ * a favourable verdict, and would invite a `fail` route back to Session for what is really
+ * a delivery or infrastructure problem rather than a requested code change.
+ */
+export const WORKFLOW_SOURCE_PORTS = ["submitted", "pass", "fail", "complete"] as const;
 export type WorkflowSourcePort = (typeof WORKFLOW_SOURCE_PORTS)[number];
 
 export const WORKFLOW_TARGET_PORTS = [
@@ -263,6 +465,10 @@ export type WorkflowDraftNode =
   | { id: string; kind: "persona"; personaId: PersonaId; position: Point }
   | { id: string; kind: "all_pass"; position: Point }
   | { id: string; kind: "check"; slot: WorkflowCheckSlot; position: Point }
+  // A draft names the LIVE action; Publish resolves it to a snapshot. Same split as
+  // `persona`, and for the same reason: a draft has to follow library edits, a version
+  // must never see one.
+  | { id: string; kind: "session_action"; sessionActionId: SessionActionId; position: Point }
   | { id: string; kind: "end"; outcome: string; position: Point };
 
 export interface WorkflowEdge {
@@ -288,6 +494,26 @@ export interface PersonaSnapshot {
   model: string | null;
 }
 
+/**
+ * The immutable copy Publish freezes into a version.
+ *
+ * One function rather than an object literal at each publisher, because there are two - the
+ * store's `publishWorkflow` and the built-in catalog's compile-time projection - and a field
+ * added to the snapshot type but to only one of them is a version that silently ships
+ * without it.
+ */
+export function personaSnapshotOf(persona: Persona): PersonaSnapshot {
+  return {
+    sourcePersonaId: persona.id,
+    sourceRevision: persona.revision,
+    name: persona.name,
+    description: persona.description,
+    guidanceMarkdown: persona.guidanceMarkdown,
+    runner: persona.runner,
+    model: persona.model,
+  };
+}
+
 export function personaSnapshotIsOutdated(
   snapshot: PersonaSnapshot,
   current: Persona | null | undefined,
@@ -298,15 +524,21 @@ export function personaSnapshotIsOutdated(
 }
 
 /**
- * Persona is the only kind whose published form differs, so every other kind - including
- * `check` - is carried through by the `Exclude`. A check node is byte-identical in draft
- * and published form because it snapshots nothing: its command is deliberately not part of
- * the version, which is the whole point of naming a slot.
+ * Persona and SessionAction are the two kinds whose published form differs, so every other
+ * kind - including `check` - is carried through by the `Exclude`. A check node is
+ * byte-identical in draft and published form because it snapshots nothing: its command is
+ * deliberately not part of the version, which is the whole point of naming a slot.
  */
 export type PublishedWorkflowNode =
-  | Exclude<WorkflowDraftNode, { kind: "persona" }>
-  | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point };
+  | Exclude<WorkflowDraftNode, { kind: "persona" | "session_action" }>
+  | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point }
+  | { id: string; kind: "session_action"; action: SessionActionSnapshot; position: Point };
 
+/**
+ * The kinds that return a `PersonaVerdict`. SessionAction is deliberately NOT one of them
+ * and must never be added: every reader of this type treats its node as something that
+ * passed or failed a review, and an action that finished has done neither.
+ */
 export type WorkflowVerdictNode = Extract<PublishedWorkflowNode, { kind: "persona" | "check" }>;
 
 export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerdictNode {
@@ -315,6 +547,20 @@ export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerd
 
 export function verdictAuthor(node: WorkflowVerdictNode): string {
   return node.kind === "persona" ? node.persona.name : `Check · ${node.slot}`;
+}
+
+export type WorkflowSessionActionNode = Extract<PublishedWorkflowNode, { kind: "session_action" }>;
+
+/**
+ * A NARROW guard beside `isVerdictNode` rather than a widening of it. Callers that ask
+ * "did this node judge the work?" and callers that ask "did this node write to the
+ * session?" are asking different questions, and one predicate answering both is how an
+ * action's completion ends up rendered as a verdict.
+ */
+export function isSessionActionNode(
+  node: PublishedWorkflowNode,
+): node is WorkflowSessionActionNode {
+  return node.kind === "session_action";
 }
 
 export interface PublishedWorkflowGraph {
@@ -350,6 +596,11 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "missing_persona",
   "archived_persona",
   "invalid_completion_policy",
+  "missing_complete_route",
+  "session_action_join",
+  "missing_session_action",
+  "archived_session_action",
+  "session_action_runtime_unavailable",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 

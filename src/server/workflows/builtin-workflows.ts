@@ -1,9 +1,14 @@
 import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   normalizeWorkflowName,
+  personaSnapshotOf,
+  sessionActionSnapshotOf,
   type PersonaId,
   type PersonaSnapshot,
   type PublishedWorkflowGraph,
+  type PublishedWorkflowNode,
+  type SessionActionId,
+  type SessionActionSnapshot,
   type WorkflowCompletionPolicy,
   type WorkflowDefinition,
   type WorkflowResumptionPolicy,
@@ -19,8 +24,14 @@ import {
   NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
 } from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
-import { compileStages, type StageMember, type StagePipeline } from "@shared/workflow-stages.ts";
+import {
+  compileStages,
+  stageNodeIds,
+  type StageMember,
+  type StagePipeline,
+} from "@shared/workflow-stages.ts";
 import { BUILTIN_PERSONAS, builtinPersonaId } from "./builtin-personas.ts";
+import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 
 export {
   BUILTIN_WORKFLOW_ID_PREFIX,
@@ -94,10 +105,12 @@ function compileBuiltinGraph(pipeline: StagePipeline): WorkflowDraftGraph {
   const declared = new Set<string>([
     pipeline.sessionId,
     pipeline.endId,
-    ...pipeline.stages.flatMap((stage) => [
-      ...(stage.members.length > 1 && stage.joinId !== null ? [stage.joinId] : []),
-      ...stage.members.map((member) => member.nodeId ?? ""),
-    ]),
+    // `stageNodeIds` answers this for both stage kinds, including the join a parallel
+    // evaluation stage owns. A hand-written union here would have to be updated in step with
+    // every new stage shape, and the failure of forgetting is a shipped workflow whose node
+    // ids are minted UUIDs - different on every machine, which is what this check exists to
+    // prevent.
+    ...pipeline.stages.flatMap(stageNodeIds),
   ]);
   const compiled = compileStages(pipeline, { nodes: [], edges: [] });
   for (const node of compiled.nodes) {
@@ -124,31 +137,47 @@ function builtinPersonaSnapshot(personaId: PersonaId): PersonaSnapshot {
   if (!persona) {
     throw new Error(`built-in workflow references Persona ${personaId}, which this build does not ship`);
   }
-  return {
-    sourcePersonaId: persona.id,
-    sourceRevision: persona.revision,
-    name: persona.name,
-    description: persona.description,
-    guidanceMarkdown: persona.guidanceMarkdown,
-    runner: persona.runner,
-    model: persona.model,
-  };
+  return personaSnapshotOf(persona);
 }
 
 /** The same draft-to-published projection `publishWorkflow` performs, over the shipped graph. */
 function publishBuiltinGraph(graph: WorkflowDraftGraph): PublishedWorkflowGraph {
   return {
-    nodes: graph.nodes.map((node) =>
-      node.kind === "persona"
-        ? {
-            id: node.id,
-            kind: "persona" as const,
-            position: node.position,
-            persona: builtinPersonaSnapshot(node.personaId),
-          }
-        : node),
+    nodes: graph.nodes.map((node): PublishedWorkflowNode => {
+      if (node.kind === "persona") {
+        return {
+          id: node.id,
+          kind: "persona" as const,
+          position: node.position,
+          persona: builtinPersonaSnapshot(node.personaId),
+        };
+      }
+      // No shipped workflow authors one yet - the runtime that would execute it arrives in a
+      // later phase - but the projection has to be total, or the day one does it would be
+      // published with a live id where its frozen prompt belongs.
+      if (node.kind === "session_action") {
+        return {
+          id: node.id,
+          kind: "session_action" as const,
+          position: node.position,
+          action: builtinSessionActionSnapshot(node.sessionActionId),
+        };
+      }
+      return node;
+    }),
     edges: graph.edges,
   };
+}
+
+/** The action half of `builtinPersonaSnapshot`, refusing an id this build does not ship. */
+function builtinSessionActionSnapshot(sessionActionId: SessionActionId): SessionActionSnapshot {
+  const action = BUILTIN_SESSION_ACTIONS.find((candidate) => candidate.id === sessionActionId);
+  if (!action) {
+    throw new Error(
+      `built-in workflow references session action ${sessionActionId}, which this build does not ship`,
+    );
+  }
+  return sessionActionSnapshotOf(action);
 }
 
 interface BuiltinWorkflowSource {
@@ -265,10 +294,12 @@ const NO_MISTAKES_REVIEW_V1: StagePipeline = {
   endOutcome: "Complete",
   stages: [
     {
+      kind: "evaluation",
       joinId: null,
       members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
     },
     {
+      kind: "evaluation",
       joinId: NO_MISTAKES_REVIEW_NODES.depth,
       members: [
         reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
@@ -291,10 +322,12 @@ const NO_MISTAKES_REVIEW_V2: StagePipeline = {
   endOutcome: "Complete",
   stages: [
     {
+      kind: "evaluation",
       joinId: null,
       members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
     },
     {
+      kind: "evaluation",
       joinId: NO_MISTAKES_REVIEW_NODES.depth,
       members: [
         reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
@@ -329,6 +362,7 @@ const NO_MISTAKES_REVIEW_V3: StagePipeline = {
   endOutcome: "Complete",
   stages: [
     {
+      kind: "evaluation",
       joinId: NO_MISTAKES_REVIEW_NODES.build,
       members: [
         check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
@@ -336,10 +370,12 @@ const NO_MISTAKES_REVIEW_V3: StagePipeline = {
       ],
     },
     {
+      kind: "evaluation",
       joinId: null,
       members: [reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge")],
     },
     {
+      kind: "evaluation",
       joinId: NO_MISTAKES_REVIEW_NODES.depth,
       members: [
         reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),

@@ -220,7 +220,14 @@ Create a server-owned registry keyed by the append-only completion ids. Each des
 
 Implement `session_turn` completely. Register `pull_request` as unavailable with a stable
 diagnostic, not a placeholder that returns success. Publish validation may now accept action graphs
-only when every referenced snapshot's completion adapter is available. Capability responses used
+only when every referenced snapshot's completion adapter is available.
+
+Phase 1 shipped that gate as one boolean, `SESSION_ACTION_RUNTIME_AVAILABLE` in
+`src/shared/workflow-graph.ts`, reaching validation through
+`WorkflowGraphValidationInput.sessionActionRuntimeAvailable` and injected into `WorkflowStore` as
+its last constructor argument. Widen that seam into the adapter-availability check rather than
+adding a second gate beside it, and keep the `session_action_runtime_unavailable` diagnostic code -
+it is already the sentence the builder shows on the node. Capability responses used
 by later UI must expose this same registry result, so the client never invents support.
 
 ### 8. Capture a child evidence segment atomically

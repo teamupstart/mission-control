@@ -3,7 +3,10 @@ import type { WorkflowCheckStatus, WorkflowVersion } from "@shared/workflow.ts";
 import {
   nodeLabel,
   projectStages,
+  stageMemberKey,
+  stageMembers,
   stageName,
+  stageSeamGate,
   stageSummary,
   type StageNode,
 } from "@shared/workflow-stages.ts";
@@ -120,6 +123,13 @@ export function RunPipeline({
     node.kind === "persona" && "persona" in node
       ? [{ id: node.persona.sourcePersonaId, name: node.persona.name }]
       : []);
+  // A published action node carries its snapshot, so this list is always complete for a
+  // version - no live catalog is consulted, and a library edit cannot rename a stage in a
+  // run that already happened.
+  const actionNames = graph.nodes.flatMap((node) =>
+    node.kind === "session_action" && "action" in node
+      ? [{ id: node.action.sourceSessionActionId, name: node.action.name }]
+      : []);
 
   return (
     <PipelineFrame ariaLabel="Workflow run pipeline" repair={repair}>
@@ -131,27 +141,39 @@ export function RunPipeline({
       />
       <StageSeam gate="submitted" />
       {pipeline.stages.map((stage, index) => {
-        const members = stage.members.map((member) => {
+        const members = stageMembers(stage).map((member) => {
           const node = member.nodeId ? nodes.get(member.nodeId) : undefined;
-          const disabled = member.nodeId ? disabledSet.has(member.nodeId) : false;
-          return {
-            key: member.nodeId
-              ?? `${index}:${member.kind === "check" ? member.slot : member.personaId}`,
-            nodeId: member.nodeId,
-            kind: member.kind,
-            disabled,
+          const name = member.kind === "check"
             // A check's row carries the bare slot and its own chip, the way the editor draws
             // it - `nodeLabel` would supply "Check · test", which the chip would then say
             // again. A Persona keeps the snapshot name the version was published with.
-            name: member.kind === "check"
-              ? member.slot
-              : node ? nodeLabel(graph, node, personaNames) : "Missing persona",
+            ? member.slot
+            : node
+              ? nodeLabel(graph, node, personaNames, actionNames)
+              : member.kind === "session_action" ? "Missing session action" : "Missing persona";
+          // A session action is never disable-able. The per-run auto-pass converts an
+          // attempt into a PASS, and `WorkflowManager` scopes the whole feature to
+          // `isVerdictNode` - so offering the toggle here would send a request the server
+          // refuses, on a node that has no verdict to force in the first place.
+          const togglable = member.kind !== "session_action";
+          const disabled = togglable && member.nodeId ? disabledSet.has(member.nodeId) : false;
+          return {
+            key: member.nodeId ?? `${index}:${stageMemberKey(member)}`,
+            nodeId: member.nodeId,
+            kind: member.kind,
+            name,
+            togglable,
+            disabled,
             meta: member.nodeId ? metaFor(member.nodeId) : null,
             // The chip is the viewed round's history: Disabled only when the auto-pass
             // will convert (or synthesized) this node's attempt, never over an outcome the
             // round already reached - a recorded failure painted as Disabled would claim
             // the toggle rewrote it. The row's red treatment carries the control's state.
-            status: (member.nodeId ? disabledChipFor?.(member.nodeId) ?? null : null)
+            //
+            // An action reports LIFECYCLE, never a verdict, so it reads the same attempt
+            // status a reviewer does but must never be routed through `checkStatus` - a
+            // "Passed" chip on a node that judged nothing is the failure this split avoids.
+            status: (togglable && member.nodeId ? disabledChipFor?.(member.nodeId) ?? null : null)
               ?? (member.kind === "check"
                 ? checkStatus(
                     member.nodeId ? statuses[member.nodeId] : undefined,
@@ -160,12 +182,13 @@ export function RunPipeline({
                 : reviewerStatus(member.nodeId ? statuses[member.nodeId] : undefined)),
           };
         });
-        const parallel = stage.members.length > 1;
-        // The stage toggle needs every member addressable; a projection member without a
-        // node id (a compile-time placeholder) leaves the stage header unswitchable.
-        const stageNodeIds = members.flatMap((member) => member.nodeId ? [member.nodeId] : []);
+        // The stage toggle needs every member addressable AND switchable; a projection member
+        // without a node id (a compile-time placeholder), or a session action, leaves the
+        // stage header unswitchable rather than half-switching it.
+        const stageNodeIds = members.flatMap((member) =>
+          member.togglable && member.nodeId ? [member.nodeId] : []);
         const stageDisabled = members.length > 0 && members.every((member) => member.disabled);
-        const stageTitle = stageName(stage, index, personaNames);
+        const stageTitle = stageName(stage, index, personaNames, actionNames);
         return (
           <div className="wf-pipeline-slot" key={`stage:${index}`}>
             <StageCard
@@ -189,7 +212,7 @@ export function RunPipeline({
                     meta={member.meta}
                     status={member.status}
                     disabled={member.disabled}
-                    onToggleDisabled={onToggleNodes && member.nodeId
+                    onToggleDisabled={onToggleNodes && member.togglable && member.nodeId
                       ? () => onToggleNodes([member.nodeId!], !member.disabled)
                       : null}
                     toggleLabel={member.disabled
@@ -199,7 +222,7 @@ export function RunPipeline({
                 ))}
               </ul>
             </StageCard>
-            <StageSeam gate={parallel ? "all pass" : "pass"} />
+            <StageSeam gate={stageSeamGate(stage)} />
           </div>
         );
       })}

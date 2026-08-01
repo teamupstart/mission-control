@@ -54,7 +54,12 @@ import { goalLine } from "@shared/goal.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
-import type { PersonaView, WorkflowRunSummary, WorkflowSummary } from "@shared/workflow.ts";
+import type {
+  PersonaView,
+  SessionAction,
+  WorkflowRunSummary,
+  WorkflowSummary,
+} from "@shared/workflow.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -397,6 +402,17 @@ export class Registry extends EventEmitter {
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
   private personas = new Map<string, PersonaView>();
+  /**
+   * Reusable SessionActions, including archived rows for durable history links.
+   *
+   * The FULL record rides the snapshot, prompt Markdown included, exactly as a Persona's
+   * guidance does. Measured against that precedent rather than assumed: the four shipped
+   * Personas already carry roughly 60 KB of guidance in every snapshot, and one shipped
+   * action's prompt is under 2 KB. A detail-only fetch is the right answer if this catalog
+   * ever grows large, and `session-action-sse.test.ts` pins the current size so making that
+   * switch has to be a decision rather than an accident.
+   */
+  private sessionActions = new Map<string, SessionAction>();
   /** Bounded catalog projections only; full drafts and guidance stay on HTTP. */
   private workflowSummaries = new Map<string, WorkflowSummary>();
   /** Compact execution projections only. Graphs, evidence, and timelines stay on HTTP. */
@@ -560,6 +576,7 @@ export class Registry extends EventEmitter {
     reviews: ReviewItem[];
     tasks: Task[];
     personas: PersonaView[];
+    sessionActions: SessionAction[];
     workflowSummaries: WorkflowSummary[];
     workflowRunSummaries: WorkflowRunSummary[];
     ensembleSummaries: EnsembleSummary[];
@@ -572,6 +589,7 @@ export class Registry extends EventEmitter {
       reviews: [...this.reviews.values()],
       tasks: [...this.tasks.values()],
       personas: [...this.personas.values()],
+      sessionActions: [...this.sessionActions.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
       workflowRunSummaries: [...this.workflowRuns.values()],
       ensembleSummaries: [...this.ensembles.values()],
@@ -759,6 +777,27 @@ export class Registry extends EventEmitter {
 
   removePersona(id: string): void {
     if (this.personas.delete(id)) this.emitEvent({ type: "persona_remove", id });
+  }
+
+  // ---- workflow SessionAction catalog ----
+
+  /** Boot-time catalog install. It precedes serving SSE, so no incremental emit is needed. */
+  initializeSessionActions(actions: SessionAction[]): void {
+    this.sessionActions = new Map(actions.map((action) => [action.id, action]));
+  }
+
+  /**
+   * Archive comes through HERE and not through `removeSessionAction`. An archived action is
+   * still addressable - drafts and published versions name its id, and history reports it -
+   * so dropping it from the browser's map would make an existing node's source unnameable.
+   */
+  upsertSessionAction(action: SessionAction): void {
+    this.sessionActions.set(action.id, action);
+    this.emitEvent({ type: "session_action_upsert", action });
+  }
+
+  removeSessionAction(id: string): void {
+    if (this.sessionActions.delete(id)) this.emitEvent({ type: "session_action_remove", id });
   }
 
   // ---- workflow definition catalog ----

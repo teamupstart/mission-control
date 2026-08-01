@@ -912,11 +912,12 @@ function ToolRun({
 }): React.JSX.Element {
   return (
     <div className="turn turn-assistant turn-toolrun">
-      <div className="turn-role">
-        {agentLabel} executed
-        <ConversationTimestamp at={ts} className="turn-time" />
-      </div>
+      <div className="turn-role">{agentLabel} executed</div>
       <ToolChips tools={tools} find={find} />
+      {/* The same byline time as a prose turn, but a child of the row rather than of the
+          label: a folded run lays its label and its chips along one line, so the right
+          edge the timestamp is pinned to belongs to the row, not to the byline. */}
+      <ConversationTimestamp at={ts} className="turn-time" />
     </div>
   );
 }

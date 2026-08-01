@@ -17,21 +17,21 @@ const messages: TranscriptMessage[] = [
   {
     id: "timestamp-user-1",
     role: "user",
-    text: "Add a local timestamp beside each speaker in the conversation.",
+    text: "Put the timestamp on the right of the conversation, on the speaker's line.",
     tools: [],
     ts: at(9, 42, 7),
   },
   {
     id: "timestamp-assistant-1",
     role: "assistant",
-    text: "Implemented Option 1. Every dated row shows its month, day, and time without adding a second line.",
+    text: "Done. Every dated row now ends in its local clock time, in one column against the right edge, and the message still runs the full width beneath it.",
     tools: [],
     ts: at(9, 43, 15),
   },
   {
     id: "timestamp-user-2",
     role: "user",
-    text: "Keep the timestamp subtle, but visible.",
+    text: "Keep the timestamp subtle, but visible - and do not lose the date.",
     tools: [],
     ts: at(9, 44, 3),
   },
@@ -45,7 +45,7 @@ const messages: TranscriptMessage[] = [
   {
     id: "timestamp-assistant-2",
     role: "assistant",
-    text: "Done. Hovering a timestamp reveals the complete local instant.",
+    text: "The date moved rather than went: hovering a time reveals the complete local instant, weekday and timezone included.",
     tools: [],
     ts: at(9, 46, 1),
   },
@@ -164,7 +164,7 @@ function EvidenceApp(): React.JSX.Element {
           </div>
         </section>
         <p className="evidence-note">
-          Option 1 · full local month, day, and time beside every dated speaker label
+          Local clock time, pinned right on every dated speaker line · full date on hover
         </p>
       </main>
     </OverlayHost>

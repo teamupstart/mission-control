@@ -1,5 +1,7 @@
 import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ForemanEpisode, TranscriptMessage } from "../src/shared/types.ts";
@@ -18,11 +20,11 @@ const AT = Date.parse("2026-07-31T13:42:07.000Z");
 
 beforeEach(() => resetHistories());
 
-test("conversation timestamps follow an explicit locale and timezone", () => {
-  assert.equal(
-    formatConversationTimestamp(AT, "en-US", "America/New_York"),
-    "Jul 31, 9:42 AM",
-  );
+test("a conversation timestamp shows the clock alone, and hides no part of the instant", () => {
+  // The row is the time only - the date it drops is the field that repeats down the log.
+  assert.equal(formatConversationTimestamp(AT, "en-US", "America/New_York"), "9:42 AM");
+  assert.doesNotMatch(formatConversationTimestamp(AT, "en-US", "America/New_York"), /Jul|31/);
+  // Nothing is lost: the hover and accessible form still carry the whole date.
   const long = formatConversationTimestampLong(AT, "en-US", "America/New_York");
   assert.match(long, /Friday, July 31, 2026/);
   assert.match(long, /9:42:07 AM/);
@@ -55,6 +57,28 @@ test("the conversation dates prose and a folded tool run from its first turn", (
   assert.match(html, /dateTime="2026-07-31T13:42:07.000Z"/);
   assert.match(html, /dateTime="2026-07-31T13:42:08.000Z"/);
   assert.doesNotMatch(html, /dateTime="2026-07-31T13:42:09.000Z"/);
+
+  // Prose keeps its time inside the byline, where `margin-left: auto` carries it to the
+  // right edge of the label's own line - the row below it is untouched and full width.
+  assert.match(html, /<div class="turn-role">you<time class="conversation-time turn-time"/);
+  // A folded run lays label and chips along one line, so its byline cannot reach the row's
+  // right edge; the time is a sibling of both. Asserted by the label div closing on itself.
+  assert.match(html, /turn-toolrun"><div class="turn-role">claude executed<\/div>/);
+  assert.match(html, /<\/div><time class="conversation-time turn-time" dateTime="[^"]+:08/);
+});
+
+test("the byline clock is pinned to the row's right edge, and takes no width from the turn", () => {
+  const css = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
+  const rule = /\.turn \.turn-time\s*\{([^}]*)\}/.exec(css)?.[1];
+  assert.ok(rule, "no .turn .turn-time rule");
+  // `margin-left: auto` is the whole mechanism: the time stays a flex item of the line it
+  // shares with the speaker, so the turn's text still runs the full width beneath it. A
+  // float or a grid column here would indent every message in the log.
+  assert.match(rule!, /margin-left:\s*auto/);
+  assert.match(rule!, /flex:\s*none/);
+  // The separator existed to part the label from the time. Against the right edge there is
+  // nothing to part, and a lone "·" out there reads as a bullet with a missing line.
+  assert.doesNotMatch(css, /\.turn(-role)? \.turn-time::before/);
 });
 
 function episode(createdAt: number): ForemanEpisode {

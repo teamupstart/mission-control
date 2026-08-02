@@ -212,8 +212,12 @@ test("an escalated chip trades its rate for the reading that escalated it", () =
   // A red `≈$14.82 · $6.10/hr` says "this is expensive". It means "a window is about to
   // close", and the only way the colour can say that is if its subject is on the chip.
   const high = fleet({ rateLimits: { fiveHour: liveWin(96, 20 * 60_000), sevenDay: null, updatedAt: NOW } });
-  const { alert, rate } = spendChipFigures(high);
+  const { alert, rate, tone } = spendChipFigures(high);
   assert.equal(alert, "96%");
+  // The tone rides along with the figures rather than being asked for separately, so the
+  // colour and the segment it colours can never come from two different reads of the clock.
+  assert.equal(tone, "high");
+  assert.equal(tone, spendChipTone(high));
   // The rate is still computed - the popover prints it - but the chip yields the slot.
   assert.equal(rate, "$6.10/hr");
   // A calm fleet has nothing to warn about and keeps the rate on its face.

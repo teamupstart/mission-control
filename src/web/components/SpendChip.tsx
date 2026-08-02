@@ -45,6 +45,13 @@ export interface SpendChipFigures {
    * window is about to close". The colour needs the thing it is about on screen beside it.
    */
   alert: string | null;
+  /**
+   * What the chip colours itself. Returned WITH the figures rather than asked for
+   * separately, so the colour and the `alert` beside it come from one read of the clock and
+   * one pass over the windows - two reads could, at a boundary, paint a red chip whose
+   * segment says the window it is about is fine.
+   */
+  tone: ContextTone;
   /** The chip's accessible name, which has to carry what the colour and the terse figures do not. */
   label: string;
 }
@@ -120,7 +127,7 @@ export function spendChipFigures(fleet: FleetCost): SpendChipFigures {
       worst.tone === "high" ? "nearly exhausted" : "running low"
     }`,
   ].filter(Boolean).join(", ");
-  return { lead, rate, alert, label };
+  return { lead, rate, alert, tone: worst?.tone ?? "ok", label };
 }
 
 /**
@@ -135,6 +142,9 @@ export function spendChipFigures(fleet: FleetCost): SpendChipFigures {
  *
  * Same rule per window as the meters inside the popover, from the same helper, so the
  * chip cannot be calm while a bar under it is red.
+ *
+ * The chip itself does NOT call this - it reads the `tone` that came back with its figures,
+ * for the reason on that field. This is the tone on its own, for callers that want only it.
  */
 export function spendChipTone(fleet: FleetCost): ContextTone {
   return worstWindow(fleet)?.tone ?? "ok";
@@ -240,7 +250,7 @@ export function SpendChip({
   // No telemetry at all draws no chip, rather than a `$0.00` claiming a measured zero.
   // Cost is configured in Settings, which is where an operator who wants it goes.
   if (!fleetCostHasContent(fleet) || !fleet) return null;
-  const { lead, rate, alert, label } = spendChipFigures(fleet);
+  const { lead, rate, alert, tone, label } = spendChipFigures(fleet);
 
   return (
     <div className="spend-chip-wrap" ref={ref}>
@@ -253,7 +263,7 @@ export function SpendChip({
         <button
           type="button"
           className="spend-chip"
-          data-tone={spendChipTone(fleet)}
+          data-tone={tone}
           aria-label={label}
           aria-expanded={open}
           aria-haspopup="dialog"

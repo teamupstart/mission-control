@@ -86,7 +86,7 @@ status: ## Show whether the daemon is running
 logs: ## Tail the background daemon log
 	@touch $(LOG); tail -f $(LOG)
 
-build: ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
+build: node_modules ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
 	npm run build
 
 app: ## Build and package the macOS app (.app + .dmg) into release/
@@ -99,16 +99,27 @@ install-app: app ## Build, package, and copy Mission Control.app into /Applicati
 icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
 	node scripts/gen-icons.mjs
 
-test: ## Run the full test suite
+# The quality gates need the dependency tree, and a freshly leased worktree has none
+# (`make session` cuts a new one, and nothing in it has run `npm install` yet). Without
+# this, `make check` fails with `TS2688: Cannot find type definition file for 'node'` and
+# `make test` fails EVERY test file - a broken environment that reads as a broken change,
+# which is exactly how it reads to a review workflow running the gates for you.
+#
+# A real file target, never `.PHONY`: make is satisfied by the directory existing, so a
+# warm worktree pays nothing and only an empty one installs.
+node_modules:
+	npm install
+
+test: node_modules ## Run the full test suite
 	npm test
 
-lint: ## Lint src, hooks, test, scripts (oxlint)
+lint: node_modules ## Lint src, hooks, test, scripts (oxlint)
 	npm run lint
 
-check: ## Typecheck
+check: node_modules ## Typecheck
 	npm run typecheck
 
-smoke: ## Boot the built bundles to prove they run (needs `make build` first)
+smoke: node_modules ## Boot the built bundles to prove they run (needs `make build` first)
 	npm run smoke
 
 hooks: ## Install the Claude status hooks

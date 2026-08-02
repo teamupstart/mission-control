@@ -119,6 +119,36 @@ export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 type RunCursor = { updatedAt: number; id: string };
 
+// A summary intentionally selects no submission evidence or context. The newest submission
+// contributes only its identity and segment; attempts for the bounded result set are loaded
+// in one follow-up query instead of three reads per run.
+const WORKFLOW_RUN_SUMMARY_SELECT = `
+  SELECT r.*, b.note_key, b.session_id,
+         d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
+         COALESCE((
+           SELECT MAX(s.round) FROM workflow_submissions s WHERE s.run_id = r.id
+         ), 0) AS current_round,
+         ls.id AS latest_submission_id,
+         COALESCE(ls.segment, 0) AS latest_segment,
+         CASE WHEN EXISTS (
+           SELECT 1 FROM workflow_submissions s
+            WHERE s.run_id = r.id AND s.mode = 'inspector_only'
+         ) THEN 1 ELSE 0 END AS bypassed_persona_review,
+         (SELECT COUNT(*) FROM workflow_deliveries wd
+           WHERE wd.run_id = r.id AND wd.state = 'uncertain') AS uncertain_delivery_count,
+         (SELECT COUNT(*) FROM workflow_deliveries wd
+           WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count
+    FROM workflow_runs r
+    JOIN workflow_bindings b ON b.id = r.binding_id
+    LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
+    LEFT JOIN workflow_definitions d ON d.id = v.workflow_id
+    LEFT JOIN workflow_submissions ls ON ls.id = (
+      SELECT newest.id FROM workflow_submissions newest
+       WHERE newest.run_id = r.id
+       ORDER BY newest.round DESC, newest.segment DESC
+       LIMIT 1
+    )`;
+
 export function encodeWorkflowRunCursor(cursor: RunCursor): string {
   return Buffer.from(JSON.stringify([cursor.updatedAt, cursor.id]), "utf8").toString("base64url");
 }
@@ -2436,25 +2466,10 @@ export class WorkflowStore {
 
   listRunSummaries(): WorkflowRunSummary[] {
     const rows = this.db.prepare(
-      `SELECT r.*, b.note_key, b.session_id,
-              d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
-              COALESCE(MAX(s.round), 0) AS current_round,
-              (SELECT COUNT(*) FROM workflow_deliveries wd
-                WHERE wd.run_id = r.id AND wd.state = 'uncertain') AS uncertain_delivery_count,
-              (SELECT COUNT(*) FROM workflow_deliveries wd
-                WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count
-         FROM workflow_runs r
-         JOIN workflow_bindings b ON b.id = r.binding_id
-         LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
-         LEFT JOIN workflow_definitions d ON d.id = v.workflow_id
-         LEFT JOIN workflow_submissions s ON s.run_id = r.id
-        GROUP BY r.id
-        ORDER BY r.updated_at DESC, r.id DESC`,
+      `${WORKFLOW_RUN_SUMMARY_SELECT}
+       ORDER BY r.updated_at DESC, r.id DESC`,
     ).all() as unknown as Array<Record<string, unknown>>;
-    return rows.flatMap((row) => {
-      const summary = this.runSummaryFromRow(row);
-      return summary ? [summary] : [];
-    });
+    return this.runSummariesFromRows(rows);
   }
 
   listRunSummaryPage(input: {
@@ -2486,7 +2501,11 @@ export class WorkflowStore {
           : "0");
         params.push(...ids);
       } else {
-        where.push(`d.id = ?`);
+        where.push(
+          `r.workflow_version_id IN (
+             SELECT id FROM workflow_versions WHERE workflow_id = ?
+           )`,
+        );
         params.push(input.workflowId);
       }
     }
@@ -2496,28 +2515,13 @@ export class WorkflowStore {
     }
     params.push(input.limit + 1);
     const rows = this.db.prepare(
-      `SELECT r.*, b.note_key, b.session_id,
-              d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
-              COALESCE(MAX(s.round), 0) AS current_round,
-              (SELECT COUNT(*) FROM workflow_deliveries wd
-                WHERE wd.run_id = r.id AND wd.state = 'uncertain') AS uncertain_delivery_count,
-              (SELECT COUNT(*) FROM workflow_deliveries wd
-                WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count
-         FROM workflow_runs r
-         JOIN workflow_bindings b ON b.id = r.binding_id
-         LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
-         LEFT JOIN workflow_definitions d ON d.id = v.workflow_id
-         LEFT JOIN workflow_submissions s ON s.run_id = r.id
-        ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
-        GROUP BY r.id
-        ORDER BY r.updated_at DESC, r.id DESC
-        LIMIT ?`,
+      `${WORKFLOW_RUN_SUMMARY_SELECT}
+       ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY r.updated_at DESC, r.id DESC
+       LIMIT ?`,
     ).all(...params) as unknown as Array<Record<string, unknown>>;
     const pageRows = rows.slice(0, input.limit);
-    const items = pageRows.flatMap((row) => {
-      const summary = this.runSummaryFromRow(row);
-      return summary ? [summary] : [];
-    });
+    const items = this.runSummariesFromRows(pageRows);
     const hasMore = rows.length > input.limit;
     const last = pageRows.at(-1);
     const lastUpdatedAt = Number(last?.updated_at);
@@ -2535,33 +2539,69 @@ export class WorkflowStore {
 
   runSummary(id: string): WorkflowRunSummary | null {
     const row = this.db.prepare(
-      `SELECT r.*, b.note_key, b.session_id,
-              d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
-              COALESCE(MAX(s.round), 0) AS current_round,
-              (SELECT COUNT(*) FROM workflow_deliveries wd
-                WHERE wd.run_id = r.id AND wd.state = 'uncertain') AS uncertain_delivery_count,
-              (SELECT COUNT(*) FROM workflow_deliveries wd
-                WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count
-         FROM workflow_runs r
-         JOIN workflow_bindings b ON b.id = r.binding_id
-         LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
-         LEFT JOIN workflow_definitions d ON d.id = v.workflow_id
-         LEFT JOIN workflow_submissions s ON s.run_id = r.id
-        WHERE r.id = ?
-        GROUP BY r.id`,
+      `${WORKFLOW_RUN_SUMMARY_SELECT}
+       WHERE r.id = ?`,
     ).get(id) as Record<string, unknown> | undefined;
-    return row ? this.runSummaryFromRow(row) : null;
+    return row ? this.runSummariesFromRows([row])[0] ?? null : null;
   }
 
-  private runSummaryFromRow(row: Record<string, unknown>): WorkflowRunSummary | null {
+  private runSummariesFromRows(rows: Array<Record<string, unknown>>): WorkflowRunSummary[] {
+    const submissionIds = rows.flatMap((row) =>
+      typeof row.latest_submission_id === "string" ? [row.latest_submission_id] : []);
+    const { attemptsBySubmission, corruptSubmissionIds } =
+      this.summaryAttemptsForSubmissions(submissionIds);
+    return rows.flatMap((row) => {
+      const submissionId = typeof row.latest_submission_id === "string"
+        ? row.latest_submission_id
+        : null;
+      if (submissionId && corruptSubmissionIds.has(submissionId)) return [];
+      const summary = this.runSummaryFromRow(
+        row,
+        submissionId ? attemptsBySubmission.get(submissionId) ?? [] : [],
+      );
+      return summary ? [summary] : [];
+    });
+  }
+
+  private summaryAttemptsForSubmissions(submissionIds: string[]): {
+    attemptsBySubmission: Map<string, WorkflowNodeAttempt[]>;
+    corruptSubmissionIds: Set<string>;
+  } {
+    const attemptsBySubmission = new Map<string, WorkflowNodeAttempt[]>();
+    const corruptSubmissionIds = new Set<string>();
+    // Stay below SQLite builds with a conservative host-parameter limit while keeping a
+    // normal 50-row page to one statement.
+    for (let offset = 0; offset < submissionIds.length; offset += 400) {
+      const chunk = submissionIds.slice(offset, offset + 400);
+      const rows = this.db.prepare(
+        `SELECT * FROM workflow_node_attempts
+          WHERE submission_id IN (${chunk.map(() => "?").join(", ")})
+          ORDER BY submission_id ASC, created_at ASC, node_id ASC, attempt ASC`,
+      ).all(...chunk) as unknown as Array<Record<string, unknown>>;
+      for (const row of rows) {
+        try {
+          const attempt = parseWorkflowNodeAttemptRow(row);
+          const attempts = attemptsBySubmission.get(attempt.submissionId) ?? [];
+          attempts.push(attempt);
+          attemptsBySubmission.set(attempt.submissionId, attempts);
+        } catch (error) {
+          diagnose(error);
+          if (typeof row.submission_id === "string") corruptSubmissionIds.add(row.submission_id);
+        }
+      }
+    }
+    return { attemptsBySubmission, corruptSubmissionIds };
+  }
+
+  private runSummaryFromRow(
+    row: Record<string, unknown>,
+    submissionAttempts: WorkflowNodeAttempt[],
+  ): WorkflowRunSummary | null {
     try {
       const run = parseWorkflowRunRow(row);
-      const submission = this.latestSubmission(run.id);
       const latestAttempts = new Map<string, WorkflowNodeAttempt>();
-      if (submission) {
-        for (const attempt of this.listAttempts(submission.id)) {
-          latestAttempts.set(attempt.nodeId, attempt);
-        }
+      for (const attempt of submissionAttempts) {
+        latestAttempts.set(attempt.nodeId, attempt);
       }
       const attempts = [...latestAttempts.values()];
       const gateState = inspectorGateState(run);
@@ -2595,7 +2635,7 @@ export class WorkflowStore {
         // several evidence segments, so counting rows would inflate the number the repair
         // budget is compared against.
         round: Number(row.current_round),
-        segment: submission?.segment ?? 0,
+        segment: Number(row.latest_segment ?? 0),
         // Derived once, HERE, from the attempt the runtime is actually watching. A surface
         // that re-derived it from session activity would be guessing at the one distinction
         // this phase exists to make - a stale idle is not a finished turn.
@@ -2617,7 +2657,7 @@ export class WorkflowStore {
             && verdict.verdict === "fail",
           );
         }).length,
-        bypassedPersonaReview: this.listSubmissions(run.id).some((item) => item.mode === "inspector_only"),
+        bypassedPersonaReview: Number(row.bypassed_persona_review ?? 0) === 1,
         gate: compactGate(run, gateState),
         gatePrNumber: Number.isInteger(gatePrNumber) ? gatePrNumber : null,
         gateHeadShort: (gateState?.targetHeadSha ?? gateState?.observedHeadSha)?.slice(0, 8) ?? null,
@@ -3795,6 +3835,17 @@ export class WorkflowStore {
     ).all(submissionId) as unknown[]).map(parseWorkflowNodeAttemptRow);
   }
 
+  /** Every attempt for a run in the same evidence and attempt order as per-submission reads. */
+  listAttemptsForRun(runId: string): WorkflowNodeAttempt[] {
+    return (this.db.prepare(
+      `SELECT a.* FROM workflow_node_attempts a
+         JOIN workflow_submissions s ON s.id = a.submission_id
+        WHERE s.run_id = ?
+        ORDER BY s.round ASC, s.segment ASC,
+                 a.created_at ASC, a.node_id ASC, a.attempt ASC`,
+    ).all(runId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+  }
+
   listRunnableAttempts(now = Date.now()): WorkflowNodeAttempt[] {
     return (this.db.prepare(
       `SELECT a.* FROM workflow_node_attempts a
@@ -4016,6 +4067,16 @@ export class WorkflowStore {
     return (this.db.prepare(
       `SELECT * FROM workflow_edge_receipts WHERE submission_id = ? ORDER BY id ASC`,
     ).all(submissionId) as unknown[]).map(parseWorkflowEdgeReceiptRow);
+  }
+
+  /** Every receipt for a run, preserving the old submission-then-receipt detail order. */
+  listReceiptsForRun(runId: string): WorkflowEdgeReceipt[] {
+    return (this.db.prepare(
+      `SELECT receipt.* FROM workflow_edge_receipts receipt
+         JOIN workflow_submissions s ON s.id = receipt.submission_id
+        WHERE s.run_id = ?
+        ORDER BY s.round ASC, s.segment ASC, receipt.id ASC`,
+    ).all(runId) as unknown[]).map(parseWorkflowEdgeReceiptRow);
   }
 
   getDelivery(id: string): WorkflowDelivery | null {
@@ -5028,7 +5089,7 @@ export class WorkflowStore {
     const version = this.getWorkflowVersionById(run.workflowVersionId);
     if (!binding) return null;
     const submissions = this.listSubmissions(id);
-    const attempts = submissions.flatMap((submission) => this.listAttempts(submission.id));
+    const attempts = this.listAttemptsForRun(id);
     const offenders = repeatOffenders(submissions, attempts);
     const events = this.listEventPage(id);
     const llmCalls = this.listLlmCallPage(id);
@@ -5048,7 +5109,7 @@ export class WorkflowStore {
       contextState: runContextState(submissions),
       submissions,
       attempts,
-      receipts: submissions.flatMap((submission) => this.listReceipts(submission.id)),
+      receipts: this.listReceiptsForRun(id),
       deliveries: this.listDeliveries(id),
       events: events.items,
       eventCount,
@@ -5065,11 +5126,11 @@ export class WorkflowStore {
   runDetailResult(id: string):
     | { kind: "found"; detail: WorkflowRunDetail }
     | { kind: "missing" | "corrupt" } {
-    const exists = this.db.prepare(`SELECT 1 FROM workflow_runs WHERE id = ?`).get(id);
-    if (!exists) return { kind: "missing" };
     try {
       const detail = this.runDetail(id);
-      return detail ? { kind: "found", detail } : { kind: "corrupt" };
+      if (detail) return { kind: "found", detail };
+      const exists = this.db.prepare(`SELECT 1 FROM workflow_runs WHERE id = ?`).get(id);
+      return exists ? { kind: "corrupt" } : { kind: "missing" };
     } catch (error) {
       diagnose(error);
       return { kind: "corrupt" };

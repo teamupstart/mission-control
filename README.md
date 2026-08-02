@@ -3381,6 +3381,21 @@ depth.
 Foreman's completion checks use the card's [durable Goal](#goal), while its latest tactical
 focus remains separate.
 
+Two default-on safeguards under **Settings → Foreman → Completion safeguards** decide which
+finished work never reaches an automatic completion action:
+
+- **Skip automatic completion for Scout tasks** uses the task's durable `Kind`. A Scout is
+  retired once its findings are ready, without showing Ship it, running No-Mistakes Review,
+  or typing the Straight-to-PR instruction.
+- **Skip automatic completion for mockups and review artifacts** recognizes explicit output
+  contracts such as `Output: mockups`, natural-language requests for reports, plans, research,
+  wireframes or prototypes, and completed diffs containing only conventional artifact paths.
+  Mixed contracts that also request source code, tests, components or another implementation
+  action still follow the configured completion path.
+
+The safeguards are independent. A task matching either one is retired while that switch is
+on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
+
 In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
 arranged differently, because a permanent conversation gives it somewhere better to sit:
 Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
@@ -3685,6 +3700,15 @@ The action is the same whichever trigger fired:
 | **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
 | **Run No-Mistakes Review automatically** | after Foreman verifies the original work, submits an existing **Foreman Complete** binding; if there is no active binding, it binds and immediately submits the current built-in **No-Mistakes Review** workflow |
 | **Straight to PR** | explicitly skip the review workflow; use git and `gh` directly to commit, push, and open a PR, then merge the default branch in, resolve conflicts, and follow CI until every check passes |
+
+Automatic wrap-up is only for shippable changes. A linked task whose **Kind** is **scout**
+retires its completion without submitting an existing Workflow, creating the built-in
+No-Mistakes fallback, typing the Straight-to-PR instruction, or raising a Ship it? card. The
+same rule applies when the resolved objective explicitly asks for review-only output such as
+mockups, wireframes, prototypes, plans, reports or design explorations, and when the completed
+diff contains only conventional mockup or plan artifacts. A mixed change that also contains an
+implementation remains eligible. This is a Foreman automation boundary; it does not prevent a
+human from committing or opening a pull request manually.
 
 The two automated actions can ultimately *push*, so they only fire in **live** mode on an
 **allowlisted** repo - until then Foreman asks, and the popover says so rather than letting

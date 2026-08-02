@@ -432,6 +432,8 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     triage: "on",
     maxFixAttempts: 3,
     maxFixRounds: 10,
+    skipScoutWrapup: true,
+    skipReviewArtifactWrapup: true,
     wrapupTriggers: ["drain"],
     wrapup: "ask",
     trackReviewFeedback: true,

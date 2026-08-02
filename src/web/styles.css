@@ -11455,9 +11455,14 @@ select.ensemble-judge-persona {
 .pal-input::placeholder {
   color: var(--dim);
 }
+/* Taller than the settings-only palette it replaced, because it indexes far more than
+   settings now and three groups have to be reachable without a scroll on a real fleet.
+   Still capped well under the viewport: the panel is a palette, not a page. A row cut in
+   half at the bottom edge is the intended scroll affordance - it is what says there is
+   more. */
 .pal-results {
   padding: 8px;
-  max-height: 380px;
+  max-height: min(60vh, 480px);
   overflow-y: auto;
 }
 .pal-glabel {
@@ -11518,6 +11523,60 @@ select.ensemble-judge-persona {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A row whose state line is something the operator has to answer. Amber is the fleet's own
+   attention tone, so a waiting ensemble reads here exactly as it does on a card. */
+.pal-row-desc.is-attention {
+  color: var(--attention);
+}
+/* The kind chip, right-aligned: what this row IS, in one mono word. Toned per kind so the
+   eye can sort a list of twenty hits without reading any of them - and toned from the same
+   variables the destinations use, so `ensemble` is the machinery purple here and there. */
+.pal-kind {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.pal-kind-workflow,
+.pal-kind-run {
+  color: var(--working);
+  border-color: color-mix(in oklab, var(--working) 35%, transparent);
+}
+.pal-kind-ensemble,
+.pal-kind-strategy {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 40%, transparent);
+}
+.pal-kind-mission {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 35%, transparent);
+}
+.pal-kind-persona,
+.pal-kind-action,
+.pal-kind-command {
+  color: var(--muted);
+}
+/* The active kind filter, stated beside the caret: a filter you cannot see is a palette that
+   looks like it lost your results. */
+.pal-filter:empty {
+  display: none;
+}
+.pal-filter {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 16%, transparent);
+  color: var(--working);
 }
 /* Presentational pill: it reflects the binding, the row (a button) handles the flip, so a
    click lands once and there is no nested control to steal the row's tooltip. */

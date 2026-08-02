@@ -265,16 +265,16 @@ test("the sitrep chord stands down for everyone else's overlay, not its own", ()
   assert.equal(overlayGuards([sitrep, diff]).onlyOpen(sitrep), false);
 });
 
-// The ⌘K settings-search chord is gated the same way in App: it opens the palette from a
-// clean screen and toggles its own palette shut, but must NOT open over another
-// screen-owning overlay (Files, the dispatch dialog), which would leave that dialog mounted
-// behind an unexpected jump to Settings.
-test("the settings-search chord stands down for another overlay but toggles its own", () => {
-  const { settingsSearch, dispatch } = OVERLAY_IDS;
-  assert.equal(overlayGuards([]).onlyOpen(settingsSearch), true);
-  assert.equal(overlayGuards([settingsSearch]).onlyOpen(settingsSearch), true);
-  assert.equal(overlayGuards([dispatch]).onlyOpen(settingsSearch), false);
-  assert.equal(overlayGuards([settingsSearch, dispatch]).onlyOpen(settingsSearch), false);
+// The ⌘K palette chord is gated the same way in App: it opens from a clean screen and
+// toggles its own palette shut, but must NOT open over another screen-owning overlay (Files,
+// the dispatch dialog) - which would leave that dialog mounted behind it, and hand the
+// palette's Escape the layer the operator was actually looking at.
+test("the palette chord stands down for another overlay but toggles its own", () => {
+  const { palette, dispatch } = OVERLAY_IDS;
+  assert.equal(overlayGuards([]).onlyOpen(palette), true);
+  assert.equal(overlayGuards([palette]).onlyOpen(palette), true);
+  assert.equal(overlayGuards([dispatch]).onlyOpen(palette), false);
+  assert.equal(overlayGuards([palette, dispatch]).onlyOpen(palette), false);
 });
 
 test("the primitive gates dismissal on `closable`, both routes at once", () => {

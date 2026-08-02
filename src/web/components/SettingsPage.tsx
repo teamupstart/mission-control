@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
@@ -17,12 +17,9 @@ import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
-import { SettingsSearch } from "./SettingsSearch.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import { useTaskSources } from "../useTaskSources.ts";
-import { useRichText } from "../lib/rich-text.ts";
 import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindings.ts";
-import { buildSettingsBindings } from "../lib/settings-search.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
@@ -51,6 +48,16 @@ function tabDomId(id: SettingsCategoryId): string {
  * its CSS animation (two 1.6s passes), matched here so the class is not stripped mid-fade.
  */
 const FLASH_MS = 3200;
+
+/**
+ * How long a deep link waits for its control to appear before giving up on it.
+ *
+ * A panel that fetches its config renders its fields only after the read returns, so an
+ * anchor arriving from off the page is routinely asked for before it exists. Generous enough
+ * to cover a slow local round trip, short enough that a control this build simply does not
+ * render stops being watched for.
+ */
+const ANCHOR_WAIT_MS = 5000;
 
 /** How far this category's writes reach, as the badge the rail and the panel head carry. */
 function ScopeBadge({ scope }: { scope: keyof typeof SETTINGS_SCOPES }): React.JSX.Element {
@@ -138,8 +145,8 @@ export function SettingsPage({
   onLayoutChange,
   settingsStatus,
   workflowSummaries = [],
-  searchOpen = false,
-  onSearchOpenChange,
+  onOpenPalette,
+  jump = null,
 }: {
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
@@ -188,14 +195,21 @@ export function SettingsPage({
   /** Published Workflow catalog used by the dispatch-default picker. */
   workflowSummaries?: WorkflowSummary[];
   /**
-   * Whether the ⌘K search palette is open. App owns it so the shortcut can open the
-   * palette from the fleet (navigate here, then open) as well as from inside the page.
-   * Optional so the render tests can mount the page without it - a closed palette draws
-   * nothing.
+   * Open the app-wide ⌘K palette. The rail's search box is one of its three doorways (the
+   * chord and the topbar are the others), so the box asks App rather than owning a palette
+   * of its own - there is one input over everything, and this page is not a second one.
    */
-  searchOpen?: boolean;
-  /** Open (rail box) or close (Escape, veil, ⌘K again) the palette. */
-  onSearchOpenChange?: (open: boolean) => void;
+  onOpenPalette?: () => void;
+  /**
+   * A control to scroll to and flash, handed down by App when the palette lands on a setting.
+   *
+   * A `{ anchor, nonce }` pair rather than a bare string because the same control can be
+   * asked for twice in a row, and the second ask has to flash again: the nonce is what makes
+   * a repeat a new request. It rides a prop rather than the route because the settings hash
+   * grammar is deliberately category-only - an anchor is a transient pointer at a control,
+   * not a location worth a history entry.
+   */
+  jump?: { anchor: string; nonce: number } | null;
 }): React.JSX.Element {
   const skills = useSkills();
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
@@ -216,81 +230,108 @@ export function SettingsPage({
   // rather than tidy - the health strip, retention readout and health card are what it
   // keeps moving, which is what let the drawer's Refresh health button go.
   const workflowSettings = useWorkflowSettings();
-  // The formatting toggle's store, owned here so the search palette can flip it inline -
-  // `AppearancePanel` reads the same module-level store, so there is no second copy to keep
-  // in step (see `lib/rich-text.ts`).
-  const [richText, setRichText] = useRichText();
-  // The resolved chord for the search action, shown as the rail box's hint so the box and
-  // the shortcut always agree even after a rebind.
+  // The resolved chord for the palette, shown as the rail box's hint so the box and the
+  // shortcut always agree even after a rebind.
   const { bindings: keyBindings } = useKeybindings();
   const searchChord = formatChord(keyBindings.settingsSearch);
   const [keybindingHints] = useKeybindingHints();
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
-  // Runtime get/set for the bindable boolean controls, wired from the hooks this page
-  // already owns and handed to the palette so a matching result can flip in place. Exactly
-  // the non-risky toggles in `SETTINGS_CONTROLS`: the risky set (YOLO, Inspector
-  // enable/mode) is never wired, so it degrades to a jump and its consent copy is on screen
-  // when it changes. The daemon-backed toggles pass `null` until their config has polled, so
-  // `buildSettingsBindings` withholds their binding and they too degrade to a jump - the
-  // same guard the panels draw as a disabled switch, never a state that is not in force.
-  const toggleBindings = useMemo(
-    () =>
-      buildSettingsBindings({
-        formatMessages: { value: richText, set: setRichText },
-        autoMode: harnesses.config
-          ? {
-              value: harnesses.config.autoModeOnDispatch,
-              set: (v) => void harnesses.update({ autoModeOnDispatch: v }),
-            }
-          : null,
-        skillsEnabled: skills.view
-          ? { value: skills.view.enabled, set: (v) => void skills.update({ enabled: v }) }
-          : null,
-        costTrack: cost.status
-          ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
-          : null,
-      }),
-    [richText, setRichText, harnesses.config, harnesses.update, skills.view, skills.update, cost.status, cost.update],
-  );
-
-  // Deep-link with a flash: a panel (Shipping's dependency warnings, the settings consoles'
-  // "Manage in Trust") asks to move to a category and light up one control there. The route
-  // change is App's `onNavigate`; the flash is this page's, because the anchor is a
-  // transient pointer at a control and was deliberately kept out of the hash grammar (which
-  // is Phase 1's, and category-only). `flashRef` holds the pending anchor and `flashNonce`
-  // re-fires the effect. Phase 5's search palette drives the same path.
-  const flashRef = useRef<string | null>(null);
-  const [flashNonce, setFlashNonce] = useState(0);
+  // Deep-link with a flash: something asks to move to a category and light up one control
+  // there. Two callers, one implementation - a panel (Shipping's dependency warnings, the
+  // settings consoles' "Manage in Trust") through `navigateWithAnchor`, and the ⌘K palette
+  // through the `jump` prop, because App navigated before this page was even mounted. The
+  // route change is App's; the flash is this page's, because the anchor is a transient
+  // pointer at a control and was deliberately kept out of the hash grammar (which is
+  // category-only).
+  //
+  // The request is STATE carrying its own id, not a ref plus a nonce. It was the latter, and
+  // that shape cannot survive a request that has to WAIT for its control (below): bumping a
+  // nonce to re-fire the effect also re-runs the effect's CLEANUP, which tore down the wait
+  // the previous run had just set up. One `seq` counter for both callers, so an id is unique
+  // whichever door the request came through and `handled` can never skip a real one.
+  const seq = useRef(0);
+  const [pending, setPending] = useState<{ anchor: string; id: number } | null>(null);
+  const handled = useRef(0);
+  const requestFlash = useCallback((anchor: string): void => {
+    seq.current += 1;
+    setPending({ anchor, id: seq.current });
+  }, []);
   const navigateWithAnchor = useCallback(
     (cat: SettingsCategoryId, anchor?: string): void => {
       onNavigate(cat);
-      if (anchor) {
-        flashRef.current = anchor;
-        setFlashNonce((n) => n + 1);
-      }
+      if (anchor) requestFlash(anchor);
     },
-    [onNavigate],
+    [onNavigate, requestFlash],
   );
   useEffect(() => {
-    const anchor = flashRef.current;
-    if (!anchor) return;
+    if (jump) requestFlash(jump.anchor);
+  }, [jump, requestFlash]);
+  useEffect(() => {
+    // Consumed once, tracked in a ref so recording it cannot re-render and cancel the run it
+    // is recording.
+    if (!pending || pending.id === handled.current) return;
     // A cross-category jump lands here twice: once still on the source category (the anchor
     // prefix won't match, so wait), and once the route caught up and the target panel is
-    // mounted (prefix matches, and the control exists to scroll to and flash). Keyed on
-    // `category` as well as the nonce so that second render re-runs it.
-    if (anchor.split("/")[0] !== category) return;
-    flashRef.current = null;
-    const el = document.querySelector<HTMLElement>(`[data-anchor="${anchor}"]`);
-    if (!el) return;
-    el.scrollIntoView({ block: "center", behavior: "smooth" });
-    el.classList.add("settings-flash");
-    const timer = window.setTimeout(() => el.classList.remove("settings-flash"), FLASH_MS);
-    return () => {
-      window.clearTimeout(timer);
-      el.classList.remove("settings-flash");
+    // mounted. Keyed on `category` as well, so that second render re-runs it.
+    if (pending.anchor.split("/")[0] !== category) return;
+    handled.current = pending.id;
+    const anchor = pending.anchor;
+
+    let lit: HTMLElement | null = null;
+    let fade: number | undefined;
+    let giveUp: number | undefined;
+    let watcher: MutationObserver | undefined;
+
+    const flash = (el: HTMLElement): void => {
+      lit = el;
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      el.classList.add("settings-flash");
+      fade = window.setTimeout(() => el.classList.remove("settings-flash"), FLASH_MS);
     };
-  }, [flashNonce, category]);
+    const findAnchor = (): HTMLElement | null =>
+      document.querySelector<HTMLElement>(`[data-anchor="${anchor}"]`);
+
+    const present = findAnchor();
+    if (present) {
+      flash(present);
+    } else {
+      // The panel is mounted, but its CONTROL may not be yet: Shipping, Inspector, Trust and
+      // Task sources all render their fields only once their config has come back, and half
+      // this page's panels behave the same way. A deep link that arrives before that read -
+      // which is every link from off the page, because the panel starts fetching as it
+      // mounts - would otherwise find nothing and silently flash nothing at all. That was
+      // invisible from inside the page (where the config had long since landed) and is
+      // exactly what a link from the ⌘K palette does every time.
+      //
+      // So wait for it, briefly, and stop waiting: a control that never appears is a jump to
+      // a setting this build does not render, and an observer left running would sit on
+      // every DOM change the dashboard makes for the life of the page.
+      watcher = new MutationObserver(() => {
+        const late = findAnchor();
+        if (!late) return;
+        watcher?.disconnect();
+        watcher = undefined;
+        window.clearTimeout(giveUp);
+        flash(late);
+      });
+      watcher.observe(document.querySelector(".settings-page") ?? document.body, {
+        childList: true,
+        subtree: true,
+      });
+      giveUp = window.setTimeout(() => {
+        watcher?.disconnect();
+        watcher = undefined;
+      }, ANCHOR_WAIT_MS);
+    }
+
+    return () => {
+      watcher?.disconnect();
+      window.clearTimeout(fade);
+      window.clearTimeout(giveUp);
+      lit?.classList.remove("settings-flash");
+    };
+  }, [pending, category]);
 
   // Inputs to the rail dots (Phase 4). Foreman is App-owned, not in the status payload. The
   // trust blind spot is a merge-without-review gap - a repo YOLO may merge that the Inspector
@@ -426,7 +467,6 @@ export function SettingsPage({
   const active = settingsCategory(category);
 
   return (
-    <>
     <main className="settings-page">
       <div className="settings-rail">
         {/* Outside the tablist, deliberately: a tablist's children are its tabs, and a
@@ -441,19 +481,21 @@ export function SettingsPage({
           </Tooltip>
         </div>
         {/* Phase 1 deliberately shipped no rail box - a dead one would lie. This is that box,
-            live now that the palette exists, showing the current chord so it doubles as the
-            shortcut's discovery point. Outside the tablist for the same reason the title is. */}
-        <Tooltip label={`Search every setting (${searchChord})`}>
+            showing the current chord so it doubles as the shortcut's discovery point. It
+            opens the app-wide palette rather than a settings-only one: the same input, from
+            this page as from anywhere else. Outside the tablist for the same reason the
+            title is. */}
+        <Tooltip label={`Search everything (${searchChord})`}>
           <button
             type="button"
             className="settings-rail-search"
-            onClick={() => onSearchOpenChange?.(true)}
-            aria-label="Search settings"
+            onClick={() => onOpenPalette?.()}
+            aria-label="Search everything"
           >
             <span className="settings-rail-search-glyph" aria-hidden>
               ⌕
             </span>
-            <span className="settings-rail-search-text">Search settings…</span>
+            <span className="settings-rail-search-text">Search everything…</span>
             {/* Answers to "Show keybindings on buttons" like every other on-button
                 keycap. Its own class, not `Keycap`: this one is right-aligned in a
                 search box rather than annotating a label, so it keeps that shape - the
@@ -522,12 +564,5 @@ export function SettingsPage({
         {renderCategory(category)}
       </div>
     </main>
-    <SettingsSearch
-      open={searchOpen}
-      onClose={() => onSearchOpenChange?.(false)}
-      onNavigate={navigateWithAnchor}
-      bindings={toggleBindings}
-    />
-    </>
   );
 }

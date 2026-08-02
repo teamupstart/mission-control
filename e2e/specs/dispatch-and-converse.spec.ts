@@ -27,6 +27,30 @@ import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.
 
 const TASK = "write a haiku about flexbox";
 
+/**
+ * Wait for a locator to stop moving before acting on it.
+ *
+ * A freshly dispatched session settles for a second or so - the titler renames it, the driver
+ * reports its model, the branch line arrives - and every one of those re-lays-out the card.
+ * Playwright requires a stable box before it will click, and under a loaded machine (the full
+ * suite runs several daemons at once) that churn can outlast the whole 60s retry budget: the
+ * observed failure is `element is not stable` followed by `element was detached from the DOM`.
+ *
+ * Two consecutive identical reads is the cheapest honest definition of "settled" - the same
+ * one `line-drawers.spec.ts` uses for the same reason. It is a barrier, never a mask: the
+ * assertions that the control EXISTS still run before this, so a genuinely missing button
+ * fails exactly as loudly as it did.
+ */
+async function settled(locator: ReturnType<Page["locator"]>): Promise<void> {
+  let last = JSON.stringify(await locator.boundingBox());
+  await expect.poll(async () => {
+    const next = JSON.stringify(await locator.boundingBox());
+    const same = next === last;
+    last = next;
+    return same;
+  }, { timeout: 15_000 }).toBe(true);
+}
+
 async function api<T>(
   daemon: DaemonHandle,
   path: string,
@@ -246,6 +270,25 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   await api(daemon, `/api/sessions/${sessionId}/queue/wrapup/asked`, {
     clearAnswer: true,
   });
+
+  // Wait for the daemon to actually be holding an OPEN ask before opening the queue.
+  //
+  // The Ship it choice renders off `queue.wrapupAskedAt !== null` with the ask unanswered,
+  // and both routes above are writes whose result reaches the browser over SSE. Clicking
+  // straight after them is a hope, not a wait: on a loaded machine the dispatch's opening
+  // turn is still settling, and the session upsert that carries the ask can land after the
+  // panel has already rendered without it. `expect.poll` on the daemon's own projection is
+  // the barrier - the e2e rule that anything outside the DOM gets polled rather than
+  // assumed. It asserts the precondition this test needs, so a genuinely missing ask still
+  // fails here rather than being papered over further down.
+  await expect.poll(async () => {
+    const session = (await api<Array<{
+      id: string;
+      queue: { wrapupAskedAt: number | null; wrapupAnswered: boolean } | null;
+    }>>(daemon, "/api/sessions")).find((candidate) => candidate.id === sessionId);
+    return session?.queue?.wrapupAskedAt !== null && session?.queue?.wrapupAnswered === false;
+  }, { timeout: 20_000 }).toBe(true);
+
   await card.getByRole("button", { name: "Queue" }).click();
   const review = card.getByRole("button", { name: "Run No-Mistakes Review" });
   await expect(review).toBeVisible();
@@ -268,6 +311,8 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
       `/api/sessions/${encodeURIComponent(sessionId)}/workflow-review`,
     )
   );
+  // The card is still settling around this button; click it once it has stopped moving.
+  await settled(card);
   await review.click();
   const sent = await request;
   expect(sent.postDataJSON()).toEqual({ requestId: expect.any(String) });

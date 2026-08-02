@@ -85,6 +85,10 @@ import {
   WorkflowBindingDialog,
   type WorkflowBindingTarget,
 } from "./workflows/WorkflowBindingDialog.tsx";
+import { Palette } from "./components/Palette.tsx";
+import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
+import { buildSettingsBindings } from "./lib/settings-search.ts";
+import { useRichText } from "./lib/rich-text.ts";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -250,11 +254,18 @@ export function App(): React.JSX.Element {
     null,
   );
   const [reportOpen, setReportOpen] = useState(false);
-  // Whether the ⌘K settings search palette is open. Owned here, not in SettingsPage, so
-  // the shortcut can open it from the fleet: App navigates to the settings page and sets
-  // this in one go. Reset whenever we leave settings (below), so returning via the gear
-  // never reopens a palette the operator closed.
-  const [searchOpen, setSearchOpen] = useState(false);
+  // Whether the ⌘K palette is open. Owned here, and rendered in the overlay slot that every
+  // page shares, because it indexes BOTH homes: it opens over the fleet, the Library, a run,
+  // an ensemble and Settings alike, and navigating from it must not close it out from under
+  // the navigation it just performed.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // The settings control the palette last asked to land on, if any.
+  //
+  // The anchor is deliberately not in the hash (the settings route is category-only), so it
+  // travels as a prop to `SettingsPage`, which owns the one scroll-and-flash implementation.
+  // The nonce is what makes asking twice for the same control flash twice - without it the
+  // second request would be a prop that did not change, and nothing would happen.
+  const [settingsJump, setSettingsJump] = useState<{ anchor: string; nonce: number } | null>(null);
   const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
   const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
@@ -570,6 +581,123 @@ export function App(): React.JSX.Element {
     setMissionsTarget(null);
     setMissionsOpen(true);
   }, [closeDispatch]);
+
+  // The formatting store, read here so the palette can flip that toggle from any page.
+  // `AppearancePanel` reads the same module-level store, so there is no second copy.
+  const [richText, setRichText] = useRichText();
+  /**
+   * Runtime get/set for the settings toggles the palette may flip in place.
+   *
+   * Two of the four are wired, and the other two are `null` ON PURPOSE. `buildSettingsBindings`
+   * already states the rule: a source that has not loaded gets NO binding, and the control
+   * degrades to a jump rather than drawing a switch for a value nobody has read. Auto mode and
+   * the Skills master switch are backed by daemon configs that the Settings page alone polls
+   * (`useHarnesses`, `useSkills`, deliberately scoped to that page so they stop polling when
+   * you leave it) - so from a palette that opens on ANY page there is no loaded value for
+   * them, and they jump to their panel, consistently, from everywhere.
+   *
+   * The formatting toggle is a browser-local store with shipped defaults and cost telemetry is
+   * already App-owned, so both are honestly bindable wherever the palette opens.
+   */
+  const paletteBindings = useMemo(
+    () =>
+      buildSettingsBindings({
+        formatMessages: { value: richText, set: setRichText },
+        autoMode: null,
+        skillsEnabled: null,
+        costTrack: cost.status
+          ? { value: cost.status.config.enabled, set: (v) => void cost.update({ enabled: v }) }
+          : null,
+      }),
+    [richText, setRichText, cost.status, cost.update],
+  );
+  /**
+   * Session names, for the run rows that are bound to one.
+   *
+   * Derived here rather than passed whole, so the palette's dependency is honestly "the names
+   * on the cards" rather than "the fleet" - sessions are not a searchable kind yet, and this
+   * keeps the index unable to become one by accident.
+   */
+  const sessionNames = useMemo(
+    () => new Map(sessions.map((session) => [session.id, session.name])),
+    [sessions],
+  );
+  /** Everything the palette's providers read, in one object. */
+  const paletteStores = useMemo<PaletteStores>(
+    () => ({
+      workflows: workflowSummaries,
+      runs: workflowRuns,
+      ensembles: ensembleSummaries,
+      personas,
+      sessionActions,
+      schedules,
+      sessionNames,
+      settingsBindings: paletteBindings,
+    }),
+    [
+      workflowSummaries,
+      workflowRuns,
+      ensembleSummaries,
+      personas,
+      sessionActions,
+      schedules,
+      sessionNames,
+      paletteBindings,
+    ],
+  );
+
+  /**
+   * Perform one palette row.
+   *
+   * Every branch below hands off to an opener that already exists and is already used by a
+   * button somewhere: `navigate` for the routes phases 2 and 4 published, the three dispatch
+   * and binding overlays, and the Missions panel. The palette adds a doorway, never a second
+   * implementation - which is why this switch has no logic of its own beyond the settings
+   * anchor, and why a row can only ask for something the app could already do in one click.
+   */
+  const onPaletteActivate = useCallback(
+    (target: PaletteTarget): void => {
+      switch (target.kind) {
+        case "route":
+          navigate(target.route);
+          // Set unconditionally when the row carries one, INCLUDING when `navigate` was a
+          // no-op because we were already on that category: the operator asked to be shown
+          // this control, and being on the right page already is not a reason to show them
+          // nothing. The nonce makes the repeat a fresh request.
+          if (target.anchor) {
+            const anchor = target.anchor;
+            setSettingsJump((prev) => ({ anchor, nonce: (prev?.nonce ?? 0) + 1 }));
+          }
+          return;
+        case "toggle": {
+          const binding = paletteBindings.get(target.controlId);
+          binding?.set(!binding.get());
+          return;
+        }
+        case "dispatch":
+          openDispatch();
+          return;
+        case "launch-ensemble":
+          launchEnsemble(target.strategyId);
+          return;
+        case "bind-workflow":
+          // Opened with no target at all, exactly as the runs rail and the Line's Review
+          // drawer open it: the dialog asks for the session and the published version itself.
+          setWorkflowBindingTarget({});
+          return;
+        case "open-mission":
+          onOpenSchedule(target.scheduleId);
+          return;
+        default: {
+          // Exhaustiveness: a new target kind fails to compile here rather than silently
+          // doing nothing when its row is pressed.
+          const unhandled: never = target;
+          void unhandled;
+        }
+      }
+    },
+    [navigate, openDispatch, launchEnsemble, onOpenSchedule, paletteBindings],
+  );
   /**
    * Which Line stage has its drawer open, or null. The one carrier of that fact: the strip
    * reads it for `aria-expanded`, the fleet body renders from it, and `esc` clears it.
@@ -1183,12 +1311,14 @@ export function App(): React.JSX.Element {
     cardEls.current.get(expandedId)?.scrollIntoView({ block: "start", behavior: "smooth" });
   }, [expandedId]);
 
-  // The search palette is a settings-page surface (its veil is fixed and would otherwise
-  // hover over the fleet), so it cannot outlive the page: leaving settings closes it. This
-  // also means arriving via the gear always starts closed, and only an explicit ⌘K or rail
-  // click reopens it.
+  // The palette does NOT close when the page changes - that is the whole difference between
+  // it and the settings-only search it replaced. It navigates for a living, and a row that
+  // flipped a setting or landed on a run would otherwise close the surface that performed it.
+  // Every path that acts on a row closes it explicitly (`Palette.activate`), so the only
+  // thing left to clear here is the settings anchor: once we have left settings, a stale
+  // pointer at a control would flash the wrong thing on the next visit.
   useEffect(() => {
-    if (route.page !== "settings") setSearchOpen(false);
+    if (route.page !== "settings") setSettingsJump(null);
   }, [route.page]);
 
   // Global keyboard driving. Every action's key comes from the editable bindings
@@ -1209,30 +1339,25 @@ export function App(): React.JSX.Element {
       // selected tile's own open button, which the arrow keys put the cursor on.
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
 
-      // Search settings (⌘K by default) works from ANY page, which is why it sits above the
-      // non-fleet return below. From the fleet it navigates to the page and opens the palette
-      // in one step; on the page it toggles. It is a plain bubble-phase handler, so the
-      // Keyboard panel's capture-phase chord recorder still swallows ⌘K while recording -
-      // "recording wins", the same contract the palette keeps.
+      // The palette (⌘K by default) opens from ANY page and stays where it is - it indexes
+      // both homes, so it no longer navigates anywhere to open, which is why this block sits
+      // above the non-fleet return below and no longer touches the route. It is a plain
+      // bubble-phase handler, so the Keyboard panel's capture-phase chord recorder still
+      // swallows ⌘K while recording - "recording wins", the same contract the palette keeps.
       //
       // `onlyOpen` is the sitrep chord's pattern: fire when nothing is open, OR when the only
       // thing open is this palette (so ⌘K toggles it shut), but STAND DOWN for anyone else's
-      // overlay - a dispatch dialog or Files must not be left mounted behind a palette after
-      // an unexpected jump to Settings. The text-field bypass is gated on a ⌘/⌃ modifier: ⌘K
-      // is unambiguous mid-sentence, but a bare-key rebinding must stay behind the typing
-      // guard, or that character would open the palette from inside any input.
+      // overlay - a dispatch dialog or Files must not end up mounted behind a palette. The
+      // text-field bypass is gated on a ⌘/⌃ modifier: ⌘K is unambiguous mid-sentence, but a
+      // bare-key rebinding must stay behind the typing guard, or that character would open
+      // the palette from inside any input.
       if (
         chord === bindings.settingsSearch &&
         (!typing || chordHasCommandModifier(bindings.settingsSearch)) &&
-        overlaysRef.current.onlyOpen(OVERLAY_IDS.settingsSearch)
+        overlaysRef.current.onlyOpen(OVERLAY_IDS.palette)
       ) {
         e.preventDefault();
-        if (route.page === "settings") {
-          setSearchOpen((v) => !v);
-        } else {
-          navigate({ page: "settings", category: DEFAULT_SETTINGS_CATEGORY });
-          setSearchOpen(true);
-        }
+        setPaletteOpen((v) => !v);
         return;
       }
 
@@ -2119,8 +2244,8 @@ export function App(): React.JSX.Element {
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
               workflowSummaries={workflowSummaries}
-              searchOpen={searchOpen}
-              onSearchOpenChange={setSearchOpen}
+              onOpenPalette={() => setPaletteOpen(true)}
+              jump={settingsJump}
             />
           )}
           fleet={(
@@ -2329,6 +2454,17 @@ export function App(): React.JSX.Element {
           )}
           overlays={(
             <>
+              {/* The everything-palette lives in the slot every page shares, because it
+                  indexes every page: it opens over the fleet, the Library, a run reader and
+                  Settings alike, and a row's navigation must not unmount the surface that
+                  performed it. */}
+              <Palette
+                open={paletteOpen}
+                onClose={() => setPaletteOpen(false)}
+                onActivate={onPaletteActivate}
+                stores={paletteStores}
+              />
+
               {inboxOpen && (
                 <AttentionInbox
                   fold={attention}

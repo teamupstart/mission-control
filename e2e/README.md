@@ -266,6 +266,38 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 `--workers=1` keeps the five tests' output from interleaving, and the `tee` is the only thing
 that produces `transcript.txt` - without it you regenerate four files out of five.
 
+### The everything-palette
+
+[`docs/evidence/palette/`](../docs/evidence/palette/) carries three frames and the run's own
+stdout, written by `specs/palette.spec.ts` under the same `MC_E2E_EVIDENCE` flag.
+
+The frames answer what only a picture can. `palette-empty.png` is the palette before a letter
+is typed - the **Do** group and nothing else, which is the claim that an unprompted palette
+does not dump fifty settings rows at you. `palette-search.png` is one query reaching all three
+groups at once, each row wearing its kind chip and its state line; "grouped as Jump to / Do /
+Settings, each row carrying a kind chip" is checkable in the DOM as a role and a class, and
+legible as a palette only here. `palette-kind-filter.png` is the same query after one
+<kbd>Tab</kbd>: narrowed to a single kind, with the active filter named beside the caret.
+
+[`transcript.txt`](../docs/evidence/palette/transcript.txt) is the run's verbatim stdout, and
+it exists because `7 passed` is a verdict rather than evidence: it says some assertions held,
+not that ⌘K opened on five different pages, that a live run carried its status into the row,
+or that a setting row landed on its control rather than the top of its panel.
+
+Regenerate all four with:
+
+```sh
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/palette.spec.ts \
+  --workers=1 --reporter=list \
+  | tee docs/evidence/palette/transcript.txt
+```
+
+`--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
+that produces `transcript.txt`.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

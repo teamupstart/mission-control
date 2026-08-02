@@ -1020,6 +1020,21 @@ export const WORKFLOW_RUN_STATUSES = [
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 
+/** The statuses a run cannot leave. Everything else is still on its way somewhere. */
+export const WORKFLOW_RUN_TERMINAL_STATUSES = ["completed", "cancelled", "failed"] as const;
+
+/**
+ * Whether a run is still going, as one predicate rather than a status list per surface.
+ *
+ * Stated here, beside the status union, because "is this run finished" is a question the
+ * browser answers in several places and the union is append-only: a fourth terminal status
+ * added to the list above must reach every reader at once, and a surface carrying its own
+ * copy of the array is how one of them would keep counting a finished run as live.
+ */
+export function workflowRunIsOpen(status: WorkflowRunStatus): boolean {
+  return !(WORKFLOW_RUN_TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
 export const WORKFLOW_GATE_WAIT_REASONS = [
   "missing_pr",
   "unadopted_pr",

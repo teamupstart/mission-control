@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   sessionActionCompletionLabel,
   sessionActionSkillLabel,
@@ -70,8 +70,11 @@ export function sessionActionRevisionLine(action: SessionAction): string {
 export function SessionActionLibrary({
   sessionActions,
   hasSnapshot = false,
+  initialActionId = null,
+  startNew = false,
   isOverlayOpen,
   onDirtyChange,
+  onSelectionChange,
 }: {
   sessionActions: SessionAction[];
   /**
@@ -80,8 +83,17 @@ export function SessionActionLibrary({
    * duplicate of something that is about to appear.
    */
   hasSnapshot?: boolean;
+  /**
+   * The action the ROUTE asked for, read once as this surface mounts. The Persona library's
+   * contract, for its reasons: the route is an entry point, selection stays here, and
+   * `onSelectionChange` reports back so the address bar names what is open.
+   */
+  initialActionId?: string | null;
+  /** Mount straight into a blank draft, for the Library's "＋ New action" card. */
+  startNew?: boolean;
   isOverlayOpen: () => boolean;
   onDirtyChange: (dirty: boolean) => void;
+  onSelectionChange?: (actionId: string | null) => void;
 }): React.JSX.Element {
   const ordered = useMemo(
     () => sessionActionsForDisplay(sessionActions)
@@ -91,8 +103,12 @@ export function SessionActionLibrary({
   const active = useMemo(() => ordered.filter((action) => action.archivedAt === null), [ordered]);
   const [actionState, setActionState] = useState<"active" | "archived">("active");
   const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(() => active[0]?.id ?? null);
-  const [seed, setSeed] = useState<SessionActionDraftSeed | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => (startNew ? null : initialActionId ?? active[0]?.id ?? null),
+  );
+  const [seed, setSeed] = useState<SessionActionDraftSeed | null>(
+    () => (startNew ? EMPTY_SESSION_ACTION_SEED : null),
+  );
   /**
    * Whether `seed` was COPIED from an existing action rather than started blank.
    *
@@ -125,6 +141,15 @@ export function SessionActionLibrary({
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+  // What is open, reported however it came to be open. See `PersonaLibrary`.
+  useEffect(() => onSelectionChange?.(selectedId), [onSelectionChange, selectedId]);
+  // The blank-draft request, honoured on its edge. `PersonaLibrary` carries the reasoning.
+  const newDraftAsked = useRef(startNew);
+  useEffect(() => {
+    const asked = startNew && !newDraftAsked.current;
+    newDraftAsked.current = startNew;
+    if (asked) start(EMPTY_SESSION_ACTION_SEED, false);
+  }, [startNew]);
   useEffect(() => {
     if (selectedId === null && seed === null && !dirty && active[0]) setSelectedId(active[0].id);
   }, [active, dirty, seed, selectedId]);

@@ -10,17 +10,25 @@ import type { ReactNode } from "react";
  */
 export function AppPageShell({
   page,
+  library,
   workflows,
   settings,
   fleet,
   overlays,
 }: {
-  page: "fleet" | "workflows" | "settings";
+  page: "fleet" | "library" | "workflows" | "settings";
+  library: ReactNode;
   workflows: ReactNode;
   settings: ReactNode;
   fleet: ReactNode;
   overlays: ReactNode;
 }): React.JSX.Element {
-  const body = page === "workflows" ? workflows : page === "settings" ? settings : fleet;
+  const body = page === "library"
+    ? library
+    : page === "workflows"
+      ? workflows
+      : page === "settings"
+        ? settings
+        : fleet;
   return <>{body}{overlays}</>;
 }

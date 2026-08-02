@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { WorkflowSummary, WorkflowVersionMetadata } from "../src/shared/workflow.ts";
-import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
+import { WorkflowLibrary } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { WorkflowStateNotice } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { WorkflowVersionHistory } from "../src/web/workflows/WorkflowVersionHistory.tsx";
 import { workflowValidSentence } from "../src/web/workflows/WorkflowProperties.tsx";
@@ -47,13 +47,12 @@ const summary = (overrides: Partial<WorkflowSummary> = {}): WorkflowSummary => (
 });
 
 test("the library row marks a built-in and leaves an operator's own workflow unmarked", () => {
-  const html = renderToStaticMarkup(createElement(WorkflowPage, {
-    tab: "workflows",
+  // Mounted directly, because the builder is a Library surface now rather than a tab on the
+  // Workflows page - the component under test is the same one either way.
+  const html = renderToStaticMarkup(createElement(WorkflowLibrary, {
+    summaries: [summary(), summary({ id: "mine", name: "My review", builtin: false })],
     personas: [],
-    workflowSummaries: [summary(), summary({ id: "mine", name: "My review", builtin: false })],
-    llm,
-    isOverlayOpen: () => false,
-    onTab: () => {},
+    hasSnapshot: true,
     onDirtyChange: () => {},
   }));
   assert.match(html, /<em class="wf-list-tag">Built-in<\/em>/);

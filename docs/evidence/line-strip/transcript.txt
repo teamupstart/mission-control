@@ -1,0 +1,15 @@
+
+Running 2 tests using 1 worker
+
+OBSERVED the strip rendered 6 stages in pipeline order: Intake -> Backlog -> Working -> Review -> Decide -> Shipped
+OBSERVED a filed backlog task reached the strip over SSE, no reload: Backlog 0 -> 1, "next up: Fix pane focus stealing"
+CAPTURED docs/evidence/line-strip/line-live.png
+OBSERVED parking that task turned Backlog amber (tone-attention), and it is the only amber stage
+CAPTURED docs/evidence/line-strip/line-attention.png
+OBSERVED clicking the Review stage navigated to #/workflows/runs with the Runs tab selected
+OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
+  ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:79:1 › the Line renders every stage, tracks the fleet live, and its stages navigate (2.4s)
+OBSERVED the strip renders once, outside <header class="topbar">, so --topbar-h and .card.expanded are untouched
+  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:148:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (1.5s)
+
+  2 passed (5.4s)

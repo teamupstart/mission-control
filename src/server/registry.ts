@@ -77,6 +77,14 @@ import type { HookSpec } from "./harness/types.ts";
 // direct import is cycle-free - unlike ensembles, whose projection is a registered callback
 // because it runs per session per sweep.
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
+// The Line's fold. Pure and input-driven (see `line-summary.ts`), so this import brings no
+// store with it: everything it reads is gathered by `lineSummaryNow` below.
+import type { LineSummary } from "@shared/line.ts";
+import { SEVEN_DAY_MS } from "@shared/cost.ts";
+import { foldLineSummary, lineSummaryEqual } from "./line-summary.ts";
+import { getBacklogPlan } from "./backlog.ts";
+import { getTaskSourcesConfig } from "./task-sources/config.ts";
+import { taskSourceStatuses } from "./task-sources/sweeper.ts";
 import { clampPrompt } from "./util/prompt-text.ts";
 import {
   clearPendingTurns as clearPendingTurnsDb,
@@ -292,6 +300,48 @@ const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
  * rate decay instead of freezing at the last export's value.
  */
 const FLEET_COST_IDLE_INTERVAL_MS = 30 * 1000;
+/**
+ * Floor on how often the Line refolds off the back of a sweep.
+ *
+ * The event-driven path (`LINE_INPUT_EVENTS`) covers everything that arrives as an SSE
+ * event, which is most of it. This covers the rest, and it is a real remainder rather than
+ * belt-and-braces: a task-source sweep that succeeds moves `lastSweepAt` without emitting
+ * anything, Foreman's plan write moves "next up" through a route that emits nothing, and
+ * the strip's own relative times ("swept 4m ago", "next mission in 3h") go stale on a fleet
+ * where literally nothing happened. Thirty seconds is under the minute those strings are
+ * quantised to, so they never skip a value; the change-gate means a genuinely still fleet
+ * still emits nothing.
+ */
+const LINE_IDLE_INTERVAL_MS = 30 * 1000;
+/**
+ * The events whose payload is an input to the Line's fold.
+ *
+ * Reviews are deliberately absent even though a pending review is exactly what makes a
+ * session "need you": the fold reads `Session.pendingReviews`, which is denormalized onto
+ * the session and emitted as `session_upsert`, so the review's own frame would buy a second
+ * identical fold. Personas, workflow definitions and session actions are absent because
+ * they are authoring state - the Line is about execution. `line_summary` is absent for the
+ * obvious reason.
+ *
+ * A new event type is NOT automatically a member. Adding one means asking whether it names
+ * a store the strip reads; if it does, it belongs here and in `LineFoldInput`.
+ */
+const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
+  "session_upsert",
+  "session_remove",
+  "task_upsert",
+  "task_remove",
+  "workflow_run_upsert",
+  "workflow_run_remove",
+  "ensemble_upsert",
+  "ensemble_remove",
+  "schedule_upsert",
+  "schedule_remove",
+  // Moves the Shipped stage's per-PR figure.
+  "cost_fleet",
+  // Moves the Intake stage's tone: `taskSources.failing` and this tuple are the same read.
+  "settings_status",
+]);
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
 /**
@@ -493,6 +543,24 @@ export class Registry extends EventEmitter {
   private lastFleetCostAt = 0;
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
+  /** Last Line fold emitted, for the same reason as the two above. */
+  private lastLineSummary: LineSummary | null = null;
+  private lastLineSummaryAt = 0;
+  /**
+   * The pending coalesced fold, or null when none is scheduled.
+   *
+   * The Line's inputs are five stores plus two config blobs, and they move CONSTANTLY: one
+   * discovery sweep emits a session upsert per session, and a busy workflow emits a run
+   * upsert per node. Recomputing per mutation - which is what `cost_fleet` does, because its
+   * ingest points are few and each one genuinely changed a figure - would run the fold, its
+   * two zod parses and its `COUNT` a dozen times to produce one identical answer.
+   *
+   * `setImmediate`, not a millisecond debounce: it fires at the end of the current event-loop
+   * turn, which is exactly the boundary a sweep or an HTTP handler completes on, so a burst
+   * collapses to one fold with no added latency and nothing to tune. Unreffed, so a pending
+   * fold never holds the process open at shutdown.
+   */
+  private lineRecomputeHandle: ReturnType<typeof setImmediate> | null = null;
 
   constructor() {
     super();
@@ -527,6 +595,7 @@ export class Registry extends EventEmitter {
     ensembleSummaries: EnsembleSummary[];
     schedules: MissionSchedule[];
     fleetCost: FleetCost | null;
+    lineSummary: LineSummary;
     settingsStatus: SettingsStatus;
   } {
     return {
@@ -543,6 +612,10 @@ export class Registry extends EventEmitter {
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
       fleetCost: this.fleetCostNow(),
+      // Folded fresh rather than served from `lastLineSummary`, which is null until the
+      // first mutation: the strip is permanent chrome, so a dashboard opened onto a quiet
+      // fleet must read "nothing waiting · no sessions open" rather than six blanks.
+      lineSummary: this.lineSummaryNow(),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -719,6 +792,14 @@ export class Registry extends EventEmitter {
 
   private emitEvent(e: ServerEvent): void {
     this.emit("event", e);
+    // The Line's one hook into the stores it folds over.
+    //
+    // Here rather than in each of the ten `upsert*`/`remove*` methods, and that is the whole
+    // reason it is correct: every path that changes a store MUST emit, or no dashboard would
+    // see the change either - so a mutation path added later cannot forget to refresh the
+    // strip the way it could forget a call at its own end. The recompute is coalesced and
+    // change-gated, so a burst costs one fold and a fold that moved nothing costs no frame.
+    if (LINE_INPUT_EVENTS.has(e.type)) this.scheduleLineRecompute();
   }
   private emitSession(s: Session): void {
     this.emitEvent({ type: "session_upsert", session: s });
@@ -913,6 +994,11 @@ export class Registry extends EventEmitter {
     // only here to keep a QUIET fleet honest - "today" has to roll over at midnight, and the
     // recent rate has to fall back to zero when the exports stop.
     if (now - this.lastFleetCostAt >= FLEET_COST_IDLE_INTERVAL_MS) this.recomputeFleetCost(now);
+    // The Line's own idle floor, for the inputs no event announces - see the constant.
+    // Through the coalescer rather than folded inline, so it shares the one guarded path:
+    // the fold reads two config blobs and the ledger, and a throw here would otherwise take
+    // down the discovery sweep that keeps the whole dashboard current.
+    if (now - this.lastLineSummaryAt >= LINE_IDLE_INTERVAL_MS) this.scheduleLineRecompute();
     if (firstSweep) this.emit("sessions_observed");
   }
 
@@ -3551,6 +3637,82 @@ export class Registry extends EventEmitter {
     this.lastFleetCost = fleet;
     if (same) return;
     this.emitEvent({ type: "cost_fleet", fleet });
+  }
+
+  // ---- the Line ----
+
+  /**
+   * Gather every store the Line folds over and hand them to the pure builder.
+   *
+   * This method is the ONLY thing that knows where each input lives, which is what keeps
+   * `line-summary.ts` free of the registry, the database and the clock. Two inputs come
+   * from outside the registry - the task-source sweeper's in-memory status map and Foreman's
+   * plan blob - and both are read exactly the way their existing owners are read
+   * (`settings-status.ts` reads the same sweeper; `readyBacklog` takes the same plan), so
+   * the strip cannot disagree with the settings dot or the board's "next up" marker.
+   */
+  lineSummaryNow(now = Date.now()): LineSummary {
+    const sources = getTaskSourcesConfig().sources;
+    const status = new Map(taskSourceStatuses(sources).map((s) => [s.sourceId, s]));
+    return foldLineSummary({
+      now,
+      sessions: [...this.sessions.values()],
+      tasks: [...this.tasks.values()],
+      backlogPlan: getBacklogPlan(),
+      schedules: [...this.schedules.values()],
+      taskSources: sources.map((source) => ({ source, status: status.get(source.id) })),
+      workflowRuns: [...this.workflowRuns.values()],
+      ensembles: [...this.ensembles.values()],
+      // The same `COUNT` over the adoption ledger `prsToday` uses, on a seven-day cutoff.
+      // A week rather than a day because "shipped" is the one stage whose emptiness on a
+      // Monday morning would say nothing true about a fleet that shipped four things on
+      // Friday.
+      prsThisWeek: prsOpenedSince(now - SEVEN_DAY_MS),
+      // Consumed exactly as the strip consumes it and never recomputed: `fleetCostNow` is
+      // already the one answer to what today cost.
+      cost: this.fleetCostNow(now),
+    });
+  }
+
+  /**
+   * Ask for a fold at the end of this event-loop turn.
+   *
+   * Every store mutation calls this; the coalescing is what makes that affordable. See
+   * `lineRecomputeHandle` for why it is `setImmediate` and not a debounce.
+   */
+  private scheduleLineRecompute(): void {
+    if (this.lineRecomputeHandle) return;
+    this.lineRecomputeHandle = setImmediate(() => {
+      this.lineRecomputeHandle = null;
+      try {
+        this.recomputeLineSummary();
+      } catch (err) {
+        // The one place this MUST be caught, and it is not defensiveness. Every other
+        // recompute in this file runs inside its caller - an HTTP handler, an ingest - where
+        // a throw becomes that request's 500. This one runs detached on the event loop, so
+        // an uncaught throw is an uncaught exception and the daemon exits. The Line is a
+        // strip of summary text; it must never be able to take the fleet down with it, so
+        // it degrades to a stale strip and a log line, the way `pruneQueues` degrades.
+        console.error("[registry] line summary fold failed:", err);
+      }
+    });
+    this.lineRecomputeHandle.unref?.();
+  }
+
+  /**
+   * Recompute the strip and emit only when a stage a human can read actually moved.
+   *
+   * Public so a test can fold synchronously instead of waiting on the coalescer, and so a
+   * caller that has just finished a batch can settle it now. Idempotent either way: a
+   * recompute that changes nothing emits nothing.
+   */
+  recomputeLineSummary(now = Date.now()): void {
+    const line = this.lineSummaryNow(now);
+    this.lastLineSummaryAt = now;
+    const same = lineSummaryEqual(this.lastLineSummary, line);
+    this.lastLineSummary = line;
+    if (same) return;
+    this.emitEvent({ type: "line_summary", line });
   }
 
   /**

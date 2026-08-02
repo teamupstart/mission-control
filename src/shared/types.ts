@@ -13,6 +13,7 @@ import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { AutomationRoleCost } from "./llm-spend.ts";
+import type { LineSummary } from "./line.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
@@ -2052,6 +2053,17 @@ export type ServerEvent =
        */
       fleetCost: FleetCost | null;
       /**
+       * The Line's six stage folds at connect time, for the same reason the two values
+       * around it are here: the strip is permanent chrome on the fleet page, so a dashboard
+       * that had to wait for the next change would open on six blank stages.
+       *
+       * Never null - unlike `fleetCost`, whose null means "the ledger has nothing to say".
+       * A quiet fleet is a real answer here ("nothing waiting", "no sessions open"), and a
+       * null would make the strip choose between drawing nothing and drawing zeros it was
+       * never told.
+       */
+      lineSummary: LineSummary;
+      /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
        * change something. Composed fresh on every snapshot (see `Registry.snapshot`).
@@ -2088,6 +2100,15 @@ export type ServerEvent =
    * session would ship the same numbers N times and invite N places to disagree.
    */
   | { type: "cost_fleet"; fleet: FleetCost }
+  /**
+   * The Line's six stage folds, recomputed on the daemon and emitted only when a figure or
+   * a sentence a human can read actually moved.
+   *
+   * One payload rather than six, and a whole payload rather than a patch: the strip is read
+   * as a single sentence about the fleet, so a half-applied update would draw a pipeline
+   * that never existed - four stages from one instant and two from another.
+   */
+  | { type: "line_summary"; line: LineSummary }
   /**
    * The settings status tuple, emitted whenever a config write or a task-source sweep
    * changed it. Reduced into `MissionState.settingsStatus`, which is the ONE client-side

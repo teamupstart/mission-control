@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FleetCost, ReviewItem, ServerEvent, Session, SettingsStatus, Task } from "@shared/types.ts";
+import type { LineSummary } from "@shared/line.ts";
 import type {
   PersonaView,
   SessionAction,
@@ -50,6 +51,19 @@ export interface MissionState {
    */
   fleetCost: FleetCost | null;
   /**
+   * The Line's six stage folds, computed WHOLE on the daemon.
+   *
+   * The one rule this store carries: nothing here re-derives it. The browser holds sessions,
+   * tasks, runs and ensembles, so a client-side fold would compile and look plausible - and
+   * would be a second answer to "how is the fleet doing" that drifts the moment either side
+   * learns something the other has not, and that is simply blind to the two stages whose
+   * inputs never cross the wire (task-source sweep recency, the adoption ledger).
+   *
+   * Null only before the first snapshot lands. After that it is always a whole strip: a
+   * quiet fleet is six real sentences, not an absence.
+   */
+  lineSummary: LineSummary | null;
+  /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
    * surface re-polls for them. Null until the first snapshot lands, which is "unknown",
@@ -80,6 +94,7 @@ export function useEventStream(): MissionState {
   const [ensembles, setEnsembles] = useState<Map<string, EnsembleSummary>>(new Map());
   const [schedules, setSchedules] = useState<Map<string, MissionSchedule>>(new Map());
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
+  const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
@@ -128,6 +143,9 @@ export function useEventStream(): MissionState {
           // Carried in the snapshot rather than waited for: the strip would otherwise sit
           // blank until the next export happened to change a figure.
           setFleetCost(msg.fleetCost);
+          // And the strip, for the same reason it is in the snapshot at all: it is permanent
+          // chrome, so waiting for the next change would open the fleet on six blank stages.
+          setLineSummary(msg.lineSummary);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(msg.settingsStatus);
@@ -237,6 +255,11 @@ export function useEventStream(): MissionState {
         case "cost_fleet":
           setFleetCost(msg.fleet);
           break;
+        // Replaced whole, never merged per stage: the strip is read as one sentence about
+        // the fleet, and a per-stage patch would draw a pipeline that never existed.
+        case "line_summary":
+          setLineSummary(msg.line);
+          break;
         case "settings_status":
           setSettingsStatus(msg.status);
           break;
@@ -277,6 +300,7 @@ export function useEventStream(): MissionState {
     ensembleSummaries: [...ensembles.values()],
     schedules: [...schedules.values()],
     fleetCost,
+    lineSummary,
     settingsStatus,
     connected,
     hasSnapshot,

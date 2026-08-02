@@ -147,18 +147,12 @@ export function compactTokens(n: number | null | undefined): string {
 /**
  * A dollar figure for a chip: `$0.42`, `$12.40`, `$1,204`.
  *
- * Cents are dropped past three figures because they stop being information there - the
- * estimate's own error bar is wider than a cent by then, and the extra glyphs cost room
- * on the tightest surfaces. Below a cent reads as `<$0.01` rather than `$0.00`, since a
- * session that has spent SOMETHING and one that has spent nothing are different states
- * and the second one renders no chip at all.
+ * Lives in `@shared/cost.ts` and is re-exported here, unchanged, so the ~20 call sites that
+ * already import it from this module keep working. It moved because the daemon now words a
+ * sentence with money in it (the Line's Shipped stage) and there must be exactly one answer
+ * to how a dollar is spelled.
  */
-export function fmtUsd(usd: number | null | undefined): string {
-  if (usd == null || !Number.isFinite(usd)) return "-";
-  if (usd > 0 && usd < 0.01) return "<$0.01";
-  if (usd >= 1000) return "$" + Math.round(usd).toLocaleString("en-US");
-  return "$" + usd.toFixed(2);
-}
+export { fmtUsd } from "@shared/cost.ts";
 
 /**
  * When a rate-limit window rolls over, as a short "in 2h 40m".

@@ -14197,6 +14197,218 @@ select.sc-input {
 }
 
 /* ============================================================================
+   THE LINE - the fleet's pipeline strip
+   ----------------------------------------------------------------------------
+   Six stages and five wires above whichever layout is showing. Deliberately OUTSIDE
+   `<header class="topbar">`, and that placement is load-bearing twice over.
+
+   First, `--topbar-h` is measured off the header, and `.card.expanded` sizes itself
+   as `100dvh - var(--topbar-h) - ...`. A strip inside the header would silently take
+   ~90px off every focus-expanded card on the grid - a surface that has nothing to do
+   with the Line and whose height is already tuned against the reply box.
+
+   Second, the header renders on all three pages and the Line is fleet-only.
+
+   Being outside costs nothing in the two full-height shells because they are flex
+   columns: `.topbar` and `.line` are both `flex: none`, `.console`/`.board` are
+   `flex: 1; min-height: 0`, so the strip takes its height out of the layout rather
+   than out of the viewport and nothing overflows. On the grid the page scrolls, so
+   the strip simply scrolls away above the cards.
+   ============================================================================ */
+.line {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  /* The topbar's own `padding: 18px 4px` inside the same `.app` gutter. Without it the
+     strip's first stage sits 4px to the left of the brand and its last 4px to the right of
+     the dispatch button - which is exactly the kind of misalignment that reads as "slightly
+     wrong" from across the room without ever being nameable. */
+  padding-inline: 4px;
+  margin-bottom: 18px;
+}
+/* The two full-height shells run edge to edge and set their own topbar gutter, so
+   the strip matches it here rather than inheriting `.app`'s. The hairline attaches
+   it to the bar above: in those layouts nothing scrolls, so without one the strip
+   and the board read as one undifferentiated field of panels. */
+.app-console .line,
+.app-board .line {
+  margin-bottom: 0;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.line-stage {
+  flex: 1 1 0;
+  /* Lets a long sentence ellipsize instead of setting the stage's width. Without it a
+     flex item's min-width is its content, so one wordy stage would squeeze the other
+     five and the strip would reflow every time a workflow name changed. */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 13px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.line-stage:hover {
+  border-color: var(--dim);
+  background: var(--panel-2);
+}
+
+.ls-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ls-glyph {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+}
+.ls-name {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ls-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--dim);
+}
+.ls-sub {
+  /* Reserves the second line even when the sentence is empty. The strip is permanent
+     chrome directly above the board, so a stage that lost its sentence would shorten
+     the whole strip and step every card underneath it up by a line. */
+  min-height: 1.4em;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Tone, and the colour budget is deliberately small. Blue says machines are moving, amber
+   says you are needed, and those two are the whole reading of the strip - a six-stage row
+   is exactly where a third accent stops being a signal and becomes decoration. So a stage
+   that simply HAS something is plain foreground, and an empty one is dim.
+
+   That is one departure from the mockup, which paints the Shipped count green. Green means
+   "idle, and fine" everywhere else in this app, and spending it here would have put it at
+   both ends of the strip competing with the one colour that is asking for a person. */
+.line-stage.tone-working .ls-count {
+  color: var(--working);
+}
+.line-stage.tone-idle .ls-count {
+  color: var(--fg);
+}
+.line-stage.tone-attention {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.line-stage.tone-attention .ls-glyph,
+.line-stage.tone-attention .ls-name,
+.line-stage.tone-attention .ls-count,
+.line-stage.tone-attention .ls-sub {
+  color: var(--attention);
+}
+
+.line-wire {
+  flex: none;
+  align-self: center;
+  position: relative;
+  width: 26px;
+  height: 2px;
+  background: var(--border);
+}
+.line-wire::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+  animation: line-flow 2.6s linear infinite;
+}
+/* Staggered so the six dots read as flow rather than as a metronome. The wires are the
+   even children between the stages, hence the positional selectors. */
+.line-wire:nth-child(4)::after {
+  animation-delay: 0.5s;
+}
+.line-wire:nth-child(6)::after {
+  animation-delay: 1s;
+}
+.line-wire:nth-child(8)::after {
+  animation-delay: 1.5s;
+}
+.line-wire:nth-child(10)::after {
+  animation-delay: 2s;
+}
+.line-wire.hot {
+  background: color-mix(in oklab, var(--attention) 35%, var(--border));
+}
+.line-wire.hot::after {
+  background: var(--attention);
+}
+@keyframes line-flow {
+  from {
+    left: 0;
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  to {
+    left: calc(100% - 6px);
+    opacity: 0;
+  }
+}
+/* Removed, not merely stilled: a dot frozen mid-wire looks like a stalled pipeline. The
+   wire itself stays, because the connection between stages is information. */
+@media (prefers-reduced-motion: reduce) {
+  .line-wire::after {
+    display: none;
+    animation: none;
+  }
+}
+
+/* Narrow: the wires go before the stages do. They are decoration, and a stage squeezed
+   past its glyph and count stops being readable, which is the opposite trade. */
+@media (max-width: 1180px) {
+  .line-wire {
+    width: 14px;
+  }
+  .line-stage {
+    padding: 11px 10px;
+  }
+}
+@media (max-width: 1000px) {
+  .line {
+    gap: 6px;
+  }
+  .line-wire {
+    display: none;
+  }
+}
+
+/* ============================================================================
    LAYOUTS - console and board
    ----------------------------------------------------------------------------
    The card grid is the default and owns everything above; these two rearrange the

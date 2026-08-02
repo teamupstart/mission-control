@@ -4216,6 +4216,50 @@ screen instead of scattered across three panels.
   Shipping's own dependency warnings link straight here. The rail's Trust dot summarizes the
   same blind spot.
 
+## The Line (the pipeline strip above the fleet)
+
+A permanent ~90px strip sits above every fleet layout: **intake → backlog → working → review
+→ decide → shipped**. Six stages, wired left to right, each carrying a glyph, a count and one
+sentence - the fleet's whole pipeline in one glance, in the order work actually moves through
+it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
+
+| Stage | The count is | The sentence says | Amber when |
+|-------|--------------|-------------------|------------|
+| ⇊ **Intake** | Enabled [task sources](#task-sources-pulling-work-into-the-backlog) plus enabled [Recurring Missions](#recurring-missions) | When the most recent source last swept, and when the next mission is due | A source failed its last sweep, or a mission's health is `attention` |
+| ☰ **Backlog** | Tasks with status `backlog` | What [autopilot](#backlog-autopilot-foreman-schedules-the-fleet) would take next, and how many are blocked | Nothing in the backlog is ready - every item is [parked](#hold-a-backlog-item-back) or waiting on a prerequisite, so capacity will never clear it |
+| ▶ **Working** | Sessions that have not exited | The split: needs you / working / idle | Any session needs you - the same [`reportBucket`](#session-status-colors) the Roundup counts with |
+| ⌁ **Review** | [Workflow runs](#watching-a-run) that are not `completed`, `cancelled` or `failed` | The workflow doing most of them, and how many are waiting on you | A run is `blocked`, or its session action is parked on one of the three wait reasons only a person can clear |
+| ⧉ **Decide** | [Ensemble runs](#multi-agent-ensembles) that have not finished | Which strategy, how many artifacts are ready, or who it is waiting on | The daemon flagged the run (`awaiting_decision`, a failure, or a member sitting on your answer) |
+| ⚑ **Shipped** | Pull requests your agents adopted **this week** | The **per-PR cost** from today's [cost telemetry](#cost-telemetry) | Never. Shipping is not an obligation |
+
+Two windows on the Shipped stage, and it says which is which: the count is the **week**,
+because a Monday morning would otherwise read as zero on a fleet that shipped four things on
+Friday, while the per-PR figure is **today's** - the only window `FleetCost` offers, and
+dividing a day's spend by a week's pull requests would mean nothing.
+
+**The strip never computes anything.** Every count, sentence and tone is folded on the daemon
+and pushed as one `line_summary` SSE event, change-gated exactly like the cost figures - so an
+unchanged fleet emits nothing. That is not an implementation detail: two of the six stages read
+inputs that never cross the wire at all (task-source sweep recency, the Inspector's adoption
+ledger), and every other stage reuses the daemon's *existing* derivation - `reportBucket`,
+`readyBacklog`, `ensembleNeedsAttention`, `deriveScheduleHealth` - rather than inventing a
+second opinion that agrees until it doesn't.
+
+Clicking a stage takes you to the surface that already reads it:
+
+| Stage | Opens |
+|-------|-------|
+| Intake | [Recurring Missions](#recurring-missions) |
+| Backlog | The [Roundup](#roundup), which lists the backlog with its blockers |
+| Working | The fleet, with the filter cleared - so the count and the cards agree again |
+| Review | `#/workflows/runs` |
+| Decide | `#/workflows/ensembles` |
+| Shipped | `#/workflows/runs` filtered to completed. There is no pull-request list surface in the app; the list of work that finished is the nearest true thing |
+
+Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
+clipped to one row so the strip's height never moves. The flowing dots on the wires respect
+`prefers-reduced-motion`: with it set, the wires stay and the dots go.
+
 ## Layout (cards, console, or board)
 
 The same fleet, three shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
@@ -5261,6 +5305,26 @@ npm run session-actions # recompile the built-in session actions from docs/sessi
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```
+
+The `make` wrappers for the build and verification commands - `make build`, `make test`,
+`make lint`, `make check`, `make smoke` - install dependencies first, through a stamp file
+(`node_modules/.install-stamp`) that carries `package.json` and `package-lock.json` as its
+prerequisites. So they install in a tree that has never been installed, re-install after a
+pull or a branch switch moves either manifest, and do nothing at all the rest of the time.
+
+The stamp is what makes the second of those work: make is satisfied by any target that
+exists, and `node_modules/` exists forever once anything has been installed into it - so
+depending on the directory would install once and then silently run the gates against stale
+dependencies. The stamp lives inside `node_modules/` so `rm -rf node_modules` invalidates it
+too, and is touched only after a successful install, so a failed one is retried rather than
+recorded as done.
+
+A never-installed tree is routine rather than exotic: a [Workflow check](#check-nodes) runs
+its command in a freshly leased [pool worktree](#check-leases), and `node_modules/` is
+gitignored, so every check starts from a tree with no dependencies at all. Without this it
+fails with `TS2688: Cannot find type definition file for 'node'`, which reads like a type
+error in the diff under review and is really just a missing `@types/node`. The `npm run …`
+forms are unchanged and assume an installed tree.
 
 `npm run test:e2e` is the browser layer: it boots the built daemon against a throwaway state
 dir, loads the built dashboard in Chromium, and drives real flows - dispatching an agent,

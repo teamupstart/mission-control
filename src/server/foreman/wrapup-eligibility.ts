@@ -32,11 +32,11 @@ const REVIEW_ARTIFACT =
 
 /** Positive evidence that the same output also asks for a shippable implementation. */
 const SHIPPABLE_OUTPUT =
-  /^\s*(?:(?:an?|the)\s+)?(?:(?:updated|production[- ]ready)\s+)*(?:implementation\b(?!\s+(?:plans?|notes?|details?|guides?|reports?|analys(?:is|es)|recommendations?))|code\s+changes?\b|working\s+(?:feature|application|app)\b|pull\s+request\b|shippable\s+change\b|(?:source\s+)?code\b)/i;
+  /^\s*(?:(?:an?|the)\s+)?(?:(?:new|updated|working|production[- ]ready)\s+)*(?:implementation\b(?!\s+(?:plans?|notes?|details?|guides?|reports?|analys(?:is|es)|recommendations?))|code\s+changes?\b|pull\s+request\b|shippable\s+change\b|(?:source\s+)?code\b|(?:[a-z0-9.+#_-]+\s+){0,3}(?:test\s+suites?|tests?|components?|features?|applications?|apps?|modules?|endpoints?|services?)\b)/i;
 
 /** A natural-language action whose object is a shippable change, not just discussion of one. */
 const SHIPPABLE_ACTION =
-  /\bimplement(?:ed|ing)?\b|\b(?:build|create|develop|ship|fix|refactor|update|deliver)\b[^.?!\n]{0,80}\b(?:implementation|source\s+code|code\s+changes?|working\s+(?:feature|application|app)|feature|application|app|component|service|endpoint|module|codebase|bugs?|issues?)\b/i;
+  /\bimplement(?:ed|ing)?\b|\b(?:build|create|develop|ship|fix|refactor|update|deliver)\b[^.?!\n]{0,80}\b(?:implementation|source\s+code|code\s+changes?|working\s+(?:feature|application|app)|test\s+suites?|tests?|features?|applications?|apps?|components?|services?|endpoints?|modules?|codebase|bugs?|issues?)\b/i;
 
 /** `a plan for code changes` names a topic, not a second implementation deliverable. */
 const REVIEW_ARTIFACT_TOPIC =

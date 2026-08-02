@@ -58,6 +58,8 @@ test("mockup context does not block a task that also asks for implementation", (
     "Create the mockups and implement them.",
     "Output: mockups\nOutput: source code",
     "Output: mockups and source code",
+    "Output: wireframes and an updated React component",
+    "Output: mockups plus unit tests",
     "Create a mockup viewer component.",
   ]) {
     assert.equal(block({ objective }), null, objective);

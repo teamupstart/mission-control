@@ -50,7 +50,11 @@ async function api<T>(
  * the very next `fill` lands on a covered control. The combobox's own Escape handler calls
  * `stopPropagation`, so this closes the list and NOT the modal.
  */
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+async function dispatch(
+  page: Page,
+  daemon: DaemonHandle,
+  options: { task?: string; kind?: "ship" | "scout" } = {},
+): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
@@ -58,7 +62,8 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
 
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  await dialog.getByPlaceholder("What should this agent do?").fill(options.task ?? TASK);
+  await dialog.getByLabel("Kind").selectOption(options.kind ?? "ship");
 
   // Pin the post-work Workflow to none. Left at "Dispatch default" the daemon's configured
   // default applies, and this repo is not allowlisted for Live delivery, so the dispatch is
@@ -244,6 +249,156 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/evidence/ship-it-review-run.png");
   }
+});
+
+test("Foreman never resurfaces Ship it actions after a scout completes", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, {
+    task: "Compare the fleet layouts and report the findings",
+    kind: "scout",
+  });
+  const card = dashboard.locator("article.card").first();
+  await expect(card).toBeVisible();
+
+  await expect.poll(async () =>
+    (await api<Array<{ id: string }>>(daemon, "/api/sessions")).length
+  ).toBe(1);
+  let session: {
+    id: string;
+    agent: string;
+    agentSessionId: string | null;
+    cwd: string;
+  } | null = null;
+  await expect.poll(async () => {
+    const sessions = await api<Array<NonNullable<typeof session>>>(daemon, "/api/sessions");
+    session = sessions[0] ?? null;
+    return session?.agentSessionId ?? null;
+  }, {
+    message: "the SDK session should bind its conversation before Foreman observes it",
+  }).not.toBeNull();
+  if (!session) throw new Error("the dispatched scout never appeared in the fleet");
+  const sessionId = session.id;
+
+  // Make the forbidden surface present first. This proves the same card can render the
+  // controls and makes the later absence meaningful rather than a selector that never
+  // matched. Answer the seeded ask before starting Foreman, then watch for any transient
+  // reappearance while the real worker retires the scout completion.
+  await api(daemon, "/api/foreman/config", {
+    enabled: true,
+    wrapup: "ask",
+    wrapupTriggers: ["prompted"],
+  }, "PUT");
+  await api(daemon, `/api/sessions/${sessionId}/queue/wrapup/asked`, {
+    clearAnswer: true,
+  });
+  await card.getByRole("button", { name: "Queue" }).click();
+  await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toBeVisible();
+  await expect(card.getByLabel("Direct shipping instruction")).toBeVisible();
+  await expect(card.getByRole("button", { name: "Send direct PR instruction" })).toBeVisible();
+
+  const seededAnswer = "e2e:cleared-before-scout-completion";
+  await api(daemon, `/api/sessions/${sessionId}/queue/wrapup`, {
+    answer: seededAnswer,
+  }, "PUT");
+  await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toBeHidden();
+
+  // The fake SDK speaks the agent protocol, but it does not run the machine-installed
+  // Claude hooks. Supply the same prompt and completion events a real turn sends so Foreman
+  // has both a resolved objective and proof that this idle card is instrumented, rather than
+  // relying on the registry's conservative startup defaults. The exact agent conversation id
+  // makes these real hook joins, not fixture-only database mutations.
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const postHook = async (event: string, body: Record<string, unknown>): Promise<void> => {
+    const hook = await fetch(`${daemon.baseURL}/hooks/${event}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": token },
+      body: JSON.stringify({
+        agent: session.agent,
+        sessionId: session.agentSessionId,
+        cwd: session.cwd,
+        env: {},
+        ...body,
+      }),
+    });
+    expect(hook.status, `the ${event} hook was accepted: ${await hook.clone().text()}`).toBe(204);
+  };
+  const scoutObjective = "Compare the fleet layouts and report the findings";
+  await postHook("UserPromptSubmit", { prompt: scoutObjective });
+  await postHook("Stop", {});
+  await expect.poll(async () => {
+    const current = (await api<Array<{
+      id: string;
+      hooksSeen: boolean;
+      instrumented: boolean;
+      goal: {
+        relationship: string | null;
+        promptRevision: number;
+        resolvedPromptRevision: number;
+      } | null;
+    }>>(daemon, "/api/sessions")).find((candidate) => candidate.id === sessionId);
+    return current ? {
+      hooksSeen: current.hooksSeen,
+      instrumented: current.instrumented,
+      relationship: current.goal?.relationship ?? null,
+      revisions: current.goal
+        ? [current.goal.resolvedPromptRevision, current.goal.promptRevision]
+        : null,
+    } : null;
+  }, {
+    message: "the completion hooks should leave a fresh, fully reconciled scout objective",
+    timeout: 15_000,
+  }).toEqual({
+    hooksSeen: true,
+    instrumented: true,
+    relationship: "initial",
+    revisions: [1, 1],
+  });
+
+  await dashboard.evaluate(() => {
+    type ShippingProbe = {
+      seen: boolean;
+      observer: MutationObserver;
+    };
+    const target = window as typeof window & { __mcShippingProbe?: ShippingProbe };
+    target.__mcShippingProbe?.observer.disconnect();
+    const probe = { seen: false } as ShippingProbe;
+    probe.observer = new MutationObserver(() => {
+      if (document.querySelector(".wq-wrapup")) probe.seen = true;
+    });
+    probe.observer.observe(document.body, { childList: true, subtree: true });
+    target.__mcShippingProbe = probe;
+  });
+
+  await daemon.startForeman();
+  await expect.poll(async () => {
+    const queue = await api<{ promptedGoal: string | null }>(
+      daemon,
+      `/api/sessions/${sessionId}/queue`,
+    );
+    return queue.promptedGoal;
+  }, {
+    message: `Foreman did not retire the scout completion:\n${daemon.readLog()}`,
+    timeout: 20_000,
+  }).not.toBeNull();
+
+  const completion = await api<{ wrapupAnswer: string | null }>(
+    daemon,
+    `/api/sessions/${sessionId}/queue`,
+  );
+  expect(completion.wrapupAnswer).toBe(seededAnswer);
+  const shippingSurfaceAppeared = await dashboard.evaluate(() => {
+    type ShippingProbe = { seen: boolean; observer: MutationObserver };
+    const target = window as typeof window & { __mcShippingProbe?: ShippingProbe };
+    const seen = target.__mcShippingProbe?.seen ?? false;
+    target.__mcShippingProbe?.observer.disconnect();
+    return seen;
+  });
+  expect(shippingSurfaceAppeared).toBe(false);
+  await expect(card.getByRole("button", { name: "Run No-Mistakes Review" })).toHaveCount(0);
+  await expect(card.getByLabel("Direct shipping instruction")).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Send direct PR instruction" })).toHaveCount(0);
 });
 
 test("the dispatched agent was launched headless, without the daemon's terminal identity", async ({

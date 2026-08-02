@@ -356,8 +356,10 @@ queued messages stay in FIFO order.
 
 Delivery begins only after the session positively reports idle and no question is covering
 its input. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
-Codex message never becomes an implicit steer and a Claude message never enters Claude's
-private follow-up FIFO while it is still shown as editable. A terminal session uses the
+message that is still shown as editable never joins a turn that is already running. Both
+embedded harnesses would do exactly that with it: Codex through an explicit steer, Claude
+Code by attaching it to the running turn, which then answers both and ends once. A terminal
+session uses the
 same Stop and task-complete lifecycle signals, plus passive transcript or rollout state,
 then waits for prompt-pickup evidence after pasting. A refusal before any terminal text was
 written returns the row to `queued`. If text may have landed but pickup cannot be proved,

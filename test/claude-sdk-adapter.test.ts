@@ -277,26 +277,62 @@ test("SDK usage refuses unavailable, incomplete, or out-of-range plan windows", 
   });
 });
 
-test("a follow-up reports whether Claude queued it behind an active turn", async () => {
+// One `result` ends the turn no matter how many messages it absorbed, and the previous
+// version of this test is why that went unnoticed for so long: it scripted the vendor stream
+// to emit a result PER accepted message, which the real CLI does not do. Claude Code folds a
+// mid-turn message into the running turn as a `queued_command` attachment and finishes the
+// whole thing with a single result, so a driver that reserved a completion per message was
+// permanently owed one that never came - and `sendIfIdle`, the outbox's only door, stayed
+// shut for the life of the session while the card read idle.
+test("a mid-turn follow-up is steered, and one result still leaves the driver idle", async () => {
   const { deps, started } = fakeDeps();
   const handle = await claudeSdkSpec(deps).launch(launchOpts());
   const { query } = await started;
 
-  // Turn one was seeded at launch, so the SDK accepts this message but will not present it
-  // as a new transcript turn until the current result arrives.
+  // Turn one was seeded at launch, so the editable outbox must keep this message rather than
+  // hand it to a driver that would fold it into work already in progress.
   assert.equal(await handle.sendIfIdle({ text: "must remain in Mission Control" }), null);
-  assert.equal(await handle.send({ text: "after that, run the tests" }), "queued");
+  assert.equal(
+    await handle.send({ text: "after that, run the tests" }),
+    "steered",
+    "Claude attaches a mid-turn message to the running turn - it does not queue a second one",
+  );
 
+  // ONE result, for a turn that took two messages. This is the assertion the bug failed.
   query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
   await collect(handle.events, (e) => e.kind === "turn_done");
   assert.equal(
-    await handle.send({ text: "one more thing" }),
-    "queued",
-    "the first queued follow-up still owns the next turn",
+    await handle.sendIfIdle({ text: "now idle" }),
+    "started",
+    "a steered message owes no second result, so the outbox door reopens",
   );
+  query.end();
+});
+
+test("a turn the driver did not start still closes the door on its first frame", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+
   query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  await collect(handle.events, (e) => e.kind === "turn_done");
+
+  // The CLI can begin work the driver never handed it - a follow-up it dequeued for itself
+  // after the result, or a resumed stream picking up where it left off. An assistant frame is
+  // proof of that, and taking it as proof is what keeps this value from being a prediction.
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    message: { content: [{ type: "tool_use", name: "Bash" }] },
+  } as ClaudeSdkMessage);
+  await collect(handle.events, (e) => e.kind === "state");
+  assert.equal(
+    await handle.sendIfIdle({ text: "do not join a turn already running" }),
+    null,
+  );
+
   query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
-  await new Promise((resolve) => setImmediate(resolve));
+  await collect(handle.events, (e) => e.kind === "turn_done");
   assert.equal(await handle.sendIfIdle({ text: "now idle" }), "started");
   query.end();
 });

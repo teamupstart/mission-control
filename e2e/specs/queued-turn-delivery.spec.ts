@@ -7,6 +7,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const HELD_TURN = "hold the current turn open";
 const QUEUED_TURN = "deliver this queued turn when the agent goes idle";
+const MID_TURN_INJECTION = "a repair round that arrived while the agent was working";
 
 const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/queued-turn-delivery/", import.meta.url));
 
@@ -100,5 +101,81 @@ test(`a queued conversation turn is delivered once the ${agent} agent goes idle`
     card.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
   ).toBeVisible({ timeout: 15_000 });
   await shoot(dashboard, `${agent}-delivered-and-answered`);
+});
+
+/**
+ * The same delivery, after the driver has taken a message mid-turn - which is where it broke.
+ *
+ * A workflow repair round, a Foreman recommendation and a work-queue instruction all reach a
+ * live session through the direct acknowledged path rather than the outbox, so they are the
+ * one thing that hands a driver a message while a turn is already running. Both harnesses
+ * fold that message into the running turn and end the whole thing with a single completion.
+ *
+ * Claude's driver used to report that as `queued` and reserve a second completion for it, so
+ * the one that arrived retired the wrong reservation and left one outstanding for ever. From
+ * that moment the session was permanently busy as far as delivery was concerned: the card
+ * still went idle, because a Stop hook says so independently, and every message a human typed
+ * was released from the outbox with "The agent became busy before delivery" against a session
+ * that had been sitting idle for hours. Nothing recovered it short of restarting the daemon.
+ *
+ * Only a browser can see that whole shape, because the failure is the ABSENCE of a later
+ * delivery: every layer beneath this one reports a successful send and an idle card.
+ */
+test(`a queued turn still lands after the ${agent} driver takes a mid-turn message`, async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, agent);
+
+  const card = dashboard.locator("article.card").first();
+  await card.getByRole("button", { name: "Expand conversation" }).click();
+
+  const composer = card.getByPlaceholder(/^Reply to this session/);
+  await expect(composer).toBeEnabled();
+
+  await composer.fill(HELD_TURN);
+  await composer.press("Enter");
+  await expect(
+    card.locator(".turn-user:not(.pending-turn)").getByText(HELD_TURN, { exact: true }),
+  ).toBeVisible();
+
+  // Mid-turn, on the path a workflow repair round uses. Not the composer: the outbox exists
+  // precisely so a human message never becomes one of these, so the composer cannot reach the
+  // state under test at all.
+  const sessions = (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Array<{
+    id: string;
+    runtime: string;
+  }>;
+  const sdk = sessions.find((s) => s.runtime === "sdk");
+  expect(sdk, "the dispatch produced an embedded session").toBeTruthy();
+  const injected = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(sdk!.id)}/inject`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: MID_TURN_INJECTION, buffer: false, origin: "workflow" }),
+  });
+  expect(injected.ok, "the driver accepted a message while a turn was running").toBe(true);
+
+  // Now the human types, meets a busy driver, and lands in the durable outbox.
+  await composer.fill(QUEUED_TURN);
+  await composer.press("Enter");
+  await expect(card.getByRole("status").filter({ hasText: /^queued$/ })).toBeVisible();
+
+  // The held turn ends, answering both the prompt it started on and the one it absorbed.
+  // Scoped to the transcript rather than the card, because the card's activity ticker
+  // renders the same sentence while a turn is running and would satisfy a looser locator
+  // for the wrong reason.
+  const replies = card.locator(".turn-assistant");
+  await expect(
+    replies.getByText(`Mock reply to: ${HELD_TURN}`, { exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(
+    replies.getByText(`Mock reply to: ${MID_TURN_INJECTION}`, { exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  // And the session is genuinely available again, which is the assertion the bug failed.
+  await expect(card.locator(".pending-turn")).toHaveCount(0, { timeout: 15_000 });
+  await expect(
+    replies.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
 });
 }

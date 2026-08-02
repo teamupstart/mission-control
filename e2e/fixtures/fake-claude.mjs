@@ -220,6 +220,28 @@ function replyTo(prompt) {
   return `Mock reply to: ${prompt}`;
 }
 
+/** The turn the CLI is running right now, and every prompt it has absorbed. */
+let openTurn = null;
+
+/**
+ * Answer a turn and close it.
+ *
+ * One `result` however many prompts the turn took in, because that is the vendor's shape:
+ * `result` means the CLI stopped, not that one message was retired.
+ */
+function answer(prompts) {
+  for (const prompt of prompts) {
+    const text = replyTo(prompt);
+    appendTurn("assistant", [{ type: "text", text }]);
+    emit({
+      type: "assistant",
+      session_id: SESSION_ID,
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    });
+  }
+  emit({ type: "result", subtype: "success", session_id: SESSION_ID });
+}
+
 const rl = createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {
@@ -250,24 +272,32 @@ rl.on("line", (line) => {
           : "";
 
     appendTurn("user", prompt);
-    const finish = () => {
-      const answer = replyTo(prompt);
-      appendTurn("assistant", [{ type: "text", text: answer }]);
 
-      emit({
-        type: "assistant",
-        session_id: SESSION_ID,
-        message: { role: "assistant", content: [{ type: "text", text: answer }] },
-      });
-      emit({ type: "result", subtype: "success", session_id: SESSION_ID });
-    };
+    // A message that arrives while a turn is open is ABSORBED BY THAT TURN, and the turn
+    // still ends with exactly one `result`. That is what Claude Code does - it attaches the
+    // message to the running turn as a `queued_command` rather than holding it for a
+    // separate next turn - and modelling it here is the whole point of this branch. A fake
+    // that answered every message with its own result would let a driver reserve one
+    // completion per message and never notice the reservation it was owed for ever.
+    if (openTurn) {
+      openTurn.prompts.push(prompt);
+      return;
+    }
 
-    // One deterministic busy window for the queued-turn browser spec. Ordinary prompts
+    // One deterministic busy window for the queued-turn browser specs. Ordinary prompts
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
-    if (prompt === HELD_TURN) setTimeout(finish, HELD_TURN_MS);
-    else finish();
+    if (prompt === HELD_TURN) {
+      const turnState = { prompts: [prompt] };
+      openTurn = turnState;
+      setTimeout(() => {
+        openTurn = null;
+        answer(turnState.prompts);
+      }, HELD_TURN_MS);
+      return;
+    }
+    answer([prompt]);
   }
 });
 

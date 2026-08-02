@@ -338,6 +338,47 @@ test("idle-only delivery rolls back its durable reservation when the driver beca
   }
 });
 
+// The other half of the contract the Claude driver broke. A driver that folds a follow-up
+// into the running turn owes ONE completion for both messages, and says so by answering
+// `steered`. If the supervisor kept its pessimistic reservation anyway, the single
+// `turn_done` that ends that turn would leave a completion outstanding for ever: the card
+// would never take a driver-sourced idle again (`deferIdle` stays true), the durable row
+// would claim a restart owes this conversation a continuation it does not, and every human
+// message would be released from the outbox with "the agent became busy before delivery"
+// against a session that has been sitting idle for hours. That is exactly what shipped.
+test("a steered follow-up leaves no completion outstanding once the turn ends", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.send = async (turn) => {
+      handle.sent.push(turn);
+      return "steered" as const;
+    };
+
+    assert.equal(
+      await supervisor.send(session.id, { text: "and open a PR when it passes" }),
+      "steered",
+    );
+    // One turn absorbed two messages, so one result ends it.
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    // The door the outbox knocks on. Before the fix this stayed shut for the session's life.
+    assert.equal(
+      await supervisor.sendWhenIdle(session.id, { text: "now that you are free" }),
+      "started",
+    );
+    assert.deepEqual(handle.sent.map((t) => t.text), [
+      "and open a PR when it passes",
+      "now that you are free",
+    ]);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a rejected follow-up releases only its recovery reservation", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);

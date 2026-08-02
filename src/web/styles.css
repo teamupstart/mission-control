@@ -6550,6 +6550,61 @@ select:not([multiple]) option:focus-visible {
   display: flex;
   gap: 7px;
 }
+/* Jump from the file you are reading to the same file in the Files tab. Weighted like
+   the +/- counts it sits beside rather than like a primary action - the diff is for
+   reading, and this is the way out of it, not the point of it. */
+.diff-open-file {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 3px 5px 3px 9px;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+.diff-open-file:hover {
+  color: var(--fg);
+  border-color: var(--dim);
+  background: var(--bg-2);
+}
+.diff-open-file-glyph {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--dim);
+}
+.diff-open-file:hover .diff-open-file-glyph {
+  color: var(--working);
+}
+/* Deleted, or outside the cwd the Files tab is rooted at. Still focusable (see the
+   `aria-disabled` note in FileDiff) so its tooltip can say which.
+
+   It keeps its border and drops its fill. Dimming the border too - or stacking an
+   `opacity` on top of the dimmed text - left the label floating on the bar with no
+   edge, reading as a stray word rather than as a control that is switched off. The
+   fill is what carries "pressable"; the border is what carries "this is a button". */
+.diff-open-file[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--dim);
+  background: none;
+}
+.diff-open-file[aria-disabled="true"] .diff-open-file-glyph {
+  color: color-mix(in oklab, var(--dim) 45%, transparent);
+}
+.diff-open-file[aria-disabled="true"]:hover {
+  color: var(--dim);
+  border-color: var(--border);
+  background: none;
+}
 .diff-binary {
   padding: 12px;
   color: var(--muted);

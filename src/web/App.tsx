@@ -1791,7 +1791,19 @@ export function App(): React.JSX.Element {
         )}
 
         {diffSession && (
-          <DiffViewer session={diffSession} commit={diffCommit} onClose={closeDiff} />
+          <DiffViewer
+            session={diffSession}
+            commit={diffCommit}
+            onClose={closeDiff}
+            // Cards have no Files tab, so `openSessionFile` opens the Files WINDOW here.
+            // The diff has to stand down first or it sits on top of the file it just
+            // asked for - the one case where opening a file also closes something.
+            onOpenInFiles={(href) => {
+              const sessionId = diffSession.id;
+              closeDiff();
+              openSessionFile(sessionId, href);
+            }}
+          />
         )}
 
         {filesSession && (

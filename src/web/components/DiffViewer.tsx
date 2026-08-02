@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Session, SessionDiff } from "@shared/types.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
-import { parsePatch, type DiffFile } from "../lib/diff.ts";
+import {
+  diffFileOpenTarget,
+  parsePatch,
+  type DiffFile,
+  type DiffFileTarget,
+} from "../lib/diff.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -19,10 +24,12 @@ export function DiffViewer({
   session,
   commit,
   onClose,
+  onOpenInFiles,
 }: {
   session: Session;
   commit?: string | null;
   onClose: () => void;
+  onOpenInFiles?: (href: string) => void;
 }): React.JSX.Element {
   const viewerKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   return (
@@ -34,7 +41,13 @@ export function DiffViewer({
       ariaLabel="Session diff"
       onKeyDown={(e) => viewerKeyRef.current?.(e)}
     >
-      <DiffViewerContent session={session} commit={commit} onClose={onClose} onViewerKeyRef={viewerKeyRef} />
+      <DiffViewerContent
+        session={session}
+        commit={commit}
+        onClose={onClose}
+        onViewerKeyRef={viewerKeyRef}
+        onOpenInFiles={onOpenInFiles}
+      />
     </Overlay>
   );
 }
@@ -48,10 +61,12 @@ export function InlineDiffViewer({
   session,
   commit,
   requestNonce,
+  onOpenInFiles,
 }: {
   session: Session;
   commit?: string | null;
   requestNonce?: number;
+  onOpenInFiles?: (href: string) => void;
 }): React.JSX.Element {
   return (
     <DiffViewerContent
@@ -59,6 +74,7 @@ export function InlineDiffViewer({
       commit={commit}
       inline
       requestNonce={requestNonce}
+      onOpenInFiles={onOpenInFiles}
     />
   );
 }
@@ -70,6 +86,7 @@ function DiffViewerContent({
   inline = false,
   onViewerKeyRef,
   requestNonce,
+  onOpenInFiles,
 }: {
   session: Session;
   commit?: string | null;
@@ -77,6 +94,7 @@ function DiffViewerContent({
   inline?: boolean;
   onViewerKeyRef?: MutableRefObject<((e: KeyboardEvent) => void) | null>;
   requestNonce?: number;
+  onOpenInFiles?: (href: string) => void;
 }): React.JSX.Element {
   const [diff, setDiff] = useState<SessionDiff | null>(null);
   const [loading, setLoading] = useState(true);
@@ -228,7 +246,13 @@ function DiffViewerContent({
               )}
             </nav>
             <div className="diff-detail" ref={detailRef}>
-              {active && <FileDiff file={active} />}
+              {active && (
+                <FileDiff
+                  file={active}
+                  target={diffFileOpenTarget(active, diff.repoRoot, session.cwd)}
+                  onOpenInFiles={onOpenInFiles}
+                />
+              )}
             </div>
           </>
         )}
@@ -275,7 +299,15 @@ const FileItem = ({
 };
 
 /** The detail pane: the selected file's full path header plus its numbered diff. */
-function FileDiff({ file }: { file: DiffFile }): React.JSX.Element {
+function FileDiff({
+  file,
+  target,
+  onOpenInFiles,
+}: {
+  file: DiffFile;
+  target: DiffFileTarget;
+  onOpenInFiles?: (href: string) => void;
+}): React.JSX.Element {
   return (
     <section className="diff-file">
       <div className="diff-file-head">
@@ -287,6 +319,27 @@ function FileDiff({ file }: { file: DiffFile }): React.JSX.Element {
           {file.added > 0 && <span className="diff-add">+{file.added}</span>}
           {file.removed > 0 && <span className="diff-del">−{file.removed}</span>}
         </span>
+        {/* Rendered for EVERY file, including the ones it cannot act on: a control that
+            vanishes on some files teaches that the diff sometimes has no route to the
+            Files tab, when the real answer is that this one file has none and here is
+            why. `aria-disabled` rather than `disabled` keeps it focusable, which is the
+            only way the reason reaches the keyboard and the accessibility tree. */}
+        {onOpenInFiles && (
+          <Tooltip label={target.reason ?? `Open ${file.path} in the Files tab`}>
+            <button
+              className="diff-open-file"
+              aria-disabled={target.href === null}
+              onClick={() => {
+                if (target.href) onOpenInFiles(target.href);
+              }}
+            >
+              Open in Files
+              <span className="diff-open-file-glyph" aria-hidden>
+                ↗
+              </span>
+            </button>
+          </Tooltip>
+        )}
       </div>
       {file.binary ? (
         <p className="diff-binary">Binary file</p>

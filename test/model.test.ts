@@ -54,7 +54,8 @@ test("parseContextWindowSize infers 1M from a delimited marker, else the model d
   assert.deepEqual(parseContextWindowSize("model (1M)"), { size: 1_000_000, longContext: true });
   // An explicit smaller marker wins over the family default.
   assert.deepEqual(parseContextWindowSize("model (200k)"), { size: 200_000, longContext: false });
-  // Marker-less long-context families (Opus 4.x, Sonnet 4.x/5) default to 1M.
+  // Marker-less long-context families use their published default windows.
+  assert.deepEqual(parseContextWindowSize("claude-fable-5"), { size: 1_000_000, longContext: true });
   assert.deepEqual(parseContextWindowSize("claude-opus-4-8"), { size: 1_000_000, longContext: true });
   assert.deepEqual(parseContextWindowSize("claude-sonnet-5"), { size: 1_000_000, longContext: true });
   // Standard-window families and unknown/absent ids stay at 200k.
@@ -71,11 +72,15 @@ test("isLongContext keys off the 1M threshold", () => {
 });
 
 test("defaultWindowForModel maps long-context Claude families to 1M, else 200k", () => {
+  assert.equal(defaultWindowForModel("claude-fable-5"), 1_000_000);
   assert.equal(defaultWindowForModel("claude-opus-5"), 1_000_000);
   assert.equal(defaultWindowForModel("claude-opus-4-8"), 1_000_000);
-  assert.equal(defaultWindowForModel("claude-sonnet-4-5"), 1_000_000);
+  assert.equal(defaultWindowForModel("claude-opus-4-6"), 1_000_000);
+  assert.equal(defaultWindowForModel("claude-sonnet-4-6"), 1_000_000);
   assert.equal(defaultWindowForModel("claude-sonnet-5"), 1_000_000);
   assert.equal(defaultWindowForModel("claude-opus-4-8-20251101"), 1_000_000); // dated build
+  assert.equal(defaultWindowForModel("claude-opus-4-5"), 200_000);
+  assert.equal(defaultWindowForModel("claude-sonnet-4-5"), 200_000);
   assert.equal(defaultWindowForModel("claude-haiku-4-5"), 200_000);
   assert.equal(defaultWindowForModel("claude-opus-3"), 200_000); // pre-4 = 200k
   assert.equal(defaultWindowForModel("gpt-5-codex"), 200_000);

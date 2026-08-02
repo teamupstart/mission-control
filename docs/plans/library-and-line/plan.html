@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Library and the Line - plan</title>
+<style>
+  :root {
+    --bg:#ffffff; --fg:#1a2027; --muted:#57606a; --dim:#6e7781; --border:#d0d7de; --soft:#f6f8fa;
+    --accent:#0969da; --ok:#1a7f37; --warn:#9a6700; --machinery:#8250df;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0a0c0f; --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798; --border:#232a33; --soft:#14181e;
+      --accent:#4a9eff; --ok:#35c08a; --warn:#f6a733; --machinery:#a371f7;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0 auto; max-width:920px; padding:48px 24px 96px; background:var(--bg); color:var(--fg);
+    font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  h1 { font-size:28px; letter-spacing:-.015em; margin:0 0 6px; }
+  h2 { font-size:19px; margin:36px 0 10px; letter-spacing:-.01em; }
+  h3 { font-size:15.5px; margin:24px 0 8px; }
+  p, li { color:var(--muted); }
+  b, strong { color:var(--fg); }
+  a { color:var(--accent); }
+  code { font-family:var(--mono); font-size:.86em; background:var(--soft); border:1px solid var(--border);
+    border-radius:5px; padding:1px 5px; }
+  .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); }
+  .lede { font-size:16px; }
+  ul { padding-left:22px; }
+  ol { padding-left:22px; }
+  li { margin:4px 0; }
+  .tablewrap { overflow-x:auto; border:1px solid var(--border); border-radius:10px; margin:12px 0; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; min-width:560px; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
+  tr:last-child td { border-bottom:0; }
+  th { font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim);
+    font-weight:500; background:var(--soft); }
+  td { color:var(--muted); }
+  td:first-child { color:var(--fg); font-weight:600; white-space:nowrap; }
+  .decisions li { margin:8px 0; }
+  .figure { border:1px solid var(--border); border-radius:10px; background:var(--soft); padding:16px; margin:14px 0; overflow-x:auto; }
+  .figcap { font-family:var(--mono); font-size:11px; color:var(--dim); margin-top:8px; }
+  .callout { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px;
+    background:var(--soft); padding:10px 14px; margin:12px 0; font-size:13.5px; color:var(--muted); }
+  svg text { font-family:var(--mono); font-size:11px; fill:var(--fg); }
+  svg .sub { fill:var(--dim); font-size:9.5px; }
+  svg .box { fill:var(--bg); stroke:var(--border); rx:8; }
+  svg .arrow { stroke:var(--dim); stroke-width:1.4; fill:none; marker-end:url(#ah); }
+  svg .lbl { fill:var(--dim); font-size:9.5px; }
+</style>
+</head>
+<body>
+
+<div class="eyebrow">Mission Control - plan - docs/plans/library-and-line</div>
+<h1>The Library and the Line</h1>
+<p class="lede">Adopted direction from the automation-prominence explorations. One product with two
+homes, organized by the split the current UI blurs: <b>what you author</b> versus <b>what is
+happening</b>.</p>
+
+<ul>
+  <li>The <b>Library</b> is the only home for authored, reusable assets: workflows, Personas,
+    actions, ensemble strategy launchers, and intake (missions and sources).</li>
+  <li>The <b>Fleet, wearing the Line</b>, is the only home for live execution: sessions, tasks,
+    workflow runs, and ensembles. The Line is a permanent pipeline strip - intake, backlog, working,
+    review, decide, shipped - with per-stage drawers for triage.</li>
+  <li>The cost bar's second topbar row is retired for a compact cost chip and a spend popover.</li>
+</ul>
+
+<div class="callout">Visual source for every surface named here:
+  <code>docs/mockups/automation-prominence-2/</code> (round 2 - <code>1-library-line.html</code> is
+  the adopted concept; Standing Orders and Threads were explored alternatives) and
+  <code>docs/mockups/automation-prominence/</code> (round 1 lineage: Library, Line, Palette).</div>
+
+<h2>Problem</h2>
+<ol>
+  <li><b>Five tabs, two natures.</b> <code>#/workflows</code> holds workflows / personas / actions /
+    runs / ensembles as sibling tabs. Three are authoring surfaces, two are execution monitors; the
+    tab strip says nothing about which is which (<code>WorkflowPage.tsx</code>,
+    <code>useWorkflowRoute.ts</code>).</li>
+  <li><b>Purpose is untaught.</b> No surface explains what a workflow, Persona, action, or ensemble
+    is for; the <code>w</code> chord and one topbar button are the entire front door.</li>
+  <li><b>Launch here, watch there.</b> Ensembles launch from the Dispatch modal but are watched on
+    the fifth tab; a decided ensemble can hand off into a workflow run
+    (<code>triggerSource: "ensemble"</code>) across two tabs that never point at each other.</li>
+  <li><b>Cost chrome overspends.</b> The foldable UsageBar row (<code>App.tsx</code>,
+    <code>FleetStrip.tsx</code>) devotes permanent topbar space to stats consulted occasionally,
+    not every glance.</li>
+</ol>
+
+<h2>Decisions (submitted by the operator, 2026-08-01)</h2>
+<p>These are requirements, not open questions.</p>
+<ol class="decisions">
+  <li><b>Merge Library and Line into one shipped product.</b> Round 1's concepts 2 and 3, unified;
+    round 1's palette ships as the final phase; round 1's rail is subsumed by the Library segment.</li>
+  <li><b>Authoring vs execution is the IA.</b> Runs and Ensembles are not Library shelves; they
+    surface on the Line, with full views re-homed to top-level routes. One exception: ensemble
+    strategy launchers shelve in the Library; watching and deciding happen on the Line.</li>
+  <li><b>Session cards are untouchable.</b> No data changes, no layout changes, no resizing in any
+    drawer state.</li>
+  <li><b>Cost rework is in scope.</b> Retire the UsageBar row. A topbar cost chip
+    (machinery-purple) opens a spend popover carrying everything the FleetStrip showed: today's
+    estimate, rate, tokens, per-PR cost, the automation line, runway meters. Per-PR cost also
+    surfaces on the Shipped stage.</li>
+  <li><b>Drawer mechanics.</b> Stage click opens the drawer in place, pushing the board down; second
+    click, <code>esc</code>, or ✕ collapses it; a different stage swaps content. Hard cap of three
+    rows (~38vh) with internal scroll - never the full viewport. Escalation: strip glance, capped
+    drawer, full page.</li>
+  <li><b>Implementation follow-up: phased plan.</b> Phase the work, schedule the phases into the
+    backlog, open a PR with the plan files, merge when CI is green. See
+    <code>phased-plan.md</code>.</li>
+</ol>
+
+<h2>Design by surface</h2>
+
+<h3>Topbar</h3>
+<ul>
+  <li>Segmented page nav <code>▦ Fleet</code> / <code>⌗ Library</code>; the Workflows toggle chord
+    retargets to toggle Fleet and Library (<code>workflowsToggleRoute</code> reworked).</li>
+  <li>Cost chip replaces the UsageBar row; click opens the spend popover. Purple machinery tone.</li>
+  <li>Pulse, dispatch, settings, report buttons unchanged.</li>
+</ul>
+
+<h3>The Library (<code>#/library</code>)</h3>
+<p>Shelves headed by the question each answers, noun demoted to a mono eyebrow, live state replaced
+by per-shelf "on the Line →" cross-links:</p>
+<div class="tablewrap"><table>
+  <thead><tr><th>Shelf</th><th>Question</th><th>Contents</th></tr></thead>
+  <tbody>
+    <tr><td>Workflows</td><td>What counts as done?</td><td>Workflow cards (version, bindings, last verdict, draft errors); builder one level deeper, unchanged</td></tr>
+    <tr><td>Personas</td><td>Who does the reviewing?</td><td>Persona cards with cross-engine usage (workflow gates + ensemble judge lenses)</td></tr>
+    <tr><td>Actions</td><td>What can a run tell the session to do?</td><td>Action cards (completion kind, used-by); editor one level deeper, unchanged</td></tr>
+    <tr><td>Ensembles</td><td>Not sure of the best approach?</td><td>Strategy launcher cards deep-linking into Dispatch with the strategy preselected</td></tr>
+    <tr><td>Missions · Sources</td><td>Where does work come from?</td><td>Cards linking to existing schedule and task-source surfaces; Settings migration deferred</td></tr>
+  </tbody>
+</table></div>
+
+<h3>The Line (on the Fleet)</h3>
+<p>Permanent ~90px strip above the session layouts: <b>intake → backlog → working → review →
+decide → shipped</b> - glyph, count, one summary sentence per stage, amber when it needs the
+operator. Folds are computed server-side and delivered as one SSE event; the strip never recomputes
+fleet state in the browser.</p>
+
+<div class="figure">
+<svg viewBox="0 0 860 150" width="860" height="150" role="img" aria-label="Line summary data flow">
+  <defs>
+    <marker id="ah" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 z" fill="#7c8798"/>
+    </marker>
+  </defs>
+  <rect class="box" x="8"   y="46" width="168" height="52"/>
+  <text x="92"  y="68" text-anchor="middle">Registry + stores</text>
+  <text x="92"  y="84" text-anchor="middle" class="sub">sessions · runs · ensembles</text>
+  <rect class="box" x="238" y="46" width="120" height="52"/>
+  <text x="298" y="68" text-anchor="middle">LineSummary</text>
+  <text x="298" y="84" text-anchor="middle" class="sub">per-stage fold</text>
+  <rect class="box" x="420" y="46" width="130" height="52"/>
+  <text x="485" y="68" text-anchor="middle">useEventStream</text>
+  <text x="485" y="84" text-anchor="middle" class="sub">exhaustive switch</text>
+  <rect class="box" x="612" y="8"  width="150" height="44"/>
+  <text x="687" y="27" text-anchor="middle">Line strip</text>
+  <text x="687" y="42" text-anchor="middle" class="sub">glance</text>
+  <rect class="box" x="612" y="60" width="150" height="44"/>
+  <text x="687" y="79" text-anchor="middle">Drawer</text>
+  <text x="687" y="94" text-anchor="middle" class="sub">triage · 3-row cap</text>
+  <rect class="box" x="612" y="112" width="150" height="34"/>
+  <text x="687" y="133" text-anchor="middle">#/runs · #/ensembles</text>
+  <path class="arrow" d="M176 72 H232"/>
+  <text class="lbl" x="204" y="62" text-anchor="middle">fold</text>
+  <path class="arrow" d="M358 72 H414"/>
+  <text class="lbl" x="386" y="62" text-anchor="middle">SSE line_summary</text>
+  <path class="arrow" d="M550 64 C 580 48, 590 38, 606 32"/>
+  <path class="arrow" d="M550 80 H606"/>
+  <path class="arrow" d="M687 104 V110"/>
+  <text class="lbl" x="700" y="109" text-anchor="start"></text>
+</svg>
+<div class="figcap">One server-side fold, one change-gated SSE event, three escalation surfaces.
+The mermaid definition of this flow lives in plan.md.</div>
+</div>
+
+<p>Drawers per decision 5: Review shows run ladders (pipeline chips, action waits called out,
+ensemble-handoff provenance); Decide shows the condensed dossier reusing the strategy result
+renderers; Intake shows missions and sources. Full readers stay one click deeper.</p>
+
+<h3>Route re-homing</h3>
+<div class="tablewrap"><table>
+  <thead><tr><th>Today</th><th>After</th></tr></thead>
+  <tbody>
+    <tr><td><code>#/workflows</code> (builder tab)</td><td><code>#/library</code> Workflows shelf; builder one level deeper</td></tr>
+    <tr><td><code>#/workflows/personas</code></td><td><code>#/library</code> Personas shelf</td></tr>
+    <tr><td><code>#/workflows/actions</code></td><td><code>#/library</code> Actions shelf</td></tr>
+    <tr><td><code>#/workflows/runs[/:id]</code></td><td><code>#/runs[/:id]</code> (full reader unchanged)</td></tr>
+    <tr><td><code>#/workflows/ensembles[/:id]</code></td><td><code>#/ensembles[/:id]</code> (detail unchanged)</td></tr>
+  </tbody>
+</table></div>
+<p>Old routes redirect permanently. The five-tab Workflows page retires once both homes exist.</p>
+
+<h3>The everything-palette</h3>
+<p><code>⌘K</code> grows from settings-only search to the app-wide palette over Library assets,
+live runs and ensembles, missions, sources, and settings - each row carrying kind and live state,
+grouped as Jump to / Do / Settings (<code>settings-search.ts</code> grows a provider registry).</p>
+
+<h2>What does not change</h2>
+<ul>
+  <li>Session cards and all data on them (<code>SessionCard.tsx</code>, <code>session-bits.tsx</code>).</li>
+  <li>The Dispatch modal, including its single/ensemble launch toggle.</li>
+  <li>The workflow builder, Persona editor, and Action editor internals; the run reader and
+    ensemble detail internals.</li>
+  <li>Server ownership rules: eviction via <code>Registry.beginEviction</code>, daemon as sole DB
+    writer.</li>
+  <li>The <code>FleetCost</code> wire contract; the spend popover consumes it as-is.</li>
+</ul>
+
+<h2>Phasing</h2>
+<p>Implementation is decomposed in <code>phased-plan.md</code> (five phases: cost chip; Library
+page; Line strip and fold event; drawers and re-homing; everything-palette), with one backlog task
+per phase gated on this plan's PR merging. Every phase carries its own e2e Playwright coverage per
+repository rule.</p>
+
+</body>
+</html>

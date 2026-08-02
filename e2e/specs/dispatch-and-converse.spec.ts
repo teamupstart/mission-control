@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
@@ -53,7 +54,7 @@ async function api<T>(
 async function dispatch(
   page: Page,
   daemon: DaemonHandle,
-  options: { task?: string; kind?: "ship" | "scout" } = {},
+  options: { task?: string; kind?: "ship" | "scout"; model?: string } = {},
 ): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
 
@@ -64,6 +65,9 @@ async function dispatch(
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(options.task ?? TASK);
   await dialog.getByLabel("Kind").selectOption(options.kind ?? "ship");
+  if (options.model) {
+    await dialog.getByLabel("Model").selectOption(options.model);
+  }
 
   // Pin the post-work Workflow to none. Left at "Dispatch default" the daemon's configured
   // default applies, and this repo is not allowlisted for Live delivery, so the dispatch is
@@ -101,6 +105,17 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   await expect(card).toContainText("Claude e2e Mock");
 });
 
+test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, { model: "claude-fable-5" });
+
+  const card = dashboard.locator("article.card").first();
+  await expect(card).toContainText("Agent SDK");
+  await expect(card).toContainText("Fable 5");
+  await expect(card).toContainText("1M");
+  await expect(card).toContainText("18%");
+  await expect(card).not.toContainText("92%");
+});
+
 test("typing into the conversation gets a reply back from the agent", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
@@ -113,6 +128,49 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
   const reply = card.getByPlaceholder(/^Reply to this session/);
   await expect(reply).toBeEnabled();
 
+  // Binding makes the composer writable before the dispatched opening turn is necessarily
+  // done. Wait for both halves of that completion before sending a new turn; otherwise this
+  // test races the intentional queued-turn path and can leave its first assertion waiting on
+  // a message that was correctly queued behind the opener. The card can already say idle
+  // when passive transcript polling sees the answer just before the SDK's `result` frame is
+  // consumed, so use the driver's durable turn boundary from the isolated fixture database.
+  // This is a read-only synchronization point; the daemon remains the only writer.
+  const [{ id: sessionId }] = await api<Array<{ id: string }>>(daemon, "/api/sessions");
+  const waitForDriverIdle = async (): Promise<void> => {
+    await expect.poll(async () => {
+      const db = new DatabaseSync(join(daemon.home, "harness.db"));
+      let turnInProgress: number | null;
+      try {
+        const row = db.prepare(
+          "SELECT turn_in_progress FROM sdk_sessions WHERE id = ?",
+        ).get(sessionId) as { turn_in_progress: number } | undefined;
+        turnInProgress = row?.turn_in_progress ?? null;
+      } finally {
+        db.close();
+      }
+      const current = (await api<Array<{ id: string; pendingTurns: unknown[] }>>(
+        daemon,
+        "/api/sessions",
+      )).find((session) => session.id === sessionId);
+      return {
+        pendingTurns: current?.pendingTurns.length ?? null,
+        turnInProgress,
+      };
+    }).toEqual({ pendingTurns: 0, turnInProgress: 0 });
+    await expect.poll(async () => {
+      const current = (await api<Array<{
+        id: string;
+        lastActivity: number | null;
+        state: string;
+      }>>(daemon, "/api/sessions")).find((session) => session.id === sessionId);
+      return current?.state === "idle" && current.lastActivity !== null
+        ? Date.now() - current.lastActivity
+        : 0;
+    }).toBeGreaterThanOrEqual(1_500);
+  };
+  await expect(card.getByText(`Mock reply to: ${TASK}`)).toBeVisible();
+  await waitForDriverIdle();
+
   // Three messages, each with a distinct reply. A single message would pass even if only
   // the first turn ever rendered - the failure mode where a transcript binds once and then
   // stops following the file.
@@ -121,6 +179,7 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
     await reply.fill(message);
     await reply.press("Enter");
     await expect(card.getByText(`Mock reply to: ${message}`)).toBeVisible();
+    await waitForDriverIdle();
   }
 
   // All three are still on screen together - the conversation accumulated rather than

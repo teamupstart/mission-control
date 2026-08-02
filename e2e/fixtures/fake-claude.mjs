@@ -36,7 +36,15 @@ import { createInterface } from "node:readline";
 
 /** Fixed so a test can assert against a known id; the driver only cares that it is stable. */
 const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? "e2e00000-0000-4000-8000-000000000001";
-const MODEL = "claude-e2e-mock";
+function argvValue(flag) {
+  const index = process.argv.indexOf(flag);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+// An explicit dispatch model is echoed by the real CLI's init frame. Keep the mock label
+// for default launches, but preserve a pinned model so browser specs can exercise the
+// production model-metadata resolver rather than a browser-side stub.
+const MODEL = argvValue("--model") ?? "claude-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = 5_000;
 
@@ -161,13 +169,30 @@ writeFileSync(transcriptPath, "");
 let turn = 0;
 function appendTurn(role, content) {
   turn += 1;
+  const runtime = role === "assistant"
+    ? {
+        model: MODEL,
+        // Fable's fixture deliberately mirrors the screenshot regression: 184k tokens is
+        // 92% only under the incorrect 200k fallback, and 18% under its real 1M window.
+        ...(MODEL === "claude-fable-5"
+          ? {
+              usage: {
+                input_tokens: 184_000,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+                output_tokens: 100,
+              },
+            }
+          : {}),
+      }
+    : {};
   appendFileSync(
     transcriptPath,
     `${JSON.stringify({
       type: role,
       uuid: `${role}-${turn}`,
       timestamp: new Date().toISOString(),
-      message: { role, content },
+      message: { role, content, ...runtime },
     })}\n`,
   );
 }

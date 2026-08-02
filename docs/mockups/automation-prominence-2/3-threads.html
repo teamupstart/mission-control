@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approach 3 - Threads - Mission Control UI exploration, round 2</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root {
+    --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+    --border:#232a33; --border-soft:#1b2129;
+    --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+    --exited:#707a88; --neutral:#8b94a3; --purple:#a371f7;
+    --radius:13px;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  body { background:#07090b; color:var(--fg); font-family:var(--sans); font-size:14px; line-height:1.45; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--working); outline-offset:2px; border-radius:4px; }
+  kbd {
+    font-family:var(--mono); font-size:10px; padding:1px 5px;
+    border:1px solid var(--border); border-bottom-width:2px; border-radius:4px;
+    background:var(--panel-2); color:var(--muted); vertical-align:1px;
+  }
+
+  /* ---- proposal chrome ---- */
+  .doc { max-width:1280px; margin:0 auto; padding:42px 24px 4px; }
+  .doc .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; }
+  .doc h1 { font-size:27px; font-weight:650; letter-spacing:-.01em; margin:10px 0 8px; }
+  .doc h1 .num { font-family:var(--mono); font-weight:500; color:var(--working); margin-right:12px; }
+  .doc .stand { color:var(--muted); max-width:74ch; }
+  .doc nav { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+  .doc nav a { font-family:var(--mono); font-size:11px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--border); border-radius:999px; padding:4px 11px; }
+  .doc nav a:hover { color:var(--fg); border-color:var(--dim); }
+  .doc nav a[aria-current] { color:var(--working); border-color:var(--working); }
+
+  .frame { max-width:1280px; margin:26px auto 12px; border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; background:var(--bg); box-shadow:0 30px 80px rgba(0,0,0,.55); }
+
+  /* ---- topbar ---- */
+  .topbar { display:flex; align-items:center; gap:14px; height:46px; padding:0 14px;
+    background:var(--bg-2); border-bottom:1px solid var(--border); }
+  .brand { display:flex; align-items:center; gap:8px; }
+  .brand-mark { width:15px; height:15px; border-radius:4px; flex:none;
+    background:linear-gradient(135deg,var(--working),var(--idle)); }
+  .brand b { font-size:13px; font-weight:600; }
+  .filter { display:flex; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:4px 9px; color:var(--dim); font-size:12px; }
+  .filter input { background:none; border:0; outline:0; color:var(--fg); font:inherit; width:110px; }
+  .tb-spacer { flex:1; }
+  .pulse { font-family:var(--mono); font-size:11px; color:var(--muted); display:flex; gap:9px; align-items:center; }
+  .pulse i { font-style:normal; color:var(--border); }
+  .p-att { color:var(--attention); }
+  .btn { font:inherit; font-size:12.5px; color:var(--fg); background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:5px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .btn:hover { border-color:var(--dim); }
+  .btn.primary { background:var(--working); border-color:var(--working); color:#04121f; font-weight:600; }
+  .btn.small { font-size:11px; padding:2px 9px; border-radius:7px; }
+  .ghost { background:none; border-color:transparent; color:var(--muted); }
+  .ghost:hover { color:var(--fg); border-color:var(--border); }
+
+  /* ---- view toggle ---- */
+  .views { display:flex; align-items:center; gap:12px; padding:11px 16px 0; }
+  .seg { display:flex; border:1px solid var(--border); border-radius:9px; overflow:hidden; }
+  .seg a { font-size:12.5px; padding:4px 13px; text-decoration:none; color:var(--muted); display:flex; gap:7px; align-items:center; }
+  .seg a[aria-current] { background:var(--panel-2); color:var(--fg); font-weight:600; }
+  .views .hint { font-family:var(--mono); font-size:10.5px; color:var(--dim); }
+
+  /* ---- threads list ---- */
+  .threads { padding:12px 16px 18px; display:flex; flex-direction:column; gap:9px; }
+  .thread { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px 11px; }
+  .thread:hover { border-color:var(--dim); }
+  .thread.open { border-color:rgba(246,167,51,.45); }
+  .thread.done { opacity:.65; }
+  .t-head { display:flex; align-items:center; gap:11px; cursor:pointer; }
+  .tdot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .td-att { background:var(--attention); animation:blink 1.6s ease-in-out infinite; }
+  .td-run { background:var(--working); }
+  .td-ok { background:var(--idle); }
+  @keyframes blink { 50% { opacity:.35; } }
+  .t-name { font-weight:650; font-size:13.5px; width:158px; flex:none;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .t-cost { font-family:var(--mono); font-size:11.5px; color:var(--fg); margin-left:auto; flex:none; }
+  .t-time { font-family:var(--mono); font-size:10.5px; color:var(--dim); flex:none; width:34px; text-align:right; }
+  .t-sub { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin:5px 0 0 19px;
+    display:flex; align-items:center; gap:10px; }
+  .t-sub .att { color:var(--attention); }
+  .t-sub .btn { margin-left:auto; }
+
+  /* ---- story spine ---- */
+  .spine { flex:1; min-width:0; display:flex; align-items:center; }
+  .sp-line { flex:1; height:2px; background:var(--border-soft); min-width:14px; }
+  .sp-line.done { background:#3a4450; }
+  .nd { width:20px; height:20px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center;
+    font-size:10px; border:1px solid var(--border); background:var(--panel-2); color:var(--dim); }
+  .nd.done { background:#1d242d; border-color:#3a4450; color:var(--fg); }
+  .nd.ship { background:rgba(53,192,138,.16); border-color:var(--idle); color:var(--idle); }
+  .nd.hollow { background:transparent; border-color:var(--border-soft); }
+  .nd.skip { background:transparent; border-style:dashed; border-color:var(--border); opacity:.55; }
+  .nd.cur { border-color:var(--attention); color:var(--attention); background:rgba(246,167,51,.12);
+    box-shadow:0 0 0 3px rgba(246,167,51,.16); animation:ring 1.8s ease-in-out infinite; }
+  .nd.cur.blue { border-color:var(--working); color:var(--working); background:rgba(74,158,255,.12);
+    box-shadow:0 0 0 3px rgba(74,158,255,.16); animation-name:ringb; }
+  @keyframes ring  { 50% { box-shadow:0 0 0 6px rgba(246,167,51,.04); } }
+  @keyframes ringb { 50% { box-shadow:0 0 0 6px rgba(74,158,255,.04); } }
+  @media (prefers-reduced-motion: reduce) { .nd.cur, .td-att { animation:none; } }
+  .cluster { display:flex; gap:3px; flex:none; }
+  .cluster .nd { width:14px; height:14px; font-size:7px; }
+
+  /* ---- chapters (expanded body) ---- */
+  .chapters { position:relative; margin:11px 0 0 19px; border:1px solid var(--border-soft); border-radius:10px;
+    background:var(--bg-2); padding:11px 14px 0; }
+  .chapters::before { content:""; position:absolute; left:103px; top:18px; bottom:52px; width:2px; background:var(--border-soft); }
+  .ch { display:grid; grid-template-columns:68px 14px 1fr; gap:0 10px; align-items:baseline; padding:4px 0; position:relative; }
+  .ch .ts { font-family:var(--mono); font-size:10px; color:var(--dim); text-align:right; }
+  .ch .cdot { width:8px; height:8px; border-radius:50%; background:var(--border); align-self:center;
+    justify-self:center; position:relative; z-index:1; }
+  .ch.g .cdot { background:var(--idle); }
+  .ch.r .cdot { background:var(--danger); }
+  .ch.a .cdot { background:var(--attention); box-shadow:0 0 0 3px rgba(246,167,51,.18); animation:blink 1.6s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .ch.a .cdot { animation:none; } }
+  .ch .cx { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .ch .cx .cg { color:var(--fg); font-size:11px; }
+  .ch .cx b { color:var(--fg); font-weight:600; }
+  .ch.g .cx { color:var(--muted); } .ch.g .cx b, .ch.g .cx .ok { color:var(--idle); }
+  .ch.a .cx { color:var(--attention); } .ch.a .cx .cg { color:var(--attention); }
+  .fail { color:var(--danger); font-weight:650; }
+  .ok { color:var(--idle); }
+  .chip { font-family:var(--mono); font-size:9.5px; padding:2px 8px; border-radius:999px;
+    border:1px solid rgba(74,158,255,.35); color:var(--working); text-decoration:none; flex:none; }
+  .chip:hover { border-color:var(--working); }
+  .ch .btn { margin-left:auto; }
+  .ch-foot { font-family:var(--mono); font-size:10px; color:var(--dim); border-top:1px solid var(--border-soft);
+    margin-top:9px; padding:8px 0 10px; }
+
+  /* ---- archive row ---- */
+  .arch { text-align:center; font-family:var(--mono); font-size:11px; color:var(--dim); padding:6px 0 2px; }
+  .arch a { color:var(--muted); text-decoration:none; }
+  .arch a:hover { color:var(--fg); }
+
+  /* ---- notes ---- */
+  .notes { max-width:1280px; margin:10px auto 64px; padding:0 24px;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; }
+  .note { border:1px solid var(--border-soft); border-radius:10px; padding:11px 13px;
+    background:var(--bg-2); font-size:12.5px; color:var(--muted); }
+  .note b { color:var(--fg); font-weight:600; }
+  .note .n { font-family:var(--mono); color:var(--working); margin-right:7px; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="eyebrow">Mission Control - UI exploration - automation prominence, round 2</div>
+  <h1><span class="num">3/3</span>Threads: every piece of work tells its own story</h1>
+  <p class="stand">
+    The reframe: automation gets no home of its own - it gets a speaking part in the story of each piece of
+    work. A Thread is one unit of work followed end to end: where it came from, who worked it, every review
+    round, the decision, the merge, and what it cost. The fleet gains a third layout next to Grid and Board.
+    The Runs monitor and the ensemble dossier stop being destinations; they are chapters that appear in the
+    thread at the moment they happened. You learn what a workflow is by watching one happen to your own task.
+  </p>
+  <nav aria-label="Approaches">
+    <a href="index.html">Index</a>
+    <a href="1-library-line.html">1 Library + Line</a>
+    <a href="2-standing-orders.html">2 Standing Orders</a>
+    <a href="3-threads.html" aria-current="page">3 Threads</a>
+  </nav>
+</header>
+
+<div class="frame">
+  <div class="topbar">
+    <div class="brand"><span class="brand-mark"></span><b>Mission Control</b></div>
+    <label class="filter">⌕ <input placeholder="Filter (/)" aria-label="Filter sessions"></label>
+    <div class="tb-spacer"></div>
+    <div class="pulse">12 sessions <i>·</i> <b class="p-att">2 need you</b> <i>·</i> 5 working</div>
+    <button class="btn ghost">📡 <kbd>r</kbd></button>
+    <button class="btn ghost">⚙</button>
+    <button class="btn primary">＋ Dispatch <kbd>+</kbd></button>
+  </div>
+
+  <div class="views">
+    <div class="seg" role="navigation" aria-label="Fleet layout">
+      <a href="#">▦ Grid</a>
+      <a href="#">▥ Board</a>
+      <a href="#" aria-current="page">≡ Threads</a>
+    </div>
+    <span class="hint">one row per unit of work, newest first</span>
+  </div>
+
+  <div class="threads" aria-label="Threads">
+
+    <article class="thread open">
+      <div class="t-head" role="button" tabindex="0" aria-expanded="true">
+        <span class="tdot td-att"></span>
+        <b class="t-name">pane-fix</b>
+        <div class="spine" aria-hidden="true">
+          <span class="nd done">⇊</span><span class="sp-line done"></span>
+          <span class="nd done">▶</span><span class="sp-line done"></span>
+          <span class="nd cur">⌁</span><span class="sp-line"></span>
+          <span class="nd skip">⧉</span><span class="sp-line"></span>
+          <span class="nd hollow">⚑</span>
+        </div>
+        <span class="t-cost">≈$4.10</span>
+        <span class="t-time">now</span>
+      </div>
+      <div class="t-sub">Round 2/3 · Pull Request action waiting on session · ≈$4.10 so far</div>
+
+      <div class="chapters" aria-label="Chapters of pane-fix">
+        <div class="ch">
+          <span class="ts">Tue 09:12</span><span class="cdot"></span>
+          <div class="cx"><span class="cg">⇊</span> Filed by <b>github-issues</b> from issue #227 "Pane focus stealing"</div>
+        </div>
+        <div class="ch">
+          <span class="ts">Tue 09:40</span><span class="cdot"></span>
+          <div class="cx"><span class="cg">▶</span> Dispatched <b>claude · opus</b> on worktree wt-11 <a class="chip" href="#">session card →</a></div>
+        </div>
+        <div class="ch r">
+          <span class="ts">Tue 10:05</span><span class="cdot"></span>
+          <div class="cx"><span class="cg">⌁</span> No-Mistakes Review v8, round 1: checks passed · Code Risk Reviewer
+            <span class="fail">FAILED</span> - unsafe fallback in registry.ts</div>
+        </div>
+        <div class="ch">
+          <span class="ts">Tue 10:06</span><span class="cdot"></span>
+          <div class="cx"><span class="cg">↺</span> Repair delivered to the session · picked up 2m later</div>
+        </div>
+        <div class="ch g">
+          <span class="ts">Tue 11:32</span><span class="cdot"></span>
+          <div class="cx"><span class="cg ok">⌁</span> Round 2: <b>all four reviewers passed</b></div>
+        </div>
+        <div class="ch">
+          <span class="ts">Tue 11:33</span><span class="cdot"></span>
+          <div class="cx"><span class="cg">▤</span> Pull Request action: session opened PR #241 <a class="chip" href="#">PR #241</a></div>
+        </div>
+        <div class="ch g">
+          <span class="ts">Tue 11:41</span><span class="cdot"></span>
+          <div class="cx"><span class="cg ok">◇</span> Inspector: <b>pass</b> - no findings on head 4e0a30c</div>
+        </div>
+        <div class="ch a">
+          <span class="ts">now</span><span class="cdot"></span>
+          <div class="cx"><span class="cg">⚑</span> Waiting: merge is yours <button class="btn primary small">Review PR →</button></div>
+        </div>
+        <div class="ch-foot">cost accrued by chapter: $0.90 → $2.10 → $3.40 → $4.10</div>
+      </div>
+    </article>
+
+    <article class="thread">
+      <div class="t-head" role="button" tabindex="0" aria-expanded="false">
+        <span class="tdot td-att"></span>
+        <b class="t-name">refactor-discovery</b>
+        <div class="spine" aria-hidden="true">
+          <span class="nd done">✍</span><span class="sp-line done"></span>
+          <span class="cluster"><span class="nd done">▶</span><span class="nd done">▶</span><span class="nd cur blue">▶</span></span>
+          <span class="sp-line done"></span>
+          <span class="nd cur">⧉</span><span class="sp-line"></span>
+          <span class="nd hollow">⚑</span>
+        </div>
+        <span class="t-cost">≈$9.80</span>
+        <span class="t-time">22m</span>
+      </div>
+      <div class="t-sub"><span>⧉ Best of 3 · 2/3 submitted · judges done · <span class="att">waiting on your decision</span> · 22m</span>
+        <button class="btn primary small">Decide →</button></div>
+    </article>
+
+    <article class="thread">
+      <div class="t-head" role="button" tabindex="0" aria-expanded="false">
+        <span class="tdot td-run"></span>
+        <b class="t-name">issue-412</b>
+        <div class="spine" aria-hidden="true">
+          <span class="nd done">⇊</span><span class="sp-line done"></span>
+          <span class="nd cur blue">▶</span><span class="sp-line"></span>
+          <span class="nd hollow">⌁</span><span class="sp-line"></span>
+          <span class="nd hollow">⚑</span>
+        </div>
+        <span class="t-cost">≈$1.20</span>
+        <span class="t-time">34m</span>
+      </div>
+      <div class="t-sub">▶ working 34m · No-Mistakes Review v8 bound, will submit on Foreman completion</div>
+    </article>
+
+    <article class="thread done">
+      <div class="t-head" role="button" tabindex="0" aria-expanded="false">
+        <span class="tdot td-ok"></span>
+        <b class="t-name">docs-sweep</b>
+        <div class="spine" aria-hidden="true">
+          <span class="nd done">◷</span><span class="sp-line done"></span>
+          <span class="nd done">▶</span><span class="sp-line done"></span>
+          <span class="nd done">⌁</span><span class="sp-line done"></span>
+          <span class="nd ship">⚑</span>
+        </div>
+        <span class="t-cost">≈$0.70</span>
+        <span class="t-time">1d</span>
+      </div>
+      <div class="t-sub">⚑ merged #236 yesterday · 1 round · passed first try</div>
+    </article>
+
+    <div class="arch">12 shipped threads this week · ≈$38.20 · <a href="#">open the archive →</a></div>
+  </div>
+</div>
+
+<section class="notes" aria-label="Design notes">
+  <div class="note"><span class="n">01</span><b>Purpose through narrative.</b> No surface has to explain that a
+    workflow reviews and repairs - chapter 3 and 4 of your own task just showed you. The vocabulary (round,
+    verdict, action, decision) is taught by the story using it.</div>
+  <div class="note"><span class="n">02</span><b>Runs and ensembles dissolve into chapters.</b> This is the direct
+    answer to "authoring vs work being done": Threads only shows the work being done. The run reader and the
+    decision dossier open from a chapter, scoped to that thread - the global Runs and Ensembles tabs retire.</div>
+  <div class="note"><span class="n">03</span><b>The honest cost view.</b> Per-day burn is the machine's accounting;
+    per-thread cost is the operator's - "this fix cost $4.10" is the number you actually reason with. The topbar
+    keeps only a small total; the real ledger lives on the work.</div>
+  <div class="note"><span class="n">04</span><b>Where authoring went.</b> Workflows, Personas and Actions are edited
+    behind a single "Catalog" entry (⌘K and one topbar item) - this concept deliberately trades authoring
+    prominence for execution clarity, and that is its main risk.</div>
+  <div class="note"><span class="n">05</span><b>Cost: needs a durable thread id.</b> Task → session → run →
+    ensemble → PR are stitched today by four different link tables; a Thread needs one persistent work id across
+    all of them, established at intake. UI is the easy half of this concept.</div>
+</section>
+
+</body>
+</html>

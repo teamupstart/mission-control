@@ -2892,8 +2892,9 @@ here and links to the Runs page, where its read-only graph remains available.
 The Board overview also keeps a compact **active-rung preview** inside each bound session tile.
 It names the consequential stage and its members, and keeps the first objection, Inspector wait,
 or uncertain-delivery warning in view. **Show full workflow** expands that tile in place into the
-same actionable ladder; **Collapse workflow** returns to the preview. These controls do not open
-the session or leave the Board. **Open run** inside the expanded ladder remains the explicit route
+same actionable ladder; **Collapse workflow** returns to the preview. Press <kbd>e</kbd> on the
+selected tile to toggle those same controls without opening the session detail. These controls do
+not open the session or leave the Board. **Open run** inside the expanded ladder remains the explicit route
 to the complete evidence and timeline. The preview fetches run detail when its tile mounts and
 refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload itself is unchanged.
 
@@ -4546,22 +4547,22 @@ without one, or if a native `title` attribute creeps back in.
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - use the arrow keys to navigate Cards and Board, to walk
-the Console rail or scroll its open reader, then act without reaching for the mouse. Every
-shortcut works in every layout:
+the Console rail or scroll its open reader, then act without reaching for the mouse. The table
+names the layouts where a shortcut's target exists:
 
 | Key | Action | Scope |
 |-----|--------|-------|
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Around the grid in **Cards**; in **Console** and the **Board** drill-in <kbd>↑</kbd>/<kbd>↓</kbd> walk the rail selection, or scroll the reader's active tab once you <kbd>Tab</kbd> into it (and move through files while its inline Diff reader is focused); along and across the columns in the **Board** overview. With nothing selected, the first arrow selects the first session | Anywhere |
 | <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
-| <kbd>Enter</kbd> | Open the selected session's detail (**Board** only - the other layouts open it with the selection). On a focused link or button it activates that instead, as it always does | Anywhere |
+| <kbd>Enter</kbd> | Open the selected session's detail. **Cards**: focus-expands or collapses the selected card. **Board**: opens the drill-in. Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open the settings search palette - from the fleet it jumps to Settings first, then opens; press again to close | Anywhere |
 | <kbd>w</kbd> | Open the **Library**, or press again to return to the fleet | Fleet or Library |
-| <kbd>e</kbd> | Expand / collapse the selected session. **Cards**: focus-expands the card and drops the cursor in its reply box, ready to type. **Board**: opens (and closes) the drill-in detail, the same thing <kbd>Enter</kbd> opens. Console already shows the selected session expanded, so there is nothing to toggle | Selected session |
-| <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>e</kbd> owns the toggle | Selected session |
+| <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
+| <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
@@ -4604,8 +4605,8 @@ The buttons those shortcuts drive print the key on their own face - Terminal and
 Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Complete and
 Kill on a card; Focus, Diff, Reset, Complete and Kill in the Console footer; the Console's
 Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and Workflows
-in the top bar; and the settings rail's search box. They show the *resolved* chord, so a
-rebind moves what they say and an unset action shows no keycap.
+in the top bar; the Board card's workflow disclosure; and the settings rail's search box. They
+show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
 
 **Settings → Keyboard → Show keybindings on buttons** turns them off once you've learnt
 them. Small icon-only controls (the ⚙ gear, the 📡 sitrep glyph, the expand chevron) never

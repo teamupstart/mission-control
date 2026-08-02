@@ -34,6 +34,25 @@ Successful-path artifacts are committed for the dispatch-and-converse suite beca
 Playwright run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all
 configured `on-failure`, so success is exactly the case with no record.
 
+### Board workflow shortcut
+
+[`docs/evidence/board-workflow-shortcut/`](../docs/evidence/board-workflow-shortcut/) contains
+two full-Board captures from the same passing browser regression. `01-expanded.png` is taken
+after the selected card receives its first <kbd>e</kbd>: the full workflow ladder is visible,
+the control reads **Collapse workflow**, and the Board remains in overview mode. `02-collapsed.png`
+is taken after the second <kbd>e</kbd>: the active-rung preview and **Show full workflow** return,
+with session detail still closed.
+
+Regenerate both frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-session-action-run.spec.ts \
+  -g 'e toggles the selected Board workflow card' \
+  --reporter=list
+```
+
 ### Ship it replacement workflow
 
 The focused browser case opens the session's Ship it choice, verifies the visible

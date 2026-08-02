@@ -827,7 +827,7 @@ export function TranscriptPanel({
                 e.preventDefault();
                 void send();
               } else if (e.key === "Escape") {
-                // Blur back to the grid so card keyboard nav (e to collapse) works.
+                // Blur back to the grid so card keyboard nav (Enter to collapse) works.
                 e.currentTarget.blur();
               }
             }}

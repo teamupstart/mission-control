@@ -27,6 +27,8 @@ const src = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(`../src/web/${rel}`, import.meta.url)), "utf8");
 
 const app = src("App.tsx");
+const board = src("components/layouts/BoardView.tsx");
+const tile = src("components/layouts/SessionTile.tsx");
 
 test("Enter is reserved, because the board's Enter is structural navigation", () => {
   assert.equal(isReservedChord("Enter"), true);
@@ -41,8 +43,9 @@ test("a modified Enter still reaches the chord matching it merely shares a key w
   // it there returned before a single binding was compared, in every layout.
   const arm = app.slice(app.indexOf('case "Enter":'), app.indexOf("// Actions on the selected card."));
   assert.match(arm, /if \(chord !== "Enter"\) break;/, arm);
-  // And the paths the board's Enter does not apply to fall through rather than return.
-  assert.match(arm, /layout !== "board" \|\| !selectedId \|\| boardOpen\) break;/, arm);
+  // And the paths structural Enter does not apply to fall through rather than return.
+  assert.match(arm, /if \(!selectedId\) break;/, arm);
+  assert.match(arm, /layout === "board" && !boardOpen/, arm);
 });
 
 test("plain Enter on native controls wins over saved bindings", () => {
@@ -121,28 +124,42 @@ test("the arrow cursor takes focus onto the tile's own open button", () => {
   assert.match(app, /querySelector<HTMLElement>\("button\.tile-open"\)/);
   // That selector is the whole contract, and nothing compiles it. SessionTile draws the
   // stretched button precisely so the keyboard has something to land on.
-  const tile = src("components/layouts/SessionTile.tsx");
   assert.match(tile, /<button[\s\S]*?className="tile-open"/, "the keyboard half of the tile is gone");
 });
 
-// The board overview shows a TILE, not the session, so opening the drill-in has to have
-// keyboard routes other than the mouse. Enter is one; Expand is the other, and it used to
-// return for any non-grid layout, so `e` did nothing on the board. These pin both.
+// Enter owns session detail. The rebindable Expand action owns the workflow disclosure
+// inside the selected Board card and must never cross into that detail.
 
-test("Enter and Expand both open the board's drill-in detail", () => {
+test("Enter opens session detail while Expand only toggles the Board workflow card", () => {
   // Enter: the switch's board arm sets the drill-in open.
   const enterArm = app.slice(app.indexOf('case "Enter":'), app.indexOf("// Actions on the selected card."));
-  assert.match(enterArm, /layout !== "board" \|\| !selectedId \|\| boardOpen\) break;/);
+  assert.match(enterArm, /layout === "board" && !boardOpen/);
   assert.match(enterArm, /setBoardOpen\(true\)/, "Enter no longer opens the board detail");
+  assert.match(enterArm, /layout === "grid"/);
+  assert.match(enterArm, /toggleExpand\(selectedId\)/, "Enter no longer toggles Cards focus mode");
 
-  // Expand: a board branch toggles the same detail (open, and collapse - the chord's own
-  // "expand / collapse" name), rather than returning for a non-grid layout.
+  // Expand: only the selected Board overview tile's registered workflow disclosure runs.
   const expandBlock = app.slice(
     app.indexOf("if (chord === bindings.expand)"),
-    app.indexOf("if (chord === bindings.diff)"),
+    app.indexOf('// "Show me this session\'s conversation"'),
   );
-  assert.match(expandBlock, /layout === "board"/, "Expand has no board branch, so `e` does nothing there");
-  assert.match(expandBlock, /setBoardOpen\(\(open\) => !open\)/, "Expand does not toggle the board drill-in");
+  assert.match(expandBlock, /layout !== "board" \|\| boardOpen \|\| !selectedId/);
+  assert.match(expandBlock, /workflowDisclosureHandles\.current\.get\(selectedId\)/);
+  assert.match(expandBlock, /disclosure\.toggle\(\)/);
+  assert.doesNotMatch(expandBlock, /setBoardOpen/);
+  assert.doesNotMatch(expandBlock, /toggleExpand/);
+
+  // The handle reaches the same local state setter the pointer button receives.
+  assert.match(board, /registerWorkflowDisclosure=\{props\.registerWorkflowDisclosure\}/);
+  assert.match(tile, /registerWorkflowDisclosure\(session\.id, \{ toggle: toggleWorkflowExpanded \}\)/);
+  assert.match(tile, /onExpandedChange: setWorkflowExpanded/);
+});
+
+test("the persisted expand action now describes the Board workflow disclosure", () => {
+  const expand = ACTIONS.find((action) => action.id === "expand");
+  assert.equal(expand?.defaultBinding, "e");
+  assert.equal(expand?.label, "Toggle workflow details");
+  assert.match(expand?.description ?? "", /without opening its session detail/);
 });
 
 test("Shift+Tab cycles the permission mode in place on the board, without opening the detail", () => {

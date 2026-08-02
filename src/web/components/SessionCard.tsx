@@ -314,7 +314,7 @@ export function SessionCard({
           </Tooltip>
         )}
         {canExpand && (
-          <Tooltip label={expanded ? "Hide conversation" : "Show conversation"}>
+          <Tooltip label={expanded ? "Hide conversation (Enter)" : "Show conversation (Enter)"}>
             <button
               className={`expand-toggle${expanded ? " open" : ""}`}
               aria-label={expanded ? "Collapse conversation" : "Expand conversation"}

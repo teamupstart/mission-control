@@ -46,6 +46,10 @@ const SHIPPABLE_ACTION =
 const GENERIC_IMPLEMENTATION_ACTION =
   /\b(?:build|create|develop|ship|fix|refactor|update|deliver)\b/i;
 
+/** An explicit publishing imperative, recognized only when it leads its own clause. */
+const SHIPPING_DIRECTIVE =
+  /^\s*(?:(?:please|next|then)\s*,?\s+)?(?:(?:open|raise|submit|publish|merge)\b[^.?!\n]{0,60}\b(?:pull\s+request|pr)\b|(?:commit|push)\b[^.?!\n]{0,60}\b(?:changes?|commits?|branch)\b)/i;
+
 /** `a plan for code changes` names a topic, not a second implementation deliverable. */
 const REVIEW_ARTIFACT_TOPIC =
   /\b(?:mock[- ]?ups?|wireframes?|prototypes?|storyboards?|design\s+(?:concepts?|explorations?|options?)|plans?|reports?|analys(?:is|es)|research|audit\s+findings?|recommendations?)\b[^.?!\n]{0,30}\b(?:for|on|about|of|to|that|which|explaining|describing|detailing|outlining|covering|discussing)\b/i;
@@ -83,7 +87,7 @@ function naturalLanguageRequestsShipping(objective: string): boolean {
     .split(/(?:[.!?;\n]|\bthen\b|\band\b)/i)
     .some((clause) => {
       if (REVIEW_ARTIFACT_TOPIC.test(clause)) return false;
-      return SHIPPABLE_ACTION.test(clause) || (
+      return SHIPPING_DIRECTIVE.test(clause) || SHIPPABLE_ACTION.test(clause) || (
         GENERIC_IMPLEMENTATION_ACTION.test(clause) && !REVIEW_ARTIFACT.test(clause)
       );
     });

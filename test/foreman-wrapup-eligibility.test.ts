@@ -32,6 +32,7 @@ test("an explicit mockup output is a non-shipping review artifact", () => {
     "Output: a report on code changes",
     "Output: an implementation plan",
     "Output: a report on implementation details",
+    "Prepare a plan to implement the feature.\nOutput: mockups",
   ]) {
     assert.equal(block({ objective })?.kind, "review_artifact", objective);
   }
@@ -61,6 +62,8 @@ test("mockup context does not block a task that also asks for implementation", (
     "Output: wireframes and an updated React component",
     "Output: mockups plus unit tests",
     "Create a mockup viewer component.",
+    "Implement the session viewer. Output: mockups",
+    "Build an updated React component.\nDeliverables: wireframes",
   ]) {
     assert.equal(block({ objective }), null, objective);
   }

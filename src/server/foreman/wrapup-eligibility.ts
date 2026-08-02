@@ -79,7 +79,12 @@ function objectiveRequestsReviewArtifacts(objective: string): boolean {
   OUTPUT_FIELD.lastIndex = 0;
   const outputValues = [...objective.matchAll(OUTPUT_FIELD)].map((match) => match[1] ?? "");
   if (outputValuesRequestShipping(outputValues)) return false;
-  if (outputValues.some((value) => REVIEW_ARTIFACT.test(value))) return true;
+  if (outputValues.some((value) => REVIEW_ARTIFACT.test(value))) {
+    // An Output field is one part of the completion contract, not necessarily the whole of
+    // it. `Implement the viewer. Output: mockups` still requests a shippable implementation;
+    // the mockups only name the accompanying review deliverable.
+    return !naturalLanguageRequestsShipping(objective);
+  }
 
   // Natural-language fallback for prompts like "Present at least three HTML mockups". A prompt
   // that also explicitly asks for implementation remains eligible, which keeps "mock up, then

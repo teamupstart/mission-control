@@ -687,20 +687,26 @@ test("5. a review-artifact objective retires before even ask mode can claim a Wo
 test("5. a work-queue item can declare the non-shipping output", () => {
   const action = tick({
     items: DRAINED().map((item) => ({ ...item, intent: "Compare the ideas.\nOutput: wireframes" })),
+    // Isolate the item's completion contract. The fixture default is `Ship the feature`,
+    // which would make this a mixed shipping + wireframe objective by design.
+    intent: null,
     cfg: { wrapup: "pr" },
   });
   assert.equal(action.kind, "skip-wrapup");
 });
 
 test("5. an implementation that cites mockups keeps the configured automatic action", () => {
-  const action = tick({
-    items: DRAINED(),
-    intent: {
-      objective: "Use the approved mockups to deliver the production-ready implementation.",
-    },
-    cfg: { wrapup: "workflow" },
-  });
-  assert.equal(action.kind, "workflow-wrapup");
+  for (const objective of [
+    "Use the approved mockups to deliver the production-ready implementation.",
+    "Implement the session viewer.\nOutput: mockups",
+  ]) {
+    const action = tick({
+      items: DRAINED(),
+      intent: { objective },
+      cfg: { wrapup: "workflow" },
+    });
+    assert.equal(action.kind, "workflow-wrapup", objective);
+  }
 });
 
 test("5. the PR payload is not harness-scoped", () => {

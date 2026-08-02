@@ -2137,10 +2137,18 @@ export interface WorkflowRunSummary {
    * was. Resolved by a single LEFT JOIN rather than a per-run lookup, because summaries are
    * folded for the whole fleet on every change.
    *
-   * It duplicates `WorkflowRunDetail.externalSource` on purpose. The detail's copy is the one
-   * a reader opens a run to see; this one is what lets a TRIAGE surface - the Line's Review
-   * drawer - say "this came out of an ensemble" without fetching a detail per row. Both come
-   * from `externalSourceForRun`, so there is one rule and two deliveries of it, not two rules.
+   * It carries the same fact as `WorkflowRunDetail.externalSource`, and that is not a second
+   * opinion: the detail FORWARDS this field rather than resolving its own. There is exactly
+   * one place the rule lives - the claims join in the store's `WORKFLOW_RUN_SUMMARY_SELECT`,
+   * read into this field by `externalSourceFromRow` - and the detail's copy is that value
+   * handed on. The rule itself is narrow and worth knowing while reading either: a claim
+   * counts only when its kind matches the RUN's own trigger source, because a claimed binding
+   * stays usable by the manual and Foreman paths and a later run on it is genuinely not the
+   * external one.
+   *
+   * The detail's field is the older of the two and stays because that is where a reader opens
+   * a run to see it; this one exists so a TRIAGE surface - the Line's Review drawer - can say
+   * "this came out of an ensemble" for every live run without fetching a detail per row.
    */
   externalSource?: WorkflowExternalSource | null;
   maxRepairRounds: number;

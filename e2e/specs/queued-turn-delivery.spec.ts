@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -5,6 +7,27 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const HELD_TURN = "hold the current turn open";
 const QUEUED_TURN = "deliver this queued turn when the agent goes idle";
+
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/queued-turn-delivery/", import.meta.url));
+
+/**
+ * Photograph the surface this spec is already asserting on.
+ *
+ * Behind `MC_E2E_EVIDENCE` rather than unconditional, for the reason the session-action
+ * captures give: a card carries a fresh worktree uuid and a relative clock, so every ordinary
+ * run would rewrite the binaries for no added signal. Inside the regression test rather than
+ * in a staged capture spec of its own, because the point of the picture is that the assertions
+ * beneath it passed on the same run - a screenshot produced by a separate scripted walk proves
+ * the walk, not the fix.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and it lands
+  // on top of the row being photographed.
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+}
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -51,6 +74,9 @@ test("a queued conversation turn is delivered once the agent goes idle", async (
   await composer.fill(QUEUED_TURN);
   await composer.press("Enter");
   await expect(card.getByRole("status").filter({ hasText: /^queued$/ })).toBeVisible();
+  // The state the bug left behind for ever. Captured while the driver is still working, which
+  // is the only moment it is legitimate.
+  await shoot(dashboard, "queued-while-working");
 
   // The held turn finishes and the session goes idle. That is the outbox's cue.
   await expect(
@@ -65,4 +91,5 @@ test("a queued conversation turn is delivered once the agent goes idle", async (
   await expect(
     card.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
   ).toBeVisible({ timeout: 15_000 });
+  await shoot(dashboard, "delivered-and-answered");
 });

@@ -112,6 +112,19 @@ It is behind that flag rather than captured on every run because the card carrie
 timestamp and a fresh worktree uuid, so an unconditional capture would rewrite a binary on
 every run for no added signal.
 
+### Queued turn delivery
+
+[`docs/evidence/queued-turn-delivery/`](../docs/evidence/queued-turn-delivery/) carries the
+two frames `specs/queued-turn-delivery.spec.ts` takes between its own assertions, behind the
+same `MC_E2E_EVIDENCE` flag: a message queued against a working driver, and that same message
+delivered as an ordinary turn and answered once the session goes idle. The second frame is
+the one the fix bought - before it, the row stayed queued for the life of the session.
+
+```sh
+MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
+  e2e/specs/queued-turn-delivery.spec.ts --reporter=list
+```
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

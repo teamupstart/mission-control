@@ -44,7 +44,7 @@ const GENERIC_IMPLEMENTATION_ACTION =
 
 /** `a plan for code changes` names a topic, not a second implementation deliverable. */
 const REVIEW_ARTIFACT_TOPIC =
-  /\b(?:mock[- ]?ups?|wireframes?|prototypes?|storyboards?|design\s+(?:concepts?|explorations?|options?)|plans?|reports?|analys(?:is|es)|research|audit\s+findings?|recommendations?)\b[^.?!\n]{0,30}\b(?:for|on|about|of|to)\b/i;
+  /\b(?:mock[- ]?ups?|wireframes?|prototypes?|storyboards?|design\s+(?:concepts?|explorations?|options?)|plans?|reports?|analys(?:is|es)|research|audit\s+findings?|recommendations?)\b[^.?!\n]{0,30}\b(?:for|on|about|of|to|that|which|explaining|describing|detailing|outlining|covering|discussing)\b/i;
 
 /** An explicit task-contract field such as `Output: mockups`. */
 const OUTPUT_FIELD =

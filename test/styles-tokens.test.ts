@@ -37,7 +37,7 @@ const SET_FROM_JS = new Map<string, string>([
   ["--topbar-h", "measured in App.tsx (see AGENTS.md)"],
   ["--cmdbar-clearance", "measured in App.tsx (see AGENTS.md)"],
   ["--tt-caret", "the tooltip caret offset, inline from Tooltip.tsx"],
-  ["--pct", "a bar's own fill percentage, inline from FleetStrip.tsx"],
+  ["--pct", "a bar's own fill percentage, inline from SpendChip.tsx"],
 ]);
 
 /** Every `var(--x)` reference, with whether that reference supplied a fallback. */

@@ -2374,6 +2374,13 @@ new one so a kept bookmark stops being a legacy link: `#/workflows` → `#/libra
 `#/ensembles[/:id]`. Query filters survive the redirect, so a saved
 `#/workflows/runs?status=completed` lands on the same filtered list it always did.
 
+Those five are every spelling that ever shipped, and **anything else under the prefix lands on
+`#/library` too** rather than falling through to the fleet. The prefix named one page, so a
+hash carrying it is a link to that page however it is misspelled or half-remembered, and an
+unrecognized sub-path cannot say which half was meant - so it takes the front door the whole
+page's front door took. A hash that does *not* carry the prefix still falls back to the fleet,
+as every unknown hash always has.
+
 An editor with unsaved changes still holds a navigation away from it and asks first, whichever
 home you are leaving for.
 

@@ -70,9 +70,23 @@ test("every legacy #/workflows spelling redirects to its new home, permanently",
     // An undecodable id under the legacy prefix takes the new page's own fallback.
     ["#/workflows/runs/%E0%A4%A", { page: "runs" }],
     ["#/workflows/ensembles/%E0%A4%A", { page: "ensembles" }],
+    // And ANYTHING else the prefix has ever been spelled with. Five spellings shipped and all
+    // five are above; these are the misspelled, mistyped and half-remembered rest, which used
+    // to fall through to the fleet - the one destination that tells its holder nothing about
+    // where the page they wanted went. They take the front door `#/workflows` bare takes.
+    ["#/workflows/session-actions", { page: "library" }],
+    ["#/workflows/workflows", { page: "library" }],
+    ["#/workflows/builder", { page: "library" }],
+    ["#/workflows/runs/one/two", { page: "library" }],
+    ["#/workflows/", { page: "library" }],
+    ["#/workflows/%E0%A4%A", { page: "library" }],
   ];
   for (const [legacy, landed] of redirects) {
     assert.deepEqual(parseMissionRoute(legacy), landed, `${legacy} did not redirect`);
+    // Never the fleet. The fleet IS a legitimate parse - it is what an unknown hash outside
+    // this prefix takes - which is exactly why a redirect landing there is indistinguishable
+    // from no redirect at all, and why it is asserted against here rather than assumed.
+    assert.notDeepEqual(parseMissionRoute(legacy), { page: "fleet" }, `${legacy} fell through`);
     // PERMANENT means the address bar stops saying the old thing: the route a legacy hash
     // parses to must serialize to a hash that is no longer legacy, or the next copy of that
     // link keeps the retired spelling alive forever.
@@ -81,6 +95,41 @@ test("every legacy #/workflows spelling redirects to its new home, permanently",
     // And the canonical spelling is a fixed point: parsing it again does not move.
     assert.deepEqual(parseMissionRoute(canonical), landed, `${canonical} is not stable`);
   }
+});
+
+// The invariant behind the table above, stated once so a sixth spelling nobody predicted is
+// covered by construction rather than by remembering to add a row.
+//
+// "Redirects permanently" has two halves and this checks both for every suffix: the hash
+// resolves to a real destination inside the two homes that inherited the page, and the
+// canonical spelling of that destination no longer carries the retired prefix. An unknown
+// hash OUTSIDE this prefix still lands on the fleet, which is the behaviour that makes the
+// first half worth asserting - falling through is silent and looks identical to working.
+test("no #/workflows hash falls through to the fleet, whatever follows the prefix", () => {
+  const suffixes = [
+    "", "/", "/personas", "/actions", "/session-actions", "/runs", "/ensembles",
+    "/runs/r1", "/ensembles/e1", "/runs/r1/extra", "/builder", "/WORKFLOWS", "/a b",
+    "/%E0%A4%A", "/runs?status=completed", "/../fleet", "/personas/p1/deep",
+  ];
+  for (const suffix of suffixes) {
+    const hash = `#/workflows${suffix}`;
+    const route = parseMissionRoute(hash);
+    assert.notEqual(route.page, "fleet", `${hash} fell through to the fleet`);
+    assert.ok(
+      ["library", "runs", "ensembles"].includes(route.page),
+      `${hash} landed on ${route.page}, which did not inherit the Workflows page`,
+    );
+    assert.doesNotMatch(
+      missionRouteHash(route),
+      /^#\/workflows/,
+      `${hash} canonicalized back to a legacy spelling`,
+    );
+  }
+  // The control: the fall-through still exists for hashes this prefix has no claim on, so
+  // the assertions above are about the redirect and not about a parser that never returns
+  // the fleet.
+  assert.deepEqual(parseMissionRoute("#/unknown"), { page: "fleet" });
+  assert.deepEqual(parseMissionRoute("#/workflowsx"), { page: "fleet" });
 });
 
 test("the Workflows page is gone, not merely unreachable", () => {

@@ -197,6 +197,19 @@ export function parseMissionRoute(hash: string): MissionRoute {
   // `actions`, not `session-actions`: the shelf is called Actions on screen, and the hash a
   // person copies out of the address bar has to be the word they read.
   if (path === "/workflows/actions") return { page: "library", shelf: "actions" };
+  // ANYTHING else under the retired page's prefix, and this is a catch-all on purpose.
+  //
+  // Five spellings ever shipped under `#/workflows` and all five are answered exactly above.
+  // Every other one still has to go somewhere better than the fleet: the prefix named ONE
+  // page, so a hash carrying it is a link to that page however it is misspelled, mistyped, or
+  // half-remembered - and `#/fleet` is the one destination that tells its holder nothing about
+  // where the thing they wanted went.
+  //
+  // The Library, because that is where `#/workflows` bare now lands: an unrecognized sub-path
+  // cannot say whether the authoring half or the execution half was meant, so it takes the
+  // front door the whole page's front door took. Exactly the rule `#/library/<unknown-shelf>`
+  // already follows a few lines up.
+  if (path.startsWith("/workflows/")) return { page: "library" };
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
   if (settings) {

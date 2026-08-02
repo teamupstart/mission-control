@@ -340,6 +340,11 @@ test("every legacy #/workflows deep link redirects, and the Workflows page is go
     ["#/workflows/runs?status=completed", /#\/runs\?status=completed$/],
     ["#/workflows/ensembles", /#\/ensembles$/],
     ["#/workflows/ensembles/ens-1", /#\/ensembles\/ens-1$/],
+    // Anything else the prefix was ever spelled with. These never shipped as routes, which
+    // is the point: a hash carrying the retired prefix is a link to that page however it is
+    // misspelled, and it has to land somewhere better than the fleet.
+    ["#/workflows/session-actions", /#\/library$/],
+    ["#/workflows/runs/one/two", /#\/library$/],
     // The authoring spellings, still redirecting one phase later.
     ["#/workflows", /#\/library$/],
     // Not anchored: the Persona surface reports the asset it opens on, so the canonical
@@ -350,6 +355,9 @@ test("every legacy #/workflows deep link redirects, and the Workflows page is go
   for (const [legacy, canonical] of redirects) {
     await dashboard.goto(`${daemon.baseURL}/${legacy}`);
     await expect(dashboard).toHaveURL(canonical);
+    // Never the fleet. That is a real destination for an unknown hash, so a redirect landing
+    // there is indistinguishable from no redirect at all.
+    await expect(dashboard).not.toHaveURL(/#\/fleet$/);
   }
 
   // And the page they used to share is gone: no tab strip, and the two surfaces are pages

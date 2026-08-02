@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan: the ensemble decision dossier</title>
+<style>
+  :root {
+    --page:#fff; --ink:#1b1f24; --ink-2:#4b5563; --ink-3:#6b7280;
+    --rule:#e3e7ec; --rule-2:#f1f3f6; --soft:#f7f9fb; --accent:#1f6feb;
+    --warn:#b45309; --ok:#2f9e6e; --code-bg:#f4f6f9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page:#0f1216; --ink:#e6eaf0; --ink-2:#a9b3c1; --ink-3:#8892a1;
+      --rule:#242b34; --rule-2:#1a2028; --soft:#151a20; --accent:#6ea8fe;
+      --warn:#e5a13a; --ok:#35c08a; --code-bg:#161b22;
+    }
+  }
+  * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
+  body {
+    margin:0; background:var(--page); color:var(--ink);
+    font:400 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width:860px; margin:0 auto; padding:56px 24px 110px; }
+  .eyebrow { font-size:11px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3); margin:0 0 14px; }
+  h1 { font-size:32px; line-height:1.2; letter-spacing:-.02em; margin:0 0 16px; font-weight:680; }
+  h2 { font-size:21px; line-height:1.3; letter-spacing:-.012em; font-weight:660; margin:54px 0 14px; padding-top:20px; border-top:1px solid var(--rule); }
+  p { margin:0 0 14px; }
+  ul, ol { margin:0 0 14px; padding-left:22px; }
+  li { margin:0 0 7px; }
+  a { color:var(--accent); }
+  strong { font-weight:650; }
+  em { font-style:italic; color:var(--ink-2); }
+  code { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.87em; background:var(--code-bg); border-radius:4px; padding:1px 5px; }
+  .lede { font-size:17px; color:var(--ink-2); margin-bottom:8px; }
+  .meta { font-size:13px; color:var(--ink-3); line-height:1.7; margin:0 0 26px; }
+  .scroller { overflow-x:auto; margin:0 0 18px; -webkit-overflow-scrolling:touch; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; min-width:480px; }
+  th, td { text-align:left; padding:8px 12px 8px 0; border-bottom:1px solid var(--rule-2); vertical-align:top; }
+  th { font-weight:650; font-size:11.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-3); border-bottom-color:var(--rule); }
+  .callout { border:1px solid var(--rule); border-left:3px solid var(--ok); border-radius:10px; background:var(--soft); padding:14px 18px; margin:0 0 20px; font-size:15px; }
+  .callout.warn { border-left-color:var(--warn); }
+  .callout p:last-child { margin-bottom:0; }
+  .grp { display:flex; gap:14px; flex-wrap:wrap; margin:0 0 18px; }
+  .grp > div { flex:1 1 240px; border:1px solid var(--rule); border-radius:10px; padding:12px 14px; background:var(--soft); }
+  .grp h3 { font-size:12px; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-3); margin:0 0 7px; }
+  .grp p { font-size:14px; margin:0; }
+  svg.flow { width:100%; height:auto; display:block; margin:6px 0 20px; }
+  ol.contracts { counter-reset:c; list-style:none; padding-left:0; }
+  ol.contracts li { counter-increment:c; position:relative; padding-left:34px; margin-bottom:11px; }
+  ol.contracts li::before {
+    content:counter(c); position:absolute; left:0; top:1px;
+    font-family:ui-monospace,Menlo,monospace; font-size:11px; font-weight:700; color:var(--ink-3);
+    border:1px solid var(--rule); border-radius:5px; width:22px; height:22px; display:grid; place-items:center;
+  }
+  @media (max-width:720px){ .wrap{padding:36px 18px 80px;} h1{font-size:26px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="eyebrow">Implementation index &middot; Mission Control</p>
+<h1>Phased plan: the ensemble decision dossier</h1>
+<p class="lede">Three phases. Phase 1 is the foundation, Phase 2 depends on it, Phase 3 is independent and can run alongside both.</p>
+<p class="meta">
+  Source plan: <a href="plan.md">plan.md</a> (approved 2026-08-01, Direction A &ndash; The Scoreboard). Rendered: <a href="plan.html">plan.html</a>.
+</p>
+
+<h2>Incorporated decisions</h2>
+<div class="scroller">
+<table>
+  <thead><tr><th>Question</th><th>Answer</th><th>Where it lands</th></tr></thead>
+  <tbody>
+    <tr><td>Direction</td><td><strong>A &ndash; The Scoreboard</strong></td><td>Phase 2</td></tr>
+    <tr><td>Floor fixes</td><td><strong>Declare the prose type scale</strong>, plus bounding the prose</td><td>Phase 1</td></tr>
+    <tr><td>Event log rewrite</td><td><strong>Include it now</strong></td><td>Phase 3</td></tr>
+    <tr><td>Follow-up</td><td>Create phased implementation plan</td><td>this document</td></tr>
+  </tbody>
+</table>
+</div>
+<p>Deferred by decision and owned by <strong>no phase</strong>: resolving the anonymised <code>Submission A/B/C</code> labels (and the <code>subjectLabel</code> wire change that would require), and the status-colour cascade onto body prose in the Members section. Their evidence stays in <code>plan.md</code> &sect;2.3 and &sect;2.4 because it is measured and still true.</p>
+<div class="callout">
+  <p>Bounding the prose was not among the selected floor fixes but is included, because Direction A's criteria-row layout is not buildable without it: a cell that can grow without limit destroys the row alignment that is the whole point. This was stated to the human and confirmed &ndash; <em>&ldquo;bound the prose if you need to, do whatever you need to support A.&rdquo;</em></p>
+</div>
+
+<h2>Investigated findings that shaped the split</h2>
+<p>Checked against the repository, not taken from the source plan:</p>
+<ol>
+  <li><strong>&ldquo;No wire change&rdquo; holds.</strong> Both new criteria rows use data the client already has. Diffstat is already rendered at <code>dossier.tsx:191</code> via the web-side type at <code>src/web/ensembles/types.ts:72</code>; elapsed derives from attempt <code>startedAt</code> / <code>finishedAt</code> in <code>src/shared/ensemble.ts</code>. No server, schema, or route change anywhere in this plan.</li>
+  <li><strong><code>CandidateColumn</code> is shared, and that shapes Phase 2's design.</strong> <code>dossier.tsx</code> exports it; <strong>both</strong> <code>BestOfN.tsx</code> and <code>PanelVote.tsx</code> import it. <code>Consensus.tsx</code> uses neither it nor the scorecard classes. Transposing Best-of-N in place would silently redesign Panel vote, outside the approved scope.</li>
+  <li><strong>Prose classes are shared, and that is desirable.</strong> Phase 1 lands on Best-of-N and Panel vote together. Both get readable prose; neither changes layout.</li>
+  <li><strong>The repo cross-checks rendered classes against the stylesheet</strong> (<code>test/panel-vote-render.test.ts:311</code>, <code>test/attention-inbox.test.ts:315</code>). Every phase that adds a class adds a rule and the matching assertion.</li>
+  <li><strong>Four render tests cover this markup</strong> and need updating rather than replacing: <code>ensemble-dossier-render</code> (575 lines), <code>ensemble-page-render</code> (941), <code>panel-vote-render</code> (328), <code>ensemble-consensus-render</code>. <code>panel-vote-render</code> is the canary &ndash; if Phase 2 breaks it, <code>CandidateColumn</code> was changed when it should not have been.</li>
+  <li><strong>Every phase needs a Playwright spec.</strong> The repo requires one for any UI change with no exemptions, and this surface has none. The cost of seeding a completed ensemble run in <code>e2e/</code> was <strong>not</strong> verified; each phase says to read <code>e2e/README.md</code> first and report honestly if seeding is expensive rather than silently skipping.</li>
+</ol>
+
+<h2>Phases</h2>
+<div class="scroller">
+<table>
+  <thead><tr><th>#</th><th>Phase</th><th>Depends on</th><th>Delivers</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><a href="phase-1-prose-scale-and-bounds.md">Prose type scale and bounded claims</a></td>
+      <td>&ndash;</td>
+      <td>Prose at 12.5px/1.55 instead of the inherited 16px/normal; no claim can set a row's height</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><a href="phase-2-scoreboard.md">The Scoreboard</a></td>
+      <td>Phase 1</td>
+      <td>Criteria as rows, the margin ruler, an Elapsed row, aligned Recommended badge</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><a href="phase-3-event-log-words.md">The event log in the operator's words</a></td>
+      <td>&ndash;</td>
+      <td>Humanised, stage-grouped event log; no raw enums</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Dependency graph</h2>
+<svg class="flow" viewBox="0 0 700 170" role="img" aria-labelledby="gt gd">
+  <title id="gt">Phase dependency graph</title>
+  <desc id="gd">Phase 1 precedes Phase 2. Phase 3 is independent and may run at any time.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <style>
+    .bx { fill:none; stroke:var(--rule); stroke-width:1.5; rx:9; }
+    .lb { fill:var(--ink); font:650 13px system-ui,sans-serif; }
+    .sb { fill:var(--ink-3); font:400 11px ui-monospace,Menlo,monospace; }
+    .ln { stroke:var(--ink-3); stroke-width:1.4; fill:none; color:var(--ink-3); }
+    .cap { fill:var(--ink-3); font:700 10px system-ui,sans-serif; letter-spacing:.11em; }
+  </style>
+  <text class="cap" x="0" y="12">GROUP A &ndash; SEQUENTIAL</text>
+  <rect class="bx" x="0" y="24" width="250" height="52"/>
+  <text class="lb" x="14" y="45">Phase 1 &middot; Prose scale + bounds</text>
+  <text class="sb" x="14" y="62">foundation, no dependencies</text>
+  <path class="ln" d="M250 50 H326" marker-end="url(#a)"/>
+  <rect class="bx" x="332" y="24" width="250" height="52"/>
+  <text class="lb" x="346" y="45">Phase 2 &middot; The Scoreboard</text>
+  <text class="sb" x="346" y="62">needs Phase 1 merged</text>
+
+  <text class="cap" x="0" y="118">GROUP B &ndash; CONCURRENT</text>
+  <rect class="bx" x="0" y="130" width="250" height="36"/>
+  <text class="lb" x="14" y="153">Phase 3 &middot; Event log words</text>
+  <text class="sb" x="272" y="153">independent &ndash; may merge in either order</text>
+</svg>
+<p>Phase 1 and Phase 3 may start together. Phase 2 starts once Phase 1 merges. Phase 2 and Phase 3 may merge in either order.</p>
+
+<h2>Cross-phase contracts</h2>
+<ol class="contracts">
+  <li><strong>The prose scale is declared once, in Phase 1.</strong> Phase 2 consumes it and must not re-declare sizes per cell.</li>
+  <li><strong>One clamp implementation.</strong> Phase 1 owns the bounded-prose class and the expander. Phase 2 reuses both; a second clamp is a defect.</li>
+  <li><strong><code>CandidateColumn</code> stays, and stays serving Panel vote.</strong> Phase 2 must not delete or repurpose it. <code>panel-vote-render.test.ts</code> passing untouched is the enforcement.</li>
+  <li><strong>Presentation may diverge; data shaping may not.</strong> Phase 2 extracts one criteria-shaping helper consumed by both presentations. Two renderers over one shaping function is fine; two derivations of a candidate's numbers is a second source of truth and is not.</li>
+  <li><strong>No wire change, in any phase.</strong> If implementation reveals a genuinely missing client-side field, stop and report rather than adding a route change.</li>
+  <li><strong>One vocabulary.</strong> Phase 3 must not add a fourth spelling of the run state, and must not introduce <code>Submission X</code> into labels while resolution is deferred.</li>
+  <li><strong><code>src/web/styles.css</code> is shared by all three phases</strong> in far-apart regions. Whichever lands last re-runs the full unit suite rather than trusting the textual merge.</li>
+</ol>
+
+<h2>Final verification</h2>
+<p>Per phase: <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, plus the phase's Playwright spec (<code>npm run build</code> first, and <code>npx playwright install chromium</code> once per machine).</p>
+<p>After all three merge:</p>
+<ul>
+  <li><code>npm run typecheck &amp;&amp; npm run lint &amp;&amp; npm test &amp;&amp; npm run build &amp;&amp; npm run smoke &amp;&amp; npm run test:e2e</code></li>
+  <li>Visual check of the Best-of-N dossier against a real completed run at 1440px and 1024px: criteria rows align, no cell exceeds its bound, no horizontal page scroll.</li>
+  <li>Panel vote and Consensus visually unchanged from before Phase 1.</li>
+</ul>
+
+<div class="callout warn">
+  <p><strong>Known environment caveat.</strong> This machine runs <strong>Node v25.9.0</strong>, an odd-numbered unstable release; the project declares <code>&gt;=24</code> and CI validates 24 and 26. <code>test/codex-rollout.test.ts:196</code> fails deterministically here and is unrelated to this plan &ndash; it reproduces with the source tree byte-identical to <code>main</code>. Implementers should not treat it as caused by their phase, and should confirm runs against a supported Node version.</p>
+</div>
+
+</div>
+</body>
+</html>

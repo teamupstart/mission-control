@@ -133,7 +133,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     description: "Which individual skills every session gets.",
     category: "skills",
     anchor: "skills/catalog",
-    keywords: ["skill", "catalog", "slash command", "no-mistakes"],
+    keywords: ["skill", "catalog", "slash command"],
     kind: "jump",
   },
   {

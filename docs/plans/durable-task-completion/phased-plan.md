@@ -66,10 +66,3 @@ numbering.
   bindings; serial invariant enforced at `agentIsFree` + `TaskManager.assign`.
 
 ## Final verification strategy
-
-Each phase runs `npm run typecheck && npm test && npm run build` and ships through the
-no-mistakes gate with CI green on Node 24 + 26. The end state is pinned by the Phase 2
-headline tests (killed-session completion, cancelled upgrade, dependent unblocked, agent
-freed) plus Phase 3's multi-task flow test (task A completes by merge → same session takes
-task B → B's completion reads B's bindings). `task-merge-settles.test.ts` and
-`task-session-orphan.test.ts` must stay green in every phase.

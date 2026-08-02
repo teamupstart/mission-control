@@ -69,16 +69,16 @@ export function promptedCompletionClaim(input: {
 }
 
 /**
- * Ask the daemon for the one automatic binding Foreman's no-mistakes option owns.
+ * Ask the daemon for the one automatic binding Foreman's workflow option owns.
  *
  * Kept as a projection over an already-built proof so the worker cannot request a binding
  * until the drain/prompted path has reached its verified-complete branch.
  */
-export function withNoMistakesFallback(
+export function withBuiltinReviewFallback(
   claim: WorkflowCompletionClaim,
   enabled: boolean,
 ): WorkflowCompletionClaim {
-  return enabled ? { ...claim, fallbackWorkflow: "no-mistakes" } : claim;
+  return enabled ? { ...claim, fallbackWorkflow: "builtin-review" } : claim;
 }
 
 /** Non-throwing seam: a failed HTTP call is distinct from an explicit unclaimed answer. */

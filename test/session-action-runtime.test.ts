@@ -51,7 +51,6 @@ function discovered(id: string): DiscoveredSession {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 6000 + id.length,
     tty: `tty-${id}`,
     terminals: [mkMuxHandle({ paneId: `%${id.length}` })],

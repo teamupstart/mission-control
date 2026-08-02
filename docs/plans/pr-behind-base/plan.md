@@ -191,25 +191,6 @@ Inherited from `reloadNeeded` (`src/server/skills/reload.ts:140`) and the Forema
 guard (`queueSendStillValid`, `src/server/foreman/queue-apply.ts:186`). Cheapest first,
 because the last one costs a subprocess and everything above it exists to avoid running it.
 
-1. **`hasPane(s)`** and `s.state !== "exited"`. Nowhere to type, ever.
-2. **`s.hooksSeen`**. No hooks have ever arrived, so nothing will report this session idle
-   and `settledIdle` can never be true. For Codex this deliberately excludes operator-started
-   sessions: only Mission Control launches attach the hooks that authorize automation. The
-   card says why, and the sentence is composed from the capability rather than typed at the
-   refusing surface. See [Foreman](../../../README.md#foreman-auto-responder) for the current
-   harness boundary.
-3. **`settledIdle(s, now, settleMs)`** (`src/server/foreman/queue-machine.ts:118`). Never
-   type into a working agent.
-4. **No in-flight work-queue item** (`s.queue`). If the Foreman *is* running, this would
-   collide with a send it is mid-way through.
-5. **No in-flight no-mistakes run** (`s.nomistakes`). That run is already pushing.
-6. **`readPaneModeLine(s)`** (`src/server/discovery/pane-mode.ts`), and it is **last**.
-   `injectPrompt` sends Enter unconditionally, and a Claude dialog is a select list, not a
-   text prompt: the pasted text is swallowed and the Enter activates whichever option is
-   highlighted. `reload.ts:199` documents the time this nearly answered *"Yes, I trust this
-   folder"* on the operator's behalf, in every pane at once. A mode line on screen is the
-   evidence that no dialog is up. It fails closed.
-
 ---
 
 ## 7. Not nagging: the watermark

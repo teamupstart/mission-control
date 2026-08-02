@@ -46,7 +46,7 @@ export type FleetBlock =
  * this order, and the arrow keys walk index arrays derived from the SAME call - `moveSelection`
  * indexes a flat list (grid, console) and a per-column list (board), so an ordering computed
  * twice by two rules is Up/Down landing somewhere other than where the eye is. That is why this
- * is a pure function over `(sessions, gateAlerts)` and not a rendering decision inside a view.
+ * is a pure function over `sessions` and not a rendering decision inside a view.
  *
  * The baseline is exactly what App sorted by before clusters existed - tone, then name, then pid
  * - so a fleet with no ensemble in it comes out byte-identical to the old order. Clustering then
@@ -63,17 +63,14 @@ export type FleetBlock =
  * pre-split structure. Re-running it on its own output returns the same order, so the two
  * cannot disagree even though each computes it.
  */
-export function orderSessions(
-  sessions: readonly Session[],
-  gateAlerts: ReadonlySet<string>,
-): FleetOrder {
+export function orderSessions(sessions: readonly Session[]): FleetOrder {
   const baseline = [...sessions].sort((a, b) => {
-    const ta = TONE_ORDER[stateDisplay(a, gateAlerts.has(a.id)).tone];
-    const tb = TONE_ORDER[stateDisplay(b, gateAlerts.has(b.id)).tone];
+    const ta = TONE_ORDER[stateDisplay(a).tone];
+    const tb = TONE_ORDER[stateDisplay(b).tone];
     return ta - tb || a.name.localeCompare(b.name) || a.pid - b.pid;
   });
 
-  const groups = groupByTone(baseline, gateAlerts).map(clusterGroup);
+  const groups = groupByTone(baseline).map(clusterGroup);
   return { sessions: groups.flatMap((g) => g.sessions), groups };
 }
 

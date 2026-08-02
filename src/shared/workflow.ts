@@ -1549,7 +1549,7 @@ export interface WorkflowCompletionClaim {
    * daemon resolves the current built-in No-Mistakes Review version, and only when this
    * completion reaches a conversation with no active binding. Existing bindings always win.
    */
-  fallbackWorkflow: "no-mistakes" | null;
+  fallbackWorkflow: "builtin-review" | null;
   expectedIntent: SessionIntentGuard | null;
 }
 

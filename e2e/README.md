@@ -30,9 +30,51 @@ npx playwright show-trace test-results/<dir>/trace.zip
 
 ## Evidence
 
-Two artifacts are committed for the dispatch-and-converse suite, because a green Playwright
-run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all configured
-`on-failure`, so success is exactly the case with no record.
+Successful-path artifacts are committed for the dispatch-and-converse suite because a green
+Playwright run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all
+configured `on-failure`, so success is exactly the case with no record.
+
+### Ship it replacement workflow
+
+The focused browser case opens the session's Ship it choice, verifies the visible
+`Run No-Mistakes Review` control, observes its `POST` to the session workflow route, waits
+for the matching durable run, opens that exact run in the dashboard, and verifies the run
+reader names `No-Mistakes Review`.
+
+The actual successful command output is committed as
+[`evidence/ship-it-review-transcript.txt`](evidence/ship-it-review-transcript.txt). Two runtime
+captures from that same command make both visible states reviewable:
+
+- [`evidence/ship-it-review-control.png`](evidence/ship-it-review-control.png) shows the Ship it
+  panel with `Run No-Mistakes Review` next to the direct shipping path.
+- [`evidence/ship-it-review-run.png`](evidence/ship-it-review-run.png) shows the run created by
+  that click, selected in the Runs monitor with its workflow name, version, state, stages,
+  evidence, model-call ledger, and timeline.
+
+Regenerate all three with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/dispatch-and-converse.spec.ts \
+  -g 'Ship it starts No-Mistakes Review through the workflow route' \
+  --reporter=list
+```
+
+Actual output from the captured run:
+
+```text
+Running 1 test using 1 worker
+
+OBSERVED Ship it panel exposes "Run No-Mistakes Review" beside the direct shipping path
+CAPTURED e2e/evidence/ship-it-review-control.png
+OBSERVED POST /api/sessions/:id/workflow-review with a requestId
+OBSERVED Runs monitor selected the created No-Mistakes Review v7 run
+CAPTURED e2e/evidence/ship-it-review-run.png
+  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:157:1 › Ship it starts No-Mistakes Review through the workflow route (3.6s)
+
+  1 passed (4.2s)
+```
 
 ### The run
 

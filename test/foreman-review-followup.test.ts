@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  activeWorkflowOwnsSession,
   advanceFollowupMark,
   buildPayload,
   decideReviewFollowup,
@@ -11,12 +12,11 @@ import type {
 } from "../src/server/foreman/review-followup.ts";
 import type {
   InspectorSummary,
-  NmRunSummary,
-  NmStep,
   Session,
   SessionQueueSummary,
 } from "../src/shared/types.ts";
 import type { TerminalHandle } from "../src/shared/terminal.ts";
+import { WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
 
 // What is at stake: Foreman must re-engage a session whose PR is carrying feedback nobody
 // is acting on - unresolved Inspector comments or a red CI - WITHOUT interrupting live
@@ -69,43 +69,6 @@ function queue(openCount: number): SessionQueueSummary {
   };
 }
 
-function step(name: string, status: string): NmStep {
-  return { step: name, status, findings: 0 };
-}
-
-/**
- * The step shape of a run that has finished the pipeline and is watching its open PR:
- * everything done, `ci` still running. This is what `axi status` reported for PR #233
- * while the merge sat blocked on the Inspector's comment.
- */
-const MONITORING: NmStep[] = [
-  step("push", "completed"),
-  step("pr", "completed"),
-  step("ci", "running"),
-];
-
-/** A running no-mistakes run that has opened a PR. Override to change what it is doing. */
-function nm(over: Partial<NmRunSummary> = {}): NmRunSummary {
-  return {
-    id: "r",
-    status: "running",
-    branch: "feat/x",
-    startedAt: NOW - 1000,
-    endedAt: null,
-    prUrl: "https://github.com/owner/repo/pull/7",
-    awaitingAgent: null,
-    findingsSummary: null,
-    gateStep: null,
-    gateSummary: null,
-    gateRisk: null,
-    steps: [],
-    activeSteps: [],
-    findings: [],
-    outcome: null,
-    ...over,
-  };
-}
-
 /** A session parked idle on an OPEN PR - the base case a nudge fires on. Override per test. */
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -119,8 +82,6 @@ function mkSession(over: Partial<Session> = {}): Session {
     gitBranch: "feat/x",
     gitRoot: "/work/alpha",
     repoRoot: "/work/alpha",
-    nomistakesGated: false,
-    nomistakesNarration: null,
     pid: 1,
     tty: "/dev/ttys001",
     permissionMode: null,
@@ -136,8 +97,6 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: NOW,
     lastActivity: NOW - 20_000, // older than SETTLE, so settledIdle is true
     pendingReviews: 0,
-    nomistakes: null,
-    nomistakesFixes: [],
     task: null,
     prUrl: "https://github.com/owner/repo/pull/7",
     prNumber: 7,
@@ -162,6 +121,7 @@ function decide(over: Partial<ReviewFollowupInput> = {}) {
     session,
     bucket: "idle",
     mayActLive: true,
+    workflowOwnsSession: false,
     mark: null,
     cfg: { enabled: true, settleMs: SETTLE },
     now: NOW,
@@ -246,111 +206,20 @@ test("a checkout with a live work queue belongs to the drain trigger", () => {
   assert.match((d as { why: string }).why, /work queue/);
 });
 
-test("an in-flight no-mistakes run is already driving the PR", () => {
+test("an active workflow owns the session and blocks an independent PR nudge", () => {
   const d = decide({
-    session: mkSession({
-      prChecks: "failing",
-      nomistakes: nm({ prUrl: null, steps: [step("push", "running")] }),
-    }),
+    session: mkSession({ inspector: inspector({ open: 1 }) }),
+    workflowOwnsSession: true,
   });
-  assert.match((d as { why: string }).why, /no-mistakes run/);
+  assert.deepEqual(d, { kind: "skip", why: "an active workflow owns this session" });
 });
 
-// ---- a no-mistakes run parked in its post-PR monitor ----
-//
-// The deadlock this split exists for, observed end to end on PR #233: the `ci` step had
-// reported "all CI checks passed - still monitoring until merged or closed" and was
-// waiting for a merge, YOLO mode had blocked that merge on `findings`, and the run still
-// said `running` - so the one trigger that would have told the agent about the Inspector's
-// comment stood down, and nothing could move. Reading `running` as "driving" costs the
-// whole window in which Inspector comments arrive, because that window IS the monitor.
-
-test("a run parked in its post-PR monitor no longer owns the Inspector's comments", () => {
-  const d = decide({
-    session: mkSession({
-      inspector: inspector({ open: 1 }),
-      prChecks: "passing",
-      nomistakes: nm({ steps: MONITORING }),
-    }),
-  });
-  assert.equal(d.kind, "nudge");
-  if (d.kind !== "nudge") return;
-  assert.match(d.reason, /1 review comment/);
-});
-
-test("that same parked monitor still owns a failing CI - it watches the checks itself", () => {
-  const d = decide({
-    session: mkSession({ prChecks: "failing", nomistakes: nm({ steps: MONITORING }) }),
-  });
-  assert.deepEqual(d, { kind: "skip", why: "the no-mistakes CI monitor owns this failure" });
-});
-
-test("findings alongside a red CI wait for the monitor, which will report the red itself", () => {
-  const d = decide({
-    session: mkSession({
-      inspector: inspector({ open: 1 }),
-      prChecks: "failing",
-      nomistakes: nm({ steps: MONITORING }),
-    }),
-  });
-  assert.deepEqual(d, { kind: "skip", why: "the no-mistakes CI monitor owns this failure" });
-});
-
-test("a monitor is only parked once a PR exists - before that the run is still driving", () => {
-  const d = decide({
-    session: mkSession({
-      inspector: inspector({ open: 1 }),
-      nomistakes: nm({ prUrl: null, steps: MONITORING }),
-    }),
-  });
-  assert.deepEqual(d, { kind: "skip", why: "a no-mistakes run is in progress" });
-});
-
-test("another step running alongside the monitor means the run is still working", () => {
-  const d = decide({
-    session: mkSession({
-      inspector: inspector({ open: 1 }),
-      nomistakes: nm({ steps: [...MONITORING, step("document", "running")] }),
-    }),
-  });
-  assert.deepEqual(d, { kind: "skip", why: "a no-mistakes run is in progress" });
-});
-
-test("a run with no step running at all is not a monitor either", () => {
-  const d = decide({
-    session: mkSession({
-      inspector: inspector({ open: 1 }),
-      nomistakes: nm({ steps: [step("ci", "pending")] }),
-    }),
-  });
-  assert.deepEqual(d, { kind: "skip", why: "a no-mistakes run is in progress" });
-});
-
-test("a parked gate is the run asking the agent something - do not type over it", () => {
-  // All three ways the run says it is waiting on a decision, each on its own.
-  for (const over of [
-    { gateStep: "review" },
-    { awaitingAgent: "parked 1m30s" },
-    { steps: [step("review", "awaiting_approval"), ...MONITORING] },
-  ]) {
-    const d = decide({
-      session: mkSession({
-        inspector: inspector({ open: 1 }),
-        nomistakes: nm({ steps: MONITORING, ...over }),
-      }),
-    });
-    assert.deepEqual(d, { kind: "skip", why: "a no-mistakes run is in progress" });
+test("every non-terminal workflow state retains ownership until the run ends", () => {
+  const terminal = new Set(["completed", "cancelled", "failed"]);
+  for (const status of WORKFLOW_RUN_STATUSES) {
+    assert.equal(activeWorkflowOwnsSession([{ status }]), !terminal.has(status), status);
   }
-});
-
-test("a finished run gates nothing, monitor shape or not", () => {
-  const d = decide({
-    session: mkSession({
-      inspector: inspector({ open: 1 }),
-      nomistakes: nm({ status: "completed", outcome: "checks-passed", steps: MONITORING }),
-    }),
-  });
-  assert.equal(d.kind, "nudge");
+  assert.equal(activeWorkflowOwnsSession([]), false);
 });
 
 test("a still-working session is not interrupted", () => {

@@ -1,5 +1,5 @@
 import { test, after } from "node:test";
-import { mkMuxHandle, mkTask as baseTask, nm } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,7 +47,6 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     gitBranch: null,
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
     terminals: [],
@@ -170,22 +169,6 @@ test("a busy agent is refused - the prompt would land mid-turn", async () => {
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
-test("an idle agent parked at a no-mistakes gate is refused", async () => {
-  const branch = "feature/review";
-  const { r, tasks, sessionId } = setup({ gitBranch: branch });
-  r.reconcileNomistakes([
-    nm({ branch, awaitingAgent: "parked 10s", gateStep: "review" }),
-  ]);
-  assert.equal(r.getSession(sessionId)?.state, "idle");
-  assert.equal(r.getSession(sessionId)?.nomistakes?.gateStep, "review");
-
-  r.upsertTask(mkTask());
-  const res = await tasks.assign("t1", sessionId);
-  assert.equal(res.ok, false);
-  assert.match(res.error!, /no-mistakes gate waiting on you/);
-  assert.match(res.error!, /resolve it first/);
-  assert.equal(r.getTask("t1")?.status, "backlog");
-});
 
 test("passively confirmed idle cannot bypass the live-hook handover gate", async () => {
   const r = new Registry();
@@ -655,7 +638,7 @@ test("a /clear the agent was never seen acting on fails the assign rather than c
 //
 // A reused agent keeps its own checkout, so without this it inherits the last task's
 // branch and context: the new work stacks onto a change that may still be out for
-// review, and no-mistakes - seeing a non-default branch - validates and pushes onto it,
+// review, and a later shipping action seeing a non-default branch can push onto it,
 // putting two unrelated tasks in one PR.
 //
 // The reset is destructive and unattended, which is why the guard in front of it refuses

@@ -11,7 +11,7 @@ import { formatTranscript } from "./prompt.ts";
 
 // The verify prompt: "did the agent actually finish THIS item, to this repo's
 // bar?". Evidence-only by decision - it judges the diff + transcript and never
-// runs anything; no-mistakes stays the gate that actually executes tests.
+// runs anything; the No-Mistakes Review workflow executes the relevant checks.
 
 /** Cap on the diff we embed - the stats stay honest past it. */
 const DIFF_CAP = 120_000;
@@ -54,7 +54,7 @@ export interface VerifyInput {
 
 const POLICY = `You are Foreman, verifying one unit of work an AI coding agent just finished for its
 human operator. You are reading EVIDENCE ONLY - a diff and a transcript. You cannot run anything, and
-you must not pretend to have. A separate pipeline ("no-mistakes") actually runs the tests and lint;
+you must not pretend to have. The separate No-Mistakes Review workflow can run tests and lint;
 your job is narrower and more important: was the thing the human asked for ACTUALLY DONE?
 
 Respond with ONLY a single JSON object - no prose, no markdown fences - of this shape:

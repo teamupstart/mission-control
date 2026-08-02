@@ -3,7 +3,6 @@ import { TaskIdCollisionError, type TaskManager } from "../tasks.ts";
 import type { WorkflowManager } from "../workflows/manager.ts";
 import { injectPrompt, paneAcceptsPrompt, resetToCommit } from "../actions.ts";
 import { driverClearFor, resetSession, type SdkClearer } from "../reset.ts";
-import { gateParked } from "@shared/session.ts";
 import { resolveEnsembleRef } from "../git/ensemble-snapshot.ts";
 import { run } from "../util/exec.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./submission-tool.ts";
@@ -82,9 +81,8 @@ export function createFinalizeDeps(deps: {
       const session = registry.getSession(sessionId);
       if (!session) return false;
       // The exact safe-idle predicate `TaskManager.assign` re-checks before it rebinds an agent:
-      // idle, live hook instrumentation, no review parked on a human, and no gate awaiting one.
+      // idle, live hook instrumentation, and no review parked on a human.
       if (session.state !== "idle" || !session.instrumented || session.pendingReviews > 0) return false;
-      if (gateParked(session, registry.snapshot().sessions)) return false;
       const probe = await paneAcceptsPrompt(session);
       return probe.ok;
     },
@@ -93,7 +91,7 @@ export function createFinalizeDeps(deps: {
       const session = registry.getSession(sessionId);
       if (!session) return { ok: false, detail: "the winner session is gone" };
       // Through `resetSession`, so every registered session-scoped family (queue, drafts, message
-      // log, no-mistakes caches, observed effort, work episode) is cleared once, and through
+      // log, observed effort, work episode) is cleared once, and through
       // `resetToCommit` for the git half so the branch is reset to the exact snapshot and kept.
       const result = await resetSession(
         registry,

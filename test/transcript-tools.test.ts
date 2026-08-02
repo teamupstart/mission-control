@@ -68,10 +68,10 @@ test("bash chips the command, not the tool name", () => {
 });
 
 test("path tools chip the basename, keeping the full path on hover", () => {
-  const path = "/Users/j/repo/test/nomistakes.test.ts";
+  const path = "/Users/j/repo/test/review-workflow.test.ts";
   // Real Edit input order: file_path is not first, so extraction must go by key.
   const chip = toolChip(call("Edit", { replace_all: false, file_path: path, old_string: "a" }));
-  assert.deepEqual(chip, { name: "edit", detail: "nomistakes.test.ts", title: path });
+  assert.deepEqual(chip, { name: "edit", detail: "review-workflow.test.ts", title: path });
 });
 
 test("known tools chip their most telling field", () => {
@@ -111,10 +111,10 @@ test("a truncated input still yields the field that precedes the cut", () => {
 test("a command cut off mid-value is still named, and its title admits the cut", () => {
   const chip = toolChip({
     name: "Bash",
-    input: '{"command":"cd /repo\\nno-mistakes axi respond --action fix --findings a,b,c --instructions \\"th…',
+    input: '{"command":"cd /repo\\ngit commit -m \\"document the workflow behavior and preserve th…',
   });
-  assert.equal(chip.detail, "no-mistakes");
-  assert.ok(chip.title.startsWith("cd /repo\nno-mistakes axi respond"));
+  assert.equal(chip.detail, "git");
+  assert.ok(chip.title.startsWith("cd /repo\ngit commit"));
   assert.ok(chip.title.endsWith("…"), chip.title);
 });
 

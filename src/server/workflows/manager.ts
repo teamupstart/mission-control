@@ -993,6 +993,68 @@ export class WorkflowManager {
     return this.captureAndActivate(binding, created.run, created.submission);
   }
 
+  /**
+   * Run the built-in review from an operator's explicit Ship it action.
+   *
+   * This is deliberately separate from `claimCompletion`: that path is Foreman's
+   * verified completion boundary. A click is a manual submission. It reuses an existing
+   * built-in binding, creates a Manual binding when the conversation has none, and refuses
+   * to replace a different workflow the operator already selected.
+   */
+  async startBuiltinReview(
+    sessionId: string,
+    input: SubmitWorkflow,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") {
+      return { ok: false, reason: "session_unavailable", message: "The selected session is not live" };
+    }
+    let binding = this.store.activeBindingForNote(noteKeyFor(session));
+    if (binding) {
+      const version = this.store.getWorkflowVersionById(binding.workflowVersionId);
+      if (version?.workflowId !== NO_MISTAKES_REVIEW_WORKFLOW_ID) {
+        return {
+          ok: false,
+          reason: "conflict",
+          message: "This conversation already has a different workflow binding. Run it from Workflows.",
+          current: binding,
+        };
+      }
+      const active = this.store.activeRunForBinding(binding.id);
+      const submission = active ? this.store.latestSubmission(active.id) : null;
+      if (active && submission) {
+        return { ok: true, value: { run: active, submission }, idempotent: true };
+      }
+      return this.submit(binding.id, input, now);
+    }
+
+    const workflow = this.get(NO_MISTAKES_REVIEW_WORKFLOW_ID);
+    const versionId = workflow?.workflow.currentVersionId ?? null;
+    if (!workflow || workflow.workflow.archivedAt !== null || !versionId) {
+      return { ok: false, reason: "not_found", message: "The built-in No-Mistakes Review workflow is unavailable" };
+    }
+    const version = this.store.getWorkflowVersionById(versionId);
+    if (!version) {
+      return { ok: false, reason: "not_found", message: "The built-in No-Mistakes Review workflow is unavailable" };
+    }
+    const workflowConfig = getWorkflowConfig();
+    const deliveryMode = workflowConfig.liveEnabled
+      && repoAllowlisted(session.cwd, session.repoRoot, workflowConfig.repoAllowlist)
+      ? "live"
+      : "preview";
+    const created = this.createBinding({
+      workflowVersionId: version.id,
+      sessionId: session.id,
+      triggerMode: "manual",
+      deliveryMode,
+      maxRepairRounds: version.bindingDefaults.maxRepairRounds,
+    }, now);
+    if (!created.ok) return created;
+    binding = created.value;
+    return this.submit(binding.id, input, now);
+  }
+
   async resubmit(
     runId: string,
     input: ResubmitWorkflow,
@@ -1879,7 +1941,7 @@ export class WorkflowManager {
     }
     let binding = this.store.activeBindingForNote(noteKeyFor(session));
     let fallbackBinding: WorkflowBindingInsert | null = null;
-    if (!binding && claim.fallbackWorkflow === "no-mistakes") {
+    if (!binding && claim.fallbackWorkflow === "builtin-review") {
       // The worker's `foremanMayActLive` check is routing, not authority: this HTTP
       // boundary must independently prove that Foreman may act in this repository
       // before it can create and submit a durable workflow binding.
@@ -1890,7 +1952,7 @@ export class WorkflowManager {
         || !repoAllowlisted(session.cwd, session.repoRoot, foremanConfig.repoAllowlist)
       ) {
         throw new Error(
-          "No-Mistakes workflow fallback requires Foreman Live mode and an allowlisted repository",
+          "Built-in review fallback requires Foreman Live mode and an allowlisted repository",
         );
       }
       const workflow = this.get(NO_MISTAKES_REVIEW_WORKFLOW_ID);
@@ -2775,7 +2837,7 @@ export class WorkflowManager {
    * Match an unpinned Inspector gate to durable PR provenance.
    *
    * Session.prUrl is intentionally not provenance and is not durable. An Inspector row is:
-   * it exists only after a trusted creation hook or no-mistakes reported its own PR.
+   * it exists only after a trusted creation hook proved the PR was opened here.
    * Session identity plus repository plus adoption-after-entry makes that row the PR this
    * gate was waiting for without claiming an older PR from the same long-lived session.
    */

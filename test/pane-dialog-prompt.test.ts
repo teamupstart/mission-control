@@ -207,7 +207,6 @@ const base = {
   state: "idle",
   pendingReviews: 0,
   instrumented: false,
-  nomistakes: null,
   paneDialog: null,
 } as unknown as Session;
 
@@ -216,12 +215,12 @@ test("a session parked on a menu needs you, with or without hooks", () => {
   // so an UNINSTRUMENTED session sitting on a permission prompt reported idle forever
   // while being the most definitively blocked thing on the board.
   assert.equal(reportBucket(base), "idle");
-  assert.equal(stateDisplay(base, false).tone, "neutral");
+  assert.equal(stateDisplay(base).tone, "neutral");
 
   const blocked = { ...base, paneDialog: dialog };
   assert.equal(reportBucket(blocked), "needs-you");
-  assert.equal(stateDisplay(blocked, false).tone, "attention");
-  assert.equal(stateDisplay(blocked, false).label, "needs an answer");
+  assert.equal(stateDisplay(blocked).tone, "attention");
+  assert.equal(stateDisplay(blocked).label, "needs an answer");
 });
 
 test("the reason counts the ways out, so a prompt reads apart from a question", () => {
@@ -238,7 +237,7 @@ test("a review still outranks a menu - it is the more specific ask", () => {
 test("an exited session is not resurrected by a menu left on its screen", () => {
   const dead = { ...base, state: "exited", paneDialog: dialog } as Session;
   assert.equal(reportBucket(dead), "exited");
-  assert.equal(stateDisplay(dead, false).tone, "exited");
+  assert.equal(stateDisplay(dead).tone, "exited");
   // The field outlives the pane: a vanished session is marked exited field-by-field, so
   // the last menu rides along for the whole exit-linger window. Every reader that offers
   // to ACT on one goes through this, which is what keeps the card from showing buttons

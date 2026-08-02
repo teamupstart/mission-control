@@ -15,7 +15,6 @@ import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
-import { gateParked } from "@shared/session.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import {
@@ -1463,13 +1462,6 @@ export class TaskManager {
         scope: "session",
       };
     }
-    if (gateParked(s, this.registry.snapshot().sessions)) {
-      return {
-        ok: false,
-        error: "that agent has a no-mistakes gate waiting on you - resolve it first",
-        scope: "session",
-      };
-    }
     // Running a task's intent against the wrong checkout is the one way this gesture
     // does damage you cannot undo from the dashboard, so a mismatch is refused rather
     // than best-efforted. Compared on repoRoot, not cwd: a linked worktree of the
@@ -1505,8 +1497,8 @@ export class TaskManager {
     //
     // The state this fixes is the ordinary one, not an edge case: an agent that just
     // shipped is standing on its own feature branch with that work committed. Typing
-    // the next task in stacks unrelated commits on top of it, and no-mistakes, seeing a
-    // non-default branch, validates and pushes onto it - so two tasks arrive in one PR.
+    // the next task in stacks unrelated commits on top of it, so two tasks can arrive
+    // in one pull request.
     // `resetSession` is the same operation the Reset button performs (git reset --hard
     // onto origin/main, clean, detach the branch, /clear), so a recycled agent is handed
     // over in the shape a freshly dispatched one starts in.
@@ -1544,8 +1536,7 @@ export class TaskManager {
       !fresh ||
       !fresh.instrumented ||
       fresh.state !== "idle" ||
-      fresh.pendingReviews > 0 ||
-      gateParked(fresh, this.registry.snapshot().sessions)
+      fresh.pendingReviews > 0
     ) {
       return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
     }

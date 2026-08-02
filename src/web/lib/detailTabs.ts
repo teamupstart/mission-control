@@ -31,8 +31,6 @@ export interface DetailTab {
 export interface DetailTabInputs {
   /** Open items in the session's work queue. */
   queueCount: number;
-  /** The no-mistakes gate is parked on a question for the operator. */
-  gateNeedsYou: boolean;
 }
 
 /**
@@ -42,14 +40,11 @@ export interface DetailTabInputs {
  * which is the question you ask right after "what is it about to do" and before you go
  * read the change itself.
  */
-export function detailTabs({ queueCount, gateNeedsYou }: DetailTabInputs): DetailTab[] {
+export function detailTabs({ queueCount }: DetailTabInputs): DetailTab[] {
   return [
     { id: "conversation", label: "Conversation", pip: 0, action: "conversation" },
     { id: "queue", label: "Work queue", pip: queueCount, action: "queue" },
-    // Inherits Gate's pip. A parked gate is the one thing in this tab that is WAITING on
-    // the operator, and the tab that absorbed it has to stay as loud about that as the tab
-    // it replaced - otherwise folding Gate in quietly silences the alarm.
-    { id: "workflows", label: "Workflows", pip: gateNeedsYou ? 1 : 0, action: "sessionWorkflows" },
+    { id: "workflows", label: "Workflows", pip: 0, action: "sessionWorkflows" },
     { id: "diff", label: "Diff", pip: 0, action: "diff" },
     { id: "files", label: "Files", pip: 0, action: "files" },
   ];

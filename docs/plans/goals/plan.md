@@ -74,27 +74,6 @@ in `evt.prompt` (`HookIngestSchema`, `protocol.ts:17`; route `routes.ts:259`;
 
 ## 3. Measured facts (do not re-derive)
 
-| Fact | Value | How it was measured |
-|---|---|---|
-| Live cards carrying a Purpose | 4 of 7 | `GET 127.0.0.1:7317/api/sessions` |
-| Of those, visible without expanding | 0 | `SessionCard.tsx:346` gate + `:191` chip conditions |
-| Stored notes, all with a purpose | 19 | `session_notes` in `~/.mission-control/harness.db` |
-| Transcripts opening with clean human prose | 26 of 250 | classified first user-role message, 14-day window |
-| Transcripts opening with `<local-command-caveat>` | 66 of 250 | of those, **44 contain no human prose at all** |
-| Transcripts that are Foreman's own headless calls | 153 of 250 | not discovered as sessions (no tty), but they dominate the dir |
-| Clean first prompt length | p50 **371** chars, p90 **5,515**, 19/26 over 200 | truncation cannot produce a sentence |
-| `claude -p` + Haiku, cold | **$0.0151**, ~5.4s wall | real probe, exit 0 |
-| `claude -p` + Haiku, warm | **$0.0023**, ~4.8s wall | second probe, cache hit |
-| Claude Code's own system prompt | **6,783 tokens**, cached 1h ephemeral | dominates cost; our prompt was 9 tokens |
-| Codex sessions on this machine | **0**; no `~/.codex/sessions` dir at all | rollout parsing remains **unverified** |
-| **Real `UserPromptSubmit` events that are `<task-notification>`** | **200 of 396 (51%)** | daemon's own `session_events`; measured in Phase 2 |
-| Real `UserPromptSubmit` events that are human prose | 188 of 396 (47%) | same; slash commands 6, our own headless prompts 2 |
-| Goals that would be scaffolding with no filter | **53%** | same |
-| Filter's real-corpus result | 397 events → 197 goals, **0 scaffolding** | `substantivePrompt` over every logged event |
-| `<local-command-caveat>` blocks that PRECEDE prose vs. replace it | 121 embedded / 115 whole | 1,891 user turns, 21-day window |
-| `<command-args>` carrying a real ask | 17 of 387 pairs | e.g. `/no-mistakes the changes for tab select…` |
-| Poisoned rows in live `session_agent_bindings` | **3 of 12** | headless runs impersonating cards; see Phase 1.5 |
-
 **Cost model.** Our prompt is negligible. Cost is Claude Code's ~6.8k-token system prompt:
 written to cache at 2x on a cold call ($0.0151), read at 0.1x when warm ($0.0023), with a
 **1h cache TTL**. So cadence governs spend, and a set of sessions that refreshes at least hourly stays
@@ -137,11 +116,6 @@ would be scaffolding. The filter is not a polish step; it is the difference betw
 feature working and not.
 
 ### Trap 2b: the two input paths see different shapes of the same ask
-
-The hook (`evt.prompt`, Tier 1) gets the flat text the human typed - `/no-mistakes fix the
-arrow keys`. A transcript read (Tier 2) gets the same thing as
-`<command-name>/no-mistakes</command-name>` + `<command-args>fix the arrow keys</command-args>`,
-wrapped in a caveat block. The `<command-*>` tags **never reach the hook at all**.
 
 So the filter unwraps those two tags rather than dropping them: it makes both paths yield
 the same string, and a goal cannot change meaning purely by which tier last wrote it.
@@ -282,12 +256,6 @@ deliberate off switch, so **cost is governed by cadence alone**.
 
 Operator ruling: **a `/clear` wipes the goal; a `/compact` has no impact on it.** Both already
 hold, and the measurement that establishes that is worth keeping:
-
-**Neither command fires `UserPromptSubmit`** - 0 of 403 real events, though 198 transcripts
-contain a `/clear`. Claude Code handles built-ins locally and reports them as lifecycle
-events (`SessionEnd(reason=clear)`, `SessionStart(source=clear|compact)`, `PreCompact`). Only
-*custom* commands like `/no-mistakes` reach the prompt hook. So the outcome rides entirely on
-whether the **agent session id rotates**, not on anything in the goal path:
 
 - **`/clear` rotates it** → `noteKeyFor` rotates → the goal orphans exactly as the note and
   queue already do (this is Q2, and the `orphanedQueue` re-attach hint exists *because* of

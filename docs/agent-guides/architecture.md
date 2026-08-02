@@ -90,6 +90,4 @@ Terminal vendors are hidden behind `MULTIPLEXERS`, `EMULATORS`, and `bindPane`. 
 
 The Inspector stays in the daemon so it is present in packaged Electron builds and its state survives restarts.
 
-Only two signals prove Mission Control opened a PR: a matching `prCreated` hook and `NmRunSummary.prUrl`. A sniffed `prUrl` or `gh pr list` match is not provenance and must never authorize Inspector adoption.
-
 The Inspector comment marker `mission-inspector:v1` is append-only because it already exists on GitHub. Parse a future version alongside it rather than replacing it.

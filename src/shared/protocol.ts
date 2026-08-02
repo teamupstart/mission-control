@@ -474,37 +474,6 @@ export const ResolveReviewSchema = z.object({
 }));
 export type ResolveReview = z.infer<typeof ResolveReviewSchema>;
 
-/** A decision on a no-mistakes gate, from the dashboard. */
-export const NomistakesRespondSchema = z.object({
-  action: z.enum(["approve", "fix", "skip"]),
-  /** Finding ids to fix (with action=fix); empty means all shown findings. */
-  findings: z.array(z.string()).optional().default([]),
-  instructions: z.string().optional(),
-  step: z.string().optional(),
-});
-export type NomistakesRespond = z.infer<typeof NomistakesRespondSchema>;
-
-/**
- * Record who answered a no-mistakes gate - the fix log's byline.
- *
- * Posted by the Foreman worker, which is a separate process and reaches the DB
- * only through routes like this one. The dashboard's own replies are logged
- * server-side (the respond route already holds everything this carries), so this
- * has exactly one caller.
- *
- * `findingIds` identifies WHICH round of a step was answered. Deliberately ids
- * and not a digest of the findings' text: `axi status` truncates descriptions,
- * so anything hashing them binds us to another tool's display constants.
- */
-export const GateReplySchema = z.object({
-  runId: z.string().min(1),
-  step: z.string().min(1),
-  findingIds: z.array(z.string()).optional().default([]),
-  /** What the author wrote. Empty is meaningful: findings selected, nothing typed. */
-  text: z.string().optional().default(""),
-});
-export type GateReply = z.infer<typeof GateReplySchema>;
-
 /** MCP `report_status`: update the session's activity line. */
 export const StatusSchema = z.object({
   env: EnvSchema,
@@ -1022,7 +991,7 @@ export const ForemanConfigSchema = z.object({
    * What happens when a wrap-up fires, whichever trigger fired it.
    *
    * `ask` is the shipped behaviour and the default: Foreman marks the moment and the
-   * human picks from the Wrapup card. `no-mistakes` claims the verified completion for
+   * human picks from the Wrapup card. `workflow` claims the verified completion for
    * an existing binding or, when there is none, binds the built-in No-Mistakes Review
    * workflow. `pr` lets Foreman type the direct shipping instruction unattended.
    *
@@ -1030,7 +999,7 @@ export const ForemanConfigSchema = z.object({
    * because either automated path can ultimately PUSH. So the auto path carries every
    * gate the manual one does and one more - it is refused outright unless `mode` is live
    * AND the repo is on the allowlist (`mayActLive`), exactly like a queue send. Setting
-   * this to `no-mistakes` while in dry-run does not auto-bind; it degrades to `ask`.
+   * this to `workflow` while in dry-run does not auto-bind; it degrades to `ask`.
    * Dry-run means dry-run.
    */
   wrapup: z.enum(WRAPUP_MODES).default("ask"),
@@ -1040,7 +1009,7 @@ export const ForemanConfigSchema = z.object({
    * failing CI green, until the PR is clean.
    *
    * On by default, because the gap it closes is the common failure the feature was asked
-   * for: a session finishes (via `/no-mistakes` or straight-to-PR), opens the PR, and
+   * for: a session finishes through the review workflow or straight-to-PR, opens the PR, and
    * parks. The Inspector then reviews and posts comments, or CI goes red - and nobody is
    * driving the session to fix them, so the PR sits with unresolved feedback until a
    * human notices. This turns each new Inspector round or newly actionable feedback kind
@@ -1177,7 +1146,6 @@ export const AwayConfigSchema = z.object({
   /** Minutes idle, with work still outstanding, before a session reads as stuck. */
   stallUnfinishedMinutes: z.number().int().min(1).max(240).default(20),
   /** Minutes a parked gate may wait on you before it reads as stuck. */
-  stallGateMinutes: z.number().int().min(1).max(240).default(5),
   /** Minutes an unanswered Foreman escalation may sit before it reads as stuck. */
   stallEscalationMinutes: z.number().int().min(1).max(240).default(5),
 });
@@ -2935,7 +2903,7 @@ export const WorkflowCompletionClaimSchema = z.object({
   evidenceFingerprint: z.string().min(1).max(200),
   // Closed to the built-in fallback the Foreman option names. The daemon resolves its
   // immutable version; the worker never gets to choose an arbitrary workflow id.
-  fallbackWorkflow: z.literal("no-mistakes").nullable().optional().default(null),
+  fallbackWorkflow: z.literal("builtin-review").nullable().optional().default(null),
   expectedIntent: z.object({
     objective: z.string().trim().min(1).max(INTENT_MAX),
     objectiveVersion: z.number().int().min(1),

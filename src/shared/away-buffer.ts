@@ -273,7 +273,6 @@ const KIND_ORDER: { kind: AlertKind; one: string; many: string }[] = [
   { kind: "stuck", one: "stuck", many: "stuck" },
   { kind: "needs-input", one: "needs you", many: "need you" },
   { kind: "review", one: "to review", many: "to review" },
-  { kind: "gate", one: "gate parked", many: "gates parked" },
   { kind: "foreman", one: "Foreman ask", many: "Foreman asks" },
   { kind: "workflow", one: "workflow update", many: "workflow updates" },
   { kind: "workflow-repeat", one: "review loop", many: "review loops" },

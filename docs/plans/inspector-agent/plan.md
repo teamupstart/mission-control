@@ -98,24 +98,6 @@ flowchart LR
   end
 ```
 
-```mermaid
-flowchart LR
-  subgraph after["After"]
-    h2["harness-hook.mjs"] -->|"prCreated + prUrl"| reg["Registry<br/>onPrOpened"]
-    nm["nomistakes poller<br/>axi status pr:"] --> reg
-    reg -->|"adoptPr"| led[("inspector_prs<br/>inspector_comments")]
-    insp["daemon<br/>inspector poller"] --> led
-    insp -->|"gh api graphql (read threads)"| gh2["GitHub"]
-    insp -->|"gh pr diff (read)"| gh2
-    insp -->|"create-review · reply · resolveReviewThread<br/>(WRITE - live mode only)"| gh2
-    insp -->|"claude -p --tools Read,Grep,Glob<br/>cwd = worktree, deny rules"| cc["headless Claude"]
-    cc -->|"reads source"| wt["PR worktree"]
-    doc["INSPECTOR.md<br/>+ CLAUDE.md/AGENTS.md"] --> insp
-    insp -->|"InspectorSummary"| reg
-    reg -->|"SSE session_upsert"| web["dashboard"]
-  end
-```
-
 Two arrows carry the whole of §1. `create-review · reply · resolveReviewThread` is the only
 write to an external service. And `claude -> PR worktree` is the read that, combined with an
 attacker-controlled diff going in and a public comment coming out, is the leak channel the
@@ -153,24 +135,11 @@ the boolean - so a command line full of secrets doesn't cross the wire for this.
 Deliberately conservative: a false negative costs one uninspected PR; a false positive means
 commenting on a stranger's pull request.
 
-### Signal B - no-mistakes says so itself
-
-`no-mistakes axi status` already prints the PR its own `pr` step opened:
-
 ```
   status: running
   head: 7218c2b2
   pr: "https://github.com/mancej/ai-harness/pull/56"
 ```
-
-(verbatim, from `test/nomistakes.test.ts:64-68`). `assignRunScalar`
-(`src/server/nomistakes.ts:460`) handles six keys and **drops this one**. It is the single
-authoritative authorship signal that already exists in the repo, emitted by the process that
-literally ran the step - and this repo's own PRs come from `/no-mistakes`, where Signal A
-misses (the Bash command is `no-mistakes …`, not `gh pr create`).
-
-So: parse `pr:` into `NmRun`, carry it to `NmRunSummary.prUrl`. `NmRunSummary` is already
-compared `byJson` in `SESSION_FIELD_COMPARATORS`, so no comparator change is needed.
 
 ### Both funnel into one idempotent entry point
 
@@ -179,12 +148,6 @@ adoptPr(url, { sessionId, cwd, repoRoot, source }): void   // INSERT … ON CONF
 ```
 
 The two arrive differently, and that asymmetry is real rather than sloppiness:
-
-- Signal A is a **transient event** - nothing persists it, so it is pushed:
-  `registry.onPrOpened(cb)`, fired from `applyHook` when `evt.prCreated && evt.prUrl` bind to a
-  live session. Symmetric with the existing `registry.subscribe`.
-- Signal B is **durable state on the session** - re-read on every 5s nm poll - so the tick
-  pulls it: scan sessions for `session.nomistakes?.prUrl`.
 
 Once adopted, a PR stays adopted while it is open, even after its session exits. Retiring a
 PR when its session dies would abandon review mid-flight for the most ordinary reason there
@@ -406,19 +369,6 @@ job than a whole-diff review and does not want the review's 180s window.)*
 
 `node:test` + `node:assert/strict`, flat in `test/`, each opening with what is at stake.
 
-| File | What it pins |
-|---|---|
-| `inspector-marker.test.ts` | Round-trip; ours vs another agent's vs a human's; **and that a quoted `> <!-- marker -->` reply is NOT read as ours** - the bug that would make it stop answering follow-ups. |
-| `inspector-fingerprint.test.ts` | Stable across line drift and whitespace/case in the title; different across paths. |
-| `inspector-plan.test.ts` | The pure planner: dry-run posts nothing, dedup by fingerprint, `drafted` gets posted on the switch to live, cap honoured, resolve-before-post, never resolves a thread it doesn't own, **and a finding naming a path the PR never touched is dropped** (§1 layer 4). |
-| `inspector-scrub.test.ts` | §1 layer 5: `ghp_`/`sk-ant-`/`AKIA`/PEM blocks/JWTs/`api_key=` are redacted out of an inline body, the review summary, and a follow-up reply - and ordinary code containing the *word* `token` is left alone. |
-| `inspector-lines.test.ts` | `commentableLines` over real hunks; an out-of-diff line demotes to the body rather than 422-ing the round. |
-| `inspector-adoption.test.ts` | Both signals reach one idempotent `adoptPr`; a loose PR URL with no `prCreated` adopts **nothing**. |
-| `inspector-config.test.ts` | `app_config` round-trip + forward-compat (an unknown stored key survives). |
-| `inspector-panel.test.ts` | Renders; `settings-sidebar-render.test.ts` picks the new category up from the array automatically. |
-| `nomistakes.test.ts` | Extended: the `pr:` line survives `parseAxiStatus` -> `summarize`. |
-| `session-leaf-parity.test.ts` | Extended: the inspector chip is the shared one in card and console detail. |
-
 ---
 
 ## 9. Docs (same change, not a follow-up)
@@ -432,21 +382,6 @@ job than a whole-diff review and does not want the review's 180s window.)*
 ---
 
 ## 10. Order of work
-
-1. `util/repo-doc.ts` extraction + `standards.ts` switched onto it. *(green before anything new)*
-2. `@shared/allowlist.ts` extraction.
-3. `nomistakes.ts` `pr:` capture -> `NmRunSummary.prUrl` + test.
-4. Hook `prCreated` + `HookIngestSchema` + `registry.onPrOpened`.
-5. DB tables + row helpers + config module.
-6. `inspector/` core: marker, fingerprint, diff lines, **scrubber**, prompt, verdict schema,
-   **pure planner** (which is where §1 layers 4 and 5 are enforced).
-7. `claude-cli.ts` gains `tools` / `cwd` / `settings`, each defaulting to today's behaviour.
-8. `inspector/github.ts` (`gh` GraphQL + REST; adds `input?: string` to `util/exec.ts`'s `run`).
-9. `inspector/worker.ts` tick + wiring in `index.ts`.
-10. Routes + registry denormalization + comparator.
-11. Web: hook, panel, chip in all four surfaces, styles.
-12. `INSPECTOR.md`, README, CLAUDE.md.
-13. `npm run typecheck && npm test && npm run build`.
 
 ---
 

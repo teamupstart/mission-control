@@ -129,7 +129,6 @@ function discovered(over: Partial<DiscoveredSession> & { syntheticId: string }):
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 4000 + over.syntheticId.length,
     tty: `tty-${over.syntheticId}`,
     terminals: [],

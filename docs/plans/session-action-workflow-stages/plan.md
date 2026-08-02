@@ -674,7 +674,7 @@ stage, and every older built-in version behaves exactly as before.
   hint.
 - Inspector remains the sole PR review poller. SessionAction adds no second GitHub poll loop.
 - Foreman remains HTTP-only and never reads or writes SQLite.
-- Built-in No-Mistakes versions 1 through 7 remain resolvable and immutable.
+- Built-in No-Mistakes Review versions 1 through 7 remain resolvable and immutable.
 - Older builds refuse unknown action nodes and completion kinds rather than defaulting them to a
   Persona, Check, or completed action.
 
@@ -722,7 +722,7 @@ stage, and every older built-in version behaves exactly as before.
 - matching adopted PR completes once; delayed proof does not redeliver;
 - existing matching PR reuses safely;
 - changed action-turn evidence is recaptured before Inspector entry;
-- No-Mistakes v7 exact artifact remains frozen;
+- No-Mistakes Review v7 exact artifact remains frozen;
 - v8 stages, ids, snapshot, defaults, `missingPrAction`, and Inspector footer are exact;
 - bindings pinned to versions 1 through 7 keep the legacy post-End handoff behavior.
 

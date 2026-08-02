@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitInfo, mainRepoRoot } from "../src/server/util/git.ts";
 
-const NM_CONFIG = '[remote "no-mistakes"]\n\turl = /Users/x/.no-mistakes/repos/demo\n';
-
 /**
  * Build a repo whose main checkout has a `.git` dir and a linked worktree whose
  * `.git` is a file - the treehouse/dispatch shape - and return both dirs.
@@ -17,7 +15,7 @@ function makeRepoWithWorktree(): { main: string; worktree: string } {
   const gitDir = join(main, ".git");
   mkdirSync(gitDir, { recursive: true });
   writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
-  writeFileSync(join(gitDir, "config"), NM_CONFIG);
+  writeFileSync(join(gitDir, "config"), "");
 
   // The linked worktree's own git dir under the main repo's .git/worktrees.
   const wtGitDir = join(gitDir, "worktrees", "wt1");
@@ -33,15 +31,14 @@ function makeRepoWithWorktree(): { main: string; worktree: string } {
   return { main, worktree };
 }
 
-test("gitInfo reads a normal checkout's branch, root, and no-mistakes gating", () => {
+test("gitInfo reads a normal checkout's branch and roots", () => {
   const { main } = makeRepoWithWorktree();
-  assert.deepEqual(gitInfo(main), { branch: "main", root: main, repoRoot: main, nomistakesGated: true });
+  assert.deepEqual(gitInfo(main), { branch: "main", root: main, repoRoot: main });
 });
 
-test("gitInfo resolves a linked worktree's branch, own root, and shared gating", () => {
+test("gitInfo resolves a linked worktree's branch and own root", () => {
   const { main, worktree } = makeRepoWithWorktree();
-  // Branch comes from the worktree's own HEAD; gating from the shared commondir
-  // config. The root is the worktree itself, NOT the main checkout - they're
+  // Branch comes from the worktree's own HEAD. The root is the worktree itself, NOT the main checkout - they're
   // separate trees, and only one of them is touched by a reset.
   assert.deepEqual(gitInfo(worktree), {
     branch: "mancej/dispatch-mission-report",
@@ -49,7 +46,6 @@ test("gitInfo resolves a linked worktree's branch, own root, and shared gating",
     // The worktree's own root is itself, but the REPO it belongs to is the main
     // checkout - the distinction Foreman's allowlist turns on.
     repoRoot: main,
-    nomistakesGated: true,
   });
   assert.notEqual(gitInfo(worktree).root, gitInfo(main).root);
   assert.equal(gitInfo(worktree).repoRoot, gitInfo(main).repoRoot, "same repo, different trees");
@@ -91,12 +87,12 @@ test("gitInfo reports a detached HEAD as being on no branch, but still in its re
   // provisioned at a bare commit look like it switched branches the instant the agent cut a
   // real one, which cancelled its task (see `branchFromHead`). `root` still resolves, so this
   // stays distinct from the not-a-repo case below.
-  assert.deepEqual(gitInfo(root), { branch: null, root, repoRoot: root, nomistakesGated: false });
+  assert.deepEqual(gitInfo(root), { branch: null, root, repoRoot: root });
 });
 
 test("gitInfo returns nulls for a non-repo dir", () => {
   const root = mkdtempSync(join(tmpdir(), "git-none-"));
-  assert.deepEqual(gitInfo(root), { branch: null, root: null, repoRoot: null, nomistakesGated: false });
+  assert.deepEqual(gitInfo(root), { branch: null, root: null, repoRoot: null });
 });
 
 /**

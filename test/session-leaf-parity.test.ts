@@ -76,11 +76,10 @@ function insp(over: Partial<NonNullable<Session["inspector"]>> = {}): Session["i
   };
 }
 
-function card(over: Partial<Session> = {}, gateNeedsYou = false): string {
+function card(over: Partial<Session> = {}): string {
   return renderToStaticMarkup(
     createElement(SessionCard, {
       session: mkSession(over),
-      gateNeedsYou,
       onOpenReviews: () => {},
     }),
   );
@@ -91,7 +90,6 @@ function tile(session: Session): string {
   return renderToStaticMarkup(
     createElement(SessionTile, {
       session,
-      gateNeedsYou: false,
       onOpen: () => {},
       draggingRepo: null,
       onDropped: () => {},
@@ -195,7 +193,7 @@ test("the rail's inspector mark is the shared InspectorRailMark", () => {
   for (const over of cases) {
     const session = mkSession(over);
     const rail = renderToStaticMarkup(
-      createElement(RailRow, { session, selected: false, gateNeedsYou: false, onSelect: () => {} }),
+      createElement(RailRow, { session, selected: false, onSelect: () => {} }),
     );
     assert.ok(
       containsMarkup(rail, bit(InspectorRailMark, { session })),
@@ -209,7 +207,6 @@ test("the rail row keeps a keyboard-focus description outside its nested marks",
     createElement(RailRow, {
       session: mkSession({ name: "focus-target" }),
       selected: false,
-      gateNeedsYou: false,
       onSelect: () => {},
     }),
   );
@@ -237,7 +234,6 @@ test("the board tile's inspector flag is the shared InspectorTileFlag", () => {
     const tile = renderToStaticMarkup(
       createElement(SessionTile, {
         session,
-        gateNeedsYou: false,
         onOpen: () => {},
         draggingRepo: null,
         onDropped: () => {},
@@ -315,7 +311,6 @@ test("the board tile's PR flag is the shared PrTileFlag, wrapped in the shared T
     const tile = renderToStaticMarkup(
       createElement(SessionTile, {
         session,
-        gateNeedsYou: false,
         onOpen: () => {},
         draggingRepo: null,
         onDropped: () => {},
@@ -345,31 +340,13 @@ test("the card's state badge is the shared StateBadge", () => {
     assert.ok(
       containsMarkup(
         card({ pendingReviews }),
-        bit(StateBadge, { session, gateNeedsYou: false, onOpenReviews: () => {} }),
+        bit(StateBadge, { session, onOpenReviews: () => {} }),
       ),
       `card should render the shared StateBadge with ${pendingReviews} pending reviews`,
     );
   }
 });
 
-test("a parked no-mistakes gate gives cards and rails the same attention status", () => {
-  const session = mkSession({ state: "idle", pendingReviews: 0 });
-  const badge = bit(StateBadge, { session, gateNeedsYou: true, onOpenReviews: () => {} });
-  const rail = renderToStaticMarkup(
-    createElement(RailRow, {
-      session,
-      selected: false,
-      gateNeedsYou: true,
-      onSelect: () => {},
-    }),
-  );
-
-  assert.ok(containsMarkup(card({ state: "idle", pendingReviews: 0 }, true), badge));
-  assert.match(badge, /badge-attention/);
-  assert.match(badge, /needs decision/);
-  assert.match(rail, /tone-attention/);
-  assert.match(rail, /needs decision/);
-});
 
 test("the card's title and rename affordance are the shared SessionTitle", () => {
   // Renameable (a live session with a pane) and not (an exited one) render differently, and
@@ -493,7 +470,6 @@ test("card and console detail agree on every shared leaf", () => {
         backlog: [],
         onEditTask: () => {},
         backlogPlan: null,
-        gateAlerts: new Set<string>(),
         selectedId: session.id,
         consoleZone: "rail",
         onConsoleZoneChange: () => {},
@@ -537,7 +513,7 @@ test("card and console detail agree on every shared leaf", () => {
   for (const [name, fragment] of [
     ["AgentDot", bit(AgentDot, { agent: session.agent })],
     ["PrChip", bit(PrChip, { session })],
-    ["StateBadge", bit(StateBadge, { session, gateNeedsYou: false, onOpenReviews: () => {} })],
+    ["StateBadge", bit(StateBadge, { session, onOpenReviews: () => {} })],
     ["InspectorChip", bit(InspectorChip, { session })],
     ["RuntimeMetaRow", bit(RuntimeMetaRow, { meta: session.meta!, session })],
     ["CostChip", bit(CostChip, { cost: session.cost })],
@@ -562,7 +538,6 @@ test("all three inspector surfaces show dry run, and none of them shows it when 
     renderToStaticMarkup(
       createElement(SessionTile, {
         session: mkSession({ inspector: i }),
-        gateNeedsYou: false,
         onOpen: () => {},
         draggingRepo: null,
         onDropped: () => {},
@@ -575,7 +550,6 @@ test("all three inspector surfaces show dry run, and none of them shows it when 
       createElement(RailRow, {
         session: mkSession({ inspector: i }),
         selected: false,
-        gateNeedsYou: false,
         onSelect: () => {},
       }),
     );
@@ -599,7 +573,6 @@ test("the inspector chip and its tile twin have an accessible name", () => {
   const tile = renderToStaticMarkup(
     createElement(SessionTile, {
       session,
-      gateNeedsYou: false,
       onOpen: () => {},
       draggingRepo: null,
       onDropped: () => {},
@@ -635,7 +608,6 @@ function scheduledView(session: Session): SessionViewProps {
     backlog: [],
     onEditTask: () => {},
     backlogPlan: null,
-    gateAlerts: new Set<string>(),
     selectedId: session.id,
     consoleZone: "rail",
     onConsoleZoneChange: () => {},
@@ -684,7 +656,6 @@ test("a scheduled task's origin mark is the shared leaf in all four session rend
   const cardHtml = renderToStaticMarkup(
     createElement(SessionCard, {
       session,
-      gateNeedsYou: false,
       onOpenReviews: () => {},
       onOpenSchedule: () => {},
       scheduleNameById: SCHEDULE_NAMES,
@@ -706,7 +677,6 @@ test("a scheduled task's origin mark is the shared leaf in all four session rend
   const tileHtml = renderToStaticMarkup(
     createElement(SessionTile, {
       session,
-      gateNeedsYou: false,
       onOpen: () => {},
       draggingRepo: null,
       onDropped: () => {},
@@ -725,7 +695,6 @@ test("a scheduled task's origin mark is the shared leaf in all four session rend
     createElement(RailRow, {
       session,
       selected: false,
-      gateNeedsYou: false,
       onSelect: () => {},
       onOpenSchedule: () => {},
       scheduleNameById: SCHEDULE_NAMES,
@@ -818,7 +787,6 @@ test("an ensemble member's mark is the shared leaf in all four session renderers
   const cardHtml = renderToStaticMarkup(
     createElement(SessionCard, {
       session,
-      gateNeedsYou: false,
       onOpenReviews: () => {},
       ensembleSummary: summary,
     }),
@@ -845,7 +813,6 @@ test("an ensemble member's mark is the shared leaf in all four session renderers
   const tileHtml = renderToStaticMarkup(
     createElement(SessionTile, {
       session,
-      gateNeedsYou: false,
       onOpen: () => {},
       draggingRepo: null,
       onDropped: () => {},
@@ -863,7 +830,6 @@ test("an ensemble member's mark is the shared leaf in all four session renderers
     createElement(RailRow, {
       session,
       selected: false,
-      gateNeedsYou: false,
       onSelect: () => {},
       ensembleSummary: summary,
     }),
@@ -966,7 +932,7 @@ test("all three surfaces say an embedded session has no pane, from one decision"
   assert.ok(containsMarkup(card({ runtime: "sdk", nameSource: "sdk", terminals: [] }), bit(SessionWhere, { session })));
   assert.ok(containsMarkup(tile(session), bit(RuntimeTileFlag, { session })));
   const rail = renderToStaticMarkup(
-    createElement(RailRow, { session, selected: false, gateNeedsYou: false, onSelect: () => {} }),
+    createElement(RailRow, { session, selected: false, onSelect: () => {} }),
   );
   assert.match(rail, new RegExp(runtimeRailMark(session)!));
 });

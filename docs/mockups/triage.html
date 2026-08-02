@@ -433,7 +433,7 @@
           return { kind: "◆ Foreman escalated a decision", text: s.note.text, acts: ["Approve Foreman's draft", "Answer myself", "Snooze"] };
         if (s.nm && s.nm.gate)
           return {
-            kind: `▮ no-mistakes parked at ${s.nm.gate.replace("_", " ")}`,
+            kind: `▮ review workflow parked at ${s.nm.gate.replace("_", " ")}`,
             text: s.nm.findings.length
               ? `${s.nm.findings.length} findings to triage before this branch can push: ${s.nm.findings[0]}`
               : s.nm.line,
@@ -495,7 +495,7 @@
             ${s.activity ? `<p class="activity">${s.activity}</p>` : ""}
             ${s.queue ? `<span class="queue-chip"><span class="qc-count">${s.queue.open} queued</span><span class="qc-intent">${s.queue.intent}</span></span>` : ""}
             ${s.nm ? nmStrip(s, true) : ""}
-            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>no-mistakes fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
+            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>review workflow fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
             <span class="section-label">conversation</span>
             ${transcript(s)}
             ${composeBox(s)}

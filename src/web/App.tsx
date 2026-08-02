@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AGENT_TYPES, type FleetCost, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
-import { backlogTasks, canCycleMode, gateParked } from "@shared/session.ts";
+import { backlogTasks, canCycleMode } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -235,7 +235,7 @@ export function App(): React.JSX.Element {
     commit: string | null;
     nonce: number;
   } | null>(null);
-  /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
+  /** When set, the diff viewer shows just this commit. */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
@@ -607,13 +607,6 @@ export function App(): React.JSX.Element {
     ],
   );
 
-  // Which sessions have a parked no-mistakes gate that actually needs you - a
-  // run being driven by any same-run session is left to that agent (see gateParked).
-  // Computed once and consumed by every display classifier below.
-  const gateAlerts = useMemo(
-    () => new Set(sessions.filter((s) => gateParked(s, sessions)).map((s) => s.id)),
-    [sessions],
-  );
   const workflowRunBySession = useMemo(() => {
     const bySession = new Map<string, (typeof workflowRuns)[number]>();
     for (const run of workflowRuns) {
@@ -634,9 +627,9 @@ export function App(): React.JSX.Element {
   // what's on screen.
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const matched = q ? sessions.filter((s) => matchesFilter(s, q, gateAlerts.has(s.id))) : sessions;
-    return orderSessions(matched, gateAlerts);
-  }, [sessions, filter, gateAlerts]);
+    const matched = q ? sessions.filter((s) => matchesFilter(s, q)) : sessions;
+    return orderSessions(matched);
+  }, [sessions, filter]);
   const visible = fleet.sessions;
 
   // The same filter over the board's Backlog column. A backlog item is a card the
@@ -650,7 +643,7 @@ export function App(): React.JSX.Element {
     return items.filter((t) => matchesTaskFilter(t, q));
   }, [tasks, filter]);
 
-  const counts = useMemo(() => summarize(sessions, gateAlerts), [sessions, gateAlerts]);
+  const counts = useMemo(() => summarize(sessions), [sessions]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
   // What the attention fold answers from, deliberately NARROWER than `pendingReviews`.
   //
@@ -699,8 +692,8 @@ export function App(): React.JSX.Element {
   // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
   // an OS notification while you are away) and deliberately excludes reviews.
   const attention = useMemo(
-    () => foldAttention({ sessions, reviews: answerableReviews, ensembles: ensembleSummaries, gateAlerts }),
-    [sessions, answerableReviews, ensembleSummaries, gateAlerts],
+    () => foldAttention({ sessions, reviews: answerableReviews, ensembles: ensembleSummaries }),
+    [sessions, answerableReviews, ensembleSummaries],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -775,8 +768,6 @@ export function App(): React.JSX.Element {
   const modalReviews = modalSession
     ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
     : [];
-  const modalOpen = Boolean(modalSession && modalReviews.length > 0);
-
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const visibleSelectedId = selected?.id ?? null;
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
@@ -796,18 +787,12 @@ export function App(): React.JSX.Element {
    * The inbox's deep links are the callers: an item's home is a card, and a click that only
    * selected it would leave the operator on the Workflows page wondering what happened.
    *
-   * `reveal` names the surface that ANSWERS the item, for the layouts where that is a tab
-   * rather than the card. A parked gate passes "workflows": Cards puts the gate strip on
-   * the card itself, but Console and the Board drill-in put it behind a tab, so without
-   * this the one deep link whose whole purpose is "come and answer this" would land on the
-   * transcript with the answer one keypress out of sight.
    */
-  function focusSession(sessionId: string, reveal?: "workflows"): void {
+  function focusSession(sessionId: string): void {
     navigate({ page: "fleet" });
     setFilter("");
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
-    if (reveal === "workflows" && layout !== "grid") requestWorkflowsTab(sessionId);
   }
 
   // Everything a layout needs, and nothing it could decide for itself. App stays the
@@ -821,7 +806,6 @@ export function App(): React.JSX.Element {
     tasks,
     backlog: visibleBacklog,
     backlogPlan: foreman.backlogPlan,
-    gateAlerts,
     selectedId,
     consoleZone,
     onConsoleZoneChange: setConsoleZone,
@@ -1315,7 +1299,7 @@ export function App(): React.JSX.Element {
         return;
       }
       // "Show me how this session's run is going" - the Workflows tab, which holds both the
-      // workflow ladder and the no-mistakes gate. Unlike the conversation, this surface has
+      // workflow ladder. Unlike the conversation, this surface has
       // no Cards equivalent to fall back to (that layout draws no tab strip and never
       // mounted the ladder), so the chord is left unclaimed there rather than swallowed to
       // no effect - the fleet-wide Workflows page on `w` is what Cards has instead.
@@ -2267,8 +2251,8 @@ function columnCount(grid: HTMLElement | null): number {
  * session's raw state is "working" even though its badge reads "running", so
  * matching raw state would make "working" hit every alive session.
  */
-function matchesFilter(s: Session, q: string, gateNeedsYou: boolean): boolean {
-  const haystack = `${s.name} ${stateDisplay(s, gateNeedsYou).label} ${s.agent}`.toLowerCase();
+function matchesFilter(s: Session, q: string): boolean {
+  const haystack = `${s.name} ${stateDisplay(s).label} ${s.agent}`.toLowerCase();
   return haystack.includes(q);
 }
 
@@ -2469,14 +2453,11 @@ function UsageBar({
   );
 }
 
-function summarize(
-  sessions: Session[],
-  gateAlerts: ReadonlySet<string>,
-): { attention: number; working: number } {
+function summarize(sessions: Session[]): { attention: number; working: number } {
   let attention = 0;
   let working = 0;
   for (const s of sessions) {
-    const tone = stateDisplay(s, gateAlerts.has(s.id)).tone;
+    const tone = stateDisplay(s).tone;
     if (tone === "attention") attention++;
     else if (tone === "working") working++;
   }

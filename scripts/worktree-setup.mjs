@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 // Prepare a freshly-provisioned git worktree for an agent session:
 //   1. warm its dependencies, so treehouse's whole promise - not re-paying the
-//      install/build cost every time you start a session - actually holds, and
-//   2. make sure the repo is gated by no-mistakes, so the session's work still
-//      flows through the push gate.
+//      install/build cost every time you start a session - actually holds.
 //
 // Every step is best-effort and idempotent, and the script always exits 0, so
 // it never blocks a worktree from being handed to you. That also makes it safe
@@ -22,8 +20,6 @@ const dir = process.argv[2] ?? process.cwd();
 // MISSION_ names, with the legacy HARNESS_ names still honored.
 const skipInstall =
   (process.env.MISSION_WORKTREE_SKIP_INSTALL ?? process.env.HARNESS_WORKTREE_SKIP_INSTALL) === "1";
-const skipGate =
-  (process.env.MISSION_WORKTREE_SKIP_GATE ?? process.env.HARNESS_WORKTREE_SKIP_GATE) === "1";
 
 const log = (m) => console.log(`  ${m}`);
 const warn = (m) => console.warn(`  ⚠ ${m}`);
@@ -62,36 +58,6 @@ if (skipInstall) {
   }
 } else {
   warn("npm not found - skipping dependency install");
-}
-
-// 2. Gate with no-mistakes. Gating is keyed to the repo's origin, so once the
-// backing repo is gated every worktree of it is covered; running init again is a
-// harmless refresh. We only try when there is an origin to gate.
-if (skipGate) {
-  log("no-mistakes gating skipped (MISSION_WORKTREE_SKIP_GATE=1)");
-} else if (!have("no-mistakes")) {
-  log("no-mistakes not installed - skipping gate (run `make init` to set it up)");
-} else {
-  let remotes = "";
-  try {
-    remotes = silent("git", ["remote"]);
-  } catch {
-    /* not a repo we can read remotes from */
-  }
-  const remoteList = remotes.split("\n").map((r) => r.trim());
-  if (remoteList.includes("no-mistakes")) {
-    log("repo already gated by no-mistakes");
-  } else if (!remoteList.includes("origin")) {
-    log("no origin remote - skipping no-mistakes gate");
-  } else {
-    log("gating repo with no-mistakes (init)…");
-    try {
-      execFileSync("no-mistakes", ["init"], { cwd: dir, stdio: "inherit" });
-      log("repo gated");
-    } catch {
-      warn("no-mistakes init failed - gate it manually with `no-mistakes init`");
-    }
-  }
 }
 
 console.log("🌳 worktree ready");

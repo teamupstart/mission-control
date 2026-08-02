@@ -1,6 +1,5 @@
 import type { ResetResult, Session } from "@shared/types.ts";
 import { resetToOrigin, withPaneLockWait, type DriverClear, type PaneLockToken } from "./actions.ts";
-import { forgetFixLog } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
 import { noteKeyFor } from "./registry.ts";
 
@@ -61,10 +60,6 @@ export async function resetSession(
    */
   driverClear?: DriverClear,
 ): Promise<ResetResult> {
-  // Sampled BEFORE the reset: the fetch inside can take ~30s, and the poller may swap
-  // or clear the run in that window.
-  const showing = session.nomistakes;
-
   registry.beginSessionReset(session.id);
   try {
     return await withPaneLockWait(session, async (lockOwner) => {
@@ -72,17 +67,6 @@ export async function resetSession(
         ? await reset(session, clear, lockOwner, driverClear)
         : await resetToOrigin(session, clear, undefined, lockOwner, driverClear);
 
-      // Retired against the checkout it wiped (root + the branch that was standing in it),
-      // not this session, so it holds for a sibling sharing the checkout and across a
-      // restart.
-      if (r.ok && showing) registry.dismissNomistakes(showing, r.root, session.gitBranch);
-      // The fix log needs no dismissal - the reset destroyed the commits it is read from, so
-      // it is empty by construction. But drop the cached read: it is keyed on HEAD, and the
-      // reset moved HEAD, so a stale entry could still be served.
-      if (r.ok && session.cwd) {
-        forgetFixLog(session.cwd);
-        registry.clearNomistakesFixes(session.id);
-      }
       // The reset discarded the task these queued items were authored for - the branch is
       // gone and (with `clear`) the agent's context is wiped - so clear the whole batch.
       // This is the deliberate "start over", the one case that overrides the re-attach

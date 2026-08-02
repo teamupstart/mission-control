@@ -17,7 +17,6 @@ import type { Session, Task } from "./types.ts";
 import {
   activePaneDialog,
   dialogIdentity,
-  gateParked,
   paneDialogReason,
   reportBucket,
 } from "./session.ts";
@@ -29,7 +28,6 @@ import { ensembleIsTerminal, type EnsembleSummary } from "./ensemble.ts";
 export type AlertKind =
   | "needs-input"
   | "review"
-  | "gate"
   | "task-done"
   | "task-failed"
   | "idle"
@@ -222,18 +220,6 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         kind: "review",
         title: `${label} needs review`,
         body: s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review",
-        sessionId: s.id,
-        severity: "attention",
-      });
-    }
-
-    // gate: a no-mistakes run parked awaiting a decision.
-    if (gateParked(s) && !(before && gateParked(before))) {
-      alerts.push({
-        id: `gate:${s.id}`,
-        kind: "gate",
-        title: `${label} - gate parked`,
-        body: `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`,
         sessionId: s.id,
         severity: "attention",
       });

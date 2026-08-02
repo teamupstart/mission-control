@@ -60,6 +60,11 @@ test("an operator who explicitly turned Foreman off keeps it off across the flip
   assert.deepEqual(upgraded.wrapupTriggers, ["drain", "prompted"]);
 });
 
+test("Foreman upgrades a removed automatic-review enum to workflow mode", () => {
+  setAppConfig("foreman", { wrapup: "retired-review-option" });
+  assert.equal(getForemanConfig().wrapup, "workflow");
+});
+
 test("Foreman persists Codex independently from the app-wide background provider", () => {
   setForemanConfig({ runner: "codex", reviewModel: "gpt-5.6-terra" });
   const cfg = getForemanConfig();

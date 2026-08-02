@@ -26,9 +26,9 @@ const MODE_HINT: Record<"dry-run" | "semi-auto" | "live", string> = {
   live: "Foreman sends on your behalf, in the repos you have trusted.",
 };
 
-const WRAPUP_HINT: Record<"ask" | "no-mistakes" | "pr", string> = {
+const WRAPUP_HINT: Record<"ask" | "workflow" | "pr", string> = {
   ask: "Show the Ship it? card and let you choose what happens next",
-  "no-mistakes":
+  workflow:
     "After Foreman verifies the original work, submit its Foreman Complete workflow or bind and submit No-Mistakes Review when none exists",
   pr: "Skip the gate: commit, push, open a PR, then wait for green CI",
 };
@@ -489,7 +489,7 @@ export function ForemanPopover({
 
         <fieldset className="foreman-wrapup-action" disabled={triggers.length === 0}>
           <legend>Then</legend>
-          {(["ask", "no-mistakes", "pr"] as const).map((w) => (
+          {(["ask", "workflow", "pr"] as const).map((w) => (
             <Tooltip label={WRAPUP_HINT[w]} key={w}>
               <label className="alert-row">
                 <input
@@ -499,8 +499,8 @@ export function ForemanPopover({
                   onChange={() => void update({ wrapup: w })}
                 />
                 {w === "ask" && "Ask me - show the Ship it? card"}
-                {w === "no-mistakes" && "Run no-mistakes automatically"}
-                {w === "pr" && "Straight to PR - skip no-mistakes; commit, push, open a PR, then green CI"}
+                {w === "workflow" && "Run No-Mistakes Review automatically"}
+                {w === "pr" && "Straight to PR - skip review; commit, push, open a PR, then green CI"}
               </label>
             </Tooltip>
           ))}

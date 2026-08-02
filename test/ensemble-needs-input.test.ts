@@ -74,7 +74,6 @@ function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
     gitBranch: null,
     gitRoot: null,
     repoRoot: null,
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
     terminals: [],

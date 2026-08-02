@@ -5,7 +5,7 @@ import type { CheapAction, Divergence } from "@shared/foreman.ts";
 import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
 import { driverFormAnswer } from "../sdk/answer.ts";
-import type { GateRef, Pending } from "./pending.ts";
+import type { Pending } from "./pending.ts";
 
 // The Foreman review verdict + the deterministic mapping from a verdict to the
 // concrete actions the worker takes. Kept pure and free of I/O so it's unit
@@ -132,11 +132,6 @@ export interface ReviewContext {
   inputReviewId: string | null;
   /** True when a reply can be DELIVERED to this session at all (`canMessage`). */
   canSend: boolean;
-  /**
-   * Which no-mistakes gate this prompt is, when it is one - so a send can be
-   * recorded against the round it answered. Null for every other situation.
-   */
-  gate?: GateRef | null;
   /**
    * The option menu the child's pane was showing when the reviewer read it, if any.
    *
@@ -508,15 +503,6 @@ export interface ForemanActions {
    */
   submitForm(sessionId: string, answers: NonNullable<SubmitOptions["answers"]>): Promise<unknown>;
   resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown>;
-  /**
-   * Record what we just said to a no-mistakes gate, for the fix log's byline.
-   *
-   * On the actions interface rather than as a direct `logEvent`, because the
-   * worker is a separate PROCESS: it reaches the daemon only over the localhost
-   * API and never touches the DB (see worker.ts). So this is a route call like
-   * every other write here, and the same injection seam the tests already use.
-   */
-  logGateReply(sessionId: string, gate: GateRef, text: string): Promise<unknown>;
 }
 
 /**
@@ -527,21 +513,6 @@ export interface ForemanActions {
  * purpose is still recorded (without the marker) and the error is rethrown so the
  * worker logs it and the session stays queued for a retry.
  *
- * A send that answered a no-mistakes gate is also recorded against that gate, so
- * the fix log can put a byline on whatever reply it produces. Only a DELIVERED
- * send is logged, and only the words actually delivered: words the agent never saw
- * caused nothing, and claiming otherwise on the card would be a fabricated byline.
- * Undelivered has TWO shapes here, and they are easy to mistake for one:
- *   - no send at all (dry-run / semi-auto / off-allowlist), which returns above;
- *   - `submit: false`, which types the text and never presses Enter, leaving it
- *     sitting unsubmitted in the pane (queue-machine.ts names the same state) with
- *     the gate still parked. The send SUCCEEDS, so nothing else here notices.
- *
- * A menu send is a third shape, and it inverts both halves. `text` is the rationale
- * and is NEVER typed - the row's label is the whole of what the child received - so
- * the byline has to quote the label. And `submit` is not a delivery question there:
- * `selectOption` always presses the Enter, so gating the log on it would drop the
- * byline for a reply that did land.
  */
 export async function applyVerdict(
   actions: ForemanActions,
@@ -576,29 +547,6 @@ export async function applyVerdict(
     }
     throw err;
   }
-  // The gate is only ever set for a `gate-parked` prompt (classifyPending sets it
-  // nowhere else), so the "log gate replies only" rule is structural here rather
-  // than a situation string re-checked in a second place that could drift.
-  // `submit` is the model's to choose, so the delivery half is not structural and
-  // has to be read off the plan we just executed.
-  //
-  // Swallowed on purpose, and it is the ONLY swallow here that costs nothing real:
-  // the reply is already delivered and the note still stamps, so a failure loses a
-  // byline - the card reads `replied` with no author, exactly as it did before this
-  // existed. Letting it throw would instead skip the note below and leave a
-  // delivered send unstamped, which the worker's idempotency check would re-send.
-  const delivered = plan.send.option
-    ? plan.send.option.label
-    : plan.send.form
-      ? describeForm(plan.send.form)
-      : plan.send.submit
-        ? plan.send.text
-        : null;
-  if (ctx.gate && delivered !== null) {
-    await actions
-      .logGateReply(ctx.sessionId, ctx.gate, delivered)
-      .catch((err) => console.error("[foreman] could not record the gate reply:", err));
-  }
   await actions.putNote(ctx.sessionId, plan.note);
 }
 
@@ -606,7 +554,7 @@ export async function applyVerdict(
  * Why an answer can't be delivered to the menu on screen, or null when it can.
  *
  * Deliberately says nothing when there is NO menu: an ordinary prompt is answered with
- * prose, which is the majority path (a parked no-mistakes gate, a plain question), and an
+ * prose, which is the majority path, and an
  * `option` volunteered against no menu is simply ignored rather than treated as an error.
  *
  * The label is re-checked against the row and not taken on trust because the number alone
@@ -635,7 +583,7 @@ function menuMismatch(
  * question.
  *
  * Deliberately says nothing when there is NO ask: an ordinary prompt is answered with prose,
- * which is the majority path (a parked no-mistakes gate, a plain question), and an `option`
+ * which is the majority path, and an `option`
  * volunteered against no menu is simply ignored rather than treated as an error.
  */
 type MenuAnswer =

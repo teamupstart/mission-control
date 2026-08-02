@@ -21,23 +21,6 @@ watches.
 
 ## Why it fits this codebase (reuse, not rebuild)
 
-- **Worktree isolation** already exists: `scripts/new-session.mjs` leases a treehouse
-  worktree and `scripts/worktree-setup.mjs` warms + gates it. We reuse that machinery
-  from the daemon instead of a human terminal.
-- **Discovery is automatic**: `src/server/discovery/correlate.ts` joins process -> tty ->
-  pane. A **detached** tmux session still owns a pty and appears in `tmux list-panes -a`
-  and `ps`, so a dispatched agent is discovered with no extra plumbing (~1.5s poll).
-- **Naming is free**: a session's name is its tmux session name
-  (`correlate.ts`), so naming the tmux session after the task gives the card a good title.
-- **Sending is solved**: `src/server/actions.ts#injectPrompt` already delivers one prompt
-  through the session's terminal adapter. The current transport contract is owned by
-  `AGENTS.md` and `src/server/terminal/`.
-- **Focus is solved**: `actions.ts#focus` already knows how to surface a detached tmux
-  session in a wezterm tab (`spawnWeztermTab(["tmux","attach",...])`). So a dispatched
-  headless session is one click from being visible.
-- **Live contract is solved**: session summaries already carry denormalized side-data
-  (`pendingReviews`, `nomistakes`) over SSE. The task summary rides the same channel.
-
 The one new capability is **spawning** a session; everything else is composition.
 
 ## The shared task data model (spine for #1 and #4)
@@ -78,7 +61,7 @@ export interface Task {
   completedAt: number | null;
 }
 
-/** Compact task view denormalized onto a Session card (like NmRunSummary). */
+/** Compact task view denormalized onto a Session card (like WorkflowRunSummary). */
 export interface TaskSummary {
   id: string;
   title: string;
@@ -168,41 +151,6 @@ Mirrors `ReviewManager`: owns lifecycle, persists via db, publishes via `registr
 ### `src/server/dispatcher.ts` (new) - the only genuinely new mechanism
 `dispatch(task)` runs the provisioning pipeline (async, best-effort, always resolves; on
 error sets the task `failed` with a reason):
-
-1. **Provision an isolated worktree** via
-   `provisionWorktree(repoRoot, taskId, slug, shortId, pins)`, where `pins` reads the
-   worktrees the harness is already holding (live session cwds + task-held trees) so a
-   reap here cannot evict a tree someone is standing in:
-   - Fast path: if the repo opted into treehouse (a `treehouse.toml` at its root),
-     `treehouse get --lease --lease-holder <LEASE_HOLDER>` (cwd = repoRoot) - a pre-warmed
-     pooled tree. The holder label comes from the `LEASE_HOLDER` constant in
-     `src/shared/harness-runtime.mjs` (currently `mission-control`), never a literal: it is
-     the mark the reaper matches on, so a lease taken under any other label can never be
-     reclaimed.
-   - If the pool hands back nothing it is usually **leaked**, not empty - leases are
-     durable, so agents that went away still hold slots. Reap them (`reapPool(repoRoot,
-     pins)`) and ask once more before giving up on the pool.
-   - Always-available fallback: `git -C <repoRoot> worktree add <MISSION_HOME>/worktrees/<taskId> -b harness/<slug>-<shortId> HEAD`,
-     with a warning naming what the pool actually reported - the fallback is a throwaway
-     checkout with none of the pool's pre-warming, so it must never be silent.
-   - Returns `{ path (realpath), branch, provider }`. The path is stored as a **realpath**
-     so it matches a pane's reported `cwd` exactly (macOS `/tmp`->`/private/tmp`).
-   - Isolation is the harness's whole reason to exist, so a task **always** gets its own
-     tree; treehouse is an optimization, not a requirement.
-   - Deliberately **no** auto `npm install` / `no-mistakes init` here: dispatch stays fast
-     and never gates or mutates an arbitrary repo behind the user's back (treehouse trees
-     are already warm; the agent installs what it needs). Warm/gate remains available via
-     `make session` for the opted-in treehouse workflow.
-2. **Record** `worktreePath`, `branch`, status `dispatching`; emit.
-3. **Spawn a detached tmux session**:
-   `tmux new-session -d -s <tmuxSession> -c <worktreePath> <agentBin>`
-   where `<tmuxSession>` = unique slug (`<title-slug>` or `<title-slug>-<shortid>` on
-   collision, checked against `tmux list-sessions`). Record `tmuxSession`.
-4. **Wait for readiness**: subscribe to the registry (or poll `snapshot()`) until a session
-   with `cwd === worktreePath` appears (proves the pane + agent booted), then a short settle
-   delay so the agent's input box is ready. Cap the wait (e.g. 20s); on timeout -> `failed`.
-5. **Inject the prompt**: `injectPrompt(session, task.intent)` - reuses `actions.ts`.
-6. **Bind + promote**: set `sessionId`, status `running`, `dispatchedAt`; emit.
 
 Notes:
 - Correlation is by **worktree path** (`cwd`), unique per task -> unambiguous binding with
@@ -296,4 +244,3 @@ Instantiate `TaskManager` + `Dispatcher`, pass into `buildApp`.
 
 - wezterm-tab dispatch backend; ship/scout behavioral differences beyond labeling;
   automatic outcome/PR detection; secondmates; the AFK auto-supervisor (idea #2).
-```

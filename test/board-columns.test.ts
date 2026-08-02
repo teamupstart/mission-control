@@ -1,11 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Session } from "../src/shared/types.ts";
-import { gateParked } from "../src/shared/session.ts";
 import { boardColumnModes, groupByTone, TONE_GROUPS } from "../src/web/lib/tone.ts";
 import type { Tone } from "../src/web/lib/format.ts";
 import { canAcceptTask } from "../src/web/components/layouts/BacklogColumn.tsx";
-import { nm } from "./helpers/session-fixture.ts";
 
 /**
  * The board's shape is decided by two small pure rules - which empty columns stay and
@@ -26,7 +24,6 @@ function session(over: Partial<Session> = {}): Session {
     gitBranch: null,
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: null,
     permissionMode: null,
@@ -44,10 +41,7 @@ function session(over: Partial<Session> = {}): Session {
     lastSeen: 0,
     lastActivity: null,
     pendingReviews: 0,
-    nomistakes: null,
-    nomistakesFixes: [],
     task: null,
-    nomistakesNarration: null,
     prUrl: null,
     prNumber: null,
     prState: null,
@@ -65,8 +59,7 @@ function session(over: Partial<Session> = {}): Session {
 const NONE: ReadonlySet<Tone> = new Set();
 
 function modesFor(sessions: Session[], revealed: ReadonlySet<Tone> = NONE, focused = false) {
-  const gateAlerts = new Set(sessions.filter((s) => gateParked(s, sessions)).map((s) => s.id));
-  return boardColumnModes(groupByTone(sessions, gateAlerts), revealed, focused);
+  return boardColumnModes(groupByTone(sessions), revealed, focused);
 }
 
 test("an empty 'needs you' keeps its column - the all-clear IS the information", () => {
@@ -90,29 +83,6 @@ test("a column that has sessions is never stashed, whatever its tone", () => {
 test("'needs you' with sessions in it is an ordinary column, not an all-clear", () => {
   const modes = modesFor([session({ state: "awaiting_input" })]);
   assert.equal(modes.get("attention"), "sessions");
-});
-
-test("an idle session parked at a no-mistakes gate moves to 'needs you'", () => {
-  const run = nm({
-    branch: "feature/review",
-    awaitingAgent: "parked 10s",
-    gateStep: "review",
-  });
-  const parked = session({ state: "idle", gitBranch: "feature/review", nomistakes: run });
-  const groups = groupByTone([parked], new Set([parked.id]));
-  assert.deepEqual(groups.find((g) => g.tone === "attention")?.sessions, [parked]);
-  assert.equal(groups.find((g) => g.tone === "idle")?.sessions.length, 0);
-
-  // A sibling still driving this exact run keeps the decision with the agent.
-  const driver = session({
-    id: "driver",
-    state: "working",
-    gitBranch: "feature/review",
-    nomistakes: run,
-  });
-  const driven = groupByTone([parked, driver], new Set());
-  assert.equal(driven.find((g) => g.tone === "attention")?.sessions.length, 0);
-  assert.deepEqual(driven.find((g) => g.tone === "idle")?.sessions, [parked]);
 });
 
 test("a revealed column comes back out of the stash, and only that one", () => {
@@ -141,17 +111,17 @@ test("every tone gets a verdict - no column can fall through the rules unrendere
 });
 
 test("only an idle agent in the task's own repo may be dropped on", () => {
-  assert.equal(canAcceptTask(session(), "/repo", false), true);
+  assert.equal(canAcceptTask(session(), "/repo"), true);
   // Busy in any sense is not a drop target: the prompt would land mid-turn.
   for (const state of ["working", "awaiting_input", "awaiting_review", "starting", "exited"] as const) {
-    assert.equal(canAcceptTask(session({ state }), "/repo", false), false, state);
+    assert.equal(canAcceptTask(session({ state }), "/repo"), false, state);
   }
   // The wrong repo is the one way this gesture does damage you can't undo from the
   // dashboard, so it is refused rather than best-efforted.
-  assert.equal(canAcceptTask(session({ repoRoot: "/other" }), "/repo", false), false);
-  assert.equal(canAcceptTask(session({ repoRoot: null }), "/repo", false), false);
+  assert.equal(canAcceptTask(session({ repoRoot: "/other" }), "/repo"), false);
+  assert.equal(canAcceptTask(session({ repoRoot: null }), "/repo"), false);
   // Nothing in the air, nothing droppable.
-  assert.equal(canAcceptTask(session(), null, false), false);
+  assert.equal(canAcceptTask(session(), null), false);
 });
 
 test("only hook-instrumented sessions in the Idle column accept drops", () => {
@@ -160,19 +130,16 @@ test("only hook-instrumented sessions in the Idle column accept drops", () => {
   //
   // With no fresh lifecycle reading, "idle" is a guess. Shows as Unconfirmed.
   assert.equal(
-    canAcceptTask(session({ instrumented: false, stateConfirmed: false }), "/repo", false),
+    canAcceptTask(session({ instrumented: false, stateConfirmed: false }), "/repo"),
     false,
   );
   // A Codex rollout can confirm idle without a hook, so it belongs in Idle, but the
   // hook-dependent handover remains unavailable.
   assert.equal(
-    canAcceptTask(session({ instrumented: false, stateConfirmed: true }), "/repo", false),
+    canAcceptTask(session({ instrumented: false, stateConfirmed: true }), "/repo"),
     false,
   );
   // A review already parked on it: the agent is idle precisely BECAUSE it is waiting
   // on the human. Shows under Needs you.
-  assert.equal(canAcceptTask(session({ pendingReviews: 1 }), "/repo", false), false);
-  // The no-mistakes gate is the same kind of human wait. BoardView supplies this
-  // cross-session verdict to the drop predicate.
-  assert.equal(canAcceptTask(session(), "/repo", true), false);
+  assert.equal(canAcceptTask(session({ pendingReviews: 1 }), "/repo"), false);
 });

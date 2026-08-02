@@ -70,19 +70,6 @@ others. Widen the modal to ~780px.
 A horizontal tab strip under the header; one panel visible at a time. Keeps the modal
 narrow (~600px).
 
-```
-┌───────────────────────────────────────────────┐
-│ Settings                                    ✕  │
-├───────────────────────────────────────────────┤
-│  Keyboard │ Skills │ Notifications │ Foreman   │
-├───────────────────────────────────────────────┤
-│  Skills                                        │
-│  [x] Enable Mission Control skills             │
-│   /deep-research           [toggle]            │
-│   /no-mistakes             [toggle]            │
-└───────────────────────────────────────────────┘
-```
-
 - Lighter change; familiar; stays narrow.
 - Skills is a peer tab, not a scroll target.
 - Cost: tabs crowd and wrap once categories pass ~5-6, and there's little room for a

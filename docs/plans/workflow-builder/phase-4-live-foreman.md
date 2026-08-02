@@ -143,14 +143,6 @@ bounded plain-text prompt. Model prose never chooses the template or adds termin
 
 The packet contains:
 
-1. A fixed statement that the workflow review failed and this is a repair round.
-2. The original user goal, bounded but never replaced by a Persona summary.
-3. Workflow name/version, run id, submission round, and evidence fingerprint prefix.
-4. One section per failed Persona in graph order, containing Persona name, summary, and numbered
-   requested changes with evidence references.
-5. A final instruction to preserve the user's explicit intent, make only supported changes, verify
-   the work, and signal completion normally.
-
 Pass details and infrastructure errors do not enter a failure packet. A Join contributes its
 already-deduplicated aggregate so the session receives one prompt even when concurrent Personas
 fail. Strip terminal control characters, cap every field and the total payload through the shared

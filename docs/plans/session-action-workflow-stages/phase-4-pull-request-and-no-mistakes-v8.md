@@ -24,7 +24,7 @@ Before editing:
 1. Read the source plan, phased index, Phase 3 downstream handoff, root `AGENTS.md`, architecture
    guide, change contracts, ensemble extension guide, and current Pull Request skill contract.
 2. Inspect merged SessionAction adapters, continuation expectations, delivery/recovery, Inspector
-   claim/poll logic, PR adoption persistence, built-in workflow generation, and all No-Mistakes
+   claim/poll logic, PR adoption persistence, built-in workflow generation, and all No-Mistakes Review
    versions.
 3. Run `git status --short`, preserve unrelated work, and run the full Phase 3 verification suite.
 4. Bind and inspect versions 1 through 7 from the merged store. Record their graph hashes and
@@ -46,7 +46,7 @@ In scope:
 
 Explicit non-goals:
 
-- No mutation of No-Mistakes versions 1 through 7.
+- No mutation of No-Mistakes Review versions 1 through 7.
 - No replacement of Inspector polling with an action node.
 - No generic GitHub automation node, arbitrary remote provider, or browser-side PR polling.
 - No automatic merge or release behavior.
@@ -195,7 +195,7 @@ Version 8 preserves the existing evaluation topology and completion policy, then
 Pull Request stage immediately before End:
 
 ```text
-Session -> existing No-Mistakes evaluation stages -> Pull Request -> End
+Session -> existing No-Mistakes Review evaluation stages -> Pull Request -> End
                                                               fixed Inspector footer
 ```
 
@@ -260,7 +260,7 @@ string or skill alone.
 - Existing action API shapes already represent the built-in and require no special PR mutation
   route.
 - PR adoption provenance remains server-owned and validated.
-- No-Mistakes v8 is additive. Stored and compiled versions 1 through 7 remain unchanged.
+- No-Mistakes Review v8 is additive. Stored and compiled versions 1 through 7 remain unchanged.
 - `pr_handoff` remains append-only and readable; `session_action` remains the new node-linked kind.
 - Inspector is still represented only by `WorkflowCompletionPolicy`.
 

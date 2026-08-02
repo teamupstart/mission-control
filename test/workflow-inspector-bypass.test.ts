@@ -355,7 +355,6 @@ test("PR switching blocks, and full restart requires confirmation before abandon
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 44,
     tty: "ttys44",
     terminals: [mkMuxHandle({ paneId: "%44" })],

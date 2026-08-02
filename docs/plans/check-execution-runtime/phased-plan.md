@@ -12,7 +12,7 @@ It is materially larger. This is that unit, plus the repair-loop work the operat
 in the same breath, because a gate that can fail is only useful if the loop that repairs it
 runs to completion.
 
-Rendered page: `phased-plan.html` beside this file. Phase detail lives in the four
+Phase detail lives in the four
 `phase-<n>-*.md` files linked below; this index is the contract between them.
 
 ## Why this is not written beside the source plan

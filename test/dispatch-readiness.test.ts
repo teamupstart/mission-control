@@ -45,7 +45,6 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nameSource: "process",
     cwd: CWD,
     gitBranch: "harness/task-1",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys015",
     terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],

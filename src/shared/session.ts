@@ -48,8 +48,7 @@ export function finishedTasks(tasks: Task[]): Task[] {
 }
 
 /**
- * True while the agent is (or is presumed to be) actively driving its own work,
- * so it will answer a parked no-mistakes gate itself rather than waiting on you.
+ * True while the agent is (or is presumed to be) actively driving its own work.
  * This intentionally reads the raw lifecycle state rather than its confidence: a
  * confirmed hook or transcript reading may report `starting`/`working`, while the
  * unconfirmed discovery default also presumes `working` rather than claiming a human
@@ -135,92 +134,17 @@ export function settledIdle(s: Session, now: number, settleMs: number): boolean 
   return now - since >= settleMs;
 }
 
-/** True while a no-mistakes run is parked at a gate, awaiting the agent's decision. */
-function gatePending(s: Session): boolean {
-  return Boolean(s.nomistakes && (s.nomistakes.awaitingAgent || s.nomistakes.gateStep));
-}
-
-/**
- * Two sessions are driving the *same* no-mistakes run. Keyed on the run itself
- * (its branch), not on cwd+branch: several terminals share one checkout on one
- * branch yet each may be driving a different run (or none), so a shared cwd is
- * not proof of a shared run. The registry attributes a run only to the sessions
- * that actually launched or own it, so both carrying a summary on the same
- * branch is the precise "same run" signal.
- */
-function sameRun(a: Session, b: Session): boolean {
-  return Boolean(a.nomistakes && b.nomistakes && a.nomistakes.branch === b.nomistakes.branch);
-}
-
-/**
- * True when a no-mistakes run parked on `s` *needs you* - i.e. waiting on a human
- * decision, not on the agent.
- *
- * `axi` is the agent-facing interface: a parked gate reports `awaiting_agent`
- * because it's waiting for the agent's `axi respond`, which the `/no-mistakes`
- * skill issues autonomously while the session works. Surfacing every parked gate
- * as "needs you" nags you for decisions the skill self-resolves.
- *
- * One run can be driven by more than one session - the launcher plus a dispatched
- * agent checked out on its branch - so it's still being driven as long as ANY
- * session carrying that same run (see sameRun) is active; the agent behind that
- * one will answer the gate. Only once they've all stopped does it need you. Pass
- * `sessions` (all live sessions) for that cross-session check; it defaults to `s`
- * alone, which reduces to "parked and this agent has stopped".
- */
-export function gateParked(s: Session, sessions: readonly Session[] = [s]): boolean {
-  if (!gatePending(s)) return false;
-  if (agentActive(s)) return false; // this agent is driving its own gate
-  for (const o of sessions) {
-    if (o.state !== "exited" && sameRun(o, s) && agentActive(o)) return false; // a sibling is driving it
-  }
-  return true;
-}
-
-/**
- * True while a no-mistakes run this session owns is actively *executing a step*.
- *
- * The agent can background the `axi run`/`axi respond` that drives the run and
- * end its turn. That reports `idle`, which is a true statement about the agent -
- * it isn't thinking or calling tools - but the run keeps going, and its
- * completion re-invokes the agent. So the session is committed to that work and
- * will resume on its own, with no human in the loop: not idle in the only sense
- * the dashboard's idle bucket means ("free, could take work").
- *
- * Executing excludes parked (see gatePending): `status` stays "running" while a
- * run sits at a gate, but a parked run is *waiting* on a decision, not working.
- * Whether that wait needs you is gateParked's call, and conflating the two here
- * would let a gate parked under a presumed-driving agent masquerade as confirmed
- * work.
- *
- * This clears the same bar as hook instrumentation rather than lowering it (see
- * reportBucket). The registry only attributes a run to a session whose *own*
- * agent process has a live `no-mistakes` descendant driving it (see
- * discovery/nomistakes-launch.ts), so this is a live process re-confirmed every
- * poll - stronger evidence than a hook, and it self-expires: when the driver
- * dies or the run ends, `status` stops reporting running and the session drops
- * back to idle on the next poll. Nothing can get stuck "working" forever.
- */
-export function runInFlight(s: Session): boolean {
-  return s.nomistakes?.status === "running" && !gatePending(s);
-}
-
 /**
  * Which report section a session belongs to:
- *  - needs-you: prompting you - a pending review, a parked gate that needs you,
- *    or the agent explicitly awaiting your input/review.
+ *  - needs-you: prompting you through a pending review, visible menu, or explicit
+ *    awaiting-input/review state.
  *  - working: an agent we can *confirm* is running. That takes a fresh lifecycle
- *    reading (from hooks or an explicit transcript marker) or a live no-mistakes run
- *    the agent backgrounded (runInFlight); a session with neither reports no live
- *    state, so we don't claim it's busy.
+ *    reading from hooks or an explicit transcript marker; a session without one
+ *    reports no live state, so we don't claim it is busy.
  *  - idle: open but not prompting you and not confirmed running - sessions whose
- *    lifecycle source reports idle, plus sessions with no fresh state and no run in
- *    flight behind them.
- *
- * `sessions` lets a parked gate defer to a same-run session that's still driving it
- * (see gateParked).
+ *    lifecycle source reports idle, plus sessions with no fresh state.
  */
-export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucket {
+export function reportBucket(s: Session, _sessions: Session[] = [s]): ReportBucket {
   if (s.state === "exited") return "exited";
   if (s.pendingReviews > 0) return "needs-you";
   // A menu on the screen is DIRECT evidence the session has stopped and cannot move
@@ -235,20 +159,15 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
   // hook. That is deliberate: answering routine prompts is Foreman's job, a visible menu is
   // exactly the case it exists for, and `decideQueueTick` still escalates on `!hooksSeen`.
   if (activePaneDialog(s)) return "needs-you";
-  if (gateParked(s, sessions)) return "needs-you";
   if (s.stateConfirmed) {
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
     if (s.state === "starting" || s.state === "working") return "working";
   }
-  // Ranks below every state the hook stream can confirm, so a genuine "needs
-  // input" still wins over a run churning in the background. A gate that needs
-  // YOU already returned above, so this only claims the run is self-driving.
-  if (runInFlight(s)) return "working";
   return "idle"; // confirmed idle, or open without confirmed busy evidence
 }
 
 /** A one-line reason a session needs you, or null when it doesn't. */
-export function needsYouReason(s: Session, sessions: Session[] = [s]): string | null {
+export function needsYouReason(s: Session, _sessions: Session[] = [s]): string | null {
   if (s.pendingReviews > 0) return s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review";
   // Ahead of `awaiting_input`, which is the same fact reported more vaguely: when we can
   // see the menu we can say how many ways out of it there are. Below `pendingReviews`
@@ -259,6 +178,5 @@ export function needsYouReason(s: Session, sessions: Session[] = [s]): string | 
   if (dialog) return paneDialogReason(dialog);
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
-  if (gateParked(s, sessions)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;
   return null;
 }

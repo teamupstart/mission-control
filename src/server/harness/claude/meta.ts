@@ -152,7 +152,7 @@ const TURN_DONE = new Set(["end_turn", "stop_sequence"]);
  *     usable - the marker is always read BEFORE the record it disqualifies.
  *
  * Deliberately NOT keyed on the `<command-name>` tag itself: a prompt-expanding
- * command like `/no-mistakes` writes that same tag and DOES open a turn, so
+ * custom prompt-expanding commands write that same tag and DO open a turn, so
  * skipping on the tag would report a working session as idle - strictly worse than
  * the bug being fixed, because it invites Foreman to ship mid-turn. The
  * `local_command` marker is the only thing that separates the two.

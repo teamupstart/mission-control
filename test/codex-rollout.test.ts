@@ -147,7 +147,11 @@ test("a pane-less Codex SDK session reads runway from its reported rollout path"
       type: "token_count",
       info: {},
       rate_limits: {
-        primary: { used_percent: 32, window_minutes: 10080, resets_at: 1785614958 },
+        primary: {
+          used_percent: 32,
+          window_minutes: 10080,
+          resets_at: Math.floor(Date.now() / 1000) + 3600,
+        },
         secondary: null,
       },
     },

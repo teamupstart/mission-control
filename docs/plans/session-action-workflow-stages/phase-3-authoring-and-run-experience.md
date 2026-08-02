@@ -307,7 +307,7 @@ compiled Pull Request action displayable and addable through the completed catal
 surfaces. Do not hard-code a special browser insertion path.
 
 Phase 4 may extend action wait copy with bounded PR-proof states, but it must retain the generic
-action stage and fixed Inspector footer. No-Mistakes v8 should be assembled through the same graph
+action stage and fixed Inspector footer. No-Mistakes Review v8 should be assembled through the same graph
 compiler and snapshot path an operator uses.
 
 As built, the seams Phase 4 will touch live at these names:

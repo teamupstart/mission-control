@@ -30,7 +30,6 @@ function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
     gitBranch: "main",
     gitRoot: null,
     repoRoot: null,
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
     terminals: [PANE],

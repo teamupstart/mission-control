@@ -3672,6 +3672,15 @@ The action is the same whichever trigger fired:
 | **Run No-Mistakes Review automatically** | after Foreman verifies the original work, submits an existing **Foreman Complete** binding; if there is no active binding, it binds and immediately submits the current built-in **No-Mistakes Review** workflow |
 | **Straight to PR** | explicitly skip the review workflow; use git and `gh` directly to commit, push, and open a PR, then merge the default branch in, resolve conflicts, and follow CI until every check passes |
 
+Automatic wrap-up is only for shippable changes. A linked task whose **Kind** is **scout**
+retires its completion without submitting an existing Workflow, creating the built-in
+No-Mistakes fallback, typing the Straight-to-PR instruction, or raising a Ship it? card. The
+same rule applies when the resolved objective explicitly asks for review-only output such as
+mockups, wireframes, prototypes, plans, reports or design explorations, and when the completed
+diff contains only conventional mockup or plan artifacts. A mixed change that also contains an
+implementation remains eligible. This is a Foreman automation boundary; it does not prevent a
+human from committing or opening a pull request manually.
+
 The two automated actions can ultimately *push*, so they only fire in **live** mode on an
 **allowlisted** repo - until then Foreman asks, and the popover says so rather than letting
 a selected radio quietly do nothing. An existing Workflow binding is never replaced: a

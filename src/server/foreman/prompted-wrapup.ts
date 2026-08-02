@@ -8,6 +8,7 @@ import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { VERIFY_FAILURE_CAP, hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
+import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
 
 // The `prompted` wrap-up trigger's decision core: the human typed straight into the
 // pane, the agent worked, and it has parked - is this session finished, and should
@@ -67,6 +68,8 @@ export interface PromptedInput {
 export type PromptedCandidate =
   /** Not a candidate. `why` is for the log - every skip is explicable. */
   | { kind: "skip"; why: string }
+  /** A finished non-shipping episode to retire without verification or a wrap-up action. */
+  | { kind: "retire"; episodeKey: string; why: string }
   /**
    * Worth verifying. Carries the goal both as the verifier's `intent` and as the
    * episode key the result gets stamped under, so the two cannot come from different
@@ -189,6 +192,16 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   if (queue?.promptedGoal === episodeKey) {
     return { kind: "skip", why: "already wrapped up this prompt" };
   }
+
+  // A scout or an explicit review-artifact objective is complete when its report or design
+  // output is ready, not when it has become a PR. Retire the episode without spending a
+  // verifier call: no verdict can make an ineligible completion safe to hand to a Workflow
+  // or the direct shipping prompt.
+  const block = automaticWrapupBlock({
+    taskKind: session.task?.kind ?? null,
+    objective,
+  });
+  if (block) return { kind: "retire", episodeKey, why: block.reason };
 
   return {
     kind: "check",

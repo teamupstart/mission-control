@@ -32,7 +32,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "../src/shared/types.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The queue's decision core. It's pure with `now` always injected, so the whole
 // state machine is a table - which is the point: two earlier designs of the
@@ -632,6 +632,59 @@ test("5. automatic wrap-up waits while the latest intent is unresolved", () => {
 
 test("5. workflow mode returns a workflow claim action, never a pane payload", () => {
   const action = tick({ items: DRAINED(), cfg: { wrapup: "workflow" } });
+  assert.equal(action.kind, "workflow-wrapup");
+});
+
+test("5. a scout drain retires without a Workflow claim or Straight-to-PR action", () => {
+  for (const wrapup of ["workflow", "pr"] as const) {
+    const action = tick({
+      session: { task: mkTaskSummary({ kind: "scout" }) },
+      items: DRAINED(),
+      cfg: { wrapup },
+    });
+    assert.equal(action.kind, "skip-wrapup", wrapup);
+    assert.match(action.kind === "skip-wrapup" ? action.reason : "", /scout/);
+  }
+});
+
+test("5. a scout drain still waits for the session to settle before retiring", () => {
+  const action = tick({
+    session: {
+      task: mkTaskSummary({ kind: "scout" }),
+      lastActivity: NOW - 1,
+    },
+    items: DRAINED(),
+    cfg: { wrapup: "workflow" },
+  });
+  assert.equal(action.kind, "none");
+});
+
+test("5. a review-artifact objective retires before even ask mode can claim a Workflow", () => {
+  const action = tick({
+    items: DRAINED(),
+    intent: { objective: "Compare the navigation ideas.\n\nOutput: mockups" },
+    cfg: { wrapup: "ask" },
+  });
+  assert.equal(action.kind, "skip-wrapup");
+  assert.match(action.kind === "skip-wrapup" ? action.reason : "", /review artifact/);
+});
+
+test("5. a work-queue item can declare the non-shipping output", () => {
+  const action = tick({
+    items: DRAINED().map((item) => ({ ...item, intent: "Compare the ideas.\nOutput: wireframes" })),
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(action.kind, "skip-wrapup");
+});
+
+test("5. an implementation that cites mockups keeps the configured automatic action", () => {
+  const action = tick({
+    items: DRAINED(),
+    intent: {
+      objective: "Use the approved mockups to deliver the production-ready implementation.",
+    },
+    cfg: { wrapup: "workflow" },
+  });
   assert.equal(action.kind, "workflow-wrapup");
 });
 

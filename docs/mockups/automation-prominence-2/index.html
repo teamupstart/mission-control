@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Automation prominence, round 2 - Mission Control UI exploration</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root {
+    --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+    --border:#232a33; --border-soft:#1b2129;
+    --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+    --neutral:#8b94a3; --purple:#a371f7;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  body { background:#07090b; color:var(--fg); font-family:var(--sans); font-size:14px; line-height:1.5; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--working); outline-offset:2px; border-radius:4px; }
+  kbd { font-family:var(--mono); font-size:10px; padding:1px 5px; border:1px solid var(--border);
+    border-bottom-width:2px; border-radius:4px; background:var(--panel-2); color:var(--muted); }
+
+  .wrap { max-width:1100px; margin:0 auto; padding:48px 24px 80px; }
+  .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; }
+  h1 { font-size:30px; font-weight:650; letter-spacing:-.015em; margin:12px 0 10px; }
+  .stand { color:var(--muted); max-width:78ch; font-size:15px; }
+  .stand b { color:var(--fg); }
+
+  h2 { font-size:15px; font-weight:650; margin:40px 0 12px; letter-spacing:.01em; }
+  h2 .g { color:var(--working); font-family:var(--mono); margin-right:8px; }
+
+  .facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:11px; }
+  .fact { background:var(--bg-2); border:1px solid var(--border-soft); border-radius:11px; padding:13px 15px;
+    font-size:13px; color:var(--muted); }
+  .fact b { color:var(--fg); display:block; margin-bottom:3px; font-size:13.5px; }
+  .fact .src { display:block; margin-top:7px; font-family:var(--mono); font-size:10px; color:var(--dim); }
+
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
+  .apr { display:block; text-decoration:none; background:var(--panel); border:1px solid var(--border);
+    border-radius:13px; padding:15px 16px; }
+  .apr:hover { border-color:var(--dim); }
+  .apr .num { font-family:var(--mono); font-size:11px; color:var(--working); }
+  .apr h3 { font-size:15.5px; font-weight:650; margin:4px 0 6px; }
+  .apr p { font-size:12.5px; color:var(--muted); min-height:70px; }
+  .apr .chips { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+  .chip { font-family:var(--mono); font-size:9.5px; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--dim); }
+  .chip.low { color:var(--idle); border-color:rgba(53,192,138,.4); }
+  .chip.med { color:var(--attention); border-color:rgba(246,167,51,.4); }
+  .chip.high { color:var(--danger); border-color:rgba(248,81,73,.4); }
+  .chip.teach { color:var(--purple); border-color:rgba(163,113,247,.4); }
+  .chip.reco { color:var(--working); border-color:rgba(74,158,255,.4); }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-soft); vertical-align:top; }
+  th { font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); font-weight:500; }
+  td:first-child { white-space:nowrap; font-weight:600; }
+  td { color:var(--muted); }
+  td .y { color:var(--idle); } td .n { color:var(--danger); } td .p { color:var(--attention); }
+
+  .combo { background:var(--bg-2); border:1px solid var(--border-soft); border-radius:11px; padding:14px 16px;
+    font-size:13px; color:var(--muted); max-width:82ch; }
+  .combo b { color:var(--fg); }
+  .combo + .combo { margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Mission Control - UI exploration - 2026-08-01 - round 2</div>
+  <h1>Building vs. watching: one product from the Library and the Line</h1>
+  <p class="stand">
+    Round 1 asked how to make workflows, Personas and ensembles visible. Round 2 starts from the split the
+    operator named since: <b>Workflows, Personas and Actions are how you build automation; Runs and Ensembles
+    are the work actually being done.</b> The current UI files all five under one page as sibling tabs.
+    The flagship concept merges round 1's Library and Line into a single product shaped by that split, and two
+    new concepts attack the same problem from different axes - rules and stories. The cost bar's second topbar
+    row is in scope everywhere; session cards are untouched everywhere.
+  </p>
+
+  <h2><span class="g">01</span>What changed since round 1</h2>
+  <div class="facts">
+    <div class="fact"><b>Actions exist now.</b> A workflow stage can type a reusable instruction into its
+      session - the built-in Pull Request action ships in No-Mistakes v8 - so a run acts, waits on the session,
+      and resumes. "Waiting for action" is a first-class run state no mockup accounted for.
+      <span class="src">SessionActionLibrary.tsx · workflow.ts</span></div>
+    <div class="fact"><b>Five tabs, two natures.</b> The Workflows page now holds workflows / personas /
+      actions / runs / ensembles as equals. Three are authoring surfaces, two are execution monitors; the tab
+      strip says nothing about which is which.
+      <span class="src">WorkflowPage.tsx · useWorkflowRoute.ts</span></div>
+    <div class="fact"><b>Ensembles hand off into runs.</b> A decided ensemble can open a workflow run on the
+      winner (trigger source "ensemble"), so the two execution systems already flow into each other - across
+      two tabs that never point at one another.
+      <span class="src">ensemble.ts workflow_handoff · ExternalProvenance</span></div>
+    <div class="fact"><b>The cost bar earns its complaint.</b> A foldable second topbar row (UsageBar →
+      FleetStrip) spends permanent chrome on stats, runway meters and an automation line that are consulted
+      occasionally, not every glance.
+      <span class="src">App.tsx UsageBar · FleetStrip.tsx</span></div>
+  </div>
+
+  <h2><span class="g">02</span>The three concepts</h2>
+  <div class="cards">
+    <a class="apr" href="1-library-line.html">
+      <span class="num">1/3 · flagship</span>
+      <h3>The Library and the Line</h3>
+      <p>Round 1's two strongest ideas as one product: the Library is the only home for what you author, the
+        Fleet wearing the Line is the only home for what is happening. Runs and Ensembles leave the authoring
+        page; the cost row becomes a chip. Ships in five phases.</p>
+      <div class="chips"><span class="chip reco">recommended</span><span class="chip high">big IA change</span><span class="chip teach">teaches purpose</span><span class="chip low">phases ship alone</span></div>
+    </a>
+    <a class="apr" href="2-standing-orders.html">
+      <span class="num">2/3 · novel</span>
+      <h3>Standing Orders</h3>
+      <p>Automation as the rules you have delegated: one page of full-sentence promises - trigger, procedure,
+        outcome - with a pause switch each. Workflows, Personas and Actions are the vocabulary inside the
+        sentences; runs are each order's execution ledger.</p>
+      <div class="chips"><span class="chip teach">purpose by grammar</span><span class="chip med">new abstraction</span><span class="chip high">backend unification</span></div>
+    </a>
+    <a class="apr" href="3-threads.html">
+      <span class="num">3/3 · novel</span>
+      <h3>Threads</h3>
+      <p>Automation gets no home - it gets a speaking part in each piece of work's story. A third fleet layout
+        follows every task end to end: intake, dispatch, review rounds, decision, merge, and what it cost.
+        Runs and dossiers become chapters.</p>
+      <div class="chips"><span class="chip teach">purpose by narrative</span><span class="chip med">needs a thread id</span><span class="chip low">cards untouched</span></div>
+    </a>
+  </div>
+
+  <h2><span class="g">03</span>Comparison</h2>
+  <table>
+    <thead>
+      <tr><th>Concept</th><th>Organizing axis</th><th>Where runs &amp; ensembles live</th><th>Where authoring lives</th><th>Main risk</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1 · Library + Line</td>
+        <td>Build vs. watch - the operator's own split, made structural</td>
+        <td>On the Line: Review and Decide stages, drawers for triage, full views one click deeper</td>
+        <td>The Library's five shelves, each headed by its question</td>
+        <td>Two homes must cross-link honestly or the split becomes a wall; one new server fold event</td>
+      </tr>
+      <tr>
+        <td>2 · Standing Orders</td>
+        <td>Delegation - what may the machinery do without me</td>
+        <td>As each order's execution ledger, attached to the rule that caused it</td>
+        <td>Behind the words of the sentences themselves</td>
+        <td>Must unify schedules, sources, trigger modes and defaults behind one honest abstraction</td>
+      </tr>
+      <tr>
+        <td>3 · Threads</td>
+        <td>Narrative - the life of one piece of work</td>
+        <td>As chapters in the thread where they happened</td>
+        <td>Demoted to a thin catalog behind ⌘K - the concept's deliberate trade</td>
+        <td>Needs one durable work id stitching task → session → run → ensemble → PR</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2><span class="g">04</span>Recommendation</h2>
+  <p class="combo">
+    <b>Ship concept 1.</b> It is the only one that resolves the stated problem with the machinery the app
+    already has: every phase reuses an existing editor, renderer or route, the five-tab page dissolves into
+    homes that match the build/watch split, and phases 1-3 each leave the app whole. Round 1's palette
+    (concept 4 there) survives intact as phase 5; round 1's rail is subsumed by the Library segment.
+  </p>
+  <p class="combo">
+    <b>Steal from 2 and 3 later, without adopting them.</b> Standing Orders' pause switch and sentence framing
+    would make a strong Library shelf header for missions and sources ("what runs without me"), and Threads'
+    per-work cost accounting ("this fix cost $4.10") is the honest number the spend popover should eventually
+    show per PR. Both graft onto concept 1; neither blocks it.
+  </p>
+
+</div>
+</body>
+</html>

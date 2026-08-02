@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concept 1 - The Library and the Line - Mission Control UI exploration</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root {
+    --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+    --border:#232a33; --border-soft:#1b2129;
+    --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+    --exited:#707a88; --neutral:#8b94a3; --purple:#a371f7;
+    --radius:13px;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  body { background:#07090b; color:var(--fg); font-family:var(--sans); font-size:14px; line-height:1.45; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--working); outline-offset:2px; border-radius:4px; }
+  kbd {
+    font-family:var(--mono); font-size:10px; padding:1px 5px;
+    border:1px solid var(--border); border-bottom-width:2px; border-radius:4px;
+    background:var(--panel-2); color:var(--muted); vertical-align:1px;
+  }
+
+  /* ---- proposal chrome ---- */
+  .doc { max-width:1280px; margin:0 auto; padding:42px 24px 4px; }
+  .doc .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; }
+  .doc h1 { font-size:27px; font-weight:650; letter-spacing:-.01em; margin:10px 0 8px; }
+  .doc h1 .num { font-family:var(--mono); font-weight:500; color:var(--working); margin-right:12px; }
+  .doc .stand { color:var(--muted); max-width:76ch; }
+  .doc nav { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+  .doc nav a { font-family:var(--mono); font-size:11px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--border); border-radius:999px; padding:4px 11px; }
+  .doc nav a:hover { color:var(--fg); border-color:var(--dim); }
+  .doc nav a[aria-current] { color:var(--working); border-color:var(--working); }
+
+  .framecap { max-width:1280px; margin:30px auto -18px; padding:0 24px;
+    font-family:var(--mono); font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); }
+  .framecap b { color:var(--muted); }
+  .frame { max-width:1280px; margin:26px auto 12px; border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; background:var(--bg); box-shadow:0 30px 80px rgba(0,0,0,.55); position:relative; }
+
+  /* ---- topbar (shared by both frames) ---- */
+  .topbar { display:flex; align-items:center; gap:14px; height:46px; padding:0 14px;
+    background:var(--bg-2); border-bottom:1px solid var(--border); }
+  .brand { display:flex; align-items:center; gap:8px; }
+  .brand-mark { width:15px; height:15px; border-radius:4px; flex:none;
+    background:linear-gradient(135deg,var(--working),var(--idle)); }
+  .brand b { font-size:13px; font-weight:600; }
+  .seg { display:flex; border:1px solid var(--border); border-radius:9px; overflow:hidden; }
+  .seg a { font-size:12.5px; padding:5px 13px; text-decoration:none; color:var(--muted); display:flex; gap:7px; align-items:center; }
+  .seg a[aria-current] { background:var(--panel-2); color:var(--fg); font-weight:600; }
+  .filter { display:flex; align-items:center; gap:6px; background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:4px 9px; color:var(--dim); font-size:12px; }
+  .filter input { background:none; border:0; outline:0; color:var(--fg); font:inherit; width:96px; }
+  .tb-spacer { flex:1; }
+  .pulse { font-family:var(--mono); font-size:11px; color:var(--muted); display:flex; gap:9px; align-items:center; }
+  .pulse i { font-style:normal; color:var(--border); }
+  .p-att { color:var(--attention); }
+  .btn { font:inherit; font-size:12.5px; color:var(--fg); background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:5px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .btn:hover { border-color:var(--dim); }
+  .btn.primary { background:var(--working); border-color:var(--working); color:#04121f; font-weight:600; }
+  .btn.sm { font-size:11.5px; padding:3px 9px; }
+  .ghost { background:none; border-color:transparent; color:var(--muted); }
+  .ghost:hover { color:var(--fg); border-color:var(--border); }
+
+  /* ---- cost chip + spend popover (the UsageBar replacement) ---- */
+  .costchip { font-family:var(--mono); font-size:11px; color:var(--purple); background:none;
+    border:1px solid rgba(163,113,247,.35); border-radius:999px; padding:4px 11px; cursor:pointer;
+    display:inline-flex; gap:7px; align-items:center; }
+  .costchip:hover { border-color:var(--purple); }
+  .costchip .r { color:var(--dim); }
+  .spendpop { position:absolute; top:52px; right:118px; width:322px; background:var(--panel-2);
+    border:1px solid var(--border); border-radius:12px; box-shadow:0 18px 50px rgba(0,0,0,.6); z-index:5; }
+  .spendpop .ph { font-family:var(--mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--dim); padding:11px 14px 8px; border-bottom:1px solid var(--border-soft); }
+  .sp-row { display:flex; align-items:baseline; gap:8px; padding:8px 14px; font-size:12.5px; }
+  .sp-row .k { color:var(--muted); flex:1; }
+  .sp-row .v { font-family:var(--mono); font-size:12px; }
+  .sp-row .v small { color:var(--dim); font-size:10px; }
+  .sp-row.auto .v, .sp-row.auto .k { color:var(--purple); }
+  .sp-sub { font-family:var(--mono); font-size:10px; color:var(--dim); padding:0 14px 8px; }
+  .sp-run { padding:4px 14px 8px; }
+  .sp-run .lbl { display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px; color:var(--dim); margin:5px 0 3px; }
+  .meter { height:5px; border-radius:3px; background:var(--border-soft); overflow:hidden; }
+  .meter i { display:block; height:100%; border-radius:3px; background:var(--working); }
+  .meter.warn i { background:var(--attention); }
+  .sp-foot { display:flex; justify-content:space-between; align-items:center; padding:9px 14px; border-top:1px solid var(--border-soft);
+    font-family:var(--mono); font-size:10.5px; color:var(--dim); }
+
+  /* ---- the Line ---- */
+  .line-wrap { padding:16px 16px 4px; }
+  .line { display:flex; align-items:stretch; gap:0; }
+  .stage { flex:1; min-width:0; background:var(--panel); border:1px solid var(--border); border-radius:12px;
+    padding:10px 13px; cursor:pointer; position:relative; }
+  .stage:hover { border-color:var(--dim); }
+  .stage .top { display:flex; align-items:baseline; gap:8px; }
+  .stage .g { color:var(--muted); font-size:13px; }
+  .stage .nm { font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+  .stage .ct { font-family:var(--mono); font-size:17px; font-weight:600; margin-left:auto; }
+  .stage .sub { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stage.sel { border-color:var(--working); box-shadow:0 0 0 1px rgba(74,158,255,.25); }
+  .stage.sel .nm, .stage.sel .ct { color:var(--working); }
+  .stage.sel::after { content:""; position:absolute; left:50%; bottom:-13px; transform:translateX(-50%);
+    border:7px solid transparent; border-top-color:var(--working); }
+  .stage .att { color:var(--attention); }
+  .stage .ok { color:var(--idle); }
+  .stage .run { color:var(--working); }
+
+  .wire { flex:none; width:34px; position:relative; align-self:center; height:2px; background:var(--border); }
+  .wire::after { content:""; position:absolute; top:-2px; left:0; width:6px; height:6px; border-radius:50%;
+    background:var(--working); animation:flow 2.6s linear infinite; }
+  .wire.w2::after { animation-delay:.9s; }
+  .wire.w3::after { animation-delay:1.6s; }
+  .wire.hot::after { background:var(--attention); }
+  @keyframes flow { from { left:0; opacity:0; } 15% { opacity:1; } 85% { opacity:1; } to { left:calc(100% - 6px); opacity:0; } }
+  @media (prefers-reduced-motion: reduce) { .wire::after { animation:none; display:none; } .ndot { animation:none !important; } }
+
+  /* ---- Review drawer: run ladders with actions ---- */
+  .drawer { margin:16px 16px 0; border:1px solid var(--border); border-radius:12px; background:var(--bg-2); overflow:hidden; }
+  .drawer-head { display:flex; align-items:center; gap:10px; padding:11px 16px; border-bottom:1px solid var(--border-soft); }
+  .drawer-head .t { font-weight:650; font-size:14px; }
+  .drawer-head .s { font-family:var(--mono); font-size:11px; color:var(--dim); }
+  .drawer-head .s .att { color:var(--attention); }
+  .drawer-head .sp { flex:1; }
+  .drawer-body { max-height:248px; overflow-y:auto; }
+  .drawer-body::-webkit-scrollbar { width:8px; }
+  .drawer-body::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+  .runrow { display:flex; align-items:center; gap:12px; padding:11px 16px; border-bottom:1px solid var(--border-soft); }
+  .runrow:last-of-type { border-bottom:0; }
+  .runrow .who { width:168px; flex:none; min-width:0; }
+  .runrow .who b { font-size:13px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .runrow .who .wf { font-family:var(--mono); font-size:10px; color:var(--dim); margin-top:2px; }
+  .runrow .who .wf .prov { color:var(--purple); }
+  .pchips { flex:1; display:flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0; }
+  .pc { font-family:var(--mono); font-size:10px; padding:3px 8px; border-radius:999px; border:1px solid var(--border);
+    color:var(--dim); white-space:nowrap; }
+  .pc.done { color:var(--idle); border-color:rgba(53,192,138,.4); }
+  .pc.live { color:var(--working); border-color:rgba(74,158,255,.4); }
+  .pc.wait { color:var(--attention); border-color:rgba(246,167,51,.45); }
+  .pc-sep { color:var(--border); font-size:10px; }
+  .runrow .st { width:200px; flex:none; font-family:var(--mono); font-size:10px; color:var(--dim); }
+  .runrow .st .att { color:var(--attention); }
+  .runrow .ops { flex:none; display:flex; gap:6px; }
+  .drawer-foot { font-family:var(--mono); font-size:10px; color:var(--dim); padding:9px 16px;
+    border-top:1px solid var(--border-soft); }
+
+  /* ---- the board beneath, at true size - session cards unchanged ---- */
+  .board-cap { text-align:center; font-family:var(--mono); font-size:10px; letter-spacing:.08em; color:var(--dim);
+    padding:14px 16px 0; }
+  .board { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; padding:14px 16px 16px; }
+  .col-head { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin-bottom:8px; }
+  .sw { width:9px; height:9px; border-radius:3px; }
+  .col-head .ct { font-family:var(--mono); font-size:11px; margin-left:auto; color:var(--dim); }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    border-top:2px solid var(--agent-accent,var(--neutral)); padding:11px 13px 12px; margin-bottom:12px; }
+  .card-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .adot { width:8px; height:8px; border-radius:50%; background:var(--agent-accent,var(--neutral)); }
+  .sname { font-weight:600; font-size:13.5px; }
+  .badge { font-family:var(--mono); font-size:10px; padding:2px 8px; border-radius:999px; margin-left:auto; }
+  .b-working { color:var(--working); background:rgba(74,158,255,.12); }
+  .b-att { color:var(--attention); background:rgba(246,167,51,.14); }
+  .b-idle { color:var(--idle); background:rgba(53,192,138,.12); }
+  .goal { font-size:12.5px; color:var(--muted); margin-top:7px; }
+  .card .tf { font-family:var(--mono); font-size:10px; color:var(--dim); margin-top:7px; display:flex; gap:9px; flex-wrap:wrap; }
+  .tf .f-ens { color:var(--purple); }
+  .tf .f-wf { color:var(--working); }
+  .tf .f-att { color:var(--attention); }
+  .meta { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:8px; }
+
+  /* ---- the Library page ---- */
+  .lib { min-height:640px; padding:22px 26px 30px; }
+  .lib-head { display:flex; align-items:baseline; gap:16px; margin-bottom:6px; }
+  .lib-head h2 { font-size:19px; font-weight:650; letter-spacing:-.01em; }
+  .lib-sub { color:var(--dim); font-size:12.5px; }
+  .lib-search { display:flex; align-items:center; gap:8px; margin:14px 0 8px; background:var(--panel);
+    border:1px solid var(--border); border-radius:10px; padding:8px 12px; color:var(--dim); max-width:520px; }
+  .lib-search input { flex:1; background:none; border:0; outline:0; color:var(--fg); font:inherit; }
+
+  .shelf { margin-top:26px; }
+  .shelf-top { display:flex; align-items:baseline; gap:12px; }
+  .shelf-eyebrow { font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); }
+  .shelf-live { margin-left:auto; font-family:var(--mono); font-size:10.5px; color:var(--working); text-decoration:none; white-space:nowrap; }
+  .shelf-live.att { color:var(--attention); }
+  .shelf-live:hover { text-decoration:underline; }
+  .shelf h3 { font-size:16px; font-weight:650; margin:3px 0 2px; }
+  .shelf .why { font-size:12.5px; color:var(--muted); max-width:82ch; }
+  .shelf-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:11px; margin-top:12px; }
+
+  .asset { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    padding:12px 14px; display:flex; flex-direction:column; gap:6px; min-height:104px; cursor:pointer; }
+  .asset:hover { border-color:var(--dim); }
+  .asset-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .a-glyph { color:var(--muted); font-size:13px; }
+  .a-name { font-weight:600; font-size:13.5px; flex:1; white-space:nowrap; }
+  .tag { font-family:var(--mono); font-size:9.5px; padding:2px 7px; border-radius:999px; border:1px solid var(--border); color:var(--dim); flex:none; }
+  .tag.builtin { color:var(--purple); border-color:rgba(163,113,247,.4); }
+  .tag.draft { color:var(--attention); border-color:rgba(246,167,51,.4); }
+  .tag.def { color:var(--working); border-color:rgba(74,158,255,.35); }
+  .a-desc { font-size:12px; color:var(--muted); flex:1; }
+  .a-live { font-family:var(--mono); font-size:10.5px; color:var(--dim); border-top:1px solid var(--border-soft); padding-top:7px; }
+  .a-live .ok { color:var(--idle); }
+  .a-live .warn { color:var(--attention); }
+  .a-live .run { color:var(--working); }
+  .a-live .cta { color:var(--working); }
+  .asset.new { border-style:dashed; align-items:center; justify-content:center; color:var(--dim);
+    font-size:12.5px; gap:4px; text-align:center; }
+  .asset.new:hover { color:var(--fg); }
+
+  /* ---- mapping + phases ---- */
+  .sect { max-width:1280px; margin:34px auto 0; padding:0 24px; }
+  .sect h2 { font-size:15px; font-weight:650; letter-spacing:.01em; margin-bottom:12px; }
+  .sect h2 .g { color:var(--working); font-family:var(--mono); margin-right:8px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-soft); vertical-align:top; }
+  th { font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); font-weight:500; }
+  td:first-child { white-space:nowrap; font-weight:600; }
+  td { color:var(--muted); }
+  td .lib-td { color:var(--idle); } td .line-td { color:var(--working); } td .gone { color:var(--danger); }
+  .phases { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:11px; }
+  .phase { background:var(--bg-2); border:1px solid var(--border-soft); border-radius:11px; padding:13px 15px; font-size:12.5px; color:var(--muted); }
+  .phase b { color:var(--fg); display:block; margin-bottom:3px; font-size:13px; }
+  .phase .pn { font-family:var(--mono); font-size:10px; color:var(--working); display:block; margin-bottom:5px; }
+  .phase .ship { display:block; margin-top:8px; font-family:var(--mono); font-size:10px; color:var(--dim); }
+
+  /* ---- notes ---- */
+  .notes { max-width:1280px; margin:30px auto 64px; padding:0 24px;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; }
+  .note { border:1px solid var(--border-soft); border-radius:10px; padding:11px 13px;
+    background:var(--bg-2); font-size:12.5px; color:var(--muted); }
+  .note b { color:var(--fg); font-weight:600; }
+  .note .n { font-family:var(--mono); color:var(--working); margin-right:7px; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="eyebrow">Mission Control - UI exploration - automation prominence, round 2</div>
+  <h1><span class="num">1/3</span>The Library and the Line: build on one page, watch on the other</h1>
+  <p class="stand">
+    Round 1's Library and Line merged into one product, organized by the split the five Workflows tabs
+    currently blur: <b>what you author</b> (workflows, Personas, actions, missions, sources) versus
+    <b>what is happening</b> (sessions, runs, ensembles, tasks). The Library is the only home for the first;
+    the Fleet, wearing the Line, is the only home for the second. Runs and ensemble results leave the
+    authoring page for good - they surface on the Line, where the work is. The cost bar's second topbar row
+    is retired for a chip and a popover.
+  </p>
+  <nav aria-label="Concepts">
+    <a href="index.html">Index</a>
+    <a href="1-library-line.html" aria-current="page">1 Library + Line</a>
+    <a href="2-standing-orders.html">2 Standing Orders</a>
+    <a href="3-threads.html">3 Threads</a>
+  </nav>
+</header>
+
+<div class="framecap"><b>Frame A</b> - the Fleet wearing the Line - Review drawer open</div>
+<div class="frame">
+  <div class="topbar">
+    <div class="brand"><span class="brand-mark"></span><b>Mission Control</b></div>
+    <div class="seg" role="navigation" aria-label="Pages">
+      <a href="#" aria-current="page">▦ Fleet <kbd>1</kbd></a>
+      <a href="#">⌗ Library <kbd>L</kbd></a>
+    </div>
+    <label class="filter">⌕ <input placeholder="Filter (/)" aria-label="Filter sessions"></label>
+    <div class="tb-spacer"></div>
+    <div class="pulse">12 sessions <i>·</i> <b class="p-att">2 need you</b> <i>·</i> 5 working</div>
+    <button class="costchip">≈$12.40 <span class="r">· $3.1/hr</span> ▾</button>
+    <button class="btn ghost">📡 <kbd>r</kbd></button>
+    <button class="btn ghost">⚙</button>
+    <button class="btn primary">＋ Dispatch <kbd>+</kbd></button>
+  </div>
+
+  <div class="line-wrap" aria-label="The line">
+    <div class="line">
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">⇊◷</span><span class="nm">Intake</span><span class="ct">2</span></div>
+        <div class="sub">github-issues swept 4m · next mission Mon 08:00</div>
+      </div>
+      <span class="wire"></span>
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">☰</span><span class="nm">Backlog</span><span class="ct">4</span></div>
+        <div class="sub">next up: Fix pane focus stealing</div>
+      </div>
+      <span class="wire w2"></span>
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">▶</span><span class="nm">Working</span><span class="ct">5</span></div>
+        <div class="sub"><span class="att">1 needs you</span> · 4 running clean</div>
+      </div>
+      <span class="wire w3"></span>
+      <div class="stage sel" role="button" tabindex="0" aria-expanded="true">
+        <div class="top"><span class="g">⌁</span><span class="nm">Review</span><span class="ct">5</span></div>
+        <div class="sub">No-Mistakes v8 ×4 · <span class="att">1 action waiting</span></div>
+      </div>
+      <span class="wire hot"></span>
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">⧉</span><span class="nm">Decide</span><span class="ct att">1</span></div>
+        <div class="sub"><span class="att">Best of 3 · waiting on you</span></div>
+      </div>
+      <span class="wire"></span>
+      <div class="stage" role="button" tabindex="0">
+        <div class="top"><span class="g">⚑</span><span class="nm">Shipped</span><span class="ct ok">3</span></div>
+        <div class="sub">this week · ≈$4.05 per PR</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer" aria-label="Review drawer">
+    <div class="drawer-head">
+      <span class="t">⌁ Review</span>
+      <span class="s">5 runs live · <span class="att">1 action waiting</span></span>
+      <span class="sp"></span>
+      <button class="btn sm">Bind a workflow…</button>
+      <button class="btn sm">All runs →</button>
+      <button class="btn sm ghost" aria-label="Close drawer">✕ <kbd>esc</kbd></button>
+    </div>
+    <div class="drawer-body">
+    <div class="runrow">
+      <div class="who"><b>pane-fix</b><div class="wf">No-Mistakes Review v8 · round 2/3</div></div>
+      <div class="pchips">
+        <span class="pc done">✓ checks</span><span class="pc-sep">→</span>
+        <span class="pc done">✓ reviewers 4/4</span><span class="pc-sep">→</span>
+        <span class="pc wait">▤ Pull Request · waiting</span><span class="pc-sep">→</span>
+        <span class="pc">◇ Inspector</span>
+      </div>
+      <div class="st"><span class="att">waiting for action</span> · delivered 6m ago · session working</div>
+      <div class="ops"><button class="btn sm">Open run</button></div>
+    </div>
+    <div class="runrow">
+      <div class="who"><b>issue-412</b><div class="wf">No-Mistakes Review v8 · round 1</div></div>
+      <div class="pchips">
+        <span class="pc done">✓ checks</span><span class="pc-sep">→</span>
+        <span class="pc live">▶ reviewers 2/4</span><span class="pc-sep">→</span>
+        <span class="pc">▤ Pull Request</span><span class="pc-sep">→</span>
+        <span class="pc">◇ Inspector</span>
+      </div>
+      <div class="st">Code Risk Reviewer · Test Evidence Auditor running</div>
+      <div class="ops"><button class="btn sm">Open run</button></div>
+    </div>
+    <div class="runrow">
+      <div class="who"><b>refactor-discovery</b><div class="wf"><span class="prov">from ⧉ Best of 3 · winner A</span> · round 1</div></div>
+      <div class="pchips">
+        <span class="pc live">▶ capturing</span><span class="pc-sep">→</span>
+        <span class="pc">reviewers</span><span class="pc-sep">→</span>
+        <span class="pc">▤ Pull Request</span><span class="pc-sep">→</span>
+        <span class="pc">◇ Inspector</span>
+      </div>
+      <div class="st">handoff run · pinning evidence from the winning worktree</div>
+      <div class="ops"><button class="btn sm">Open run</button></div>
+    </div>
+    <div class="runrow">
+      <div class="who"><b>goal-refiner</b><div class="wf">No-Mistakes Review v8 · round 1</div></div>
+      <div class="pchips">
+        <span class="pc done">✓ checks</span><span class="pc-sep">→</span>
+        <span class="pc live">▶ reviewers 1/4</span><span class="pc-sep">→</span>
+        <span class="pc">▤ Pull Request</span><span class="pc-sep">→</span>
+        <span class="pc">◇ Inspector</span>
+      </div>
+      <div class="st">Documentation Steward running</div>
+      <div class="ops"><button class="btn sm">Open run</button></div>
+    </div>
+    <div class="runrow">
+      <div class="who"><b>settings-panel</b><div class="wf">No-Mistakes Review v8 · round 1</div></div>
+      <div class="pchips">
+        <span class="pc live">▶ checks</span><span class="pc-sep">→</span>
+        <span class="pc">reviewers</span><span class="pc-sep">→</span>
+        <span class="pc">▤ Pull Request</span><span class="pc-sep">→</span>
+        <span class="pc">◇ Inspector</span>
+      </div>
+      <div class="st">queued · waiting for a check lease</div>
+      <div class="ops"><button class="btn sm">Open run</button></div>
+    </div>
+    </div>
+    <div class="drawer-foot">The drawer is triage: it caps at three rows and scrolls inside itself beyond that - it never buries the board.
+      The full reader - verdicts, deliveries, timeline, exports - is one click deeper on each run.
+      Close with ✕, <kbd>esc</kbd>, or a second click on the Review stage; the board slides back up.</div>
+  </div>
+
+  <div class="board-cap">▼ the board, exactly as it is today - the drawer pushes it down and hands the space back on close; cards never resize</div>
+  <div class="board">
+    <div>
+      <div class="col-head"><span class="sw" style="background:var(--attention)"></span> needs you <span class="ct">1</span></div>
+      <div class="card" style="--agent-accent:#c678dd">
+        <div class="card-head"><span class="adot"></span><span class="sname">docs-sweep</span><span class="badge b-att">needs you</span></div>
+        <div class="goal">Bring README runtime sections up to date</div>
+        <div class="tf"><span class="f-wf">⌁ waiting for session</span><span>◷ Dependency audit</span></div>
+        <div class="meta">pi · ≈$0.61</div>
+      </div>
+    </div>
+    <div>
+      <div class="col-head"><span class="sw" style="background:var(--working)"></span> working <span class="ct">5</span></div>
+      <div class="card" style="--agent-accent:#d97757">
+        <div class="card-head"><span class="adot"></span><span class="sname">pane-fix</span><span class="badge b-working">working</span></div>
+        <div class="goal">Fix pane focus stealing in board drill-in</div>
+        <div class="tf"><span class="f-wf">⌁ round 2/3</span><span class="f-att">▤ PR action delivered</span></div>
+        <div class="meta">claude · opus · ≈$4.10</div>
+      </div>
+      <div class="card" style="--agent-accent:#3dc9b0">
+        <div class="card-head"><span class="adot"></span><span class="sname">refactor-a</span><span class="badge b-idle">submitted</span></div>
+        <div class="goal">Refactor session discovery behind one sweep</div>
+        <div class="tf"><span class="f-ens">⧉ E 1/3 · submitted</span></div>
+        <div class="meta">codex · gpt-5.3 · ≈$2.84</div>
+      </div>
+      <div class="card" style="--agent-accent:#d97757">
+        <div class="card-head"><span class="adot"></span><span class="sname">refactor-b</span><span class="badge b-working">working</span></div>
+        <div class="goal">Refactor session discovery behind one sweep</div>
+        <div class="tf"><span class="f-ens">⧉ E 2/3 · working</span></div>
+        <div class="meta">claude · sonnet · ≈$1.92</div>
+      </div>
+    </div>
+    <div>
+      <div class="col-head"><span class="sw" style="background:var(--idle)"></span> idle <span class="ct">3</span></div>
+      <div class="card" style="--agent-accent:#d97757">
+        <div class="card-head"><span class="adot"></span><span class="sname">flaky-tests</span><span class="badge b-idle">idle</span></div>
+        <div class="goal">Hunt the two flaky terminal-adapter cases</div>
+        <div class="tf"><span>idle 18m</span></div>
+        <div class="meta">claude · opus · ≈$0.88</div>
+      </div>
+      <div class="card" style="--agent-accent:#3dc9b0">
+        <div class="card-head"><span class="adot"></span><span class="sname">issue-412</span><span class="badge b-idle">idle</span></div>
+        <div class="goal">Board column widths reset on reload</div>
+        <div class="tf"><span class="f-wf">⌁ round 1 · reviewers running</span></div>
+        <div class="meta">codex · gpt-5.3 · ≈$1.05</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="framecap"><b>Frame B</b> - the Library - authoring only, live state linked out to the Line - spend popover open</div>
+<div class="frame">
+  <div class="topbar">
+    <div class="brand"><span class="brand-mark"></span><b>Mission Control</b></div>
+    <div class="seg" role="navigation" aria-label="Pages">
+      <a href="#">▦ Fleet <kbd>1</kbd></a>
+      <a href="#" aria-current="page">⌗ Library <kbd>L</kbd></a>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="pulse">12 sessions <i>·</i> <b class="p-att">2 need you</b> <i>·</i> 5 working</div>
+    <button class="costchip" aria-expanded="true">≈$12.40 <span class="r">· $3.1/hr</span> ▾</button>
+    <button class="btn ghost">📡 <kbd>r</kbd></button>
+    <button class="btn ghost">⚙</button>
+    <button class="btn primary">＋ Dispatch <kbd>+</kbd></button>
+  </div>
+
+  <div class="spendpop" role="dialog" aria-label="Spend today">
+    <div class="ph">Spend - today</div>
+    <div class="sp-row"><span class="k">Fleet</span><span class="v">≈$12.40 <small>· 8.4M tok</small></span></div>
+    <div class="sp-row"><span class="k">Rate now</span><span class="v">$3.10/hr</span></div>
+    <div class="sp-row"><span class="k">Per shipped PR</span><span class="v">≈$4.05 <small>· 3 today</small></span></div>
+    <div class="sp-row auto"><span class="k">Automation</span><span class="v">≈$1.85</span></div>
+    <div class="sp-sub">Foreman $0.62 · Inspector $0.71 · reviewers $0.52</div>
+    <div class="sp-run">
+      <div class="lbl"><span>claude · 5h window</span><span>62% · resets 14:00</span></div>
+      <div class="meter warn"><i style="width:62%"></i></div>
+      <div class="lbl"><span>claude · 7d window</span><span>31%</span></div>
+      <div class="meter"><i style="width:31%"></i></div>
+      <div class="lbl"><span>codex · 5h window</span><span>48%</span></div>
+      <div class="meter"><i style="width:48%"></i></div>
+    </div>
+    <div class="sp-foot"><span>runway ≈ 4h 20m at this rate</span><a href="#">config →</a></div>
+  </div>
+
+  <div class="lib">
+    <div class="lib-head">
+      <h2>Library</h2>
+      <span class="lib-sub">Everything you author once and reuse. Nothing here runs - live state lives on the Line.</span>
+    </div>
+    <label class="lib-search">⌕ <input placeholder="Search workflows, Personas, actions, missions…" aria-label="Search the library"> <kbd>⌘K</kbd></label>
+
+    <section class="shelf">
+      <div class="shelf-top">
+        <span class="shelf-eyebrow">Workflows</span>
+        <a class="shelf-live" href="#">2 on the Line →</a>
+      </div>
+      <h3>What counts as done?</h3>
+      <p class="why">A workflow reviews one session's work and loops it back for repair until every reviewer
+        passes it - then it can tell the session what to do next.</p>
+      <div class="shelf-row">
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">⌁</span><span class="a-name">No-Mistakes Review</span>
+            <span class="tag builtin">built-in</span><span class="tag def">dispatch default</span></div>
+          <div class="a-desc">Checks, four reviewers, a Pull Request action, then the Inspector gate.</div>
+          <div class="a-live">v8 · bound to 2 sessions · <span class="ok">last round passed</span></div>
+        </div>
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">⌁</span><span class="a-name">Docs-only gate</span>
+            <span class="tag draft">draft</span></div>
+          <div class="a-desc">Documentation Steward alone, for README and plan changes.</div>
+          <div class="a-live"><span class="warn">1 validation error</span> · never published</div>
+        </div>
+        <div class="asset new" role="button" tabindex="0">＋ New workflow<br><small>pipeline or graph editor</small></div>
+      </div>
+    </section>
+
+    <section class="shelf">
+      <div class="shelf-top">
+        <span class="shelf-eyebrow">Personas</span>
+        <a class="shelf-live" href="#">3 reviewing now →</a>
+      </div>
+      <h3>Who does the reviewing?</h3>
+      <p class="why">A Persona is one reviewer's standards in Markdown. Workflow stages gate on their verdicts;
+        ensembles judge with them.</p>
+      <div class="shelf-row">
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">❝</span><span class="a-name">Code Risk Reviewer</span>
+            <span class="tag builtin">built-in</span></div>
+          <div class="a-desc">Hunts regressions, unsafe fallbacks, and contract drift in the diff.</div>
+          <div class="a-live">used by 2 workflows</div>
+        </div>
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">❝</span><span class="a-name">Test Evidence Auditor</span>
+            <span class="tag builtin">built-in</span></div>
+          <div class="a-desc">Refuses claims of coverage without a run to show for it.</div>
+          <div class="a-live">used by 1 workflow · 1 judge lens</div>
+        </div>
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">❝</span><span class="a-name">Intent Conformance Judge</span>
+            <span class="tag builtin">built-in</span></div>
+          <div class="a-desc">Did the work do what the task asked - nothing more, nothing less?</div>
+          <div class="a-live">workflow reviewer · ensemble evaluator</div>
+        </div>
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">❝</span><span class="a-name">Documentation Steward</span>
+            <span class="tag builtin">built-in</span></div>
+          <div class="a-desc">Docs must match the implementation before anything ships.</div>
+          <div class="a-live">used by No-Mistakes v8</div>
+        </div>
+        <div class="asset new" role="button" tabindex="0">＋ New Persona<br><small>or import .md</small></div>
+      </div>
+    </section>
+
+    <section class="shelf">
+      <div class="shelf-top">
+        <span class="shelf-eyebrow">Actions</span>
+        <a class="shelf-live att" href="#">1 waiting on the Line →</a>
+      </div>
+      <h3>What can a run tell the session to do?</h3>
+      <p class="why">An Action is a reusable instruction a workflow stage types into the bound session - open a
+        PR, run a migration. It completes; it never judges.</p>
+      <div class="shelf-row">
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">▤</span><span class="a-name">Pull Request</span>
+            <span class="tag builtin">built-in</span></div>
+          <div class="a-desc">Open or update the PR for this branch; the stage completes when the PR exists.</div>
+          <div class="a-live">completion: pull request · used by No-Mistakes v8</div>
+        </div>
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">▤</span><span class="a-name">Migration dry-run</span></div>
+          <div class="a-desc">Run the schema migration against a scratch database and paste the output.</div>
+          <div class="a-live">completion: session turn · used by 1 workflow</div>
+        </div>
+        <div class="asset new" role="button" tabindex="0">＋ New action<br><small>exact Markdown, one skill</small></div>
+      </div>
+    </section>
+
+    <section class="shelf">
+      <div class="shelf-top">
+        <span class="shelf-eyebrow">Ensembles</span>
+        <a class="shelf-live att" href="#">1 deciding on the Line →</a>
+      </div>
+      <h3>Not sure of the best approach?</h3>
+      <p class="why">Launchers, not assets: race 2-5 agents from one pinned commit, judge the candidates, keep
+        the best. Launch from here or from Dispatch - watching and deciding happen on the Line.</p>
+      <div class="shelf-row">
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">⧉</span><span class="a-name">Best of N</span></div>
+          <div class="a-desc">One anonymous comparison ranks the candidates; you confirm the winner.</div>
+          <div class="a-live"><span class="cta">Launch one →</span></div>
+        </div>
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">⧉</span><span class="a-name">Panel vote</span></div>
+          <div class="a-desc">Single-lens judges score every submission; disagreement is shown, not averaged.</div>
+          <div class="a-live"><span class="cta">Launch one →</span></div>
+        </div>
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">⧉</span><span class="a-name">Consensus</span></div>
+          <div class="a-desc">Mines agreements and open questions across attempts; promotes nothing.</div>
+          <div class="a-live"><span class="cta">Launch one →</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="shelf">
+      <div class="shelf-top">
+        <span class="shelf-eyebrow">Missions · Sources</span>
+        <a class="shelf-live" href="#">intake healthy →</a>
+      </div>
+      <h3>Where does work come from?</h3>
+      <p class="why">Both stop at the backlog. A mission files a task on a cadence; a source pulls your real
+        backlog in. Neither ever launches an agent.</p>
+      <div class="shelf-row">
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">◷</span><span class="a-name">Dependency audit</span></div>
+          <div class="a-desc">Audit and bump dependencies; open a PR if anything is stale.</div>
+          <div class="a-live">Mondays 08:00 · <span class="ok">healthy</span> · next in 3d</div>
+        </div>
+        <div class="asset">
+          <div class="asset-head"><span class="a-glyph">⇊</span><span class="a-name">github-issues</span></div>
+          <div class="a-desc">mancej/ai-harness - open issues become backlog tasks.</div>
+          <div class="a-live">swept 4m ago · filed 2 tasks</div>
+        </div>
+        <div class="asset new" role="button" tabindex="0">＋ Add a mission or source</div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<section class="sect" aria-label="What moved where">
+  <h2><span class="g">A</span>What moved where</h2>
+  <table>
+    <thead><tr><th>Today</th><th>In this concept</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>#/workflows · Workflows tab</td>
+        <td><span class="lib-td">Library</span> · Workflows shelf; the builder opens one level deeper, unchanged</td>
+        <td>Authoring. The pipeline/graph editors, versions, and publish flow move house without changing.</td></tr>
+      <tr><td>#/workflows · Personas tab</td>
+        <td><span class="lib-td">Library</span> · Personas shelf</td>
+        <td>Authoring. Cards finally show cross-engine usage (workflow gates + ensemble lenses).</td></tr>
+      <tr><td>#/workflows · Actions tab</td>
+        <td><span class="lib-td">Library</span> · Actions shelf</td>
+        <td>Authoring. Same editor; the shelf question teaches what an Action is for.</td></tr>
+      <tr><td>#/workflows · Runs tab</td>
+        <td><span class="line-td">The Line</span> · Review stage; drawer for triage, full reader at #/runs/:id</td>
+        <td>Execution. A run is work being judged, not a thing you author - it belongs where the work is.</td></tr>
+      <tr><td>#/workflows · Ensembles tab</td>
+        <td><span class="line-td">The Line</span> · Decide stage (members race under Working); launchers stay on the Library shelf</td>
+        <td>Execution, with one authoring-shaped exception: the strategy catalog is reusable know-how, so its launchers shelve.</td></tr>
+      <tr><td>UsageBar (second topbar row)</td>
+        <td><span class="gone">Retired.</span> Cost chip + spend popover; per-PR cost surfaces on the Shipped stage</td>
+        <td>Cost is a glance and a drill-down, not permanent chrome. Everything the strip showed survives in the popover.</td></tr>
+      <tr><td>Dispatch modal ensemble toggle</td>
+        <td>Unchanged; Library launchers deep-link into it with the strategy preselected</td>
+        <td>Launch and watch are finally adjacent: launch lands on the Line's Working + Decide stages.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="sect" aria-label="Shipping it">
+  <h2><span class="g">B</span>Shipping it - five phases, each one leaves the app whole</h2>
+  <div class="phases">
+    <div class="phase"><span class="pn">Phase 1</span><b>Cost chip + popover</b>
+      Retire the UsageBar row; the FleetStrip's stats, automation line, and runway meters move into the popover.
+      Standalone win, no IA dependency.
+      <span class="ship">App.tsx topbar · FleetStrip content reused</span></div>
+    <div class="phase"><span class="pn">Phase 2</span><b>The Library page</b>
+      New #/library route + topbar segment. Workflows, Personas, Actions tabs become shelves; the existing
+      editors mount one level deeper unchanged. #/workflows redirects.
+      <span class="ship">useWorkflowRoute · WorkflowPage dissolves partially</span></div>
+    <div class="phase"><span class="pn">Phase 3</span><b>The Line strip</b>
+      Server-side per-stage fold (one SSE summary event; the strip never recomputes fleet state in the browser).
+      Stage clicks route to existing views first - no drawers yet.
+      <span class="ship">registry fold + one ServerEvent · Fleet layouts gain the strip</span></div>
+    <div class="phase"><span class="pn">Phase 4</span><b>Drawers + re-homing</b>
+      Review drawer (run ladders reuse pipeline-bits), Decide drawer (reuses the results renderers), Intake drawer.
+      Runs and Ensembles full views re-home to #/runs and #/ensembles; the five-tab page retires.
+      <span class="ship">old routes redirect forever</span></div>
+    <div class="phase"><span class="pn">Phase 5</span><b>The everything-palette</b>
+      ⌘K indexes Library assets, live Line objects, and settings - round 1's concept 4, unchanged, as the
+      connective tissue between the two homes.
+      <span class="ship">settings-search grows providers</span></div>
+  </div>
+</section>
+
+<section class="notes" aria-label="Design notes">
+  <div class="note"><span class="n">01</span><b>One split, two homes.</b> The five tabs mixed build-time
+    (workflows, Personas, actions) with run-time (runs, ensembles). The IA now states the distinction instead
+    of blurring it: the Library answers "what have I built?", the Line answers "what is happening?".</div>
+  <div class="note"><span class="n">02</span><b>Runs grew hands; the Review stage shows it.</b> A run no longer
+    just judges - Actions let it instruct the session, and "waiting for action" is a first-class state. The
+    drawer surfaces action waits at triage level, and ensemble handoff runs carry their ⧉ provenance.</div>
+  <div class="note"><span class="n">03</span><b>The overlap is resolved.</b> Round 1's Library had a "Happening
+    now" rail and the Line had live stages - two owners for the same information. Here the Line owns live
+    state; the Library keeps only per-shelf "on the Line →" links, so no state renders in two places.</div>
+  <div class="note"><span class="n">04</span><b>Cost demoted from chrome to chip.</b> The always-on second row
+    becomes a purple chip (machinery tone) with the full strip's content one click away, and per-PR cost moves
+    to the stage where PRs live. Session cards keep their per-card ≈$ facts, untouched.</div>
+  <div class="note"><span class="n">05</span><b>Drawers toggle, cap, and scroll; cards never scale.</b> A stage
+    click opens its drawer in place, pushing the board down - a second click, <kbd>esc</kbd>, or ✕ closes it and
+    the board slides back up; a different stage swaps the content. The drawer is hard-capped at three rows
+    (~38vh) and scrolls internally beyond that, so the board is always on screen - a drawer that could fill the
+    viewport would be a fourth page, and that job belongs to "All runs →". Cards render at full size in every
+    state.</div>
+  <div class="note"><span class="n">06</span><b>Cost of the concept:</b> two navigation homes must stay honest -
+    every Library card needs a live link and every Line object needs a "definition →" backlink, or the split
+    becomes a wall. The per-stage fold event is the one new server contract.</div>
+</section>
+
+</body>
+</html>

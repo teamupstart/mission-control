@@ -46,6 +46,8 @@ const CFG: QueueConfig = {
   pickupTimeoutMs: 45_000,
   wrapupTriggers: ["drain"],
   wrapup: "ask",
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
 };
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -645,6 +647,22 @@ test("5. a scout drain retires without a Workflow claim or Straight-to-PR action
     assert.equal(action.kind, "skip-wrapup", wrapup);
     assert.match(action.kind === "skip-wrapup" ? action.reason : "", /scout/);
   }
+});
+
+test("5. disabled completion safeguards restore the configured queue action", () => {
+  const scout = tick({
+    session: { task: mkTaskSummary({ kind: "scout" }) },
+    items: DRAINED(),
+    cfg: { wrapup: "workflow", skipScoutWrapup: false },
+  });
+  assert.equal(scout.kind, "workflow-wrapup");
+
+  const mockups = tick({
+    items: DRAINED(),
+    intent: { objective: "Output: mockups" },
+    cfg: { wrapup: "workflow", skipReviewArtifactWrapup: false },
+  });
+  assert.equal(mockups.kind, "workflow-wrapup");
 });
 
 test("5. blocked drains still wait for the session to settle before retiring", () => {

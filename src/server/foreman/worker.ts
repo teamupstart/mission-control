@@ -1053,6 +1053,8 @@ async function processTarget(
         // A truncated patch is not a complete file list. Treating its visible prefix as
         // exhaustive could hide a later source file and incorrectly classify a mixed change.
         changedPaths: diff?.ok && !diff.truncated ? changedPaths(diff.patch) : null,
+        skipScoutWrapup: cfg.skipScoutWrapup,
+        skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
       });
       if (block) {
         const outcome = await applyQueueAction(
@@ -1141,6 +1143,8 @@ function queueConfig(cfg: ForemanConfig): QueueConfig {
     pickupTimeoutMs: PICKUP_TIMEOUT_MS,
     wrapupTriggers: cfg.wrapupTriggers,
     wrapup: cfg.wrapup,
+    skipScoutWrapup: cfg.skipScoutWrapup,
+    skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   };
 }
 
@@ -1150,6 +1154,8 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
     triggers: cfg.wrapupTriggers,
     wrapup: cfg.wrapup,
     settleMs: SETTLE_MS,
+    skipScoutWrapup: cfg.skipScoutWrapup,
+    skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   };
 }
 
@@ -1253,6 +1259,8 @@ async function processPromptedWrapup(
     taskKind: session.task?.kind ?? null,
     objective: candidate.objective,
     changedPaths: diff.truncated ? null : changedPaths(diff.patch),
+    skipScoutWrapup: cfg.skipScoutWrapup,
+    skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   });
   if (block) {
     if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;

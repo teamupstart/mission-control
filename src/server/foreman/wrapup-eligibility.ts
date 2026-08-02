@@ -17,6 +17,10 @@ export interface AutomaticWrapupInput {
   objective: string | null;
   /** Repo-relative paths from the completed diff, when that evidence is available. */
   changedPaths?: readonly string[] | null;
+  /** Whether the operator wants scout completions retired before automatic wrap-up. */
+  skipScoutWrapup: boolean;
+  /** Whether the operator wants review-only artifacts retired before automatic wrap-up. */
+  skipReviewArtifactWrapup: boolean;
 }
 
 /**
@@ -119,18 +123,26 @@ function diffContainsOnlyReviewArtifacts(paths: readonly string[]): boolean {
  * operator actions stay outside this predicate.
  */
 export function automaticWrapupBlock(input: AutomaticWrapupInput): AutomaticWrapupBlock | null {
-  if (input.taskKind === "scout") {
+  if (input.skipScoutWrapup && input.taskKind === "scout") {
     return { kind: "scout", reason: "the linked task kind is scout" };
   }
 
-  if (input.objective && objectiveRequestsReviewArtifacts(input.objective)) {
+  if (
+    input.skipReviewArtifactWrapup
+    && input.objective
+    && objectiveRequestsReviewArtifacts(input.objective)
+  ) {
     return {
       kind: "review_artifact",
       reason: "the requested output is a review artifact rather than a shippable change",
     };
   }
 
-  if (input.changedPaths && diffContainsOnlyReviewArtifacts(input.changedPaths)) {
+  if (
+    input.skipReviewArtifactWrapup
+    && input.changedPaths
+    && diffContainsOnlyReviewArtifacts(input.changedPaths)
+  ) {
     return {
       kind: "review_artifact",
       reason: "the completed diff contains only review artifacts",

@@ -58,6 +58,10 @@ export interface QueueConfig {
   wrapupTriggers: readonly WrapupTrigger[];
   /** What to do when a wrap-up fires: ask the human, or type the instruction ourselves. */
   wrapup: WrapupMode;
+  /** Whether scout tasks stop before every automatic wrap-up action. */
+  skipScoutWrapup: boolean;
+  /** Whether review-only artifacts stop before every automatic wrap-up action. */
+  skipReviewArtifactWrapup: boolean;
 }
 
 /** What the worker should do for one session this tick. Every branch is explicit. */
@@ -383,6 +387,8 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
       objective: [intentGuard?.objective, session.task?.title, ...items.map((item) => item.intent)]
         .filter((part): part is string => Boolean(part?.trim()))
         .join("\n\n") || null,
+      skipScoutWrapup: cfg.skipScoutWrapup,
+      skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
     });
     const blockedAction: QueueAction | null = block
       ? { kind: "skip-wrapup", queue, reason: block.reason }

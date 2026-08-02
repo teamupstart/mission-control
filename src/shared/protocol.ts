@@ -968,6 +968,26 @@ export const ForemanConfigSchema = z.object({
    */
   maxFixRounds: z.number().int().min(1).max(50).default(10),
   /**
+   * Whether a task whose durable Kind is `scout` is retired at completion instead of
+   * reaching any automatic wrap-up action.
+   *
+   * On by default because scout work is an investigation contract: its useful output is
+   * the finding itself, not a Workflow submission or a prompt that asks the session to open
+   * a pull request. Turning it off deliberately restores the ordinary wrap-up path, subject
+   * to the independent review-artifact safeguard below.
+   */
+  skipScoutWrapup: z.boolean().default(true),
+  /**
+   * Whether mockups and other explicit review-only artifacts are retired at completion
+   * instead of reaching any automatic wrap-up action.
+   *
+   * The classifier reads the resolved objective and, when available, the completed diff's
+   * paths. It stays independent from `skipScoutWrapup`: a ship-kind task can still request
+   * only mockups, while a scout task can also match both safeguards. On by default to keep
+   * No-Mistakes Review and Straight-to-PR for work that actually asks for implementation.
+   */
+  skipReviewArtifactWrapup: z.boolean().default(true),
+  /**
    * WHICH moments count as "this session has finished its work" and should wrap up.
    * Independent of `wrapup`, which says what to DO at whichever moment fires.
    *

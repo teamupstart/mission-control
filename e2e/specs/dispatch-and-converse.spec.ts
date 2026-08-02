@@ -310,6 +310,40 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   }
 });
 
+test("Foreman completion safeguards default on and persist independently", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings/foreman`);
+
+  const scout = dashboard.getByRole("checkbox", {
+    name: "Skip automatic completion for Scout tasks",
+  });
+  const artifacts = dashboard.getByRole("checkbox", {
+    name: "Skip automatic completion for mockups and review artifacts",
+  });
+  await expect(scout).toBeVisible();
+  await expect(artifacts).toBeVisible();
+  await expect(scout).toBeChecked();
+  await expect(artifacts).toBeChecked();
+
+  await artifacts.uncheck();
+  await expect.poll(async () => {
+    const config = await api<{
+      skipScoutWrapup: boolean;
+      skipReviewArtifactWrapup: boolean;
+    }>(daemon, "/api/foreman/config");
+    return {
+      scout: config.skipScoutWrapup,
+      artifacts: config.skipReviewArtifactWrapup,
+    };
+  }).toEqual({ scout: true, artifacts: false });
+
+  await dashboard.reload();
+  await expect(scout).toBeChecked();
+  await expect(artifacts).not.toBeChecked();
+});
+
 test("Foreman never resurfaces Ship it actions after a scout completes", async ({
   dashboard,
   daemon,

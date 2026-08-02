@@ -8,6 +8,8 @@ function block(over: Partial<Parameters<typeof automaticWrapupBlock>[0]> = {}) {
     taskKind: "ship",
     objective: "Implement retry handling in the uploader.",
     changedPaths: null,
+    skipScoutWrapup: true,
+    skipReviewArtifactWrapup: true,
     ...over,
   });
 }
@@ -20,6 +22,44 @@ test("scout is an absolute automatic-wrap-up block", () => {
   });
 
   assert.equal(result?.kind, "scout");
+});
+
+test("the scout and review-artifact safeguards can be disabled independently", () => {
+  assert.equal(
+    block({
+      taskKind: "scout",
+      objective: "Implement the production-ready uploader.",
+      skipScoutWrapup: false,
+    }),
+    null,
+  );
+  assert.equal(
+    block({
+      objective: "Output: mockups",
+      changedPaths: ["docs/mockups/uploader.html"],
+      skipReviewArtifactWrapup: false,
+    }),
+    null,
+  );
+
+  assert.equal(
+    block({
+      taskKind: "scout",
+      objective: "Output: mockups",
+      skipScoutWrapup: false,
+    })?.kind,
+    "review_artifact",
+    "the enabled artifact safeguard still applies to a scout",
+  );
+  assert.equal(
+    block({
+      taskKind: "scout",
+      objective: "Output: mockups",
+      skipReviewArtifactWrapup: false,
+    })?.kind,
+    "scout",
+    "the enabled scout safeguard still applies to a review-artifact objective",
+  );
 });
 
 test("an explicit mockup output is a non-shipping review artifact", () => {

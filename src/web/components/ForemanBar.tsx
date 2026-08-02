@@ -8,9 +8,9 @@ import { Tooltip } from "./Tooltip.tsx";
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
 // worker is running; the popover flips the in-the-moment knobs - the mode, the
 // access-approval switch, the work queues, and the wrap-up triggers + action. The
-// set-once posture (cheap tier - off / shadow / on, see docs/plans/foreman-watcher/plan.md -
-// and the live repo allowlist) lives in Settings → Foreman, which the popover
-// deep-links. Mirrors AlertBar's popover pattern.
+// set-once posture (cheap tier - off / shadow / on, completion safeguards, see
+// docs/plans/foreman-watcher/plan.md - and the live repo allowlist) lives in
+// Settings → Foreman, which the popover deep-links. Mirrors AlertBar's popover pattern.
 
 const MODE_LABEL: Record<string, string> = {
   "dry-run": "dry-run",
@@ -218,8 +218,8 @@ export function ForemanBar({
   onOpenSettings,
 }: {
   state: ForemanState;
-  /** Open Settings on the Foreman category, where the cheap tier and the trusted-repo
-   *  list now live. The popover keeps only the in-the-moment knobs. */
+  /** Open Settings on the Foreman category, where the cheap tier, completion safeguards,
+   *  and trusted-repo list now live. The popover keeps only the in-the-moment knobs. */
   onOpenSettings: () => void;
 }): React.JSX.Element {
   const { config, status } = state;

@@ -55,6 +55,8 @@ const CFG: PromptedConfig = {
   triggers: ["prompted"],
   wrapup: "ask",
   settleMs: 10_000,
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
 };
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -184,6 +186,20 @@ test("a prompted mockup output retires without a Workflow or PR action", () => {
   const r = decide({ intent: mkIntent({ objective }) });
   assert.equal(r.kind, "retire");
   assert.match(r.kind === "retire" ? r.why : "", /review artifact/);
+});
+
+test("disabled completion safeguards let prompted work reach verification", () => {
+  const scout = decide({
+    session: mkSession({ task: mkTaskSummary({ kind: "scout" }) }),
+    cfg: { ...CFG, skipScoutWrapup: false },
+  });
+  assert.equal(scout.kind, "check");
+
+  const mockups = decide({
+    intent: mkIntent({ objective: "Output: mockups" }),
+    cfg: { ...CFG, skipReviewArtifactWrapup: false },
+  });
+  assert.equal(mockups.kind, "check");
 });
 
 test("a prompted implementation may still use mockups as context", () => {

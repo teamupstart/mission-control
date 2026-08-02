@@ -3381,6 +3381,21 @@ depth.
 Foreman's completion checks use the card's [durable Goal](#goal), while its latest tactical
 focus remains separate.
 
+Two default-on safeguards under **Settings → Foreman → Completion safeguards** decide which
+finished work never reaches an automatic completion action:
+
+- **Skip automatic completion for Scout tasks** uses the task's durable `Kind`. A Scout is
+  retired once its findings are ready, without showing Ship it, running No-Mistakes Review,
+  or typing the Straight-to-PR instruction.
+- **Skip automatic completion for mockups and review artifacts** recognizes explicit output
+  contracts such as `Output: mockups`, natural-language requests for reports, plans, research,
+  wireframes or prototypes, and completed diffs containing only conventional artifact paths.
+  Mixed contracts that also request source code, tests, components or another implementation
+  action still follow the configured completion path.
+
+The safeguards are independent. A task matching either one is retired while that switch is
+on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
+
 In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
 arranged differently, because a permanent conversation gives it somewhere better to sit:
 Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what

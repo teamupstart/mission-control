@@ -47,6 +47,10 @@ export interface PromptedConfig {
   wrapup: WrapupMode;
   /** How long a session must sit idle before its work counts as settled. */
   settleMs: number;
+  /** Whether scout tasks stop before every automatic wrap-up action. */
+  skipScoutWrapup: boolean;
+  /** Whether review-only artifacts stop before every automatic wrap-up action. */
+  skipReviewArtifactWrapup: boolean;
 }
 
 export interface PromptedInput {
@@ -200,6 +204,8 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   const block = automaticWrapupBlock({
     taskKind: session.task?.kind ?? null,
     objective,
+    skipScoutWrapup: cfg.skipScoutWrapup,
+    skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   });
   if (block) return { kind: "retire", episodeKey, why: block.reason };
 

@@ -2358,7 +2358,7 @@ you are looking at and **Back** still means the page you came from. `new` is res
 never an asset id.
 
 Execution is not a Library shelf. Workflow runs and ensembles are top-level pages hung off
-[the Line](#the-line), and the Workflows page that once held all five surfaces as sibling tabs
+[the Line](#the-line-the-pipeline-strip-above-the-fleet), and the Workflows page that once held all five surfaces as sibling tabs
 is retired:
 
 | Hash | Surface |
@@ -4201,29 +4201,32 @@ inherits the worst of them** - red over amber over green - so a subsystem that n
 shows from the fleet; the gear's tooltip names what the dot means. Before the first status
 arrives (a cold tab, a reconnect) the dots stay dark rather than claim an all-clear.
 
-### Search settings (⌘K)
+### Reaching a setting from the palette
 
-Roughly seventy controls span the twelve categories, so **search** is how you reach one you
-half-remember without knowing which panel it lives in. Open the palette with <kbd>⌘</kbd><kbd>K</kbd>
-(rebindable, like every other shortcut - **Settings → Keyboard**) or the **search box at the
-top of the rail**, which shows the current chord as its hint. From the fleet the shortcut
-jumps to the page and opens the palette in one step; the topbar ⚙ gear keeps its one job of
-navigating to the page. Type any part of a control's name, description, or keywords -
-matching is plain substring, so the same query always returns the same rows in the same
-order, no fuzzy guessing. Arrows move the selection, <kbd>Enter</kbd> acts on it,
-<kbd>Esc</kbd> (or a click on the dimmed backdrop) closes.
+Roughly seventy controls span the twelve categories, so search is how you reach one you
+half-remember without knowing which panel it lives in - and that search is the app-wide
+<kbd>⌘</kbd><kbd>K</kbd> palette, not a settings-only box. See
+[The palette (⌘K)](#the-palette-k) for the whole surface; what matters here is what it does
+with a settings row.
 
-The index covers controls, not content: every switch, picker, model field and sub-panel is
-in it, but repo names and PR numbers are not. A **boolean control flips inline** right in the
-results - the switch re-reads the daemon on the next poll, so a change that has not landed
-shows honestly as unmoved rather than an optimistic guess. Everything else - a scalar, a
-picker, a whole panel - **jumps** to its category and flashes the control it named.
+Open it from anywhere, or from the **search box at the top of the rail**, which shows the
+current chord as its hint; the topbar ⚙ gear keeps its one job of navigating to the page.
+The settings index covers **controls, not content**: every switch, picker, model field and
+sub-panel is in it, but repo names and PR numbers are not. A row **jumps** to its category
+and flashes the exact control it named, so landing on "Soak time" puts you on the field
+rather than at the top of Shipping.
 
-The one exception is the **risky set** - YOLO mode and the Inspector's enable and mode. Those
-never flip from a search result: they always jump to their panel, so the consent copy that
-explains what merges or gets published is on screen when they change. A category-name match
-also appears, under **Jump to**, so searching "shipping" or "keyboard" lands you on the
-whole panel.
+Two of the boolean controls - **Format messages** and **Track Claude estimated cost** -
+**flip inline** from the row without leaving the palette. The others jump, and that is the
+honest answer rather than a shortcoming: a switch can only be flipped from a row when its
+current value has actually been read, and the configs behind **Auto mode on dispatch** and
+**Enable Mission Control skills** are polled by the Settings page alone. A palette that
+opens over the fleet has not read them, so it takes you to the panel that has.
+
+The **risky set** - YOLO mode, the Inspector's enable and mode, Live workflow delivery and
+workflow check commands - never flips from a row under any circumstances: it always jumps,
+so the consent copy that explains what merges, gets published, or runs branch-authored code
+is on screen when it changes.
 
 ### Trust (who may act in which repository)
 
@@ -4332,6 +4335,58 @@ stage the run has not reached. A run summary carries no graph, so "reviewers 2 o
 a denominator invented in the browser - the row says who is reviewing right now and points at
 the run for the rest. Chips for a session action or an Inspector gate appear only when the run
 actually has one, which makes their absence informative rather than grey furniture.
+
+## The palette (⌘K)
+
+<kbd>⌘</kbd><kbd>K</kbd> is the connective tissue between the two homes: **one input** over
+everything the [Library](#the-library) holds, everything the [Line](#the-line-the-pipeline-strip-above-the-fleet) is running, and
+every [setting](#settings). Type a few letters and land on the shelf card, the live run, or
+the control - from wherever you are.
+
+It opens **over whatever page you are on** and never navigates to open. <kbd>Esc</kbd>, a
+click on the dimmed backdrop, or <kbd>⌘</kbd><kbd>K</kbd> again closes it and leaves the page
+exactly as it found it. The chord is rebindable like every other shortcut
+(**Settings → Keyboard**); the search box at the top of the Settings rail opens the same
+palette, and shows the current chord as its hint.
+
+Results are grouped by what pressing <kbd>Enter</kbd> will *do*, and every row wears a **kind
+chip** and a second line saying what the thing is, or what it is doing right now:
+
+| Group | Kinds | The second line says |
+| --- | --- | --- |
+| **Jump to** | `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
+| **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, or open a blank draft on a Library shelf |
+| **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
+
+Rows that need an answer - an ensemble awaiting your decision, a mission that is unhealthy, a
+workflow whose draft will not validate - are **amber and sort to the top of their group**, so
+searching doubles as a status check. Nothing here is recomputed in the browser: an ensemble's
+attention flag, a mission's health and a run's status sentence are all read from the surfaces
+that already own them, so the palette can never describe a run differently from the run page it
+takes you to.
+
+| Key | Does |
+| --- | --- |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move the selection. <kbd>Home</kbd> and <kbd>End</kbd> jump to the ends |
+| <kbd>Enter</kbd> | Open the selected row - or flip it, for a settings toggle the palette can flip in place |
+| <kbd>Tab</kbd> | Filter by kind. It cycles through the kinds in the current results and back out to everything, so the same key clears it. The active filter is named beside the caret |
+| <kbd>Esc</kbd> | Close, without going anywhere |
+
+Matching is **plain substring** over each row's title, its state line, its kind and its
+keywords - so the same query always returns the same rows in the same order, no fuzzy
+guessing. Before you type anything it previews what needs you, then everything you can start.
+
+Two things it deliberately does not do. It **never fetches**: every row is built from the live
+SSE collections the dashboard already holds, so typing a letter is not a network event and the
+palette can never be more stale than the page beside it. And it **only ever opens a door that
+already exists** - every "Do" row lands on the same modal a button somewhere else opens, and
+every "Jump to" row on a route the app publishes.
+
+Archived assets are not indexed, because the shelf a hit would land on does not list them.
+Task sources appear under Settings rather than as their own kind, which is where the Library's
+Sources card points too. Sessions and backlog tasks are not searchable kinds yet - a run row
+borrows its session's name, but that is a label, not an index - and they are the next kinds
+the provider registry behind the palette is built to take.
 
 ## Layout (cards, console, or board)
 
@@ -4631,7 +4686,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
-| <kbd>⌘</kbd><kbd>K</kbd> | Open the settings search palette - from the fleet it jumps to Settings first, then opens; press again to close | Anywhere |
+| <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>w</kbd> | Open the **Library**, or press again to return to the fleet | Fleet or Library |
 | <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |

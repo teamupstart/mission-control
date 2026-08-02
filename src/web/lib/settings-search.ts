@@ -1,5 +1,5 @@
 // The settings search index: one flat, control-level list of everything the settings
-// page can be told to do, plus the deterministic matcher the ⌘K palette runs over it.
+// page can be told to do.
 //
 // Pure data and pure functions - no React, no `node:` anything - for the same reason
 // `settings-registry.ts` is: the palette, the page (which wires the runtime toggle
@@ -8,14 +8,15 @@
 // control-level (the palette); keeping them apart is what lets the anchor integrity test
 // prove every entry here points at a control the page actually renders.
 //
-// This is the one control-level index (the Phase 5 cross-phase contract). A new setting
-// adds an entry HERE, next to its control's `data-anchor`, rather than starting a second
-// list somewhere a search can miss.
+// This is the one control-level index. A new setting adds an entry HERE, next to its
+// control's `data-anchor`, rather than starting a second list somewhere a search can miss.
+//
+// The MATCHER that runs over it lives in `palette-index.ts` now, which wraps this list in a
+// provider alongside the Library's assets and the Line's live objects. It kept this file's
+// rule - deterministic substring, registry order, no fuzzy ranking - and this file kept the
+// list and the toggle bindings, so there is still exactly one of each.
 
-import {
-  SETTINGS_CATEGORIES,
-  type SettingsCategoryId,
-} from "./settings-registry.ts";
+import type { SettingsCategoryId } from "./settings-registry.ts";
 import { ACTIONS } from "./keybindings.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -432,36 +433,4 @@ export function buildSettingsBindings(sources: {
   put("skills-enabled", sources.skillsEnabled);
   put("cost-track", sources.costTrack);
   return map;
-}
-
-/** How many controls the empty-query palette previews before the user types anything. */
-export const SEARCH_PREVIEW_COUNT = 6;
-
-export interface SettingsSearchResult {
-  /** Control-level hits, in registry order. */
-  controls: SettingsControl[];
-  /** Category-name hits, offered as "Jump to" rows below the controls. */
-  categories: SettingsCategoryId[];
-}
-
-function haystack(c: SettingsControl): string {
-  return `${c.label} ${c.description} ${c.keywords.join(" ")}`.toLowerCase();
-}
-
-/**
- * Deterministic substring search over label + description + keywords, plus category-name
- * matches from the registry's own `keywords`. No fuzzy ranking on purpose (D5 / the phase
- * non-goals): the same query always returns the same rows in the same order, which is a
- * registry order, not a relevance guess. An empty query previews the first few controls.
- */
-export function searchSettings(query: string): SettingsSearchResult {
-  const q = query.trim().toLowerCase();
-  if (!q) {
-    return { controls: SETTINGS_CONTROLS.slice(0, SEARCH_PREVIEW_COUNT), categories: [] };
-  }
-  const controls = SETTINGS_CONTROLS.filter((c) => haystack(c).includes(q));
-  const categories = SETTINGS_CATEGORIES.filter((cat) =>
-    `${cat.label} ${cat.keywords.join(" ")}`.toLowerCase().includes(q),
-  ).map((cat) => cat.id);
-  return { controls, categories };
 }

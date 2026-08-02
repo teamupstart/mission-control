@@ -78,14 +78,18 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "global",
   },
   {
-    // The ⌘K settings search palette. `defaultBinding` is "cmd+k", not "meta+k": this
-    // codebase's chord grammar spells the Command/Meta modifier `cmd` (see
-    // `chordFromEvent`, which emits it from `e.metaKey`), so "meta+k" would never match a
-    // keypress. Global, because it opens the palette from the fleet or any page - App's
-    // dispatch navigates to settings first when it has to.
+    // The ⌘K palette. `defaultBinding` is "cmd+k", not "meta+k": this codebase's chord
+    // grammar spells the Command/Meta modifier `cmd` (see `chordFromEvent`, which emits it
+    // from `e.metaKey`), so "meta+k" would never match a keypress. Global, because it opens
+    // over whatever page you are on.
+    //
+    // The id stays `settingsSearch` while the label moves on, exactly as `roundup` did when
+    // its panel became the Sitrep and `workflows` did when its page became the Library: it
+    // keys persisted overrides in `app_config.ui.keybindings`, so renaming it here would
+    // silently reset every operator's rebinding of ⌘K.
     id: "settingsSearch",
-    label: "Search settings",
-    description: "Open the settings search palette from anywhere.",
+    label: "Search everything",
+    description: "Open the palette over workflows, runs, ensembles, missions and settings.",
     defaultBinding: "cmd+k",
     group: "global",
   },

@@ -291,6 +291,10 @@ A fourth layout also requires render selection, expansion state, Escape handling
 Extend existing registries instead of adding parallel lists:
 
 - Settings: `SETTINGS_CATEGORIES`, `renderCategory`, panel component, and search anchors
+- ⌘K palette: `PALETTE_PROVIDERS` and `PALETTE_KIND_INFO` in `src/web/lib/palette-index.ts`. A new
+  searchable kind is a provider over an existing client SSE store, never a second index, a
+  server-side search endpoint, or a fetch. Its rows may target only routes the router already
+  publishes and affordances that already exist in one step elsewhere
 - Harnesses: `HARNESS_CAPABILITIES` and `HARNESSES`
 - LLM runners: `LLM_RUNNER_IDS` and `LLM_RUNNERS`
 - Terminal backends: ID tuples and `MULTIPLEXERS` or `EMULATORS`

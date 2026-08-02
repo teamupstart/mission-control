@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -86,6 +88,10 @@ test("Bind and submit opens the durable capturing run before compaction finishes
   expect(response.status()).toBe(202);
   const accepted = await response.json() as { run: { id: string; status: string } };
   expect(accepted.run.status).toBe("capturing");
+  if (process.env.MC_E2E_EVIDENCE) {
+    // eslint-disable-next-line no-console
+    console.log("OBSERVED bind-and-submit returned 202 with a durable capturing run");
+  }
 
   await expect(dialog).toBeHidden();
   await expect(dashboard).toHaveURL(new RegExp(`/workflows/runs/${accepted.run.id}$`));
@@ -101,4 +107,15 @@ test("Bind and submit opens the durable capturing run before compaction finishes
     "Capturing evidence",
     { timeout: 3_000 },
   );
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    // eslint-disable-next-line no-console
+    console.log('OBSERVED the accepted run detail page says "Capturing evidence"');
+    await dashboard.screenshot({
+      path: fileURLToPath(new URL("../evidence/workflow-submit-accepted.png", import.meta.url)),
+      fullPage: true,
+    });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/evidence/workflow-submit-accepted.png");
+  }
 });

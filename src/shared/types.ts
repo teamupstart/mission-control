@@ -98,10 +98,17 @@ export type SessionRuntime = (typeof SESSION_RUNTIMES)[number];
 /**
  * What an embedded driver's acknowledgement means for the submitted message.
  *
- * A busy Claude stream accepts a follow-up into its FIFO for the next turn, while Codex
- * can steer input into the turn already running. Both are successful sends, but collapsing
- * them into a bare `ok` leaves the operator unable to tell a queued message from one the
- * active turn is already processing.
+ * Both current drivers fold a message sent mid-turn into the turn already running, and both
+ * report that as `steered`: Codex through `turn/steer`, Claude Code by attaching it to the
+ * running turn as a `queued_command`. Either way ONE turn is in flight and one `result` ends
+ * it, which is the fact the supervisor's completion bookkeeping is built on.
+ *
+ * `queued` is the third possibility - a CLI that holds the message for a separate next turn,
+ * owing a second completion - and no driver reports it today. It is retained because it is
+ * the honest description of that behavior if a driver ever has it, and it must not be
+ * inferred from the vocabulary that any driver currently does: this type previously claimed
+ * Claude did, the Claude driver said so on every mid-turn send, and the resulting turn that
+ * was owed forever wedged the outbox closed against an idle session.
  */
 export type SdkSendDisposition = "started" | "steered" | "queued";
 
@@ -110,9 +117,8 @@ export type SdkSendDisposition = "started" | "steered" | "queued";
  *
  * `pending` is Mission Control's editable outbox, before any runtime has accepted the
  * turn. The other three are the embedded-driver acknowledgements above. Keeping the two
- * vocabularies distinct at the type boundary prevents a buffered message from being
- * mistaken for Claude's already-accepted internal FIFO, where editing is no longer
- * possible.
+ * vocabularies distinct at the type boundary prevents a buffered message, which is still
+ * editable, from being mistaken for one a driver has already accepted, which is not.
  */
 export type MessageSendDisposition = SdkSendDisposition | "pending";
 

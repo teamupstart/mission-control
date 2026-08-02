@@ -158,12 +158,17 @@ function thread(status) {
 const replyTo = (prompt) => `Mock reply to: ${prompt}`;
 
 let turnSeq = 0;
+/** The turn being held open, if any, and every prompt it has absorbed. */
+let openTurn = null;
 
-function runTurn(turnId, input) {
-  const prompt = (Array.isArray(input) ? input : [])
+const textOf = (input) =>
+  (Array.isArray(input) ? input : [])
     .filter((part) => part?.type === "text")
     .map((part) => part.text)
     .join("\n");
+
+function runTurn(turnId, input) {
+  const prompt = textOf(input);
 
   appendRollout("user_message", prompt);
   notify("turn/started", { threadId: THREAD_ID, turn: turnOf(turnId, "inProgress") });
@@ -172,8 +177,11 @@ function runTurn(turnId, input) {
     status: { type: "active", activeFlags: [] },
   });
 
-  const finish = () => {
-    appendRollout("agent_message", replyTo(prompt));
+  const finish = (prompts) => {
+    openTurn = null;
+    for (const answered of prompts) appendRollout("agent_message", replyTo(answered));
+    // ONE completion, however many prompts the turn absorbed - a steer joins the turn that
+    // is running rather than creating another completion to wait for.
     notify("turn/completed", { threadId: THREAD_ID, turn: turnOf(turnId, "completed") });
     // The backstop the driver deliberately keeps: both fire today, in this order, and
     // `finishTurn` is idempotent.
@@ -183,8 +191,13 @@ function runTurn(turnId, input) {
   // One deterministic busy window, the same contract `fake-claude.mjs` offers, so the
   // queued-turn specs can meet a genuinely busy driver on either harness. Ordinary prompts
   // still answer synchronously and keep every other spec's fast path.
-  if (prompt === HELD_TURN) setTimeout(finish, HELD_TURN_MS);
-  else finish();
+  if (prompt === HELD_TURN) {
+    const turnState = { prompts: [prompt] };
+    openTurn = turnState;
+    setTimeout(() => finish(turnState.prompts), HELD_TURN_MS);
+    return;
+  }
+  finish([prompt]);
 }
 
 createInterface({ input: process.stdin }).on("line", (line) => {
@@ -227,6 +240,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       // real server cannot invert these two; neither may this.
       respond(id, { turn: turnOf(turnId, "inProgress") });
       setImmediate(() => runTurn(turnId, params?.input));
+      return;
+    }
+    case "turn/steer": {
+      // A steer joins the turn already running: its text is answered by that turn, and no
+      // second `turn/completed` is ever sent for it. A fake that completed a steer
+      // separately would hand the driver an extra completion and hide the accounting bug
+      // this pair of harnesses exists to keep honest.
+      if (openTurn) openTurn.prompts.push(textOf(params?.input));
+      respond(id, {});
       return;
     }
     case "turn/interrupt":

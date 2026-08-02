@@ -338,6 +338,87 @@ test("idle-only delivery rolls back its durable reservation when the driver beca
   }
 });
 
+// The other half of the contract the Claude driver broke. A driver that folds a follow-up
+// into the running turn owes ONE completion for both messages, and says so by answering
+// `steered`. If the supervisor kept its pessimistic reservation anyway, the single
+// `turn_done` that ends that turn would leave a completion outstanding for ever: the card
+// would never take a driver-sourced idle again (`deferIdle` stays true), the durable row
+// would claim a restart owes this conversation a continuation it does not, and every human
+// message would be released from the outbox with "the agent became busy before delivery"
+// against a session that has been sitting idle for hours. That is exactly what shipped.
+test("a steered follow-up leaves no completion outstanding once the turn ends", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.send = async (turn) => {
+      handle.sent.push(turn);
+      return "steered" as const;
+    };
+
+    assert.equal(
+      await supervisor.send(session.id, { text: "and open a PR when it passes" }),
+      "steered",
+    );
+    // One turn absorbed two messages, so one result ends it.
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    // The door the outbox knocks on. Before the fix this stayed shut for the session's life.
+    assert.equal(
+      await supervisor.sendWhenIdle(session.id, { text: "now that you are free" }),
+      "started",
+    );
+    assert.deepEqual(handle.sent.map((t) => t.text), [
+      "and open a PR when it passes",
+      "now that you are free",
+    ]);
+  } finally {
+    fake.restore();
+  }
+});
+
+// The durable half of the race above: an idle-only delivery accepted in the gap between a
+// `result` and the first frame of a turn the CLI started for itself, which then absorbs it.
+//
+// The reservation this send makes is retired by that turn's single completion, because the
+// turn was never counted separately - the pump only adopts an unobserved turn when nothing is
+// outstanding and no send is in flight (`unfinishedTurns === 0 && !acceptingTurns.has(id)`),
+// and this send has already made both false. So the sequence ends at zero rather than one,
+// and the row does not claim a restart owes this conversation a continuation.
+test("a delivery absorbed by a vendor-started turn is retired by that turn's completion", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    // Accepted: the CLI has begun a follow-up of its own but has not spoken, so the driver
+    // has nothing to refuse on.
+    assert.equal(
+      await supervisor.sendWhenIdle(session.id, { text: "sent into the gap" }),
+      "started",
+    );
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === true);
+
+    // That turn speaks - and must not be adopted as a SECOND outstanding turn on top of the
+    // send's own reservation, or its one completion would leave the count at one for ever.
+    handle.push({ kind: "state", state: "working", activity: null });
+    handle.push({ kind: "turn_done", usage: null });
+
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    assert.equal(
+      await supervisor.sendWhenIdle(session.id, { text: "still reachable" }),
+      "started",
+    );
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a rejected follow-up releases only its recovery reservation", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);

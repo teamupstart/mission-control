@@ -103,6 +103,7 @@
     display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 10.5px; font-weight: 620;
     letter-spacing: .02em; border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
   }
+  .chip-sub { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; }
   .chip-rec { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); background: color-mix(in oklab, var(--idle) 11%, transparent); }
 
   .ruler { margin: 16px 0 20px; padding: 12px 14px 8px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-2); }
@@ -146,6 +147,75 @@
   .clamp3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .more { display: inline-block; margin-top: 6px; font-size: 11px; color: var(--muted); border: 0; background: none; padding: 0; border-bottom: 1px dashed var(--border); }
   .claim { font-size: 12.5px; line-height: 1.55; }
+  .decide { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+  .btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 540; }
+  .btn-p { background: color-mix(in oklab, var(--idle) 16%, var(--panel-2)); border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); color: var(--fg); }
+
+  /* ---- B: verdict sheet ---- */
+  .vs-verdict { display: grid; grid-template-columns: 1fr 132px; gap: 26px; align-items: start; margin: 14px 0 4px; }
+  .vs-prose { font-size: 13px; line-height: 1.62; max-width: 68ch; }
+  .res {
+    display: inline-flex; align-items: baseline; gap: 5px; border-radius: 5px; padding: 0 5px;
+    background: color-mix(in oklab, var(--working) 15%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--working) 34%, transparent);
+    white-space: nowrap;
+  }
+  /* A resolved label may be immediately followed by punctuation ("Submission A's"). Trimming the
+     trailing pad keeps the possessive attached to the word rather than floating off the chip. */
+  .res.poss { padding-right: 1px; }
+  .res u { text-decoration: none; font-family: var(--mono); font-size: 10.5px; color: var(--working); letter-spacing: .04em; }
+  .res b { font-weight: 620; font-size: 12.5px; }
+  .seal { text-align: right; border-left: 1px solid var(--border); padding-left: 18px; }
+  .seal-rank { font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--idle); }
+  .seal-fig { font-family: var(--mono); font-size: 34px; font-weight: 600; letter-spacing: -.045em; line-height: 1.05; color: var(--idle); font-variant-numeric: tabular-nums; }
+  .seal-fig s { text-decoration: none; font-size: 10px; color: var(--dim); font-weight: 500; letter-spacing: 0; }
+  .seal-meta { font-size: 10.5px; color: var(--dim); margin-top: 4px; }
+  .docket { border-top: 1px solid var(--border); margin-top: 20px; }
+  .dk-row {
+    display: grid; grid-template-columns: 24px 1fr 54px 92px 62px; gap: 12px; align-items: center;
+    padding: 9px 8px; border-bottom: 1px solid var(--border-soft); font-size: 11.5px;
+  }
+  .dk-row.open { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--working); }
+  .dk-rank { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .dk-name { font-size: 12.5px; font-weight: 620; }
+  .dk-name span { font-weight: 400; color: var(--dim); font-size: 11px; margin-left: 6px; }
+  .dk-score { font-family: var(--mono); font-size: 14px; font-variant-numeric: tabular-nums; text-align: right; }
+  .dk-panel { padding: 14px 8px 18px 34px; border-bottom: 1px solid var(--border-soft); background: color-mix(in oklab, var(--panel) 60%, transparent); }
+  .dk-read { font-size: 13px; line-height: 1.62; max-width: 68ch; }
+  .dk-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 14px; }
+  .caveats { margin-top: 18px; padding: 12px 14px; border: 1px solid var(--border-soft); border-left: 3px solid var(--attention); border-radius: 10px; background: var(--bg-2); font-size: 12px; line-height: 1.55; }
+
+  /* ---- C: ledger ---- */
+  .lg { display: grid; grid-template-columns: minmax(0, 1fr) minmax(228px, 268px); gap: 28px; align-items: start; }
+  .lg > * { min-width: 0; }
+  .lg table { width: 100%; border-collapse: collapse; font-size: 11.5px; table-layout: auto; }
+  .lg th {
+    font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--dim);
+    text-align: left; padding: 0 8px 7px 0; border-bottom: 1px solid var(--border);
+  }
+  .lg th.r, .lg td.r { text-align: right; padding-right: 0; }
+  .lg td { padding: 9px 8px 9px 0; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+  .lg tr.sel td { background: color-mix(in oklab, var(--working) 8%, transparent); }
+  .lg .gut { width: 30px; padding-right: 0; }
+  .gutwrap { display: flex; align-items: center; gap: 7px; }
+  .radio { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--muted); flex: none; }
+  .radio.on { border-color: var(--idle); box-shadow: inset 0 0 0 2.5px var(--bg), inset 0 0 0 12px var(--idle); }
+  .bar { width: 3px; height: 30px; background: color-mix(in oklab, var(--border) 70%, transparent); border-radius: 2px; position: relative; overflow: hidden; flex: none; }
+  .bar i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--neutral); border-radius: 2px; }
+  .bar.win i { background: var(--idle); }
+  .lg .nm { font-size: 12px; font-weight: 620; }
+  .lg .md { font-size: 10.5px; color: var(--dim); }
+  .lg .sc { font-family: var(--mono); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  .lg .sc.win { color: var(--idle); }
+  .peek { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-2); padding: 13px 14px; }
+  .peek-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+  .peek p { font-size: 12.5px; line-height: 1.55; margin: 0 0 11px; }
+  .peek h6 { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); margin: 0 0 5px; }
+  .peek ul { font-size: 12px; line-height: 1.5; margin-bottom: 11px; }
+  .kbd {
+    font-family: var(--mono); font-size: 10px; border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 4px; color: var(--dim);
+  }
   .decide { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--border); flex-wrap: wrap; }
   .btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 540; }
   .btn-p { background: color-mix(in oklab, var(--idle) 16%, var(--panel-2)); border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); color: var(--fg); }
@@ -355,15 +425,170 @@
 <p><code>winner_materialized</code> becomes <em>Winner restored to a checkout</em>; <code>member_eliminated</code> becomes <em>Candidate 3 eliminated</em>. Group by stage rather than listing 18 flat rows. Timestamps carry information or they go. This touches <code>EnsembleTimeline.tsx</code>, outside the dossier proper, and was explicitly included.</p>
 
 <h2>4. Considered and set aside</h2>
-<p>Two other directions were mocked up and reviewed at commit <code>578fbc9</code>, where their mockups remain if anyone wants them.</p>
-<div class="aside">
-  <h4>B &ndash; The Verdict Sheet</h4>
-  <p style="margin:0">Lead with the ruling at a 68ch measure, resolve the anonymised labels inline, and put candidates in a docket that opens one at a time. Signature was a mono seal at 34px, the app&rsquo;s first display type. Set aside because it gives up simultaneous three-way comparison, and because its central move depends on the label resolution that is deferred.</p>
-</div>
-<div class="aside">
-  <h4>C &ndash; The Ledger</h4>
-  <p style="margin:0">A dense blotter at native density with a score gutter whose fill height is the score, and a peek pane that swaps as you arrow through rows. Set aside as less self-explanatory for an infrequent reader, though it remains the strongest option if ensemble volume rises.</p>
-</div>
+<p>Both were mocked up and reviewed alongside Direction A. They are kept here in full so the comparison that produced the decision stays readable in this document. <strong>Neither is being built</strong> &ndash; Direction A is the approved direction.</p>
+
+<h3>Direction B &ndash; The Verdict Sheet <span class="tag tag-out">set aside</span></h3>
+<p><strong>Concept.</strong> Lead with the ruling, not the roster. One full-measure verdict block carries the judge&rsquo;s summary at a readable measure, with the anonymised labels <strong>resolved inline</strong>. Today&rsquo;s worst comprehension defect becomes the page&rsquo;s signature moment. Beneath it, candidates are a docket of one-line rows; selecting one swaps a single full-measure reading column. Comparison happens by switching, not by scrolling.</p>
+<p><span class="sig">Signature &middot; the seal</span><br>Rank and score set as a letterpress lockup in <code>--mono</code> at 34px, ranged against a hairline rule. Exactly one per page, on the recommended candidate. This is the app&rsquo;s first display type, and it is spent once.</p>
+
+<div class="mc"><div class="mc-inner">
+  <div class="mc-head">
+    <span class="mc-title">Ensemble test one</span>
+    <span class="mc-sub">Best of N &middot; the comparison has ruled &middot; you have not decided</span>
+  </div>
+
+  <div class="vs-verdict">
+    <div>
+      <div class="eyeb" style="margin-bottom:8px">The ruling</div>
+      <p class="vs-prose" style="margin:0">
+        <span class="res"><u>B</u><b>Candidate 2</b></span> best addresses the half-screen requirement with a measured responsive ladder and the strongest reported verification.
+        <span class="res"><u>A</u><b>Candidate 3</b></span> is a solid, smaller redesign with sensible grouping but less complete responsive coverage.
+        <span class="res"><u>C</u><b>Candidate 1</b></span> makes the multi-row layout intentional yet preserves substantial vertical overhead and provides the weakest evidence.
+      </p>
+      <div class="caveats">
+        <div class="eyeb" style="margin-bottom:6px">The judge qualified this</div>
+        <ul style="padding-left:14px">
+          <li>Visual and test claims are author-reported rather than independently verified.</li>
+          <li><span class="res poss"><u>A</u><b>Candidate 3</b></span>&rsquo;s visual-verification claim is truncated.</li>
+          <li><span class="res"><u>B</u><b>Candidate 2</b></span> has a large, higher-risk diff and reports one failing test, even though it claims the failure is pre-existing.</li>
+          <li><span class="res"><u>C</u><b>Candidate 1</b></span> provides no test evidence beyond unverified check claims.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="seal">
+      <div class="seal-rank">Recommends</div>
+      <div class="seal-fig">92<s>/100</s></div>
+      <div class="seal-meta">Candidate 2<br>90% confident<br>8 clear of next</div>
+    </div>
+  </div>
+
+  <div class="docket">
+    <div class="eyeb" style="padding:10px 8px 8px">The docket &middot; 3 submissions</div>
+
+    <div class="dk-row open">
+      <span class="dk-rank">1</span>
+      <span class="dk-name">Candidate 2 <span>claude &middot; opus-5 &middot; high</span></span>
+      <span class="chip chip-rec">Rec</span>
+      <span class="num" style="font-size:11px;color:var(--dim)">6f +817 &minus;195</span>
+      <span class="dk-score" style="color:var(--idle)">92</span>
+    </div>
+    <div class="dk-panel">
+      <div class="eyeb" style="margin-bottom:6px">Why the judge ranked it first</div>
+      <p class="dk-read" style="margin:0 0 14px">It most completely fulfills the stated responsive title-bar goal and presents the strongest relevant evidence, despite meaningful complexity and the reported test failure.</p>
+      <div class="eyeb" style="margin-bottom:6px">Claimed by this candidate &middot; not verified</div>
+      <p class="dk-read" style="margin:0">Rebuilt the topbar around three ranked zones plus a measured <code>@container</code> degradation ladder, so it stays ONE row from a maximised window down to half screen (864px) instead of wrapping into three. Verified live at 14 widths from 1728px down to 830px: topbar height 110px throughout, previously 110 &rarr; 153 &rarr; 191.</p>
+      <div class="dk-cols">
+        <div>
+          <div class="eyeb" style="margin-bottom:5px">Strengths</div>
+          <ul class="sb-list"><li>Directly targets half-screen single-row behavior.</li><li>Measured container-query breakpoints; keeps the Dispatch label.</li><li>Adds focused tests for responsive and accessibility invariants.</li></ul>
+        </div>
+        <div>
+          <div class="eyeb" style="margin-bottom:5px">Risks</div>
+          <ul class="sb-list"><li>Large 817-line change increases regression surface.</li><li>One full-suite test reported failing.</li><li>Source-inspection tests are brittle.</li></ul>
+        </div>
+      </div>
+      <div style="margin-top:13px;display:flex;gap:8px"><span class="btn">Open the diff</span><span class="btn">Restore this checkout</span></div>
+    </div>
+
+    <div class="dk-row">
+      <span class="dk-rank">2</span>
+      <span class="dk-name">Candidate 3 <span>claude &middot; sonnet-5 &middot; xhigh</span></span>
+      <span></span>
+      <span class="num" style="font-size:11px;color:var(--dim)">3f +255 &minus;151</span>
+      <span class="dk-score">84</span>
+    </div>
+    <div class="dk-row">
+      <span class="dk-rank">3</span>
+      <span class="dk-name">Candidate 1 <span>codex &middot; gpt-5.6-terra &middot; xhigh</span></span>
+      <span></span>
+      <span class="num" style="font-size:11px;color:var(--dim)">2f +183 &minus;92</span>
+      <span class="dk-score">67</span>
+    </div>
+  </div>
+
+  <div class="decide">
+    <span class="btn btn-p">Confirm Candidate 2</span>
+    <span class="btn">Pick another</span>
+    <span class="btn">No consensus</span>
+    <span style="font-size:11px;color:var(--dim)">Reaps the other two worktrees. Snapshots are kept.</span>
+  </div>
+</div></div>
+<p class="mock-cap"><b>What changed.</b> The ruling is the hero, set at 13px/1.62 in a 68ch measure &ndash; the only genuinely readable long-form setting of the three directions. Every <code>Submission A/B/C</code> is resolved in place, so the sentence that decides the run can actually be followed. The caveats get their own block instead of being a fourth bullet list. One candidate is open at a time, at full measure.<br><b>Risk taken.</b> Introduces a display treatment into an app that has none, and gives up simultaneous three-way comparison. Justified because the subject is adjudication, <code>--mono</code> is already a token, and today&rsquo;s &ldquo;simultaneous&rdquo; comparison is a fiction &ndash; 1,927px of scroll between peer sections is not simultaneity. <b>Trade-off.</b> Strongest for reading and defending a decision, weakest for spotting a narrow numeric difference.</p>
+
+<h3>Direction C &ndash; The Ledger <span class="tag tag-out">set aside</span></h3>
+<p><strong>Concept.</strong> No cards. A blotter at the app&rsquo;s native density: candidates as rows, hairline rules, tabular numerals, the decision control in the leftmost gutter. All prose lives in a peek pane that swaps as you arrow through rows, so reading a claim never costs your place. The entire decision fits one viewport with no scrolling.</p>
+<p><span class="sig">Signature &middot; the score gutter</span><br>A 3px vertical stripe on each row whose fill height <em>is</em> the score. Ranking becomes legible peripherally, without reading a digit &ndash; the structural device carries the quantity rather than decorating it.</p>
+
+<div class="mc"><div class="mc-inner">
+  <div class="mc-head">
+    <span class="mc-title">Ensemble test one</span>
+    <span class="mc-sub">Best of N &middot; 3 submissions &middot; <span class="kbd">&uarr;&darr;</span> move &middot; <span class="kbd">&crarr;</span> confirm</span>
+  </div>
+  <p style="font-size:12.5px;line-height:1.55;color:var(--muted);max-width:68ch;margin:10px 0 16px">
+    The judge recommends <b style="color:var(--fg)">Candidate 2</b> &ndash; 8 points clear, 90% confident &ndash; on the strongest reported verification, despite the largest diff.
+  </p>
+
+  <div class="lg">
+   <div>
+    <table>
+      <thead><tr>
+        <th class="gut"></th><th>Candidate</th><th class="r">Score</th><th class="r">Conf</th><th class="r">Diff</th><th class="r">Elapsed</th>
+      </tr></thead>
+      <tbody>
+        <tr class="sel">
+          <td class="gut"><div class="gutwrap"><span class="radio on"></span><span class="bar win"><i style="height:92%"></i></span></div></td>
+          <td><div class="nm">Candidate 2 <span class="chip chip-rec" style="margin-left:4px">Rec</span></div><div class="md">claude &middot; opus-5 &middot; high &middot; was B</div></td>
+          <td class="r"><span class="sc win">92</span></td>
+          <td class="r num" style="color:var(--muted)">90%</td>
+          <td class="r num"><span class="ins">+817</span> <span class="del">&minus;195</span></td>
+          <td class="r num" style="color:var(--muted)">49m</td>
+        </tr>
+        <tr>
+          <td class="gut"><div class="gutwrap"><span class="radio"></span><span class="bar"><i style="height:84%"></i></span></div></td>
+          <td><div class="nm">Candidate 3</div><div class="md">claude &middot; sonnet-5 &middot; xhigh &middot; was A</div></td>
+          <td class="r"><span class="sc">84</span></td>
+          <td class="r num" style="color:var(--muted)">84%</td>
+          <td class="r num"><span class="ins">+255</span> <span class="del">&minus;151</span></td>
+          <td class="r num" style="color:var(--muted)">5h 24m</td>
+        </tr>
+        <tr>
+          <td class="gut"><div class="gutwrap"><span class="radio"></span><span class="bar"><i style="height:67%"></i></span></div></td>
+          <td><div class="nm">Candidate 1</div><div class="md">codex &middot; gpt-5.6-terra &middot; xhigh &middot; was C</div></td>
+          <td class="r"><span class="sc">67</span></td>
+          <td class="r num" style="color:var(--muted)">87%</td>
+          <td class="r num"><span class="ins">+183</span> <span class="del">&minus;92</span></td>
+          <td class="r num" style="color:var(--muted)">4h 38m</td>
+        </tr>
+        <tr>
+          <td class="gut"><div class="gutwrap"><span class="radio"></span></div></td>
+          <td colspan="5"><div class="nm" style="color:var(--muted)">No consensus &ndash; keep every snapshot, promote none</div></td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="margin-top:14px;padding:10px 12px;border:1px solid var(--border-soft);border-left:3px solid var(--attention);border-radius:10px;background:var(--bg-2)">
+      <div class="eyeb" style="margin-bottom:5px">At stake</div>
+      <p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--muted)">Present me an idea for improving the title bar of this app, it&rsquo;s jumbled, and doesn&rsquo;t work on smaller screens well. It should look ok at half-screen.</p>
+    </div>
+   </div>
+
+    <div class="peek">
+      <div class="peek-h"><span class="eyeb">Candidate 2</span><span class="chip chip-sub">was B</span></div>
+      <h6>Why first</h6>
+      <p>It most completely fulfills the stated responsive title-bar goal and presents the strongest relevant evidence, despite meaningful complexity and the reported test failure.</p>
+      <h6>Strengths</h6>
+      <ul class="sb-list"><li>Directly targets half-screen single-row behavior.</li><li>Measured container-query breakpoints.</li><li>Extensive live-width verification reported.</li></ul>
+      <h6>Risks</h6>
+      <ul class="sb-list"><li>Large 817-line change increases regression surface.</li><li>One full-suite test reported failing.</li></ul>
+      <div style="display:flex;gap:6px;margin-top:4px"><span class="btn">Full claim</span><span class="btn">Diff</span></div>
+    </div>
+  </div>
+
+  <div class="decide">
+    <span class="btn btn-p">Confirm Candidate 2</span>
+    <span style="font-size:11px;color:var(--dim)">Reaps the other two worktrees. Snapshots are kept, so a change of mind is a restore.</span>
+  </div>
+</div></div>
+<p class="mock-cap"><b>What changed.</b> Nothing new in the type system &ndash; 11.5px rows, 10.5px eyebrows, 12.5px/1.55 in the peek pane, all already in use. Numerals are tabular throughout, so the diff and score columns align optically. The whole decision, including the control that makes it, sits in one viewport. The gutter stripe means you can rank the rows without reading them.<br><b>Risk taken.</b> Restraint. It is the least visually bold of the three and wins on precision in spacing, alignment and rule weight or not at all. <b>Trade-off.</b> Fastest for an operator who runs ensembles often; least self-explanatory for a first-time reader.</p>
 
 <h2>5. Scope</h2>
 <p><strong>In scope:</strong> <code>dossier.tsx</code>, <code>BestOfN.tsx</code>, <code>DecisionPanel.tsx</code>, the <code>.ensemble-scorecard</code> / <code>.dossier-*</code> CSS, and <code>EnsembleTimeline.tsx</code> for the event log.</p>

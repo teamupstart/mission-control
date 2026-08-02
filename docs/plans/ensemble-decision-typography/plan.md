@@ -136,7 +136,7 @@ This touches `EnsembleTimeline.tsx`, outside the dossier proper, and was explici
 
 ## 4. Considered and set aside
 
-Two other directions were mocked up and reviewed at commit `578fbc9`, where their mockups remain if anyone wants them.
+Both were mocked up and reviewed alongside Direction A, and their mockups are retained in full in `plan.html` so the comparison that produced the decision stays readable in this document. Neither is being built.
 
 **B - The Verdict Sheet.** Lead with the ruling at a 68ch measure, resolve the anonymised labels inline, and put candidates in a docket that opens one at a time. Signature was a mono seal at 34px, the app's first display type. Set aside because it gives up simultaneous three-way comparison, and because its central move depends on the label resolution that is deferred.
 

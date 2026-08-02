@@ -436,14 +436,12 @@ test("the Ensembles tab wears the daemon's attention count, and nothing when cal
   const page = (summaries: EnsembleSummary[], count: number): string =>
     renderToStaticMarkup(
       createElement(WorkflowPage, {
-        tab: "workflows" as const,
-        personas: [],
+        // Any tab draws the strip; `runs` is the page's own default and keeps this test
+        // about the badge rather than about what the other tab renders.
+        tab: "runs" as const,
         ensembleSummaries: summaries,
         ensembleAttentionCount: count,
-        llm: { status: null, loading: false, error: null, refresh: () => {} } as never,
-        isOverlayOpen: () => false,
         onTab: () => {},
-        onDirtyChange: () => {},
       }),
     );
   const busy = page([mkEnsembleSummary({ attention: true })], 1);

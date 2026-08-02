@@ -7,11 +7,58 @@ import {
 import { WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "@shared/workflow.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
-// dashboard has - fleet, Workflows, Settings - is a variant of `MissionRoute` here, and
-// `App.tsx` renders whichever one the hash names. A second router would be a second answer
+// dashboard has - fleet, Library, Workflows, Settings - is a variant of `MissionRoute` here,
+// and `App.tsx` renders whichever one the hash names. A second router would be a second answer
 // to "which page is showing", and the dirty-draft gate below only guards one of them.
 
-export type WorkflowTab = "workflows" | "personas" | "actions" | "runs" | "ensembles";
+/**
+ * What is left of the Workflows page: the two EXECUTION tabs.
+ *
+ * Authoring moved to the Library, and the three tabs it took with it are gone from this union
+ * rather than deprecated in place - a tab id the page can no longer render is a route App
+ * would have to defend against on every read. The legacy hashes still parse (see
+ * `parseMissionRoute`), but they parse into `library` routes.
+ */
+export type WorkflowTab = "runs" | "ensembles";
+
+/**
+ * The Library's five shelves, in the order they are read on the page.
+ *
+ * Append-only, and the strings are the hash segments: a rename is a broken bookmark.
+ */
+export const LIBRARY_SHELVES = [
+  "workflows",
+  "personas",
+  "actions",
+  "ensembles",
+  "missions",
+] as const;
+export type LibraryShelf = (typeof LIBRARY_SHELVES)[number];
+
+/**
+ * The three shelves whose assets are AUTHORED one level deeper, and so the only ones that can
+ * appear in a route.
+ *
+ * Ensembles shelves launchers rather than assets (its cards open Dispatch) and Missions ·
+ * Sources links out to surfaces that already own their state, so neither has anything to
+ * deep-link into. Typing the route field this narrowly is what stops `#/library/ensembles`
+ * from becoming a page that has to be invented later to answer a link.
+ */
+export const LIBRARY_SURFACES = ["workflows", "personas", "actions"] as const;
+export type LibrarySurface = (typeof LIBRARY_SURFACES)[number];
+
+export function isLibrarySurface(value: string): value is LibrarySurface {
+  return (LIBRARY_SURFACES as readonly string[]).includes(value);
+}
+
+/**
+ * The path segment that means "open a blank draft here" rather than an asset id.
+ *
+ * Reserved, so no asset whose id is literally `new` can be deep-linked - ids are UUIDs or
+ * `builtin:`-prefixed, so nothing real collides.
+ */
+export const LIBRARY_NEW_SEGMENT = "new";
+
 export interface WorkflowRunFilters {
   status?: WorkflowRunStatus;
   workflowId?: string;
@@ -19,6 +66,15 @@ export interface WorkflowRunFilters {
 }
 export type MissionRoute =
   | { page: "fleet" }
+  | {
+      page: "library";
+      /** Absent on the shelves index; present when an authoring surface is mounted. */
+      shelf?: LibrarySurface;
+      /** The asset that surface has open. Never set together with `creating`. */
+      assetId?: string;
+      /** Open the surface on a new draft instead of an existing asset. */
+      creating?: true;
+    }
   | {
       page: "workflows";
       tab: WorkflowTab;
@@ -30,17 +86,22 @@ export type MissionRoute =
   | { page: "settings"; category: SettingsCategoryId };
 
 /**
- * The route the Workflows toggle (default `w`) navigates to, or `null` when it must stand
- * down. Pure, so the keydown handler's one navigation chord is testable without a DOM: App
- * feeds it the live guard state and this decides.
+ * The route the page toggle (default `w`) navigates to, or `null` when it must stand down.
+ * Pure, so the keydown handler's one navigation chord is testable without a DOM: App feeds it
+ * the live guard state and this decides.
+ *
+ * It toggles Fleet <-> Library, the two homes the topbar segment names. It used to toggle
+ * Fleet <-> Workflows, and it moved with the authoring surfaces rather than being re-pointed
+ * at a page that is now only watched: the chord's job is "the other home", and the Workflows
+ * page is no longer one.
  *
  * It is the one fleet shortcut that fires OFF the fleet too - that is what lets the same key
- * RETURN - so it toggles Fleet <-> Workflows and does nothing on any other page. It stands
- * down while a text field has focus, a session is being renamed, or an overlay owns the
- * screen, so `w` types, renames, or dismisses in those moments rather than navigating.
+ * RETURN - and it does nothing on any other page. It stands down while a text field has focus,
+ * a session is being renamed, or an overlay owns the screen, so `w` types, renames, or
+ * dismisses in those moments rather than navigating.
  */
-export function workflowsToggleRoute(state: {
-  /** The pressed chord already equals the resolved Workflows binding. */
+export function pageToggleRoute(state: {
+  /** The pressed chord already equals the resolved page-toggle binding. */
   active: boolean;
   typing: boolean;
   renaming: boolean;
@@ -48,8 +109,8 @@ export function workflowsToggleRoute(state: {
   page: MissionRoute["page"];
 }): MissionRoute | null {
   if (!state.active || state.typing || state.renaming || state.overlayOpen) return null;
-  if (state.page === "fleet") return { page: "workflows", tab: "workflows" };
-  if (state.page === "workflows") return { page: "fleet" };
+  if (state.page === "fleet") return { page: "library" };
+  if (state.page === "library") return { page: "fleet" };
   return null;
 }
 
@@ -85,9 +146,28 @@ export function parseMissionRoute(hash: string): MissionRoute {
     ...(params.get("session") ? { session: params.get("session")! } : {}),
   };
   const withFilters = Object.keys(filters).length > 0 ? filters : undefined;
-  if (path === "/workflows") {
-    return { page: "workflows", tab: "workflows" };
+  if (path === "/library") return { page: "library" };
+  const library = /^\/library\/([^/]+)(?:\/([^/]+))?$/.exec(path);
+  if (library) {
+    const shelf = segment(library[1]!);
+    // An unreadable or retired shelf lands on the shelves index rather than on a blank pane,
+    // the same rule an unknown settings category takes.
+    if (shelf === null || !isLibrarySurface(shelf)) return { page: "library" };
+    if (library[2] === undefined) return { page: "library", shelf };
+    if (library[2] === LIBRARY_NEW_SEGMENT) return { page: "library", shelf, creating: true };
+    // An id nothing can decode names no asset, so it opens the surface on whatever that
+    // surface would have opened by itself.
+    const assetId = segment(library[2]);
+    return assetId ? { page: "library", shelf, assetId } : { page: "library", shelf };
   }
+  // The three legacy authoring routes, redirected permanently ON PARSE rather than by a
+  // component that would have to mount first. `useWorkflowRoute` rewrites the address bar to
+  // the canonical spelling, so a kept bookmark both lands and stops being legacy.
+  if (path === "/workflows") return { page: "library" };
+  if (path === "/workflows/personas") return { page: "library", shelf: "personas" };
+  // `actions`, not `session-actions`: the shelf is called Actions on screen, and the hash a
+  // person copies out of the address bar has to be the word they read.
+  if (path === "/workflows/actions") return { page: "library", shelf: "actions" };
   if (path === "/workflows/runs") {
     return { page: "workflows", tab: "runs", ...(withFilters ? { filters: withFilters } : {}) };
   }
@@ -115,11 +195,6 @@ export function parseMissionRoute(hash: string): MissionRoute {
       ? { page: "workflows", tab: "ensembles", ensembleId }
       : { page: "workflows", tab: "ensembles" };
   }
-  if (path === "/workflows/personas") return { page: "workflows", tab: "personas" };
-  // `actions` rather than `session-actions`: the tab is called Actions on screen, and
-  // `missionRouteHash` serializes a tab by its own name, so the two have to be the same word
-  // or a link the operator copies out of the address bar lands on the fleet.
-  if (path === "/workflows/actions") return { page: "workflows", tab: "actions" };
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
   if (settings) {
@@ -140,6 +215,13 @@ export function missionRouteHash(route: MissionRoute): string {
   // Always spelled out with its category, so every settings link is a deep link and
   // back/forward steps between categories rather than collapsing them into one entry.
   if (route.page === "settings") return `#/settings/${route.category}`;
+  if (route.page === "library") {
+    if (!route.shelf) return "#/library";
+    if (route.creating) return `#/library/${route.shelf}/${LIBRARY_NEW_SEGMENT}`;
+    return route.assetId
+      ? `#/library/${route.shelf}/${encodeURIComponent(route.assetId)}`
+      : `#/library/${route.shelf}`;
+  }
   if (route.tab === "runs") {
     const path = route.runId
       ? `#/workflows/runs/${encodeURIComponent(route.runId)}`
@@ -151,12 +233,9 @@ export function missionRouteHash(route: MissionRoute): string {
     const query = params.toString();
     return query ? `${path}?${query}` : path;
   }
-  if (route.tab === "ensembles") {
-    return route.ensembleId
-      ? `#/workflows/ensembles/${encodeURIComponent(route.ensembleId)}`
-      : "#/workflows/ensembles";
-  }
-  return route.tab === "workflows" ? "#/workflows" : `#/workflows/${route.tab}`;
+  return route.ensembleId
+    ? `#/workflows/ensembles/${encodeURIComponent(route.ensembleId)}`
+    : "#/workflows/ensembles";
 }
 
 export interface MissionRouter {
@@ -166,6 +245,18 @@ export interface MissionRouter {
    * now holding it (see `pendingRoute`) or because it was already the current route.
    */
   navigate: (route: MissionRoute) => boolean;
+  /**
+   * Record a move the operator has ALREADY made inside the page they are on, without a
+   * history entry and without the dirty-draft gate.
+   *
+   * The one caller is a Library authoring surface reporting which asset it has open, so the
+   * address bar names it and the link is shareable. It bypasses the gate deliberately and
+   * safely: the surface owns that selection, it has already asked its own "discard unsaved
+   * changes?" question before switching, and this is called AFTER it switched - so the gate
+   * would raise a second dialog about a draft the operator just answered for, on a page they
+   * are not leaving. `navigate` remains the only way to change pages.
+   */
+  replace: (route: MissionRoute) => void;
   /**
    * The route a dirty draft is holding up, or null. App renders the confirm dialog for it;
    * the router does not import a component, so this hook stays testable without a DOM.
@@ -222,6 +313,28 @@ export function useWorkflowRoute(dirty: boolean): MissionRouter {
     return true;
   }, [applyRoute, setPendingRoute]);
 
+  const replace = useCallback((next: MissionRoute): void => {
+    const hash = missionRouteHash(next);
+    if (hash === missionRouteHash(accepted.current)) return;
+    // `replaceState`, not `location.hash`: selecting your way down a Persona list must not
+    // build a history entry per click, or Back stops meaning "the page I came from".
+    history.replaceState(null, "", hash);
+    accepted.current = next;
+    setRoute(next);
+  }, []);
+
+  // A legacy hash lands on its new route (see `parseMissionRoute`), and the address bar is
+  // rewritten to say so. Without this the redirect is invisible: the page would be the
+  // Library while the URL still read `#/workflows/personas`, and the next copy of that link
+  // would keep the old spelling alive forever. `replaceState` fires no `hashchange`, so this
+  // cannot loop through the listener below.
+  useEffect(() => {
+    const current = window.location.hash;
+    if (!current) return;
+    const canonical = missionRouteHash(parseMissionRoute(current));
+    if (canonical !== current) history.replaceState(null, "", canonical);
+  }, []);
+
   useEffect(() => {
     const onHash = (): void => {
       const hash = window.location.hash || "#/fleet";
@@ -242,6 +355,10 @@ export function useWorkflowRoute(dirty: boolean): MissionRouter {
       }
       accepted.current = next;
       setRoute(next);
+      // Same canonicalization the mount effect does, for a legacy link followed mid-session
+      // (a bookmark opened into this tab, or Back onto one).
+      const canonical = missionRouteHash(next);
+      if (canonical !== hash) history.replaceState(null, "", canonical);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -256,5 +373,5 @@ export function useWorkflowRoute(dirty: boolean): MissionRouter {
 
   const cancelPending = useCallback((): void => setPendingRoute(null), [setPendingRoute]);
 
-  return { route, navigate, pendingRoute, confirmPending, cancelPending };
+  return { route, navigate, replace, pendingRoute, confirmPending, cancelPending };
 }

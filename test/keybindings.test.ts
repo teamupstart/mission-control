@@ -55,7 +55,7 @@ const {
 } = await import("../src/web/lib/keybindings.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { KeyboardPanel } = await import("../src/web/components/KeyboardPanel.tsx");
-const { workflowsToggleRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
+const { pageToggleRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
 type ActionId = (typeof ACTIONS)[number]["id"];
 
 /** The resolved map the runtime handler and the settings editor both read. */
@@ -238,51 +238,54 @@ test("workflows is a global action defaulting to w that toggles the page", () =>
   assert.equal(formatChord(workflows.defaultBinding), "w");
 });
 
-// ---- the Workflows toggle decision the App keydown handler runs ----
+// ---- the page toggle decision the App keydown handler runs ----
 //
 // The handler itself is a global keydown listener reaching refs through renders, which has
-// no jsdom here to drive. So its one navigation chord is a PURE function, `workflowsToggleRoute`,
+// no jsdom here to drive. So its one navigation chord is a PURE function, `pageToggleRoute`,
 // that App feeds the live guard state - and these exercise that function the way a real `w`
-// keydown would: the chord a `w` keypress actually produces resolves to the Workflows binding,
+// keydown would: the chord a `w` keypress actually produces resolves to the toggle's binding,
 // so `active` is that comparison, and the route it returns is what App hands `navigate`.
+//
+// The ACTION ID is still `workflows` while the page it reaches is the Library: the id keys
+// persisted overrides, so renaming it would reset every operator's rebinding of this key.
 
 const workflowsBinding = ACTIONS.find((a) => a.id === "workflows")!.defaultBinding;
 /** What App computes for a keydown: does the produced chord equal the resolved binding? */
 const pressed = (k: string, mods?: Partial<Record<"ctrl" | "shift", true>>): boolean =>
   chordFromEvent(key(k, mods)) === workflowsBinding;
 
-test("w toggles Fleet to Workflows and back, and does nothing on any other page", () => {
+test("w toggles Fleet to Library and back, and does nothing on any other page", () => {
   const clear = { typing: false, renaming: false, overlayOpen: false } as const;
   // A real `w` keypress is what makes the chord `active`.
   assert.equal(pressed("w"), true);
   assert.deepEqual(
-    workflowsToggleRoute({ active: pressed("w"), ...clear, page: "fleet" }),
-    { page: "workflows", tab: "workflows" },
+    pageToggleRoute({ active: pressed("w"), ...clear, page: "fleet" }),
+    { page: "library" },
   );
   assert.deepEqual(
-    workflowsToggleRoute({ active: pressed("w"), ...clear, page: "workflows" }),
+    pageToggleRoute({ active: pressed("w"), ...clear, page: "library" }),
     { page: "fleet" },
   );
-  // Settings owns its own keys: the toggle stands down rather than yanking to Workflows.
-  assert.equal(workflowsToggleRoute({ active: pressed("w"), ...clear, page: "settings" }), null);
+  // Settings owns its own keys: the toggle stands down rather than yanking to the Library.
+  assert.equal(pageToggleRoute({ active: pressed("w"), ...clear, page: "settings" }), null);
 });
 
-test("the Workflows toggle stands down while typing, renaming, or an overlay is open", () => {
+test("the page toggle stands down while typing, renaming, or an overlay is open", () => {
   const base = { active: true, typing: false, renaming: false, overlayOpen: false, page: "fleet" } as const;
   // With every guard clear it fires; flipping any one alone suppresses it, so `w` types into
   // a field, renames a card, or dismisses an overlay instead of navigating.
-  assert.deepEqual(workflowsToggleRoute(base), { page: "workflows", tab: "workflows" });
-  assert.equal(workflowsToggleRoute({ ...base, typing: true }), null);
-  assert.equal(workflowsToggleRoute({ ...base, renaming: true }), null);
-  assert.equal(workflowsToggleRoute({ ...base, overlayOpen: true }), null);
+  assert.deepEqual(pageToggleRoute(base), { page: "library" });
+  assert.equal(pageToggleRoute({ ...base, typing: true }), null);
+  assert.equal(pageToggleRoute({ ...base, renaming: true }), null);
+  assert.equal(pageToggleRoute({ ...base, overlayOpen: true }), null);
 });
 
-test("only the resolved Workflows chord toggles, nothing near it", () => {
+test("only the resolved page-toggle chord toggles, nothing near it", () => {
   // A different key is not `active`, so it never navigates - the toggle owns `w` alone.
   assert.equal(pressed("q"), false);
   assert.equal(pressed("w", { ctrl: true }), false);
   assert.equal(
-    workflowsToggleRoute({ active: pressed("q"), typing: false, renaming: false, overlayOpen: false, page: "fleet" }),
+    pageToggleRoute({ active: pressed("q"), typing: false, renaming: false, overlayOpen: false, page: "fleet" }),
     null,
   );
 });

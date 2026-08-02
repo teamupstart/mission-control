@@ -135,15 +135,18 @@ test("the desktop shell still makes the topbar the draggable title bar", () => {
   );
 });
 
-test("the Workflows page control lives in the topbar's explicit no-drag button coverage", () => {
-  assert.match(app, /className="ghost-btn workflow-nav-btn"/);
+test("the page segment lives in the topbar's explicit no-drag button coverage", () => {
+  // The one control that says which page you are on. It replaced a single ghost button, and
+  // it is still plain `<button>`s inside the bar - so the blanket rule below is what keeps
+  // the desktop shell's drag region from eating the clicks that switch homes.
+  assert.match(app, /className={`page-seg-btn/);
   assert.ok(
     ALL.some(
       (rule) =>
         rule.selectors.includes(".is-desktop .topbar button") &&
         /-webkit-app-region:\s*no-drag/.test(rule.body),
     ),
-    "the Workflows topbar button would be swallowed by the desktop drag region",
+    "the page segment's buttons would be swallowed by the desktop drag region",
   );
 });
 

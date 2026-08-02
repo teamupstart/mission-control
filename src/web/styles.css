@@ -1075,6 +1075,51 @@ body {
   margin: 0;
 }
 
+/* ---- the page segment: the app's two homes ----
+
+   One control rather than the lone self-renaming button it replaces. A segment states that
+   there are exactly two places to be and which one you are in; a button that says "Workflows"
+   and then "Fleet" states neither, and cost a click to discover. It sits at the LEFT, beside
+   the brand, because that is where a person looks for "where am I" - the right side is the
+   fleet's actions. */
+.page-seg {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  padding: 2px;
+  gap: 2px;
+  flex: none;
+}
+.page-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 26px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+.page-seg-btn:hover {
+  color: var(--fg);
+}
+/* Keyed off `aria-current`, not a class, so the styling cannot disagree with what a screen
+   reader is told. */
+.page-seg-btn[aria-current] {
+  color: var(--fg);
+  font-weight: 600;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
 /* ---- nav-bar filter ---- */
 .filter-box {
   display: flex;
@@ -1482,12 +1527,17 @@ body {
    decorative rather than a control's name: the mark beside it and the window itself
    already say which app this is. */
 @container topbar (max-width: 1600px) {
-  /* Rung 1 (-188px): the two labelled destinations become glyphs. Both already carry a real
-     icon (the ⌘/← and the ◷) and an `aria-label`, so this costs the word and nothing else.
+  /* Rung 1: the Missions button becomes a glyph. It already carries a real icon (the ◷) and
+     an `aria-label`, so this costs the word and nothing else.
+
+     The page SEGMENT is deliberately not here. It sheds at rung 4, with Foreman: it is the
+     one control that answers "where am I", and two unlabelled squares beside the brand is
+     the question rather than the answer. A 16" laptop sits at 1512px - inside this rung -
+     so shedding it here would mean most windows never see the words at all.
+
      Foreman's word survives here and gives up its mode chip instead - the dot beside it
      already carries live/off, and the chip is the wider of the two. Dispatch has no
      `.tb-label` at all and so never degrades: it is the one control you would hunt for. */
-  .workflow-nav-btn .tb-label,
   .missions-btn .tb-label {
     position: absolute;
     width: 1px;
@@ -1498,11 +1548,6 @@ body {
     white-space: nowrap;
   }
   .foreman-chip {
-    display: none;
-  }
-  /* The chord hint goes with its word: a keycap floating beside a bare glyph reads as a
-     second glyph. The chord still works, and the tooltip still names it. */
-  .workflow-nav-btn .kb-hint {
     display: none;
   }
   /* The cost chip's rate segment, and it belongs at the first rung because it is the most
@@ -1602,7 +1647,8 @@ body {
      deliberately - bundled, the two shed 349px at once, and a rung that saves far more than
      the width it was crossed at leaves the bar visibly half empty for the next 300px of
      window. A rung cannot restyle `.topbar` itself because `.topbar` is its container. */
-  .foreman-btn .tb-label {
+  .foreman-btn .tb-label,
+  .page-seg-btn .tb-label {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -1610,6 +1656,11 @@ body {
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+  /* The chord hint goes with its word: a keycap floating beside a bare glyph reads as a
+     second glyph. The chord still works, and the tooltip still names it. */
+  .page-seg-btn .kb-hint {
+    display: none;
   }
 }
 @container topbar (max-width: 1045px) {
@@ -9212,11 +9263,217 @@ select.ensemble-judge-persona {
   }
 }
 
-/* ---- workflows page + Persona library ---- */
-.workflow-nav-btn {
-  gap: 6px;
+/* ---- the Library page ----
+
+   Shelves of authored assets. The question is the heading and the system noun is the mono
+   eyebrow above it, which is the whole point of the layout: an operator learns what a
+   workflow is for by reading the shelf rather than by opening one. Nothing here shows live
+   execution state - each shelf carries one link to where its assets are actually running. */
+.lib-page,
+.lib-surface {
+  min-width: 0;
+  padding: 4px 0 40px;
+}
+.app-console > .lib-page,
+.app-board > .lib-page,
+.app-console > .lib-surface,
+.app-board > .lib-surface {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 22px;
+}
+/* `end`, not `baseline`: the left column is an eyebrow stacked over the title, so its
+   baseline is the EYEBROW's - baseline alignment floated the sentence up beside "AUTHORING"
+   rather than beside "Library". */
+.lib-head {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-bottom: 8px;
+}
+.lib-head > div > * {
+  margin: 0;
+}
+.lib-head h2 {
+  margin-top: 2px;
+  font-size: 26px;
+  letter-spacing: -0.025em;
+}
+.lib-sub {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.lib-shelf {
+  margin-top: 26px;
+}
+.lib-shelf-top {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.lib-shelf-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+/* A button rather than an anchor: every route change in this app goes through the router's
+   `navigate`, which is what the dirty-draft gate hangs off. */
+.lib-shelf-live {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--working);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
   white-space: nowrap;
 }
+.lib-shelf-live:hover {
+  text-decoration: underline;
+}
+.lib-shelf-live.is-attention {
+  color: var(--attention);
+}
+.lib-shelf h3 {
+  margin: 3px 0 2px;
+  font-size: 16px;
+  font-weight: 650;
+}
+.lib-shelf-why {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  max-width: 82ch;
+}
+.lib-shelf-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 11px;
+  margin-top: 12px;
+}
+.lib-shelf-empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--dim);
+  align-self: center;
+}
+
+.lib-asset {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-height: 104px;
+  padding: 12px 14px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.14s ease;
+}
+.lib-asset:hover {
+  border-color: var(--border);
+}
+.lib-asset-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lib-asset-glyph {
+  color: var(--muted);
+  font-size: 13px;
+}
+.lib-asset-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  /* Wraps rather than truncating. Four of the five shipped Personas have names long enough
+     to hit the ellipsis at this column width, and "Documentation Ste…" beside "Intent
+     Conformanc…" is a shelf an operator cannot read. The tag beside it is `flex: none` and
+     the row wraps, so a long name pushes the tag down instead of eating it. */
+  overflow-wrap: anywhere;
+}
+.lib-tag {
+  flex: none;
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 9.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.lib-tag-builtin {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 40%, transparent);
+}
+.lib-tag-attention {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 40%, transparent);
+}
+/* `flex: 1` is what pushes every card's fact line down onto its hairline, so a row of cards
+   aligns on the line that matters rather than on whatever the descriptions happen to wrap to. */
+.lib-asset-desc {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+  /* Clamped, because these descriptions are authored without a length budget: the shipped
+     No-Mistakes Review carries a full paragraph, and unclamped it set a 260px row height
+     that left every card beside it mostly empty. The card is an index entry - the whole
+     text is one click away in the editor. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.lib-asset-fact {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  border-top: 1px solid var(--border-soft);
+  padding-top: 7px;
+}
+.lib-asset-fact.is-warn {
+  color: var(--attention);
+}
+.lib-asset-new {
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+  border-style: dashed;
+  border-color: var(--border);
+  background: none;
+  color: var(--dim);
+}
+.lib-asset-new:hover {
+  color: var(--fg);
+  border-color: var(--dim);
+}
+.lib-asset-new-label {
+  font-size: 12.5px;
+}
+.lib-asset-new-sub {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* ---- workflows page + Persona library ---- */
 .workflow-page {
   min-width: 0;
   padding: 4px 0 40px;

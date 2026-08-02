@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-pagination-"));
 process.env.MISSION_HOME = home;
@@ -14,6 +15,7 @@ const {
   decodeWorkflowRunCursor,
   WorkflowStore,
 } = await import("../src/server/workflows/store.ts");
+const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const db = openDb();
 const store = new WorkflowStore(db);
 beforeEach(() => clearWorkflowTables(db));
@@ -52,6 +54,56 @@ function seedRun(id: string, updatedAt: number, status = "completed"): void {
        trigger_source, trigger_key, started_at, updated_at, completed_at
      ) VALUES (?, 'binding', 'version', ?, 'complete', 5, 'manual', ?, 1, ?, ?)`,
   ).run(id, status, `trigger:${id}`, updatedAt, status === "completed" ? updatedAt : null);
+}
+
+function instrumentedStore(): { store: InstanceType<typeof WorkflowStore>; statements: { count: number } } {
+  const statements = { count: 0 };
+  const countedDb = new Proxy(db, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (sql: string) => {
+          statements.count += 1;
+          return target.prepare(sql);
+        };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as DatabaseSync;
+  return { store: new WorkflowStore(countedDb), statements };
+}
+
+function insertSubmission(input: {
+  id: string;
+  runId: string;
+  round: number;
+  contextJson: string;
+  evidenceJson: string;
+}): void {
+  db.prepare(
+    `INSERT INTO workflow_submissions (
+       id, run_id, round, segment, mode, trigger_source, trigger_key,
+       evidence_fingerprint, context_json, evidence_json, status,
+       created_at, updated_at, completed_at
+     ) VALUES (?, ?, ?, 0, 'full_workflow', 'manual', ?, ?, ?, ?,
+               'completed', ?, ?, ?)`,
+  ).run(
+    input.id,
+    input.runId,
+    input.round,
+    `submission:${input.id}`,
+    `fingerprint:${input.id}`,
+    input.contextJson,
+    input.evidenceJson,
+    input.round,
+    input.round,
+    input.round,
+  );
+  db.prepare(
+     `INSERT INTO workflow_node_attempts (
+       id, submission_id, node_id, attempt, state, input_fingerprint, created_at, updated_at
+     ) VALUES (?, ?, 'node', 1, 'completed', ?, ?, ?)`,
+  ).run(`attempt:${input.id}`, input.id, `attempt-fingerprint:${input.id}`, input.round, input.round);
 }
 
 test("run pages use a stable opaque updated-at/id cursor and exact filters", () => {
@@ -158,4 +210,88 @@ test("a 1000-run installation still reads one bounded page", () => {
   assert.equal(page.items[0]?.id, "scale-1000");
   assert.equal(page.items.at(-1)?.id, "scale-0951");
   assert.ok(page.nextCursor);
+});
+
+test("a 50-run summary page uses two statements and never reads context blobs", () => {
+  seedCatalog();
+  for (let index = 1; index <= 50; index += 1) {
+    const runId = `bounded-${String(index).padStart(2, "0")}`;
+    seedRun(runId, index);
+    // Deliberately malformed and far larger than summary data. A summary has no reason to
+    // parse or transfer either field, and the old per-run latestSubmission path did both.
+    insertSubmission({
+      id: `submission:${runId}`,
+      runId,
+      round: 1,
+      contextJson: `{not-json:${"x".repeat(8_000)}`,
+      evidenceJson: `{not-json:${"y".repeat(8_000)}`,
+    });
+  }
+  const measured = instrumentedStore();
+  const page = measured.store.listRunSummaryPage({ limit: 50, cursor: null });
+  assert.equal(page.items.length, 50);
+  assert.equal(measured.statements.count, 2);
+  assert.equal(page.items[0]?.round, 1);
+  assert.equal(page.items[0]?.segment, 0);
+});
+
+test("run detail statement count is constant as submission history grows", () => {
+  seedCatalog();
+  const raw = {
+    primaryGoal: { rawPrompt: "Review this", refined: null, sourceNoteKey: "note-key" },
+    humanDecisions: [],
+    priorPersonaFeedback: [],
+    session: { agent: "codex", name: "Worker", cwd: "/repo", branch: "feature" },
+    evidence: {
+      headSha: "abc",
+      diffFingerprint: "diff",
+      diff: "patch",
+      diffTruncated: false,
+      workingTreeDirty: false,
+      workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
+      transcript: [],
+      transcriptAnchor: 1,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+    },
+  };
+  const context = fallbackWorkflowContext(raw, "test fallback");
+  const contextJson = JSON.stringify(context);
+  const evidenceJson = JSON.stringify(context.evidence);
+  seedRun("detail-one", 100);
+  insertSubmission({
+    id: "submission:detail-one:1",
+    runId: "detail-one",
+    round: 1,
+    contextJson,
+    evidenceJson,
+  });
+  seedRun("detail-many", 101);
+  for (let round = 1; round <= 20; round += 1) {
+    const submissionId = `submission:detail-many:${round}`;
+    insertSubmission({
+      id: submissionId,
+      runId: "detail-many",
+      round,
+      contextJson,
+      evidenceJson,
+    });
+    db.prepare(
+      `INSERT INTO workflow_edge_receipts (
+         submission_id, edge_id, source_attempt_id, payload_json, created_at
+       ) VALUES (?, ?, ?, '{}', ?)`,
+    ).run(submissionId, `edge:${round}`, `attempt:${submissionId}`, round);
+  }
+
+  const one = instrumentedStore();
+  assert.ok(one.store.runDetail("detail-one"));
+  const many = instrumentedStore();
+  const detail = many.store.runDetail("detail-many");
+  assert.equal(detail?.submissions.length, 20);
+  assert.equal(detail?.attempts.length, 20);
+  assert.equal(detail?.receipts.length, 20);
+  assert.equal(many.statements.count, one.statements.count);
+  assert.ok(many.statements.count <= 15, `detail used ${many.statements.count} statements`);
 });

@@ -968,9 +968,12 @@ export function buildApp(
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, SubmitWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = await manager.submit(c.req.param("id"), parsed.data);
+    const result = manager.enqueueSubmit(c.req.param("id"), parsed.data);
     return result.ok
-      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      ? c.json(
+          { ...result.value, idempotent: result.idempotent ?? false },
+          result.idempotent ? 200 : 202,
+        )
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/sessions/:id/workflow-review", async (c) => {

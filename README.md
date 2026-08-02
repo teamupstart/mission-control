@@ -356,8 +356,10 @@ queued messages stay in FIFO order.
 
 Delivery begins only after the session positively reports idle and no question is covering
 its input. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
-Codex message never becomes an implicit steer and a Claude message never enters Claude's
-private follow-up FIFO while it is still shown as editable. A terminal session uses the
+message that is still shown as editable never joins a turn that is already running. Both
+embedded harnesses would do exactly that with it: Codex through an explicit steer, Claude
+Code by attaching it to the running turn, which then answers both and ends once. A terminal
+session uses the
 same Stop and task-complete lifecycle signals, plus passive transcript or rollout state,
 then waits for prompt-pickup evidence after pasting. A refusal before any terminal text was
 written returns the row to `queued`. If text may have landed but pickup cannot be proved,
@@ -2835,13 +2837,16 @@ editing a newer workflow cannot change an existing binding or run.
 
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never
-starts duplicate work. One submission captures one shared snapshot for every concurrent
-Persona. It preserves the raw goal, refined goal when present, human decisions and rationale,
-repository HEAD and diff, transcript evidence, repository standards, and prior Persona
-feedback. A cheap provider-neutral compaction call may summarize that context, but its
-45-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh
-45-second attempt; invalid, timed-out, or unavailable compaction produces a deterministic
-visible fallback.
+starts duplicate work. **Bind and submit** returns as soon as that capturing row is durable,
+and the dashboard opens the run immediately while evidence capture and context compaction
+continue in the background. The first request is acknowledged with HTTP `202`; replaying its
+request key returns the same row with HTTP `200`. One submission captures one shared snapshot
+for every concurrent Persona. It preserves the raw goal, refined goal when present, human
+decisions and rationale, repository HEAD and diff, transcript evidence, repository standards,
+and prior Persona feedback. A cheap provider-neutral compaction call may summarize that
+context, but its 45-second attempt cannot replace the raw evidence. An unparsable reply gets
+one fresh 45-second attempt; invalid, timed-out, or unavailable compaction produces a
+deterministic visible fallback.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all
@@ -2860,8 +2865,10 @@ no terminal write, keystroke injection, Foreman action, Inspector action, or mes
 
 The whole daemon runs at most three review calls at once, and Persona attempts and context
 compaction spend that one budget together rather than each holding a private ceiling. The
-Foreman is a separate process with its own serial queue, and the background jobs below keep
-their own limits, because they degrade differently and must not wait behind a Persona call.
+capture compaction for an accepted submission moves ahead of queued Persona attempts when a
+slot becomes free; it does not interrupt a call already running. The Foreman is a separate
+process with its own serial queue, and the background jobs below keep their own limits,
+because they degrade differently and must not wait behind a Persona call.
 
 Run state survives daemon restarts. Interrupted provider calls become auditable errors and
 are retried without duplicating receipts; missing immutable data fails visibly instead of
@@ -2871,7 +2878,10 @@ then requires a fresh resubmit. Reset removes bindings, runs, submissions, attem
 captured context, and model-call metadata through the same session reset owner. Compact run
 summaries update over the existing SSE stream, while detailed evidence and timelines are
 loaded on demand for a selected run or a bound Board tile. Cards, Console, and Board show the
-same workflow status.
+same workflow status. Run history pages use the updated-time cursor index, select the bounded
+page before enrichment, and batch the latest attempts in one follow-up query. Summary reads
+never load submission context or evidence. Detail reads batch attempts and receipts for the
+whole run, so their query count does not grow with the number of submissions.
 
 ### Watching a run
 

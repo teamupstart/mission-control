@@ -115,6 +115,36 @@ test("the scheduler is a shared ceiling, not one budget per caller", async () =>
   assert.equal(DEFAULT_REVIEW_CONCURRENCY, 3);
 });
 
+test("capture work passes queued Persona work without exceeding the ceiling", async () => {
+  const schedule = createReviewScheduler(1);
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    markFirstStarted = resolve;
+  });
+
+  const first = schedule(async () => {
+    order.push("persona-running");
+    markFirstStarted();
+    await firstBlocked;
+  });
+  await firstStarted;
+  const secondPersona = schedule(async () => {
+    order.push("persona-queued");
+  });
+  const capture = schedule(async () => {
+    order.push("capture");
+  }, "capture");
+
+  releaseFirst();
+  await Promise.all([first, secondPersona, capture]);
+  assert.deepEqual(order, ["persona-running", "capture", "persona-queued"]);
+});
+
 test("an engine-level scheduler option cannot split the budget in two", async () => {
   // The manager passes its scheduler to the engine, so the two options name ONE budget. If
   // `engine.schedule` won for Persona attempts while compaction kept the manager's, a manager

@@ -340,8 +340,25 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private readonly prPending = new Set<string>();
   /** Armed by `clearContext`, spent by the next `bind` - see both for why it must exist. */
   private clearing = false;
-  /** Accepted user turns that have not yet produced a result, including FIFO follow-ups. */
-  private uncompletedTurns = 0;
+  /**
+   * Whether the CLI is running a turn right now.
+   *
+   * Deliberately a boolean rather than a count of turns owed a `result`. Claude Code does
+   * not hold a mid-turn message for a separate next turn: it folds it into the turn already
+   * running, as a `queued_command` attachment on that turn, and emits ONE `result` for the
+   * whole thing. A counter that reserved a completion per accepted message therefore drifted
+   * up by one every time a message arrived mid-turn and never came back down - which wedged
+   * `sendIfIdle` closed for the life of the session, so Mission Control's outbox released
+   * every human message with "The agent became busy before delivery" against a session that
+   * had been idle for hours.
+   *
+   * With one bit there is nothing to drift. Both edges are OBSERVATIONS of the vendor stream
+   * rather than predictions about it: a `result` frame means the CLI stopped, and an
+   * `assistant` frame means it is going again. That second edge is what makes the value
+   * self-correcting - a turn we failed to notice starting re-arms this on its first frame,
+   * where the old counter had no path back to zero at all.
+   */
+  private turnActive = false;
   /** Serialize the experimental control so a slow older reading cannot land after a newer one. */
   private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
@@ -352,16 +369,25 @@ class ClaudeSdkSession implements SdkSessionHandle {
     return this.out;
   }
 
+  /**
+   * Hand a turn to the CLI, and say what it did with it.
+   *
+   * `steered` rather than `queued` when a turn is already running, because that is what
+   * Claude Code actually does with the message - the same thing Codex reports for
+   * `turn/steer`. The distinction is not cosmetic: the supervisor releases its pessimistic
+   * one-completion reservation on `steered` and holds it on `queued`, so calling a steer a
+   * queue leaves the supervisor waiting for a second `result` the CLI will never send.
+   */
   async send(turn: SdkTurn): Promise<SdkSendDisposition> {
     if (this.stopped) throw new Error("this session's driver has stopped");
-    const disposition: SdkSendDisposition = this.uncompletedTurns > 0 ? "queued" : "started";
+    const steering = this.turnActive;
     this.acceptTurn(turn);
-    return disposition;
+    return steering ? "steered" : "started";
   }
 
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     if (this.stopped) throw new Error("this session's driver has stopped");
-    if (this.uncompletedTurns > 0) return null;
+    if (this.turnActive) return null;
     this.acceptTurn(turn);
     return "started";
   }
@@ -373,7 +399,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       parent_tool_use_id: null,
       ...(this.agentSessionId ? { session_id: this.agentSessionId } : {}),
     });
-    this.uncompletedTurns += 1;
+    this.turnActive = true;
     // Accepting a turn IS the transition to working, and saying so here rather than waiting
     // for the first assistant frame is what keeps the card honest during the seconds a
     // model spends thinking before it emits anything. `turn_done` is the other end.
@@ -592,7 +618,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       message: { role: "user", content: prompt },
       parent_tool_use_id: null,
     });
-    this.uncompletedTurns += 1;
+    this.turnActive = true;
     this.out.emit({ kind: "state", state: "working", activity: null });
   }
 
@@ -804,11 +830,16 @@ class ClaudeSdkSession implements SdkSessionHandle {
     if (typeof message.session_id === "string") this.bind(message.session_id);
     if (initialized) this.refreshRateLimits();
     if (message.type === "assistant") {
+      // Proof a turn is running, and the reason `turnActive` cannot get stuck on the wrong
+      // value: a turn the CLI started for itself - a resumed stream, or a follow-up it chose
+      // to dequeue after a `result` we had already read as the end of the work - re-arms the
+      // flag here, on its own first frame, without the driver having to predict it.
+      this.turnActive = true;
       this.out.emit({ kind: "state", state: "working", activity: assistantActivity(message) });
       return;
     }
     if (message.type === "result") {
-      this.uncompletedTurns = Math.max(0, this.uncompletedTurns - 1);
+      this.turnActive = false;
       this.out.emit({ kind: "turn_done", usage: null });
       this.refreshRateLimits();
       return;

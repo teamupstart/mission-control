@@ -101,6 +101,13 @@ test("the topbar segment moves between the two homes, and the chord does the sam
   expect(await dashboard.evaluate(() => location.hash)).toBe("#/library");
 
   await pages.getByRole("button", { name: /Fleet/ }).click();
+  // The same barrier the keyboard half below explains, and it is needed here for the same
+  // reason: the press that follows is synthetic and can land inside the render that trails
+  // this navigation, where the handler React armed for the Library answers it and does
+  // nothing. Waiting on the hash alone waits for something the click already made true, so
+  // the first `w` was silently swallowed and `aria-current` never reached the Library.
+  await expect(pages.getByRole("button", { name: /Fleet/ }))
+    .toHaveAttribute("aria-current", "page");
   expect(await dashboard.evaluate(() => location.hash)).toBe("#/fleet");
 
   // The same swing on the keyboard. It is the one chord that fires OFF the fleet too, which

@@ -47,6 +47,8 @@ function argvValue(flag) {
 const MODEL = argvValue("--model") ?? "claude-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = 5_000;
+const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
+const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
@@ -92,8 +94,21 @@ if (process.argv.includes("-p")) {
   process.stdin.on("data", (c) => chunks.push(c));
   process.stdin.on("end", () => {
     const prompt = Buffer.concat(chunks).toString("utf8");
-    process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
-    process.exit(0);
+    const finish = () => {
+      process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
+      process.exit(0);
+    };
+    // Keep one workflow compaction visibly in flight so the browser can prove an accepted
+    // submission opens its run before this provider child finishes. The marker sits in the
+    // dispatched session's intent, and the prompt prefix keeps its title call instant.
+    if (
+      prompt.includes(SLOW_WORKFLOW_CONTEXT)
+      && prompt.includes("Compact workflow intent without rewriting it.")
+    ) {
+      setTimeout(finish, SLOW_WORKFLOW_CONTEXT_MS);
+    } else {
+      finish();
+    }
   });
 } else {
   runSession();
@@ -116,6 +131,12 @@ if (process.argv.includes("-p")) {
  * including the titler, keeps the fixed title reply below.
  */
 function headlessAnswer(prompt) {
+  if (
+    prompt.includes(SLOW_WORKFLOW_CONTEXT)
+    && prompt.includes("Compact workflow intent without rewriting it.")
+  ) {
+    return JSON.stringify({ constraints: [], acceptanceCriteria: [] });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",
@@ -220,6 +241,28 @@ function replyTo(prompt) {
   return `Mock reply to: ${prompt}`;
 }
 
+/** The turn the CLI is running right now, and every prompt it has absorbed. */
+let openTurn = null;
+
+/**
+ * Answer a turn and close it.
+ *
+ * One `result` however many prompts the turn took in, because that is the vendor's shape:
+ * `result` means the CLI stopped, not that one message was retired.
+ */
+function answer(prompts) {
+  for (const prompt of prompts) {
+    const text = replyTo(prompt);
+    appendTurn("assistant", [{ type: "text", text }]);
+    emit({
+      type: "assistant",
+      session_id: SESSION_ID,
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    });
+  }
+  emit({ type: "result", subtype: "success", session_id: SESSION_ID });
+}
+
 const rl = createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {
@@ -250,24 +293,32 @@ rl.on("line", (line) => {
           : "";
 
     appendTurn("user", prompt);
-    const finish = () => {
-      const answer = replyTo(prompt);
-      appendTurn("assistant", [{ type: "text", text: answer }]);
 
-      emit({
-        type: "assistant",
-        session_id: SESSION_ID,
-        message: { role: "assistant", content: [{ type: "text", text: answer }] },
-      });
-      emit({ type: "result", subtype: "success", session_id: SESSION_ID });
-    };
+    // A message that arrives while a turn is open is ABSORBED BY THAT TURN, and the turn
+    // still ends with exactly one `result`. That is what Claude Code does - it attaches the
+    // message to the running turn as a `queued_command` rather than holding it for a
+    // separate next turn - and modelling it here is the whole point of this branch. A fake
+    // that answered every message with its own result would let a driver reserve one
+    // completion per message and never notice the reservation it was owed for ever.
+    if (openTurn) {
+      openTurn.prompts.push(prompt);
+      return;
+    }
 
-    // One deterministic busy window for the queued-turn browser spec. Ordinary prompts
+    // One deterministic busy window for the queued-turn browser specs. Ordinary prompts
     // still answer synchronously, so existing conversation specs keep their fast path. The
     // delay is inside the fake agent, not the dashboard or daemon, and therefore exercises
     // the real SDK busy state and pending-turn route without spending model tokens.
-    if (prompt === HELD_TURN) setTimeout(finish, HELD_TURN_MS);
-    else finish();
+    if (prompt === HELD_TURN) {
+      const turnState = { prompts: [prompt] };
+      openTurn = turnState;
+      setTimeout(() => {
+        openTurn = null;
+        answer(turnState.prompts);
+      }, HELD_TURN_MS);
+      return;
+    }
+    answer([prompt]);
   }
 });
 

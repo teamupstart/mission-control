@@ -34,6 +34,39 @@ Successful-path artifacts are committed for the dispatch-and-converse suite beca
 Playwright run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all
 configured `on-failure`, so success is exactly the case with no record.
 
+### Accepted workflow submission
+
+The focused bind-and-submit case holds evidence compaction open for five seconds, observes the
+`202 Accepted` response with a durable `capturing` run, follows the browser to that exact run,
+and verifies the visible run header says `Capturing evidence` before compaction finishes.
+
+The actual successful command output is committed as
+[`evidence/workflow-submit-accepted-transcript.txt`](evidence/workflow-submit-accepted-transcript.txt).
+[`evidence/workflow-submit-accepted.png`](evidence/workflow-submit-accepted.png) is the visual
+capture from that same run and shows the selected run detail page in the capturing state.
+
+Regenerate both with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-submit-accepted.spec.ts \
+  --reporter=list
+```
+
+Actual output from the captured run:
+
+```text
+Running 1 test using 1 worker
+
+OBSERVED bind-and-submit returned 202 with a durable capturing run
+OBSERVED the accepted run detail page says "Capturing evidence"
+CAPTURED e2e/evidence/workflow-submit-accepted.png
+  ✓  1 [chromium] › e2e/specs/workflow-submit-accepted.spec.ts:45:1 › Bind and submit opens the durable capturing run before compaction finishes (2.8s)
+
+  1 passed (3.5s)
+```
+
 ### Board workflow shortcut
 
 [`docs/evidence/board-workflow-shortcut/`](../docs/evidence/board-workflow-shortcut/) contains

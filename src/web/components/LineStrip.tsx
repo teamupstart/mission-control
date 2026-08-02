@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import type { LineStageId, LineStageSummary, LineSummary } from "@shared/line.ts";
 import { LINE_STAGES, LINE_STAGE_LABELS, lineStage } from "@shared/line.ts";
+import { lineStageHasDrawer } from "../lib/line-targets.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -90,12 +91,33 @@ function stageTooltip(fold: LineStageSummary): string {
   return fold.sentence ? `${blurb} Now: ${fold.sentence}` : blurb;
 }
 
+/** The id the drawer's region carries, so an expanded stage button can point at it. */
+export const LINE_DRAWER_DOM_ID = "line-drawer";
+
 export function LineStrip({
   summary,
+  openStage = null,
+  stageRef,
   onStage,
 }: {
   /** The daemon's fold, or null before the first snapshot lands. */
   summary: LineSummary | null;
+  /**
+   * Which stage's drawer is showing, or null. The strip does not own this - App does - and
+   * it is passed IN rather than held here because the drawer is a sibling of the strip, not
+   * a child of it: a stage that remembered its own open state would be a second answer to
+   * "what is showing below", and the two would disagree the first time `esc` closed one.
+   */
+  openStage?: LineStageId | null;
+  /**
+   * Hands each stage's button to the owner as it mounts (and `null` as it unmounts).
+   *
+   * One prop, for one job: putting the keyboard back where it came from when a drawer
+   * closes. That has to be done by whoever OWNS the open state, because the drawer has
+   * already unmounted by then - and it cannot be done by querying the DOM, since the
+   * attribute that identified the open stage went with it.
+   */
+  stageRef?: (stage: LineStageId, button: HTMLButtonElement | null) => void;
   onStage: (stage: LineStageId) => void;
 }): React.JSX.Element {
   // Driven by LINE_STAGES rather than by what arrived, which is what makes the strip
@@ -120,8 +142,20 @@ export function LineStrip({
           <Tooltip label={stageTooltip(fold)}>
             <button
               type="button"
-              className={`line-stage tone-${fold.tone}`}
+              ref={stageRef ? (el) => stageRef(fold.stage, el) : undefined}
+              className={`line-stage tone-${fold.tone}${
+                openStage === fold.stage ? " is-open" : ""
+              }`}
               aria-label={stageLabel(fold)}
+              // Only the three stages that OPEN something are expandable. Announcing
+              // `aria-expanded="false"` on Working - which clears the filter - would promise
+              // a panel that no press produces.
+              {...(lineStageHasDrawer(fold.stage)
+                ? {
+                    "aria-expanded": openStage === fold.stage,
+                    ...(openStage === fold.stage ? { "aria-controls": LINE_DRAWER_DOM_ID } : {}),
+                  }
+                : {})}
               onClick={() => onStage(fold.stage)}
             >
               <span className="ls-head">

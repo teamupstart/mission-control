@@ -1,0 +1,79 @@
+const { app, BrowserWindow } = require("electron");
+
+/**
+ * Measures an open Line drawer's laid-out geometry in a real browser.
+ *
+ * The sibling of `line-strip-browser.cjs`, and it exists for the same reason: the three
+ * claims this surface makes are all about USED HEIGHT, which no assertion on markup can
+ * produce. The drawer is hard-capped and scrolls inside itself; the board below it moves down
+ * by exactly the drawer's height and no more; and a session card is the same size with the
+ * drawer open as with it shut.
+ *
+ * One page per case, loaded in turn into the same window, because the shell cases are
+ * `height: 100dvh` and a viewport holds one of those at a time.
+ */
+app.whenReady().then(async () => {
+  try {
+    const paths = process.argv.slice(process.argv.indexOf("--pages") + 1);
+    const window = new BrowserWindow({ show: false, width: 1400, height: 900 });
+    const out = {};
+
+    for (const htmlPath of paths) {
+      await window.loadFile(htmlPath);
+      const measured = await window.webContents.executeJavaScript(`(() => {
+        const drawer = document.querySelector('.line-drawer');
+        const body = document.querySelector('.line-drawer-body');
+        const shellBody = document.querySelector('.console');
+        const card = document.querySelector('.card.expanded');
+        const rows = [...document.querySelectorAll('.line-drawer-rows > li')];
+        const first = rows[0]?.getBoundingClientRect() ?? null;
+        return {
+          rows: rows.length,
+          // The drawer's whole footprint, which is what the board below it gives up.
+          drawerHeight: drawer
+            ? Math.round(
+                drawer.getBoundingClientRect().height
+                + parseFloat(getComputedStyle(drawer).marginTop)
+                + parseFloat(getComputedStyle(drawer).marginBottom),
+              )
+            : null,
+          // The capped, scrolling part. \`scrollHeight > clientHeight\` is the whole claim
+          // about internal scroll - a body that grew to fit would report them equal.
+          bodyClientHeight: body ? body.clientHeight : null,
+          bodyScrollHeight: body ? body.scrollHeight : null,
+          // Every row at ONE height, so three rows is a number and not an average.
+          rowHeights: rows.map((row) => Math.round(row.getBoundingClientRect().height)),
+          // The widest thing the row clipped rather than wrapped, across every field that
+          // is allowed to clip. Which ONE overflows depends on the window - at a realistic
+          // width four chips fit and the session name does not - so measuring a single
+          // column would make the case pass or fail on the viewport rather than on the rule.
+          rowOverflows: rows.map((row) => Math.max(0, ...[
+            ...row.querySelectorAll(
+              '.line-run-who strong, .line-run-wf, .line-run-chips, .line-run-state',
+            ),
+          ].map((el) => el.scrollWidth - el.clientWidth))),
+          firstRowTop: first ? Math.round(first.top) : null,
+          // The two boxes the drawer must not resize.
+          shellBodyHeight: shellBody
+            ? Math.round(shellBody.getBoundingClientRect().height)
+            : null,
+          shellBodyTop: shellBody ? Math.round(shellBody.getBoundingClientRect().top) : null,
+          shellBodyBottomOverflow: shellBody
+            ? Math.round(shellBody.getBoundingClientRect().bottom - window.innerHeight)
+            : null,
+          cardHeight: card ? Math.round(card.getBoundingClientRect().height) : null,
+          cardWidth: card ? Math.round(card.getBoundingClientRect().width) : null,
+        };
+      })()`);
+      out[htmlPath.replace(/^.*\/(.+)\.html$/, "$1")] = measured;
+    }
+
+    process.stdout.write(`${JSON.stringify(out)}\n`);
+    window.destroy();
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  } finally {
+    app.quit();
+  }
+});

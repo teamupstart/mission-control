@@ -339,21 +339,21 @@ test("a tile is a real link even with nothing listening for the click", () => {
   const html = render(ANSWERED);
   assert.match(
     html,
-    /<a class="sc-stat sc-stat-link sc-stat-danger" href="#\/workflows\/runs\?status=waiting_for_session"/,
+    /<a class="sc-stat sc-stat-link sc-stat-danger" href="#\/runs\?status=waiting_for_session"/,
     "the destination must be on the element, not only in a handler",
   );
 });
 
-// Where each tile goes. The hashes are the same grammar the Workflows page's own filter
-// chips produce, so a tile is a real deep link and not a button wearing an underline.
+// Where each tile goes. The hashes are the same grammar the runs page's own filter chips
+// produce, so a tile is a real deep link and not a button wearing an underline.
 test("the tiles deep-link into the real run list, pre-filtered", () => {
   const byId = new Map(workflowStripLinks(STATUS).map((tile) => [tile.id, tile]));
-  assert.equal(byId.get("needs-you")?.href, "#/workflows/runs?status=waiting_for_session");
-  assert.equal(byId.get("gates")?.href, "#/workflows/runs?status=waiting_for_inspector");
-  assert.equal(byId.get("delivered")?.href, "#/workflows/runs?status=completed");
+  assert.equal(byId.get("needs-you")?.href, "#/runs?status=waiting_for_session");
+  assert.equal(byId.get("gates")?.href, "#/runs?status=waiting_for_inspector");
+  assert.equal(byId.get("delivered")?.href, "#/runs?status=completed");
   // Waiting deliveries have no single run status that means them, so the tile opens the
   // whole list rather than inventing a filter that would show the wrong rows.
-  assert.equal(byId.get("waiting")?.href, "#/workflows/runs");
+  assert.equal(byId.get("waiting")?.href, "#/runs");
 });
 
 // A tile must not count a population its own link cannot reach. `activeRuns` is every run
@@ -366,7 +366,7 @@ test("the Active tile does not link to a filter narrower than what it counts", (
   const active = byId.get("active");
   assert.ok(active, "the tile counting activeRuns should be the Active tile");
   assert.equal(active.label, "Active", "the label has to name what activeRuns counts");
-  assert.equal(active.href, "#/workflows/runs");
+  assert.equal(active.href, "#/runs");
   assert.doesNotMatch(
     active.href,
     /status=/,

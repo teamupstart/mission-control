@@ -356,7 +356,7 @@ turning **unreadable**, or a `finalizing` run holding an error each raise an **a
 (delivered even in Away mode); completion, cancellation and failure are **informational** and land in
 the Away digest. Each is edge-triggered by stable run identity, so a reconnect or a recovery never
 re-announces a decision you already saw. An ensemble toast deep-links to
-`#/workflows/ensembles/<id>`.
+`#/ensembles/<id>`.
 
 A run needs your attention when it is **failed**, **cancelling**, parked on a **decision**,
 **unreadable** - or when **a member is waiting on your answer**. That last one is a question on a

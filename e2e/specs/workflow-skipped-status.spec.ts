@@ -99,7 +99,7 @@ test("skipped checks stay amber while prior passes turn green in an Inspector re
   daemon,
 }) => {
   const runId = await seedRun(dashboard, daemon);
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${runId}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const pipeline = dashboard.locator(".wf-pipeline-strip");
   const check = pipeline.locator("li.wf-pipeline-reviewer").filter({ hasText: "test" });
   const checkStatus = check.locator(".wf-pipeline-status");

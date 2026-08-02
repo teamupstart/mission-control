@@ -10,7 +10,8 @@ import type { PersonaView } from "../src/shared/workflow.ts";
 import type { LlmProviderView } from "../src/shared/types.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
 import { WorkflowLibrary } from "../src/web/workflows/WorkflowLibrary.tsx";
-import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
+import { ExecutionPage } from "../src/web/workflows/ExecutionPage.tsx";
+import { WorkflowRuns } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   PersonaLibrary,
   importMayReplaceEditor,
@@ -353,11 +354,19 @@ test("the builder and the Runs surface are both active, one home apart", () => {
   assert.match(workflows, /Build a review workflow/);
   assert.match(workflows, /New workflow/);
 
-  const runs = renderToStaticMarkup(createElement(WorkflowPage, {
-    tab: "runs",
-    onTab: () => {},
+  const runs = renderToStaticMarkup(createElement(ExecutionPage, {
+    title: "Workflow runs",
+    blurb: "Every review a workflow has run.",
+    children: createElement(WorkflowRuns, {
+      runs: [],
+      selectedRunId: null,
+      onSelectRun: () => {},
+    }),
   }));
   assert.match(runs, /Loading workflow runs/);
+  // The eyebrow is what tells an operator arriving on a bookmark which half of the product
+  // they landed in, now that no tab strip above the page says it.
+  assert.match(runs, /workflow-eyebrow">Execution</);
 });
 
 test("Markdown import derives a name without changing the body", () => {

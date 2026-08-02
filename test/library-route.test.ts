@@ -73,22 +73,24 @@ test("the three legacy authoring hashes redirect into the Library, permanently",
   }
 });
 
-test("the execution tabs are untouched by the split", () => {
-  assert.deepEqual(parseMissionRoute("#/workflows/runs"), { page: "workflows", tab: "runs" });
-  assert.deepEqual(parseMissionRoute("#/workflows/runs/r1"), {
-    page: "workflows",
-    tab: "runs",
-    runId: "r1",
-  });
-  assert.deepEqual(parseMissionRoute("#/workflows/ensembles/e1"), {
-    page: "workflows",
-    tab: "ensembles",
-    ensembleId: "e1",
-  });
-  assert.deepEqual(parseMissionRoute("#/workflows/runs?status=running"), {
-    page: "workflows",
-    tab: "runs",
+// The execution routes left the Workflows page too, one phase after the authoring ones. What
+// this case is here to hold is that the LIBRARY parse did not swallow them on the way: the
+// three authoring redirects match `/workflows` and `/workflows/<shelf>`, and a run id is
+// shaped exactly like a shelf name. The full redirect table lives in `workflow-route.test.ts`.
+test("the execution routes are top-level, and the Library parse does not claim them", () => {
+  assert.deepEqual(parseMissionRoute("#/runs"), { page: "runs" });
+  assert.deepEqual(parseMissionRoute("#/runs/r1"), { page: "runs", runId: "r1" });
+  assert.deepEqual(parseMissionRoute("#/ensembles/e1"), { page: "ensembles", ensembleId: "e1" });
+  assert.deepEqual(parseMissionRoute("#/runs?status=running"), {
+    page: "runs",
     filters: { status: "running" },
+  });
+  // The legacy spellings land on those same routes rather than on the Library's shelves
+  // index, which is where an over-eager `/workflows/*` authoring redirect would put them.
+  assert.deepEqual(parseMissionRoute("#/workflows/runs/r1"), { page: "runs", runId: "r1" });
+  assert.deepEqual(parseMissionRoute("#/workflows/ensembles/e1"), {
+    page: "ensembles",
+    ensembleId: "e1",
   });
 });
 
@@ -96,10 +98,12 @@ test("the page toggle swings between the two homes, and stands down everywhere e
   const guards = { active: true, typing: false, renaming: false, overlayOpen: false };
   assert.deepEqual(pageToggleRoute({ ...guards, page: "fleet" }), { page: "library" });
   assert.deepEqual(pageToggleRoute({ ...guards, page: "library" }), { page: "fleet" });
-  // Settings is reached and left by the gear; the Workflows page is watched, not authored.
-  // Neither is a home the chord swings to, so it does nothing rather than guessing.
+  // Settings is reached and left by the gear; Runs and Ensembles are watched, not authored,
+  // and are reached from the Line. None of the three is a home the chord swings to, so it
+  // does nothing rather than guessing.
   assert.equal(pageToggleRoute({ ...guards, page: "settings" }), null);
-  assert.equal(pageToggleRoute({ ...guards, page: "workflows" }), null);
+  assert.equal(pageToggleRoute({ ...guards, page: "runs" }), null);
+  assert.equal(pageToggleRoute({ ...guards, page: "ensembles" }), null);
   // The four stand-downs, which are what let `w` type, rename and dismiss.
   assert.equal(pageToggleRoute({ ...guards, active: false, page: "fleet" }), null);
   assert.equal(pageToggleRoute({ ...guards, typing: true, page: "fleet" }), null);

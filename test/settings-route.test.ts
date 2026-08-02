@@ -71,22 +71,15 @@ test("a hash no decoder can read falls back instead of throwing", () => {
   }
   // The same defect one line up in the same parser: an undecodable run id names no run,
   // so it lands on the runs list rather than throwing.
-  assert.deepEqual(parseMissionRoute("#/workflows/runs/%"), { page: "workflows", tab: "runs" });
-  assert.deepEqual(parseMissionRoute("#/workflows/runs/%E0%A4%A"), {
-    page: "workflows",
-    tab: "runs",
-  });
+  assert.deepEqual(parseMissionRoute("#/runs/%"), { page: "runs" });
+  assert.deepEqual(parseMissionRoute("#/runs/%E0%A4%A"), { page: "runs" });
 });
 
-test("the fleet, library and workflows routes are untouched by the settings page", () => {
+test("the fleet, library and execution routes are untouched by the settings page", () => {
   assert.deepEqual(parseMissionRoute("#/fleet"), { page: "fleet" });
   assert.deepEqual(parseMissionRoute("#/library"), { page: "library" });
   assert.deepEqual(parseMissionRoute("#/library/personas"), { page: "library", shelf: "personas" });
-  assert.deepEqual(parseMissionRoute("#/workflows/runs/r1"), {
-    page: "workflows",
-    tab: "runs",
-    runId: "r1",
-  });
+  assert.deepEqual(parseMissionRoute("#/runs/r1"), { page: "runs", runId: "r1" });
   assert.deepEqual(parseMissionRoute("#/unknown"), { page: "fleet" });
   assert.equal(missionRouteHash({ page: "fleet" }), "#/fleet");
   assert.equal(missionRouteHash({ page: "library", shelf: "personas" }), "#/library/personas");

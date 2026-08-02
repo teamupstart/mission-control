@@ -130,7 +130,7 @@ test("notifier preserves workflow deep links and reconnect uses the shared detec
     "utf8",
   );
   assert.match(source, /a\.workflowRunId/);
-  assert.match(source, /#\/workflows\/runs\/\$\{encodeURIComponent\(deepLink\.workflowRunId\)\}/);
+  assert.match(source, /#\/runs\/\$\{encodeURIComponent\(deepLink\.workflowRunId\)\}/);
   assert.match(
     source,
     /detectAlerts\(withKnownStalls\(prev, scope\), scope\)\.filter\(deliverable\)/,

@@ -1044,13 +1044,13 @@ test("paging controls appear exactly when the daemon says there is more", () => 
   assert.doesNotMatch(render(base), /Load more events/);
 });
 
-test("external provenance deep-links an ensemble source to its Ensembles-tab route", () => {
+test("external provenance deep-links an ensemble source to its re-homed route", () => {
   const html = render({
     ...runningDetail(),
     externalSource: { kind: "ensemble" as const, sourceId: "ens-42", createdAt: 5 },
   } as WorkflowRunDetail);
   assert.match(html, /Started by Ensemble/);
-  assert.match(html, /<a [^>]*href="#\/workflows\/ensembles\/ens-42"/);
+  assert.match(html, /<a [^>]*href="#\/ensembles\/ens-42"/);
   // A manually started run carries no provenance line at all rather than an empty one.
   assert.doesNotMatch(render(runningDetail()), /Started by/);
 });

@@ -8,7 +8,8 @@ const canvas = readFileSync(new URL("../src/web/workflows/WorkflowCanvas.tsx", i
 const node = readFileSync(new URL("../src/web/workflows/WorkflowNode.tsx", import.meta.url), "utf8");
 const library = readFileSync(new URL("../src/web/workflows/WorkflowLibrary.tsx", import.meta.url), "utf8");
 const runs = readFileSync(new URL("../src/web/workflows/WorkflowRuns.tsx", import.meta.url), "utf8");
-const page = readFileSync(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url), "utf8");
+const strip = readFileSync(new URL("../src/web/components/LineStrip.tsx", import.meta.url), "utf8");
+const drawer = readFileSync(new URL("../src/web/components/line/LineDrawer.tsx", import.meta.url), "utf8");
 const properties = readFileSync(new URL("../src/web/workflows/WorkflowProperties.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/web/styles.css", import.meta.url), "utf8");
 const editor = readFileSync(new URL("../src/web/workflows/PipelineEditor.tsx", import.meta.url), "utf8");
@@ -27,10 +28,17 @@ test("builder exposes semantic names, roving focus, live state, and focus restor
   assert.match(library, /aria-live="assertive"/);
   assert.match(runs, /role="alert"/);
   assert.match(runs, /aria-live="assertive"/);
-  assert.match(page, /role="tablist"/);
-  assert.match(page, /role="tab"/);
-  assert.match(page, /role="tabpanel"/);
-  assert.match(page, /event\.key === "ArrowRight"/);
+  // The Workflows page's tablist retired with the page. What replaced it as the way into
+  // the execution surfaces is the Line's strip and its drawers, and the disclosure has to
+  // announce itself: an expandable stage says so, says what it controls while it is open,
+  // and the panel it opens is a named region that takes focus.
+  assert.match(strip, /"aria-expanded": openStage === fold\.stage/);
+  assert.match(strip, /"aria-controls": LINE_DRAWER_DOM_ID/);
+  assert.match(strip, /lineStageHasDrawer\(fold\.stage\)/);
+  assert.match(drawer, /aria-label=\{`\$\{title\} drawer`\}/);
+  assert.match(drawer, /tabIndex=\{-1\}/);
+  assert.match(drawer, /frame\.current\?\.focus/);
+  assert.match(drawer, /aria-label=\{`Close the \$\{title\} drawer`\}/);
   assert.match(properties, /<span tabIndex=\{0\}>/);
   assert.match(properties, /aria-label=\{`Remove \$\{edge\.sourcePort\} connection/);
 });

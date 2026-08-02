@@ -592,6 +592,25 @@ export function sessionActionWaitsOnOperator(
 }
 
 /**
+ * True when this RUN is stopped on something only a person can clear.
+ *
+ * The Line's Review fold counts these for the strip's "N waiting on you", and the Review
+ * drawer marks exactly these rows amber. Stated once, here, because the two are the same
+ * claim rendered at two grains: a strip that says one run needs you, above a drawer that
+ * marks none, is the surface arguing with itself - and both readings would be defensible
+ * if each carried its own copy of the rule.
+ *
+ * `blocked` and an operator-only action wait, and deliberately nothing else.
+ * `waiting_for_session` is absent because it is the workflow's ordinary repair loop: the
+ * session is being told what to fix and will resubmit on its own.
+ */
+export function workflowRunWaitsOnOperator(
+  run: Pick<WorkflowRunSummary, "status" | "actionWait">,
+): boolean {
+  return run.status === "blocked" || sessionActionWaitsOnOperator(run.actionWait);
+}
+
+/**
  * Why a session action can no longer proceed. APPEND-ONLY for `SESSION_ACTION_WAIT_REASONS`'
  * reason.
  *
@@ -2109,6 +2128,29 @@ export interface WorkflowRunSummary {
    * it from attempts or live session activity.
    */
   actionWait?: SessionActionWaitReason | null;
+  /**
+   * Provenance for a run an external orchestrator started - today, an ensemble handoff.
+   *
+   * OPTIONAL and append-only, for the reason every other optional field here is: a summary
+   * written by an older daemon must still parse in a newer browser, and absent reads as "an
+   * operator or Foreman started this", which is what every run predating claims genuinely
+   * was. Resolved by a single LEFT JOIN rather than a per-run lookup, because summaries are
+   * folded for the whole fleet on every change.
+   *
+   * It carries the same fact as `WorkflowRunDetail.externalSource`, and that is not a second
+   * opinion: the detail FORWARDS this field rather than resolving its own. There is exactly
+   * one place the rule lives - the claims join in the store's `WORKFLOW_RUN_SUMMARY_SELECT`,
+   * read into this field by `externalSourceFromRow` - and the detail's copy is that value
+   * handed on. The rule itself is narrow and worth knowing while reading either: a claim
+   * counts only when its kind matches the RUN's own trigger source, because a claimed binding
+   * stays usable by the manual and Foreman paths and a later run on it is genuinely not the
+   * external one.
+   *
+   * The detail's field is the older of the two and stays because that is where a reader opens
+   * a run to see it; this one exists so a TRIAGE surface - the Line's Review drawer - can say
+   * "this came out of an ensemble" for every live run without fetching a detail per row.
+   */
+  externalSource?: WorkflowExternalSource | null;
   maxRepairRounds: number;
   activePersonaNames: string[];
   failedPersonaCount: number;

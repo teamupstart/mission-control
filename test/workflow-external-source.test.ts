@@ -761,13 +761,21 @@ test("run detail carries display provenance and never the opaque idempotency key
     createdAt: detail.externalSource!.createdAt,
   });
   assert.equal(JSON.stringify(detail.externalSource).includes(bound.value.claim.sourceKey), false);
-  // Run SUMMARIES travel over SSE for every run in the fleet, so provenance must not widen
-  // them. The summary keys are exactly what they were.
-  assert.deepEqual(Object.keys(detail.summary).sort(), [
-    // The two continuation fields are the only additions, and both are compact scalars: the
-    // evidence segment inside the current repair round, and why a session action is waiting.
-    // They ride the summary rather than run detail precisely so no surface has to re-derive
-    // them from attempts or live session activity.
+  // Run SUMMARIES travel over SSE for every run in the fleet, so the key set is pinned: a
+  // field added here is paid for on every run on every change.
+  //
+  // `externalSource` is on that list now, and it was deliberately NOT before. What changed is
+  // that the Line's Review drawer lists every live run at triage grain, and "this run came
+  // out of an ensemble" is the fact that makes a handoff row legible - a drawer that fetched
+  // a run DETAIL per row to learn it would trade one compact optional field for N bounded
+  // HTTP reads behind a click on a strip. The compactness argument is honoured rather than
+  // dropped: the field is OMITTED entirely for a run nobody claimed, which is almost all of
+  // them (asserted below), and it is resolved by one LEFT JOIN rather than a lookup per run.
+  const SUMMARY_KEYS = [
+    // The two continuation fields are compact scalars: the evidence segment inside the
+    // current repair round, and why a session action is waiting. They ride the summary
+    // rather than run detail precisely so no surface has to re-derive them from attempts or
+    // live session activity.
     "actionWait",
     "activePersonaNames",
     "bindingId",
@@ -791,10 +799,15 @@ test("run detail carries display provenance and never the opaque idempotency key
     "workflowId",
     "workflowName",
     "workflowVersion",
-  ]);
-  for (const summary of workflows.runs()) {
-    assert.equal("externalSource" in summary, false);
-  }
+  ];
+  assert.deepEqual(
+    Object.keys(detail.summary).sort(),
+    ["externalSource", ...SUMMARY_KEYS].sort(),
+  );
+  // The summary's copy and the detail's are the same object, because they are the same read:
+  // the detail takes it off the summary rather than looking the claim up a second way.
+  assert.deepEqual(detail.summary.externalSource, detail.externalSource);
+  assert.equal(JSON.stringify(detail.summary).includes(bound.value.claim.sourceKey), false);
   // A manual run reports no provenance at all rather than an empty badge.
   const manual = workflows.createBinding({
     workflowVersionId: "v-detail",
@@ -810,6 +823,8 @@ test("run detail carries display provenance and never the opaque idempotency key
   if (manualResult.kind !== "found") return;
   assert.equal(manualResult.detail.externalSource, null);
   assert.equal(workflows.store.getRun(manualSubmit.value.run.id)?.triggerSource, "manual");
+  // Omitted, not null: an unclaimed run's summary carries no provenance key at all.
+  assert.deepEqual(Object.keys(manualResult.detail.summary).sort(), SUMMARY_KEYS.sort());
 
   // A CLAIMED binding stays usable by the manual path, and a later manual run on it is
   // genuinely not the external one. Provenance follows the run's own trigger source, so an

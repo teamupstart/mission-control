@@ -202,7 +202,7 @@ test("a pull request action names each stray, then completes with its provenance
     timeout: 90_000,
   }).toBe("awaiting_pull_request");
 
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${runId}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const card = dashboard.locator("article.wf-run-action");
   await expect(card).toBeVisible();
   await expect(card).toContainText("Awaiting PR");

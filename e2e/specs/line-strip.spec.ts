@@ -133,12 +133,15 @@ test("the Line renders every stage, tracks the fleet live, and its stages naviga
   observed("parking that task turned Backlog amber (tone-attention), and it is the only amber stage");
   await shoot(dashboard, line, "line-attention");
 
-  // ---- a stage click goes somewhere real ----
+  // ---- a stage click does something real ----
 
-  await line.getByRole("button", { name: /^Review,/ }).click();
-  await expect(dashboard).toHaveURL(/#\/workflows\/runs$/);
-  await expect(dashboard.getByRole("tab", { name: /Runs/ })).toHaveAttribute("aria-selected", "true");
-  observed("clicking the Review stage navigated to #/workflows/runs with the Runs tab selected");
+  // Shipped is the strip's navigating half. Review, Decide and Intake open drawers in place
+  // instead - their semantics are `line-drawers.spec.ts`' subject, and what is checked here
+  // is only that a stage press REACHES its target at all, on the one stage that still leaves
+  // the page.
+  await line.getByRole("button", { name: /^Shipped,/ }).click();
+  await expect(dashboard).toHaveURL(/#\/runs\?status=completed$/);
+  observed("clicking the Shipped stage navigated to #/runs?status=completed");
 
   // The strip is the FLEET's chrome, not the app's: it must not follow you off the page.
   await expect(line).toBeHidden();

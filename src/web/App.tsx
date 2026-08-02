@@ -26,7 +26,11 @@ import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
 import { SpendChip } from "./components/SpendChip.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
+import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
+import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
+import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
 import { LINE_STAGE_TARGETS } from "./lib/line-targets.ts";
+import { nextLineDrawer, type LineDrawerStage } from "./lib/line-drawer.ts";
 import type { LineStageId } from "@shared/line.ts";
 import { Keycap } from "./components/Keycap.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
@@ -65,7 +69,8 @@ import { FileWindow } from "./components/FileWindow.tsx";
 import { FilePicker } from "./components/FilePicker.tsx";
 import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
-import { WorkflowPage } from "./workflows/WorkflowPage.tsx";
+import { WorkflowRuns } from "./workflows/WorkflowRuns.tsx";
+import { EnsembleRuns } from "./workflows/EnsembleRuns.tsx";
 import { pageToggleRoute, useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
 import type { LibrarySurface } from "./workflows/useWorkflowRoute.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
@@ -74,6 +79,7 @@ import { PersonaLibrary } from "./workflows/PersonaLibrary.tsx";
 import { SessionActionLibrary } from "./workflows/SessionActionLibrary.tsx";
 import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
+import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialog,
@@ -565,36 +571,128 @@ export function App(): React.JSX.Element {
     setMissionsOpen(true);
   }, [closeDispatch]);
   /**
+   * Which Line stage has its drawer open, or null. The one carrier of that fact: the strip
+   * reads it for `aria-expanded`, the fleet body renders from it, and `esc` clears it.
+   */
+  const [lineDrawer, setLineDrawer] = useState<LineDrawerStage | null>(null);
+  /** Every stage button, so closing a drawer can put the keyboard back on the one that opened it. */
+  const lineStageButtons = useRef(new Map<LineStageId, HTMLButtonElement>());
+  const registerLineStage = useCallback(
+    (stage: LineStageId, button: HTMLButtonElement | null): void => {
+      if (button) lineStageButtons.current.set(stage, button);
+      else lineStageButtons.current.delete(stage);
+    },
+    [],
+  );
+  /**
+   * Close, and hand the keyboard back.
+   *
+   * The focus half is not decoration: the drawer takes focus as it opens (see `LineDrawer`),
+   * so without this every close - ✕, `esc`, or a second click on the stage - would drop the
+   * keyboard on `<body>` and the next Tab would restart from the top of the page.
+   */
+  // Mirrored in a ref so the closer can read what is open WITHOUT doing it from inside a
+  // state updater: React may call an updater twice, and moving the keyboard is not a thing
+  // to do twice. Same reason the router mirrors its held route.
+  const lineDrawerRef = useRef<LineDrawerStage | null>(null);
+  lineDrawerRef.current = lineDrawer;
+  const closeLineDrawer = useCallback((): void => {
+    const open = lineDrawerRef.current;
+    if (open) lineStageButtons.current.get(open)?.focus();
+    setLineDrawer(null);
+  }, []);
+
+  /**
+   * Open one workflow run's reader, from anywhere.
+   *
+   * Six surfaces reach it now - a session card's workflow chip, the board tile, the runs
+   * rail, the ensembles detail's handoff link, the Review drawer, and the Library's
+   * cross-link - and they used to spell the destination themselves. One opener, because the
+   * FILTER rule is the part worth stating once: a run opened while the runs page is already
+   * filtered keeps that filter, so Back returns to the list you were reading rather than to
+   * an unfiltered one. Opened from anywhere else there is no filter to keep.
+   */
+  const keptRunFilters = route.page === "runs" ? route.filters : undefined;
+  const openWorkflowRun = useCallback(
+    (runId: string): void => {
+      navigate({ page: "runs", runId, ...(keptRunFilters ? { filters: keptRunFilters } : {}) });
+    },
+    [navigate, keptRunFilters],
+  );
+  const openEnsembleRun = useCallback(
+    (ensembleId: string): void => {
+      navigate({ page: "ensembles", ensembleId });
+    },
+    [navigate],
+  );
+  /** Land on the fleet with this session selected, drilling the board in if that is the layout. */
+  const openSessionOnFleet = useCallback(
+    (sessionId: string): void => {
+      navigate({ page: "fleet" });
+      setSelectedId(sessionId);
+      if (layout === "board") setBoardOpen(true);
+    },
+    [navigate, layout],
+  );
+  /**
    * Run a Line stage click.
    *
-   * The mapping itself is not here - it is `LINE_STAGE_TARGETS`, one table in one file, so
-   * the next phase can repoint all six at drawers without touching this. This only knows
-   * how to perform the four kinds of destination the dashboard has.
+   * The mapping itself is not here - it is `LINE_STAGE_TARGETS`, one table in one file - so
+   * this only knows how to perform the four kinds of destination the dashboard has. Three of
+   * the six stages now open a drawer between the strip and the board; the other three still
+   * go somewhere, and NEITHER kind is a special case of the other.
+   *
+   * A stage that navigates also closes any open drawer, because the strip is one surface: a
+   * press changes what it is showing you, and "swap to a stage that has no drawer" is a
+   * close. The other half of that rule - leaving the fleet by any route at all - is the
+   * effect below, which is where it has to live: most navigations away from an open drawer
+   * start INSIDE it ("Open run", "All ensembles →").
    */
   const onLineStage = useCallback(
     (stage: LineStageId) => {
       const target = LINE_STAGE_TARGETS[stage];
       switch (target.kind) {
+        case "drawer":
+          setLineDrawer((open) => nextLineDrawer(open, target.stage));
+          break;
         case "route":
+          setLineDrawer(null);
           navigate(target.route);
           break;
-        case "missions":
-          openMissions();
-          break;
         case "sitrep":
+          setLineDrawer(null);
           setReportOpen(true);
           break;
         case "fleet":
           // Already the page under the strip, so the useful half is the filter: the stage
           // counts every live session and a filter box with something in it means the board
           // is showing fewer. Clearing it makes the count and the cards agree again.
+          setLineDrawer(null);
           navigate({ page: "fleet" });
           setFilter("");
           break;
       }
     },
-    [navigate, openMissions],
+    [navigate],
   );
+  /**
+   * Leaving the fleet closes the drawer.
+   *
+   * An effect on the ROUTE rather than a call in each opener, because almost every navigation
+   * away from an open drawer starts inside it - "Open run", "All ensembles →", the ensemble
+   * provenance link - and one of those would eventually be added without the close. The
+   * symptom is quiet and confusing: App never unmounts, so a drawer left open comes back the
+   * moment you return to the fleet, still showing the rows you already triaged, and the next
+   * click on that stage TOGGLES IT SHUT instead of opening it. (This is not hypothetical -
+   * the drawers spec caught exactly that.)
+   *
+   * No focus restoration here on purpose: the keyboard is on whatever the operator clicked to
+   * leave with, and pulling it back to a stage button on a page they are no longer looking at
+   * would be worse than dropping the drawer quietly.
+   */
+  useEffect(() => {
+    if (route.page !== "fleet") setLineDrawer(null);
+  }, [route.page]);
   const closeDiff = useCallback(() => {
     setDiffSessionId(null);
     setDiffCommit(null);
@@ -974,11 +1072,11 @@ export function App(): React.JSX.Element {
     reviews,
     onEditTask: openTaskEditor,
     workflowRunBySession,
-    onOpenWorkflowRun: (runId) => navigate({ page: "workflows", tab: "runs", runId }),
+    onOpenWorkflowRun: openWorkflowRun,
     onBindWorkflow: (sessionId) => setWorkflowBindingTarget({ sessionId }),
     onOpenSchedule,
     scheduleNameById,
-    onOpenEnsemble: (runId) => navigate({ page: "workflows", tab: "ensembles", ensembleId: runId }),
+    onOpenEnsemble: openEnsembleRun,
     ensembleSummaryByRun,
   };
 
@@ -1179,6 +1277,28 @@ export function App(): React.JSX.Element {
       // Stand down while any overlay owns the screen (or a card's title is being
       // edited), so grid shortcuts don't drive a background card behind it.
       if (overlaysRef.current.anyOpen || renamingId) return;
+
+      // Escape closes the Line's drawer, but only while the keyboard is INSIDE it or on the
+      // strip that opened it.
+      //
+      // Scoped by focus rather than taken unconditionally, because Escape on this page is
+      // already a ladder that peels one layer at a time - expanded card, then reader, then
+      // board drill-in, then selection - and the drawer is not above any of those. It is
+      // beside them. A drawer left open while you work in the console reader must not eat
+      // the Escape that hands the keyboard back to the rail; a drawer you are reading must
+      // close on the first press, which is where the keyboard actually is (the drawer takes
+      // focus as it opens, and a close returns it to the stage button - so both ends of that
+      // journey are in scope). It sits below the overlay stand-down above, which is what
+      // makes "the drawer closes only when it is the topmost surface" true.
+      if (
+        chord === "Escape" &&
+        lineDrawerRef.current &&
+        (target?.closest(".line-drawer") || target?.closest(".line"))
+      ) {
+        e.preventDefault();
+        closeLineDrawer();
+        return;
+      }
 
       // Reader navigation - identical in the console and the board drill-in, because both
       // mount the same ConsoleDetail. A session's detail is open (the console always shows
@@ -1538,7 +1658,8 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody]);
+    // No `lineDrawer` entry either, for the same reason: the guard reads `lineDrawerRef`.
+  }, [visible, selectedId, selected, consoleZone, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -1681,8 +1802,8 @@ export function App(): React.JSX.Element {
             onOpenAsset={(shelf, assetId) => navigate({ page: "library", shelf, assetId })}
             onCreateAsset={(shelf) => navigate({ page: "library", shelf, creating: true })}
             onLaunchEnsemble={launchEnsemble}
-            onOpenRuns={() => navigate({ page: "workflows", tab: "runs" })}
-            onOpenEnsembles={() => navigate({ page: "workflows", tab: "ensembles" })}
+            onOpenRuns={() => navigate({ page: "runs" })}
+            onOpenEnsembles={() => navigate({ page: "ensembles" })}
             onOpenMissions={openMissions}
             onOpenTaskSources={() => navigate({ page: "settings", category: "task-sources" })}
           />
@@ -1902,87 +2023,81 @@ export function App(): React.JSX.Element {
         <AppPageShell
           page={route.page}
           library={libraryBody}
-          workflows={(
-            <WorkflowPage
-              tab={route.page === "workflows" ? route.tab : "runs"}
-              workflowRuns={workflowRuns}
-              selectedRunId={
-                route.page === "workflows" && route.tab === "runs"
-                  ? route.runId ?? null
-                  : null
-              }
-              runFilters={
-                route.page === "workflows" && route.tab === "runs"
-                  ? route.filters
-                  : undefined
-              }
-              ensembleSummaries={ensembleSummaries}
-              ensembleAttentionCount={ensembleAttentionCount}
-              sessions={sessions}
-              reviews={pendingReviews}
-              hasSnapshot={hasSnapshot}
-              selectedEnsembleId={
-                route.page === "workflows" && route.tab === "ensembles"
-                  ? route.ensembleId ?? null
-                  : null
-              }
-              onTab={(tab) => navigate({ page: "workflows", tab })}
-              onRun={(runId) => navigate({
-                page: "workflows",
-                tab: "runs",
-                runId,
-                ...(route.page === "workflows" && route.tab === "runs" && route.filters
-                  ? { filters: route.filters }
-                  : {}),
-              })}
-              onRunFilters={(filters) => navigate({
-                page: "workflows",
-                tab: "runs",
-                ...(route.page === "workflows" && route.tab === "runs" && route.runId
-                  ? { runId: route.runId }
-                  : {}),
-                filters,
-              })}
-              onEnsemble={(ensembleId) => navigate({
-                page: "workflows",
-                tab: "ensembles",
-                ...(ensembleId ? { ensembleId } : {}),
-              })}
-              onOpenTask={(taskId) => {
-                const task = tasks.find((candidate) => candidate.id === taskId);
-                if (!task) return;
-                const liveSession = task.sessionId
-                  ? sessions.find((session) => session.id === task.sessionId)
-                  : sessions.find((session) => session.task?.id === taskId);
-                if (liveSession) {
+          runs={(
+            <ExecutionPage
+              title="Workflow runs"
+              blurb="Every review a workflow has run over a session's work, live and finished."
+              actions={(
+                <Tooltip label="Live delivery, its allowed repositories, retention and health, in Settings">
+                  <button
+                    className="btn btn-ghost wf-settings-link"
+                    onClick={() => navigate({ page: "settings", category: "workflows" })}
+                  >
+                    Workflow settings
+                    <span aria-hidden>→</span>
+                  </button>
+                </Tooltip>
+              )}
+            >
+              <WorkflowRuns
+                runs={workflowRuns}
+                selectedRunId={route.page === "runs" ? route.runId ?? null : null}
+                filters={route.page === "runs" ? route.filters : undefined}
+                onSelectRun={openWorkflowRun}
+                onFilters={(filters) => navigate({
+                  page: "runs",
+                  ...(route.page === "runs" && route.runId ? { runId: route.runId } : {}),
+                  filters,
+                })}
+                onOpenSession={openSessionOnFleet}
+                onOpenInspectorSettings={() => {
+                  navigate({ page: "settings", category: "inspector" });
+                }}
+                // No session and no version pinned: the dialog already supports being opened
+                // empty and asking for both.
+                onBindWorkflow={() => setWorkflowBindingTarget({})}
+              />
+            </ExecutionPage>
+          )}
+          ensembles={(
+            <ExecutionPage
+              title="Ensembles"
+              blurb="Multi-agent runs racing one goal: their evidence, their judges, and your decision."
+            >
+              <EnsembleRuns
+                summaries={ensembleSummaries}
+                sessions={sessions}
+                reviews={pendingReviews}
+                selectedId={route.page === "ensembles" ? route.ensembleId ?? null : null}
+                hasSnapshot={hasSnapshot}
+                onSelect={(ensembleId) => navigate({
+                  page: "ensembles",
+                  ...(ensembleId ? { ensembleId } : {}),
+                })}
+                onOpenSession={openSessionOnFleet}
+                onOpenTask={(taskId) => {
+                  const task = tasks.find((candidate) => candidate.id === taskId);
+                  if (!task) return;
+                  const liveSession = task.sessionId
+                    ? sessions.find((session) => session.id === task.sessionId)
+                    : sessions.find((session) => session.task?.id === taskId);
+                  if (liveSession) {
+                    navigate({ page: "fleet" });
+                    setFilter("");
+                    setSelectedId(liveSession.id);
+                    if (layout === "board") setBoardOpen(true);
+                    return;
+                  }
+                  if (task.status === "backlog") {
+                    openTaskEditor(taskId);
+                    return;
+                  }
                   navigate({ page: "fleet" });
-                  setFilter("");
-                  setSelectedId(liveSession.id);
-                  if (layout === "board") setBoardOpen(true);
-                  return;
-                }
-                if (task.status === "backlog") {
-                  openTaskEditor(taskId);
-                  return;
-                }
-                navigate({ page: "fleet" });
-                setReportOpen(true);
-              }}
-              onOpenSession={(sessionId) => {
-                navigate({ page: "fleet" });
-                setSelectedId(sessionId);
-                if (layout === "board") setBoardOpen(true);
-              }}
-              onOpenInspectorSettings={() => {
-                navigate({ page: "settings", category: "inspector" });
-              }}
-              onOpenWorkflowSettings={() => {
-                navigate({ page: "settings", category: "workflows" });
-              }}
-              // No session and no version pinned: the dialog already supports being opened
-              // empty and asking for both.
-              onBindWorkflow={() => setWorkflowBindingTarget({})}
-            />
+                  setReportOpen(true);
+                }}
+                onOpenWorkflowRun={openWorkflowRun}
+              />
+            </ExecutionPage>
           )}
           settings={(
             <SettingsPage
@@ -1993,8 +2108,7 @@ export function App(): React.JSX.Element {
               // growing a second one. Through `navigate`, like every other route change,
               // so the dirty-draft gate and history behave the same.
               onOpenRuns={(filters) => navigate({
-                page: "workflows",
-                tab: "runs",
+                page: "runs",
                 ...(Object.keys(filters).length > 0 ? { filters } : {}),
               })}
               onLeave={() => navigate({ page: "fleet" })}
@@ -2016,7 +2130,48 @@ export function App(): React.JSX.Element {
             purpose: it is the one thing on this page that is worth reading when the board
             is empty. A fleet with no sessions still has a backlog, sources due to sweep and
             pull requests that shipped this week, and the strip is where that is said. */}
-        <LineStrip summary={lineSummary} onStage={onLineStage} />
+        <LineStrip
+          summary={lineSummary}
+          openStage={lineDrawer}
+          stageRef={registerLineStage}
+          onStage={onLineStage}
+        />
+
+        {/* The drawer, between the strip and the layouts and a sibling of both. It pushes
+            the board down and hands the space back on close; the cards below are the same
+            cards at the same size in every state, which is the one thing this whole surface
+            was not allowed to change. Mounted only while open, so the Intake drawer's single
+            task-sources read happens on the click that asks for it and never otherwise. */}
+        {lineDrawer === "review" && (
+          <ReviewDrawer
+            runs={workflowRuns}
+            sessions={sessions}
+            onClose={closeLineDrawer}
+            onOpenRun={openWorkflowRun}
+            onOpenAllRuns={() => navigate({ page: "runs" })}
+            onBindWorkflow={() => setWorkflowBindingTarget({})}
+            onOpenEnsemble={openEnsembleRun}
+          />
+        )}
+        {lineDrawer === "decide" && (
+          <DecideDrawer
+            summaries={ensembleSummaries}
+            attentionCount={ensembleAttentionCount}
+            now={Date.now()}
+            onClose={closeLineDrawer}
+            onOpenEnsemble={openEnsembleRun}
+            onOpenAllEnsembles={() => navigate({ page: "ensembles" })}
+          />
+        )}
+        {lineDrawer === "intake" && (
+          <IntakeDrawer
+            schedules={schedules}
+            now={Date.now()}
+            onClose={closeLineDrawer}
+            onOpenMissions={openMissions}
+            onOpenTaskSources={() => navigate({ page: "settings", category: "task-sources" })}
+          />
+        )}
 
         {/* Nothing to arrange means no layout: one of the two empty states below says why,
             and every layout would otherwise dress that silence up as furniture - an empty
@@ -2178,9 +2333,7 @@ export function App(): React.JSX.Element {
                 <AttentionInbox
                   fold={attention}
                   onClose={() => setInboxOpen(false)}
-                  onOpenEnsemble={(runId) =>
-                    navigate({ page: "workflows", tab: "ensembles", ensembleId: runId })
-                  }
+                  onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                 />
               )}
@@ -2204,9 +2357,7 @@ export function App(): React.JSX.Element {
                 launchIntent={dispatchIntent}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
-                onEnsembleLaunched={(runId) =>
-                  navigate({ page: "workflows", tab: "ensembles", ensembleId: runId })
-                }
+                onEnsembleLaunched={openEnsembleRun}
               />
 
               {reportOpen && (
@@ -2301,7 +2452,7 @@ export function App(): React.JSX.Element {
                   foremanEnabled={foreman.config?.enabled ?? false}
                   promptedWrapupEnabled={foreman.config?.wrapupTriggers.includes("prompted") ?? false}
                   onClose={() => setWorkflowBindingTarget(null)}
-                  onRun={(runId) => navigate({ page: "workflows", tab: "runs", runId })}
+                  onRun={openWorkflowRun}
                 />
               )}
             </>

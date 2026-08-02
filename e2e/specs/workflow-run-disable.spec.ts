@@ -134,7 +134,7 @@ test("clicking a reviewer disables it for this run, and the next round auto-pass
 }) => {
   const runId = await seedFailedRun(dashboard, daemon);
 
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${runId}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const pipeline = dashboard.locator(".wf-pipeline-strip");
   const row = (name: string) =>
     pipeline.locator("li.wf-pipeline-reviewer").filter({ hasText: name });
@@ -195,7 +195,7 @@ test("a stage header click disables every member of the stage at once", async ({
   daemon,
 }) => {
   const runId = await seedFailedRun(dashboard, daemon);
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${runId}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const pipeline = dashboard.locator(".wf-pipeline-strip");
 
   // Each authored reviewer is its own single-member stage, so its header carries the

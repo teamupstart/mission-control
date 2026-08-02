@@ -233,14 +233,38 @@ OBSERVED a filed backlog task reached the strip over SSE, no reload: Backlog 0 -
 CAPTURED docs/evidence/line-strip/line-live.png
 OBSERVED parking that task turned Backlog amber (tone-attention), and it is the only amber stage
 CAPTURED docs/evidence/line-strip/line-attention.png
-OBSERVED clicking the Review stage navigated to #/workflows/runs with the Runs tab selected
+OBSERVED clicking the Shipped stage navigated to #/runs?status=completed
 OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
-  ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:79:1 › the Line renders every stage, tracks the fleet live, and its stages navigate (2.4s)
+  ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:79:1 › the Line renders every stage, tracks the fleet live, and its stages navigate (1.7s)
 OBSERVED the strip renders once, outside <header class="topbar">, so --topbar-h and .card.expanded are untouched
-  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:148:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (1.5s)
+  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:151:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (1.1s)
 
-  2 passed (5.4s)
+  2 passed (3.3s)
 ```
+
+### The Line's drawers
+
+[`docs/evidence/line-drawers/`](../docs/evidence/line-drawers/) carries four frames and the
+run's own stdout, written by `specs/line-drawers.spec.ts` under the same `MC_E2E_EVIDENCE`
+flag. The frames answer what only a picture can: `review-open.png` is a live run's ladder with
+the session card **below it at full size**, `board-pushed-down.png` and `board-returned.png`
+are the same board with the drawer open and closed (the spec asserts the card's box is
+identical in both; the pictures are what make that legible), and `intake-capped.png` is five
+missions in a panel showing three.
+
+Regenerate all five with:
+
+```sh
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/line-drawers.spec.ts \
+  --workers=1 --reporter=list \
+  | tee docs/evidence/line-drawers/transcript.txt
+```
+
+`--workers=1` keeps the five tests' output from interleaving, and the `tee` is the only thing
+that produces `transcript.txt` - without it you regenerate four files out of five.
 
 ## Steering a workflow reviewer
 

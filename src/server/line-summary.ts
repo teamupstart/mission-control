@@ -8,7 +8,7 @@ import { LINE_STAGES } from "@shared/line.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { readyBacklog } from "@shared/backlog.ts";
 import { ensembleIsTerminal } from "@shared/ensemble.ts";
-import { sessionActionWaitsOnOperator, workflowRunIsOpen } from "@shared/workflow.ts";
+import { workflowRunIsOpen, workflowRunWaitsOnOperator } from "@shared/workflow.ts";
 import { fmtUsd } from "@shared/cost.ts";
 
 /**
@@ -233,9 +233,11 @@ function foldWorking(input: LineFoldInput): LineStageSummary {
 /**
  * REVIEW - workflow runs still in flight.
  *
- * The amber half is deliberately narrow. Most of `SESSION_ACTION_WAIT_REASONS` is the daemon
- * waiting on itself, so `sessionActionWaitsOnOperator` picks out only the waits a person can
- * end; `blocked` joins them because a blocked run has stopped and stated why.
+ * The amber half is deliberately narrow, and the rule is `workflowRunWaitsOnOperator` rather
+ * than a predicate spelled out here: most of `SESSION_ACTION_WAIT_REASONS` is the daemon
+ * waiting on itself, and the Review DRAWER marks the same rows amber one grain further in.
+ * A strip that says "1 waiting on you" over a drawer that marks none is the surface arguing
+ * with itself, so both read the one shared predicate.
  */
 function foldReview(input: LineFoldInput): LineStageSummary {
   const live = input.workflowRuns.filter((r) => workflowRunIsOpen(r.status));
@@ -244,9 +246,7 @@ function foldReview(input: LineFoldInput): LineStageSummary {
     return { stage: "review", count: 0, sentence: "no runs live", tone: "neutral" };
   }
 
-  const waiting = live.filter(
-    (r) => r.status === "blocked" || sessionActionWaitsOnOperator(r.actionWait),
-  ).length;
+  const waiting = live.filter(workflowRunWaitsOnOperator).length;
 
   // Which workflow is doing the most of this - the run ladder's identity, condensed. Ties
   // break on the name so the sentence is stable rather than reordering with map iteration.

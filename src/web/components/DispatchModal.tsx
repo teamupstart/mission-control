@@ -961,11 +961,34 @@ function DispatchModal({
             </label>
             <label className="field">
               <span className="field-label">Kind</span>
-              <Tooltip label="Whether this task asks for a delivered change or an investigation">
+              <Tooltip label="Whether this task asks for a delivered change or an investigation - scout also clears the after-work Workflow">
                 <select
                   className="field-input"
                   value={draft.kind}
-                  onChange={(e) => update({ kind: e.target.value as TaskKind })}
+                  // Kind carries the after-work choice with it, for the same reason
+                  // switching harness above carries model and effort: the dependent
+                  // choice belongs to the kind now selected, not the one it replaced.
+                  // A scout investigates and reports - there is no delivered change to
+                  // hand off - so its default is None rather than the machine default,
+                  // which would otherwise run a review Workflow over a task that never
+                  // set out to produce a diff. Still only a default: pick a Workflow
+                  // after choosing scout and it sticks.
+                  onChange={(e) => {
+                    const kind = e.target.value as TaskKind;
+                    update({
+                      kind,
+                      workflowId:
+                        kind === "scout"
+                          ? null
+                          // Back to the kind's default, which is what "__default"
+                          // means on each path: undefined defers to the machine
+                          // default on a fresh task, and an edit has to name the
+                          // value because an omitted key would leave the stored one.
+                          : editing
+                            ? workflowConfig?.defaultWorkflowId ?? null
+                            : undefined,
+                    });
+                  }}
                 >
                   <option value="ship">ship</option>
                   <option value="scout">scout</option>

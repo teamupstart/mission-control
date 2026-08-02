@@ -28,6 +28,10 @@ test("an explicit mockup output is a non-shipping review artifact", () => {
     "Required deliverable: three wireframes and a recommendation",
     "Expected artifacts: an interactive prototype",
     "Output: design explorations",
+    "Output: a plan for code changes",
+    "Output: a report on code changes",
+    "Output: an implementation plan",
+    "Output: a report on implementation details",
   ]) {
     assert.equal(block({ objective })?.kind, "review_artifact", objective);
   }
@@ -38,7 +42,9 @@ test("a natural-language review-artifact request is blocked without an Output fi
     "Present at least three HTML mockups for the new session viewer.",
     "Present HTML mockups that reflect the existing source code.",
     "Write a report comparing the available approaches.",
+    "Write a report on code changes.",
     "Prepare a migration plan for operator review.",
+    "Prepare a plan to implement the feature.",
   ]) {
     assert.equal(block({ objective })?.kind, "review_artifact", objective);
   }
@@ -51,6 +57,7 @@ test("mockup context does not block a task that also asks for implementation", (
     "Create mockups, then deliver the implementation.",
     "Create the mockups and implement them.",
     "Output: mockups\nOutput: source code",
+    "Output: mockups and source code",
     "Create a mockup viewer component.",
   ]) {
     assert.equal(block({ objective }), null, objective);

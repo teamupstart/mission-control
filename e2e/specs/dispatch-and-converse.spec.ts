@@ -206,15 +206,21 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
 
   await expect(review).toBeHidden();
   let runId = "";
+  let runVersion = 0;
   await expect.poll(async () => {
-    const page = await api<{ items: Array<{ id: string; workflowName: string; sessionId: string }> }>(
-      daemon,
-      "/api/workflow-runs",
-    );
+    const page = await api<{
+      items: Array<{
+        id: string;
+        workflowName: string;
+        workflowVersion: number;
+        sessionId: string;
+      }>;
+    }>(daemon, "/api/workflow-runs");
     const run = page.items.find((candidate) =>
       candidate.workflowName === "No-Mistakes Review" && candidate.sessionId === sessionId
     );
     runId = run?.id ?? "";
+    runVersion = run?.workflowVersion ?? 0;
     return Boolean(run);
   }).toBe(true);
 
@@ -223,12 +229,14 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${encodeURIComponent(runId)}`);
   const selectedRun = dashboard.locator(".wf-run-row.active");
   await expect(selectedRun).toContainText("No-Mistakes Review");
-  await expect(selectedRun).toContainText("v7");
+  await expect(selectedRun).toContainText(`v${runVersion}`);
   await expect(dashboard.locator(".wf-run-reader")).toContainText("No-Mistakes Review");
 
   if (process.env.MC_E2E_EVIDENCE) {
     // eslint-disable-next-line no-console
-    console.log("OBSERVED Runs monitor selected the created No-Mistakes Review v7 run");
+    console.log(
+      `OBSERVED Runs monitor selected the created No-Mistakes Review v${runVersion} run`,
+    );
     await dashboard.screenshot({
       path: fileURLToPath(new URL("../evidence/ship-it-review-run.png", import.meta.url)),
       fullPage: true,

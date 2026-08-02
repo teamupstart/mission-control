@@ -69,9 +69,9 @@ Running 1 test using 1 worker
 OBSERVED Ship it panel exposes "Run No-Mistakes Review" beside the direct shipping path
 CAPTURED e2e/evidence/ship-it-review-control.png
 OBSERVED POST /api/sessions/:id/workflow-review with a requestId
-OBSERVED Runs monitor selected the created No-Mistakes Review v7 run
+OBSERVED Runs monitor selected the created No-Mistakes Review v8 run
 CAPTURED e2e/evidence/ship-it-review-run.png
-  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:157:1 › Ship it starts No-Mistakes Review through the workflow route (3.6s)
+  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:157:1 › Ship it starts No-Mistakes Review through the workflow route (3.7s)
 
   1 passed (4.2s)
 ```

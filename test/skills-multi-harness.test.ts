@@ -194,7 +194,7 @@ test("the refusal names a fix the caller can apply", () => {
  * Both entry points, because `uninstallSkillLinks` is the one that did the damage.
  */
 const GUARD_PROBE = `
-import { mkdirSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 const { reconcileSkillLinks, uninstallSkillLinks } = await import("./src/server/skills/reconcile.ts");
@@ -205,6 +205,14 @@ const source = join(home, "their-skill");
 const aliasDir = join(home, "alias-agents");
 const OFF = { enabled: false, skills: {}, generation: 0, generationAt: 0 };
 const READABLE = { readable: true, skills: [], present: new Set(), problems: [] };
+
+// A catalog with something in it, for the ABSENT cases below: an empty desired set removes
+// nothing and creates nothing, so it could not tell an allowed pass from a refused one.
+const catalogDir = process.env.MISSION_SKILLS_DIR;
+mkdirSync(join(catalogDir, "alpha"), { recursive: true });
+writeFileSync(join(catalogDir, "alpha", "SKILL.md"), "---\\nname: alpha\\n---\\nbody\\n");
+const ON = { enabled: true, skills: { alpha: true }, generation: 0, generationAt: 0 };
+const WITH_ALPHA = { readable: true, skills: [], present: new Set(["alpha"]), problems: [] };
 
 function seed() {
   rmSync(live, { recursive: true, force: true });
@@ -224,77 +232,90 @@ symlinkSync(join(home, ".agents"), aliasDir, "dir");
 // String concatenation, not join(): join() would normalise the spelling away before the
 // guard ever saw it, which is how the first cut of these cases passed against a guard that
 // could not handle them.
+//
+// \`absent\` flips the question from "was the live link destroyed?" to "was a live directory
+// CREATED?". Both are ways of writing into the operator's home, and the second one only
+// appears when the directory is not there yet - the state where no inode exists to compare
+// and the check has nothing but the spelling to go on.
 const SPELLINGS = {
-  exact: () => live,
-  trailingSlash: () => live + "/",
-  doubleSlash: () => join(home, ".agents") + "//skills",
-  dotDot: () => join(home, ".agents") + "/skills/../skills",
-  symlinkedParent: () => join(aliasDir, "skills"),
-  upperCase: () => join(home, ".AGENTS", "skills"),
+  exact: { spell: () => live },
+  trailingSlash: { spell: () => live + "/" },
+  doubleSlash: { spell: () => join(home, ".agents") + "//skills" },
+  dotDot: { spell: () => join(home, ".agents") + "/skills/../skills" },
+  symlinkedParent: { spell: () => join(aliasDir, "skills") },
+  upperCase: { spell: () => join(home, ".AGENTS", "skills") },
+  exactAbsent: { absent: true, spell: () => live },
+  upperCaseAbsent: { absent: true, spell: () => join(home, ".AGENTS", "skills") },
 };
 
-// Whether ".AGENTS" and ".agents" are one directory HERE. macOS ships case-insensitive
-// APFS, Linux CI is case-sensitive, and the honest assertion differs between them.
-const caseInsensitive = statSync(join(home, ".AGENTS"), { throwIfNoEntry: false }) !== undefined;
-
-const out = { caseInsensitive, results: {} };
-for (const [name, spell] of Object.entries(SPELLINGS)) {
-  out.results[name] = {};
-  for (const [entry, call] of [
-    ["reconcile", (d) => reconcileSkillLinks(OFF, READABLE, [d])],
-    ["uninstall", (d) => uninstallSkillLinks([d])],
-  ]) {
-    seed();
+const out = {};
+for (const [name, { spell, absent }] of Object.entries(SPELLINGS)) {
+  out[name] = {};
+  // An absent directory has nothing to unlink, so the destructive entry point has nothing
+  // to say about it; the creating one is the whole question.
+  const entries = absent
+    ? [["reconcile", (d) => reconcileSkillLinks(ON, WITH_ALPHA, [d])]]
+    : [
+        ["reconcile", (d) => reconcileSkillLinks(OFF, READABLE, [d])],
+        ["uninstall", (d) => uninstallSkillLinks([d])],
+      ];
+  for (const [entry, call] of entries) {
+    if (absent) rmSync(join(home, ".agents"), { recursive: true, force: true });
+    else seed();
     let refused = false;
     try {
       call(spell());
     } catch (err) {
       refused = /refusing to reconcile/.test(err.message);
     }
-    out.results[name][entry] = { refused, survived: readdirSync(live).includes("mission-alpha") };
+    out[name][entry] = absent
+      ? { refused, intact: !existsSync(join(home, ".agents")) }
+      : { refused, intact: readdirSync(live).includes("mission-alpha") };
   }
 }
 console.log(JSON.stringify(out));
 `;
 
 test("no spelling of a live skills directory gets past the guard", () => {
-  // The review finding this pins: the first guard compared raw strings, so it was a guard
-  // against one SPELLING rather than against one DIRECTORY. Verified before the fix -
-  // `CODEX_SKILLS_DIR` with a trailing slash, and a symlinked scratch path, each walked
-  // straight through and deleted the seeded link. On macOS so did a case variant, which no
-  // amount of string normalisation catches, and which is why the check ends at the inode.
+  // Two review findings, one test. Round 1: the guard compared raw strings, so it guarded a
+  // SPELLING rather than a DIRECTORY - a trailing slash and a symlinked scratch path each
+  // walked through and deleted the seeded link, and on macOS so did a case variant.
+  // Round 3: the same weakness survives wherever the inode cannot speak, which is precisely
+  // when the directory does not exist yet - and there the pass CREATES the operator's skills
+  // directory and links a temp catalog into it, which dangles the moment the temp dir goes.
+  // Both were reproduced against a fake $HOME before either was fixed.
   const fakeHome = join(home, "guard-probe-home");
+  const probeCatalog = join(home, "guard-probe-catalog");
   mkdirSync(fakeHome, { recursive: true });
+  mkdirSync(probeCatalog, { recursive: true });
 
   const out = execFileSync(
     process.execPath,
     ["--import", "tsx", "--input-type=module", "-e", GUARD_PROBE],
     {
       cwd: fileURLToPath(new URL("..", import.meta.url)),
-      env: { ...process.env, HOME: fakeHome },
+      // MISSION_SKILLS_DIR so the child's own catalog is what a permitted pass would link
+      // FROM, rather than this repo's real `skills/`.
+      env: { ...process.env, HOME: fakeHome, MISSION_SKILLS_DIR: probeCatalog },
       encoding: "utf8",
     },
   );
 
-  const { caseInsensitive, results } = JSON.parse(
-    out.trim().split("\n").filter(Boolean).at(-1) ?? "{}",
-  ) as { caseInsensitive: boolean; results: Record<string, Record<string, { refused: boolean; survived: boolean }>> };
+  const results = JSON.parse(out.trim().split("\n").filter(Boolean).at(-1) ?? "{}") as
+    Record<string, Record<string, { refused: boolean; intact: boolean }>>;
 
   assert.deepEqual(
     Object.keys(results).sort(),
-    ["dotDot", "doubleSlash", "exact", "symlinkedParent", "trailingSlash", "upperCase"],
+    ["dotDot", "doubleSlash", "exact", "exactAbsent", "symlinkedParent", "trailingSlash", "upperCase", "upperCaseAbsent"],
     "every spelling was attempted",
   );
 
   for (const [name, entries] of Object.entries(results)) {
-    for (const [entry, { refused, survived }] of Object.entries(entries)) {
-      // The assertion that actually matters, and it holds on every filesystem: whatever the
-      // guard decided, the operator's link is still on disk afterwards.
-      assert.equal(survived, true, `${entry} via ${name} destroyed a live link`);
-      // A case variant only NAMES the live directory where the filesystem folds case. On
-      // ext4 it is a different directory and letting it through is correct, so this asks the
-      // child which kind of disk it ran on rather than assuming CI's.
-      if (name === "upperCase" && !caseInsensitive) continue;
+    for (const [entry, { refused, intact }] of Object.entries(entries)) {
+      // The assertion that actually matters, and the reason the child works on a real disk
+      // rather than asserting a return value: whatever the guard decided, the operator's home
+      // is untouched afterwards - the seeded link still there, or the directory still absent.
+      assert.equal(intact, true, `${entry} via ${name} wrote into the operator's home`);
       assert.equal(refused, true, `${entry} via ${name} was not refused`);
     }
   }

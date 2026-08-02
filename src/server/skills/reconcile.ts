@@ -188,14 +188,26 @@ function directoryIdentity(path: string): string | null {
  * are, on every platform, and it settles hard links and bind mounts in the same breath.
  *
  * Identity needs both paths to EXIST, which is why it is the first answer and not the only
- * one. A directory a reconcile is about to create has no inode yet, and creating one in the
- * operator's home is its own kind of wrong, so the canonical spellings decide that case.
+ * one. A directory a reconcile is about to create has no inode yet, and that case is not a
+ * harmless one to get wrong: with `~/.agents/skills` not yet there, `~/.AGENTS/skills` was
+ * allowed through and the pass CREATED the operator's directory and linked a test's temp
+ * catalog into it - dangling the moment the temp directory went away. Verified.
+ *
+ * So the unresolved case folds case as well as spelling. Being wrong in that direction costs
+ * a refused test that has to name a different scratch path, and says so in the message; being
+ * wrong in the other direction writes into the operator's home. Where the filesystem CAN
+ * answer - both paths present, the case this can't reach - the inode still decides, so a
+ * genuine `~/.AGENTS` alongside a genuine `~/.agents` on a case-sensitive disk is correctly
+ * told apart rather than folded together.
  */
 function sameDirectory(a: string, b: string): boolean {
   const idA = directoryIdentity(a);
   const idB = directoryIdentity(b);
   if (idA !== null && idB !== null) return idA === idB;
-  return canonical(a) === canonical(b);
+  const canonicalA = canonical(a);
+  const canonicalB = canonical(b);
+  return canonicalA === canonicalB
+    || canonicalA.toLowerCase() === canonicalB.toLowerCase();
 }
 
 /**

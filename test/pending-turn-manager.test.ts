@@ -25,13 +25,26 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 const tick = (ms = 8) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function sdkFixture(name: string, send: (text: string) => Promise<"started" | null>) {
+/** Poll instead of sleeping a fixed span, so a settle window costs its own length and no more. */
+async function until(predicate: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await tick(5);
+  }
+}
+
+function sdkFixture(
+  name: string,
+  send: (text: string) => Promise<"started" | null>,
+  options: { idleSettleMs?: number; agent?: "claude" | "codex" } = {},
+) {
   const registry = new Registry();
   const id = `sdk:${name}`;
   const key = `conversation:${name}`;
   registry.registerSdkSession({
     id,
-    agent: "claude",
+    agent: options.agent ?? "claude",
     name,
     cwd: `/repo/${name}`,
     agentSessionId: key,
@@ -47,7 +60,7 @@ function sdkFixture(name: string, send: (text: string) => Promise<"started" | nu
         return send(turn.text);
       },
     },
-    { idleSettleMs: 0, pickupTimeoutMs: 15 },
+    { idleSettleMs: options.idleSettleMs ?? 0, pickupTimeoutMs: 15 },
   );
   manager.start();
   return { registry, manager, id, key, calls };
@@ -149,6 +162,46 @@ test("busy SDK sessions retain editable text until confirmed idle", async () => 
   idle(f.registry, f.id);
   await tick();
   assert.deepEqual(f.calls, ["follow up after the current turn"]);
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
+  f.manager.stop();
+});
+
+test("an embedded session's only idle transition still drains the queued row", async () => {
+  // The settle window is the entire point of this case, and every other SDK test here sets
+  // it to zero. A driver reports idle with `lastActivity` set to that same instant, so the
+  // session is NEVER already settled when the transition arrives - and unlike a terminal
+  // card, which the discovery poller sweeps every `DEFAULT_POLL_MS`, nothing asks an
+  // embedded session again. The transition below is the only chance the outbox gets.
+  const f = sdkFixture("settle", async () => "started", { idleSettleMs: 40, agent: "codex" });
+  working(f.registry, f.id);
+  assert.equal(f.manager.submit(f.id, "deliver me after the settle window").ok, true);
+  await tick();
+  assert.deepEqual(f.calls, []);
+
+  idle(f.registry, f.id);
+  await until(() => f.calls.length > 0, "the queued turn to be delivered");
+  assert.deepEqual(f.calls, ["deliver me after the settle window"]);
+  assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
+  f.manager.stop();
+});
+
+test("a second queued row waits for the next idle transition rather than stalling", async () => {
+  // The follow-on half: after the first row leaves, the session goes working and comes back
+  // idle exactly once more. A drain that only ever armed on the submit path would deliver
+  // row one and strand row two.
+  const f = sdkFixture("settle-fifo", async () => "started", { idleSettleMs: 40 });
+  working(f.registry, f.id);
+  assert.equal(f.manager.submit(f.id, "first queued row").ok, true);
+  assert.equal(f.manager.submit(f.id, "second queued row").ok, true);
+
+  idle(f.registry, f.id);
+  await until(() => f.calls.length > 0, "the first queued turn to be delivered");
+  assert.deepEqual(f.calls, ["first queued row"]);
+
+  working(f.registry, f.id);
+  idle(f.registry, f.id);
+  await until(() => f.calls.length > 1, "the second queued turn to be delivered");
+  assert.deepEqual(f.calls, ["first queued row", "second queued row"]);
   assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
   f.manager.stop();
 });

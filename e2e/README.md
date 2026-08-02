@@ -67,13 +67,6 @@ CAPTURED e2e/evidence/workflow-submit-accepted.png
   1 passed (3.5s)
 ```
 
-The requested No-Mistakes Review v8 submission is recorded in
-[`evidence/workflow-performance-submission-receipt.txt`](evidence/workflow-performance-submission-receipt.txt).
-That live API receipt identifies run `d20f4803-4b53-40bd-9439-4abdc073a09b`, submission
-`35a270d8-1d8f-4cc8-af23-3f44a3565a3f`, and captured head `a5d7278e`. Its
-`waiting_for_session` and `persona_feedback` state records the review handoff that requested
-this repair round.
-
 ### Ship it replacement workflow
 
 The focused browser case opens the session's Ship it choice, verifies the visible

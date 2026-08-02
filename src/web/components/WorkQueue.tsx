@@ -826,7 +826,7 @@ export function AddBox({
               e.preventDefault();
               onAdd();
             }
-            // Blur back to the grid so card keyboard nav (e to collapse) works again -
+            // Blur back to the grid so card keyboard nav (Enter to collapse) works again -
             // the same escape the reply box offers. The grid's own Escape stands down
             // for this press (its guard reads the event's target, which is still this
             // field), so one press leaves the box and the next collapses the card,

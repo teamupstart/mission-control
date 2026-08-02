@@ -15,6 +15,7 @@ import {
   workflowRunTone,
 } from "../components/session-bits.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { Keycap } from "../components/Keycap.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import {
   actionBlockSentence,
@@ -598,6 +599,7 @@ function WorkflowTileDisclosure({
             onClick={() => onExpandedChange(!expanded)}
           >
             <span className="tile-workflow-chevron" aria-hidden>⌄</span>
+            <Keycap action="expand" />
             {expanded ? "Collapse workflow" : "Show full workflow"}
           </button>
         </Tooltip>

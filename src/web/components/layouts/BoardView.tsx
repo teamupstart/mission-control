@@ -119,6 +119,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       selected={s.id === props.selectedId}
       onOpen={() => props.onSelect(s.id)}
       registerEl={props.registerEl}
+      registerWorkflowDisclosure={props.registerWorkflowDisclosure}
       draggingRepo={draggingRepo}
       onDropped={() => setDraggingRepo(null)}
       onDropError={setDropError}

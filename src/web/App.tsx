@@ -33,7 +33,10 @@ import { Tooltip } from "./components/Tooltip.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
-import type { SessionViewProps } from "./components/layouts/types.ts";
+import type {
+  SessionViewProps,
+  WorkflowDisclosureHandle,
+} from "./components/layouts/types.ts";
 import { dropMessageDrafts } from "./lib/drafts.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { useNotifier } from "./useNotifier.ts";
@@ -344,6 +347,10 @@ export function App(): React.JSX.Element {
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
+  // Board workflow disclosures stay local to their tiles, but the global, rebindable
+  // expand action needs to drive the selected one through the exact same transition as
+  // its Show full workflow / Collapse workflow button.
+  const workflowDisclosureHandles = useRef<Map<string, WorkflowDisclosureHandle>>(new Map());
   const launcherHandles = useRef<Map<string, SessionLaunchersHandle>>(new Map());
   const findHandles = useRef<Map<string, TranscriptFindHandle>>(new Map());
   // The session whose find was asked for before its transcript existed. Held for exactly
@@ -357,8 +364,8 @@ export function App(): React.JSX.Element {
   // it hands the keyboard to the rail. Shared by the console and the board drill-in, which
   // mount the same ConsoleDetail.
   const readerTabbers = useRef<Map<string, (dir: -1 | 1) => "moved" | "edge">>(new Map());
-  // Set to the id a keyboard expand should drop the cursor into once its send box
-  // mounts (see the `expand` chord and the effect that consumes it). A ref, not
+  // Set to the id a Cards Enter should drop the cursor into once its send box
+  // mounts (see the structural Enter arm and the effect that consumes it). A ref, not
   // state: it arms a one-shot side effect, and must not itself cause a render.
   const pendingReplyFocus = useRef<string | null>(null);
   // The board's arrow cursor, armed to take DOM focus once the tile it names has
@@ -381,6 +388,14 @@ export function App(): React.JSX.Element {
     if (el) cardEls.current.set(id, el);
     else cardEls.current.delete(id);
   }, []);
+
+  const registerWorkflowDisclosure = useCallback(
+    (id: string, handle: WorkflowDisclosureHandle | null) => {
+      if (handle) workflowDisclosureHandles.current.set(id, handle);
+      else workflowDisclosureHandles.current.delete(id);
+    },
+    [],
+  );
 
   // The rail row is a RailRow in BOTH the console rail and the board drill-in column, so
   // this focuses the left-bar selection in either layout. `.cdetail` is ConsoleDetail's
@@ -845,7 +860,7 @@ export function App(): React.JSX.Element {
   //   board   - the console detail is separate from the arrow-key cursor; Enter or a
   //             click opens it, and what it opens is the cursor's session.
   // Keeping the state honest (rather than overriding `expanded` at the call site) is
-  // what lets Escape, the expand chord and the card's own toggle all agree.
+  // what lets Escape, Enter and the card's own toggle all agree.
   const boardOpenId = boardOpen ? selectedId : null;
   const expandedForView =
     layout === "grid" ? expandedId : layout === "board" ? boardOpenId : selectedId;
@@ -940,6 +955,7 @@ export function App(): React.JSX.Element {
     onKilled,
     resetNonces,
     registerEl,
+    registerWorkflowDisclosure,
     registerActions,
     registerLaunchers,
     registerFind,
@@ -1302,35 +1318,34 @@ export function App(): React.JSX.Element {
           // below - the switch keys off `e.key`, so it lands here too and used to be
           // eaten by the key it merely shares.
           if (chord !== "Enter") break;
-          if (layout !== "board" || !selectedId || boardOpen) break;
-          e.preventDefault();
-          setBoardOpen(true);
-          return;
+          if (!selectedId) break;
+          if (layout === "board" && !boardOpen) {
+            e.preventDefault();
+            setBoardOpen(true);
+            return;
+          }
+          // Cards keeps its conversation in an in-place focus expansion. Enter owns that
+          // structural reveal now; the rebindable expand action is reserved for the Board
+          // tile's workflow ladder below.
+          if (layout === "grid") {
+            e.preventDefault();
+            pendingReplyFocus.current = expandedId === selectedId ? null : selectedId;
+            toggleExpand(selectedId);
+            return;
+          }
+          break;
       }
 
       // Actions on the selected card.
       if (chord === bindings.expand) {
-        if (!selectedId) return;
-        // On the board the overview shows a TILE, not the session, so Expand opens its
-        // drill-in detail - the same thing Enter opens - and collapses it again, which is
-        // the "collapse" half of the chord's own name. Console already shows the selected
-        // session expanded, so there is nothing to toggle; it falls through to the grid
-        // path below, which returns for any non-grid layout.
-        if (layout === "board") {
-          e.preventDefault();
-          setBoardOpen((open) => !open);
-          return;
-        }
-        // Focus mode is a grid idea; leave the chord unclaimed elsewhere rather than
-        // swallowing it to no effect.
-        if (layout !== "grid") return;
+        // This action is the Board card's in-place workflow disclosure only. It never
+        // opens Conversation (Enter owns the drill-in), never closes an open drill-in,
+        // and stays unclaimed where there is no selected card with a bound workflow.
+        if (layout !== "board" || boardOpen || !selectedId) return;
+        const disclosure = workflowDisclosureHandles.current.get(selectedId);
+        if (!disclosure) return;
         e.preventDefault();
-        // Expanding via the keyboard is an explicit "I want to type here", so arm the
-        // send box to take the cursor once it mounts. Collapsing (this card is already
-        // the expanded one) arms nothing. The focus itself is deferred to the effect
-        // below because the reply box only exists after the next render.
-        pendingReplyFocus.current = expandedId === selectedId ? null : selectedId;
-        toggleExpand(selectedId);
+        disclosure.toggle();
         return;
       }
       // "Show me this session's conversation" - which is a different action in each
@@ -1536,7 +1551,7 @@ export function App(): React.JSX.Element {
     actionHandles.current.get(pending.id)?.[pending.run]();
   }, [boardOpenId]);
 
-  // Land the cursor in a keyboard-expanded card's send box. The panel that renders
+  // Land the cursor in a card expanded with Enter. The panel that renders
   // it mounts on the render this effect trails, so a synchronous focus in the chord
   // handler would find no box - the wait is the whole reason this is deferred here.
   // Routed through the SAME `startSend` the `s` shortcut uses, so an unavailable
@@ -2461,9 +2476,15 @@ function CommandBar({
             </button>
           </Tooltip>
         )}
-        <Tooltip label={expanded ? "Collapse this session's detail" : "Expand this session's detail"}>
+        <Tooltip
+          label={
+            expanded
+              ? "Collapse this session's detail (Enter)"
+              : "Expand this session's detail (Enter)"
+          }
+        >
           <button className="keycap-btn" onClick={onToggleExpand}>
-            <kbd>{formatChord(bindings.expand)}</kbd> {expanded ? "collapse" : "expand"}
+            <kbd>↵</kbd> {expanded ? "collapse" : "expand"}
           </button>
         </Tooltip>
         <span className="cmdbar-hint">

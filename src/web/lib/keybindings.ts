@@ -101,9 +101,12 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "global",
   },
   {
+    // The id predates the Board's in-place workflow disclosure and is persisted in
+    // `app_config.ui.keybindings`, so keep it stable while narrowing what the action means.
     id: "expand",
-    label: "Expand / collapse",
-    description: "Focus-expand the selected card in Cards, open or close the Board drill-in, or do nothing in Console where it is already expanded.",
+    label: "Toggle workflow details",
+    description:
+      "Show or collapse the selected Board card's full workflow without opening its session detail.",
     defaultBinding: "e",
     group: "selection",
   },

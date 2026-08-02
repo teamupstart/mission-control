@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -27,6 +29,19 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const NODE = { session: "session-node", action: "action-node", end: "end-node" };
 const PROMPT = "# Tidy the workspace\n\nRemove the stray scratch file and say so.\n";
+const SHORTCUT_EVIDENCE = fileURLToPath(
+  new URL("../../docs/evidence/board-workflow-shortcut/", import.meta.url),
+);
+
+/** Capture the two asserted Board states without rewriting evidence on an ordinary run. */
+async function captureBoardShortcut(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(SHORTCUT_EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${SHORTCUT_EVIDENCE}${name}.png`, fullPage: true });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED docs/evidence/board-workflow-shortcut/${name}.png`);
+}
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
@@ -357,4 +372,73 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   await card.getByRole("button", { name: "Expand conversation" }).click();
   await expect(card.getByPlaceholder(/^Reply to this session/)).toBeEnabled();
   await expect(card.getByText("Remove the stray scratch file and say so.")).toHaveCount(0);
+});
+
+test("e toggles the selected Board workflow card without opening session detail", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Park a real run on a Preview action so the Board has a stable active workflow to
+  // disclose. Live is authorized to make Preview's lack of delivery an explicit choice,
+  // not a refusal that could replace the state under test.
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true,
+    repoAllowlist: [daemon.repo],
+  }, "PUT");
+  const { runId } = await seedActionRun(dashboard, daemon, "preview");
+  await expect
+    .poll(async () => (await detail(daemon, runId)).summary.actionWait, {
+      message: "the workflow should be parked where its Board card can disclose it",
+      timeout: 30_000,
+    })
+    .toBe("awaiting_send");
+
+  await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  await dashboard.setViewportSize({ width: 1440, height: 900 });
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.reload();
+
+  const boardDetail = dashboard.locator(".board-detail");
+  await expect(dashboard.getByRole("button", { name: "Show full workflow" })).toBeVisible();
+  await expect(boardDetail).toHaveAttribute("aria-hidden", "true");
+
+  // The first arrow only selects. `e` must stay inside that card and drive the same
+  // aria-expanded transition as clicking Show full workflow.
+  await dashboard.keyboard.press("ArrowRight");
+  const tile = dashboard.locator(".tile.selected");
+  await expect(tile).toBeVisible();
+  await dashboard.keyboard.press("e");
+  await expect(tile.getByRole("button", { name: "Collapse workflow" }))
+    .toHaveAttribute("aria-expanded", "true");
+  await expect(tile.locator(".wf-ladder-panel")).toBeVisible();
+  await expect(boardDetail).toHaveAttribute("aria-hidden", "true");
+  await captureBoardShortcut(dashboard, "01-expanded");
+
+  // A second press returns to the compact preview and still does not drill in.
+  await dashboard.keyboard.press("e");
+  await expect(tile.getByRole("button", { name: "Show full workflow" }))
+    .toHaveAttribute("aria-expanded", "false");
+  await expect(boardDetail).toHaveAttribute("aria-hidden", "true");
+  await captureBoardShortcut(dashboard, "02-collapsed");
+
+  // Enter remains the explicit route to Conversation and the rest of session detail.
+  await dashboard.keyboard.press("Enter");
+  await expect(boardDetail).toHaveAttribute("aria-hidden", "false");
+  await expect(boardDetail.getByRole("tab", { name: "Conversation" }))
+    .toHaveAttribute("aria-selected", "true");
+
+  // Cards gives its old conversation-expansion job to structural Enter as well. The first
+  // press expands and moves focus into Reply; Escape hands focus back before Enter collapses.
+  await api(daemon, "/api/ui/config", { layout: "grid" }, "PUT");
+  await dashboard.reload();
+  await expect(dashboard.locator("article.card")).toBeVisible();
+  await dashboard.keyboard.press("ArrowRight");
+  const card = dashboard.locator("article.card.selected");
+  await expect(card).not.toHaveClass(/expanded/);
+  await dashboard.keyboard.press("Enter");
+  await expect(card).toHaveClass(/expanded/);
+  await expect(card.getByPlaceholder(/^Reply to this session/)).toBeFocused();
+  await dashboard.keyboard.press("Escape");
+  await dashboard.keyboard.press("Enter");
+  await expect(card).not.toHaveClass(/expanded/);
 });

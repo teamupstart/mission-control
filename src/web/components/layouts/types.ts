@@ -7,6 +7,11 @@ import type { WorkspaceLinkHandler } from "../Markdown.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 
+/** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
+export interface WorkflowDisclosureHandle {
+  toggle(): void;
+}
+
 /**
  * What every layout gets from App, which stays the single owner of session state.
  * A layout arranges; it never decides.
@@ -107,6 +112,8 @@ export interface SessionViewProps {
    *  reply box and clear the text a reset discarded. Absent id means never reset (0). */
   resetNonces: Record<string, number>;
   registerEl: (id: string, el: HTMLElement | null) => void;
+  /** Register a Board tile's workflow disclosure for the rebindable expand action. */
+  registerWorkflowDisclosure?: (id: string, handle: WorkflowDisclosureHandle | null) => void;
   registerActions: (id: string, handle: ActionBarHandle | null) => void;
   /** Register the conversation toolbar's terminal and agent launch controls. */
   registerLaunchers: (id: string, handle: SessionLaunchersHandle | null) => void;

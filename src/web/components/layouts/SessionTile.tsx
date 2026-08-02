@@ -18,6 +18,7 @@ import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
+import type { WorkflowDisclosureHandle } from "./types.ts";
 
 /**
  * Whether a click only marks the end of a drag-select rather than a click on the thing
@@ -52,6 +53,7 @@ export function SessionTile({
   onDropError,
   onDropConfirm,
   workflowRun = null,
+  registerWorkflowDisclosure,
   onOpenWorkflowRun,
   onOpenSchedule,
   scheduleNameById,
@@ -69,6 +71,8 @@ export function SessionTile({
   /** The drop needs a yes: the handover would take something from this agent. */
   onDropConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void;
   workflowRun?: WorkflowRunSummary | null;
+  /** Register the same disclosure transition the Show/Collapse workflow button drives. */
+  registerWorkflowDisclosure?: (id: string, handle: WorkflowDisclosureHandle | null) => void;
   onOpenWorkflowRun?: (runId: string) => void;
   /** Open Recurring Missions from a scheduled task's tile flag. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -80,13 +84,23 @@ export function SessionTile({
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const isRunning = session.state === "working" || session.state === "starting";
+  const workflowRunId = workflowRun?.id ?? null;
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
+  const toggleWorkflowExpanded = useCallback(
+    () => setWorkflowExpanded((expanded) => !expanded),
+    [],
+  );
   const setTileRef = useCallback(
     (el: HTMLDivElement | null) => registerEl?.(session.id, el),
     [registerEl, session.id],
   );
-  useEffect(() => setWorkflowExpanded(false), [workflowRun?.id]);
+  useEffect(() => setWorkflowExpanded(false), [workflowRunId]);
+  useEffect(() => {
+    if (!workflowRunId || !registerWorkflowDisclosure) return;
+    registerWorkflowDisclosure(session.id, { toggle: toggleWorkflowExpanded });
+    return () => registerWorkflowDisclosure(session.id, null);
+  }, [registerWorkflowDisclosure, session.id, toggleWorkflowExpanded, workflowRunId]);
 
   const droppable = canAcceptTask(session, draggingRepo);
 

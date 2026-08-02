@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approach 2 - Standing Orders - Mission Control UI exploration</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  :root {
+    --bg:#0a0c0f; --bg-2:#0e1116; --panel:#14181e; --panel-2:#171c23;
+    --border:#232a33; --border-soft:#1b2129;
+    --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798;
+    --working:#4a9eff; --idle:#35c08a; --attention:#f6a733; --danger:#f85149;
+    --exited:#707a88; --neutral:#8b94a3; --purple:#a371f7;
+    --radius:13px;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  body { background:#07090b; color:var(--fg); font-family:var(--sans); font-size:14px; line-height:1.45; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--working); outline-offset:2px; border-radius:4px; }
+  kbd {
+    font-family:var(--mono); font-size:10px; padding:1px 5px;
+    border:1px solid var(--border); border-bottom-width:2px; border-radius:4px;
+    background:var(--panel-2); color:var(--muted); vertical-align:1px;
+  }
+
+  /* ---- proposal chrome ---- */
+  .doc { max-width:1280px; margin:0 auto; padding:42px 24px 4px; }
+  .doc .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.18em; color:var(--dim); text-transform:uppercase; }
+  .doc h1 { font-size:27px; font-weight:650; letter-spacing:-.01em; margin:10px 0 8px; }
+  .doc h1 .num { font-family:var(--mono); font-weight:500; color:var(--working); margin-right:12px; }
+  .doc .stand { color:var(--muted); max-width:74ch; }
+  .doc nav { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; }
+  .doc nav a { font-family:var(--mono); font-size:11px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--border); border-radius:999px; padding:4px 11px; }
+  .doc nav a:hover { color:var(--fg); border-color:var(--dim); }
+  .doc nav a[aria-current] { color:var(--working); border-color:var(--working); }
+
+  .frame { max-width:1280px; margin:26px auto 12px; border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; background:var(--bg); box-shadow:0 30px 80px rgba(0,0,0,.55); }
+
+  /* ---- topbar ---- */
+  .topbar { display:flex; align-items:center; gap:14px; height:46px; padding:0 14px;
+    background:var(--bg-2); border-bottom:1px solid var(--border); }
+  .brand { display:flex; align-items:center; gap:8px; }
+  .brand-mark { width:15px; height:15px; border-radius:4px; flex:none;
+    background:linear-gradient(135deg,var(--working),var(--idle)); }
+  .brand b { font-size:13px; font-weight:600; }
+  .seg { display:flex; border:1px solid var(--border); border-radius:9px; overflow:hidden; }
+  .seg a { font-size:12.5px; padding:5px 13px; text-decoration:none; color:var(--muted); display:flex; gap:7px; align-items:center; }
+  .seg a[aria-current] { background:var(--panel-2); color:var(--fg); font-weight:600; }
+  .tb-spacer { flex:1; }
+  .pulse { font-family:var(--mono); font-size:11px; color:var(--muted); display:flex; gap:9px; align-items:center; }
+  .pulse i { font-style:normal; color:var(--border); }
+  .p-att { color:var(--attention); }
+  .btn { font:inherit; font-size:12.5px; color:var(--fg); background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:5px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .btn:hover { border-color:var(--dim); }
+  .btn.primary { background:var(--working); border-color:var(--working); color:#04121f; font-weight:600; }
+  .btn.decide { background:var(--attention); border-color:var(--attention); color:#1f1403; font-weight:600; }
+  .ghost { background:none; border-color:transparent; color:var(--muted); }
+  .ghost:hover { color:var(--fg); border-color:var(--border); }
+
+  /* ---- the Orders page ---- */
+  .orders { padding:22px 26px 32px; min-height:640px; }
+  .orders-head { display:flex; align-items:baseline; gap:16px; }
+  .orders-head h2 { font-size:19px; font-weight:650; letter-spacing:-.01em; }
+  .orders-sub { color:var(--dim); font-size:12.5px; flex:1; }
+
+  .order { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); margin-top:12px; }
+  .order:hover { border-color:var(--dim); }
+  .order.paused { opacity:.6; }
+  .order-main { display:flex; gap:13px; padding:14px 16px 13px; align-items:flex-start; cursor:pointer; }
+  .odot { width:9px; height:9px; border-radius:50%; margin-top:8px; flex:none; }
+  .od-on { background:var(--idle); animation:pulse 2.2s ease-in-out infinite; }
+  .od-wait { background:var(--attention); }
+  .od-off { background:var(--exited); }
+  @keyframes pulse { 50% { opacity:.35; } }
+  @media (prefers-reduced-motion: reduce) { .od-on { animation:none; } }
+  .order-body { flex:1; min-width:0; }
+  .sentence { font-size:13.5px; font-weight:550; line-height:2; }
+  .arr { color:var(--dim); font-family:var(--mono); margin:0 2px; }
+  .chip { font-family:var(--mono); font-size:10.5px; padding:2px 8px; border-radius:999px;
+    border:1px solid var(--border); white-space:nowrap; font-weight:500; }
+  .chip.wf { color:var(--working); border-color:rgba(74,158,255,.4); background:rgba(74,158,255,.07); }
+  .chip.pe { color:var(--fg); background:var(--panel-2); }
+  .chip.pe i { font-style:normal; color:var(--dim); }
+  .chip.ac { color:var(--purple); border-color:rgba(163,113,247,.45); background:rgba(163,113,247,.08); }
+  .chip.st { color:var(--purple); border-color:rgba(163,113,247,.45); }
+  .chip.nt { color:var(--muted); }
+  .facts { font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:5px; }
+  .facts .att { color:var(--attention); }
+  .facts .ok { color:var(--idle); }
+  .facts .run { color:var(--working); }
+  .order-side { display:flex; align-items:center; gap:14px; flex:none; margin-top:5px; }
+  .chev { color:var(--dim); font-size:12px; }
+
+  /* toggle switch */
+  .toggle { width:34px; height:19px; border-radius:999px; position:relative; flex:none; cursor:pointer;
+    background:rgba(53,192,138,.22); border:1px solid rgba(53,192,138,.5); }
+  .toggle::after { content:""; position:absolute; top:2px; right:2px; width:13px; height:13px;
+    border-radius:50%; background:var(--idle); }
+  .toggle.off { background:var(--panel-2); border-color:var(--border); }
+  .toggle.off::after { right:auto; left:2px; background:var(--exited); }
+
+  /* ---- execution ledger (expanded card) ---- */
+  .ledger { margin:0 16px 15px 38px; border:1px solid var(--border-soft); border-radius:10px;
+    background:var(--bg-2); padding:11px 14px 12px; }
+  .ledger h4 { font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--dim); margin-bottom:4px; }
+  .lrow { display:flex; align-items:center; gap:10px; padding:8px 2px; border-top:1px solid var(--border-soft); cursor:pointer; }
+  .lrow:first-of-type { border-top:0; }
+  .lrow:hover .lopen { color:var(--fg); }
+  .ldot { width:7px; height:7px; border-radius:50%; flex:none; }
+  .ld-att { background:var(--attention); }
+  .ld-run { background:var(--working); }
+  .ld-ok { background:var(--idle); }
+  .lname { font-size:12.5px; font-weight:600; flex:none; }
+  .ldetail { font-family:var(--mono); font-size:10.5px; color:var(--dim); flex:1; min-width:0;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ltime { font-family:var(--mono); font-size:10.5px; color:var(--dim); flex:none; }
+  .lopen { font-family:var(--mono); font-size:10.5px; color:var(--working); flex:none; }
+  .ledger-note { font-family:var(--mono); font-size:10px; color:var(--dim); margin-top:9px;
+    border-top:1px solid var(--border-soft); padding-top:8px; }
+
+  /* ---- vocabulary strip ---- */
+  .vocab { margin-top:20px; border:1px solid var(--border); border-radius:12px; background:var(--bg-2);
+    padding:12px 16px; display:flex; align-items:center; gap:20px; flex-wrap:wrap; }
+  .vocab .eyebrow { font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); }
+  .v-item { font-family:var(--mono); font-size:11.5px; color:var(--muted); display:inline-flex; gap:7px; align-items:baseline; }
+  .v-item b { color:var(--fg); font-weight:600; }
+  .v-item a { color:var(--working); text-decoration:none; }
+  .v-item a:hover { text-decoration:underline; }
+  .v-hint { margin-left:auto; font-size:11.5px; color:var(--dim); }
+
+  /* ---- notes ---- */
+  .notes { max-width:1280px; margin:10px auto 64px; padding:0 24px;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; }
+  .note { border:1px solid var(--border-soft); border-radius:10px; padding:11px 13px;
+    background:var(--bg-2); font-size:12.5px; color:var(--muted); }
+  .note b { color:var(--fg); font-weight:600; }
+  .note .n { font-family:var(--mono); color:var(--working); margin-right:7px; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="eyebrow">Mission Control - UI exploration - automation prominence, round 2</div>
+  <h1><span class="num">2/3</span>Standing Orders: the rules you have delegated</h1>
+  <p class="stand">
+    The reframe: automation is not a set of pages, it is a set of promises the operator has made to the
+    machinery. One surface lists every rule Mission Control may act on without you, written as a full
+    sentence - trigger, procedure, outcome. Workflows, Personas and Actions become the vocabulary inside
+    the sentences; runs and ensemble decisions become each order's execution ledger, attached to the rule
+    that caused them. Nothing is hidden, because everything the app will ever do on its own is on this one
+    page, in plain language, with a pause switch.
+  </p>
+  <nav aria-label="Approaches">
+    <a href="index.html">Index</a>
+    <a href="1-library-line.html">1 Library + Line</a>
+    <a href="2-standing-orders.html" aria-current="page">2 Standing Orders</a>
+    <a href="3-threads.html">3 Threads</a>
+  </nav>
+</header>
+
+<div class="frame">
+  <div class="topbar">
+    <div class="brand"><span class="brand-mark"></span><b>Mission Control</b></div>
+    <div class="seg" role="navigation" aria-label="Pages">
+      <a href="#">▦ Fleet <kbd>1</kbd></a>
+      <a href="#" aria-current="page">⚖ Orders <kbd>o</kbd></a>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="pulse">12 sessions <i>·</i> <b class="p-att">2 need you</b> <i>·</i> 5 working</div>
+    <button class="btn ghost">📡 <kbd>r</kbd></button>
+    <button class="btn ghost">⚙</button>
+    <button class="btn primary">＋ Dispatch <kbd>+</kbd></button>
+  </div>
+
+  <div class="orders">
+    <div class="orders-head">
+      <h2>Standing Orders</h2>
+      <span class="orders-sub">Everything Mission Control may do without you. Sentences, not settings.</span>
+      <button class="btn ghost">＋ New order</button>
+    </div>
+
+    <!-- 1 · review order, expanded -->
+    <div class="order" aria-expanded="true">
+      <div class="order-main" role="button" tabindex="0">
+        <span class="odot od-on"></span>
+        <div class="order-body">
+          <div class="sentence">
+            When Foreman completes a task on a bound session <span class="arr">→</span>
+            run <span class="chip wf">⌁ No-Mistakes Review v8</span> <span class="arr">→</span>
+            loop repairs until <span class="chip pe"><i>❝</i> Code Risk Reviewer</span>
+            <span class="chip pe"><i>❝</i> Test Evidence Auditor</span>
+            <span class="chip pe"><i>❝</i> Intent Conformance Judge</span>
+            <span class="chip pe"><i>❝</i> Documentation Steward</span> all pass <span class="arr">→</span>
+            have the session <span class="chip ac">▤ Open a pull request</span> <span class="arr">→</span>
+            Inspector gates the merge.
+          </div>
+          <div class="facts"><span class="run">2 executing now</span> · 41 executions · last: <span class="ok">passed</span>, 4m ago</div>
+        </div>
+        <div class="order-side">
+          <span class="toggle" role="switch" aria-checked="true" tabindex="0" aria-label="Order active"></span>
+          <span class="chev">▾</span>
+        </div>
+      </div>
+      <div class="ledger" aria-label="Executions of this order">
+        <h4>Executions</h4>
+        <div class="lrow" role="button" tabindex="0">
+          <span class="ldot ld-att"></span><span class="lname">pane-fix</span>
+          <span class="ldetail">round 2/3 · Pull Request action waiting on session</span>
+          <span class="ltime">8m</span><span class="lopen">open →</span>
+        </div>
+        <div class="lrow" role="button" tabindex="0">
+          <span class="ldot ld-run"></span><span class="lname">issue-412</span>
+          <span class="ldetail">round 1 · checks passed · Code Risk Reviewer running</span>
+          <span class="ltime">2m</span><span class="lopen">open →</span>
+        </div>
+        <div class="lrow" role="button" tabindex="0">
+          <span class="ldot ld-ok"></span><span class="lname">flaky-tests</span>
+          <span class="ldetail">passed · PR #238 merged</span>
+          <span class="ltime">yesterday</span><span class="lopen">open →</span>
+        </div>
+        <div class="ledger-note">This order's history IS the Runs view - filtered to the rule that caused it.</div>
+      </div>
+    </div>
+
+    <!-- 2 · ensemble decision order -->
+    <div class="order">
+      <div class="order-main" role="button" tabindex="0">
+        <span class="odot od-wait"></span>
+        <div class="order-body">
+          <div class="sentence">
+            When I dispatch with <span class="chip st">⧉ Best of N</span> <span class="arr">→</span>
+            race N agents from one pinned commit <span class="arr">→</span>
+            judges rank the candidates <span class="arr">→</span>
+            hold everything until I decide.
+          </div>
+          <div class="facts"><span class="att">1 waiting on you</span> · Best of 3 · refactor-discovery · 22m · A recommended</div>
+        </div>
+        <div class="order-side">
+          <button class="btn decide">Decide →</button>
+          <span class="chev">▸</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3 · mission order -->
+    <div class="order">
+      <div class="order-main" role="button" tabindex="0">
+        <span class="odot od-on"></span>
+        <div class="order-body">
+          <div class="sentence">
+            Every Monday 08:00 <span class="arr">→</span>
+            file <span class="chip nt">◷ Dependency audit</span> into the backlog. Never dispatches an agent.
+          </div>
+          <div class="facts">next in 3d · last filed task: <span class="ok">merged</span></div>
+        </div>
+        <div class="order-side">
+          <span class="toggle" role="switch" aria-checked="true" tabindex="0" aria-label="Order active"></span>
+          <span class="chev">▸</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4 · source order -->
+    <div class="order">
+      <div class="order-main" role="button" tabindex="0">
+        <span class="odot od-on"></span>
+        <div class="order-body">
+          <div class="sentence">
+            When <span class="chip nt">⇊ mancej/ai-harness</span> has a new open issue <span class="arr">→</span>
+            file it as a task. Never dispatches an agent.
+          </div>
+          <div class="facts">swept 4m ago · filed 2 this week</div>
+        </div>
+        <div class="order-side">
+          <span class="toggle" role="switch" aria-checked="true" tabindex="0" aria-label="Order active"></span>
+          <span class="chev">▸</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5 · paused order -->
+    <div class="order paused">
+      <div class="order-main" role="button" tabindex="0">
+        <span class="odot od-off"></span>
+        <div class="order-body">
+          <div class="sentence">
+            When a session sits idle 30 minutes with queued work <span class="arr">→</span>
+            nudge it with the next task.
+          </div>
+          <div class="facts">paused by you, 3d ago · fired 12 times before that</div>
+        </div>
+        <div class="order-side">
+          <span class="toggle off" role="switch" aria-checked="false" tabindex="0" aria-label="Order paused"></span>
+          <span class="chev">▸</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="vocab" aria-label="Vocabulary">
+      <span class="eyebrow">The vocabulary the sentences use</span>
+      <span class="v-item">⌁ Workflows <b>2</b> · <a href="#">edit</a></span>
+      <span class="v-item">❝ Personas <b>6</b> · <a href="#">edit</a></span>
+      <span class="v-item">▤ Actions <b>3</b> · <a href="#">edit</a></span>
+      <span class="v-item">⧉ Strategies <b>3</b></span>
+      <span class="v-hint">Authoring lives one click behind the words themselves.</span>
+    </div>
+  </div>
+</div>
+
+<section class="notes" aria-label="Design notes">
+  <div class="note"><span class="n">01</span><b>The sentence IS the purpose.</b> Nobody needs a tooltip explaining
+    what a workflow is for when it only ever appears mid-sentence between its trigger and its outcome. The noun
+    survives as a chip; the meaning is the grammar around it.</div>
+  <div class="note"><span class="n">02</span><b>Runs re-homed as ledgers.</b> A run is the receipt of a promise
+    kept. Attaching execution history to the order that caused it answers "why did this run happen" for free -
+    the global Runs tab becomes a per-order filter.</div>
+  <div class="note"><span class="n">03</span><b>Trust is the organizing axis.</b> The page doubles as the app's
+    consent surface: every order has a pause switch, and the paused state is as legible as the active one.
+    Prominence and blast-radius control become the same feature.</div>
+  <div class="note"><span class="n">04</span><b>Cost: the biggest conceptual lift of the three.</b> Orders must
+    unify four existing mechanisms (schedules, task sources, binding trigger modes, dispatch defaults) behind one
+    abstraction, and manual one-off launches still need a home outside it. An order model that is only a view over
+    those systems risks lying; one that replaces them is a real migration.</div>
+</section>
+
+</body>
+</html>

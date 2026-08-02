@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Library and the Line - phased implementation</title>
+<style>
+  :root {
+    --bg:#ffffff; --fg:#1a2027; --muted:#57606a; --dim:#6e7781; --border:#d0d7de; --soft:#f6f8fa;
+    --accent:#0969da; --ok:#1a7f37; --warn:#9a6700; --machinery:#8250df;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0a0c0f; --fg:#e7ebf1; --muted:#939eae; --dim:#7c8798; --border:#232a33; --soft:#14181e;
+      --accent:#4a9eff; --ok:#35c08a; --warn:#f6a733; --machinery:#a371f7;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0 auto; max-width:920px; padding:48px 24px 96px; background:var(--bg); color:var(--fg);
+    font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  h1 { font-size:26px; letter-spacing:-.015em; margin:0 0 6px; }
+  h2 { font-size:19px; margin:36px 0 10px; letter-spacing:-.01em; }
+  p, li { color:var(--muted); }
+  b, strong { color:var(--fg); }
+  a { color:var(--accent); }
+  code { font-family:var(--mono); font-size:.86em; background:var(--soft); border:1px solid var(--border);
+    border-radius:5px; padding:1px 5px; }
+  .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); }
+  ul, ol { padding-left:22px; }
+  li { margin:5px 0; }
+  .tablewrap { overflow-x:auto; border:1px solid var(--border); border-radius:10px; margin:12px 0; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; min-width:560px; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
+  tr:last-child td { border-bottom:0; }
+  th { font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim);
+    font-weight:500; background:var(--soft); }
+  td { color:var(--muted); }
+  td:first-child { color:var(--fg); font-weight:600; white-space:nowrap; }
+  .figure { border:1px solid var(--border); border-radius:10px; background:var(--soft); padding:16px; margin:14px 0; overflow-x:auto; }
+  .figcap { font-family:var(--mono); font-size:11px; color:var(--dim); margin-top:8px; }
+  svg text { font-family:var(--mono); font-size:11.5px; fill:var(--fg); }
+  svg .sub { fill:var(--dim); font-size:9.5px; }
+  svg .box { fill:var(--bg); stroke:var(--border); rx:8; }
+  svg .grp { fill:none; stroke:var(--accent); stroke-dasharray:4 4; rx:12; opacity:.55; }
+  svg .arrow { stroke:var(--dim); stroke-width:1.4; fill:none; marker-end:url(#ah2); }
+  svg .lbl { fill:var(--dim); font-size:9.5px; }
+</style>
+</head>
+<body>
+
+<div class="eyebrow">Mission Control - phased plan - docs/plans/library-and-line</div>
+<h1>The Library and the Line - phased implementation</h1>
+<p>Source plan: <code>plan.md</code> (rendered: <code>plan.html</code>). The operator's submitted
+decisions are recorded there as requirements; the follow-up decision was "create phased
+implementation plan, schedule the phases, PR the artifacts, merge on green CI".</p>
+
+<h2>Incorporated decisions</h2>
+<ol>
+  <li>One product: Library (authoring home) + Line (execution surface on the Fleet).</li>
+  <li>Runs and Ensembles re-home to <code>#/runs</code> and <code>#/ensembles</code>; never Library
+    shelves. Strategy launchers shelve in the Library.</li>
+  <li>Session cards unchanged in data, layout, and size, in every state.</li>
+  <li>UsageBar row retired for a cost chip + spend popover; <code>FleetCost</code> unchanged.</li>
+  <li>Drawers: toggle semantics, hard cap of three rows (~38vh), internal scroll, board pushes
+    down and returns.</li>
+  <li>The everything-palette is the final phase.</li>
+</ol>
+
+<h2>Investigated findings</h2>
+<ul>
+  <li><code>MissionRoute</code> is the single router union (<code>useWorkflowRoute.ts</code>);
+    <code>workflowsToggleRoute</code> implements the page-toggle chord with guards. New pages extend
+    this union.</li>
+  <li><code>App.tsx</code> renders the <code>UsageBar</code> second row delegating to
+    <code>FleetStrip.tsx</code>; fold state persists via <code>usageBar.ts</code>.</li>
+  <li><code>useEventStream.ts</code> handles every <code>ServerEvent</code> exhaustively;
+    <code>cost_fleet</code> is the precedent for a server-computed, change-gated
+    <code>line_summary</code> event (registry folds ~<code>registry.ts:3779</code>).</li>
+  <li>Drawer building blocks exist: runs (<code>run-model.ts</code>, <code>pipeline-bits.tsx</code>,
+    <code>WorkflowLadder.tsx</code>) and ensembles (<code>ENSEMBLE_RESULT_RENDERERS</code>,
+    <code>DecisionPanel.tsx</code>).</li>
+  <li><code>⌘K</code> today searches settings only (<code>settings-search.ts</code>).</li>
+  <li>e2e specs select by role/label/placeholder with fake agents; Electron geometry tests measure
+    fleet height on macOS.</li>
+  <li>Discrepancy noted: mockup topbar filter and sample counts are illustrative; phases bind to
+    contracts, not sample data.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Cost chip and spend popover</td><td><code>phase-1-cost-chip.md</code></td><td>none</td></tr>
+    <tr><td>2</td><td>The Library page</td><td><code>phase-2-library-page.md</code></td><td>none</td></tr>
+    <tr><td>3</td><td>Line strip and fold event</td><td><code>phase-3-line-strip.md</code></td><td>none</td></tr>
+    <tr><td>4</td><td>Drawers and re-homing</td><td><code>phase-4-drawers-and-rehoming.md</code></td><td>2, 3</td></tr>
+    <tr><td>5</td><td>The everything-palette</td><td><code>phase-5-everything-palette.md</code></td><td>4</td></tr>
+  </tbody>
+</table></div>
+
+<h2>Dependency graph and concurrency</h2>
+<div class="figure">
+<svg viewBox="0 0 780 190" width="780" height="190" role="img" aria-label="Phase dependency graph">
+  <defs>
+    <marker id="ah2" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 z" fill="#7c8798"/>
+    </marker>
+  </defs>
+  <rect class="grp" x="10" y="12" width="240" height="166"/>
+  <text class="lbl" x="22" y="30">concurrency group A</text>
+  <rect class="box" x="30" y="44"  width="200" height="34"/>
+  <text x="130" y="65" text-anchor="middle">P1 cost chip</text>
+  <rect class="box" x="30" y="88"  width="200" height="34"/>
+  <text x="130" y="109" text-anchor="middle">P2 library page</text>
+  <rect class="box" x="30" y="132" width="200" height="34"/>
+  <text x="130" y="153" text-anchor="middle">P3 line strip</text>
+  <rect class="box" x="360" y="88" width="220" height="44"/>
+  <text x="470" y="107" text-anchor="middle">P4 drawers + re-homing</text>
+  <text x="470" y="122" text-anchor="middle" class="sub">needs P2 + P3</text>
+  <rect class="box" x="640" y="93" width="130" height="34"/>
+  <text x="705" y="114" text-anchor="middle">P5 palette</text>
+  <path class="arrow" d="M230 105 H354"/>
+  <path class="arrow" d="M230 149 C 300 149, 320 125, 354 116"/>
+  <path class="arrow" d="M580 110 H634"/>
+</svg>
+<div class="figcap">P1 gates nothing. P1, P2, P3 run concurrently; P4 after P2 and P3; P5 after P4.</div>
+</div>
+<ul>
+  <li><b>Group A (P1, P2, P3):</b> mutually independent. P1 owns the topbar's right side, P2 the
+    topbar's left segment and the router union, P3 the fleet content area and the new SSE event.
+    The only shared file is <code>App.tsx</code>, in disjoint regions; merge in any order.</li>
+  <li><b>P4</b> needs P2 (a destination for the retiring authoring tabs) and P3 (a strip to hang
+    drawers from).</li>
+  <li><b>P5</b> needs P4 directly; P2 and P3 arrive transitively.</li>
+</ul>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+  <li><b>Routes:</b> P2 owns <code>#/library</code>; P4 owns <code>#/runs</code>,
+    <code>#/ensembles</code>, and permanent <code>#/workflows/*</code> redirects; P5 navigates only
+    to published routes.</li>
+  <li><b>Event:</b> P3 owns <code>line_summary</code> / <code>LineSummary</code> in
+    <code>src/shared/</code> (append-only); P4 consumes for drawers; P5 reads the store.</li>
+  <li><b>Cost:</b> P1 owns the chip + popover; P3 reuses <code>FleetCost.prsToday</code> on the
+    Shipped stage without new wire contracts.</li>
+  <li><b>Interim state:</b> after P2 and before P4, the Workflows page is a valid two-tab
+    execution page (runs, ensembles).</li>
+  <li><b>Keyboard:</b> P2 retargets the page toggle; P4 adds fleet-scoped drawer <code>esc</code>;
+    P5 owns <code>⌘K</code>.</li>
+</ul>
+
+<h2>Final verification</h2>
+<p>After P5: <code>npm run typecheck && npm run lint && npm test</code>,
+<code>npm run build && npm run smoke</code>, <code>npm run test:e2e</code> (all phase specs),
+<code>npm run test:electron</code> on macOS. Manual pass against the mockups: two homes, drawer
+semantics (cap, scroll, close paths), every legacy deep-link redirect, cost chip parity with the
+retired FleetStrip, README matching every shipped surface.</p>
+
+</body>
+</html>

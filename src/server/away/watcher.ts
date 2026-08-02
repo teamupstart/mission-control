@@ -2,7 +2,7 @@ import { envVar } from "../config.ts";
 import { unref } from "../util/timers.ts";
 import { detectAlerts, stuckAlert } from "@shared/alerts.ts";
 import type { AlertScope } from "@shared/alerts.ts";
-import { detectStalls, trackParked } from "@shared/stall.ts";
+import { detectStalls } from "@shared/stall.ts";
 import type { Stall } from "@shared/stall.ts";
 import {
   closeBuffer,
@@ -97,8 +97,6 @@ export function startAwayWatcher(
   /** The `awaySince` the buffer was opened for, so a NEW away window starts fresh. */
   let bufferedSince: number | null = null;
   /** When each parked gate was first seen parked - the gate rule's only honest clock. */
-  let parked = new Map<string, number>();
-
   /** Close the open window into `pending`. Idempotent - a second call is a no-op. */
   const closeWindow = (): void => {
     if (buffer === null) return;
@@ -118,12 +116,8 @@ export function startAwayWatcher(
       const t = now();
       const snap = registry.snapshot();
 
-      // Tracked even when detection is off, so switching it on doesn't date every
-      // parked gate from the moment of the switch.
-      parked = trackParked(parked, snap.sessions, t);
-
       stalls = cfg.detectStalls
-        ? detectStalls(snap.sessions, t, stallThresholds(cfg), parked)
+        ? detectStalls(snap.sessions, t, stallThresholds(cfg))
         : [];
 
       const scope: AlertScope = {

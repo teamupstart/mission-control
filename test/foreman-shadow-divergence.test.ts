@@ -55,7 +55,6 @@ function ctxFor(p: Pending, menu: ReviewContext["menu"] = null): ReviewContext {
     promptMarker: p.marker,
     inputReviewId: p.inputReviewId,
     canSend: p.canSend,
-    gate: p.gate ?? null,
     menu,
   };
 }

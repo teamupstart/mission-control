@@ -11,20 +11,7 @@ import { meta, mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fix
 import { AGENT_TYPES } from "../src/shared/types.ts";
 import { AGENT_IDENTITY } from "../src/shared/agent.ts";
 import { DispatchSchema, UpdateTaskSchema } from "../src/shared/protocol.ts";
-import type { NmFixSummary, OrphanedQueueHint, Session } from "../src/shared/types.ts";
-
-const FIX: NmFixSummary = {
-  sha: "abc1234",
-  step: "lint",
-  summary: "drop unused import",
-  committedAt: 0,
-  filesChanged: 1,
-  added: 0,
-  removed: 1,
-  decision: null,
-  repliedBy: null,
-  findingCount: 1,
-};
+import type { OrphanedQueueHint, Session } from "../src/shared/types.ts";
 
 const ORPHAN: OrphanedQueueHint = { noteKey: "k", itemCount: 2, branch: "harness/x" };
 
@@ -69,7 +56,6 @@ test("a visible change emits", () => {
     { activity: "something else" },
     { permissionMode: "plan" },
     { pendingReviews: 3 },
-    { nomistakesNarration: "running tests" },
     { prUrl: "https://example.test/pr/1" },
     { prNumber: 1 },
     { prState: "open" },
@@ -95,9 +81,7 @@ test("nested summaries are compared structurally", () => {
   const base = mkSession({ queue: null, orphanedQueue: null });
   // Same shape, different object identity: equal, or every poll would re-emit.
   assert.equal(sessionEqual(base, mkSession({ queue: null, orphanedQueue: null })), true);
-  assert.equal(sessionEqual(mkSession(), mkSession({ nomistakes: null })), false);
   assert.equal(sessionEqual(mkSession(), mkSession({ goal: null })), false);
-  assert.equal(sessionEqual(mkSession(), mkSession({ nomistakesFixes: [FIX] })), false);
   assert.equal(
     sessionEqual(
       mkSession(),

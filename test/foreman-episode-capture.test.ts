@@ -43,7 +43,6 @@ function ctxFor(p: Pending, menu: ReviewContext["menu"] = MENU): ReviewContext {
     promptMarker: p.marker,
     inputReviewId: p.inputReviewId,
     canSend: p.canSend,
-    gate: p.gate ?? null,
     menu,
   };
 }
@@ -169,23 +168,6 @@ test("a draft Foreman was not cleared to send records no author", () => {
   assert.equal(ep.recommendation, "Use SQLite.", "the draft itself is still kept");
 });
 
-test("a parked gate records the framed question, and no pane is lost to the surface", () => {
-  const pending = terminalPending({
-    situation: "gate-parked",
-    question: "The no-mistakes run on main is parked at the \"review\" gate.",
-    marker: "gate:r7:review:abc",
-    gate: { runId: "r7", step: "review", findingIds: ["F-1"] },
-  });
-  const ctx = ctxFor(pending, null);
-  const v = verdict();
-  const plan = planFromVerdict(v, ctx, false);
-  const ep = episodeFromPlan({ pending, ctx, pane: PANE, verdict: v, tier: 2, plan });
-
-  assert.equal(ep.situation, "gate-parked");
-  assert.equal(ep.surface, "terminal");
-  assert.equal(ep.pane, PANE, "a gate is a terminal surface, so its screen is kept");
-  assert.ok(ep.question.includes("parked"));
-});
 
 test("the tier that produced the verdict is recorded, cheap tier included", () => {
   const pending = terminalPending();

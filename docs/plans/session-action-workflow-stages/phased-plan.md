@@ -17,10 +17,6 @@ The source plan records three approved decisions. They are requirements for ever
 3. Inspector remains the immutable post-End completion policy. Pipeline and run surfaces render it
    as a fixed footer stage, but Graph view and the persisted graph gain no Inspector node.
 
-The planning session also explicitly excludes the no-mistakes validation workflow from shipping
-these artifacts. Each implementation phase still runs the repository checks named in its own
-verification section.
-
 ## Investigated findings that determine the split
 
 ### One submission currently means one repair round and one evidence snapshot
@@ -46,7 +42,7 @@ discriminated union and adds an append-only `complete` port. It must not coerce 
 
 `WorkflowManager.preparePr`, `renderPrHandoff`, the `pr_handoff` delivery kind, required-skill
 resolution, delivery consent, uncertain-write handling, and Inspector PR provenance already serve
-No-Mistakes versions 5 through 7. Phase 4 extracts reusable mechanics but preserves that entry path
+No-Mistakes Review versions 5 through 7. Phase 4 extracts reusable mechanics but preserves that entry path
 for every pinned legacy version. The new built-in action uses a new generic action delivery linked
 to a node attempt; historical `pr_handoff` rows and recovery remain readable.
 
@@ -78,7 +74,7 @@ flowchart LR
   P[Planning artifacts merged] --> A[Phase 1: catalog and graph foundation]
   A --> B[Phase 2: durable execution and continuations]
   B --> C[Phase 3: authoring and run experience]
-  C --> D[Phase 4: Pull Request and No-Mistakes v8]
+  C --> D[Phase 4: Pull Request and No-Mistakes Review v8]
 ```
 
 ## Scheduled Mission Control tasks
@@ -155,7 +151,7 @@ Phase 3 must display them, not reinterpret them.
 
 - built-in SessionActions are compiled app data, not seeded rows;
 - workflow versions snapshot actions and never consult mutable action text at runtime;
-- No-Mistakes versions 1 through 7 remain byte-compatible and keep their legacy post-End PR
+- No-Mistakes Review versions 1 through 7 remain byte-compatible and keep their legacy post-End PR
   preparation behavior;
 - version 8 alone adds the Pull Request graph stage and changes its missing-PR policy to `wait`;
 - Inspector remains the only PR review poller and remains outside persisted graphs.

@@ -718,8 +718,8 @@
         color: var(--idle);
       }
 
-      /* The no-mistakes strip, verbatim, for the reference panel. */
-      .nm-strip {
+      /* The workflow ladder, verbatim, for the reference panel. */
+      .review-strip {
         display: flex;
         flex-direction: column;
         gap: 7px;
@@ -729,18 +729,18 @@
         background: color-mix(in oklab, var(--idle) 5%, var(--bg-2));
         font-size: 12px;
       }
-      .nm-head {
+      .review-head {
         display: flex;
         align-items: center;
         gap: 8px;
       }
-      .nm-brand {
+      .review-brand {
         color: var(--idle);
         font-weight: 620;
         font-size: 11px;
         letter-spacing: 0.02em;
       }
-      .nm-status {
+      .review-status {
         font-size: 11px;
         font-weight: 560;
         padding: 1px 7px;
@@ -748,59 +748,59 @@
         color: var(--muted);
         background: color-mix(in oklab, var(--neutral) 14%, transparent);
       }
-      .nm-status-running {
+      .review-status-running {
         color: var(--working);
         background: color-mix(in oklab, var(--working) 15%, transparent);
       }
-      .nm-summary {
+      .review-summary {
         margin-left: auto;
         color: var(--muted);
         font-size: 11px;
         font-weight: 520;
       }
-      .nm-elapsed {
+      .review-elapsed {
         display: flex;
         align-items: baseline;
         gap: 5px;
         font-size: 11.5px;
         color: var(--muted);
       }
-      .nm-elapsed-glyph {
+      .review-elapsed-glyph {
         color: var(--working);
         font-size: 10.5px;
       }
-      .nm-elapsed-time {
+      .review-elapsed-time {
         color: var(--fg);
         font-weight: 560;
         font-variant-numeric: tabular-nums;
       }
-      .nm-stage {
+      .review-stage {
         font-size: 11.5px;
         color: var(--muted);
         line-height: 1.35;
       }
-      .nm-stage strong {
+      .review-stage strong {
         color: var(--fg);
         font-weight: 600;
       }
-      .nm-pipe {
+      .review-pipe {
         display: flex;
         gap: 4px;
         align-items: center;
       }
-      .nm-dot {
+      .review-dot {
         width: 12px;
         height: 6px;
         border-radius: 3px;
         background: var(--dim);
       }
-      .nm-done {
+      .review-done {
         background: var(--idle);
       }
-      .nm-run {
+      .review-run {
         background: var(--working);
       }
-      .nm-pending {
+      .review-pending {
         background: color-mix(in oklab, var(--dim) 60%, transparent);
       }
 
@@ -1108,7 +1108,7 @@
 
       /* --- the rail: one segment per stage, plus a separated terminal gate segment.
              Full width rather than the strip's 12px dots, matching what a board tile
-             already draws for a no-mistakes run. --- */
+             already draws for a workflow run. --- */
       .wf-rail {
         display: flex;
         align-items: center;
@@ -1196,7 +1196,7 @@
         color: #ff7b72;
       }
 
-      /* Requested changes, in the shape `.nm-findings` uses for findings. */
+      /* Requested changes, in the shape `.review-findings` uses for findings. */
       .wf-changes {
         list-style: none;
         margin: 0;
@@ -1639,7 +1639,7 @@
         <p class="mk-eyebrow">Mission Control &middot; design options</p>
         <h1>Showing a bound workflow, as it executes, on the card</h1>
         <p class="mk-lede">
-          A no-mistakes run gets a whole embedded strip on the card: a named stage, a segmented
+          A workflow run gets a whole embedded strip on the card: a named stage, a segmented
           rail, a ticking clock, findings and the buttons to answer a gate. A bound
           <strong>workflow</strong> run gets one pill in the header that says
           <code>Preview &middot; R2</code>, and everything else lives two clicks away on the Runs
@@ -1686,7 +1686,7 @@
         </div>
         <div class="mk-prose">
           <p>
-            The asymmetry is the whole brief. On the left, a no-mistakes run: you can tell from
+            The asymmetry is the whole brief. On the left, a workflow run: you can tell from
             across the room which step it is on, how far through it is, and how long it has been
             there. On the right, a workflow run in an identical situation: a pill.
           </p>
@@ -1694,8 +1694,8 @@
         <div class="mk-deck">
           <div class="mk-slot">
             <span class="mk-slot-label"
-              ><b>Shipped</b> no-mistakes strip
-              <span class="mk-slot-note">NomistakesStrip.tsx</span></span
+              ><b>Shipped</b> workflow ladder
+              <span class="mk-slot-note">workflow ladder</span></span
             >
             <article class="card tone-working" style="--agent-accent: #d97757">
               <header class="card-head">
@@ -1707,26 +1707,26 @@
                 <span class="badge badge-working"><span class="badge-dot"></span>working</span>
               </header>
               <p class="activity">running Bash</p>
-              <div class="nm-strip">
-                <div class="nm-head">
-                  <span class="nm-brand">&#9671; no-mistakes</span>
-                  <span class="nm-status nm-status-running">running</span>
-                  <span class="nm-summary">1 auto-fix</span>
+              <div class="review-strip">
+                <div class="review-head">
+                  <span class="review-brand">&#9671; workflow review</span>
+                  <span class="review-status review-status-running">running</span>
+                  <span class="review-summary">1 auto-fix</span>
                 </div>
-                <div class="nm-elapsed">
-                  <span class="nm-elapsed-glyph">&#9719;</span>
+                <div class="review-elapsed">
+                  <span class="review-elapsed-glyph">&#9719;</span>
                   <span>running for</span>
-                  <span class="nm-elapsed-time mono">14m02s</span>
+                  <span class="review-elapsed-time mono">14m02s</span>
                 </div>
-                <div class="nm-stage">
-                  <strong>ci</strong><span class="nm-stage-pos"> &middot; step 9 of 9</span>
+                <div class="review-stage">
+                  <strong>ci</strong><span class="review-stage-pos"> &middot; step 9 of 9</span>
                 </div>
-                <div class="nm-pipe">
-                  <span class="nm-dot nm-done"></span><span class="nm-dot nm-done"></span
-                  ><span class="nm-dot nm-done"></span><span class="nm-dot nm-done"></span
-                  ><span class="nm-dot nm-done"></span><span class="nm-dot nm-done"></span
-                  ><span class="nm-dot nm-done"></span><span class="nm-dot nm-done"></span
-                  ><span class="nm-dot nm-run"></span>
+                <div class="review-pipe">
+                  <span class="review-dot review-done"></span><span class="review-dot review-done"></span
+                  ><span class="review-dot review-done"></span><span class="review-dot review-done"></span
+                  ><span class="review-dot review-done"></span><span class="review-dot review-done"></span
+                  ><span class="review-dot review-done"></span><span class="review-dot review-done"></span
+                  ><span class="review-dot review-run"></span>
                 </div>
               </div>
               <footer class="card-foot">
@@ -1781,14 +1781,14 @@
           <div>
             <h2>Gate rail</h2>
             <p class="mk-sub">
-              The no-mistakes shape, applied verbatim, with the Inspector as its own segment.
+              The workflow ladder, applied verbatim, with the Inspector as its own segment.
             </p>
           </div>
         </div>
         <div class="mk-prose">
           <p>
             One segment per <strong>stage</strong>, full width, exactly as a board tile already
-            draws a no-mistakes run. Above it, the stage name and position; below it, one line of
+            draws a workflow run. Above it, the stage name and position; below it, one line of
             why. The move that makes this more than a copy is the
             <strong>terminal gate segment</strong>: the Inspector wait is drawn as a place in the
             pipeline, set off by a hairline, rather than as a sentence underneath. A run parked at
@@ -2100,7 +2100,7 @@
               sessions by id in <code>App.tsx</code>).
             </li>
             <li>
-              Reuses the vocabulary an operator already learned from no-mistakes. Nothing new to
+              Reuses the vocabulary an operator already learned from the workflow ladder. Nothing new to
               teach.
             </li>
             <li>
@@ -2511,7 +2511,7 @@
         </div>
         <div class="mk-prose">
           <p>
-            A no-mistakes run is a line: nine steps, one direction, done. A workflow run is a
+            A workflow run is a line: nine steps, one direction, done. A workflow run is a
             <strong>loop</strong>. Any fail returns the submission to the session and the whole
             pipeline runs again, up to <code>maxRepairRounds</code>. A and B both draw the loop as
             if it were a line and put the round in a corner.

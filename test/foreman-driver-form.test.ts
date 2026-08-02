@@ -220,7 +220,6 @@ test("a form is delivered through submit-options, and only a delivered one stamp
     selectOption: async () => (calls.push("selectOption"), {}),
     submitForm: async (_id, answers) => (calls.push("submitForm"), submitted.push(answers), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
-    logGateReply: async () => (calls.push("logGateReply"), {}),
   };
   const c = ctx({ menu: FORM });
   const plan = planFromVerdict(verdict({ "Which key?": "By URL", "Evict how?": ["TTL"] }), c, true);
@@ -247,7 +246,6 @@ test("a refused submission leaves the session unanswered and retryable", async (
       throw new Error("this form no longer asks that");
     },
     resolveReview: async () => ({}),
-    logGateReply: async () => ({}),
   };
   const c = ctx({ menu: FORM });
   const plan = planFromVerdict(verdict({ "Which key?": "By URL", "Evict how?": ["TTL"] }), c, true);

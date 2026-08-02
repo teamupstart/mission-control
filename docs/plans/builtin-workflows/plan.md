@@ -5,9 +5,8 @@ Status: **decisions adopted 2026-07-26**
 ## The question under review
 
 Four built-in Personas ship today (PR #270). They were authored to compose into one specific
-graph, and the README says so: "The four are written to compose as the example workflow in
-`docs/plans/no-mistakes-workflow-mapping/plan.md`." That workflow exists only as prose and a
-Mermaid block. A fresh install therefore has four ready review roles and **zero workflows**,
+graph, but that workflow exists only as prose and a Mermaid block. A fresh install therefore
+has four ready review roles and **zero workflows**,
 so the canonical pipeline is an authoring gesture every operator has to perform by hand,
 correctly, from a document they have not read.
 
@@ -85,19 +84,9 @@ published until an operator wires it, which is exactly the gap this plan closes.
 
 ### The delivery tail already exists
 
-`completionPolicy: { kind: "inspector", ... }` gates a passed graph on an adopted PR at the
-reviewed head. `restart_workflow` requires a full resubmission that reruns every Persona;
-`missingPrAction: "offer_prepare_pr"` surfaces the **Prepare PR in session** action. Between
-them these reproduce no-mistakes' `pr` and `ci` steps without the workflow engine ever
-calling git or GitHub, which `AGENTS.md` requires ("PR provenance is two signals").
+## Relationship to the earlier design
 
-## Relationship to the earlier plan
-
-`docs/plans/no-mistakes-workflow-mapping/plan.md` is the approved gate-by-gate mapping and
-remains the reference for **why** each no-mistakes step does or does not become a node. This
-plan supersedes exactly one of its adopted decisions.
-
-That plan's adopted decision 2 reads:
+The earlier design left deterministic test and lint command gates outside the graph:
 
 > **Deterministic test/lint command gates**: leave outside the graph. CI enforces them at the
 > PR head; the Inspector final gate makes them binding. No check-node kind is planned.
@@ -110,7 +99,7 @@ cost of the alternative. Deferring every deterministic check to CI means a repai
 pass all four judges and only then discover that the branch does not compile, which spends
 four model calls to learn what one exit code would have said first.
 
-Its other three decisions stand unchanged, and this plan depends on them:
+Its other decisions stand unchanged, and this plan depends on them:
 
 - The four-Persona set is final. No fifth judging role is added here.
 - The ship tail stays with the Inspector final gate and the existing PR wrap-up. No
@@ -208,26 +197,6 @@ two distinct Persona predecessors on the Join, every cycle passing through Sessi
 reachable End. It is also expressible as a **stage pipeline**, so it renders in the Pipeline
 editor rather than forcing Graph view.
 
-### How it maps back to no-mistakes
-
-| no-mistakes step | Where it lands here |
-|---|---|
-| intent | `WorkflowContextSnapshot` plus Intent Conformance Judge |
-| review (judge) | Code Risk Reviewer |
-| review (fixer) | Session repair loop |
-| test (evidence) | Test Evidence Auditor |
-| test / lint (command) | Check node (Part 3); CI and the Inspector gate until then |
-| document | Documentation Steward |
-| rebase, push | Deliberately absent. The engine never calls git |
-| pr, ci | Inspector final gate plus **Prepare PR in session** |
-
-Two fidelity notes worth stating rather than discovering later. no-mistakes runs one fixed
-reviewer prompt with `auto_fix.review: 0`, so its review step always parks for a human; our
-four-way fan-out is a richer decomposition of that single prompt, and a Persona `fail`
-closing the round is the same park. And no-mistakes' reviewer keeps a durable session across
-rounds, whereas Personas are deliberately cold and receive `priorPersonaFeedback` in the
-context packet instead.
-
 ## Part 3: the check node
 
 A fifth node kind:
@@ -243,21 +212,9 @@ through the existing version export route, and a built-in workflow hardcoding `n
 would be wrong on every repository that is not this one. The node therefore names a **slot**,
 and a trusted source outside the graph says what that slot runs.
 
-This is precisely no-mistakes' own model: `commands.test`, `commands.lint` and
-`commands.format` are read from `.no-mistakes.yaml` **on the default branch only**, and the
-binary disables them outright when that trusted read fails ("trusted repo config: parse
-failed; commands/agent from pushed branch will be disabled"). The command a gate runs must
-not be attacker-controlled by the branch under review, because the branch under review is the
-thing being judged.
-
 `WORKFLOW_CHECK_SLOTS` is **append-only**, because a slot id reaches durable published graphs.
 
 ### An unconfigured slot passes with a note
-
-If a repository has no command for a slot, the node must pass and say so, not fail. A shipped
-built-in that fails on every repository without configuration is a shipped built-in that is
-broken by default. no-mistakes makes the same choice: no configured test command means the
-evidence agent runs instead of a hard failure.
 
 ### Consent
 
@@ -322,15 +279,6 @@ A full check-execution sandbox is a named follow-up.
 **Decided: Mission Control settings, keyed by repository root.** `WorkflowConfig` gains a
 list of `{ repoRoot, slot, command }` entries beside the existing `repoAllowlist`, edited
 under **Settings → Workflows**.
-
-The alternative considered was no-mistakes' own model, a trusted file on the repository's
-default branch. It is the better long-term answer because the configuration travels with the
-repository, and it is named here as a follow-up rather than rejected. It is not what this
-plan builds, for two reasons. It requires reading a blob from a branch other than the one
-under review, which is real git machinery this subsystem does not have today, and settings
-keep the argv itself out of branch control. They do not make execution branch-independent:
-the reviewed branch still supplies the scripts and source that argv loads. Adding the file
-later is additive, with settings as the override.
 
 A list of entries rather than a `Record<repoRoot, ...>` because repository roots are absolute
 paths and make poor object keys, and because the flat shape matches how `repoAllowlist`

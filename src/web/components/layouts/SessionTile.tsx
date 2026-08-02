@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
-import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
+import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import {
   AgentDot,
   CostChip,
@@ -33,9 +33,8 @@ export function isDragSelection(sel: { isCollapsed: boolean } | null): boolean {
 
 /**
  * A session shrunk to what you'd triage by, without opening it: who it is, what it's
- * for, what it's doing this second, where its gate is parked, how much context it has
- * left, and whether it wants something. The conversation, the diff, and the gate's
- * buttons are all one click away in the console detail the tile opens.
+ * for, what it's doing this second, how much context it has left, and whether it wants
+ * something. The conversation and diff are one click away in the console detail.
  *
  * An idle tile is also a drop target for a backlog card - see BacklogColumn.
  *
@@ -46,7 +45,6 @@ export function isDragSelection(sel: { isCollapsed: boolean } | null): boolean {
 export function SessionTile({
   session,
   selected = false,
-  gateNeedsYou,
   onOpen,
   registerEl,
   draggingRepo,
@@ -63,7 +61,6 @@ export function SessionTile({
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
   selected?: boolean;
-  gateNeedsYou: boolean;
   onOpen: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   draggingRepo: string | null;
@@ -81,12 +78,7 @@ export function SessionTile({
   /** This member's run summary, for the flag's hover copy. Null until its SSE summary lands. */
   ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
-  const st = stateDisplay(session, gateNeedsYou);
-  // A run always produces a gate line, and the line always carries the run's segments:
-  // pairing them here is what lets the tile head drop its own diamond (below) on the
-  // strength of a single guard rather than re-deriving the invariant at each use.
-  const nm = session.nomistakes;
-  const gate = nm ? { ...gateStepView(nm), steps: nm.steps } : null;
+  const st = stateDisplay(session);
   const isRunning = session.state === "working" || session.state === "starting";
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
@@ -96,7 +88,7 @@ export function SessionTile({
   );
   useEffect(() => setWorkflowExpanded(false), [workflowRun?.id]);
 
-  const droppable = canAcceptTask(session, draggingRepo, gateNeedsYou);
+  const droppable = canAcceptTask(session, draggingRepo);
 
   return (
     <div
@@ -134,7 +126,7 @@ export function SessionTile({
 
           So the open action is split. The pointer half lives on the tile root above:
           clicks land on whatever content you aimed at and bubble up, which keeps the
-          shared tooltips on the model, effort, context meter and gate diamonds
+          shared tooltips on the model, effort, and context meter
           hoverable. This stretched button is the keyboard half - focusable, labelled,
           Enter/Space-activatable, which a bare div with onClick would not be. It takes
           no pointer events, so it can never swallow a click meant for the content. The
@@ -163,13 +155,6 @@ export function SessionTile({
         <Tooltip label={`Open ${session.name || "unnamed session"}`}>
           <span className="tile-name">{session.name || "(unnamed)"}</span>
         </Tooltip>
-        {session.nomistakesGated && !session.nomistakes && (
-          <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
-            <span className="gated" aria-hidden>
-              ◇
-            </span>
-          </Tooltip>
-        )}
       </span>
 
       {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}
@@ -188,32 +173,6 @@ export function SessionTile({
             ⟳
           </span>
           <span className="ta-txt">{session.activity}</span>
-        </span>
-      )}
-
-      {/* The gate as a named hairline: the segment bar the tile always afforded, now with
-          the stage a glance should land on spelled out above it (gateStepView picks it).
-          The full strip - findings and buttons - stays in the console detail. */}
-      {gate && (
-        <span className="tile-gate">
-          <span className="tile-gate-row">
-            <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
-              <span className="gate-brand" aria-hidden>
-                ◇
-              </span>
-            </Tooltip>
-            <span className={`gate-step gate-${gate.tone}`}>{gate.label}</span>
-            {!gate.done && gate.pos != null && (
-              <span className="gate-pos">
-                step {gate.pos} / {gate.total}
-              </span>
-            )}
-          </span>
-          <span className="tile-rail" aria-hidden>
-            {gate.steps.map((step) => (
-              <span key={step.step} className={`tr-${step.status}`} />
-            ))}
-          </span>
         </span>
       )}
 
@@ -238,7 +197,6 @@ export function SessionTile({
             The DECISION and the tooltip are shared with the card chip and the rail glyph
             (`RuntimeTileFlag`), so the three cannot drift on what it is called. */}
         <RuntimeTileFlag session={session} />
-        {gateNeedsYou && <span className="tile-flag tf-gate">gate</span>}
         {session.note && (
           <span className={`tile-flag tf-${session.note.disposition}`}>
             {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}

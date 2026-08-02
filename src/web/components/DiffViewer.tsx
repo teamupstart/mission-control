@@ -13,7 +13,7 @@ import { Tooltip } from "./Tooltip.tsx";
  * one long scroll. Files move by click or ↑/↓ (j/k); the diff shows one file only.
  *
  * Given a `commit`, it shows what that ONE commit changed instead - how a
- * no-mistakes fix opens from the card's fix log.
+ * a caller asks to inspect one commit.
  */
 export function DiffViewer({
   session,

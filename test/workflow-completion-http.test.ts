@@ -48,7 +48,6 @@ function discovered(id: string): DiscoveredSession {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: id.length,
     tty: `tty-${id}`,
     terminals: [],
@@ -64,7 +63,7 @@ function request(
   expectedIntent: SessionIntentGuard | null = completionKind === "prompted"
     ? PROMPTED_INTENT
     : null,
-  fallbackWorkflow: "no-mistakes" | null = null,
+  fallbackWorkflow: "builtin-review" | null = null,
 ) {
   return app.request(`/api/sessions/${sessionId}/workflow-completion`, {
     method: "POST",
@@ -374,7 +373,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     "1".repeat(64),
     "drain",
     null,
-    "no-mistakes",
+    "builtin-review",
   )).json(), {
     claimed: false,
     reason: "manual_trigger",
@@ -402,7 +401,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
       "8".repeat(64),
       "drain",
       null,
-      "no-mistakes",
+      "builtin-review",
     );
     assert.equal(response.status, 409);
     assert.match(
@@ -428,7 +427,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     "9".repeat(64),
     "drain",
     null,
-    "no-mistakes",
+    "builtin-review",
   );
   assert.equal(rejectedFallback.status, 409);
   assert.match(
@@ -443,8 +442,8 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(workflows.store.listBindings().length, bindingCountBeforeRejectedFallback);
 
   const autoBound = await Promise.all([
-    request(app, "auto-bound", "a".repeat(64), "drain", null, "no-mistakes"),
-    request(app, "auto-bound", "a".repeat(64), "drain", null, "no-mistakes"),
+    request(app, "auto-bound", "a".repeat(64), "drain", null, "builtin-review"),
+    request(app, "auto-bound", "a".repeat(64), "drain", null, "builtin-review"),
   ]);
   const autoBodies = await Promise.all(autoBound.map((response) => response.json())) as Array<{
     claimed: boolean;

@@ -276,7 +276,7 @@ export async function reloadOne(
   //
   // Where this deliberately parts company with that path is the rollback below.
   // Auto-wrapup's rule is "never retry", and its reason - "a retry IS the
-  // double-push", because `/no-mistakes` opens a PR - is exactly what does NOT
+  // double-push", because a shipping instruction opens a PR - is exactly what does NOT
   // transfer: `/reload-skills` does not push, does not commit, and re-reading a
   // directory twice reaches the same answer. So the two failures point opposite ways.
   // For the wrap-up, silence beats a duplicate. Here, a duplicate costs two lines of
@@ -306,7 +306,7 @@ export async function reloadOne(
  * Drive the reload broadcast on the discovery poll's interval.
  *
  * Its own timer rather than a callback bolted onto `startPoller`, matching the three
- * sibling pollers (nomistakes, pr, runtime-meta) - discovery's tick is about sweeping
+ * sibling pollers (PR and runtime metadata) - discovery's tick is about sweeping
  * the OS, and threading an unrelated concern through it buys nothing. What the plan
  * actually wanted from "ride the poller" is kept: the same interval constant (no new
  * knob to tune), and a per-target re-read rather than a fan-out from one snapshot.

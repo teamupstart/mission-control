@@ -26,7 +26,6 @@ import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
 import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
-import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPoolReaper } from "./pool.ts";
 import { installCheckLeasePins } from "./pool-lease.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
@@ -263,7 +262,6 @@ setLlmSpendSink((report) => {
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
-const stopNomistakes = startNomistakesPoller(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopInspector = startInspector(registry, {
   workflowGatePending: (prKey) => workflows.blocksMerge(prKey),
@@ -361,7 +359,6 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
 async function shutdown(): Promise<void> {
   stopPoller();
   stopAgentsShadow();
-  stopNomistakes();
   stopPrPoller();
   stopInspector();
   stopRuntimeMeta();

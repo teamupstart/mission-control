@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentType, Session, SessionQueue, WorkItem } from "@shared/types.ts";
-import { composeWrapup, wrapupAskCopy, wrapupNoMistakes } from "@shared/queue.ts";
+import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
+import { WRAPUP_PR, wrapupAskCopy } from "@shared/queue.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
@@ -169,7 +169,7 @@ export function WorkQueue({
         {head(0)}
         {session.orphanedQueue && <ReattachHint session={session} onDone={() => void refresh()} />}
         {queue && queue.wrapupAskedAt !== null && (
-          <Wrapup sessionId={sessionId} agent={session.agent} queue={queue} onDone={() => void refresh()} />
+          <Wrapup sessionId={sessionId} queue={queue} onDone={() => void refresh()} />
         )}
         <AddBox
           value={adding}
@@ -599,7 +599,7 @@ export function WorkQueue({
       )}
 
       {queue && queue.wrapupAskedAt !== null && (
-        <Wrapup sessionId={sessionId} agent={session.agent} queue={queue} onDone={() => void refresh()} />
+        <Wrapup sessionId={sessionId} queue={queue} onDone={() => void refresh()} />
       )}
 
       {error && <p className="wq-error">{error}</p>}
@@ -864,7 +864,7 @@ export function AddBox({
  * case where writing THAT is what failed. A `useState` latch dies with the mount, so
  * collapsing and re-expanding the card (which remounts `Wrapup`) brought "Ship it?"
  * back with a live Send button next to an agent that already had the instruction -
- * one click from injecting `/no-mistakes` twice.
+ * one click from starting the same shipping action twice.
  *
  * Keyed on `wrapupAskedAt` too, not just the session: a later drain is a genuinely
  * new ask, and must not be suppressed by this one. Module scope rather than a store
@@ -879,26 +879,14 @@ const wrapupSent = new Set<string>();
  */
 function Wrapup({
   sessionId,
-  agent,
   queue,
   onDone,
 }: {
   sessionId: string;
-  /** Whose composer this text is headed for - the gate is spelled per harness. */
-  agent: AgentType;
   queue: SessionQueue;
   onDone: () => void;
 }): React.JSX.Element | null {
-  /**
-   * Whether this harness can be told to run a skill by name at all. Every harness that
-   * can hold a queue can (so the box is always there today), but a tick that composed
-   * nothing would put an empty prefill next to a live Send, and the honest answer to
-   * "run the gate?" on a harness with no way to run it is not to ask.
-   */
-  const gateAvailable = wrapupNoMistakes(agent) !== null;
-  const [pr, setPr] = useState(true);
-  const [nm, setNm] = useState(gateAvailable);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(WRAPUP_PR);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
@@ -906,13 +894,20 @@ function Wrapup({
   const sentKey = `${sessionId}:${queue.wrapupAskedAt}`;
   const [sent, setSent] = useState(() => wrapupSent.has(sentKey));
 
-  // Recompose the prefill as the checkboxes change, until the human edits it.
-  const [touched, setTouched] = useState(false);
-  useEffect(() => {
-    if (!touched) setText(composeWrapup(pr, nm, agent));
-  }, [pr, nm, touched, agent]);
-
   if (dismissed || queue.wrapupAnswer !== null) return null;
+
+  async function runReview(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    const result = await api.startBuiltinReview(sessionId, crypto.randomUUID());
+    setBusy(false);
+    if (!result.ok) {
+      setErr(result.error ?? "could not start No-Mistakes Review");
+      return;
+    }
+    onDone();
+  }
 
   async function send(): Promise<void> {
     const body = text.trim();
@@ -936,7 +931,7 @@ function Wrapup({
     // turns every failure into a returned `{ok:false}` rather than a throw, so an
     // unchecked write here fails silently and leaves "Ship it?" on screen with a live
     // Send button next to an agent that already got the instruction; a second click
-    // injects `/no-mistakes` twice. Latch on the SEND, not on the write, so the button
+    // starts the same shipping action twice. Latch on the SEND, not on the write, so the button
     // dies even when the write is what failed - and latch it OUTSIDE this component,
     // which a card collapse would otherwise unmount and reset.
     wrapupSent.add(sentKey);
@@ -974,20 +969,22 @@ function Wrapup({
           drain, so the drain sentence would state something that never happened. The
           alert reads the same rule off the card summary's `totalCount`. */}
       <p className="wq-wrapup-title">{wrapupAskCopy(queue.items.length > 0).card}</p>
-      <label className="alert-row">
-        <Tooltip label="Ask the agent to open a pull request as part of wrapping up">
-          <input type="checkbox" checked={pr} onChange={(e) => setPr(e.target.checked)} />
+      <p className="wq-hint dim">
+        Run the built-in review workflow, or send the agent a direct shipping instruction.
+      </p>
+      <div className="wq-actions">
+        <Tooltip label="Bind and start the built-in review workflow for this session">
+          <button className="btn btn-primary" disabled={busy} onClick={() => void runReview()}>
+            Run No-Mistakes Review
+          </button>
         </Tooltip>
-        Create a PR
-      </label>
-      {gateAvailable && (
-        <label className="alert-row">
-          <Tooltip label="Ask the agent to run the no-mistakes gate before it wraps up">
-            <input type="checkbox" checked={nm} onChange={(e) => setNm(e.target.checked)} />
-          </Tooltip>
-          Run no-mistakes
-        </label>
-      )}
+        <Tooltip label="Dismiss this wrap-up ask without starting or sending anything">
+          <button className="btn btn-ghost" disabled={busy} onClick={() => void dismiss()}>
+            Dismiss
+          </button>
+        </Tooltip>
+      </div>
+      <p className="wq-hint dim">Ship directly</p>
       {/* `rows` is the FLOOR, not the height: `field-sizing: content` grows this to fit
           (see styles.css). It has to, because the PR prefill now spells out CI and
           conflicts rather than just "open a PR", and the same string is two lines in the
@@ -998,10 +995,8 @@ function Wrapup({
         className="field-input"
         rows={3}
         value={text}
-        onChange={(e) => {
-          setTouched(true);
-          setText(e.target.value);
-        }}
+        aria-label="Direct shipping instruction"
+        onChange={(e) => setText(e.target.value)}
       />
       <div className="wq-actions">
         <Tooltip
@@ -1014,12 +1009,7 @@ function Wrapup({
           }
         >
           <button className="btn btn-primary" disabled={busy || sent || !text.trim()} onClick={() => void send()}>
-            Send
-          </button>
-        </Tooltip>
-        <Tooltip label="Dismiss this wrap-up ask without sending anything">
-          <button className="btn btn-ghost" disabled={busy} onClick={() => void dismiss()}>
-            Dismiss
+            Send direct PR instruction
           </button>
         </Tooltip>
       </div>
@@ -1030,14 +1020,6 @@ function Wrapup({
     </div>
   );
 }
-
-// `composeWrapup` moved to @shared/queue.ts: Foreman can now compose this same
-// instruction itself (the `wrapup` config), and the card and the worker MUST send
-// identical bytes. "Both ticked prefills the gate alone, because that pipeline pushes and
-// opens the PR itself" is a rule that has to hold on both paths, so it is spelled once -
-// same argument as IN_FLIGHT_ITEM_STATES. Which BYTES the gate is depends on the session's
-// harness (`wrapupNoMistakes`), which is exactly why the card passes `agent` down rather
-// than each surface knowing a sigil.
 
 /** The re-attach affordance for a queue left behind by a previous session here. */
 function ReattachHint({

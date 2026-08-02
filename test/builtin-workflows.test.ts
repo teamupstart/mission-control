@@ -324,7 +324,7 @@ test("No-Mistakes Review ships the adopted graph, defaults and final gate", () =
 // `compileStages`' layout, would otherwise rewrite version 1 underneath every existing
 // binding and every test here would still pass.
 
-const NO_MISTAKES_V1_NODES = [
+const NO_MISTAKES_REVIEW_V1_NODES = [
   ["nmr-session", "session", 60, 60],
   ["nmr-intent-conformance", "persona", 340, 60],
   ["nmr-code-risk", "persona", 620, 60],
@@ -334,7 +334,7 @@ const NO_MISTAKES_V1_NODES = [
   ["nmr-end", "end", 1180, 60],
 ];
 
-const NO_MISTAKES_V1_EDGES = [
+const NO_MISTAKES_REVIEW_V1_EDGES = [
   "nmr-session~submitted~nmr-intent-conformance~activate",
   "nmr-intent-conformance~fail~nmr-session~return_for_changes",
   "nmr-intent-conformance~pass~nmr-code-risk~activate",
@@ -357,9 +357,9 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
   assert.equal(version.sourceDraftRevision, 1);
   assert.deepEqual(
     version.graph.nodes.map((node) => [node.id, node.kind, node.position.x, node.position.y]),
-    NO_MISTAKES_V1_NODES,
+    NO_MISTAKES_REVIEW_V1_NODES,
   );
-  assert.deepEqual(version.graph.edges.map((edge) => edge.id), NO_MISTAKES_V1_EDGES);
+  assert.deepEqual(version.graph.edges.map((edge) => edge.id), NO_MISTAKES_REVIEW_V1_EDGES);
   // No check node reached version 1. Adding the gates was an APPEND, and a version 1 that
   // grew them would be a graph an existing binding never agreed to run commands under.
   assert.equal(version.graph.nodes.filter((node) => node.kind === "check").length, 0);

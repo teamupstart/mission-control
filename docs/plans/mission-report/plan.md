@@ -19,20 +19,7 @@ does, plus a real **backlog**:
    JSON (`GET /api/report`), and as copyable markdown (`GET /api/report.md`) so you can
    paste "current bearings" into a chat or notes.
 
-Both are **pure reads over state that already exists** - no new polling, no new agents.
-The report is a projection of `registry.snapshot()` (sessions + reviews + tasks) plus the
-no-mistakes summaries already denormalized onto each session.
-
 ## Why it fits (and why it depends on dispatch)
-
-- The **intent** side of `/bearings` ("what is each agent doing") is exactly
-  `session.task`, delivered by dispatch. Without the tasks model there's nothing to report
-  beyond raw session state - hence the hard dependency and serial build.
-- The report needs no new data source: `Registry.snapshot()` already returns sessions
-  (with state, activity, `nomistakes`, `pendingReviews`) and, after dispatch, `tasks`.
-- "Needs you" is already computed per-card by `stateDisplay()` (attention tone from
-  `awaiting_input` / pending reviews). The report reuses the same rules server-side so the
-  UI and the markdown agree.
 
 ## Data model
 
@@ -53,35 +40,7 @@ export interface ReportItem {
   outcomeUrl: string | null;
 }
 
-export interface MissionReport {
-  generatedAt: number;
-  counts: { sessions: number; working: number; idle: number; needsYou: number; exited: number; queued: number };
-  needsYou: ReportItem[];       // needs-input, pending reviews, parked no-mistakes gates
-  working: ReportItem[];        // running tasks / busy sessions, with intent
-  idle: ReportItem[];           // alive, waiting
-  backlog: Task[];              // status === "queued"
-  recent: Task[];               // status in done/failed/cancelled, newest first (capped)
-}
-```
-
 ## Backend changes
-
-### `src/server/report.ts` (new) - pure functions
-- `buildReport(snapshot): MissionReport` - buckets sessions using the **same** attention
-  logic as `stateDisplay` (extracted into a shared helper in `src/shared/` or duplicated
-  minimally with a comment linking the two, so UI and report never diverge). Joins each
-  live session to its `task` summary; pulls parked-gate reasons from `session.nomistakes`.
-- `renderReportMarkdown(report): string` - a compact, copy-pasteable digest:
-  ```
-  # Mission bearings - 2026-07-11 14:03
-  Needs you (2)
-  - agent "auth-refactor" (ship) - 2 to review  [feat/auth]
-  - "flaky-tests" - gate parked at review
-  Working (3) ...
-  Backlog (4) ...
-  Recent outcomes (2)
-  - "rate-limit" done - opened PR #123
-  ```
 
 ### `src/server/routes.ts`
 - `GET /api/report` -> `c.json(buildReport(registry.snapshot()))`.

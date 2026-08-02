@@ -1,5 +1,5 @@
-import { activePaneDialog, runInFlight } from "@shared/session.ts";
-import type { AgentType, NmRunSummary, PermissionMode, Session, SessionState } from "@shared/types.ts";
+import { activePaneDialog } from "@shared/session.ts";
+import type { AgentType, PermissionMode, Session, SessionState } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canWriteTo, type PaneHandles } from "@shared/pane.ts";
 
@@ -220,14 +220,9 @@ export interface StateDisplay {
  * busy or idle. A reading may come from hooks or from an explicit lifecycle marker in
  * the harness transcript (Codex rollout files provide the latter).
  *
- * Mirrors reportBucket's precedence (see src/shared/session.ts): a session whose
- * agent backgrounded a no-mistakes run and ended its turn reads "validating"
- * rather than "idle", both because it isn't idle and because the badge would
- * otherwise contradict the run's live progress in the strip right below it. The
- * strip already brands itself "no-mistakes", so the badge names the agent's own
- * state instead of repeating it.
+ * Mirrors reportBucket's precedence (see src/shared/session.ts).
  */
-export function stateDisplay(session: Session, gateNeedsYou: boolean): StateDisplay {
+export function stateDisplay(session: Session): StateDisplay {
   if (session.state === "exited") return { label: "exited", tone: "exited" };
   // A pending review always needs you, regardless of the agent's own state.
   if (session.pendingReviews > 0) {
@@ -241,94 +236,18 @@ export function stateDisplay(session: Session, gateNeedsYou: boolean): StateDisp
   if (activePaneDialog(session)) {
     return { label: "needs an answer", tone: "attention" };
   }
-  // A parked no-mistakes gate is a cross-session decision: another session carrying
-  // the same run may still be driving it. App computes that once with `gateParked` and
-  // every layout passes the answer here. Keeping the boolean required makes a new
-  // status surface choose deliberately instead of silently filing the gate as idle.
-  if (gateNeedsYou) {
-    return { label: "needs decision", tone: "attention" };
-  }
-  const validating: StateDisplay = { label: "validating", tone: "working" };
   if (!session.stateConfirmed) {
-    return runInFlight(session) ? validating : { label: "running", tone: "neutral" };
+    return { label: "running", tone: "neutral" };
   }
   const map: Record<SessionState, StateDisplay> = {
     starting: { label: "starting", tone: "working" },
     working: { label: "working", tone: "working" },
-    idle: runInFlight(session) ? validating : { label: "idle", tone: "idle" },
+    idle: { label: "idle", tone: "idle" },
     awaiting_input: { label: "needs input", tone: "attention" },
     awaiting_review: { label: "needs review", tone: "attention" },
     exited: { label: "exited", tone: "exited" },
   };
   return map[session.state];
-}
-
-export interface GateStepView {
-  /** The step to name above the tile's hairline, e.g. "review" - or the outcome once landed. */
-  label: string;
-  /** 1-based position of that step in the pipeline, or null when it can't be placed. */
-  pos: number | null;
-  /** How many steps the pipeline has. */
-  total: number;
-  /** Tone for the label - the same scale the hairline segment carries. */
-  tone: "working" | "attention" | "idle" | "danger";
-  /** True once the run has finished cleanly (label is the outcome, not a step). */
-  done: boolean;
-}
-
-/** Outcomes that mean the run landed badly - the calm idle tone would misreport these. */
-const FAILED_OUTCOMES = new Set(["failed", "cancelled", "canceled"]);
-
-/**
- * The one step worth naming above the board tile's gate hairline.
- *
- * The hairline colours every step but names none, so "which stage is it at" is
- * unreadable without knowing the pipeline's order by heart. This picks the step a
- * glance should land on and dresses it in the same tone the segment carries, so the
- * word and the bar can't disagree. Precedence mirrors what you'd triage by: a failure
- * first, then a gate parked on your decision, then whatever is running, then - with
- * nothing in flight - the outcome if the run has landed, else the next step up. A run
- * that landed failed or cancelled keeps the danger tone; only a clean landing reads calm.
- *
- * Pure, so the rule is tested without a DOM (see gate-step-view.test.ts).
- */
-export function gateStepView(nm: NmRunSummary): GateStepView {
-  const total = nm.steps.length;
-  const at = (i: number, tone: GateStepView["tone"]): GateStepView => ({
-    label: nm.steps[i]!.step,
-    pos: i + 1,
-    total,
-    tone,
-    done: false,
-  });
-
-  const failed = nm.steps.findIndex((s) => s.status === "failed");
-  if (failed >= 0) return at(failed, "danger");
-
-  // Parked on a decision: trust no-mistakes' own gateStep, but fall back to the parked
-  // status when it names no step we hold. gateStep and steps[] are parsed from separate
-  // blocks, so a name that doesn't place must not cost the tile its attention tone.
-  const named = nm.gateStep ? nm.steps.findIndex((s) => s.step === nm.gateStep) : -1;
-  const gated =
-    named >= 0
-      ? named
-      : nm.steps.findIndex((s) => s.status === "awaiting_approval" || s.status === "fix_review");
-  if (gated >= 0) return at(gated, "attention");
-
-  const running = nm.steps.findIndex((s) => s.status === "running");
-  if (running >= 0) return at(running, "working");
-
-  // Nothing in flight: the run has either landed, or is between steps.
-  if (nm.outcome) {
-    const tone = FAILED_OUTCOMES.has(nm.outcome.toLowerCase()) ? "danger" : "idle";
-    return { label: nm.outcome, pos: total || null, total, tone, done: true };
-  }
-  // The frontier is the first step still owing work. Counting settled steps would assume
-  // they form a prefix, which `--step <name> --action skip` can break.
-  const next = nm.steps.findIndex((s) => s.status !== "completed" && s.status !== "skipped");
-  return next >= 0
-    ? { label: nm.steps[next]!.step, pos: next + 1, total, tone: "working", done: false }
-    : { label: nm.status || "queued", pos: null, total, tone: "working", done: false };
 }
 
 /** Card presentation for a permission mode: chip label, tone, tooltip. */

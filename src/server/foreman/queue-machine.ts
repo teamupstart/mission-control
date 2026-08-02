@@ -79,6 +79,12 @@ export type QueueAction =
   | { kind: "escalate"; item: WorkItem; reason: string }
   /** Every item is terminal and the drain ask hasn't fired yet. */
   | { kind: "ask-wrapup"; queue: SessionQueue }
+  /** Same drain, claimed by the built-in review workflow instead of a pane prompt. */
+  | {
+      kind: "workflow-wrapup";
+      queue: SessionQueue;
+      intentGuard: SessionIntentGuard;
+    }
   /**
    * Same drain, but `wrapup` says type it rather than ask. Carries the payload so
    * the apply step holds no policy - and so the decision about WHAT to send is made
@@ -195,9 +201,7 @@ export function tickTargets(
   triggers: readonly WrapupTrigger[],
 ): Session[] {
   // Both halves gate on the `workQueue` capability rather than on an agent id. Needs-you
-  // additionally requires either the authorization promised by that harness's hook scope,
-  // or an independently observed parked no-mistakes gate. The latter is triage-only; queued
-  // work still reaches step 3 so an old hookless batch can be escalated.
+  // additionally requires the authorization promised by that harness's hook scope.
   const needsYou = sessions
     .filter((s) => foremanTriageAuthorized(s, sessions) && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));
@@ -360,17 +364,16 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // selected forever deciding `none`.
     if (!wrapupTriggerOn(cfg.wrapupTriggers, "drain")) return { kind: "none" };
 
-    // Spelled for THIS session's harness: the gate is `/no-mistakes` on Claude and
-    // `$no-mistakes …` on Codex, and typing the wrong one is a wrap-up that never runs.
-    const payload = autoWrapupPayload(cfg.wrapup, session.agent);
+    const workflowWrapup = cfg.wrapup === "workflow";
+    const payload = autoWrapupPayload(cfg.wrapup);
 
     // Nothing to automate (`ask`), or Foreman may not type here at all. `mayActLive` is
     // the same gate a queue send passes, and it binds harder here: the instruction
-    // PUSHES - `/no-mistakes` opens a PR at the end of its pipeline - so a dry-run that
-    // typed it would be a dry-run that shipped. Dry-run degrades to the ask rather than
-    // to a `propose`, because the Wrapup card already IS the proposal: it prefills this
-    // exact text (same `composeWrapup`) and puts it one click away.
-    if (!payload || !mayActLive || !hasPane(session)) return { kind: "ask-wrapup", queue };
+    // can ultimately PUSH, so a dry-run that typed it would be a dry-run that shipped.
+    // Dry-run degrades to the ask rather than to a `propose` because the Wrapup card is
+    // already the human decision surface.
+    if ((!payload && !workflowWrapup) || !mayActLive) return { kind: "ask-wrapup", queue };
+    if (!workflowWrapup && !hasPane(session)) return { kind: "ask-wrapup", queue };
 
     // Automation is on and allowed. It needs a FRESH idle signal, and `settledIdle`
     // folds two very different failures into one `false`. Split them - they want
@@ -397,7 +400,8 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     const intentGuard = resolvedSessionIntent(intent);
     if (!intentGuard) return { kind: "none" };
 
-    return { kind: "auto-wrapup", queue, payload, intentGuard };
+    if (workflowWrapup) return { kind: "workflow-wrapup", queue, intentGuard };
+    return { kind: "auto-wrapup", queue, payload: payload!, intentGuard };
   }
 
   // 6. The agent is still busy (or hasn't settled): don't interrupt it.

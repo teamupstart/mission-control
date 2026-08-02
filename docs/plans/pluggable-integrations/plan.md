@@ -1234,42 +1234,6 @@ capabilities are visibly disabled in the UI rather than silently absent". Two ha
 dashboard must PAINT a harness it has never heard of, and every sentence naming an agent
 must be computed rather than typed.
 
-- **`accent` went on `AGENT_IDENTITY`, and it is a VALUE.** The register that held two
-  names now holds three facts about how an agent presents itself, because name and colour
-  are one question asked at the same surfaces - a second `Record<AgentType, …>` beside it
-  in the same module, at the same purity, over the same domain, would have been the list
-  to keep in step that this whole plan is about. It is not a capability (an accent is not
-  something an agent can *do*, so it does not belong on `HarnessCapabilities`) and not on
-  the server-side `Harness` (the browser cannot import that). The value is `#d97757`, not
-  `var(--claude)`: a token NAME would have left the coupling exactly where it was, with a
-  new harness rendering correctly only once someone remembered to add its token to a
-  7,800-line stylesheet.
-- **One `--agent-accent` custom property, set inline, and `styles.css` names no agent.**
-  `AgentDot` and the transcript set it (`agentAccentStyle`, `session-bits.tsx`); the
-  stylesheet reads it back with `var(--agent-accent, var(--neutral))`. The fallback is the
-  neutral grey deliberately - a surface that forgets to set it should look unremarkable,
-  not look like Claude. `.turn-assistant .turn-role` moved onto it too, so an agent's
-  byline over its own turns is its own colour rather than a hardcoded terracotta.
-- **Foreman has `--foreman`, and it is purple.** The collision the old comment admitted was
-  not just a shared token, it was a shared APPEARANCE: Foreman's byline in the no-mistakes
-  log was drawn in Claude Code's terracotta, in a log that sits beside a Claude agent's own
-  turns. Foreman was already purple in the one place the two had to sit side by side
-  (`.turn-foreman`), and that is the decision the other five rules have been brought onto -
-  so Foreman is one colour everywhere and is never read as an agent. `--syntax-type` picked
-  up the terracotta for `.hljs-type`, which had `--claude` by pure coincidence of hue.
-- **The remaining agent-naming prose is computed.** `agentList` (`@shared/agent.ts`) says a
-  set of harnesses out loud for the empty grid; `autoModeAgents` / `autoModeUnsupportedWhy`
-  (`@shared/harness-capabilities.ts`) replace the settings panel's "claude only", "Every
-  Claude session…" and "Codex support comes later" - the last of which was a promise the
-  dashboard was in no position to make on a vendor's behalf. The skills panel's
-  `~/.claude/skills` is read off `skills.homeDir`, and `MODE_DISPLAY`'s tooltips say "the
-  agent" rather than "Claude".
-- **Nothing was left for the dispatch modal or the layout leaves.** The agent `<select>`
-  was already generated from `AGENT_TYPES`, and the mode picker, work-queue refusal and
-  action bar were already reading capabilities from the guards item - so the four surfaces
-  a session is drawn by (`SessionCard`, `ConsoleDetail`, `SessionTile`, `RailRow`) all
-  reach the accent through the one shared `AgentDot` and none of them gained a branch.
-
 Test: `agent-accent.test.ts`, which is the enforcement the old arrangement lacked - it
 fails if any agent id reappears anywhere in `styles.css`, if an accent is declared as a
 token name rather than a value, or if a Foreman rule borrows an agent's colour again.

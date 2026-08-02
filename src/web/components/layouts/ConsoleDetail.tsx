@@ -125,15 +125,11 @@ function useIntent(
  * give it, and the sections that share a card's height in the grid get a tab each here
  * instead of stacking and fighting.
  *
- * The Conversation tab is the transcript and nothing else. Progress readouts - the workflow
- * ladder and the no-mistakes gate strip - used to stack above it, and between them they
- * could push the first message of a long-running session off the bottom of the screen. Both
- * now live in Workflows, which is the tab that answers "how is this run going" while
- * Conversation answers "what was said". They are the same components either way; only where
- * they mount moved.
+ * The Conversation tab is the transcript and nothing else. The workflow ladder lives in
+ * Workflows, which answers "how is this run going", while Conversation answers "what was said".
  *
- * Built from the same leaf pieces the card is (the transcript, the work queue, the gate
- * strip, the action bar, the session-bits), arranged fresh. Keyed by session id in the
+ * Built from the same leaf pieces the card is (the transcript, the work queue, the action
+ * bar, the session-bits), arranged fresh. Keyed by session id in the
  * parent, so switching sessions remounts it - the tab resets to the conversation and the
  * transcript starts clean, rather than showing the last session's Workflows tab.
  */
@@ -201,7 +197,7 @@ export function ConsoleDetail({
   }, [session.id, tab, view.registerDetailScroll]);
 
   // Unlike Cards, Console and Board have a session-owned Diff tab. An action-bar
-  // shortcut or a no-mistakes fix therefore lands here instead of opening a modal.
+  // shortcut or a commit-specific request therefore lands here instead of opening a modal.
   useEffect(() => {
     const request = view.diffTabRequest;
     if (request?.sessionId !== session.id) return;
@@ -231,8 +227,7 @@ export function ConsoleDetail({
     transcriptRef.current?.focusReply();
   }, [tab]);
 
-  const gateNeedsYou = view.gateAlerts.has(session.id);
-  const st = stateDisplay(session, gateNeedsYou);
+  const st = stateDisplay(session);
   const live = session.state !== "exited";
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
@@ -241,10 +236,7 @@ export function ConsoleDetail({
   const queueCount = session.queue?.openCount ?? 0;
   const openCount = openEpisodeCount(episodes);
 
-  const tabs = useMemo(
-    () => detailTabs({ queueCount, gateNeedsYou }),
-    [queueCount, gateNeedsYou],
-  );
+  const tabs = useMemo(() => detailTabs({ queueCount }), [queueCount]);
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
 
   // Tab/Shift+Tab walk this tab strip left to right, driven from App's one global key
@@ -303,7 +295,6 @@ export function ConsoleDetail({
         )}
         <StateBadge
           session={session}
-          gateNeedsYou={gateNeedsYou}
           onOpenReviews={() => view.onOpenReviews(session.id)}
         />
         <span className="detail-head-spacer" />
@@ -465,17 +456,11 @@ export function ConsoleDetail({
           </div>
         )}
 
-        {/* This tab absorbed the old Gate tab rather than sitting beside it: two adjacent
-            tabs both answering "is this change allowed to land" was the split that put one
-            of them above the transcript in the first place. */}
         {tab === "workflows" && (
           <div ref={paneRef} className="detail-pane">
             <SessionWorkflowsPane
-              session={session}
               run={workflowRun}
-              gateNeedsYou={gateNeedsYou}
               onOpenRun={(runId) => view.onOpenWorkflowRun?.(runId)}
-              onOpenDiff={(sha) => view.onOpenDiff(session.id, sha)}
             />
           </div>
         )}
@@ -513,11 +498,6 @@ export function ConsoleDetail({
 
       <footer className="detail-foot">
         <span className="detail-agent">{AGENT_IDENTITY[session.agent].label}</span>
-        {session.nomistakesGated && (
-          <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
-            <span className="gated">◇ gated</span>
-          </Tooltip>
-        )}
         <ModePicker session={session} />
         <span className="dot-sep">·</span>
         <span className="mono dim">pid {session.pid}</span>

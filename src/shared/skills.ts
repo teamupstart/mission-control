@@ -19,8 +19,8 @@ import { skillLoadingAgents } from "./harness-capabilities.ts";
  * newest first: the head is what it WRITES today, and the whole list is what it
  * RECOGNISES as ours - i.e. the only things it will ever remove.
  *
- * That directory is the operator's, not ours - `no-mistakes`, `implement-plan` and
- * friends live there and are hand-authored. The prefix makes them untouchable by
+ * That directory is the operator's, not ours. Hand-authored skills live there.
+ * The prefix makes them untouchable by
  * construction rather than by care.
  *
  * It costs almost nothing legible: a skill's directory name and its frontmatter `name`

@@ -3,7 +3,7 @@
  *
  * Before this fold there was a chip that opened the first answerable review's session modal.
  * Everything else the operator owed - a run parked on a decision, a second blocked session, a
- * finalization stuck mid-promotion, a shipping gate nobody was driving - was found by noticing
+ * finalization stuck mid-promotion - was found by noticing
  * it. A queue that quietly drops one of those is worse than no queue: it says "you are clear"
  * over work that is stopped.
  *
@@ -35,8 +35,6 @@ import {
   mkTaskSummary,
 } from "./helpers/session-fixture.ts";
 
-const NO_GATES: ReadonlySet<string> = new Set();
-
 function review(over: Partial<ReviewItem> & { id: string; sessionId: string }): ReviewItem {
   return {
     kind: "input",
@@ -54,13 +52,11 @@ function fold(over: {
   sessions?: Session[];
   reviews?: ReviewItem[];
   ensembles?: ReturnType<typeof mkEnsembleSummary>[];
-  gateAlerts?: ReadonlySet<string>;
 }) {
   return foldAttention({
     sessions: over.sessions ?? [],
     reviews: over.reviews ?? [],
     ensembles: over.ensembles ?? [],
-    gateAlerts: over.gateAlerts ?? NO_GATES,
   });
 }
 
@@ -71,9 +67,8 @@ test("the sections are fixed in order: decisions, questions, parked menus, then 
     link: { ordinal: 2 },
   });
   const asking = mkSession({ id: "s-ask", name: "Asking" });
-  const gated = mkSession({ id: "s-gate", name: "Gated" });
   const result = fold({
-    sessions: [member, asking, gated],
+    sessions: [member, asking],
     reviews: [review({ id: "r-1", sessionId: "s-ask" })],
     ensembles: [
       mkEnsembleSummary({ id: "run-decide", status: "awaiting_decision" }),
@@ -81,7 +76,6 @@ test("the sections are fixed in order: decisions, questions, parked menus, then 
       // A healthy run needs nobody and must not appear at all.
       mkEnsembleSummary({ id: "run-fine", status: "running" }),
     ],
-    gateAlerts: new Set(["s-gate"]),
   });
 
   assert.deepEqual(
@@ -91,7 +85,6 @@ test("the sections are fixed in order: decisions, questions, parked menus, then 
       "session_reviews",
       "member_dialog",
       "parked_finalization",
-      "gate",
     ],
   );
   assert.equal(result.items.filter((i) => i.kind === "ensemble_decision").length, 1);
@@ -229,7 +222,6 @@ test("every item id is unique, so no review can be drawn into the document twice
       review({ id: "r-2", sessionId: "s-both", createdAt: 2000 }),
     ],
     ensembles: [mkEnsembleSummary()],
-    gateAlerts: new Set(["s-both"]),
   });
   const ids = result.items.map((item) => item.id);
   assert.equal(new Set(ids).size, ids.length);
@@ -272,18 +264,6 @@ test("a finalization is parked only when it FAILED, not merely because it is pro
   );
 });
 
-test("a gate is listed from App's own derivation, never re-decided here", () => {
-  // `gateParked` already excludes a gate some sibling session is driving. A second opinion
-  // here would put an amber row over a run an agent is answering itself.
-  const driving = mkSession({ id: "s-driving" });
-  const parked = mkSession({ id: "s-parked" });
-  const result = fold({ sessions: [driving, parked], gateAlerts: new Set(["s-parked"]) });
-  assert.deepEqual(
-    result.items.map((item) => item.id),
-    ["gate:s-parked"],
-  );
-});
-
 test("a task with no ensemble link takes the ordinary path", () => {
   const plain = mkSession({ id: "s-1", task: mkTaskSummary({ ensemble: null }) });
   const result = fold({ sessions: [plain], reviews: [review({ id: "r", sessionId: "s-1" })] });
@@ -318,7 +298,6 @@ test("the inbox renders every item kind the fold can produce", () => {
     "session_reviews",
     "member_dialog",
     "parked_finalization",
-    "gate",
   ]) {
     assert.match(inbox, new RegExp(`case "${kind}":`), `${kind} has no arm in the inbox`);
   }

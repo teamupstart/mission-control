@@ -199,7 +199,6 @@ async function seed(over: SeedOptions = {}) {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 10 + serial,
     tty: `ttys${serial}`,
     terminals: [mkMuxHandle({ paneId: `%${serial}` })],

@@ -6,8 +6,8 @@ import { activePaneDialog } from "@shared/session.ts";
  * Everything that is waiting on the operator, folded into ONE ordered queue.
  *
  * The topbar used to carry a "N reviews" chip that opened the FIRST answerable review's
- * session modal - so a second blocked session, a run parked on your decision, a stuck
- * finalization and a parked shipping gate were all things you found by noticing them. This
+ * session modal - so a second blocked session, a run parked on your decision, and a stuck
+ * finalization were all things you found by noticing them. This
  * is the drain: one list, in a fixed order, that the inbox renders and the chip counts.
  *
  * It is a RENDERING of state the app already holds, never a second alert engine. Nothing
@@ -53,8 +53,7 @@ export type AttentionItem =
       runId: string;
       summary: EnsembleSummary;
       error: string;
-    }
-  | { kind: "gate"; id: string; session: Session };
+    };
 
 export interface AttentionFold {
   items: AttentionItem[];
@@ -100,8 +99,6 @@ export interface AttentionInput {
    */
   reviews: readonly ReviewItem[];
   ensembles: readonly EnsembleSummary[];
-  /** Sessions with a parked no-mistakes gate that needs a human - App's `gateAlerts`. */
-  gateAlerts: ReadonlySet<string>;
 }
 
 /**
@@ -113,7 +110,7 @@ export interface AttentionInput {
  *  1. **Ensemble decisions** - a run parked on you; nothing else in the run moves until it is answered.
  *  2. **Session reviews** - answerable inline, right here, which is what makes this an inbox.
  *  3. **Blocked member dialogs** - a TUI menu, answered on the card (see the inbox's comment).
- *  4. **Parked finalizations and gates** - a stuck destructive step, then shipping gates.
+ *  4. **Parked finalizations** - a stuck destructive step.
  *
  * Within a section the oldest wait leads, so draining top-to-bottom answers whoever has been
  * waiting longest. Every order is total (a timestamp then an id) so the list cannot reshuffle
@@ -197,14 +194,6 @@ export function foldAttention(input: AttentionInput): AttentionFold {
       summary,
       error: summary.error!,
     });
-  }
-
-  // (4b) Parked shipping gates. `gateAlerts` is App's own derivation (`gateParked`), which
-  // already excludes a gate some sibling session is driving - this must not re-decide that.
-  for (const session of input.sessions
-    .filter((s) => input.gateAlerts.has(s.id))
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1))) {
-    items.push({ kind: "gate", id: `gate:${session.id}`, session });
   }
 
   const total = items.reduce(

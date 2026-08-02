@@ -28,12 +28,6 @@ write.
 
 Phase 5 consumes:
 
-- the immutable `WorkflowCompletionPolicy` published in Phase 2;
-- Phase 3's successful End, evidence head, repair rounds, submission modes, run timeline, and SSE;
-- Phase 4's exact-payload delivery state machine for `inspector_feedback` and PR handoff prompts;
-- Inspector's existing `inspector_prs` adoption ledger and `inspector_comments` provenance ledger;
-- only the two existing adoption proofs: a hook with `prCreated` and `NmRunSummary.prUrl`.
-
 Run all workflow suites from Phases 1 through 4 plus `inspector-adoption.test.ts`,
 `inspector-marker.test.ts`, `inspector-plan.test.ts`, `inspector-posture.test.ts`, and
 `shipping-merge.test.ts` before implementation. Any adoption, comment-dedup, delivery-ambiguity, or
@@ -71,11 +65,6 @@ gate is an adapter over durable facts Inspector already owns:
 - non-resolved `InspectorComment` rows are findings still carried by the ledger.
 - `InspectorPr.reviewPosture` states whether that completed review was live, dry-run, or not
   allowlisted.
-
-`session.prUrl` is only a lookup hint. It may select a key that must already exist in
-`inspector_prs`; it can never create or adopt a row. Do not call `adoptPr` from any workflow path.
-Keep the provenance tests pinning that `prCreated` and `NmRunSummary.prUrl` are the only inputs to
-adoption.
 
 ## Persist scrubbed finding bodies
 
@@ -277,17 +266,6 @@ The published `missingPrAction` means:
 - `wait`: show why the gate cannot start and provide Open session only.
 - `offer_prepare_pr`: additionally show **Prepare PR in session**. This remains a deliberate human
   action; entering the gate never pushes or opens a PR automatically.
-
-The action renders a deterministic prompt asking the session to commit all reviewed work, push, open
-the PR through the normal harness/no-mistakes path, and resubmit the full workflow. Add
-`"pr_handoff"` to `WorkflowDeliveryKind` and send the prompt through the Phase 4 delivery state
-machine. Once the operator chooses the handoff, transition the run from `waiting_for_pr` to
-`waiting_for_session` with reason `pr_handoff`; the next Manual or Foreman completion creates a new
-full-workflow submission. A PR handoff changes the evidence boundary, so it never resumes the old
-Persona approval.
-
-When the hook or no-mistakes later proves PR authorship, normal Inspector adoption emits
-`InspectionUpdated`. An unadopted PR remains visibly refused even when `session.prUrl` points to it.
 
 ## Findings policy: restart full workflow
 

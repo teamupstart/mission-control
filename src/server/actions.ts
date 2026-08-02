@@ -18,7 +18,6 @@ import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
 import { EMULATOR_IDS } from "@shared/terminal.ts";
-import type { EmulatorHandle, MuxHandle } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
 import { sessionEffortLevels, supportsSessionEffort, type EffortSpec } from "@shared/harness-capabilities.ts";
 import { PLAIN_NAMES } from "./terminal/names.ts";
@@ -2197,7 +2196,7 @@ function defaultBranchOf(remoteRef: string): string {
  * branch already has (so the card keeps a chip for work that's over - see
  * `pollAndReconcilePrs`, which retires it once the session moves off the branch),
  * and the next task's commits land on top of a branch whose PR is merged, where
- * no-mistakes sees a non-default branch and validates onto it.
+ * a shipping process sees a non-default branch and pushes onto it.
  *
  * Detaching, rather than checking the default branch out, is the only option here:
  * a linked worktree cannot check out `main` while the main checkout holds it, and
@@ -2216,7 +2215,7 @@ async function releaseBranch(root: string, branch: string | null, target: string
   // Already standing on a commit - nothing holds the checkout, nothing to release.
   if (!branch) return true;
   // The default branch is the main checkout's resting state: no PR is keyed to it,
-  // no-mistakes already forces a feature branch off it, and yanking the user's own
+  // the shipping workflow already forces a feature branch off it, and yanking the user's own
   // tree into detached HEAD is not a thing a reset should surprise them with.
   if (branch === defaultBranchOf(target)) return false;
   return (await git(root, ["checkout", "--detach", target])).code === 0;

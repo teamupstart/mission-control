@@ -26,7 +26,6 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     backlog: [],
     onEditTask: () => {},
     backlogPlan: null,
-    gateAlerts: new Set<string>(),
     selectedId: null,
     consoleZone: "rail",
     onConsoleZoneChange: () => {},

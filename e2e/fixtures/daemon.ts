@@ -97,7 +97,7 @@ async function freeLoopbackPort(): Promise<number> {
  * A real git repository for a dispatch to branch a worktree off.
  *
  * Real git rather than a stub directory because dispatch does real work with it - it cuts a
- * worktree, reads the branch, and asks whether the repo is gated by no-mistakes. A fixture
+ * worktree and reads the branch. A fixture
  * that only looked like a repo would fail at the first `git` call, inside the daemon, where
  * the failure surfaces as an inscrutable dispatch error rather than as a broken fixture.
  */

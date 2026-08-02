@@ -286,7 +286,7 @@ same change.
 
 ## Canvas-first user experience
 
-Implement the first mockup in [the rendered parent plan](./plan.html): workflow library and palette
+Implement the first mockup in the parent plan: workflow library and palette
 on the left, graph canvas in the center, properties/validation on the right.
 
 Suggested modules:

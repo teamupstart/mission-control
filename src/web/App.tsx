@@ -595,6 +595,27 @@ export function App(): React.JSX.Element {
       nonce: (request?.nonce ?? 0) + 1,
     }));
   }, [layout]);
+  /**
+   * Show one EXACT checkout-relative path in the session's Files workspace.
+   *
+   * The destination half of `openSessionFile`, split out because not every caller has
+   * prose to parse. A path that came from `git diff` is already exact, and running it
+   * through `workspaceFileTarget` would apply that function's `:line[:column]` rule to
+   * it - correct for a path a human typed in a sentence, wrong for a file genuinely
+   * named `notes:12`, which would silently open `notes` instead.
+   */
+  const openSessionPath = useCallback((sessionId: string, path: string): void => {
+    files.ensure(sessionId);
+    files.select(sessionId, path);
+    if (layout === "grid") {
+      setFilesSessionId(sessionId);
+    } else {
+      setSelectedId(sessionId);
+      if (layout === "board") setBoardOpen(true);
+      requestFilesTab(sessionId);
+    }
+  }, [files.ensure, files.select, layout, requestFilesTab]);
+
   const openSessionFile = useCallback((
     sessionId: string,
     href: string,
@@ -608,17 +629,9 @@ export function App(): React.JSX.Element {
     }) : null;
     if (!target) return false;
     if (probe) return ambiguousRoot ? files.probe(sessionId, target.path) : true;
-    files.ensure(sessionId);
-    files.select(sessionId, target.path);
-    if (layout === "grid") {
-      setFilesSessionId(sessionId);
-    } else {
-      setSelectedId(sessionId);
-      if (layout === "board") setBoardOpen(true);
-      requestFilesTab(sessionId);
-    }
+    openSessionPath(sessionId, target.path);
     return true;
-  }, [files.ensure, files.probe, files.select, layout, requestFilesTab, sessions]);
+  }, [files.probe, openSessionPath, sessions]);
 
   /**
    * The overlays keyed on a session id, and how to drop that id.
@@ -880,6 +893,7 @@ export function App(): React.JSX.Element {
     onOpenDiff: openDiff,
     onOpenFiles: setFilesSessionId,
     onOpenFile: openSessionFile,
+    onOpenFilePath: openSessionPath,
     fileTabRequest,
     diffTabRequest,
     conversationTabRequest,
@@ -1966,7 +1980,19 @@ export function App(): React.JSX.Element {
         )}
 
         {diffSession && (
-          <DiffViewer session={diffSession} commit={diffCommit} onClose={closeDiff} />
+          <DiffViewer
+            session={diffSession}
+            commit={diffCommit}
+            onClose={closeDiff}
+            // Cards have no Files tab, so `openSessionPath` opens the Files WINDOW here.
+            // The diff has to stand down first or it sits on top of the file it just
+            // asked for - the one case where opening a file also closes something.
+            onOpenInFiles={(path) => {
+              const sessionId = diffSession.id;
+              closeDiff();
+              openSessionPath(sessionId, path);
+            }}
+          />
         )}
 
         {filesSession && (

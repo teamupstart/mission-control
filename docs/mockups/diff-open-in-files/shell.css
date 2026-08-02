@@ -1,0 +1,556 @@
+/*
+ * Shared shell for the "open a diff file in the Files tab" placement mockups.
+ *
+ * Everything under "app surface" is lifted verbatim from src/web/styles.css so the
+ * three options are compared at the real sizes, colours and paddings they would
+ * ship at. Only the placement of ONE control differs between the pages; each page
+ * owns that control's CSS and nothing else.
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f;
+  --bg-2: #0e1116;
+  --panel: #14181e;
+  --panel-2: #171c23;
+  --border: #232a33;
+  --border-soft: #1b2129;
+  --fg: #e7ebf1;
+  --muted: #939eae;
+  --dim: #7c8798;
+
+  --working: #4a9eff;
+  --idle: #35c08a;
+  --attention: #f6a733;
+  --danger: #f85149;
+  --neutral: #8b94a3;
+  --purple: #a371f7;
+
+  --radius: 13px;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+body {
+  background: #07090b;
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.45;
+}
+a {
+  color: inherit;
+}
+:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------- *
+ * proposal chrome - not part of the app
+ * ---------------------------------------------------------------- */
+
+.doc {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 42px 24px 4px;
+}
+.doc .eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+.doc h1 {
+  font-size: 27px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 10px 0 8px;
+}
+.doc h1 .num {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--working);
+  margin-right: 12px;
+}
+.doc .stand {
+  color: var(--muted);
+  max-width: 78ch;
+}
+.doc nav {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.doc nav a {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 11px;
+}
+.doc nav a:hover {
+  color: var(--fg);
+  border-color: var(--dim);
+}
+.doc nav a[aria-current] {
+  color: var(--working);
+  border-color: var(--working);
+}
+
+.framecap {
+  max-width: 1240px;
+  margin: 30px auto -18px;
+  padding: 0 24px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.frame {
+  max-width: 1240px;
+  margin: 26px auto 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+}
+
+.notes {
+  max-width: 1240px;
+  margin: 14px auto 64px;
+  padding: 0 24px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 10px;
+}
+.note {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 11px 13px;
+  background: var(--bg-2);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.note b {
+  color: var(--fg);
+  font-weight: 600;
+  display: block;
+  margin-bottom: 3px;
+}
+.note.good {
+  border-left: 3px solid var(--idle);
+}
+.note.cost {
+  border-left: 3px solid var(--attention);
+}
+.note.src {
+  border-left: 3px solid var(--dim);
+}
+.note code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg);
+}
+
+/* Ring the ONE control each page is proposing, so the eye finds it in a frame
+   that is otherwise the shipping UI. Not part of the design. */
+.spot {
+  position: relative;
+}
+.spot::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 9px;
+  border: 1px dashed color-mix(in oklab, var(--working) 55%, transparent);
+  pointer-events: none;
+}
+
+/* A strip of the proposed control in each of its states, shown at real size. */
+.states {
+  max-width: 1240px;
+  margin: 22px auto 0;
+  padding: 0 24px;
+}
+.states h2 {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+.state-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
+  gap: 10px;
+}
+.state {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 14px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-2);
+  min-width: 0;
+}
+.state .cap {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.state .why {
+  font-size: 11.5px;
+  color: var(--muted);
+  max-width: 34ch;
+}
+
+/* ---------------------------------------------------------------- *
+ * app surface - lifted from src/web/styles.css
+ * ---------------------------------------------------------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 660px;
+  background: var(--panel);
+}
+
+.detail-tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.detail-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 13px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.detail-tab:hover {
+  color: var(--fg);
+}
+.detail-tab.on {
+  color: var(--fg);
+}
+.detail-tab.on::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--working);
+}
+.kb-hint {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 3px;
+}
+
+.diff-viewer-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--panel);
+}
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.diff-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px 12px;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+}
+.diff-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+.diff-stat {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.mono {
+  font-family: var(--mono);
+}
+.branch::before {
+  content: "⑂ ";
+  color: var(--dim);
+}
+.diff-add {
+  color: var(--idle);
+}
+.diff-del {
+  color: #ef5f63;
+}
+.diff-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ---- left file list ---- */
+.diff-filelist {
+  flex: none;
+  width: 264px;
+  overflow-y: auto;
+  padding: 8px;
+  border-right: 1px solid var(--border-soft);
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.diff-fileitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.diff-fileitem:hover {
+  background: var(--panel-2);
+}
+.diff-fileitem.active {
+  background: color-mix(in oklab, var(--working) 14%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.diff-file-dot {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--mono);
+  border-radius: 5px;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--muted) 16%, transparent);
+}
+.diff-file-dot.status-added {
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 18%, transparent);
+}
+.diff-file-dot.status-deleted {
+  color: #ef5f63;
+  background: color-mix(in oklab, #ef5f63 18%, transparent);
+}
+.diff-fileitem-path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.fp-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 68%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  color: var(--fg);
+  font-family: var(--mono);
+}
+.fp-dir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--dim);
+  font-family: var(--mono);
+}
+.diff-fileitem.active .fp-name {
+  font-weight: 600;
+}
+.diff-fileitem-stat {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  gap: 6px;
+}
+
+/* ---- right detail pane ---- */
+.diff-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 14px 18px;
+}
+.diff-file {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+.diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  color: var(--fg);
+}
+.diff-file-status {
+  flex: none;
+  font-size: 10px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 20px;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--muted) 14%, transparent);
+}
+.diff-file-status.status-added {
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 16%, transparent);
+}
+.diff-file-status.status-deleted {
+  color: #ef5f63;
+  background: color-mix(in oklab, #ef5f63 16%, transparent);
+}
+.diff-file-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diff-file-stat {
+  flex: none;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  gap: 7px;
+}
+.diff-lines {
+  overflow-x: auto;
+}
+.diff-lines table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.dl td {
+  padding: 0;
+}
+.dl-num {
+  width: 1%;
+  min-width: 44px;
+  padding: 0 8px !important;
+  text-align: right;
+  color: var(--dim);
+  user-select: none;
+  white-space: nowrap;
+  border-right: 1px solid var(--border-soft);
+}
+.dl-sign {
+  width: 16px;
+  text-align: center;
+  color: var(--dim);
+  user-select: none;
+}
+.dl-text {
+  white-space: pre;
+  padding-right: 14px !important;
+  color: var(--fg);
+}
+.dl-add {
+  background: color-mix(in oklab, var(--idle) 11%, transparent);
+}
+.dl-add .dl-sign,
+.dl-add .dl-text {
+  color: color-mix(in oklab, var(--idle) 45%, var(--fg));
+}
+.dl-del {
+  background: color-mix(in oklab, #ef5f63 12%, transparent);
+}
+.dl-del .dl-sign,
+.dl-del .dl-text {
+  color: color-mix(in oklab, #ef5f63 42%, var(--fg));
+}
+.dl-hunk .dl-text {
+  color: var(--working);
+}
+.dl-hunk {
+  background: color-mix(in oklab, var(--working) 8%, transparent);
+}

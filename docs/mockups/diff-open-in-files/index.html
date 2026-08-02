@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open a diff file in Files - Mission Control UI exploration</title>
+<link rel="stylesheet" href="shell.css">
+<style>
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 48px 24px 80px; }
+  .wrap .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .18em;
+    color: var(--dim); text-transform: uppercase;
+  }
+  h1 { font-size: 30px; font-weight: 650; letter-spacing: -.015em; margin: 12px 0 10px; }
+  .stand { color: var(--muted); max-width: 76ch; font-size: 15px; line-height: 1.6; }
+  h2 { font-size: 15px; font-weight: 650; margin: 40px 0 12px; letter-spacing: .01em; }
+  h2 .g { color: var(--working); font-family: var(--mono); margin-right: 8px; }
+
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 11px; }
+  .fact {
+    background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: 11px;
+    padding: 13px 15px; font-size: 13px; color: var(--muted); line-height: 1.55;
+  }
+  .fact b { color: var(--fg); display: block; margin-bottom: 3px; font-size: 13.5px; }
+  .fact .loc {
+    display: block; margin-top: 8px; font-family: var(--mono); font-size: 10px; color: var(--dim);
+  }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .opt {
+    display: block; text-decoration: none; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 13px; padding: 15px 16px 16px;
+    transition: border-color .12s ease;
+  }
+  .opt:hover { border-color: var(--dim); }
+  .opt .num { font-family: var(--mono); font-size: 11px; color: var(--working); }
+  .opt h3 { font-size: 15.5px; font-weight: 650; margin: 4px 0 7px; }
+  .opt p { font-size: 12.5px; color: var(--muted); line-height: 1.55; min-height: 62px; }
+  .opt .chips { display: flex; gap: 6px; margin-top: 11px; flex-wrap: wrap; }
+  .chip {
+    font-family: var(--mono); font-size: 9.5px; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--dim);
+  }
+  .chip.low { color: var(--idle); border-color: rgba(53,192,138,.4); }
+  .chip.med { color: var(--attention); border-color: rgba(246,167,51,.4); }
+  .chip.loud { color: var(--working); border-color: rgba(74,158,255,.4); }
+
+  /* a real, live sample of each option's control, inside its card */
+  .swatch {
+    margin-top: 12px; padding: 10px 11px; border-radius: 8px;
+    background: var(--panel-2); border: 1px solid var(--border-soft);
+    display: flex; align-items: center; gap: 9px; overflow: hidden;
+  }
+  .sw-btn {
+    display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 11.5px;
+    font-weight: 600; color: var(--muted); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 7px; padding: 3px 5px 3px 9px;
+  }
+  .sw-btn .glyph { font-size: 12px; line-height: 1; color: var(--working); }
+  .sw-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+  .sw-open {
+    flex: none; display: grid; place-items: center; width: 22px; height: 22px;
+    font-size: 12px; color: var(--working); border-radius: 6px;
+    background: color-mix(in oklab, var(--working) 16%, transparent);
+  }
+  /* The rule belongs under the path, not across the rest of the bar. */
+  .sw-link {
+    font-family: var(--mono); font-size: 12px; color: var(--working);
+    display: flex; gap: 6px; align-items: baseline; min-width: 0;
+  }
+  .sw-link .t {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    border-bottom: 1px solid var(--working);
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td {
+    text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border-soft);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--dim); font-weight: 500;
+  }
+  td:first-child { white-space: nowrap; font-weight: 600; color: var(--fg); }
+  td { color: var(--muted); }
+  td .y { color: var(--idle); }
+  td .n { color: #ef5f63; }
+  td .p { color: var(--attention); }
+
+  .combo {
+    background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: 11px;
+    border-left: 3px solid var(--working); padding: 14px 16px; font-size: 13px;
+    color: var(--muted); max-width: 84ch; line-height: 1.65;
+  }
+  .combo b { color: var(--fg); }
+  .combo code, .fact code, td code {
+    font-family: var(--mono); font-size: 11.5px; color: var(--fg);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Mission Control - UI exploration - 2026-08-01</div>
+  <h1>Opening a diff file in the Files tab</h1>
+  <p class="stand">
+    The Diff tab tells you a file changed. The Files tab, one tab over, is where you read and edit
+    it. Right now nothing connects them - you read <code>src/web/components/DiffViewer.tsx</code> in
+    the diff, press <kbd class="kb-hint">f</kbd>, and hunt for it again in a list of the whole
+    checkout. Three placements for the link that closes that gap, each shown in a full-size frame
+    of the real UI.
+  </p>
+
+  <h2><span class="g">01</span>What is already true in the codebase</h2>
+  <div class="facts">
+    <div class="fact"><b>The jump already exists.</b> <code>onOpenFile</code> does
+      <code>files.select</code> + <code>requestFilesTab</code> and is what a path in a transcript
+      calls today. Nothing new has to be built to make the tab switch happen.
+      <span class="loc">App.tsx:541 · openSessionFile</span></div>
+    <div class="fact"><b>The diff reader has no route to it.</b> <code>InlineDiffViewer</code> takes
+      three props - session, commit, requestNonce. It has never been handed a way to reach the
+      Files tab, so the callback has to be threaded in.
+      <span class="loc">DiffViewer.tsx:47</span></div>
+    <div class="fact"><b>The list row is one big button.</b> Putting a second control inside it is
+      invalid markup and unreachable for a screen reader, so option 2 must split the row in two.
+      Options 1 and 3 leave it alone.
+      <span class="loc">DiffViewer.tsx:255</span></div>
+    <div class="fact"><b>There is already a visual language for this.</b>
+      <code>a.workspace-path</code> - inherited colour, dotted rule, accent on hover - means
+      "a path that opens in Files" everywhere in a transcript.
+      <span class="loc">styles.css:3409</span></div>
+    <div class="fact"><b>The header bar has room.</b> <code>.diff-file-head</code> is a flex row
+      whose path is the only growing child; the list is a fixed 264px where
+      <code>.fp-dir</code> is already truncating.
+      <span class="loc">styles.css:6502 · 6378</span></div>
+    <div class="fact"><b><code>o</code> is unclaimed.</b> Every other single letter that reads as
+      "open" is spoken for, but <code>o</code> is free if this wants a chord and a keycap.
+      <span class="loc">keybindings.ts</span></div>
+  </div>
+
+  <h2><span class="g">02</span>The three placements</h2>
+  <div class="cards">
+
+    <a class="opt" href="1-header-action.html">
+      <span class="num">01</span>
+      <h3>Header action</h3>
+      <p>A labelled <b>Open in Files ↗</b> button at the right end of the file bar, after the
+        +/− counts. Always visible, never hidden behind a hover, and it says in words where it
+        goes.</p>
+      <div class="swatch">
+        <span class="diff-file-status">modified</span>
+        <span class="diff-file-path mono" style="flex:1">…/DiffViewer.tsx</span>
+        <span class="sw-btn">Open in Files <span class="glyph">↗</span></span>
+      </div>
+      <div class="chips">
+        <span class="chip low">1 component</span>
+        <span class="chip loud">most discoverable</span>
+        <span class="chip">open file only</span>
+      </div>
+    </a>
+
+    <a class="opt" href="2-list-row-action.html">
+      <span class="num">02</span>
+      <h3>List row action</h3>
+      <p>An ↗ on every row of the changed-files list, quiet until you point at a row and pinned on
+        the selected one. The only option that lets you jump to a file you are <i>not</i> currently
+        reading.</p>
+      <div class="swatch">
+        <span class="sw-row">
+          <span class="diff-file-dot" aria-hidden="true">M</span>
+          <span class="diff-fileitem-path mono" style="flex:1">
+            <span class="fp-name">DiffViewer.tsx</span><span class="fp-dir">src/web/components</span>
+          </span>
+          <span class="sw-open">↗</span>
+        </span>
+      </div>
+      <div class="chips">
+        <span class="chip med">restructures the row</span>
+        <span class="chip loud">every file at once</span>
+        <span class="chip med">costs 27px of path</span>
+      </div>
+    </a>
+
+    <a class="opt" href="3-path-link.html">
+      <span class="num">03</span>
+      <h3>The path is the link</h3>
+      <p>No new control. The path already on the bar becomes clickable in the app's existing
+        workspace-path style - the same dotted rule every clickable path in a transcript already
+        wears.</p>
+      <div class="swatch">
+        <span class="diff-file-status">modified</span>
+        <span class="sw-link" style="flex:1">
+          <span class="t">…/DiffViewer.tsx</span>
+          <span>↗</span>
+        </span>
+        <span class="diff-file-stat"><span class="diff-add">+34</span></span>
+      </div>
+      <div class="chips">
+        <span class="chip low">zero new chrome</span>
+        <span class="chip low">reuses an idiom</span>
+        <span class="chip">quietest</span>
+      </div>
+    </a>
+
+  </div>
+
+  <h2><span class="g">03</span>Side by side</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>&nbsp;</th>
+        <th>01 Header action</th>
+        <th>02 List row</th>
+        <th>03 Path link</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>On every file</td>
+        <td><span class="y">Yes</span> - one at a time, whichever is open</td>
+        <td><span class="y">Yes</span> - all five on screen together</td>
+        <td><span class="y">Yes</span> - one at a time, whichever is open</td>
+      </tr>
+      <tr>
+        <td>Clicks to jump<br>to another file</td>
+        <td>2 (select, then click)</td>
+        <td><span class="y">1</span></td>
+        <td>2 (select, then click)</td>
+      </tr>
+      <tr>
+        <td>Discoverable<br>at rest</td>
+        <td><span class="y">High</span> - a labelled button</td>
+        <td><span class="n">Low</span> - hover reveals a bare glyph</td>
+        <td><span class="p">Medium</span> - a dotted rule and an ↗</td>
+      </tr>
+      <tr>
+        <td>Layout cost</td>
+        <td>~120px of path truncation room in a wide pane</td>
+        <td><span class="n">27px off every row</span> in an already tight 264px list</td>
+        <td><span class="y">None</span></td>
+      </tr>
+      <tr>
+        <td>Markup change</td>
+        <td><code>FileDiff</code> only</td>
+        <td><span class="n"><code>FileItem</code> row splits into a container + two buttons</span></td>
+        <td><code>FileDiff</code> only - <code>span</code> becomes <code>button</code></td>
+      </tr>
+      <tr>
+        <td>New visual<br>vocabulary</td>
+        <td>A button style the bar has not carried before</td>
+        <td>An unlabelled glyph the list has not carried before</td>
+        <td><span class="y">None</span> - reuses <code>a.workspace-path</code></td>
+      </tr>
+      <tr>
+        <td>Deleted files</td>
+        <td>Disabled button + tooltip</td>
+        <td>Disabled glyph + tooltip</td>
+        <td>Path renders as plain text</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2><span class="g">04</span>Where I would land</h2>
+  <div class="combo">
+    <p><b>Option 3, and then option 2 if one click matters.</b> Option 3 is the only one that adds
+      no vocabulary: the dashboard already has a single treatment meaning "this path opens in
+      Files", the diff header is the one place printing a path that ignores it, and honouring it
+      there is a smaller change than any new control. It also costs nothing in layout, which the
+      264px file list cannot say.</p>
+    <p style="margin-top:11px">The real argument for <b>option 2</b> is not decoration, it is that
+      it halves the interaction: from the diff you can open any of the five changed files without
+      first making it the one you are reading. If reviewers are jumping between files rather than
+      following one, that is worth the row restructure and the 27px. The two compose - the same
+      <code>onOpenInFiles</code> prop feeds both, and shipping 3 first does not close the door.</p>
+    <p style="margin-top:11px"><b>Option 1</b> is the safe pick if the worry is that nobody finds
+      the feature. It is the loudest and the least surprising, at the price of putting a button
+      where the app currently puts none.</p>
+  </div>
+
+  <h2><span class="g">05</span>True of all three</h2>
+  <div class="facts">
+    <div class="fact"><b>Deleted files cannot be opened.</b> The path is gone from the checkout, so
+      the control is disabled with a tooltip rather than offering a jump that only produces an
+      error in the Files pane.</div>
+    <div class="fact"><b>Renames point at the new path.</b> <code>DiffFile.path</code> holds the
+      post-rename name, which is the one that exists on disk.</div>
+    <div class="fact"><b>One shared callback.</b> All three call
+      <code>onOpenInFiles(path)</code>, threaded from <code>ConsoleDetail</code> into
+      <code>InlineDiffViewer</code>, landing on the existing
+      <code>files.select</code> + <code>requestFilesTab</code> pair.</div>
+    <div class="fact"><b>Grid layout has no Files tab.</b> Cards open the diff as a modal.
+      <code>openSessionFile</code> already handles that branch by setting
+      <code>filesSessionId</code> instead - so the control works there too, or is omitted from the
+      modal on purpose.
+      <span class="loc">App.tsx:557</span></div>
+    <div class="fact"><b>Needs a Playwright spec.</b> Click the control in the Diff tab,
+      assert the Files tab is selected and showing that path. Selected by role and accessible
+      name - no <code>data-testid</code>.</div>
+    <div class="fact"><b>The keyboard walk stays.</b> ↑/↓ and j/k keep moving the diff selection;
+      whichever control ships must not steal those keys or the focus they depend on.</div>
+  </div>
+
+</div>
+</body>
+</html>

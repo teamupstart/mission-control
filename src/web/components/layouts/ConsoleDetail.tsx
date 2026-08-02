@@ -473,6 +473,9 @@ export function ConsoleDetail({
               requestNonce={
                 diffSelection.sessionId === session.id ? diffSelection.requestNonce : undefined
               }
+              // The destination a transcript file link reaches, without its prose
+              // parsing: a diff path is exact (see `diffFileOpenTarget`).
+              onOpenInFiles={(path) => view.onOpenFilePath(session.id, path)}
             />
           ) : (
             <div className="detail-pane">

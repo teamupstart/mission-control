@@ -20,6 +20,92 @@ export interface DiffFile {
   lines: DiffLine[];
 }
 
+/** A changed file's route into the Files tab, or the reason it has none. */
+export interface DiffFileTarget {
+  /**
+   * The path to hand the Files workspace, relative to the session's cwd because that
+   * is what the Files workspace is rooted at. Null exactly when `reason` is set.
+   */
+  path: string | null;
+  /** Why this file cannot be opened in the Files tab, or null when it can. */
+  reason: string | null;
+}
+
+/** Drop any trailing slashes so two directory paths concatenate predictably. */
+function trimTrailingSlash(path: string): string {
+  return path.replace(/\/+$/, "");
+}
+
+/**
+ * Where a changed file lives for the Files tab, or why it cannot go there.
+ *
+ * The two readers do not measure paths from the same place, and neither is wrong.
+ * Git emits toplevel-relative paths wherever it is invoked from, so the patch is
+ * relative to `SessionDiff.repoRoot` (`computeSessionDiff` runs `git diff` with no
+ * pathspec, so the patch spans the whole repository). The Files browser runs
+ * `git ls-files` inside the session's cwd and lists only that subtree, so its paths
+ * are relative to `cwd` (`listSessionFiles`). For a session sitting at the repo root -
+ * every dispatched session, since a worktree IS its root - those are the same
+ * directory and every changed file resolves.
+ *
+ * They differ for a session opened in a SUBDIRECTORY, and there the difference is not
+ * cosmetic. Handing the patch's path over as written makes the daemon resolve it
+ * against cwd, so a changed root `src/index.ts` opens the package's own `src/index.ts`
+ * instead: a real file, the wrong file, no error anywhere. Reaching the real one needs
+ * `../../src/index.ts`, which the daemon refuses with 403 "path leaves the session
+ * checkout" - the containment every session file read goes through. A file above cwd
+ * therefore has no route into this session's Files tab at all, and saying so is the
+ * only honest answer available.
+ *
+ * Both sides are physical paths, so the comparison below is sound rather than merely
+ * conservative: git reports `--show-toplevel` resolved, `lsof -d cwd` reports the
+ * kernel's resolved cwd for an adopted session, and a dispatched session's cwd is
+ * `realpathSync`'d. A symlinked checkout does not produce a spurious refusal.
+ *
+ * Deliberately NOT `workspaceFileTarget`, which the transcript uses: that function
+ * reads a trailing `:12` as a line number because a path in prose means it that way.
+ * A path from `git diff` is exact, and a file genuinely named `notes:12` would be
+ * routed to `notes` - enabled, and opening the wrong file.
+ *
+ * DECIDED, not overlooked: review asked that no non-deleted file be disabled, and the
+ * human ruled to keep the refusal above. The alternative is re-rooting the Files
+ * workspace at the repo root, which widens the daemon's read and write containment
+ * from the cwd subtree to the whole repository for every session - a bigger and more
+ * security-relevant change than the affordance it would serve. Every dispatched
+ * session is at its worktree root, where `cwd === repoRoot` and nothing is refused.
+ * Revisit this with that re-rooting, not by loosening the check.
+ */
+export function diffFileOpenTarget(
+  file: DiffFile,
+  repoRoot: string | null,
+  cwd: string | null,
+): DiffFileTarget {
+  // A deleted file is gone from the checkout; there is no working-tree copy to read.
+  if (file.status === "deleted") {
+    return { path: null, reason: "This file was deleted, so there is nothing to open." };
+  }
+  if (!cwd) return { path: null, reason: "This session has no working directory." };
+  // `repoRoot` is null only when the cwd is not a git repo, in which case there is no
+  // patch to be reading in the first place - but the diff can outlive that fact.
+  if (!repoRoot) return { path: null, reason: "The checkout root for this diff is unknown." };
+  // Git does not emit these, and the daemon would refuse them; neither is a reason to
+  // hand one to it.
+  if (file.path.split("/").some((segment) => segment === ".." || segment === "")) {
+    return { path: null, reason: "This file's path cannot be resolved in the checkout." };
+  }
+
+  const root = trimTrailingSlash(repoRoot);
+  const base = trimTrailingSlash(cwd);
+  const absolute = `${root}/${file.path}`;
+  if (base !== root && !absolute.startsWith(`${base}/`)) {
+    return {
+      path: null,
+      reason: "This file is outside the session's working directory, so the Files tab cannot open it.",
+    };
+  }
+  return { path: absolute.slice(base.length + 1), reason: null };
+}
+
 /** Strip a leading a/ or b/ prefix (git's default) and surrounding quotes. */
 function stripPrefix(p: string): string {
   return p.replace(/^"|"$/g, "").replace(/^[ab]\//, "");

@@ -61,23 +61,50 @@ const drawer = (page: Page, name: string): Locator =>
 const anyDrawer = (page: Page): Locator => page.locator(".line-drawer");
 
 /**
- * A bounding box read only once it has stopped moving.
+ * A bounding box read only once it has genuinely stopped moving.
  *
- * A freshly dispatched session is still settling for a second or so - the titler renames it,
- * the driver reports its model, the branch line arrives - and every one of those changes the
- * card's height. Comparing a box taken mid-settle against one taken after it is a test that
- * fails about one run in five and blames the drawer for the titler. Two consecutive identical
- * reads is the cheapest honest definition of "settled".
+ * A freshly dispatched session keeps changing shape for a second or two after its card
+ * appears - the titler renames it, the driver reports its model, the branch line arrives -
+ * and each of those can add a line to the card. Comparing a box taken mid-settle against one
+ * taken after it is a test that fails on a loaded machine and blames the drawer for the
+ * titler, which is exactly what it did: 358px against an expected 339, one line's worth.
+ *
+ * TWO consecutive identical reads is not enough, and that was the first cut's mistake. The
+ * mutations arrive from a subprocess over SSE, so a card can sit quiet for one poll interval
+ * and then grow. This wants a QUIET WINDOW - several consecutive identical reads at a fixed
+ * interval - and the caller gates on the session reaching `idle` first, so the window is
+ * waiting out stragglers rather than the whole launch.
  */
+const QUIET_READS = 5;
+const QUIET_INTERVAL_MS = 250;
+
 async function settledBox(locator: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
   let last = JSON.stringify(await locator.boundingBox());
+  let stable = 0;
   await expect.poll(async () => {
     const next = JSON.stringify(await locator.boundingBox());
-    const same = next === last;
+    stable = next === last ? stable + 1 : 0;
     last = next;
-    return same;
-  }, { timeout: 15_000 }).toBe(true);
+    return stable;
+  }, {
+    // A fixed cadence, so "five reads" is a known ~1.25s of quiet rather than whatever
+    // `expect.poll`'s backoff happened to produce.
+    intervals: Array.from({ length: 120 }, () => QUIET_INTERVAL_MS),
+    timeout: 30_000,
+  }).toBeGreaterThanOrEqual(QUIET_READS);
   return JSON.parse(last) as { x: number; y: number; width: number; height: number };
+}
+
+/** The daemon's own word for "the launch turn is over", which no DOM poll can substitute for. */
+async function waitForIdleSession(daemon: DaemonHandle): Promise<string> {
+  let sessionId = "";
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
+    const live = sessions.find((session) => session.state !== "exited");
+    sessionId = live?.id ?? "";
+    return live?.state ?? "";
+  }, { timeout: 30_000 }).toBe("idle");
+  return sessionId;
 }
 
 /** A recurring mission, which files a backlog task on a cadence and never launches an agent. */
@@ -165,6 +192,9 @@ test("the drawer pushes the board down and hands the space back, and never resiz
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
+  // Idle first, then quiet. The card's height is a function of content still arriving from a
+  // subprocess, and no amount of polling the DOM can tell "quiet" from "not started yet".
+  await waitForIdleSession(daemon);
   const card = dashboard.locator(".card").first();
   await expect(card).toBeVisible();
   const before = await settledBox(card);
@@ -234,6 +264,45 @@ test("past three rows the drawer caps and scrolls inside itself, never burying t
   expect((await intake.boundingBox())!.y).toBe(drawerTopBefore);
   await body.evaluate((el) => el.scrollTo(0, 0));
   await shoot(dashboard, "intake-capped");
+});
+
+test("a task-source read that fails says so, instead of reporting an empty intake", async ({
+  dashboard,
+}) => {
+  const intake = () => drawer(dashboard, "Intake");
+
+  // The CONTROL first, and it is not optional: the assertion below is that a sentence is
+  // absent, and a sentence that could never appear here would make it pass through the exact
+  // regression it names. On a fleet with no missions and a healthy (empty) sources read, the
+  // drawer does claim nothing files work on its own.
+  await stage(dashboard, "Intake").click();
+  await expect(intake()).toContainText("Nothing files work on its own yet");
+  await expect(intake().locator(".line-drawer-count")).toContainText("0 sources");
+  await stage(dashboard, "Intake").click();
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+
+  // Now break the read the drawer makes when it opens. `fetchJson` swallows every failure and
+  // resolves null, so this is the shape a real outage takes: not an exception, just an absence.
+  await dashboard.route("**/api/task-sources/config", (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"boom"}' }));
+
+  await stage(dashboard, "Intake").click();
+  await expect(intake()).toBeVisible();
+
+  // It must not claim an absence it cannot know about - this is the defect: four configured
+  // sources behind a failing route would have reported as a tidy, healthy, empty intake.
+  await expect(intake()).not.toContainText("Nothing files work on its own yet");
+  // The header stops printing a number it does not have, and counts the unknown as needing
+  // a look, because unknown health is not health.
+  await expect(intake().locator(".line-drawer-count")).toContainText("sources unavailable");
+  await expect(intake().locator(".line-drawer-count")).not.toContainText("0 sources");
+  await expect(intake().locator(".line-drawer-att")).toContainText("1 needs a look");
+  // And it says what to go and look at, in the place a broken source row would be.
+  const row = intake().locator(".line-intake-row").first();
+  await expect(row).toContainText("Task sources");
+  await expect(row).toContainText("could not be read");
+  await expect(row).toHaveClass(/is-waiting/);
+  await expect(row.getByRole("button", { name: "Settings" })).toBeVisible();
 });
 
 test("the Review drawer reads a live run and escalates to it at #/runs/:id", async ({

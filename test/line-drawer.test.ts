@@ -366,13 +366,28 @@ test("the Intake drawer links out rather than editing, and archived missions are
   assert.doesNotMatch(html, /<input/, "nothing is edited in the drawer");
 });
 
-test("an intake with nothing configured teaches what the two machineries are", () => {
+// Under `renderToStaticMarkup` no effect runs, so every case in this file sees the drawer's
+// PRE-FETCH frame - which is a real frame a person sees for a tick, and the one the three
+// source states are easiest to get wrong in.
+test("before the sources read lands, the drawer counts no sources and claims no absence", () => {
   const html = intakeDrawer([]);
-  // Under `renderToStaticMarkup` no effect runs, so the sources read has not happened - which
-  // is exactly the pre-fetch frame a person sees for one tick, and it must still read.
-  assert.match(html, /0 sources · 0 missions/);
-  assert.match(html, /files a task on a cadence/);
-  assert.match(html, /Neither ever launches an agent/);
+  // Not "0 sources". A zero an operator cannot tell from a real zero is worse than no figure:
+  // this drawer's whole job is to say whether anything feeding the backlog is broken, and a
+  // tidy "0" is the one answer it must never give while it does not know.
+  assert.match(html, /sources loading… · 0 missions/);
+  assert.doesNotMatch(html, /0 sources/);
+  // And it must not assert the absence either - that sentence is a claim, and nothing has
+  // come back to support it yet.
+  assert.doesNotMatch(html, /Neither ever launches an agent/);
+  assert.match(html, /Reading task sources…/);
+});
+
+test("a mission renders while the sources read is still out", () => {
+  // One half being unknown is no reason to withhold the other.
+  const html = intakeDrawer([{ id: "m1", name: "Nightly audit" }]);
+  assert.match(html, /Nightly audit/);
+  assert.match(html, /sources loading… · 1 mission/);
+  assert.doesNotMatch(html, /Reading task sources…/);
 });
 
 // ---------------------------------------------------------------------------

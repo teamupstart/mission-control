@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -17,6 +19,27 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * No model tokens. The seeded states are reached through the task, schedule and workflow
  * routes; the one dispatched session runs against the fake agent like every other spec here.
  */
+
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/line-drawers/", import.meta.url));
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * Behind `MC_E2E_EVIDENCE` for the reason the Line strip's captures are: an ordinary run
+ * would rewrite the binaries for no added signal. Inside the regression tests rather than in
+ * a staged capture spec, because the point of the picture is that the assertions around it
+ * passed on the same run.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and the
+  // strip is six adjacent buttons.
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED docs/evidence/line-drawers/${name}.png`);
+}
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
@@ -150,6 +173,7 @@ test("the drawer pushes the board down and hands the space back, and never resiz
   await expect(drawer(dashboard, "Review")).toBeVisible();
   const open = await settledBox(card);
   const panel = (await drawer(dashboard, "Review").boundingBox())!;
+  await shoot(dashboard, "board-pushed-down");
 
   // The board is still there, below the drawer, with the card in it - the drawer is a
   // sibling of the layout and not an overlay over it.
@@ -166,6 +190,7 @@ test("the drawer pushes the board down and hands the space back, and never resiz
   await expect(anyDrawer(dashboard)).toHaveCount(0);
   const after = await settledBox(card);
   expect(after.y).toBe(before.y);
+  await shoot(dashboard, "board-returned");
   expect(after.width).toBe(before.width);
   expect(after.height).toBe(before.height);
 });
@@ -207,6 +232,8 @@ test("past three rows the drawer caps and scrolls inside itself, never burying t
   await body.evaluate((el) => el.scrollTo(0, el.scrollHeight));
   await expect(intake.getByText("Link check")).toBeInViewport();
   expect((await intake.boundingBox())!.y).toBe(drawerTopBefore);
+  await body.evaluate((el) => el.scrollTo(0, 0));
+  await shoot(dashboard, "intake-capped");
 });
 
 test("the Review drawer reads a live run and escalates to it at #/runs/:id", async ({
@@ -282,6 +309,7 @@ test("the Review drawer reads a live run and escalates to it at #/runs/:id", asy
   await expect(row).toContainText("Drawer review v1");
   await expect(row).toContainText("1 reviewer failed");
   await expect(review.locator(".line-drawer-count")).toContainText("1 run live");
+  await shoot(dashboard, "review-open");
 
   // Escalation: the full reader is one click deeper, at the re-homed route.
   await row.getByRole("button", { name: "Open run" }).click();

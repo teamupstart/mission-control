@@ -14525,6 +14525,12 @@ select.sc-input {
   max-height: min(38vh, calc(var(--line-drawer-row-h) * 3));
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* Reserved whether or not it scrolls, so the rows sit at one indent down the panel AND the
+     thumb is drawn in a track rather than floating over the last column. The cap lands on an
+     exact row boundary, so no half-row peeks over the edge to say "there is more" - the
+     header's count does that in words ("0 sources · 5 missions" over three rows), and a
+     visible track is the other half of it. */
+  scrollbar-gutter: stable;
 }
 .line-drawer-body::-webkit-scrollbar {
   width: 8px;

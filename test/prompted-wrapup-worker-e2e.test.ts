@@ -48,6 +48,16 @@ function tmp(prefix: string): string {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * How long to keep the worker alive after the behaviour under test has been observed,
+ * before concluding it did not ALSO do something it shouldn't.
+ *
+ * One full idle cadence plus margin: the worker's loop is `IDLE_MS = 4000`
+ * (`src/server/foreman/worker.ts`), so a tick that should not happen would land inside
+ * this window. Anything shorter proves only that the next tick had not arrived yet.
+ */
+const IDLE_SETTLE_MS = 5_500;
+
+/**
  * A stand-in for `claude -p` that records every invocation with a timestamp.
  *
  * The timestamps are the point: the strike-cap test asserts on the GAP between calls,
@@ -530,6 +540,8 @@ test("a failed Manual-binding card write leaves the prompted completion retryabl
   const session = mkSession(repo);
   let queue = mkQueue(repo);
   let promptedWrites = 0;
+  /** When the retry landed, so the worker can be given a full idle cadence past it. */
+  let retriedAt = 0;
 
   const stub = await startStub((req, url, raw) => {
     const p = url.pathname;
@@ -574,6 +586,7 @@ test("a failed Manual-binding card write leaves the prompted completion retryabl
     if (p === "/api/sessions/s1/queue/wrapup/prompted") {
       promptedWrites += 1;
       if (promptedWrites === 1) return { status: 500, json: { error: "temporary write failure" } };
+      if (promptedWrites === 2) retriedAt = Date.now();
       const body = JSON.parse(raw) as { goal: string; ask?: boolean };
       assert.equal(body.ask, true, "the guard and Ship it? card must share one write");
       queue = {
@@ -590,7 +603,19 @@ test("a failed Manual-binding card write leaves the prompted completion retryabl
     return { status: 200, json: null };
   });
 
-  const out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 9000 });
+  // Waits FOR the retry rather than for a stopwatch. The old 9s budget had to cover a Node
+  // + tsx boot, the lease, one tick to fail the write, a full `IDLE_MS` (4s) sleep, and then
+  // the retry - roughly two seconds of slack on an idle machine and none on a busy one, so a
+  // retry that was merely LATE was reported as a retry that never happened. The deadline is
+  // now a backstop, and the run still outlives the retry by a full idle cadence, which is the
+  // window a third write would have to appear in for `=== 2` to mean "exactly once".
+  const out = await runWorker({
+    port: stub.port,
+    claudeBin: fake.bin,
+    claudeLog: fake.log,
+    ms: 30_000,
+    until: () => retriedAt !== 0 && Date.now() - retriedAt >= IDLE_SETTLE_MS,
+  });
   await stub.close();
 
   assert.equal(promptedWrites, 2, `the failed atomic handoff was not retried once\n${out}`);

@@ -42,7 +42,6 @@ function mkSession(over: Partial<Session> = {}): Session {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys001",
     permissionMode: null,
@@ -58,10 +57,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: NOW,
     lastActivity: NOW - 60_000,
     pendingReviews: 0,
-    nomistakes: null,
-    nomistakesFixes: [],
     task: null,
-    nomistakesNarration: null,
     prUrl: null,
     prNumber: null,
     prState: null,
@@ -70,6 +66,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     effortBaselineReady: false,
     note: null, cost: null, goal: null,
     queue: null,
+    pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
     paneDialog: null,
@@ -796,11 +793,10 @@ test("ask-wrapup stamps the ask and types nothing", async () => {
 
 // ---- auto-wrapup: the drain Foreman answers itself (the `wrapup` config) ----
 //
-// Every test here is about NOT pushing twice. `/no-mistakes` opens a PR at the end of
-// its pipeline, so a doubled wrap-up is two pipelines racing on one branch - the harm
-// the card's `wrapupSent` latch was added for after a remount did exactly that.
+// Every test here is about NOT pushing twice. A doubled wrap-up is two shipping
+// instructions racing on one branch, which is the harm the latch prevents.
 
-async function autoWrapup(fake: Fake, payload = "/no-mistakes") {
+async function autoWrapup(fake: Fake, payload = "Commit this work, push the branch, and open a PR.") {
   const queue = await fake.queue("s1");
   return applyQueueAction(
     fake,
@@ -828,8 +824,8 @@ test("auto-wrapup retires the drain BEFORE typing, then records what it sent", a
   // The order IS the safety argument: `mark` stamps the once-only guard, so no later
   // tick can re-decide auto-wrapup even if the process dies on the next line.
   assert.deepEqual(fake.order, ["mark", "inject", "answer"]);
-  assert.deepEqual(fake.injected, ["/no-mistakes"]);
-  assert.deepEqual(fake.wrapupAnswers, ["/no-mistakes"], "the card must not re-offer this");
+  assert.deepEqual(fake.injected, ["Commit this work, push the branch, and open a PR."]);
+  assert.deepEqual(fake.wrapupAnswers, ["Commit this work, push the branch, and open a PR."], "the card must not re-offer this");
 });
 
 test("a wrap-up whose send fails degrades to the human, and never retries", async () => {
@@ -851,7 +847,7 @@ test("a wrap-up that sends but cannot be recorded reports it rather than throwin
   const fake = mkFake({ answerThrows: true });
   const out = await autoWrapup(fake);
   assert.equal(out.kind, "done");
-  assert.deepEqual(fake.injected, ["/no-mistakes"]);
+  assert.deepEqual(fake.injected, ["Commit this work, push the branch, and open a PR."]);
   assert.match(out.kind === "done" ? out.what : "", /could not record/);
 });
 

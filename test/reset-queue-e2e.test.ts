@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkCloneOnBranch } from "./helpers/git-fixture.ts";
@@ -38,7 +38,6 @@ function mkDisco(id: string, cwd: string, branch: string): DiscoveredSession {
     gitBranch: branch,
     gitRoot: cwd,
     repoRoot: cwd,
-    nomistakesGated: false,
     pid: 4242,
     tty: "ttys003",
     terminals: [],

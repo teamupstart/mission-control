@@ -23,6 +23,9 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
+import type {
+  SessionActionAdoptedPullRequest,
+} from "../src/server/workflows/session-action-adapters.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
@@ -51,7 +54,6 @@ function discovered(id: string): DiscoveredSession {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 6000 + id.length,
     tty: `tty-${id}`,
     terminals: [mkMuxHandle({ paneId: `%${id.length}` })],
@@ -102,6 +104,14 @@ async function waitFor(check: () => boolean, message: string): Promise<void> {
 interface HarnessOptions {
   /** Actions in pipeline order, each a `session_turn` action unless it names a skill. */
   actions?: Array<{ id: string; prompt: string; skillId?: string | null }>;
+  /**
+   * Give every action the `pull_request` completion instead of `session_turn`.
+   *
+   * The harness's mutable `adopted` list is then what decides whether the proof succeeds, so a
+   * test states "there is an open pull request on this branch at this commit" rather than
+   * arranging one on GitHub.
+   */
+  pullRequest?: boolean;
   deliveryMode?: "preview" | "live";
   /** A reviewer AFTER the last action, so downstream activation is observable. */
   downstream?: boolean;
@@ -131,8 +141,37 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   const actionsManager = new SessionActionManager(registry, store);
   const injected: string[] = [];
   const head = { sha: "head-1" };
+  /**
+   * The repository and the adoption ledger, as facts a test states rather than arranges.
+   *
+   * `full()` is the harness's whole answer to the short-versus-full head problem the runtime
+   * has to solve for real: evidence capture records an abbreviation and GitHub reports a
+   * 40-character object id, so the fixture keeps the two spellings of one commit distinct and
+   * `resolveCommit` maps between them exactly as `resolveCapturedCommit` does against git.
+   */
+  const full = (sha: string): string =>
+    ([...sha].map((char) => char.charCodeAt(0).toString(16)).join("") + "0".repeat(40)).slice(0, 40);
+  const repository = { root: "/repo", branch: "feature" as string | null };
+  /**
+   * The commit evidence capture records, when it must differ from the one the PROOF read.
+   *
+   * Null means "the same commit", which is the ordinary case. Setting it is how a test
+   * reproduces the race the whole re-check path exists for: the adapter proves the pull
+   * request at one commit and the checkout has moved by the time the capture reads it, which
+   * on a real machine is an agent that pushed and then kept working.
+   */
+  const captureHead: { sha: string | null } = { sha: null };
+  const adopted: SessionActionAdoptedPullRequest[] = [];
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const manager = new WorkflowManager(registry, store, {
+    readRepositoryHead: async () => ({
+      repositoryId: repository.root,
+      root: repository.root,
+      branch: repository.branch,
+      headOid: full(head.sha),
+    }),
+    adoptedPullRequests: () => adopted,
+    resolveCommit: async (_root, headSha) => full(headSha),
     requireSkill: options.requireSkill
       ?? (() => ({ ok: true, command: "/mission-pull-request" })),
     inject: (async (
@@ -160,9 +199,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         priorPersonaFeedback: [],
         session: { agent: "claude" as const, name: sessionId, cwd: "/repo", branch: "feature" },
         evidence: {
-          headSha: head.sha,
-          diffFingerprint: `diff-${head.sha}`,
-          diff: `patch at ${head.sha}`,
+          headSha: captureHead.sha ?? head.sha,
+          diffFingerprint: `diff-${captureHead.sha ?? head.sha}`,
+          diff: `patch at ${captureHead.sha ?? head.sha}`,
           diffTruncated: false,
           workingTreeDirty: false,
           workingTreeStatus: [],
@@ -180,10 +219,10 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         boundary: {
           noteKey: binding.noteKey,
           sessionId: binding.sessionId!,
-          headSha: head.sha,
+          headSha: captureHead.sha ?? head.sha,
           transcriptPath: null,
           transcriptSize: 0,
-          repositoryFingerprint: `repo-${head.sha}`,
+          repositoryFingerprint: `repo-${captureHead.sha ?? head.sha}`,
         },
       };
     },
@@ -225,7 +264,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       description: "",
       promptMarkdown: spec.prompt,
       requiredSkillId: spec.skillId ?? null,
-      completion: { kind: "session_turn" },
+      completion: { kind: options.pullRequest ? "pull_request" : "session_turn" },
     });
     assert.equal(created.ok, true, `session action ${spec.id} was refused`);
     return created.ok ? created.action.id : "";
@@ -356,12 +395,40 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     reportIdle();
   };
 
+  /** State that an open pull request for this branch now sits at the given captured head. */
+  const adoptPr = (
+    patch: Partial<SessionActionAdoptedPullRequest> & { atHead?: string } = {},
+  ): void => {
+    const { atHead, ...rest } = patch;
+    adopted.push({
+      key: "owner/repo#7",
+      url: "https://github.com/owner/repo/pull/7",
+      number: 7,
+      repositoryRoot: "/repo",
+      branch: "feature",
+      observedHeadOid: full(atHead ?? head.sha),
+      observedState: "OPEN",
+      observedAt: 1,
+      // Attributable to the bound session and adopted after any packet this file delivers, so
+      // a test that moves the row off-branch reproduces the stray case rather than the
+      // unattributable one.
+      sessionId,
+      adoptedAt: Number.MAX_SAFE_INTEGER,
+      ...rest,
+    });
+  };
+
   return {
     registry,
     store,
     manager,
     injected,
     head,
+    captureHead,
+    full,
+    repository,
+    adopted,
+    adoptPr,
     sessionId,
     versionId,
     reportIdle,
@@ -399,6 +466,21 @@ function waitingAttempt(h: Harness, runId: string) {
     .flatMap((submission) => h.store.listAttempts(submission.id))
     .filter((attempt) => attempt.state === "waiting");
   return attempts[0] ?? null;
+}
+
+/**
+ * The action attempt's id, whatever state it has since reached.
+ *
+ * `waitingAttempt` answers only while it is still waiting, and the assertions that matter most
+ * are about what it holds AFTERWARDS - the completed output's proven expectation, the block
+ * code - so the id has to be findable by node rather than by state.
+ */
+function waitingActionAttemptId(h: Harness, runId: string): string {
+  const attempts = h.store.listSubmissions(runId)
+    .flatMap((submission) => h.store.listAttempts(submission.id))
+    .filter((attempt) => attempt.sessionAction !== null);
+  assert.ok(attempts.length > 0, "no session action attempt exists on this run");
+  return attempts[0]!.id;
 }
 
 test("an action activates as one waiting attempt, with no evaluator work and no receipt", async () => {
@@ -1023,6 +1105,250 @@ test("a child captured but interrupted before its receipt is sealed, not re-capt
       "the downstream reviewer never activated on the resealed child",
     );
     assert.equal(h.injected.length, 1, "the packet was retyped while resealing");
+  } finally {
+    await h.stop();
+  }
+});
+
+// ---- the pull request completion, driven through the real runtime ---------------------------
+//
+// The adapter's own decisions are unit-tested in `session-action-pull-request-adapter.test.ts`.
+// What these prove is the WIRING: that the manager reads the repository and the ledger at the
+// right moment, that a decision reaches the continuation, that the captured commit is held to
+// the one the pull request was proven at, and that none of it sends or completes twice.
+
+test("a pull request action waits after its turn until a matching pull request is adopted", async () => {
+  const h = await harness("pr-wait", { pullRequest: true, downstream: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+
+    // The turn runs and settles, and the session has pushed a new commit - but nothing has
+    // adopted a pull request. A `session_turn` action would be finished here.
+    h.head.sha = "head-2";
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(waitingAttempt(h, runId)?.state, "waiting");
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+    assert.equal(h.store.listSubmissions(runId).length, 1, "a segment was captured with no proof");
+
+    // A pull request appears on the branch, but the poller last saw it at the OLD commit.
+    h.adoptPr({ atHead: "head-1" });
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pushed_head");
+    assert.equal(h.store.listSubmissions(runId).length, 1);
+
+    // The push lands and the next poll sees it. Only now does the graph advance.
+    h.adopted[0]!.observedHeadOid = h.full("head-2");
+    await h.manager.sweepSessionActions(SETTLED());
+        await waitFor(
+      () => h.store.listSubmissions(runId).length === 2,
+      "a proven pull request never captured a continuation segment",
+    );
+    const child = h.store.listSubmissions(runId)[1]!;
+    assert.equal(child.segment, 1);
+    await waitFor(
+      () => h.store.listAttempts(child.id).some((item) => item.nodeId === "downstream"),
+      "the downstream reviewer never activated on the child evidence",
+    );
+
+    // One packet, whatever the wait cost. Waiting for a pull request must never retype.
+    assert.equal(h.injected.length, 1);
+
+    // And what was proven is on the completed attempt, which is the only durable record of it.
+    const done = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
+    assert.equal(done.state, "completed");
+    const output = done.output as { expectation?: { kind: string; expectedHeadOid?: string; pullRequestUrl?: string } };
+    assert.equal(output.expectation?.kind, "pull_request");
+    assert.equal(output.expectation?.expectedHeadOid, h.full("head-2"));
+    assert.equal(output.expectation?.pullRequestUrl, "https://github.com/owner/repo/pull/7");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a pull request on another branch never satisfies the action, and says which mistake it was", async () => {
+  const h = await harness("pr-wrong", { pullRequest: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.runActionTurn();
+
+    // Same commit, wrong branch - a stacked branch, or one that was never switched.
+    h.adoptPr({ branch: "some-other-branch" });
+    for (let tick = 0; tick < 3; tick += 1) await h.manager.sweepSessionActions(SETTLED());
+    // Reported as its own state and NOT as `awaiting_pull_request`: an operator watching for a
+    // pull request that has already been opened somewhere else is the failure this separates.
+    assert.equal(h.store.runSummary(runId)?.actionWait, "pull_request_wrong_branch");
+    assert.equal(h.store.listSubmissions(runId).length, 1);
+    assert.equal(h.injected.length, 1);
+
+    // Same commit and branch, another checkout entirely: the larger mistake wins.
+    h.adoptPr({ key: "owner/other#1", number: 1, repositoryRoot: "/elsewhere" });
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.runSummary(runId)?.actionWait, "pull_request_wrong_repository");
+
+    // A WAIT throughout, never a block: the turn may still open the right pull request, and
+    // when it does the run advances without anything being retyped.
+    assert.equal(waitingAttempt(h, runId)?.state, "waiting");
+    h.adoptPr();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.listSubmissions(runId).length === 2,
+      "the right pull request never rescued a run that had reported a stray one",
+    );
+    assert.equal(h.injected.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a closed pull request at the reviewed commit blocks the run without spending a round", async () => {
+  const h = await harness("pr-closed", { pullRequest: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.runActionTurn();
+    h.adoptPr({ observedState: "CLOSED" });
+    await h.manager.sweepSessionActions(SETTLED());
+
+    const attempt = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
+    assert.equal(attempt.state, "error");
+    assert.equal(attempt.verdict, null, "a block must never become a verdict");
+    assert.equal(h.store.getRun(runId)?.status, "blocked");
+    // The round is untouched: an action's block never spends repair budget, and nothing was
+    // sent back to Session as a requested change.
+    assert.equal(h.store.runSummary(runId)?.round, 1);
+    assert.equal(h.store.listSubmissions(runId).length, 1);
+    assert.equal(h.injected.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a head that moves between the proof and the capture converges on the captured commit", async () => {
+  const h = await harness("pr-head-moved", { pullRequest: true, downstream: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+
+    // The adapter proves the pull request at `head-2`, and the checkout moves to `head-3`
+    // before the capture reads it - the ordinary shape of an agent that pushed and then kept
+    // working. The captured child therefore holds `head-3`, which the expectation refuses.
+    h.head.sha = "head-2";
+    h.runActionTurn();
+    h.adoptPr({ atHead: "head-2" });
+    // The PROOF still reads `head-2` and matches, and the CAPTURE records `head-3`.
+    h.captureHead.sha = "head-3";
+    await h.manager.sweepSessionActions(SETTLED());
+
+    // A child was reserved and captured, and the attempt is back to waiting rather than sealed
+    // on evidence the pull request does not contain.
+    assert.equal(waitingAttempt(h, runId)?.state, "waiting");
+    assert.equal(h.store.listSubmissions(runId).length, 2, "the reservation was not reused");
+    assert.equal(
+      h.store.listEvents(runId).some((event) => event.kind === "session_action_expectation_unmet"),
+      true,
+    );
+    assert.deepEqual(h.store.listReceipts(h.store.listSubmissions(runId)[1]!.id), []);
+
+    // Re-deciding against the CAPTURED head is what converges: the checkout has moved on, so
+    // the question is now "has the pull request caught up with what we captured", and a push
+    // answers it. Deciding against the live head instead would chase a moving target forever -
+    // and `head-4` below is exactly that moving target, present so this cannot pass by
+    // accidentally agreeing with the live head.
+    h.head.sha = "head-4";
+    h.adopted[0]!.observedHeadOid = h.full("head-3");
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.getAttempt(waitingActionAttemptId(h, runId))?.state === "completed",
+      "the action never sealed against the head its child had captured",
+    );
+
+    // Still exactly one child segment, one packet, and one receipt.
+    assert.equal(h.store.listSubmissions(runId).length, 2);
+    assert.equal(h.injected.length, 1);
+    const child = h.store.listSubmissions(runId)[1]!;
+    assert.equal(
+      h.store.listReceipts(child.id).filter((receipt) => receipt.edgeId === "e-act").length,
+      1,
+    );
+    const output = h.store.getAttempt(waitingActionAttemptId(h, runId))!.output as {
+      expectation?: { expectedHeadOid?: string };
+    };
+    assert.equal(output.expectation?.expectedHeadOid, h.full("head-3"));
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a restart while waiting for a pull request neither retypes nor completes", async () => {
+  const h = await harness("pr-restart", { pullRequest: true, downstream: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.head.sha = "head-2";
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
+
+    await h.manager.stop();
+    h.manager.start();
+    // Recovery must not prepare a second packet for an action whose only problem is that its
+    // proof has not arrived: the delivery landed, and the wait is the runtime working.
+    await h.manager.sweepSessionActions(SETTLED());
+    assert.equal(h.injected.length, 1, "the packet was retyped across a restart");
+    assert.equal(waitingAttempt(h, runId)?.state, "waiting");
+    assert.equal(h.store.listSubmissions(runId).length, 1);
+
+    // And the proof still lands afterwards, so the wait was a wait and not a wedge.
+    h.adoptPr({ atHead: "head-2" });
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.listSubmissions(runId).length === 2,
+      "the run never recovered once its pull request appeared",
+    );
+    assert.equal(h.injected.length, 1);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a pull request already open at the reviewed commit completes without a second one", async () => {
+  const h = await harness("pr-existing", { pullRequest: true });
+  try {
+    // Adopted BEFORE the run even starts, which is the shape of a branch that already had a
+    // pull request open. The action still runs its turn - the description may need updating -
+    // but it must not demand that a second pull request be opened.
+    const runId = await runToAction(h);
+    h.adoptPr();
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the action packet never reached the pane",
+    );
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.listSubmissions(runId).length === 2,
+      "an already-matching pull request never satisfied the action",
+    );
+    assert.equal(h.adopted.length, 1, "the fixture adopted a second pull request");
+    assert.equal(h.injected.length, 1);
   } finally {
     await h.stop();
   }

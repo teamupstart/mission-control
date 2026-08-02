@@ -140,6 +140,12 @@ test("a pane-less Codex SDK session reads runway from its reported rollout path"
   const { Registry } = await import("../src/server/registry.ts");
   const { startRuntimeMetaPoller } = await import("../src/server/runtime-meta.ts");
   const path = join(root, "rollout.jsonl");
+  // Relative to now, and deliberately so: `fleetCostNow` drops any window whose `resetsAt`
+  // has already passed, so a hard-coded epoch here is a time bomb - it asserts the reading
+  // survives the poller right up until the instant it expires, and fails every run after.
+  // This one was 2026-08-01T20:09:18Z and did exactly that. Same rule as
+  // `test/statusline-ratelimits.test.ts`: a fixture that must stay live is written from now.
+  const resetsAt = Math.floor(Date.now() / 1000) + 7 * 86400;
   const limitRecord = JSON.stringify({
     timestamp: "2026-07-27T12:00:00.000Z",
     type: "event_msg",
@@ -147,7 +153,7 @@ test("a pane-less Codex SDK session reads runway from its reported rollout path"
       type: "token_count",
       info: {},
       rate_limits: {
-        primary: { used_percent: 32, window_minutes: 10080, resets_at: 1785614958 },
+        primary: { used_percent: 32, window_minutes: 10080, resets_at: resetsAt },
         secondary: null,
       },
     },

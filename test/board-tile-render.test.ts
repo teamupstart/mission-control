@@ -6,12 +6,12 @@ import { BoardView } from "../src/web/components/layouts/BoardView.tsx";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
-import { mkSession, nm } from "./helpers/session-fixture.ts";
+import { mkSession } from "./helpers/session-fixture.ts";
 import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 
 // The board tile is meant to be triaged WITHOUT opening it, so what's worth testing is the
-// static markup of a tile with nothing selected: it must surface the live activity, the named
-// gate step, and the runtime meta with its context number. Rendered rather than driven through
+// static markup of a tile with nothing selected: it must surface the live activity,
+// workflow disclosure, and runtime meta with its context number. Rendered rather than driven through
 // a browser - this dashboard's SSE stream blocks Chrome automation, and renderToStaticMarkup
 // answers "what's in the tile" with no daemon and no flake. createElement, not JSX, because the
 // runner's glob only matches .test.ts.
@@ -23,7 +23,6 @@ function props(sessions: Session[]): SessionViewProps {
     backlog: [],
     onEditTask: () => {},
     backlogPlan: null,
-    gateAlerts: new Set<string>(),
     selectedId: null,
     consoleZone: "rail",
     onConsoleZoneChange: () => {},
@@ -134,74 +133,6 @@ test("a settled session omits the ticker rather than animating over a still sess
   }
 });
 
-test("exactly one gate diamond, whether or not a run has started", () => {
-  // Gating is a property of the repo, so a gated session shows the mark before its first
-  // run - but once the gate line exists it carries the diamond, and two would be noise.
-  const withRun = render(mkSession());
-  assert.doesNotMatch(withRun, /class="gated"/);
-  assert.match(withRun, /gate-brand/);
-
-  const noRun = render(mkSession({ nomistakes: null }));
-  assert.match(noRun, /class="gated"/);
-  assert.doesNotMatch(noRun, /gate-brand/);
-
-  const ungated = render(mkSession({ nomistakes: null, nomistakesGated: false }));
-  assert.doesNotMatch(ungated, /class="gated"/);
-  assert.doesNotMatch(ungated, /gate-brand/);
-});
-
-test("the gate hairline carries a named, positioned step", () => {
-  const html = render(mkSession());
-  assert.match(html, /gate-step gate-working/); // "test" is running
-  assert.match(html, /step 2 \/ 3/);
-  // The hairline segments are still there under the label.
-  assert.match(html, /tr-completed/);
-  assert.match(html, /tr-running/);
-});
-
-test("a parked gate reads in attention tone", () => {
-  const parked = nm({
-    gateStep: "review",
-    steps: [
-      { step: "review", status: "awaiting_approval", findings: 1 },
-      { step: "test", status: "pending", findings: 0 },
-    ],
-  });
-  const html = render(mkSession({ nomistakes: parked }));
-  assert.match(html, /gate-step gate-attention/);
-  assert.match(html, /step 1 \/ 2/);
-});
-
-test("a parked idle session is presented under needs you, not idle", () => {
-  const session = mkSession({
-    state: "idle",
-    nomistakes: nm({
-      awaitingAgent: "parked 10s",
-      gateStep: "review",
-      steps: [{ step: "review", status: "awaiting_approval", findings: 1 }],
-    }),
-  });
-  const view = { ...props([session]), gateAlerts: new Set([session.id]) };
-  const html = renderToStaticMarkup(createElement(BoardView, view));
-  assert.match(html, /class="board-col tone-attention/);
-  assert.match(html, /<h2>needs you<\/h2>/);
-  assert.doesNotMatch(html, /class="tile tone-idle/);
-});
-
-test("a landed gate names its outcome and drops the step position", () => {
-  const passed = nm({
-    status: "completed",
-    outcome: "passed",
-    steps: [
-      { step: "review", status: "completed", findings: 0 },
-      { step: "test", status: "completed", findings: 0 },
-    ],
-  });
-  const html = render(mkSession({ nomistakes: passed }));
-  assert.match(html, /gate-step gate-idle/);
-  assert.doesNotMatch(html, /step \d+ \//);
-});
-
 test("the runtime row carries the context percentage, not just a bare meter", () => {
   const html = render(mkSession());
   assert.match(html, /card-runtime/);
@@ -209,11 +140,10 @@ test("the runtime row carries the context percentage, not just a bare meter", ()
   assert.match(html, /62%/);
 });
 
-test("a session with no meta and no gate simply omits those rows", () => {
-  const bare = mkSession({ meta: null, nomistakes: null, nomistakesGated: false, activity: null });
+test("a session with no meta simply omits the runtime row", () => {
+  const bare = mkSession({ meta: null, activity: null });
   const html = render(bare);
   assert.doesNotMatch(html, /card-runtime/);
-  assert.doesNotMatch(html, /tile-gate/);
   assert.doesNotMatch(html, /tile-activity/);
   // ...but the tile itself still renders.
   assert.match(html, /App Bugfixes/);

@@ -383,7 +383,7 @@ test("stage two keeps the newest cap and never deletes failed or uncertain famil
        key, url, owner, repo, number, source, state, round, fail_count,
        adopted_at, updated_at
      ) VALUES ('owner/repo#1', 'https://github.com/owner/repo/pull/1',
-               'owner', 'repo', 1, 'no-mistakes', 'open', 1, 0, 1, 1)`,
+               'owner', 'repo', 1, 'retired-provenance', 'open', 1, 0, 1, 1)`,
   ).run();
   db.prepare(
     `INSERT INTO inspector_comments (

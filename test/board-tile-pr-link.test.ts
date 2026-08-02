@@ -28,7 +28,6 @@ function render(over: Partial<Session> = {}): string {
   return renderToStaticMarkup(
     createElement(SessionTile, {
       session: mkSession(over),
-      gateNeedsYou: false,
       onOpen: () => {},
       draggingRepo: null,
       onDropped: () => {},

@@ -20,6 +20,8 @@ Write for a reviewer who has not been in this session and will not read the tran
 - Concrete proof the work works: the commands that were run and what they reported, the tests
   that were added and what they would catch, and the behaviour that was observed rather than
   assumed.
+- For a UI change, attach or link screenshots of the working feature so the reviewer can see
+  the result without reconstructing it locally.
 
 A list of changed files is not a description. Neither is a restatement of the diff.
 

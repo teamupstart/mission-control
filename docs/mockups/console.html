@@ -392,7 +392,7 @@
 
       function railRow(s) {
         const marks = [];
-        if (s.gated) marks.push(`<span class="row-mark" title="gated by no-mistakes">◇</span>`);
+        if (s.gated) marks.push(`<span class="row-mark" title="gated by review workflow">◇</span>`);
         if (s.nm && s.nm.gate)
           marks.push(`<span class="row-mark on" title="parked at a gate">▮</span>`);
         if (s.note) marks.push(`<span class="row-mark on" title="Foreman note">◆</span>`);
@@ -438,7 +438,7 @@
             ${s.activity ? `<p class="activity">${s.activity}</p>` : ""}
             ${s.note ? `<div class="note"><span class="note-head">◆ Foreman escalated a decision</span><p>${s.note.text}</p><div class="note-acts"><button class="act">Approve draft</button><button class="act">Edit</button><button class="act">Dismiss</button></div></div>` : ""}
             ${s.nm ? nmStrip(s, needsYou) : ""}
-            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>no-mistakes fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
+            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>review workflow fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
             ${transcript(s)}
             ${composeBox(s)}`;
         } else if (tab === "queue") {
@@ -451,7 +451,7 @@
           // nmStrip carries the findings itself - listing them again here printed them twice.
           body = s.nm
             ? nmStrip(s, needsYou)
-            : `<span class="section-label">This repo isn't gated by no-mistakes</span>`;
+            : `<span class="section-label">This repo isn't gated by a review workflow</span>`;
         } else {
           body = `<span class="section-label">changes vs ${s.branch ? "main" : "source branch"}</span>
             <div class="qitem mono">+142 −38 across 6 files · click a file to open the diff</div>`;
@@ -481,7 +481,7 @@
           <div class="detail-body">${body}</div>
           <div class="detail-foot">
             <span>${AGENT_LABEL[s.agent]}</span>
-            ${s.gated ? `<span class="gated" title="gated by no-mistakes">◇ gated</span>` : ""}
+            ${s.gated ? `<span class="gated" title="gated by review workflow">◇ gated</span>` : ""}
             ${s.mode ? `<button class="mode-pick" title="Cycle permission mode (m)">${s.mode} ▾</button>` : ""}
             <span>·</span><span class="mono dim">pid ${s.pid}</span>
             ${!s.instrumented ? `<span class="hint" title="No hooks reporting - status is coarse">uninstrumented</span>` : ""}

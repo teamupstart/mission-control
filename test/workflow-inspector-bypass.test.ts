@@ -77,6 +77,10 @@ adoptInspectorPr({
   lastAttemptSha: null,
   mergedAt: null,
   mergeBlock: null,
+  observedHeadSha: null,
+  observedState: null,
+  observedAt: null,
+  headRefName: null,
   adoptedAt: 1,
   updatedAt: 1,
 });
@@ -355,7 +359,6 @@ test("PR switching blocks, and full restart requires confirmation before abandon
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 44,
     tty: "ttys44",
     terminals: [mkMuxHandle({ paneId: "%44" })],

@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Session, SessionNoteSummary } from "@shared/types.ts";
 import {
   allowlistSuggestion,
+  approveForemanRecommendation,
   closeForemanNote,
   deliveryTarget,
   sessionSendBlock,
@@ -91,17 +92,11 @@ export function useForemanDecision(o: {
       return;
     }
     setBusy(true);
-    const res =
-      target.kind === "review"
-        ? await api.resolveReview(target.reviewId, "answer", note.recommendation)
-        : await api.sendText(sessionId, note.recommendation);
+    const res = await approveForemanRecommendation(api, sessionId, target, {
+      marker: note.handledMarker,
+      recommendation: note.recommendation,
+    });
     if (res.ok) {
-      await closeForemanNote(api, sessionId, {
-        marker: note.handledMarker,
-        disposition: "answered",
-        lastAction: "approved by you",
-        sentText: note.recommendation,
-      });
       setHandled(note.handledMarker);
     }
     setBusy(false);

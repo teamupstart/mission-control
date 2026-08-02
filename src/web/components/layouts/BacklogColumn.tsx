@@ -409,11 +409,10 @@ function BacklogCard({
 export function canAcceptTask(
   session: Session,
   repoRoot: string | null,
-  gateNeedsYou: boolean,
 ): boolean {
   if (!repoRoot) return false;
   if (!session.instrumented) return false;
-  if (stateDisplay(session, gateNeedsYou).tone !== "idle") return false;
+  if (stateDisplay(session).tone !== "idle") return false;
   return session.repoRoot != null && session.repoRoot === repoRoot;
 }
 

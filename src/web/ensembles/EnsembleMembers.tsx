@@ -25,7 +25,6 @@ import {
 export interface EnsembleMemberLiveLane {
   session: Session;
   reviews: ReviewItem[];
-  gateNeedsYou: boolean;
 }
 
 const EMPTY_LIVE_LANES: ReadonlyMap<string, EnsembleMemberLiveLane> = new Map();
@@ -185,7 +184,7 @@ function MemberCard({
   const observed = section(artifact?.metadata, "observed");
   const busy = pending !== null;
   const session = live?.session ?? null;
-  const sessionState = session ? stateDisplay(session, live?.gateNeedsYou ?? false) : null;
+  const sessionState = session ? stateDisplay(session) : null;
   const dialog = session ? activePaneDialog(session) : null;
 
   const facts = [

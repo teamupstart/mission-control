@@ -8,7 +8,6 @@ import type {
   EnsembleSummary,
 } from "@shared/ensemble.ts";
 import { aggregateEnsembleAgentCost } from "@shared/ensemble.ts";
-import { gateParked } from "@shared/session.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { fmtUsd } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -115,7 +114,6 @@ export function EnsembleDetail({
       joined.set(member.id, {
         session,
         reviews: pendingBySessionId.get(session.id) ?? [],
-        gateNeedsYou: gateParked(session, sessions),
       });
     }
     return joined;

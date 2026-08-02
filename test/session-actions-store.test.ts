@@ -262,21 +262,33 @@ function draftWithAction(sessionActionId: string): string {
   return "w1";
 }
 
+/**
+ * A store told an adapter is UNAVAILABLE, so the refusal contract stays provable.
+ *
+ * Both shipped adapters run now, so this can no longer be demonstrated with whichever one
+ * happens to be unfinished - and the mechanism is what matters rather than the adapter. It is
+ * how the next completion kind arrives: registered and addressable, so a version naming it is
+ * readable, and refused at Publish so nobody can author a workflow this build cannot run.
+ */
+const unrunnable = new WorkflowStore(db, [], [], [], {
+  session_turn: { available: true, unavailableReason: null },
+  pull_request: { available: false, unavailableReason: "not in this build" },
+});
+
 test("publishing an action graph is refused while its ADAPTER has no runtime here", () => {
-  // The default fixture selects `pull_request`, whose durable proof this build does not
-  // have. The refusal is about that adapter and not about action nodes in general - see the
-  // `session_turn` case below, which publishes.
+  // The refusal is about the adapter and not about action nodes in general - see the
+  // available case below, which publishes the same graph.
   assert.equal(create().ok, true);
   const id = draftWithAction("a1");
-  const published = store.publishWorkflow(id, 1, "v1", 900);
+  const published = unrunnable.publishWorkflow(id, 1, "v1", 900);
   assert.equal(published.ok, false);
   if (published.ok) return;
   assert.equal(published.reason, "validation");
   assert.ok(published.diagnostics?.some((item) =>
     item.code === "session_action_runtime_unavailable"));
   // The DRAFT is untouched and still saved, so the API and fixtures round-trip.
-  assert.deepEqual(store.getWorkflow(id)?.draft, actionGraph("a1"));
-  assert.equal(store.listWorkflowVersions(id).length, 0);
+  assert.deepEqual(unrunnable.getWorkflow(id)?.draft, actionGraph("a1"));
+  assert.equal(unrunnable.listWorkflowVersions(id).length, 0);
 });
 
 test("a missing or archived action is a publish refusal, not a snapshot of nothing", () => {
@@ -299,8 +311,11 @@ test("a missing or archived action is a publish refusal, not a snapshot of nothi
 test("a draft summary counts the action's refusal as an error the library can see", () => {
   assert.equal(create().ok, true);
   const id = draftWithAction("a1");
-  const summary = store.summary(store.getWorkflow(id)!);
+  const summary = unrunnable.summary(unrunnable.getWorkflow(id)!);
   assert.ok(summary.errorCount > 0, "the Publish control must be refused where it is offered");
+  // And the same draft is clean once the adapter runs, so the error is about the runtime
+  // rather than about the graph having an action node in it.
+  assert.equal(store.summary(store.getWorkflow(id)!).errorCount, 0);
 });
 
 test("an action whose adapter IS available publishes, and freezes its snapshot", () => {

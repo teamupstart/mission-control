@@ -10,8 +10,6 @@ import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { Keycap } from "./Keycap.tsx";
 import { ModePicker } from "./ModePicker.tsx";
-import { NomistakesStrip } from "./NomistakesStrip.tsx";
-import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import {
@@ -100,7 +98,6 @@ function allowlisted(session: Session, allowlist: string[] | undefined): boolean
 
 export function SessionCard({
   session,
-  gateNeedsYou = false,
   onOpenReviews,
   onOpenDiff,
   onOpenFiles,
@@ -137,8 +134,6 @@ export function SessionCard({
   ensembleSummary = null,
 }: {
   session: Session;
-  /** True when this session's parked no-mistakes gate needs you (computed cross-session in App). */
-  gateNeedsYou?: boolean;
   onOpenReviews?: () => void;
   /** Opens the diff viewer: the whole branch, or one commit when given a sha. */
   onOpenDiff?: (commit?: string) => void;
@@ -203,7 +198,7 @@ export function SessionCard({
   /** That run's live summary, when App has one: the chip's `n/m in` progress suffix. */
   ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
-  const st = stateDisplay(session, gateNeedsYou);
+  const st = stateDisplay(session);
   const attention = st.tone === "attention";
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
@@ -281,7 +276,7 @@ export function SessionCard({
             </button>
           </Tooltip>
         )}
-        <StateBadge session={session} gateNeedsYou={gateNeedsYou} onOpenReviews={onOpenReviews} />
+        <StateBadge session={session} onOpenReviews={onOpenReviews} />
         {attention &&
           session.note &&
           (session.note.disposition === "escalated" ||
@@ -402,30 +397,8 @@ export function SessionCard({
 
       {session.activity && <p className="activity">{session.activity}</p>}
 
-      {session.nomistakes && (
-        <NomistakesStrip
-          sessionId={session.id}
-          nm={session.nomistakes}
-          needsYou={gateNeedsYou}
-          narration={session.nomistakesNarration}
-        />
-      )}
-
-      {session.nomistakesFixes.length > 0 && (
-        <NomistakesFixLog
-          sessionId={session.id}
-          fixes={session.nomistakesFixes}
-          onOpenDiff={(sha) => onOpenDiff?.(sha)}
-        />
-      )}
-
       <footer className="card-foot">
         <span className="agent-name">{AGENT_IDENTITY[session.agent].label}</span>
-        {session.nomistakesGated && (
-          <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
-            <span className="gated">◇ gated</span>
-          </Tooltip>
-        )}
         <ModePicker session={session} />
         <span className="dot-sep">·</span>
         <span className="mono dim">pid {session.pid}</span>

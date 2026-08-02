@@ -30,7 +30,7 @@ function pins(over: Partial<PoolPins> = {}): PoolPins {
 test("parsePoolStatus reads slot, state, holder, and expands ~ to an absolute path", () => {
   const trees = parsePoolStatus(
     [
-      "1     leased       ~/.treehouse/repo-abc/1/repo  (held by nm-reset-fix)",
+      "1     leased       ~/.treehouse/repo-abc/1/repo  (held by reset-fix)",
       "2     available    ~/.treehouse/repo-abc/2/repo",
       "3     in-use       /abs/path/repo-abc/3/repo",
     ].join("\n"),
@@ -40,7 +40,7 @@ test("parsePoolStatus reads slot, state, holder, and expands ~ to an absolute pa
     name: "1",
     state: "leased",
     path: join(homedir(), ".treehouse/repo-abc/1/repo"),
-    holder: "nm-reset-fix",
+    holder: "reset-fix",
     busy: false,
   });
   assert.equal(trees[1]!.state, "available");

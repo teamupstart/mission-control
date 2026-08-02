@@ -39,7 +39,6 @@ export function stallThresholds(cfg: AwayConfig): StallThresholds {
   return {
     workingMs: cfg.stallWorkingMinutes * 60_000,
     unfinishedMs: cfg.stallUnfinishedMinutes * 60_000,
-    gateMs: cfg.stallGateMinutes * 60_000,
     escalationMs: cfg.stallEscalationMinutes * 60_000,
   };
 }

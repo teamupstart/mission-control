@@ -96,6 +96,10 @@ function fakeHandle(): FakeHandle {
       sent.push(turn);
       return "started" as const;
     },
+    async sendIfIdle(turn: SdkTurn) {
+      sent.push(turn);
+      return "started" as const;
+    },
     async interrupt() {},
     async answer() {},
     setPermissionMode: null,
@@ -149,13 +153,6 @@ const START = {
   permissionMode: null,
   mcp: null,
   taskId: null,
-};
-
-const GATED_GIT = {
-  branch: "feature/no-mistakes",
-  root: "/wt/one",
-  repoRoot: "/repo",
-  nomistakesGated: true,
 };
 
 test("start persists a row, registers the card, and records the binding", async () => {
@@ -313,6 +310,34 @@ test("a queued send rechecks its target inside session serialization", async () 
   }
 });
 
+test("idle-only delivery rolls back its durable reservation when the driver became busy", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    handle.sendIfIdle = async () => {
+      assert.equal(
+        getSdkSession(session.id)?.turnInProgress,
+        true,
+        "the crash-recovery reservation crosses before the adapter check",
+      );
+      return null;
+    };
+
+    assert.equal(
+      await supervisor.sendWhenIdle(session.id, { text: "do not steer" }),
+      null,
+    );
+    assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+    assert.deepEqual(handle.sent, [], "the driver did not accept an idle-only turn");
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a rejected follow-up releases only its recovery reservation", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);
@@ -383,20 +408,6 @@ test("a failed recovery write prevents the driver from accepting the turn", asyn
   }
 });
 
-test("start registers an SDK checkout's no-mistakes gate immediately", async () => {
-  const handle = fakeHandle();
-  const fake = withFakeDriver(async () => handle);
-  try {
-    const registry = new Registry();
-    const supervisor = new SdkSupervisor(registry, { gitInfo: () => GATED_GIT });
-    const session = await supervisor.start(START);
-
-    assert.equal(session.nomistakesGated, true);
-    assert.deepEqual(registry.nomistakesPollCwds(), [START.cwd]);
-  } finally {
-    fake.restore();
-  }
-});
 
 test("a driver we cannot take ownership of is stopped, not leaked", async () => {
   const first = fakeHandle();
@@ -484,7 +495,6 @@ test("restore resumes the same conversation rather than starting a new one", asy
     const registry = new Registry();
     const supervisor = new SdkSupervisor(registry, {
       missionMcpDescriptor: async () => descriptor,
-      gitInfo: () => GATED_GIT,
     });
     await supervisor.restore();
 
@@ -502,11 +512,6 @@ test("restore resumes the same conversation rather than starting a new one", asy
       registry.getSession("sdk:restore-1")?.agentSessionId,
       "agent-42",
       "the first restored frame keeps the durable note key instead of publishing a false conversation change",
-    );
-    assert.equal(
-      registry.getSession("sdk:restore-1")?.nomistakesGated,
-      true,
-      "restoration reads the checkout before the first poll",
     );
     // The row keeps the id it is being picked up from - it must not be blanked to `null`
     // and then re-learned, or a crash in that window loses the only thing a resume needs.

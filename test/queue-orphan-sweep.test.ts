@@ -45,7 +45,6 @@ function mkDiscovered(syntheticId: string, paneId: string): DiscoveredSession {
     nameSource: "process",
     cwd: "/repo",
     gitBranch: "feature",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
     terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId })],

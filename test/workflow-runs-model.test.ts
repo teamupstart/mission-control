@@ -16,6 +16,7 @@ import type {
   WorkflowSubmission,
 } from "../src/shared/workflow.ts";
 import {
+  canShowInspectorOnlySkip,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
@@ -26,8 +27,11 @@ import {
   eventLine,
   eventsByRound,
   gateWaitSentence,
+  inspectorOnlySkipStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
+  previousFullWorkflowAttempts,
+  priorAttemptPassed,
   readCapturedContext,
   reviewerStatus,
   runRounds,
@@ -213,11 +217,15 @@ test("a check that never ran says so, and is never laundered into Passed", () =>
   assert.deepEqual(checkStatus("pass", "unavailable"), {
     tone: "waiting",
     label: "Not run",
+    tooltip: "This check could not run. Open the run details for its recorded reason.",
+    skipKind: "unavailable_check",
     degraded: true,
   });
   assert.deepEqual(checkStatus("pass", "skipped"), {
     tone: "waiting",
     label: "Skipped",
+    tooltip: "Skipped because no command is configured for this check.",
+    skipKind: "unconfigured_check",
     degraded: true,
   });
   // A check that genuinely ran keeps the ordinary vocabulary, and a real failure still wins.
@@ -247,14 +255,23 @@ test("a stage says how much of its gate was real", () => {
   const ran = checkStatus("pass", "passed");
   const notRun = checkStatus("pass", "unavailable");
   const skipped = checkStatus("pass", "skipped");
+  assert.deepEqual(stageStatus([skipped, skipped]), {
+    tone: "waiting",
+    label: "Skipped",
+    tooltip: "Skipped because no command is configured for the checks in this stage.",
+    skipKind: "unconfigured_check",
+    degraded: true,
+  });
   assert.deepEqual(stageStatus([notRun, skipped]), {
     tone: "waiting",
     label: "None ran",
+    tooltip: "One or more checks in this stage did not run. Hover each check for its reason.",
     degraded: true,
   });
   assert.deepEqual(stageStatus([notRun]), {
     tone: "waiting",
     label: "Did not run",
+    tooltip: "One or more checks in this stage did not run. Hover each check for its reason.",
     degraded: true,
   });
   assert.equal(stageStatus([ran, notRun]).label, "Passed, 1 not run");
@@ -263,6 +280,55 @@ test("a stage says how much of its gate was real", () => {
   assert.deepEqual(stageStatus([ran, ran]), { tone: "passed", label: "All passed" });
   // A real failure still outranks a gate that did not run.
   assert.equal(stageStatus([notRun, checkStatus("fail", "failed")]).tone, "failed");
+});
+
+test("an Inspector-only repair marks previously passed stages as green skipped", () => {
+  assert.deepEqual(inspectorOnlySkipStatus(), {
+    tone: "passed",
+    label: "Skipped",
+    tooltip: "Skipped because this stage passed in the prior full workflow round. This Inspector repair round only rechecks Inspector.",
+    skipKind: "inspector_repair",
+  });
+});
+
+test("an Inspector-only repair never treats a missing pipeline member as previously passed", () => {
+  assert.equal(canShowInspectorOnlySkip(true, null, false, false, true), false);
+  assert.equal(canShowInspectorOnlySkip(true, "stale-node", false, false, true), false);
+  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, false, true), true);
+  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, true, true), false);
+  assert.equal(canShowInspectorOnlySkip(false, "authored-node", true, false, true), false);
+  assert.equal(canShowInspectorOnlySkip(true, "authored-node", true, false, false), false);
+});
+
+test("Inspector-only skips inherit only earned outcomes from the preceding full round", () => {
+  const first = submission("full-1", 1);
+  const previous = submission("full-2", 2);
+  const inspector = submission("inspector", 3, { mode: "inspector_only" });
+  const passedPersona = attempt("persona", previous.id, "persona-node", {
+    verdict: { verdict: "pass" } as never,
+  });
+  const skippedCheck = attempt("check", previous.id, "check-node", {
+    verdict: { verdict: "pass" } as never,
+    output: {
+      status: "skipped",
+      slot: "test",
+      command: null,
+      exitCode: null,
+      output: "",
+      truncatedBytes: 0,
+      note: "No command is configured.",
+    },
+  });
+  const stale = attempt("stale", first.id, "stale-node", {
+    verdict: { verdict: "pass" } as never,
+  });
+  const prior = previousFullWorkflowAttempts(
+    detail([first, previous, inspector], [stale, passedPersona, skippedCheck]),
+    inspector,
+  );
+  assert.deepEqual([...prior.keys()].sort(), ["check-node", "persona-node"]);
+  assert.equal(priorAttemptPassed("persona", prior.get("persona-node")), true);
+  assert.equal(priorAttemptPassed("check", prior.get("check-node")), false);
 });
 
 test("the Disabled chip follows the engine's claim-time boundary, never a reached outcome", () => {
@@ -311,6 +377,7 @@ test("a disabled member reads red on its own chip and as not-run in the stage fo
   assert.deepEqual(stageStatus([ran, disabled]), {
     tone: "waiting",
     label: "Passed, 1 not run",
+    tooltip: "One or more checks in this stage did not run. Hover each check for its reason.",
     degraded: true,
   });
   // A wholly disabled stage is finished, not waiting on anything.

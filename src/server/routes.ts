@@ -21,7 +21,6 @@ import {
   ForemanConfigPatchSchema,
   ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
-  GateReplySchema,
   HarnessesConfigPatchSchema,
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
@@ -31,8 +30,8 @@ import {
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
-  NomistakesRespondSchema,
   OtlpMetricsSchema,
+  PendingTurnRevisionSchema,
   ReattachQueueSchema,
   RescheduleTaskSchema,
   RenameSchema,
@@ -96,7 +95,7 @@ import {
   UpdateWorkflowBindingSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
-import type { NomistakesRespond, TaskDependencyInput } from "@shared/protocol.ts";
+import type { TaskDependencyInput } from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
@@ -104,7 +103,6 @@ import type { QueueManager } from "./queue.ts";
 import type {
   InspectorStatus,
   LlmStatus,
-  NmRunSummary,
   Session,
   SkillsView,
   WorkItem,
@@ -132,6 +130,7 @@ import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
@@ -160,16 +159,13 @@ import {
   setForemanInstructions,
 } from "./foreman/instructions.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
-import { fixDetail } from "./nomistakes-fixes.ts";
 import { readRuntimeEffortBaseline } from "./runtime-meta.ts";
 import { checkToken } from "./auth.ts";
 import {
-  dropGateReply,
   forgetTaskSourceSeen,
   getSkillsAcks,
   loadHumanResolvedReviews,
   loadInspectorInspections,
-  logGateReply,
   recentEpisodes,
 } from "./db.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
@@ -183,7 +179,6 @@ import {
   sendText,
   setPermissionMode,
   setSessionEffort,
-  sessionEffortTargetResult,
   driverEffortTargetResult,
   defaultPaneDeps,
   submitPaneForm,
@@ -191,7 +186,6 @@ import {
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
 import { driverClearFor, resetSession } from "./reset.ts";
-import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos, resolveRepoPath, resolveRepoRoot, resolveTaskRepoRoot } from "./repos.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
@@ -319,57 +313,6 @@ function ownedItem(
     return { ok: false, res: c.json({ error: "that item is not in this session's queue" }, 404) };
   }
   return { ok: true, item };
-}
-
-/**
- * Stake the "you typed this" byline on a gate decision that is about to go out.
- * Returns the row to retract if it doesn't land, or null if there is nothing to
- * take back (the byline is best-effort, so a failed write costs the byline alone).
- */
-function stakeYourByline(
-  session: Session,
-  gate: NmRunSummary,
-  step: string,
-  body: NomistakesRespond,
-): number | null {
-  try {
-    return logGateReply({
-      sessionId: session.id,
-      ts: Date.now(),
-      source: "you",
-      runId: gate.id,
-      step,
-      // What the human actually picked. Falling back to every finding at the gate
-      // matches the Fix box's own contract - it sends an empty list to mean "all
-      // shown findings" - so the recorded set is what was decided either way, which
-      // is what the join reads.
-      findingIds:
-        body.findings.length > 0 ? body.findings : gate.findings.map((f) => f.id).filter(Boolean),
-      // The Fix box sends `trim() || undefined`, so selecting findings and typing
-      // nothing is ordinary and lands as null: an author with no words, not an
-      // absent author.
-      text: body.instructions ?? null,
-    });
-  } catch (err) {
-    // The decision still goes out; losing the byline must not fail the request.
-    console.error("[nomistakes] could not record the gate reply:", err);
-    return null;
-  }
-}
-
-/**
- * Take back a "you typed this" byline the gate never received.
- *
- * Fail-soft, like the write it undoes: this runs both in a request path and in a
- * background `.then()`, and losing the retraction costs one wrong byline while
- * throwing would cost the caller its response or its reconcile.
- */
-function retractByline(rowId: number): void {
-  try {
-    dropGateReply(rowId);
-  } catch (err) {
-    console.error("[nomistakes] could not retract the gate reply:", err);
-  }
 }
 
 /**
@@ -527,6 +470,8 @@ export function buildApp(
   launchSessionTerminal?: typeof launchTerminal,
   /** Optional for existing route-unit stubs; the daemon always supplies it. */
   sessionActions?: SessionActionManager,
+  /** Durable editable outbox. Optional only for legacy route-unit construction. */
+  pendingTurns?: PendingTurnManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -1027,6 +972,18 @@ export function buildApp(
     return result.ok
       ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
+  });
+  app.post("/api/sessions/:id/workflow-review", async (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, SubmitWorkflowSchema);
+    if (!parsed.ok) return parsed.res;
+    const sessionId = c.req.param("id");
+    const result = await manager.startBuiltinReview(sessionId, parsed.data);
+    if (!result.ok) return workflowRuntimeFailure(c, result);
+    const queue = queues.get(sessionId);
+    if (queue) queues.setWrapupAnswer(queue.noteKey, "workflow:no-mistakes-review");
+    return c.json({ ...result.value, idempotent: result.idempotent ?? false });
   });
   app.post("/api/workflow-bindings/:id/reattach", async (c) => {
     const manager = workflowManager();
@@ -1593,25 +1550,12 @@ export function buildApp(
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    // `commit` isolates ONE commit (`<sha>^..<sha>`) - what a single no-mistakes
-    // fix changed. Distinct from `base`, which diffs from the merge-base and so
-    // would answer with everything *since* that sha.
+    // `commit` isolates ONE commit (`<sha>^..<sha>`). Distinct from `base`, which
+    // diffs from the merge-base and would answer with everything since that sha.
     const commit = c.req.query("commit");
     if (commit) return c.json(await computeCommitDiff(session.cwd, commit));
     const source = c.req.query("base") || undefined;
     return c.json(await computeSessionDiff(session.cwd, source));
-  });
-
-  // The context behind one no-mistakes fix: the findings that justified it and
-  // the reply that authorized it. Fetched per fix rather than denormalized onto
-  // the card - a 22-finding fix carries ~20KB of description text.
-  app.get("/api/sessions/:id/nomistakes/fixes/:sha", async (c) => {
-    const session = registry.getSession(c.req.param("id"));
-    if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no repo directory" }, 400);
-    const detail = await fixDetail(session.cwd, c.req.param("sha"));
-    if (!detail) return c.json({ error: "no such fix on this branch" }, 404);
-    return c.json(detail);
   });
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
@@ -1943,6 +1887,10 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.submit && pendingTurns) {
+      const result = pendingTurns.submit(session.id, parsed.data.text);
+      return c.json(result, result.ok ? 200 : 409);
+    }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -2092,6 +2040,10 @@ export function buildApp(
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
+    if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
+      const result = pendingTurns.submit(session.id, parsed.data.text);
+      return c.json(result, result.ok ? 200 : 409);
+    }
     // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
     // here is positive evidence that nothing landed, which is the only state a caller may
@@ -2107,6 +2059,42 @@ export function buildApp(
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
     return c.json(r, r.ok ? 200 : 500);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/recall", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const turn = pendingTurns.recall(session.id, c.req.param("turnId"), parsed.data.revision);
+    return turn
+      ? c.json({ ok: true as const, text: turn.text })
+      : c.json({ ok: false as const, error: "that queued message is no longer editable" }, 409);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/retry", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const turn = pendingTurns.retry(session.id, c.req.param("turnId"), parsed.data.revision);
+    return turn
+      ? c.json({ ok: true as const })
+      : c.json({ ok: false as const, error: "that message can no longer be retried" }, 409);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/resolve", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = pendingTurns.resolve(session.id, c.req.param("turnId"), parsed.data.revision);
+    return resolved
+      ? c.json({ ok: true as const })
+      : c.json({ ok: false as const, error: "that message can no longer be resolved" }, 409);
   });
 
   // Park a dropped image on disk and hand back its path, which the caller pastes
@@ -2320,90 +2308,9 @@ export function buildApp(
       parsed.data.clear,
       undefined,
       driverClearFor(sdkSessions),
+      pendingTurns,
     );
     return c.json(r, r.ok ? 200 : 500);
-  });
-
-  // Answer a no-mistakes gate (approve / fix / skip) for the session's repo.
-  app.post("/api/sessions/:id/nomistakes/respond", async (c) => {
-    const session = registry.getSession(c.req.param("id"));
-    if (!session) return c.json({ error: "no such session" }, 404);
-    if (!session.cwd) return c.json({ error: "session has no repo directory" }, 400);
-    const parsed = await parseBody(c, NomistakesRespondSchema);
-    if (!parsed.ok) return parsed.res;
-    // The "you typed this" byline. Recorded HERE rather than inside `respond()`
-    // because this route is what the claim actually means: `respond()` is a helper
-    // keyed by cwd that anything could call, while a POST to this route is by
-    // definition the dashboard's Fix box. It's also the only side holding a session
-    // and its live run.
-    //
-    // Only for `fix`: `approve`/`skip` commit nothing, so they have no fix to put a
-    // byline on.
-    //
-    // Written BEFORE the decision goes out and RETRACTED if it doesn't land, rather
-    // than written once we know. The ordering is load-bearing, not an optimisation:
-    // `axi respond` blocks server-side until the run reaches the next gate or an
-    // outcome, so by the time it settles the fix it authorized is already committed -
-    // a byline stamped then would date from after that commit, and `pickGateReply`'s
-    // causality filter would discard it. Logging on the way out is the only way the
-    // row's `ts` can precede the fix it explains; the alternative silently deletes
-    // the whole "you" lane.
-    const gate = session.nomistakes;
-    const step = parsed.data.step || gate?.gateStep;
-    const rowId =
-      parsed.data.action === "fix" && gate && step
-        ? stakeYourByline(session, gate, step, parsed.data)
-        : null;
-
-    const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, {
-      ...parsed.data,
-      runId: gate?.id,
-      step: step ?? undefined,
-      // Undelivered is un-authored. The gate the user answered may be one the run has
-      // already moved past (status is polled, so the Fix box can be ~seconds stale),
-      // and `axi respond` then exits non-zero having said nothing. Left behind, that
-      // row would sign whatever the agent later decided for itself through the
-      // `/no-mistakes` skill - stamping "by you, in the dashboard" on an autonomous
-      // fix, which is the feature's own distinction inverted, in its worst direction.
-      //
-      // KNOWN LIMITATION: only the LOUD failure is compensated. `axi` exiting 0 while
-      // no-opping on an already-decided gate leaves a row nothing here can tell from a
-      // delivered one, so that byline stands. Guessing at it would reintroduce exactly
-      // the misattribution this closes.
-      onUndelivered: rowId === null ? undefined : () => retractByline(rowId),
-    });
-    // Rejected before anything was spawned (no binary, or a decision already in
-    // flight): the gate heard nothing, so the same retraction applies.
-    if (!r.ok && rowId !== null) retractByline(rowId);
-    return c.json(r, r.ok ? 200 : 409);
-  });
-
-  // Record a Foreman gate nudge, for the fix log's byline. Loopback-gated like
-  // every /api route: the worker is a separate process with no DB access of its own.
-  app.post("/api/sessions/:id/gate-reply", async (c) => {
-    const session = registry.getSession(c.req.param("id"));
-    if (!session) return c.json({ error: "no such session" }, 404);
-    const parsed = await parseBody(c, GateReplySchema);
-    if (!parsed.ok) return parsed.res;
-    try {
-      logGateReply({
-        sessionId: session.id,
-        ts: Date.now(),
-        source: "foreman",
-        runId: parsed.data.runId,
-        step: parsed.data.step,
-        findingIds: parsed.data.findingIds,
-        text: parsed.data.text || null,
-      });
-    } catch (err) {
-      // Fail soft, like every other byline write (stakeYourByline, retractByline,
-      // attribute, the prune). A byline is never worth an error to its caller: the
-      // foreman's reply is already delivered by the time it posts this, so a DB
-      // failure must cost the byline and nothing else. 500ing here would be the one
-      // write in the feature that breaks that posture.
-      console.error("[nomistakes] could not record the foreman gate reply:", err);
-    }
-    return c.json({ ok: true });
   });
 
   // --- Foreman session notes (localhost only) ---
@@ -2437,8 +2344,8 @@ export function buildApp(
     try {
       registry.recordEpisode(session.id, parsed.data);
     } catch (err) {
-      // Fail soft, on the same reasoning as the gate byline above: by the time the
-      // worker posts this it has already delivered its answer and stamped the note.
+      // Fail soft: by the time the worker posts this it has already delivered its
+      // answer and stamped the note.
       // The episode is the audit trail for an act that already happened, so a DB
       // failure must cost the record and nothing else - 500ing would make the worker
       // log an error for work that succeeded.

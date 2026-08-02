@@ -5,11 +5,10 @@ import type {
   AgentType,
   ForemanEpisode,
   MetaSource,
-  NmFixSummary,
-  NmRunSummary,
   FleetCost,
   OrphanedQueueHint,
   PaneDialog,
+  PendingTurn,
   PermissionMode,
   RateLimits,
   RateLimitWindow,
@@ -32,7 +31,6 @@ import type {
   TaskSummary,
   ThinkingLevel,
   WorkItem,
-  WorkItemState,
   InspectorInspection,
   InspectorSummary,
   InspectionUpdated,
@@ -81,6 +79,7 @@ import type { HookSpec } from "./harness/types.ts";
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
 import { clampPrompt } from "./util/prompt-text.ts";
 import {
+  clearPendingTurns as clearPendingTurnsDb,
   clearQueue as clearQueueDb,
   deleteQueueItem,
   deleteTask as dbDeleteTask,
@@ -90,6 +89,7 @@ import {
   getSessionNote,
   listQueueItems,
   listQueueRows,
+  listPendingTurns,
   loadActiveTasks,
   loadResourceHoldingTerminalTasks,
   loadPrPendingTerminalTasks,
@@ -106,7 +106,6 @@ import {
   listQueueRowsForCwd,
   countOpenQueueItems,
   pruneDeadQueues,
-  pruneGateReplies,
   pruneEpisodes,
   recordEpisode as dbRecordEpisode,
   resolveEpisode as dbResolveEpisode,
@@ -206,7 +205,6 @@ export interface SdkSessionRegistration {
   gitBranch?: string | null;
   gitRoot?: string | null;
   repoRoot?: string | null;
-  nomistakesGated?: boolean;
   /** Injectable clock, for the same reason every other seam in here has one: tests. */
   now?: number;
 }
@@ -262,19 +260,6 @@ const EXIT_LINGER_MS = 8000;
  */
 const QUEUE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * How long a no-mistakes gate reply is kept before it's pruned.
- *
- * Much longer than the queue window, because the thing it dates is much longer
- * lived: the fix log reads `origin..HEAD`, so a byline stays useful for as long
- * as the BRANCH does, and a branch outlives the session that opened it by weeks.
- * The cost of being generous is a row per gate verdict; the cost of being tight
- * is a fix log that says "replied" and can't say by whom on the exact branch a
- * human finally sat down to review. See `pruneGateReplies` for why this is aged
- * rather than scoped to a session.
- */
-const GATE_REPLY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
-
-/**
  * How long a Foreman episode is kept.
  *
  * Shorter than a gate byline and longer than a queue, because it is read for a
@@ -316,14 +301,6 @@ const OVERLAY_TTL_MS = 30 * 60 * 1000;
  * allowed to take over so an idle card doesn't freeze on a stale exact figure.
  */
 const STATUSLINE_TTL_MS = 3 * 60 * 1000;
-/**
- * Caps on remembered no-mistakes dismissals (see `nmDismissed`): how many
- * checkouts we keep at all, and how many retired runs per checkout. Only a reset
- * ever adds one, so these sit far above any real session's worth of resets; they
- * exist so the map can't grow with a long-lived daemon's uptime.
- */
-const NM_DISMISSED_CHECKOUTS = 200;
-const NM_DISMISSED_RUNS_PER_CHECKOUT = 8;
 
 /**
  * Passive effort revisions are source-specific. Codex supplies ISO timestamps, which
@@ -438,7 +415,7 @@ export class Registry extends EventEmitter {
   private ensembleProjection: ((taskId: string) => TaskEnsembleLink | null) | null = null;
   private workflowReset: ((noteKey: string) => void) | null = null;
   /** A terminal side effect must not cross the asynchronous reset boundary. */
-  private resettingSessionIds = new Set<string>();
+  private resettingSessionCounts = new Map<string, number>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
   private notes = new Map<string, SessionNote>();
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
@@ -495,38 +472,6 @@ export class Registry extends EventEmitter {
    * instead makes the guard reject the rebinding it exists to protect.
    */
   private discoveredIdentity = new Map<string, { agentSessionId: string | null; transcriptPath: string | null }>();
-  /**
-   * No-mistakes launcher bindings: sessionId -> worktree cwd -> {branch, seen}.
-   * Records which worktree(s) a session is driving a run in, so a run dispatched
-   * off `main` is attributed to its launcher and not to idle same-checkout
-   * siblings. Refreshed by discovery, remembered across a parked gate (when the
-   * driver process is momentarily gone), and dropped by TTL or on session exit.
-   */
-  private nmBindings = new Map<string, Map<string, { branch: string | null; updatedAt: number }>>();
-  /**
-   * Runs retired from a checkout: `checkoutKey` (worktree root + branch) -> run
-   * ids. A reset moves the branch pointer but not the branch *name*, and `axi
-   * status` goes on reporting a finished run for that branch indefinitely - so
-   * clearing the decoration alone doesn't hold, the next poll just re-attaches
-   * it. Remembering the run is what makes the clear stick.
-   *
-   * Keyed on the *checkout*, because that is what a reset acts on: `reset --hard`
-   * wipes one worktree, so the run stops describing anything real for whoever
-   * stands in that worktree on that branch - a property of the checkout, not of
-   * the session that happened to click the button. Keying on the session id
-   * instead would drop the dismissal on the next agent restart (a new pid mints a
-   * new synthetic id), and the strip would come back on a card the user already
-   * cleared. Keyed on run id within the checkout, so a *new* run on the same
-   * branch still decorates the card.
-   *
-   * Bounded by eviction rather than reaped on the run disappearing from `axi
-   * status`: the active-run set only covers worktrees we polled, and those come
-   * from live sessions (`nomistakesPollCwds`), so "the run is gone" and "nobody
-   * asked about it this tick" are indistinguishable - reaping on absence would be
-   * session-presence reaping in disguise, reopening the very bug. Entries are
-   * tiny and only a reset creates one, so the caps are far above real use.
-   */
-  private nmDismissed = new Map<string, Set<string>>();
   /** Whether a discovery sweep has ever completed - see `sessionsObserved`. */
   private sweptSessions = false;
   /** The Inspector's ledger, by PR key. Rebuilt from the DB; see `refreshInspections`. */
@@ -630,16 +575,32 @@ export class Registry extends EventEmitter {
     return this.sessions.get(id);
   }
 
+  /** Resolve a durable conversation key back to its current live session. */
+  sessionForNoteKey(noteKey: string): Session | undefined {
+    let owner: Session | undefined;
+    for (const session of this.sessions.values()) {
+      if (session.state === "exited" || noteKeyFor(session) !== noteKey) continue;
+      if (owner) return undefined;
+      owner = session;
+    }
+    return owner;
+  }
+
   beginSessionReset(id: string): void {
-    this.resettingSessionIds.add(id);
+    this.resettingSessionCounts.set(id, (this.resettingSessionCounts.get(id) ?? 0) + 1);
   }
 
   endSessionReset(id: string): void {
-    this.resettingSessionIds.delete(id);
+    const count = this.resettingSessionCounts.get(id);
+    if (!count || count === 1) {
+      this.resettingSessionCounts.delete(id);
+      return;
+    }
+    this.resettingSessionCounts.set(id, count - 1);
   }
 
   sessionResetInProgress(id: string): boolean {
-    return this.resettingSessionIds.has(id);
+    return this.resettingSessionCounts.has(id);
   }
 
   subscribe(fn: (e: ServerEvent) => void): () => void {
@@ -909,10 +870,8 @@ export class Registry extends EventEmitter {
       const prev = this.sessions.get(d.syntheticId);
       const next = this.mergeDiscovered(prev, d, now);
       this.sessions.set(d.syntheticId, next);
-      this.recordNmLaunches(d, now);
       if (!prev || !sessionEqual(prev, next)) this.emitSession(next);
     }
-    this.pruneNmBindings(now);
 
     // Anything a COMPLETED sweep didn't see is gone, and gets an eviction timer -
     // whether or not it already reads as exited.
@@ -975,22 +934,14 @@ export class Registry extends EventEmitter {
       // keeps the whole dashboard current.
       console.error("[registry] queue prune failed:", err);
     }
-    // Its own try: a gate-reply prune that threw must not stop the queue prune above
-    // (or vice versa), since they share only this timer and nothing else.
-    try {
-      pruneGateReplies(now - GATE_REPLY_RETENTION_MS);
-    } catch (err) {
-      console.error("[registry] gate reply prune failed:", err);
-    }
-    // And its own again, for the same reason.
+    // Independently caught so housekeeping cannot stop the discovery sweep.
     try {
       pruneEpisodes(now - EPISODE_RETENTION_MS);
     } catch (err) {
       console.error("[registry] foreman episode prune failed:", err);
     }
-    // Fourth, and independently caught like the three above: these are the rows an estimate
-    // is summed from, so a throw here must not be able to take the sweep - or the
-    // other three prunes - down with it.
+    // Independently caught again: these are the rows an estimate is summed from, so
+    // a throw here must not be able to take the sweep or the other prunes down.
     try {
       pruneUsageLedger(now - USAGE_RETENTION_MS);
     } catch (err) {
@@ -1036,7 +987,6 @@ export class Registry extends EventEmitter {
       gitBranch: d.gitBranch,
       gitRoot: d.gitRoot,
       repoRoot: d.repoRoot,
-      nomistakesGated: d.nomistakesGated,
       pid: d.pid,
       tty: d.tty,
       // A mode read straight off the pane outranks every remembered value; absent
@@ -1085,10 +1035,7 @@ export class Registry extends EventEmitter {
       lastSeen: now,
       lastActivity: prev?.lastActivity ?? null,
       pendingReviews: this.countPending(d.syntheticId),
-      nomistakes: prev?.nomistakes ?? null,
-      nomistakesFixes: prev?.nomistakesFixes ?? [],
       task: this.taskSummaryFor(d.syntheticId, d.cwd),
-      nomistakesNarration: prev?.nomistakesNarration ?? null,
       // Carried forward like the PR fields for the same reason: discovery cannot see it.
       // Re-resolved from the ledger just below, once cwd/prUrl are settled.
       inspector: prev?.inspector ?? null,
@@ -1102,6 +1049,7 @@ export class Registry extends EventEmitter {
       note: null,
       goal: null,
       queue: null,
+      pendingTurns: prev?.pendingTurns ?? [],
       orphanedQueue: null,
     };
     const overlay = this.overlayFor(base);
@@ -1157,6 +1105,7 @@ export class Registry extends EventEmitter {
     base.cost =
       prev && noteKeyFor(prev) === noteKeyFor(base) ? prev.cost : sessionCostFor(noteKeyFor(base));
     base.queue = this.queueSummaryFor(base);
+    base.pendingTurns = this.pendingTurnsFor(base);
     base.inspector = this.inspectorSummaryFor(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about every session ("no live session holds that key"), and this
@@ -1233,7 +1182,6 @@ export class Registry extends EventEmitter {
       gitBranch: input.gitBranch ?? null,
       gitRoot: input.gitRoot ?? null,
       repoRoot: input.repoRoot ?? null,
-      nomistakesGated: input.nomistakesGated ?? false,
       // 0 until registration or `bound` identifies the subprocess the driver spawned. A
       // driver with no separate process leaves it there, and `signalProcess` must keep
       // refusing that sentinel because POSIX interprets pid 0 as the caller's process group.
@@ -1254,10 +1202,7 @@ export class Registry extends EventEmitter {
       lastSeen: now,
       lastActivity: null,
       pendingReviews: this.countPending(input.id),
-      nomistakes: null,
-      nomistakesFixes: [],
       task: null,
-      nomistakesNarration: null,
       prUrl: null,
       prNumber: null,
       prState: null,
@@ -1268,6 +1213,7 @@ export class Registry extends EventEmitter {
       note: null,
       goal: null,
       queue: null,
+      pendingTurns: [],
       orphanedQueue: null,
       inspector: null,
       paneDialog: null,
@@ -1277,6 +1223,7 @@ export class Registry extends EventEmitter {
     s.goal = this.goalSummaryFor(s);
     s.cost = sessionCostFor(noteKeyFor(s));
     s.queue = this.queueSummaryFor(s);
+    s.pendingTurns = this.pendingTurnsFor(s);
     s.inspector = this.inspectorSummaryFor(s);
     this.sessions.set(s.id, s);
     this.emitSession(s);
@@ -1441,6 +1388,7 @@ export class Registry extends EventEmitter {
     next.goal = this.goalSummaryFor(next);
     if (noteKeyFor(next) !== noteKeyFor(s)) next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
+    next.pendingTurns = this.pendingTurnsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
     next.inspector = this.inspectorSummaryFor(next);
     this.sessions.set(next.id, next);
@@ -1669,6 +1617,7 @@ export class Registry extends EventEmitter {
       // through `syncSessionsForCost`.
       if (noteKeyFor(next) !== noteKeyFor(target)) next.cost = sessionCostFor(noteKeyFor(next));
       next.queue = this.queueSummaryFor(next);
+      next.pendingTurns = this.pendingTurnsFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
       // A hook is how a PR url first reaches a card, and the summary is keyed on it -
       // so resolving here is what makes the chip appear on the same event that
@@ -1790,6 +1739,7 @@ export class Registry extends EventEmitter {
     next.goal = this.goalSummaryFor(next);
     next.cost = sessionCostFor(noteKeyFor(next));
     next.queue = this.queueSummaryFor(next);
+    next.pendingTurns = this.pendingTurnsFor(next);
     next.orphanedQueue = this.orphanedQueueFor(next);
     this.rememberAgentSession(next, s.agentSessionId);
     this.ensureWorkEpisode(next);
@@ -2022,201 +1972,6 @@ export class Registry extends EventEmitter {
       if (matches.length === 1) return matches[0];
     }
     return undefined;
-  }
-
-  /** Refresh a session's launcher bindings from this discovery sweep (never clears). */
-  private recordNmLaunches(d: DiscoveredSession, now: number): void {
-    if (!d.nomistakesRuns || d.nomistakesRuns.length === 0) return;
-    let map = this.nmBindings.get(d.syntheticId);
-    if (!map) this.nmBindings.set(d.syntheticId, (map = new Map()));
-    for (const { cwd, branch } of d.nomistakesRuns) map.set(cwd, { branch, updatedAt: now });
-  }
-
-  /** Drop launcher bindings that haven't been re-seen within the TTL. */
-  private pruneNmBindings(now: number): void {
-    for (const [id, map] of this.nmBindings) {
-      for (const [cwd, b] of map) if (now - b.updatedAt > OVERLAY_TTL_MS) map.delete(cwd);
-      if (map.size === 0) this.nmBindings.delete(id);
-    }
-  }
-
-  /**
-   * Worktree dirs to poll `no-mistakes axi status` from. `axi status` is
-   * branch-scoped when run from a worktree checked out on a run's branch, so we
-   * poll each gated session's own checkout (a session literally on a run branch)
-   * plus every remembered launcher worktree (where a run dispatched off `main`
-   * actually lives). Distinct, so one worktree is polled once.
-   */
-  nomistakesPollCwds(): string[] {
-    const set = new Set<string>();
-    for (const s of this.sessions.values()) {
-      if (s.nomistakesGated && s.cwd && s.state !== "exited") set.add(s.cwd);
-    }
-    for (const map of this.nmBindings.values()) for (const cwd of map.keys()) set.add(cwd);
-    return [...set];
-  }
-
-  /**
-   * Gated sessions that can carry a fix log, with their checkout. Unlike
-   * `nomistakesPollCwds` this is per-session, not a deduped cwd set: the log is
-   * denormalized onto each card, and two sessions sharing a checkout each get it.
-   * Not conditional on an active run - the log outliving the run is the point.
-   */
-  nomistakesFixTargets(): Array<{ id: string; cwd: string }> {
-    const out: Array<{ id: string; cwd: string }> = [];
-    for (const [id, s] of this.sessions) {
-      if (s.nomistakesGated && s.cwd && s.state !== "exited") out.push({ id, cwd: s.cwd });
-    }
-    return out;
-  }
-
-  /** Set a session's fix log. No-op when unchanged, so it doesn't churn the stream. */
-  applyNomistakesFixes(sessionId: string, fixes: NmFixSummary[]): void {
-    const s = this.sessions.get(sessionId);
-    if (!s) return;
-    if (JSON.stringify(s.nomistakesFixes) === JSON.stringify(fixes)) return;
-    const next: Session = { ...s, nomistakesFixes: fixes };
-    this.sessions.set(sessionId, next);
-    this.emitSession(next);
-  }
-
-  /**
-   * Drop the session's fix log. Called on reset, which discards the very commits
-   * the log is derived from - so unlike `dismissNomistakes` there's no dismissal
-   * to remember: the next poll re-reads git and agrees the log is empty. This
-   * just makes the card clean the moment the reset returns instead of a poll later.
-   */
-  clearNomistakesFixes(sessionId: string): void {
-    const s = this.sessions.get(sessionId);
-    if (!s || s.nomistakesFixes.length === 0) return;
-    const next: Session = { ...s, nomistakesFixes: [] };
-    this.sessions.set(sessionId, next);
-    this.emitSession(next);
-  }
-
-  /**
-   * Set each session's no-mistakes run from the full set of active runs (keyed by
-   * branch). A session owns a run when it is literally checked out on the run's
-   * branch (exact worktree owner), or when it launched that run in a worktree it
-   * drives (remembered binding on the run's branch). Sessions that merely share a
-   * checkout with a launcher get nothing - a run never leaks onto idle siblings.
-   *
-   * The full run set is applied in one pass so two concurrent runs don't clobber
-   * each other (each launcher keeps its own run rather than fighting over one).
-   */
-  reconcileNomistakes(runs: NmRunSummary[]): void {
-    const byBranch = new Map<string, NmRunSummary>();
-    for (const r of runs) if (r.branch) byBranch.set(r.branch, r);
-
-    for (const [id, s] of this.sessions) {
-      const owned = this.ownedRun(id, s, byBranch);
-      const narration = owned ? s.nomistakesNarration : null; // narration clears with its run
-      if (
-        JSON.stringify(s.nomistakes) === JSON.stringify(owned) &&
-        s.nomistakesNarration === narration
-      )
-        continue;
-      const next = { ...s, nomistakes: owned, nomistakesNarration: narration };
-      this.sessions.set(id, next);
-      this.emitSession(next);
-    }
-  }
-
-  /**
-   * The active run this session owns: the one on its own branch (exact worktree
-   * owner) or, failing that, one it drives in a worktree it launched (binding).
-   *
-   * A retired run is skipped *while* matching rather than nulled out afterwards,
-   * so it never shadows a run the session still owns. A reset retires the run on
-   * the session's own branch, but `axi status` keeps reporting it for that branch
-   * for good - so once the session dispatches new work elsewhere, its own branch
-   * still resolves to the dead run. Skipping it falls through to the binding, and
-   * a run parked at a gate keeps the approve/fix/skip buttons that are the only
-   * way to answer it; returning null there would blank the card instead.
-   */
-  private ownedRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
-    const key = checkoutKey(s.gitRoot, s.gitBranch);
-    const retired = key ? this.nmDismissed.get(key) : undefined;
-    const live = (branch: string | null): NmRunSummary | null => {
-      const run = branch ? byBranch.get(branch) : undefined;
-      return run && !retired?.has(run.id) ? run : null;
-    };
-    const own = live(s.gitBranch);
-    if (own) return own;
-    for (const { branch } of this.nmBindings.get(id)?.values() ?? []) {
-      const bound = live(branch);
-      if (bound) return bound;
-    }
-    return null;
-  }
-
-  /**
-   * Retire `run` from the checkout a reset just wiped - `root`, standing on
-   * `branch` - for good. A reset throws away the very work the run validated, so
-   * the run - finished or not - no longer describes that checkout, and the strip
-   * would otherwise sit there forever (see `nmDismissed`).
-   *
-   * Scoped to that one checkout: `reset --hard` only touches one worktree, so the
-   * run is retired exactly for whoever stands in that worktree on the branch whose
-   * work just went away - now or after a restart. That covers a sibling sharing
-   * the checkout (its strip describes the same dead work), while a same-branch
-   * twin in an independent worktree keeps its strip, its work being still on disk.
-   *
-   * A run on a *different* branch than the reset checkout lives in a different
-   * worktree that the reset never touched (git won't check one branch out twice),
-   * so it is never retired - keeping the approve/fix/skip buttons that are the
-   * only way to answer a parked gate.
-   *
-   * The caller passes the run it saw before the reset, rather than us re-reading
-   * it after: a fetch can take ~30s, and the poller may have swapped or cleared
-   * the run in that window. We retire the run the user was actually looking at.
-   */
-  dismissNomistakes(run: NmRunSummary, root: string | null, branch: string | null): void {
-    // No id means we can't name the run, and dismissing "" would gag every
-    // id-less run on the card for good. Leave the strip rather than over-suppress.
-    if (!run.id || branch !== run.branch) return;
-    const key = checkoutKey(root, branch);
-    if (!key) return;
-    this.rememberDismissal(key, run.id);
-    for (const [id, s] of this.sessions) {
-      if (checkoutKey(s.gitRoot, s.gitBranch) !== key || s.nomistakes?.id !== run.id) continue;
-      const next: Session = { ...s, nomistakes: null, nomistakesNarration: null };
-      this.sessions.set(id, next);
-      this.emitSession(next);
-    }
-  }
-
-  /** Record a retired run against its checkout, evicting the oldest past the caps. */
-  private rememberDismissal(key: string, runId: string): void {
-    const ids = this.nmDismissed.get(key) ?? new Set<string>();
-    ids.add(runId);
-    // Re-insert, so this checkout moves to the tail. A Map keeps first-insertion
-    // order, so mutating the set in place would leave the checkout ranked by its
-    // *oldest* dismissal and let eviction drop one reset seconds ago.
-    this.nmDismissed.delete(key);
-    this.nmDismissed.set(key, ids);
-    // `axi status` reports the latest run for a branch, so once newer runs have
-    // been retired on this checkout the older ids can no longer suppress anything.
-    evictOldest(ids, NM_DISMISSED_RUNS_PER_CHECKOUT);
-    evictOldest(this.nmDismissed, NM_DISMISSED_CHECKOUTS);
-  }
-
-  /**
-   * Update the "what the skill is doing now" narration for a session, sourced
-   * from its Claude transcript (see readCurrentTodo). Cleared to null when there
-   * is no active run or nothing is in progress.
-   */
-  applyNomistakesNarration(sessionId: string, narration: string | null): void {
-    const s = this.sessions.get(sessionId);
-    if (!s || s.nomistakesNarration === narration) return;
-    const next: Session = { ...s, nomistakesNarration: narration };
-    this.sessions.set(sessionId, next);
-    this.emitSession(next);
-  }
-
-  /** Sessions currently showing a no-mistakes run (for narration polling). */
-  nomistakesSessions(): Session[] {
-    return [...this.sessions.values()].filter((s) => s.nomistakes !== null);
   }
 
   private startWorkEpisode(
@@ -3100,12 +2855,9 @@ export class Registry extends EventEmitter {
    *
    * The counterpart to `applyDiscovery` for the one runtime that never passes through it.
    * A pane-backed session's Git facts are re-resolved from its cwd on every sweep, so it
-   * follows the agent onto whatever branch it cuts and notices when no-mistakes gating is
-   * added or removed. A driver-run session is registered once and never passes through that
-   * sweep. Without this counterpart a pooled worktree can stay branchless for its whole
-   * session, and an SDK-only no-mistakes run is never polled because its checkout remains
-   * marked ungated. A terminal sibling can accidentally mask the latter by polling the
-   * shared branch on the SDK session's behalf.
+   * follows the agent onto whatever branch it cuts. A driver-run session is registered once
+   * and never passes through that sweep. Without this counterpart a pooled worktree can stay
+   * branchless for its whole session.
    *
    * Scoped to `runtime === "sdk"` for the same reason `applyDiscovery`'s unseen-means-exited
    * loop is scoped to `"terminal"`: this is the arm for sessions the sweep cannot answer for,
@@ -3133,25 +2885,19 @@ export class Registry extends EventEmitter {
    * this session on".
    *
    * `cwd` is fixed for the life of a driver-run session, so `gitRoot` and `repoRoot` cannot
-   * have changed and the launch-time answers stay authoritative. The branch and
-   * `nomistakesGated` are mutable: agents cut branches, and no-mistakes can add its remote
-   * after the session launches.
+   * have changed and the launch-time answers stay authoritative. The branch is mutable as
+   * agents cut branches after the session launches.
    */
   applyDriverGit(
-    snapshots: Map<string, { branch: string | null; nomistakesGated: boolean }>,
+    snapshots: Map<string, { branch: string | null }>,
   ): void {
     for (const [id, snapshot] of snapshots) {
       const s = this.sessions.get(id);
       if (!s || s.runtime !== "sdk" || s.state === "exited") continue;
-      if (
-        s.gitBranch === snapshot.branch &&
-        s.nomistakesGated === snapshot.nomistakesGated
-      )
-        continue;
+      if (s.gitBranch === snapshot.branch) continue;
       const next: Session = {
         ...s,
         gitBranch: snapshot.branch,
-        nomistakesGated: snapshot.nomistakesGated,
       };
       this.sessions.set(next.id, next);
       if (!sessionEqual(s, next)) this.emitSession(next);
@@ -3985,7 +3731,6 @@ export class Registry extends EventEmitter {
     this.exitTimers.delete(id);
     this.prObservations.delete(id);
     this.announcedPrs.delete(id);
-    this.nmBindings.delete(id);
     this.discoveredIdentity.delete(id);
     this.clearSessionEffortTracking(id);
     this.permissionModeFreshnessGuards.delete(id);
@@ -4903,6 +4648,18 @@ export class Registry extends EventEmitter {
 
   // ---- Foreman work queues ----
 
+  /** Re-read pending turns after the outbox manager commits a lifecycle transition. */
+  refreshPendingTurns(key: string): void {
+    this.syncSessionsForPendingTurns(key);
+  }
+
+  /** Reset cleanup for human turns authored against discarded conversation state. */
+  clearPendingTurns(key: string, preserveIds: readonly string[] = []): boolean {
+    const changed = clearPendingTurnsDb(key, preserveIds) > 0;
+    if (changed) this.syncSessionsForPendingTurns(key);
+    return changed;
+  }
+
   /** The compact queue view denormalized onto a session card. */
   private queueSummaryFor(s: Session): SessionQueueSummary | null {
     const key = noteKeyFor(s);
@@ -4914,6 +4671,11 @@ export class Registry extends EventEmitter {
       { askedAt: row?.wrapupAskedAt ?? null, answer: row?.wrapupAnswer ?? null },
       row?.updatedAt ?? 0,
     );
+  }
+
+  /** The complete editable outbox projection for one conversation. */
+  private pendingTurnsFor(s: Session): PendingTurn[] {
+    return listPendingTurns(noteKeyFor(s));
   }
 
   /**
@@ -5339,6 +5101,17 @@ export class Registry extends EventEmitter {
     }
   }
 
+  private syncSessionsForPendingTurns(key: string): void {
+    const pendingTurns = listPendingTurns(key);
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      if (JSON.stringify(s.pendingTurns) === JSON.stringify(pendingTurns)) continue;
+      const next = { ...s, pendingTurns };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
   /** Re-resolve every card's orphan hint (after a re-attach changes who's orphaned). */
   private syncAllOrphanHints(): void {
     for (const [id, s] of this.sessions) {
@@ -5390,26 +5163,6 @@ export function summarizeQueue(
 }
 
 // ---- pure helpers ----
-
-/**
- * Identity of a checkout: the worktree root plus the branch standing in it. Two
- * sessions share a key exactly when they share a working tree, which is the unit
- * `git reset --hard` acts on. Null when either half is unknown, so an
- * unreadable checkout never collides with another under a partial key. Encoded
- * rather than concatenated, so no root/branch pair can spell another's key.
- */
-function checkoutKey(root: string | null, branch: string | null): string | null {
-  return root && branch ? JSON.stringify([root, branch]) : null;
-}
-
-/** Drop oldest-inserted entries until `m` is within `cap`. */
-function evictOldest(m: Pick<Map<string, unknown>, "size" | "keys" | "delete">, cap: number): void {
-  while (m.size > cap) {
-    const oldest = m.keys().next();
-    if (oldest.done) return;
-    m.delete(oldest.value);
-  }
-}
 
 /** A task in a terminal state has no further lifecycle - safe to evict from memory. */
 function isTerminalTask(status: Task["status"]): boolean {
@@ -5675,9 +5428,6 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   gitBranch: byValue,
   gitRoot: byValue,
   repoRoot: byValue,
-  // Re-read from the checkout: no-mistakes can add or remove its remote while a session is
-  // live, and both the gated chip and whether the status poller visits the cwd follow it.
-  nomistakesGated: byValue,
   pid: byValue,
   permissionMode: byValue,
   terminals: terminalsEqual,
@@ -5695,10 +5445,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   lastSeen: alwaysEqual,
   lastActivity: alwaysEqual,
   pendingReviews: byValue,
-  nomistakes: byJson,
-  nomistakesFixes: byJson,
   task: byJson,
-  nomistakesNarration: byValue,
   prUrl: byValue,
   prNumber: byValue,
   prState: byValue,
@@ -5723,6 +5470,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // in any way of its own - an idle sibling is equal by every other field, stays
   // quiet, and never surfaces the stranded batch.
   queue: byJson,
+  pendingTurns: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
   // byJson: a small object the chip renders as a unit - counts, mode and a timestamp

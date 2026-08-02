@@ -49,7 +49,6 @@ function seedSession(): void {
     gitBranch: "main",
     gitRoot: null,
     repoRoot: null,
-    nomistakesGated: false,
     pid: 4242,
     tty: "ttys003",
     terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%3" })],
@@ -318,7 +317,6 @@ test("cycling the permission mode is rejected for a menu-controlled harness", as
       gitBranch: "main",
       gitRoot: null,
       repoRoot: null,
-      nomistakesGated: false,
       pid: 9191,
       tty: "ttys009",
       terminals: [mkMuxHandle({ session: "cx", windowName: "w", windowIndex: 0, paneId: "%9" })],
@@ -388,7 +386,6 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
       gitBranch: "main",
       gitRoot: null,
       repoRoot: null,
-      nomistakesGated: false,
       pid: 5252,
       tty: "ttys055",
       terminals: [mkMuxHandle({ session: "harness-rename-src-xyzzy", windowName: "w", windowIndex: 0, paneId: "%55" })],
@@ -934,7 +931,7 @@ test("a prompted ask clears a PREVIOUS episode's answer; the drain ask never doe
   await app.request("/api/sessions/sess-1/queue/wrapup", {
     method: "PUT",
     headers: jsonHeaders,
-    body: JSON.stringify({ answer: "/no-mistakes" }),
+    body: JSON.stringify({ answer: "ship directly" }),
   });
 
   // The drain path sends no body, and must leave the answer it just collected alone.
@@ -944,7 +941,7 @@ test("a prompted ask clears a PREVIOUS episode's answer; the drain ask never doe
   });
   assert.equal(
     ((await drain.json()) as { wrapupAnswer: string | null }).wrapupAnswer,
-    "/no-mistakes",
+    "ship directly",
     "the drain ask must not clobber the answer to the ask it is raising",
   );
 
@@ -990,7 +987,7 @@ test("a prompted human handoff retires its episode and raises the card atomicall
   await app.request("/api/sessions/sess-1/queue/wrapup", {
     method: "PUT",
     headers: jsonHeaders,
-    body: JSON.stringify({ answer: "/no-mistakes" }),
+    body: JSON.stringify({ answer: "ship directly" }),
   });
 
   const goal = "preserve the existing Manual workflow binding";
@@ -1140,7 +1137,6 @@ test("Codex queue writes require launch-scoped hook authorization", async () => 
     gitBranch: "main",
     gitRoot: null,
     repoRoot: null,
-    nomistakesGated: false,
     pid: 4243,
     tty: "ttys004",
     terminals: [mkMuxHandle({ session: "other", windowName: "w", windowIndex: 0, paneId: "%4" })],
@@ -1363,7 +1359,6 @@ test("the standards route reads the repo's contract from the git TOPLEVEL, not t
       gitBranch: "main",
       gitRoot: repo,
       repoRoot: repo,
-      nomistakesGated: false,
       pid: 4343,
       tty: "ttys009",
       terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 1, paneId: "%9" })],
@@ -1405,7 +1400,6 @@ test("the standards request carries its paths in a BODY, so a big refactor still
       gitBranch: "main",
       gitRoot: repo,
       repoRoot: repo,
-      nomistakesGated: false,
       pid: 4444,
       tty: "ttys010",
       terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 2, paneId: "%10" })],

@@ -34,7 +34,6 @@ const cfg = (away: boolean, awaySince: number | null): AwayConfig => ({
   detectStalls: true,
   stallWorkingMinutes: 10,
   stallUnfinishedMinutes: 20,
-  stallGateMinutes: 5,
   stallEscalationMinutes: 5,
 });
 

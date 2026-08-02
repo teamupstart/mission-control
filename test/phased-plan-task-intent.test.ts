@@ -267,7 +267,6 @@ test("the planning PR merge both publishes the plan files and releases the phase
       gitBranch: PLAN_BRANCH,
       gitRoot: repo,
       repoRoot: repo,
-      nomistakesGated: false,
       pid: 101,
       tty: null,
       terminals: [],

@@ -51,11 +51,14 @@ import {
   inspectorFooterStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
+  previousFullWorkflowAttempts,
+  priorAttemptPassed,
   readCapturedContext,
   runRounds,
   runStatusLabel,
   segmentProvenanceSentence,
   selectedSubmission,
+  provenPullRequest,
   sessionActionProgress,
   sessionActionStatus,
   shortSha,
@@ -280,6 +283,7 @@ function SessionActionCard({
 }): React.JSX.Element {
   const snapshot = attempt.sessionAction;
   const blocked = state?.blocked ?? null;
+  const proven = provenPullRequest(state);
   const prompt = snapshot?.promptMarkdown ?? "";
   const clipped = prompt.length > ACTION_PREVIEW_CHARS;
   return (
@@ -320,6 +324,22 @@ function SessionActionCard({
           Sent {when(state.anchor.deliveredAt)}
           {state.pickedUpAt === null ? "" : ` · picked up ${when(state.pickedUpAt)}`}
           {state.settledAt === null ? "" : ` · turn finished ${when(state.settledAt)}`}
+        </p>
+      )}
+      {/* What the proof actually WAS, for the one adapter that has one.
+          Shown only once it exists, because until then there is no pull request to link and
+          no commit to name - and a link rendered early is the "Open PR" affordance the plan
+          refuses, offering to open something nothing has verified. The commit is printed
+          because it is the whole claim: this pull request, at this commit, is what the stages
+          below were allowed to read fresh evidence for. */}
+      {proven && (
+        <p className="wf-run-meta wf-run-action-pr">
+          <Tooltip label="The pull request this action proved, at the commit it was proved at">
+            <a href={proven.pullRequestUrl} target="_blank" rel="noreferrer">
+              #{proven.pullRequestNumber}
+            </a>
+          </Tooltip>
+          {` on ${proven.branch}, verified at ${proven.expectedHeadOid.slice(0, 8)}`}
         </p>
       )}
       {snapshot && (
@@ -509,6 +529,17 @@ export function WorkflowRunView({
   ];
   const reviewAttempts = roundAttempts.filter((attempt) => attempt.sessionAction === null);
   const latestAttemptByNode = latestAttemptsFor(detail, viewed?.id ?? null);
+  const previousFullAttempts = inspectorOnly
+    ? previousFullWorkflowAttempts(detail, viewed)
+    : new Map<string, WorkflowNodeAttempt>();
+  const priorPassedNodeIds = inspectorOnly && version
+    ? version.graph.nodes.flatMap((node) => {
+        if (node.kind !== "persona" && node.kind !== "check" && node.kind !== "session_action") {
+          return [];
+        }
+        return priorAttemptPassed(node.kind, previousFullAttempts.get(node.id)) ? [node.id] : [];
+      })
+    : [];
   const statuses = nodeStatusesForSubmission(detail, viewed?.id ?? null);
   const calls = detail.llmCalls ?? [];
   const completionClaims = detail.events.flatMap((event) => {
@@ -840,8 +871,13 @@ export function WorkflowRunView({
             // check that was skipped or could not run passes the gate, so the verdict says
             // "pass" for a command that never executed.
             const attempt = latestAttemptByNode.get(nodeId);
-            return attempt ? checkOutcomeOf(attempt)?.status ?? null : null;
+            const prior = inspectorOnly ? previousFullAttempts.get(nodeId) : undefined;
+            return attempt
+              ? checkOutcomeOf(attempt)?.status ?? null
+              : prior ? checkOutcomeOf(prior)?.status ?? null : null;
           }}
+          inspectorOnly={inspectorOnly}
+          priorPassedNodeIds={priorPassedNodeIds}
           actionWaitFor={(nodeId) => {
             // The attempt's OWN durable state, not `summary.actionWait`. A repair round can
             // run several actions in turn and the summary carries one; scrubbing to an
@@ -996,7 +1032,7 @@ export function WorkflowRunView({
                 ) : "not resolved"}
               </dd>
             </div>
-            <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source ?? "not adopted"}</dd></div>
+            <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source === "hook" ? "hook" : inspectorGate.inspection ? "legacy import" : "not adopted"}</dd></div>
             <div><dt>Inspector</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
             <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
             <div><dt>Target head</dt><dd><code>{shortSha(inspectorGate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>

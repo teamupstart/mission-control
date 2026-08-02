@@ -12,19 +12,6 @@ the final cutover, so the migration is safe to land incrementally and revert at 
 
 ## 1. Goals & non-goals
 
-### Goals
-- Ship a single double-clickable **Mission Control.app** that lives in the menu bar and
-  the Dock.
-- **Deliver alerts (notification + chime) with no browser tab open** - the one thing the
-  web version structurally cannot do (README: *"Delivery needs the tab open… a closed tab
-  can't receive one"*).
-- **Self-contained**: the app runs without requiring a system `node` on `PATH`. The daemon
-  runs on Electron's bundled Node.
-- **Zero functional regressions.** Discovery, actions, reviews, dispatch, reports,
-  no-mistakes, transcripts, diffs, hooks, and the MCP review channel all keep working.
-- **Preserve the dev loop**: Vite HMR / React Fast Refresh in the window; `tsx watch`
-  server reload; the plain browser workflow still available.
-
 ### Non-goals (explicitly out of scope)
 - Windows / Linux builds. macOS `arm64` only.
 - Auto-update (Squirrel / electron-updater).
@@ -39,17 +26,6 @@ the final cutover, so the migration is safe to land incrementally and revert at 
 
 The app is already a **loopback client/server web app**, which is exactly the shape that
 wraps cleanly:
-
-- **Daemon** (`src/server`, Hono on `127.0.0.1:7317`): discovery, actions, reviews,
-  dispatch, reports, SSE. Pure-JS deps + `node:sqlite`. **No compiled native deps** in the
-  runtime path.
-- **Web UI** (`src/web`, React + Vite): talks to the daemon over **same-origin relative
-  URLs** (`fetch("/api/…")`, `new EventSource("/events")`).
-- **OS integration** is entirely **shelling out** (`ps` / `tmux` / `wezterm cli` / `git` /
-  `no-mistakes` / `treehouse`) from the daemon - works identically from any Node process.
-- **Satellites**: two external processes that Claude Code launches, not us -
-  `hooks/harness-hook.mjs` (status bridge) and `dist/mcp/server.mjs` (review channel). Both
-  reach the daemon over loopback HTTP + a shared token in `~/.mission-control/token`.
 
 The migration touches **four** things: (1) the SQLite driver, (2) how the daemon is
 started, (3) where notifications are delivered, and (4) how the two satellites are packaged
@@ -123,14 +99,6 @@ of `src/server/index.ts` (no `tsx` in production).
   headless/dev daemon rather than fighting over `:7317`.
 - **Supervision:** restart on unexpected exit with backoff; surface a tray error if it can't
   bind. Pipe daemon stdout/stderr to `~/.mission-control/daemon.log`.
-
-### D3 — Inject a real `PATH` (critical)
-A GUI app launched from Finder inherits a **minimal** `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`).
-`git`/`ps` are there, but **`tmux`, `wezterm`, `no-mistakes`, `treehouse` are not** - discovery
-and dispatch would silently break. On startup, main resolves the user's **login-shell PATH**
-(`$SHELL -lc 'command -v … / echo $PATH'`, à la the `fix-path` pattern used by VS Code) and
-injects it into the daemon's env. This mirrors what `scripts/install-service.mjs` already
-hardcodes for the LaunchAgent, done properly.
 
 ### D4 — Notifications: keep the window alive, hidden (primary strategy)
 The alert logic (`useNotifier.ts`, `alerts.ts`), the synthesized Web-Audio **chime**
@@ -308,7 +276,7 @@ external (automatic for `node:` builtins under `--platform=node`).
 - `package.json` script `package`: `electron-builder --mac` (output → `release/`).
 - **Acceptance:** `npm run package` produces `release/Mission Control.dmg`; installing to
   `/Applications` and launching from Finder yields a working app - **daemon spawns on
-  Electron's Node, PATH is injected (tmux/wezterm/no-mistakes resolve), discovery + dispatch
+  Electron's Node, PATH is injected (tmux/wezterm resolve), discovery + dispatch
   + reviews + alerts all work** with no terminal and no system `node` required to run.
 
 ### Phase 8 — Developer experience (HMR-preserving)
@@ -433,38 +401,9 @@ new bundles. Two adjustments + one new job:
 Verify each in the **packaged** app (launched from Finder, no terminal, no system `node` on
 `PATH` for the app itself):
 
-| Capability | How to verify | Depends on |
-|---|---|---|
-| Passive discovery + names + branch/uptime | live sessions appear grey "running" | daemon PATH (D3) |
-| Live SSE grid transitions | start/stop a session → card updates | window loads loopback URL |
-| Send / focus / kill | act on a card; focus raises the wezterm/tmux tab | daemon PATH |
-| Precise status (hooks) | new Claude session flips grey→blue in ~1s | integrations installer (D5) |
-| Review channel (MCP) | `request_review` shows a diff; decision returns | MCP satellite + token |
-| Dispatch (worktree + detached tmux) | dispatch a task; agent appears with intent chip | daemon PATH + treehouse |
-| no-mistakes strip + approve/fix/skip | gated repo shows pipeline; respond to a gate | daemon PATH |
-| Roundup report / copy-as-markdown | Report panel; clipboard copy works | loopback = secure context |
-| Transcript stream / diff view | expand a card | EventSource over loopback |
-| Persistence across restart | dispatch, quit app, relaunch → backlog intact | node:sqlite (D1) |
-| **Alerts with window hidden** | hide window; trigger needs-input → OS notif + chime | hide-on-close (D4) |
-| AFK digest | enable AFK; wait one interval → digest notif | renderer stays alive |
-| External links | click a PR link in a report → opens default browser | navigation handler (D6) |
-| Start at login | toggle; reboot → app returns to the tray | `setLoginItemSettings` |
-
 ---
 
 ## 10. Risks & mitigations
-
-| Risk | Likelihood | Mitigation |
-|---|---|---|
-| `node:sqlite` missing from a future Electron/Node line | low | Spike-confirmed present in Electron 43 / Node 24; pin the Electron major; `better-sqlite3` is the documented one-file fallback |
-| GUI app can't find `tmux`/`wezterm`/`no-mistakes` (minimal Finder PATH) | **high if unhandled** | D3 login-shell PATH injection into the daemon env; existing `resolveWeztermBin`/`*_BIN` overrides as backstop |
-| Satellites can't resolve a runtime after install | med | D5: prefer resolved system `node`, fall back to `ELECTRON_RUN_AS_NODE`; installer writes a concrete absolute command |
-| Hidden renderer throttled → missed alerts | low | `backgroundThrottling: false`; hide (not minimize); verify AFK digest timer fires while hidden |
-| Window navigates away from daemon origin (dead app) | med | `will-navigate`/`setWindowOpenHandler` restrict in-window nav to the loopback origin, route the rest to `shell.openExternal` |
-| Gatekeeper blocks an unsigned app | med | Ad-hoc sign in `electron-builder`; document `xattr -dr com.apple.quarantine` for the local install |
-| Daemon startup race → blank window | low | Retry `loadURL` until `/api/health` passes; show a "Connecting…" state |
-| Double daemon (LaunchAgent + app) | low | Adopt-or-spawn (D2): app adopts a healthy `:7317` and never double-binds |
-| `routes.ts` version read / static root break when bundled | med | esbuild `--define` the version; serve static from an absolute `MISSION_WEB_DIR` (Phase 2) |
 
 ---
 
@@ -501,4 +440,3 @@ Verify each in the **packaged** app (launched from Finder, no terminal, no syste
 A runnable end-to-end prototype (Phases 1–4: window + supervised daemon + tray, dev-loaded)
 lands in **~2 days**; the remaining time is the productionization that makes it a real,
 self-contained, integration-installing app with no regressions.
-```

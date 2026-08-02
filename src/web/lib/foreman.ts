@@ -176,6 +176,24 @@ export interface ForemanWriter {
   setNote: (id: string, note: SetNote) => Promise<unknown>;
 }
 
+interface ForemanDeliveryResult {
+  ok: boolean;
+  error?: string;
+}
+
+export interface ForemanApprovalWriter extends ForemanWriter {
+  resolveReview: (
+    id: string,
+    action: "answer",
+    response: string,
+  ) => Promise<ForemanDeliveryResult>;
+  injectPrompt: (
+    id: string,
+    text: string,
+    buffer: false,
+  ) => Promise<ForemanDeliveryResult>;
+}
+
 /**
  * Close out a Foreman note you just acted on, in the one order that keeps the record.
  *
@@ -218,4 +236,37 @@ export async function closeForemanNote(
     recommendation: null,
     brief: null,
   });
+}
+
+/**
+ * Deliver an approved Foreman recommendation, then record exactly what was acknowledged.
+ *
+ * A conversation composer intentionally enters the editable outbox. Foreman approval is
+ * different: closing its episode permanently claims `sentText` was delivered. Its session
+ * path therefore uses `/inject` with buffering disabled, the same direct acknowledged
+ * boundary as Work Queue, and stamps the episode only after that call succeeds. Review
+ * answers already have their own acknowledged resolution endpoint and follow the same order.
+ */
+export async function approveForemanRecommendation(
+  writer: ForemanApprovalWriter,
+  sessionId: string,
+  target: Extract<DeliveryTarget, { kind: "review" | "send" }>,
+  o: {
+    marker: string | null;
+    recommendation: string;
+  },
+): Promise<ForemanDeliveryResult> {
+  const delivered =
+    target.kind === "review"
+      ? await writer.resolveReview(target.reviewId, "answer", o.recommendation)
+      : await writer.injectPrompt(sessionId, o.recommendation, false);
+  if (!delivered.ok) return delivered;
+
+  await closeForemanNote(writer, sessionId, {
+    marker: o.marker,
+    disposition: "answered",
+    lastAction: "approved by you",
+    sentText: o.recommendation,
+  });
+  return delivered;
 }

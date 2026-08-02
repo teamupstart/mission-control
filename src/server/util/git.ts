@@ -24,22 +24,19 @@ export interface GitInfo {
    * Foreman's allowlist mean the repo rather than the directory.
    */
   repoRoot: string | null;
-  /** True when the repo is gated by no-mistakes (has a `no-mistakes` remote). */
-  nomistakesGated: boolean;
 }
 
 /**
  * Read git info for a directory by walking up to the repo root - pure
  * filesystem, no subprocess, cheap enough to run for every session every poll.
- * Returns the branch (or null when detached) and whether the repo is gated by
- * no-mistakes (surfacing the component the harness runs alongside).
+ * Returns the branch (or null when detached) and the checkout/repository roots.
  *
  * Handles linked worktrees (and submodules), where `.git` is a FILE pointing at
  * the real git dir (`gitdir: <path>`) and shared config lives in the commondir -
  * without this, agents in a dispatched worktree show no branch and never gate.
  */
 export function gitInfo(cwd: string | null): GitInfo {
-  const none: GitInfo = { branch: null, root: null, repoRoot: null, nomistakesGated: false };
+  const none: GitInfo = { branch: null, root: null, repoRoot: null };
   if (!cwd) return none;
   const found = resolveGitDir(cwd);
   if (!found) return none;
@@ -49,14 +46,11 @@ export function gitInfo(cwd: string | null): GitInfo {
   } catch {
     return none;
   }
-  // Resolved once and shared: the no-mistakes probe needs the same common dir, so
-  // this reads the `commondir` pointer once per session per poll rather than twice.
   const common = commonDir(found.gitDir);
   return {
     branch: branchFromHead(head),
     root: realPath(found.root),
     repoRoot: realPath(mainRootFromCommonDir(common)),
-    nomistakesGated: hasNoMistakesRemote(common),
   };
 }
 
@@ -164,13 +158,4 @@ function branchFromHead(head: string): string | null {
   // A detached checkout has no branch. Keeping this null lets the first real branch be
   // adopted in place instead of looking like a branch change that invalidates task ownership.
   return null;
-}
-
-function hasNoMistakesRemote(gitDir: string): boolean {
-  try {
-    const cfg = readFileSync(join(gitDir, "config"), "utf8");
-    return /\[remote "no-mistakes"\]/.test(cfg) || cfg.includes("/.no-mistakes/repos/");
-  } catch {
-    return false;
-  }
 }

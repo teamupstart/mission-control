@@ -25,7 +25,6 @@ function discovered(): DiscoveredSession {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
     terminals: [],
@@ -74,6 +73,10 @@ test("successful reset uses resetSession to clear session workflow rows and pres
     lastAttemptSha: "reviewed-head",
     mergedAt: null,
     mergeBlock: null,
+    observedHeadSha: null,
+    observedState: null,
+    observedAt: null,
+    headRefName: null,
     adoptedAt: 1,
     updatedAt: 2,
   });

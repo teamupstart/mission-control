@@ -1,5 +1,4 @@
 import type {
-  NmRunSummary,
   Session,
   SessionMeta,
   Task,
@@ -26,31 +25,6 @@ export function meta(over: Partial<SessionMeta> = {}): SessionMeta {
     contextWindow: 200000,
     source: "statusline",
     updatedAt: 0,
-    ...over,
-  };
-}
-
-export function nm(over: Partial<NmRunSummary> = {}): NmRunSummary {
-  return {
-    id: "run1",
-    status: "running",
-    branch: "harness/app-bugfixes",
-    startedAt: 0,
-    endedAt: null,
-    prUrl: null,
-    awaitingAgent: null,
-    findingsSummary: null,
-    gateStep: null,
-    gateSummary: null,
-    gateRisk: null,
-    steps: [
-      { step: "review", status: "completed", findings: 0 },
-      { step: "test", status: "running", findings: 0 },
-      { step: "lint", status: "pending", findings: 0 },
-    ],
-    activeSteps: [],
-    findings: [],
-    outcome: null,
     ...over,
   };
 }
@@ -105,7 +79,6 @@ export function mkSession(over: Partial<Session> = {}): Session {
     gitBranch: "harness/app-bugfixes",
     gitRoot: null,
     repoRoot: null,
-    nomistakesGated: true,
     pid: 1,
     tty: "ttys1",
     permissionMode: null,
@@ -121,10 +94,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: 0,
     lastActivity: null,
     pendingReviews: 0,
-    nomistakes: nm(),
-    nomistakesFixes: [],
     task: null,
-    nomistakesNarration: null,
     prUrl: null,
     prNumber: null,
     prState: null,
@@ -135,6 +105,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     cost: null,
     goal: { text: "Ensure all worktree changes are in main", source: "model", updatedAt: 0 },
     queue: null,
+    pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
     paneDialog: null,

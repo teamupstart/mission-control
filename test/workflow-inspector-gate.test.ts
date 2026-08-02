@@ -97,6 +97,10 @@ function inspectorPr(key: string, url: string, sessionId: string, now: number): 
     lastAttemptSha: null,
     mergedAt: null,
     mergeBlock: null,
+    observedHeadSha: null,
+    observedState: null,
+    observedAt: null,
+    headRefName: null,
     adoptedAt: now,
     updatedAt: now,
   };
@@ -104,7 +108,7 @@ function inspectorPr(key: string, url: string, sessionId: string, now: number): 
 
 interface SeedOptions {
   policy?: "none" | "restart_workflow" | "inspector_only";
-  missingPrAction?: "offer_prepare_pr" | "prepare_pr";
+  missingPrAction?: "wait" | "offer_prepare_pr" | "prepare_pr";
   deliveryMode?: "preview" | "live";
   adopted?: boolean;
   withHint?: boolean;
@@ -195,7 +199,6 @@ async function seed(over: SeedOptions = {}) {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 10 + serial,
     tty: `ttys${serial}`,
     terminals: [mkMuxHandle({ paneId: `%${serial}` })],
@@ -306,6 +309,32 @@ test("no final-gate policy keeps the Phase 4 completion path unclaimed", async (
   assert.equal(seeded.store.getRun(seeded.ids.run)?.status, "running");
   assert.equal(seeded.store.getRun(seeded.ids.run)?.gateState, null);
   await seeded.manager.stop();
+});
+
+test("a `wait` policy neither prepares a handoff nor offers to, and still waits honestly", async () => {
+  // The version 8 posture. Its own last stage opens the pull request before End, so a gate
+  // that finds none has met a state its own preparation would not fix - typing a handoff would
+  // ask for a pull request the run already has, and the operator's remedy is to look at why
+  // the action's proof went missing rather than to open a second one.
+  //
+  // The run still parks in `waiting_for_pr` rather than blocking: the Inspector poller may
+  // simply not have looked yet, and a gate that gave up on a race would end a run for it.
+  const waiting = await seed({ withHint: false, adopted: false, missingPrAction: "wait" });
+  try {
+    assert.equal(waiting.store.getRun(waiting.ids.run)?.status, "waiting_for_pr");
+    assert.equal(
+      (waiting.store.getRun(waiting.ids.run)?.gateState as { waitReason?: string })?.waitReason,
+      "missing_pr",
+    );
+    // Nothing was typed, and nothing offers to. `preparePr` is the route the Prepare PR button
+    // calls, and it refuses for this published policy rather than 500-ing behind a lit control.
+    const refused = await waiting.manager.preparePr(waiting.ids.run, "prepare-request");
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.equal(refused.reason, "run_not_waiting");
+    assert.deepEqual(waiting.store.listDeliveries(waiting.ids.run), []);
+  } finally {
+    await waiting.manager.stop();
+  }
 });
 
 test("missing and unadopted PR hints wait without creating Inspector provenance", async () => {

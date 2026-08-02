@@ -38,12 +38,12 @@ function fixture(): string {
 function sess(cwd: string | null): Session {
   return {
     id: "s1", agent: "claude", name: "work", runtime: "terminal", nameSource: "process", state: "idle",
-    cwd, gitBranch: "main", gitRoot: null, repoRoot: null, nomistakesGated: false, pid: 1, tty: null,
+    cwd, gitBranch: "main", gitRoot: null, repoRoot: null, pid: 1, tty: null,
     permissionMode: null, terminals: [], agentSessionId: null, transcriptPath: null,
     instrumented: false, stateConfirmed: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
-    lastActivity: null, pendingReviews: 0, nomistakes: null, nomistakesFixes: [], task: null,
-    nomistakesNarration: null, prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null,
-    meta: null, effortBaselineReady: false, note: null, cost: null, goal: null, queue: null, orphanedQueue: null, paneDialog: null,
+    lastActivity: null, pendingReviews: 0, task: null,
+    prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null,
+    meta: null, effortBaselineReady: false, note: null, cost: null, goal: null, queue: null, pendingTurns: [], orphanedQueue: null, paneDialog: null,
   };
 }
 

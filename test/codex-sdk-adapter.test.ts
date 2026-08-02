@@ -266,6 +266,8 @@ test("a second turn steers while one is running, and starts when the thread is i
   await settle();
 
   // Running: `turn/start` here would be accepted and then never run.
+  assert.equal(await handle.sendIfIdle({ text: "keep this editable" }), null);
+  assert.equal(server.calls("turn/steer").length, 0, "idle-only delivery must never steer");
   assert.equal(await handle.send({ text: "also mention heapsort" }), "steered");
   const steer = server.calls("turn/steer")[0]?.params as Record<string, unknown>;
   assert.equal(steer.expectedTurnId, "turn-1", "a steer must name the turn it expects");
@@ -273,7 +275,7 @@ test("a second turn steers while one is running, and starts when the thread is i
 
   server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
   await settle();
-  assert.equal(await handle.send({ text: "now do the next thing" }), "started");
+  assert.equal(await handle.sendIfIdle({ text: "now do the next thing" }), "started");
   assert.equal(server.calls("turn/start").length, 2, "an idle thread takes a new turn");
   await handle.stop();
   await drained;

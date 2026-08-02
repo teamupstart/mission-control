@@ -41,7 +41,6 @@ const discovered: DiscoveredSession = {
   gitBranch: "main",
   gitRoot: null,
   repoRoot: null,
-  nomistakesGated: false,
   pid: 4242,
   tty: "ttys003",
   terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%3" })],

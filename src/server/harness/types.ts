@@ -259,8 +259,8 @@ export interface TranscriptMessages {
   /** Whatever complete turns were appended since `pos`. Throws if unreadable. */
   appended(path: string, pos: number): TranscriptStreamRead;
   /**
-   * The "what's happening now" narration for the no-mistakes strip, or null when there
-   * is none. Null is also the right answer for a harness with no such notion - it is a
+   * The current active narration, or null when there is none. Null is also the right
+   * answer for a harness with no such notion. It is a
    * one-line status, so absence degrades to showing nothing rather than to being wrong.
    */
   narration(path: string): string | null;
@@ -643,6 +643,14 @@ export interface SdkSessionHandle {
    * until the current turn finishes.
    */
   send(turn: SdkTurn): Promise<SdkSendDisposition>;
+  /**
+   * Start a new turn only while the driver is positively idle.
+   *
+   * Null is a measured busy result. It is used by Mission Control's editable outbox so a
+   * pending message never becomes a Codex steer or enters Claude's internal FIFO between
+   * an idle observation and the driver's own acceptance boundary.
+   */
+  sendIfIdle(turn: SdkTurn): Promise<"started" | null>;
   interrupt(): Promise<void>;
   /** Resolve a pending `SessionRequest` (permission, question, plan, approval). */
   answer(requestId: string, answer: SessionRequestAnswer): Promise<void>;

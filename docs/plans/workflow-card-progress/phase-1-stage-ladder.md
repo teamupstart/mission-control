@@ -44,47 +44,6 @@ or on an uncertain delivery. Today all of that is one pill reading `Preview · R
 
 ## Repository findings
 
-- `ConsoleDetail` (`src/web/components/layouts/ConsoleDetail.tsx`) already reads the run:
-  `const workflowRun = view.workflowRunBySession?.get(session.id) ?? null;` (`:102`). It renders
-  `WorkflowChip` in its header at `:245`. The conversation tab (`:377-427`) stacks `GoalLine`,
-  activity, `PaneDialogPrompt`, `ForemanStrip` (`:382`), `NomistakesStrip` (`:393`),
-  `NomistakesFixLog` (`:401`) and `TranscriptPanel` (`:408`).
-- `SessionViewProps` already carries `workflowRunBySession`, `onOpenWorkflowRun` and
-  `onBindWorkflow` (`types.ts:117-119`). **No new prop is required.** If one becomes necessary it
-  goes in `SessionViewProps` *and* `cardProps` (`types.ts:156-192`), never on a single view.
-- `WorkflowRunDetail` (`workflow.ts:1312-1334`) is the response of `GET /api/workflow-runs/:id`
-  (`routes.ts:965-979`), which answers 200 / 404 `workflow_run_not_found` / 500
-  `workflow_run_corrupt` / 503. `inspectorGate` is filled only by `WorkflowManager.decorateRun`
-  (`manager.ts:578-600`).
-- `WorkflowRuns.tsx`'s `load()` (`:1278-1297`) is the pattern to extract: `workflowRequest`
-  (`workflowApi.ts:12`), a `loadGeneration` counter so a slow response cannot overwrite a newer
-  one, and a re-trigger on `[selected, selectedSummary]` (`:1298-1303`) - a moving SSE summary is
-  what refreshes detail. `workflowRunLoadError` (`run-model.ts:37`) turns a thrown
-  `WorkflowApiError` into a sentence.
-- Every derivation the ladder needs already exists; see the phased plan's findings. The ones this
-  phase calls: `projectStages`, `stageName`, `stageSummary`, `nodeLabel`, `orderedSubmissions`,
-  `selectedSubmission`, `latestAttemptsFor`, `nodeStatusesForSubmission`, `verdictOf`,
-  `verdictMeta`, `reviewerStatus`, `checkStatus`, `checkOutcomeOf`, `checkStatusView`,
-  `stageStatus`, `endStatus`, `submissionStatus`, `gateWaitSentence`, `gateSummaryStatus`,
-  `deliveryStateView`, `runStatusLabel`, `shortSha`.
-- `workflowRunTone` (`session-bits.tsx:142`) is the shared 5-value tone vocabulary
-  (`running | waiting | blocked | passed | failed`) already used by the chip, tile flag, rail mark
-  and `PipelineStatusChip`.
-- `.detail-conv` uses child combinators: `> .transcript` (`styles.css:13444`),
-  `> .transcript .transcript-log` (`:13448`), `> .nm-log-open` (`:13465`). A new child is safe;
-  do not wrap `.transcript` in anything.
-- `PersonaVerdict` (`workflow.ts:1260-1275`) is discriminated on `verdict`; the fail arm carries
-  `summary`, `requestedChanges: RequestedChange[]` and `confidence`. `RequestedChange`
-  (`:1252-1258`) has `title`, `rationale`, `evidence[]`, optional `path`/`line`.
-- `maxRepairRounds` defaults to 5 (`workflow.ts:387-390`), bounds 1-20 (`:32-33`).
-- **A round can legitimately contain no persona review at all.** The shipped built-in is at
-  version 4 (`builtin-workflows.ts:365-414`), whose completion policy sets
-  `onFindings: "inspector_only"` (#305): Inspector findings now open an inspector-only
-  submission instead of restarting the whole review. `WorkflowSubmission.mode` is
-  `full_workflow | inspector_only` (`workflow.ts:447-448`), `runRounds` (`run-model.ts:168`)
-  already flags such a round `inspectorOnly`, and `WorkflowRunSummary.bypassedPersonaReview`
-  records that it happened.
-
 ## Implementation steps
 
 ### 1. `src/web/workflows/useWorkflowRunDetail.ts` (new)
@@ -178,9 +137,6 @@ and optionally `is-terminal`, so CSS owns the spine and node shape.
 
 ### 3. `src/web/components/layouts/ConsoleDetail.tsx`
 
-In the conversation tab, between `NomistakesFixLog` (`:401-407`) and `TranscriptPanel` (`:408`),
-gated on `workflowRun`:
-
 ```tsx
 {workflowRun && (
   <WorkflowLadderPanel
@@ -194,9 +150,6 @@ gated on `workflowRun`:
 `useWorkflowRunDetail(run.id, run.updatedAt)` and renders loading, error and ready states. Keeping
 the hook in the wrapper is what lets `WorkflowLadder` stay a pure renderer the tests can drive
 with a literal detail object.
-
-Place it **after** `NomistakesFixLog` and **before** `TranscriptPanel`, and do not wrap
-`.transcript`: `styles.css:13444` selects it as a direct child of `.detail-conv`.
 
 ### 4. `src/web/styles.css`
 

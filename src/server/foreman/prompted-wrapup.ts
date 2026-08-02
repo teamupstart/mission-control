@@ -1,4 +1,4 @@
-import type { AgentType, Session, SessionGoal, SessionQueue } from "@shared/types.ts";
+import type { Session, SessionGoal, SessionQueue } from "@shared/types.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
@@ -131,9 +131,7 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   }
 
   // 4. Something needs a human. `needs-you` means an unanswered question, and an agent
-  //    waiting on an answer is stopped, not finished - typing `/no-mistakes` at it
-  //    would answer its question with an unrelated instruction. Triage owns this
-  //    session until it doesn't.
+  //    waiting on an answer is stopped, not finished. Triage owns this session until it doesn't.
   if (bucket === "needs-you") return { kind: "skip", why: "the session needs a human" };
   if (session.state === "awaiting_input") {
     return { kind: "skip", why: "the session is waiting on input" };
@@ -175,9 +173,8 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   const objective = resolvedIntent.objective;
 
   // 9. THE LOOP GUARD. The goal is one of our own wrap-up instructions, which means
-  //    the last prompt this session took was typed by Foreman: we fired, `/no-mistakes`
-  //    landed as a `UserPromptSubmit`, goal capture stored it, and the run has now
-  //    finished and parked. Firing again here is the infinite loop - see
+  //    the last prompt this session took was typed by Foreman, goal capture stored it,
+  //    and the run has now finished. Firing again here is the infinite loop - see
   //    `isWrapupPayload`, which exists for this line.
   if (intent.prompt && isWrapupPayload(intent.prompt.trim())) {
     return { kind: "skip", why: "the last prompt was Foreman's own wrap-up" };
@@ -233,12 +230,6 @@ export function planPromptedWrapup(
   cfg: PromptedConfig,
   /** Whether Foreman is cleared to type here (live + allowlisted) - the same gate a send passes. */
   mayActLive: boolean,
-  /**
-   * The harness whose composer this will be typed into. Step 1 already established
-   * there is one (`workQueue` non-null), but WHICH one decides how the gate is spelled -
-   * see `wrapupNoMistakes`.
-   */
-  agent: AgentType,
 ): PromptedPlan {
   // The verifier's primary axis. `complete: false` is the agent's work being
   // unfinished, which is the human's business and not ours.
@@ -260,7 +251,7 @@ export function planPromptedWrapup(
     };
   }
 
-  const payload = autoWrapupPayload(cfg.wrapup, agent);
+  const payload = autoWrapupPayload(cfg.wrapup);
 
   // Nothing to automate (`ask`), or Foreman may not type here. Same fallback as the
   // drain path and the same argument: the instruction PUSHES, so a dry-run that typed

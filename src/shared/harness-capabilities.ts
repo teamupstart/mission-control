@@ -129,10 +129,8 @@ export interface SkillsSpec {
    * it, or null when the harness loads skills but offers no typed invocation at all.
    *
    * The three shipped harnesses spell the same act three different ways, and the whole
-   * point of this slot is that no caller has to know which is which: Foreman's wrap-up
-   * used to type Claude's `/no-mistakes` at every agent, so a Codex session was handed a
-   * literal string its TUI has no command for and the gate ran only if the model happened
-   * to reach for the skill anyway.
+   * point of this slot is that no caller has to know which is which. A harness-specific
+   * invocation sent to a different TUI is just literal text it cannot execute.
    *
    * A line, not a token, because the invocation is not the only thing that has to be
    * true: it must also SUBMIT. Measured against codex-cli 0.145.0, over the daemon's own
@@ -283,7 +281,7 @@ function claudeComposerReady(paneText: string): boolean {
   return prompt === "❯";
 }
 
-function claudePickerSelection(paneText: string, model: string): ThinkingLevel | null {
+function claudePickerSelection(paneText: string, _model: string): ThinkingLevel | null {
   if (!CLAUDE_PICKER_VISIBLE.test(paneText)) return null;
   const match = /^\s*◉\s+(xhigh|medium|high|max|low)\s+effort\b/im.exec(paneText);
   return match ? (match[1]!.toLowerCase() as ThinkingLevel) : null;

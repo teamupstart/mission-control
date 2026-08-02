@@ -126,6 +126,10 @@ test("findings deliver, full resubmit reruns, and only the newly approved clean 
     lastAttemptSha: null,
     mergedAt: null,
     mergeBlock: null,
+    observedHeadSha: null,
+    observedState: null,
+    observedAt: null,
+    headRefName: null,
     adoptedAt: 1,
     updatedAt: 1,
   };
@@ -142,7 +146,6 @@ test("findings deliver, full resubmit reruns, and only the newly approved clean 
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 61,
     tty: "ttys61",
     terminals: [mkMuxHandle({ paneId: "%61" })],

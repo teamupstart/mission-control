@@ -135,13 +135,13 @@ function liveSession(over: Partial<Session> = {}): Session {
 
 function render(
   memberDetail: EnsembleRunDetailResponse,
-  lane: Omit<EnsembleMemberLiveLane, "gateNeedsYou"> & { gateNeedsYou?: boolean } | null,
+  lane: EnsembleMemberLiveLane | null,
 ): string {
   return renderToStaticMarkup(
     createElement(EnsembleMembers, {
       detail: memberDetail,
       liveByMemberId: lane
-        ? new Map([["member-1", { ...lane, gateNeedsYou: lane.gateNeedsYou ?? false }]])
+        ? new Map([["member-1", lane]])
         : undefined,
       pending: null,
       onAction: () => {},
@@ -160,17 +160,15 @@ test("a joined member lane renders live tone, activity, goal, elapsed, last even
   assert.match(html, /<details class="ensemble-lane-history"><summary>/);
 });
 
-test("a joined member lane uses the parked-gate attention tone", () => {
+test("a joined member lane uses the answerable-dialog attention tone", () => {
   const html = render(detail(), {
     session: liveSession({
       state: "idle",
       pendingReviews: 0,
-      paneDialog: null,
     }),
     reviews: [],
-    gateNeedsYou: true,
   });
-  assert.match(html, /aria-label="Session needs decision"/);
+  assert.match(html, /aria-label="Session needs an answer"/);
   assert.match(html, /ensemble-lane-tone-attention/);
 });
 

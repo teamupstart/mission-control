@@ -24,13 +24,13 @@ help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-9s\033[0m %s\n", $$1, $$2}'
 
-init: ## First-run bootstrap: deps, build, hooks, treehouse + no-mistakes, gate repo
+init: ## First-run bootstrap: deps, build, hooks, and treehouse
 	node scripts/init.mjs
 
-session: ## Start an agent in a fresh, gated worktree (e.g. make session ARGS="-- claude")
+session: ## Start an agent in a fresh worktree (e.g. make session ARGS="-- claude")
 	node scripts/new-session.mjs $(ARGS)
 
-claude: ## One shot: bootstrap, ensure the daemon, lease a gated worktree, open Claude in it (harness-ready). Pass flags via ARGS="--resume"
+claude: ## One shot: bootstrap, ensure the daemon, lease a worktree, open Claude in it (harness-ready). Pass flags via ARGS="--resume"
 	@$(MAKE) --no-print-directory init
 	@lsof -ti tcp:$(PORT) >/dev/null 2>&1 \
 		&& echo "✓ harness daemon already up on http://127.0.0.1:$(PORT)" \

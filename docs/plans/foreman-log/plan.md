@@ -66,8 +66,8 @@ already sent over the wire.
 
 ### Why an episode table, not columns on `session_notes`
 
-Same reasoning `gate_replies` records for itself (`db.ts:66-77`). `session_notes` is a **current
-state** row with one `disposition` and one `updated_at` meaning "what Foreman decided, and when".
+`session_notes` is a **current state** row with one `disposition` and one `updated_at` meaning
+"what Foreman decided, and when".
 An append-only history has a different cardinality, a different key, and a different retention
 rule. Sharing the row would corrupt both, and `CREATE TABLE IF NOT EXISTS` gives a new table a free
 upgrade path where new columns would need ALTERs.
@@ -117,9 +117,8 @@ same row rather than appending a second one.
 durable in `reviews.body`, and storing a screen capture for it would be a second copy that can
 drift.
 
-Retention: swept alongside the existing `gate_replies` sweep, but at **30 days** rather than
-that sweep's 90. An episode row can carry a whole pane capture, so it is the fattest of the
-aged tables, and the drawer is read for recent judgment rather than for a branch that may sit
+Retention is **30 days**. An episode row can carry a whole pane capture, so it is the fattest of
+the aged tables, and the drawer is read for recent judgment rather than for a branch that may sit
 open for months. `pane` is capped at 16k bytes on write for the same reason.
 
 ## Phases
@@ -260,8 +259,7 @@ one with something to say - capped at four paragraphs so scrollback isn't weighe
 ## Open risks
 
 - **Pane size.** A capture is a full screen; at one row per episode this is bounded by the sweep,
-  but worth watching. **Resolved:** capped at 16k bytes on write, and the sweep is 30 days
-  rather than `gate_replies`' 90 - see Schema above.
+  but worth watching. **Resolved:** capped at 16k bytes on write, and the sweep is 30 days.
 - **`/clear` re-mints `note_key`**, orphaning an episode history the same way it orphans a note.
   Acceptable for now - the drawer is session-scoped, and a cleared session is a new session.
 - **Fleet-wide view** is the obvious next step once episodes are durable (same list, unfiltered by

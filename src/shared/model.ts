@@ -178,16 +178,26 @@ export function parseContextWindowSize(id: string | null | undefined): {
 
 /**
  * The context window a model runs at when its id carries no explicit size marker.
- * Claude Code enables the 1M (`[1m]`) window by default for its long-context
- * models - Opus 4+ and Sonnet 4+ - but the transcript records the bare id with
- * the marker stripped, so those families would otherwise read as the 200k default
- * and their context% would be ~5x too high. Map them to 1M here; everything else
- * (Haiku, Claude 3.x, unknown ids) keeps the standard 200k window.
+ * Claude Code enables 1M by default for Fable 5+, Opus 4.6+, and Sonnet 4.6+,
+ * but the transcript records the bare id with any context marker stripped. Those
+ * models would otherwise read as the 200k default and their context% would be
+ * ~5x too high. Keep the version boundary explicit: Opus/Sonnet 4.5 and Haiku
+ * 4.5 are 200k models, while a delimited `[1m]` marker above still wins for any
+ * model that was launched on an explicit long-context variant.
  */
 export function defaultWindowForModel(id: string | null | undefined): number {
   if (!id) return DEFAULT_CONTEXT_WINDOW;
-  const m = /^claude-(opus|sonnet)-(\d+)/i.exec(coreModelId(id).toLowerCase());
-  if (m && Number(m[2]) >= 4) return LONG_CONTEXT_THRESHOLD;
+  const m = /^claude-(fable|opus|sonnet)-(\d+)(?:-(\d+))?/i.exec(
+    coreModelId(id).toLowerCase(),
+  );
+  if (!m) return DEFAULT_CONTEXT_WINDOW;
+  const family = m[1]!.toLowerCase();
+  const major = Number(m[2]);
+  const minor = Number(m[3] ?? 0);
+  if (family === "fable" && major >= 5) return LONG_CONTEXT_THRESHOLD;
+  if ((family === "opus" || family === "sonnet") && (major > 4 || (major === 4 && minor >= 6))) {
+    return LONG_CONTEXT_THRESHOLD;
+  }
   return DEFAULT_CONTEXT_WINDOW;
 }
 

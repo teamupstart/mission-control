@@ -135,12 +135,6 @@ sends one combined repair packet. It does not race two prompts into the session.
 one fails, the passing verdict stays in history but the next submission reruns both branches because
 the code changed after the shared evidence snapshot.
 
-The canvas ends at **Persona workflow passed**. The dotted Inspector portion is run-state decoration,
-not editable graph structure. Inspector cannot review a session diff directly, so a configured final
-gate waits for an adopted pull request and the Inspector subsystem's next poll of that PR. If no
-eligible PR exists, the run shows a missing-PR wait and can offer the existing `/no-mistakes` or
-direct PR wrap-up action. Inspector itself never commits, pushes, opens, or adopts anything.
-
 ## Design mockups
 
 These are two presentation options for the same graph and runtime semantics.
@@ -367,18 +361,6 @@ Inspector is a separate asynchronous subsystem inside the daemon and remains the
 polling, review execution, marker parsing, GitHub comments, and its adoption ledger. It is not a
 Persona or graph node. The workflow's optional final gate is a read-only adapter over that ledger:
 
-- It is entered only after the Persona graph reaches a successful End.
-- It only accepts an `inspector_prs` row that existing `prCreated` or no-mistakes provenance adopted.
-- It requires Inspector to be enabled. If not, the run is `blocked` with a Settings link.
-- It waits for Inspector to observe the PR after gate entry, then pins the adopted PR and head SHA
-  that the successful graph submitted.
-- It requires no staged, unstaged, or untracked content outside that captured HEAD.
-- It waits for Inspector's normal poll to complete for that exact current head.
-- It passes when that head has no open Inspector findings and no review error.
-- It returns the current findings in severity order when marked Inspector comments remain open.
-- It does not run a second GitHub poller, post, resolve, merge, grant tools, or change Inspector mode
-  or allowlists.
-
 The current Inspector ledger stores finding titles but not the scrubbed finding body. Add a nullable
 `body TEXT` column to `inspector_comments`, add the matching `addColumn` migration, persist the already
 scrubbed planned comment body, and expose it only to the local workflow feedback adapter. Existing
@@ -428,12 +410,6 @@ wrap-up - it calls a new daemon route with:
 
 The daemon answers whether the boundary is owned by a workflow and includes its run/submission when
 available:
-
-- `claimed: true` means an active Foreman-triggered binding consumed this completion, including a
-  visible workflow block such as a round cap. Foreman retires its completion episode and does not
-  also run the existing wrap-up action.
-- `claimed: false` is reserved for no active binding or a Manual trigger, so Foreman's current ask,
-  no-mistakes, or PR behavior proceeds unchanged.
 
 The same route can resubmit a workflow waiting at its Session node. A unique non-null trigger key on
 every submission makes a repeated HTTP request return the existing submission instead of starting

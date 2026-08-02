@@ -8,7 +8,8 @@ import type {
   InspectorInspection,
   InspectorStatus,
   LlmStatus,
-  NmFixDetail,
+  MessageSendDisposition,
+  PendingTurn,
   PermissionMode,
   PlanDecisionAnswer,
   ResetPreview,
@@ -18,7 +19,6 @@ import type {
   SessionFileDocument,
   SessionFileEntry,
   SessionFileSaveResult,
-  SdkSendDisposition,
   SessionQueue,
   SkillsView,
   TaskPriority,
@@ -83,8 +83,10 @@ import type { PersonaDefaultsView } from "@shared/workflow.ts";
 export interface ActionResult {
   ok: boolean;
   error?: string;
-  /** Present when an embedded driver acknowledged where it put the submitted turn. */
-  delivery?: SdkSendDisposition;
+  /** Present when Mission Control or an embedded driver acknowledges the submission. */
+  delivery?: MessageSendDisposition;
+  /** The durable outbox row created for an editable submission. */
+  pendingTurn?: PendingTurn;
   /** HTTP status, so a caller can tell a CAS conflict (409) from a real failure. */
   status?: number;
 }
@@ -230,12 +232,6 @@ export async function fetchSessionDiff(id: string, commit?: string): Promise<Ses
     return fail(err instanceof Error ? err.message : String(err));
   }
 }
-
-/** The context behind one no-mistakes fix. Null when it can't be loaded. */
-export const fetchNomistakesFix = (id: string, sha: string): Promise<NmFixDetail | null> =>
-  fetchJson<NmFixDetail>(
-    `/api/sessions/${encodeURIComponent(id)}/nomistakes/fixes/${encodeURIComponent(sha)}`,
-  );
 
 // ---- ensembles ----
 //
@@ -758,6 +754,21 @@ export const api = {
     ),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
+  recallPendingTurn: (id: string, turnId: string, revision: number) =>
+    post<ActionResult & { text?: string }>(
+      `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/recall`,
+      { revision },
+    ),
+  retryPendingTurn: (id: string, turnId: string, revision: number) =>
+    post(
+      `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/retry`,
+      { revision },
+    ),
+  resolvePendingTurn: (id: string, turnId: string, revision: number) =>
+    post(
+      `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/resolve`,
+      { revision },
+    ),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
   /**
    * Open a terminal on this session's checkout - a shell, or its own agent CLI resumed on
@@ -852,12 +863,6 @@ export const api = {
     selections?: PlanDecisionAnswer[] | null,
   ) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
-  nomistakesRespond: (
-    id: string,
-    action: "approve" | "fix" | "skip",
-    opts: { findings?: string[]; instructions?: string } = {},
-  ) => post(`/api/sessions/${encodeURIComponent(id)}/nomistakes/respond`, { action, ...opts }),
-
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   /**
@@ -1000,9 +1005,14 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}/approve`),
   setWrapupAnswer: (id: string, answer: string | null) =>
     put(`/api/sessions/${encodeURIComponent(id)}/queue/wrapup`, { answer }),
+  startBuiltinReview: (id: string, requestId: string) =>
+    post<{ run?: { id: string } } & ActionResult>(
+      `/api/sessions/${encodeURIComponent(id)}/workflow-review`,
+      { requestId },
+    ),
   reattachQueue: (id: string, noteKey: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),
   /** Deliver a whole multi-line prompt as one bracketed-paste submission. */
-  injectPrompt: (id: string, text: string) =>
-    post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text }),
+  injectPrompt: (id: string, text: string, buffer = true) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text, buffer }),
 };

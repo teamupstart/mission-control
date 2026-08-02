@@ -15,7 +15,6 @@ import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
-import { gateParked } from "@shared/session.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import {
@@ -41,7 +40,11 @@ import {
   historicalTaskWorkEpisodeBindingsForTask,
   taskWorkEpisodeForTask,
 } from "./db.ts";
-import { driverClearFor, resetSession } from "./reset.ts";
+import {
+  driverClearFor,
+  resetSession,
+  type PendingTurnResetBoundary,
+} from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -276,6 +279,8 @@ export class TaskManager {
      * `homeName` means "keep the worktree", the safe direction.
      */
     private supervisor?: SdkSupervisor,
+    /** Coordinates claimed message delivery with every task-assignment reset. */
+    private pendingTurns?: PendingTurnResetBoundary,
   ) {
     this.dispatcher = new Dispatcher(registry, undefined, { supervisor });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
@@ -1435,7 +1440,14 @@ export class TaskManager {
         // `cleared: false`, `workIdentityReady` stays false, and `assignReserved` correctly
         // refuses to hand the task over - so this is the difference between an SDK session
         // taking a second task and never taking one.
-        resetSession(this.registry, session, true, undefined, driverClearFor(this.supervisor)));
+        resetSession(
+          this.registry,
+          session,
+          true,
+          undefined,
+          driverClearFor(this.supervisor),
+          this.pendingTurns,
+        ));
     const doRename = opts.rename ?? rename;
 
     if (s.state !== "idle") {
@@ -1460,13 +1472,6 @@ export class TaskManager {
       return {
         ok: false,
         error: "that agent has a review waiting on you - clear it first",
-        scope: "session",
-      };
-    }
-    if (gateParked(s, this.registry.snapshot().sessions)) {
-      return {
-        ok: false,
-        error: "that agent has a no-mistakes gate waiting on you - resolve it first",
         scope: "session",
       };
     }
@@ -1505,8 +1510,8 @@ export class TaskManager {
     //
     // The state this fixes is the ordinary one, not an edge case: an agent that just
     // shipped is standing on its own feature branch with that work committed. Typing
-    // the next task in stacks unrelated commits on top of it, and no-mistakes, seeing a
-    // non-default branch, validates and pushes onto it - so two tasks arrive in one PR.
+    // the next task in stacks unrelated commits on top of it, so two tasks can arrive
+    // in one pull request.
     // `resetSession` is the same operation the Reset button performs (git reset --hard
     // onto origin/main, clean, detach the branch, /clear), so a recycled agent is handed
     // over in the shape a freshly dispatched one starts in.
@@ -1544,8 +1549,7 @@ export class TaskManager {
       !fresh ||
       !fresh.instrumented ||
       fresh.state !== "idle" ||
-      fresh.pendingReviews > 0 ||
-      gateParked(fresh, this.registry.snapshot().sessions)
+      fresh.pendingReviews > 0
     ) {
       return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
     }

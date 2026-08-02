@@ -369,7 +369,7 @@
 
       function row(s) {
         const flags = [];
-        if (s.gated) flags.push(`<span class="flag" title="gated by no-mistakes">◇</span>`);
+        if (s.gated) flags.push(`<span class="flag" title="gated by review workflow">◇</span>`);
         if (s.note)
           flags.push(
             `<span class="flag on" title="Foreman ${s.note.disposition === "escalated" ? "escalated a decision" : "drafted a reply"}">◆</span>`,
@@ -416,7 +416,7 @@
             ${s.nm ? nmStrip(s, needsYou) : ""}
             ${s.queue ? `<span class="section-label">work queue</span><span class="queue-chip"><span class="qc-count">${s.queue.open} queued</span><span class="qc-intent">${s.queue.intent}</span><span class="qc-round">fix ${s.queue.round}</span></span>` : ""}
             ${s.task ? `<span class="task-chip"><span class="task-kind">${s.task.kind}</span><span class="task-title">${s.task.title}</span>${s.task.outcome ? `<span class="task-outcome">${s.task.outcome}</span>` : ""}</span>` : ""}
-            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>no-mistakes fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
+            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>review workflow fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
             <div class="exp-foot">
               <span class="mono dim">${s.cwd}</span><span>·</span><span class="mono dim">pid ${s.pid}</span>
               ${s.mode ? `<button class="mode-pick">${s.mode} ▾</button>` : ""}

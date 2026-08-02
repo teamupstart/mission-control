@@ -211,9 +211,15 @@ function seed() {
   mkdirSync(live, { recursive: true });
   mkdirSync(source, { recursive: true });
   symlinkSync(source, join(live, "mission-alpha"), "dir");
-  rmSync(aliasDir, { force: true });
-  symlinkSync(join(home, ".agents"), aliasDir, "dir");
 }
+
+// Once, not per seed: it points at ".agents", which seed() re-creates but never removes.
+// Re-making it each time meant REMOVING it each time, and \`rmSync\` on a symlink to a
+// directory is not portable - it raised ERR_FS_EISDIR on CI's node 24 Linux runner while
+// passing on node 26 there and on node 24 locally under macOS. Creating it once needs no
+// removal and so has no version to be wrong about.
+seed();
+symlinkSync(join(home, ".agents"), aliasDir, "dir");
 
 // String concatenation, not join(): join() would normalise the spelling away before the
 // guard ever saw it, which is how the first cut of these cases passed against a guard that
@@ -227,7 +233,6 @@ const SPELLINGS = {
   upperCase: () => join(home, ".AGENTS", "skills"),
 };
 
-seed();
 // Whether ".AGENTS" and ".agents" are one directory HERE. macOS ships case-insensitive
 // APFS, Linux CI is case-sensitive, and the honest assertion differs between them.
 const caseInsensitive = statSync(join(home, ".AGENTS"), { throwIfNoEntry: false }) !== undefined;

@@ -2372,8 +2372,14 @@ Every `#/workflows/*` spelling redirects permanently, and the address bar is rew
 new one so a kept bookmark stops being a legacy link: `#/workflows` → `#/library`,
 `#/workflows/personas` → `#/library/personas`, `#/workflows/actions` → `#/library/actions`,
 `#/workflows/runs[/:id]` → `#/runs[/:id]`, `#/workflows/ensembles[/:id]` →
-`#/ensembles[/:id]`. Query filters survive the redirect, so a saved
-`#/workflows/runs?status=completed` lands on the same filtered list it always did.
+`#/ensembles[/:id]`. The runs page's three filters - `status`, `workflowId` and `session` -
+survive the redirect, so a saved `#/workflows/runs?status=completed` lands on the same filtered
+list it always did.
+
+Those three are the only query parameters any route has ever had, and **anything else in a
+query string is dropped**. That is a property of the router rather than of redirecting: a route
+is a typed value serialized back out of its own fields, so `#/runs?source=x` loses `source`
+exactly as `#/workflows/runs?source=x` does, and always has.
 
 Those five are every spelling that ever shipped, and **anything else under the prefix lands on
 `#/library` too** rather than falling through to the fleet. The prefix named one page, so a

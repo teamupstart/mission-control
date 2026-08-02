@@ -137,6 +137,14 @@ export function parseMissionRoute(hash: string): MissionRoute {
   const [rawPath, rawQuery = ""] = withoutHash.split("?", 2);
   const path = rawPath!.replace(/\/+$/, "");
   const params = new URLSearchParams(rawQuery);
+  // THREE query parameters exist, they belong to the runs route alone, and every other one is
+  // dropped. A `MissionRoute` is a typed value rather than a URL: it is serialized back out of
+  // its own fields by `missionRouteHash`, so a parameter with no field to land in cannot
+  // survive the round trip and never has - `#/runs?source=x` loses it exactly as
+  // `#/workflows/runs?source=x` does. That is worth saying here because the legacy redirects
+  // make it look like a property of REDIRECTING, and it is not; carrying an arbitrary query
+  // through would mean parking an opaque bag on every route and printing meaningless
+  // parameters in the address bar forever.
   const rawStatus = params.get("status");
   const filters: WorkflowRunFilters = {
     ...(rawStatus && (WORKFLOW_RUN_STATUSES as readonly string[]).includes(rawStatus)

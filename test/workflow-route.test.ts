@@ -45,9 +45,9 @@ test("the ensembles page parses and serializes, with an id and back to the list"
 // This is the whole redirect contract in one table, and it is a table because the failure it
 // guards against is per-spelling: a redirect written as a branch per route is a redirect that
 // gets one of them wrong, and the symptom is a bookmark or a desktop notification quietly
-// landing on the fleet. The run and ensemble rows also check that the QUERY survives - the
-// legacy prefix is stripped before matching precisely so filters cannot be dropped on the way
-// through.
+// landing on the fleet. The RUN rows also carry a query, because the legacy prefix is stripped
+// before matching precisely so the run filters cannot be dropped on the way through - what
+// exactly a query is worth on each route is the case below this one.
 test("every legacy #/workflows spelling redirects to its new home, permanently", () => {
   const redirects: [legacy: string, landed: MissionRoute][] = [
     // Authoring, which moved to the Library one phase earlier.
@@ -130,6 +130,41 @@ test("no #/workflows hash falls through to the fleet, whatever follows the prefi
   // the fleet.
   assert.deepEqual(parseMissionRoute("#/unknown"), { page: "fleet" });
   assert.deepEqual(parseMissionRoute("#/workflowsx"), { page: "fleet" });
+});
+
+// What "the query survives the redirect" is actually worth, stated exactly.
+//
+// The three run filters survive, because they are FIELDS on the runs route. Nothing else
+// does, on any route - and the point of the second half here is that this is a property of
+// the router rather than of redirecting: the canonical spelling drops an unknown parameter
+// just as the legacy one does. A reader who saw only the legacy case would reasonably file a
+// bug against the redirect.
+test("a legacy redirect carries the run filters, and no route carries anything else", () => {
+  // Every filter, through the longest legacy spelling, with the run id kept beside them.
+  assert.deepEqual(
+    parseMissionRoute("#/workflows/runs/r1?status=running&workflowId=w1&session=s1"),
+    { page: "runs", runId: "r1", filters: { status: "running", workflowId: "w1", session: "s1" } },
+  );
+  assert.equal(
+    missionRouteHash(parseMissionRoute("#/workflows/runs?status=completed")),
+    "#/runs?status=completed",
+  );
+  // An unknown parameter is dropped - and identically on the route it redirects TO, which is
+  // what makes it the router's rule and not the redirect's.
+  for (const [legacy, canonical] of [
+    ["#/workflows/ensembles?source=notification", "#/ensembles?source=notification"],
+    ["#/workflows/runs?source=notification", "#/runs?source=notification"],
+  ]) {
+    assert.deepEqual(
+      parseMissionRoute(legacy!),
+      parseMissionRoute(canonical!),
+      `${legacy} and ${canonical} must parse alike`,
+    );
+    assert.doesNotMatch(missionRouteHash(parseMissionRoute(canonical!)), /source=/);
+  }
+  // A status this build cannot name is not a filter either, so it cannot reach the run list
+  // query as one.
+  assert.deepEqual(parseMissionRoute("#/workflows/runs?status=not-a-status"), { page: "runs" });
 });
 
 test("the Workflows page is gone, not merely unreachable", () => {

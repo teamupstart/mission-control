@@ -134,19 +134,50 @@ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
 
 ### The Line
 
-[`docs/evidence/line-strip/`](../docs/evidence/line-strip/) carries the two frames
-`specs/line-strip.spec.ts` takes between its own assertions, behind the same
-`MC_E2E_EVIDENCE` flag: the strip after a task is filed, with the Backlog stage naming what
-autopilot would take next, and the same strip after that task is parked - amber border,
-glyph, name, count and sentence, with the wire feeding it lit to match.
+[`docs/evidence/line-strip/`](../docs/evidence/line-strip/) carries all three artifacts
+`specs/line-strip.spec.ts` produces behind `MC_E2E_EVIDENCE`, and they answer different
+questions.
 
-Both are worth having as pictures rather than assertions because the claim is a colour and a
-shape: "amber when it needs the operator" is checkable in the DOM as a class name, and
-readable as a strip only here.
+The two frames are the ones only a picture answers: `line-live.png` is the strip after a
+task is filed, with the Backlog stage naming what autopilot would take next, and
+`line-attention.png` is the same strip after that task is parked - amber border, glyph,
+name, count and sentence, with the wire feeding it lit to match. "Amber when it needs the
+operator" is checkable in the DOM as a class name and readable as a strip only here.
+
+[`transcript.txt`](../docs/evidence/line-strip/transcript.txt) is the run's own verbatim
+output, and it exists because `2 passed` is a verdict rather than evidence: it says some
+assertions held, not that the strip rendered six stages, took an SSE update with no reload,
+went amber, and navigated on click. Each `OBSERVED` line is printed only after the assertion
+it describes has already succeeded, so the transcript cannot narrate a step that did not
+happen.
+
+Regenerate all three with (`--workers=1` so the two tests' lines do not interleave, which is
+what makes the committed transcript readable and byte-stable):
 
 ```sh
-MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
-  e2e/specs/line-strip.spec.ts --reporter=list
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/line-strip.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Actual output from the captured run:
+
+```text
+Running 2 tests using 1 worker
+
+OBSERVED the strip rendered 6 stages in pipeline order: Intake -> Backlog -> Working -> Review -> Decide -> Shipped
+OBSERVED a filed backlog task reached the strip over SSE, no reload: Backlog 0 -> 1, "next up: Fix pane focus stealing"
+CAPTURED docs/evidence/line-strip/line-live.png
+OBSERVED parking that task turned Backlog amber (tone-attention), and it is the only amber stage
+CAPTURED docs/evidence/line-strip/line-attention.png
+OBSERVED clicking the Review stage navigated to #/workflows/runs with the Runs tab selected
+OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
+  ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:79:1 › the Line renders every stage, tracks the fleet live, and its stages navigate (1.8s)
+OBSERVED the strip renders once, outside <header class="topbar">, so --topbar-h and .card.expanded are untouched
+  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:148:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (1.2s)
+
+  2 passed (3.5s)
 ```
 
 ## Steering a workflow reviewer

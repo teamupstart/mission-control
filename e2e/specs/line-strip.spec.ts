@@ -55,6 +55,25 @@ async function shoot(page: Page, line: Locator, name: string): Promise<void> {
   // strip of six adjacent buttons it lands squarely on the stage being photographed.
   await page.mouse.move(0, 0);
   await line.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED docs/evidence/line-strip/${name}.png`);
+}
+
+/**
+ * Narrate a step that just passed, so the committed transcript evidences the WALK and not
+ * only its verdict.
+ *
+ * `2 passed` says a spec named some assertions and they held; it does not say the strip
+ * rendered six stages, took an SSE update, went amber, and navigated. Those are the claims
+ * a reader of the evidence is checking, and each line below is printed only after the
+ * assertion above it has already succeeded - so the transcript cannot narrate a step that
+ * did not happen. Same `OBSERVED` / `CAPTURED` vocabulary the dispatch-and-converse
+ * evidence uses.
+ */
+function observed(what: string): void {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  // eslint-disable-next-line no-console
+  console.log(`OBSERVED ${what}`);
 }
 
 test("the Line renders every stage, tracks the fleet live, and its stages navigate", async ({
@@ -78,6 +97,7 @@ test("the Line renders every stage, tracks the fleet live, and its stages naviga
   const backlog = line.getByRole("button", { name: /^Backlog,/ });
   await expect(backlog).toContainText("nothing waiting");
   await expect(line.getByRole("button", { name: /^Working,/ })).toContainText("no sessions open");
+  observed(`the strip rendered ${STAGES.length} stages in pipeline order: ${STAGES.join(" -> ")}`);
 
   // ---- the strip moves with the fleet, over SSE, with no reload ----
 
@@ -93,6 +113,7 @@ test("the Line renders every stage, tracks the fleet live, and its stages naviga
   // client-side code in this build knows how to write "next up:".
   await expect(backlog).toHaveAccessibleName(/^Backlog, 1 task waiting - next up: Fix pane focus stealing$/);
   await expect(backlog).toContainText("next up: Fix pane focus stealing");
+  observed("a filed backlog task reached the strip over SSE, no reload: Backlog 0 -> 1, \"next up: Fix pane focus stealing\"");
   await shoot(dashboard, line, "line-live");
 
   // ---- amber when it needs the operator ----
@@ -109,6 +130,7 @@ test("the Line renders every stage, tracks the fleet live, and its stages naviga
   await expect(backlog).toHaveClass(/tone-attention/);
   // And it is the ONLY amber stage: a strip where everything glows says nothing.
   await expect(line.locator(".line-stage.tone-attention")).toHaveCount(1);
+  observed("parking that task turned Backlog amber (tone-attention), and it is the only amber stage");
   await shoot(dashboard, line, "line-attention");
 
   // ---- a stage click goes somewhere real ----
@@ -116,9 +138,11 @@ test("the Line renders every stage, tracks the fleet live, and its stages naviga
   await line.getByRole("button", { name: /^Review,/ }).click();
   await expect(dashboard).toHaveURL(/#\/workflows\/runs$/);
   await expect(dashboard.getByRole("tab", { name: /Runs/ })).toHaveAttribute("aria-selected", "true");
+  observed("clicking the Review stage navigated to #/workflows/runs with the Runs tab selected");
 
   // The strip is the FLEET's chrome, not the app's: it must not follow you off the page.
   await expect(line).toBeHidden();
+  observed("the strip is fleet-only: it did not follow the navigation off the fleet page");
 });
 
 test("the strip sits outside the topbar, so it cannot shorten an expanded card", async ({
@@ -130,4 +154,5 @@ test("the strip sits outside the topbar, so it cannot shorten an expanded card",
   // rests on, checked against the app as actually composed rather than against a fixture.
   await expect(dashboard.locator("header.topbar .line")).toHaveCount(0);
   await expect(dashboard.locator(".line")).toHaveCount(1);
+  observed("the strip renders once, outside <header class=\"topbar\">, so --topbar-h and .card.expanded are untouched");
 });

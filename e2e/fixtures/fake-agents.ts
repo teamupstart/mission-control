@@ -32,10 +32,9 @@ export interface FakeAgents {
 /**
  * A fake that only has to exist.
  *
- * `codex` and `pi` are pointed at this so that nothing can silently fall through to a real
- * binary on PATH, but neither is driven by any spec yet. It fails loudly rather than
- * succeeding quietly: a test that starts exercising them should see this message, not a
- * mysteriously idle card.
+ * `pi` is pointed at this so that nothing can silently fall through to a real binary on
+ * PATH, but no spec drives it yet. It fails loudly rather than succeeding quietly: a test
+ * that starts exercising it should see this message, not a mysteriously idle card.
  */
 function unimplemented(agent: string): string {
   return `#!/bin/sh
@@ -62,12 +61,16 @@ export function writeFakeAgents(home: string): FakeAgents {
   copyFileSync(fileURLToPath(new URL("./fake-claude.mjs", import.meta.url)), claude);
   chmodSync(claude, 0o755);
 
+  // Copied to an extension-less path for the same reason as its sibling above, though only
+  // Claude's vendored SDK actually sniffs the extension: `spawnAppServer` execs the resolved
+  // path directly, so the shebang is what picks the interpreter either way.
   const codex = join(binDir, "fake-codex");
+  copyFileSync(fileURLToPath(new URL("./fake-codex.mjs", import.meta.url)), codex);
+  chmodSync(codex, 0o755);
+
   const pi = join(binDir, "fake-pi");
-  for (const [agent, path] of [["codex", codex], ["pi", pi]] as const) {
-    writeFileSync(path, unimplemented(agent));
-    chmodSync(path, 0o755);
-  }
+  writeFileSync(pi, unimplemented("pi"));
+  chmodSync(pi, 0o755);
 
   return { recordDir, bins: { claude, codex, pi } };
 }

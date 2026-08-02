@@ -54,10 +54,10 @@ and get your decision back.
   moment a session needs input, a review lands, a session **gets stuck**, or a
   dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
-- **Tracks fleet economics**: a badge on every priced card and a topbar strip carrying
-  the sessions' Claude + Codex API-equivalent estimate, tokens, estimated cost per pull
-  request, and rate-limit runway. A separate automation figure attributes the Foreman's
-  and Inspector's own model spend by role. See [Cost telemetry](#cost-telemetry).
+- **Tracks fleet economics**: a badge on every priced card and a topbar cost chip whose
+  popover carries the sessions' Claude + Codex API-equivalent estimate, tokens, estimated
+  cost per pull request, and rate-limit runway. A separate automation figure attributes the
+  Foreman's and Inspector's own model spend by role. See [Cost telemetry](#cost-telemetry).
 - **Says what each prompt-reporting session is for**: its card carries a one-sentence
   **Goal** - what that session is currently trying to solve - derived from your own
   prompts and refreshed as you steer it. No API key: it runs the configured local
@@ -1028,17 +1028,18 @@ npm run install-hooks -- --uninstall   # removes that block - and the hooks, and
 ```
 
 Once any session or automation source has data, every priced session card carries a **cost
-badge** beside its model / thinking / context row, and the topbar grows a foldable **Usage**
-row:
+badge** beside its model / thinking / context row, and the topbar grows a **cost chip** -
+`≈$12.40 · $3.10/hr`, in the machinery purple cost wears everywhere. Clicking it opens the
+**Spend** popover, which carries the rest:
 
-| Figure | What it is |
-|---|---|
-| **Estimated cost today** | Claude- plus Codex-estimated session usage since local midnight |
-| **Estimated rate** | the last hour of that same session estimate |
-| **Tokens today** | session input, output and cache, every tier summed |
-| **Cost / PR** | today's session estimate over pull requests either agent opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
-| **Automation today** | API-equivalent estimated cost for the Foreman's and Inspector's own model calls since midnight. Hover for the per-role split |
-| **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
+| Figure | Where | What it is |
+|---|---|---|
+| **Fleet today** | chip and popover | Claude- plus Codex-estimated session usage since local midnight |
+| **Rate now** | chip and popover | the last hour of that same session estimate |
+| **Tokens today** | popover | session input, output and cache, every tier summed |
+| **Per shipped PR** | popover | today's session estimate over pull requests either agent opened today, with the count it was divided by. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
+| **Automation** | popover | API-equivalent estimated cost for the Foreman's and Inspector's own model calls since midnight, with the per-role split printed under it |
+| **Runway** | popover, and the chip's colour | per rate-limit window: how much is used and how long the rest lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
 
 The runway is the only forward-looking number in the app, and it is an average
 extrapolated forward - which is why it is written `~41 min`, and why a window the current
@@ -1048,10 +1049,16 @@ meters, so deriving one from the other would be a confident number about the wro
 An average cannot see a burst; a fleet that idled all morning and then started six
 sessions reads as calm for a while.
 
-Folding the row away keeps today's estimate visible beside the toggle, and the choice
-persists per machine like the layout.
+The chip is the one thing cost keeps permanently on screen, so it is also what carries the
+warning: when a quota window is projected to run out it turns amber and then red, trades
+its rate for the reading that escalated it (`≈$12.40 · 96%`), and names that window in its
+accessible name rather than leaving the alarm to colour alone. It does **not** escalate on
+the dollars - those thresholds are per session, and a fleet clears them most afternoons, so
+a chip wired to them would be red by lunchtime every day. A fleet with no usage and no quota
+reading at all renders no chip, rather than a confident `$0.00`. `Esc` or a click outside
+closes the popover; `Cost settings →` in its footer opens **Settings · Cost**.
 
-Five transports feed the strip, each kept to the facts it actually reports:
+Five transports feed these figures, each kept to the facts it actually reports:
 
 | Source | Provides |
 |---|---|
@@ -1136,9 +1143,9 @@ A plan meter disappears once its window resets rather than holding the last perc
 a quota that has already rolled over is not a figure worth showing, and the same rule
 already governs an account with no rate limits to report.
 
-**Every dollar figure is one API-equivalent estimate.** Session cards mark it `≈$`; in the
-Usage row, the session labels say estimated and **Automation today** follows the valuation
-described above. Claude Code calculates its rows from request usage; Mission Control prices
+**Every dollar figure is one API-equivalent estimate.** Session cards mark it `≈$`; so does
+the cost chip, and the Spend popover says so once in its footer rather than five times.
+**Automation** follows the valuation described above. Claude Code calculates its rows from request usage; Mission Control prices
 Codex requests at an immutable snapshot of OpenAI Standard API rates, including cache and
 long-context rules.
 Estimator provenance remains on each session, but both values have the same economic
@@ -3420,6 +3427,21 @@ depth.
 Foreman's completion checks use the card's [durable Goal](#goal), while its latest tactical
 focus remains separate.
 
+Two default-on safeguards under **Settings → Foreman → Completion safeguards** decide which
+finished work never reaches an automatic completion action:
+
+- **Skip automatic completion for Scout tasks** uses the task's durable `Kind`. A Scout is
+  retired once its findings are ready, without showing Ship it, running No-Mistakes Review,
+  or typing the Straight-to-PR instruction.
+- **Skip automatic completion for mockups and review artifacts** recognizes explicit output
+  contracts such as `Output: mockups`, natural-language requests for reports, plans, research,
+  wireframes or prototypes, and completed diffs containing only conventional artifact paths.
+  Mixed contracts that also request source code, tests, components or another implementation
+  action still follow the configured completion path.
+
+The safeguards are independent. A task matching either one is retired while that switch is
+on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
+
 In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
 arranged differently, because a permanent conversation gives it somewhere better to sit:
 Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
@@ -3724,6 +3746,15 @@ The action is the same whichever trigger fired:
 | **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
 | **Run No-Mistakes Review automatically** | after Foreman verifies the original work, submits an existing **Foreman Complete** binding; if there is no active binding, it binds and immediately submits the current built-in **No-Mistakes Review** workflow |
 | **Straight to PR** | explicitly skip the review workflow; use git and `gh` directly to commit, push, and open a PR, then merge the default branch in, resolve conflicts, and follow CI until every check passes |
+
+Automatic wrap-up is only for shippable changes. A linked task whose **Kind** is **scout**
+retires its completion without submitting an existing Workflow, creating the built-in
+No-Mistakes fallback, typing the Straight-to-PR instruction, or raising a Ship it? card. The
+same rule applies when the resolved objective explicitly asks for review-only output such as
+mockups, wireframes, prototypes, plans, reports or design explorations, and when the completed
+diff contains only conventional mockup or plan artifacts. A mixed change that also contains an
+implementation remains eligible. This is a Foreman automation boundary; it does not prevent a
+human from committing or opening a pull request manually.
 
 The two automated actions can ultimately *push*, so they only fire in **live** mode on an
 **allowlisted** repo - until then Foreman asks, and the popover says so rather than letting
@@ -5138,7 +5169,7 @@ cleanup broke" from "the build passed and then cleanup broke".
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](#cost-telemetry) installers edit. Overridable so tests never touch your real one |
 
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
-shortcuts, alert delivery, message formatting, and the usage row's fold all live in the
+shortcuts, alert delivery, and message formatting all live in the
 daemon's database (`app_config`), alongside the Foreman, Skills, Harnesses, Task sources, Models, and
 Cost settings - so they are the same in every tab, on `localhost` and `127.0.0.1` alike, in the
 desktop app and in a browser, and they survive an upgrade. The browser keeps a copy in

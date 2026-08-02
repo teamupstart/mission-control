@@ -35,6 +35,8 @@ test("Foreman ships enabled with both wrap-up triggers, and still authorises not
   const fresh = getForemanConfig();
   assert.equal(fresh.enabled, true);
   assert.deepEqual(fresh.wrapupTriggers, ["drain", "prompted"]);
+  assert.equal(fresh.skipScoutWrapup, true);
+  assert.equal(fresh.skipReviewArtifactWrapup, true);
   assert.equal(fresh.mode, "dry-run", "enabled must not imply may-act");
   assert.deepEqual(fresh.repoAllowlist, [], "enabled must not imply an authorised repository");
   assert.equal(fresh.wrapup, "ask", "a wrap-up moment must still ask rather than type");
@@ -58,6 +60,18 @@ test("an operator who explicitly turned Foreman off keeps it off across the flip
   const upgraded = getForemanConfig();
   assert.equal(upgraded.enabled, true);
   assert.deepEqual(upgraded.wrapupTriggers, ["drain", "prompted"]);
+  assert.equal(upgraded.skipScoutWrapup, true);
+  assert.equal(upgraded.skipReviewArtifactWrapup, true);
+});
+
+test("Foreman persists the two completion safeguards independently", () => {
+  const scoutOff = setForemanConfig({ skipScoutWrapup: false });
+  assert.equal(scoutOff.skipScoutWrapup, false);
+  assert.equal(scoutOff.skipReviewArtifactWrapup, true);
+
+  const bothOff = setForemanConfig({ skipReviewArtifactWrapup: false });
+  assert.equal(bothOff.skipScoutWrapup, false);
+  assert.equal(bothOff.skipReviewArtifactWrapup, false);
 });
 
 test("Foreman upgrades a removed automatic-review enum to workflow mode", () => {

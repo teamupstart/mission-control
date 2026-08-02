@@ -71,6 +71,12 @@ interface SdkHandoff {
   ownershipUncertain: boolean;
 }
 
+interface ArmedDrain {
+  timer: ReturnType<typeof setTimeout>;
+  /** The moment this session's current idle observation finishes settling. */
+  drainAt: number;
+}
+
 /**
  * Durable human-turn outbox shared by embedded and terminal conversations.
  *
@@ -83,7 +89,7 @@ interface SdkHandoff {
 export class PendingTurnManager {
   private readonly deps: PendingTurnDeps;
   private readonly draining = new Set<string>();
-  private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly idleTimers = new Map<string, ArmedDrain>();
   private readonly pickup = new Map<string, PickupCandidate>();
   private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
   private readonly sdkHandoffs = new Map<string, SdkHandoff>();
@@ -125,7 +131,7 @@ export class PendingTurnManager {
     this.stopped = true;
     this.unsubscribe?.();
     this.unsubscribe = null;
-    for (const timer of this.idleTimers.values()) clearTimeout(timer);
+    for (const armed of this.idleTimers.values()) clearTimeout(armed.timer);
     for (const candidate of this.pickup.values()) {
       if (candidate.timer) clearTimeout(candidate.timer);
     }
@@ -206,7 +212,7 @@ export class PendingTurnManager {
     if (this.registry.sessionResetInProgress(sessionId)) return;
     this.resetPreserve.delete(sessionId);
     const session = this.registry.getSession(sessionId);
-    if (session && this.readyToDrain(session)) this.scheduleDrain(noteKeyFor(session));
+    if (session) this.scheduleDrain(noteKeyFor(session));
   }
 
   submit(sessionId: string, text: string): PendingTurnSubmitResult {
@@ -374,7 +380,7 @@ export class PendingTurnManager {
       }
       return;
     }
-    if (this.readyToDrain(session)) this.scheduleDrain(key);
+    if (this.canDrain(session)) this.scheduleDrain(key);
     else this.cancelIdleTimer(key);
   }
 
@@ -415,40 +421,63 @@ export class PendingTurnManager {
     this.registry.refreshPendingTurns(toKey);
   }
 
-  private readyToDrain(session: Session): boolean {
+  /**
+   * Every delivery precondition except the wait.
+   *
+   * Deliberately split from `readyToDrain`: the two ask different questions. This one asks
+   * whether a drain is still COMING, and it stays true throughout the settle window that
+   * `readyToDrain` is false during. That distinction is the whole reason the timer exists,
+   * because an idle transition always arrives carrying `lastActivity === now` - so a session
+   * is never settled at the instant it reports being idle. Arming on `readyToDrain` would
+   * refuse the timer at exactly the moment it is needed, and an embedded session, whose
+   * driver events are the only thing that ever pokes its card, would never ask again.
+   */
+  private canDrain(session: Session): boolean {
     const drainBoundary = this.terminalDrainBoundaries.get(noteKeyFor(session));
     return (
       drainBoundary?.sessionId !== session.id &&
       session.stateConfirmed &&
+      session.state === "idle" &&
       session.paneDialog === null &&
       !this.registry.sessionResetInProgress(session.id) &&
-      canMessage(session) &&
+      canMessage(session)
+    );
+  }
+
+  private readyToDrain(session: Session): boolean {
+    return (
+      this.canDrain(session) &&
       settledIdle(session, this.deps.now(), this.deps.idleSettleMs)
     );
   }
 
   private scheduleDrain(key: string): void {
-    if (this.stopped || this.idleTimers.has(key) || this.draining.has(key) || this.pickup.has(key)) {
-      return;
-    }
+    if (this.stopped || this.draining.has(key) || this.pickup.has(key)) return;
     const session = this.registry.sessionForNoteKey(key);
-    if (!session || !session.stateConfirmed || session.state !== "idle" || session.paneDialog) return;
-    if (this.terminalDrainBoundaries.get(key)?.sessionId === session.id) return;
+    if (!session || !this.canDrain(session)) return;
     const idleSince = session.lastActivity ?? session.firstSeen;
-    const delay = Math.max(0, idleSince + this.deps.idleSettleMs - this.deps.now());
+    const drainAt = idleSince + this.deps.idleSettleMs;
+    const armed = this.idleTimers.get(key);
+    // Keep whichever timer fires LATER. An armed timer measured against an older idle
+    // observation would wake inside the current settle window, find `readyToDrain` false,
+    // and leave the row with nothing holding a claim on it.
+    if (armed) {
+      if (armed.drainAt >= drainAt) return;
+      clearTimeout(armed.timer);
+    }
     const timer = unref(
       setTimeout(() => {
         this.idleTimers.delete(key);
         void this.drain(key);
-      }, delay),
+      }, Math.max(0, drainAt - this.deps.now())),
     );
-    this.idleTimers.set(key, timer);
+    this.idleTimers.set(key, { timer, drainAt });
   }
 
   private cancelIdleTimer(key: string): void {
-    const timer = this.idleTimers.get(key);
-    if (!timer) return;
-    clearTimeout(timer);
+    const armed = this.idleTimers.get(key);
+    if (!armed) return;
+    clearTimeout(armed.timer);
     this.idleTimers.delete(key);
   }
 
@@ -477,7 +506,14 @@ export class PendingTurnManager {
   private async drainOne(key: string): Promise<void> {
     if (this.stopped || this.draining.has(key) || this.pickup.has(key)) return;
     const session = this.registry.sessionForNoteKey(key);
-    if (!session || !this.readyToDrain(session)) return;
+    if (!session) return;
+    if (!this.readyToDrain(session)) {
+      // Woke inside a settle window that moved after this timer was armed. Re-arm instead
+      // of returning: nothing re-polls an embedded session on the outbox's behalf, so a
+      // dropped claim here is a queued row that never leaves.
+      if (this.canDrain(session)) this.scheduleDrain(key);
+      return;
+    }
     this.draining.add(key);
     try {
       const turn = claimNextPendingTurn(key, this.deps.now());

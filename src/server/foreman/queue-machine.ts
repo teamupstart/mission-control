@@ -21,6 +21,7 @@ import {
   wrapupTriggerOn,
 } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
+import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
 
 // The lifecycle predicates are defined in @shared/queue.ts, not here: the DB's
 // partial unique index is built from the same constant, so the set of in-flight
@@ -57,6 +58,10 @@ export interface QueueConfig {
   wrapupTriggers: readonly WrapupTrigger[];
   /** What to do when a wrap-up fires: ask the human, or type the instruction ourselves. */
   wrapup: WrapupMode;
+  /** Whether scout tasks stop before every automatic wrap-up action. */
+  skipScoutWrapup: boolean;
+  /** Whether review-only artifacts stop before every automatic wrap-up action. */
+  skipReviewArtifactWrapup: boolean;
 }
 
 /** What the worker should do for one session this tick. Every branch is explicit. */
@@ -84,6 +89,12 @@ export type QueueAction =
       kind: "workflow-wrapup";
       queue: SessionQueue;
       intentGuard: SessionIntentGuard;
+    }
+  /** The work finished, but its task contract is not eligible for automatic shipping. */
+  | {
+      kind: "skip-wrapup";
+      queue: SessionQueue;
+      reason: string;
     }
   /**
    * Same drain, but `wrapup` says type it rather than ask. Carries the payload so
@@ -366,14 +377,43 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
 
     const workflowWrapup = cfg.wrapup === "workflow";
     const payload = autoWrapupPayload(cfg.wrapup);
+    const intentGuard = resolvedSessionIntent(intent);
+    const block = automaticWrapupBlock({
+      taskKind: session.task?.kind ?? null,
+      // Queue items are completion contracts too. Include them beside the durable session
+      // objective so `Output: mockups` cannot disappear merely because it was added as an
+      // item rather than as the session's opening prompt. A task title is the last compact
+      // clue available when a source filed a terse structured task.
+      objective: [intentGuard?.objective, session.task?.title, ...items.map((item) => item.intent)]
+        .filter((part): part is string => Boolean(part?.trim()))
+        .join("\n\n") || null,
+      skipScoutWrapup: cfg.skipScoutWrapup,
+      skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
+    });
+    const blockedAction: QueueAction | null = block
+      ? { kind: "skip-wrapup", queue, reason: block.reason }
+      : null;
+
+    // A non-shipping contract changes WHAT happens after completion, not WHEN Foreman may
+    // declare the episode complete. Keep it behind the same settled-idle evidence as an
+    // automatic Workflow or PR. This branch still sits before every `ask-wrapup` return, so
+    // an eligible retirement cannot claim an existing Workflow or briefly expose a Ship it?
+    // card while the agent is finishing its report.
+    if (blockedAction) {
+      return settledIdle(session, now, cfg.settleMs) ? blockedAction : { kind: "none" };
+    }
 
     // Nothing to automate (`ask`), or Foreman may not type here at all. `mayActLive` is
     // the same gate a queue send passes, and it binds harder here: the instruction
     // can ultimately PUSH, so a dry-run that typed it would be a dry-run that shipped.
     // Dry-run degrades to the ask rather than to a `propose` because the Wrapup card is
     // already the human decision surface.
-    if ((!payload && !workflowWrapup) || !mayActLive) return { kind: "ask-wrapup", queue };
-    if (!workflowWrapup && !hasPane(session)) return { kind: "ask-wrapup", queue };
+    if ((!payload && !workflowWrapup) || !mayActLive) {
+      return { kind: "ask-wrapup", queue };
+    }
+    if (!workflowWrapup && !hasPane(session)) {
+      return { kind: "ask-wrapup", queue };
+    }
 
     // Automation is on and allowed. It needs a FRESH idle signal, and `settledIdle`
     // folds two very different failures into one `false`. Split them - they want
@@ -387,7 +427,9 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     //
     // Collapsing them breaks one case or the other: treat stale as "wait" and the ask
     // stalls forever on a signal that stopped coming; treat moving as "ask" and see below.
-    if (!session.instrumented) return { kind: "ask-wrapup", queue };
+    if (!session.instrumented) {
+      return { kind: "ask-wrapup", queue };
+    }
 
     // Not settled: wait, and DO NOT fall back to the ask. `ask-wrapup` stamps
     // `wrapupAskedAt` - the once-only guard at the top of this block - so asking here
@@ -397,7 +439,6 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // (`queueWantsATick` stays true while drained and unasked).
     if (!settledIdle(session, now, cfg.settleMs)) return { kind: "none" };
 
-    const intentGuard = resolvedSessionIntent(intent);
     if (!intentGuard) return { kind: "none" };
 
     if (workflowWrapup) return { kind: "workflow-wrapup", queue, intentGuard };

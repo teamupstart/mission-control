@@ -110,7 +110,10 @@ if (process.argv.includes("-p")) {
  * in `waiting_for_session`, a stable state, instead of completing it or bouncing through
  * parse-failure retries.
  *
- * Everything else (the titler, the goal refiner) keeps the fixed title reply below.
+ * Goal reconciliation also gets a schema-valid deterministic answer. Foreman's prompted
+ * completion path intentionally requires a resolved objective, so returning the title reply
+ * there would leave every browser-driven session permanently fail-closed. Everything else,
+ * including the titler, keeps the fixed title reply below.
  */
 function headlessAnswer(prompt) {
   if (prompt.includes("E2E_FAIL_VERDICT")) {
@@ -133,6 +136,18 @@ function headlessAnswer(prompt) {
       summary: "Deterministic e2e approval",
       approvalDetails: { reason: "This reviewer is scripted to approve", evidence: [] },
       confidence: 0.9,
+    });
+  }
+  if (prompt.includes("You reconcile the intent of an AI coding session")) {
+    const objective = prompt.match(
+      /## The specific unresolved instruction to classify now\n([\s\S]*?)(?:\n\n## Conversation|\n\nNow output)/,
+    )?.[1]?.trim() || "Complete the e2e task";
+    return JSON.stringify({
+      relationship: "initial",
+      objective,
+      goal: objective,
+      focus: objective,
+      reason: "This is the first substantive e2e instruction",
     });
   }
   // A fixed title, so the card's name is deterministic and a spec can assert on it

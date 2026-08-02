@@ -26,6 +26,8 @@ export interface DaemonHandle {
   workspace: string;
   /** Absolute path of the seeded git repository a dispatch can branch from. */
   repo: string;
+  /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
+  startForeman(): Promise<void>;
   /**
    * Everything the daemon has written to stdout/stderr so far. The daemon's structured
    * `[workflow]`/`[llm]` lines are the only view of a server-side failure a spec has -
@@ -137,53 +139,55 @@ export async function startDaemon(): Promise<DaemonHandle> {
   mkdirSync(workspace, { recursive: true });
   const repo = seedRepo(workspace, "demo-repo");
 
+  const isolatedEnv = {
+    ...process.env,
+    // The OS home, NOT the state dir. Claude transcripts are derived from `homedir()` as
+    // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
+    // agent would write conversations into the operator's real ~/.claude.
+    HOME: home,
+    MISSION_HOME: home,
+    MISSION_PORT: String(port),
+    MISSION_WORKSPACE_DIRS: workspace,
+    MISSION_WEB_DIR: join(REPO_ROOT, "dist/web"),
+    // Every agent the daemon can launch, redirected at a fake. Missing even one would
+    // let a real CLI start and spend real tokens.
+    MISSION_CLAUDE_BIN: bins.claude,
+    MISSION_CODEX_BIN: bins.codex,
+    MISSION_PI_BIN: bins.pi,
+    MC_E2E_RECORD_DIR: recordDir,
+    // The pool sweep is NOT scoped to MISSION_HOME - it reaps the shared treehouse
+    // worktree pool, so an isolated daemon will still delete a sibling checkout's work.
+    // 0 switches the sweep off entirely.
+    MISSION_POOL_REAP_MS: "0",
+    // Neither is terminal discovery. It walks EVERY process on the machine and cards
+    // anything that looks like an agent, so on a developer's laptop this daemon adopts
+    // their real sessions - non-deterministic against CI, where there are none, and
+    // unsafe, because the dashboard's Kill and Reset controls would then act on them.
+    // 0 switches passive discovery off entirely.
+    MISSION_POLL_MS: "0",
+    // A fake agent answers instantly, so the dispatch settle windows are pure latency here.
+    MISSION_DISPATCH_SETTLE_MS: "0",
+    // The same reasoning for the workflow sweep, which is what advances a session action
+    // once its turn has settled. Shipped at 15s for a laptop with real agents on it; here
+    // every turn is already over by the time the first sweep would have looked, so the
+    // default is pure wall clock in every action spec.
+    //
+    // A second and lower, deliberately: this runs in EVERY daemon this suite starts, not
+    // only the ones running an action, and four workers each hold a daemon and a browser.
+    // `queued-turn-recall` has a real five-second budget between two submits, so background
+    // work here is not free - and a sweep fifteen times faster than shipped is already far
+    // more than the action specs need.
+    MISSION_WORKFLOW_SWEEP_MS: "1000",
+    // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
+    // instead of quietly spending.
+    ANTHROPIC_API_KEY: "",
+    // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
+    ...DAEMON_TERMINAL_IDENTITY,
+  };
+
   const child: ChildProcess = spawn(process.execPath, [join(REPO_ROOT, "dist/server/index.mjs")], {
     cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      // The OS home, NOT the state dir. Claude transcripts are derived from `homedir()` as
-      // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
-      // agent would write conversations into the operator's real ~/.claude.
-      HOME: home,
-      MISSION_HOME: home,
-      MISSION_PORT: String(port),
-      MISSION_WORKSPACE_DIRS: workspace,
-      MISSION_WEB_DIR: join(REPO_ROOT, "dist/web"),
-      // Every agent the daemon can launch, redirected at a fake. Missing even one would
-      // let a real CLI start and spend real tokens.
-      MISSION_CLAUDE_BIN: bins.claude,
-      MISSION_CODEX_BIN: bins.codex,
-      MISSION_PI_BIN: bins.pi,
-      MC_E2E_RECORD_DIR: recordDir,
-      // The pool sweep is NOT scoped to MISSION_HOME - it reaps the shared treehouse
-      // worktree pool, so an isolated daemon will still delete a sibling checkout's work.
-      // 0 switches the sweep off entirely.
-      MISSION_POOL_REAP_MS: "0",
-      // Neither is terminal discovery. It walks EVERY process on the machine and cards
-      // anything that looks like an agent, so on a developer's laptop this daemon adopts
-      // their real sessions - non-deterministic against CI, where there are none, and
-      // unsafe, because the dashboard's Kill and Reset controls would then act on them.
-      // 0 switches passive discovery off entirely.
-      MISSION_POLL_MS: "0",
-      // A fake agent answers instantly, so the dispatch settle windows are pure latency here.
-      MISSION_DISPATCH_SETTLE_MS: "0",
-      // The same reasoning for the workflow sweep, which is what advances a session action
-      // once its turn has settled. Shipped at 15s for a laptop with real agents on it; here
-      // every turn is already over by the time the first sweep would have looked, so the
-      // default is pure wall clock in every action spec.
-      //
-      // A second and lower, deliberately: this runs in EVERY daemon this suite starts, not
-      // only the ones running an action, and four workers each hold a daemon and a browser.
-      // `queued-turn-recall` has a real five-second budget between two submits, so background
-      // work here is not free - and a sweep fifteen times faster than shipped is already far
-      // more than the action specs need.
-      MISSION_WORKFLOW_SWEEP_MS: "1000",
-      // Belt and braces: if some path ever escaped the fake bins, an unset key fails loudly
-      // instead of quietly spending.
-      ANTHROPIC_API_KEY: "",
-      // Give the daemon a terminal identity to leak. See DAEMON_TERMINAL_IDENTITY.
-      ...DAEMON_TERMINAL_IDENTITY,
-    },
+    env: isolatedEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -195,7 +199,62 @@ export async function startDaemon(): Promise<DaemonHandle> {
   child.on("exit", (code, signal) => (exited = { code, signal }));
 
   const baseURL = `http://127.0.0.1:${port}`;
+  let foreman: ChildProcess | null = null;
+  let foremanExited: { code: number | null; signal: string | null } | null = null;
+
+  const startForeman = async (): Promise<void> => {
+    if (foreman && !foremanExited) return;
+    if (foremanExited) {
+      throw new Error(
+        `the isolated Foreman worker already exited (code ${foremanExited.code}, ` +
+          `signal ${foremanExited.signal}):\n${log}`,
+      );
+    }
+
+    const logStart = log.length;
+    // The standalone worker is deliberately started only by specs that need its policy.
+    // It receives the same isolated home and fake agent binaries as the daemon, closing
+    // every route to operator state or paid model calls. A zero settle window removes only
+    // test latency; the spec still waits for the worker's durable completion stamp.
+    foreman = spawn(
+      process.execPath,
+      ["--import", "tsx", join(REPO_ROOT, "src/server/foreman/worker.ts")],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          ...isolatedEnv,
+          FOREMAN_QUEUE_SETTLE_MS: "0",
+          FOREMAN_EVAL_DEBOUNCE_MS: "0",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    foreman.stdout?.on("data", (d: Buffer) => (log += d.toString()));
+    foreman.stderr?.on("data", (d: Buffer) => (log += d.toString()));
+    foreman.on("exit", (code, signal) => (foremanExited = { code, signal }));
+
+    const deadline = Date.now() + BOOT_TIMEOUT_MS;
+    for (;;) {
+      if (foremanExited) {
+        throw new Error(
+          `Foreman exited before acquiring its lease (code ${foremanExited.code}, ` +
+            `signal ${foremanExited.signal}):\n${log}`,
+        );
+      }
+      if (log.slice(logStart).includes("[foreman] acquired the lease")) return;
+      if (Date.now() > deadline) {
+        throw new Error(`Foreman did not acquire its lease in ${BOOT_TIMEOUT_MS}ms:\n${log}`);
+      }
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+  };
+
   const stop = async (): Promise<void> => {
+    if (foreman && !foremanExited) {
+      foreman.kill("SIGTERM");
+      await new Promise((r) => setTimeout(r, 200));
+      if (!foremanExited) foreman.kill("SIGKILL");
+    }
     if (!exited) {
       child.kill("SIGTERM");
       await new Promise((r) => setTimeout(r, 200));
@@ -263,15 +322,20 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // `Dispatcher.dispatch` returns before every terminal-only step. Set through the real
   // route rather than a seeded DB row, so this configures the daemon the way the Settings
   // panel does and cannot drift from it.
+  // Codex alongside Claude, for the same reason and with the same fake behind it: its
+  // driver speaks `codex app-server` over stdio, which is as headless as Claude's, while a
+  // terminal Codex would need the pane CI does not have.
   const configured = await fetch(`${baseURL}/api/harnesses/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionRuntime: { claude: "sdk" } }),
+    body: JSON.stringify({ sessionRuntime: { claude: "sdk", codex: "sdk" } }),
   });
   if (!configured.ok) {
     await stop();
-    throw new Error(`could not switch claude to the sdk runtime: ${configured.status} ${await configured.text()}`);
+    throw new Error(
+      `could not switch claude and codex to the sdk runtime: ${configured.status} ${await configured.text()}`,
+    );
   }
 
-  return { baseURL, home, recordDir, workspace, repo, readLog: () => log, stop };
+  return { baseURL, home, recordDir, workspace, repo, readLog: () => log, startForeman, stop };
 }

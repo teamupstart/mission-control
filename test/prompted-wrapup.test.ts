@@ -18,7 +18,7 @@ import type {
   SessionQueueSummary,
   WorkItem,
 } from "../src/shared/types.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The `prompted` wrap-up trigger. Same discipline as queue-machine.test.ts: the
 // decision is pure with `now` injected, so the whole policy is a table.
@@ -55,6 +55,8 @@ const CFG: PromptedConfig = {
   triggers: ["prompted"],
   wrapup: "ask",
   settleMs: 10_000,
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
 };
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -171,6 +173,39 @@ test("a settled, instrumented, goal-carrying session with no queue is a candidat
   const r = decide();
   assert.equal(r.kind, "check");
   assert.equal(r.kind === "check" && r.objective, GOAL);
+});
+
+test("a prompted scout episode retires without verification or automatic shipping", () => {
+  const r = decide({ session: mkSession({ task: mkTaskSummary({ kind: "scout" }) }) });
+  assert.equal(r.kind, "retire");
+  assert.match(r.kind === "retire" ? r.why : "", /scout/);
+});
+
+test("a prompted mockup output retires without a Workflow or PR action", () => {
+  const objective = "Explore the navigation layout.\n\nOutput: mockups";
+  const r = decide({ intent: mkIntent({ objective }) });
+  assert.equal(r.kind, "retire");
+  assert.match(r.kind === "retire" ? r.why : "", /review artifact/);
+});
+
+test("disabled completion safeguards let prompted work reach verification", () => {
+  const scout = decide({
+    session: mkSession({ task: mkTaskSummary({ kind: "scout" }) }),
+    cfg: { ...CFG, skipScoutWrapup: false },
+  });
+  assert.equal(scout.kind, "check");
+
+  const mockups = decide({
+    intent: mkIntent({ objective: "Output: mockups" }),
+    cfg: { ...CFG, skipReviewArtifactWrapup: false },
+  });
+  assert.equal(mockups.kind, "check");
+});
+
+test("a prompted implementation may still use mockups as context", () => {
+  const objective = "Use the mockups to deliver the production-ready implementation.";
+  const r = decide({ intent: mkIntent({ objective }) });
+  assert.equal(r.kind, "check");
 });
 
 test("the trigger being off is decided FIRST, before anything that could write", () => {

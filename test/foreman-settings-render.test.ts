@@ -20,6 +20,8 @@ const BASE: ForemanConfig = {
   triage: "shadow",
   maxFixAttempts: 3,
   maxFixRounds: 10,
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
   wrapupTriggers: ["drain"],
   wrapup: "ask",
   trackReviewFeedback: true,
@@ -46,6 +48,11 @@ function renderPanel(state: ForemanState): string {
   );
 }
 
+function inputWithLabel(html: string, label: string): string {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return html.match(new RegExp(`<input[^>]*aria-label="${escaped}"[^>]*>`))?.[0] ?? "";
+}
+
 // ---- ForemanSettingsPanel ----
 
 test("the Tier control lists all three cheap-tier options", () => {
@@ -56,14 +63,21 @@ test("the Tier control lists all three cheap-tier options", () => {
 });
 
 test("exactly one tier option is checked, following config.triage", () => {
-  // The panel has no other checkable input, so the lone `checked` is the tier selection.
   const shadow = renderPanel(mkState({ triage: "shadow" }));
-  assert.equal((shadow.match(/checked/g) ?? []).length, 1);
-  assert.match(shadow, /checked[^]*?Shadow - run the cheap tier/);
+  const shadowGroup = shadow.slice(
+    shadow.indexOf('data-anchor="foreman/cheap-tier"'),
+    shadow.indexOf('data-anchor="foreman/provider"'),
+  );
+  assert.equal((shadowGroup.match(/checked/g) ?? []).length, 1);
+  assert.match(shadowGroup, /checked[^]*?Shadow - run the cheap tier/);
 
   const on = renderPanel(mkState({ triage: "on" }));
-  assert.equal((on.match(/checked/g) ?? []).length, 1);
-  assert.match(on, /checked[^]*?On - cheap tier answers/);
+  const onGroup = on.slice(
+    on.indexOf('data-anchor="foreman/cheap-tier"'),
+    on.indexOf('data-anchor="foreman/provider"'),
+  );
+  assert.equal((onGroup.match(/checked/g) ?? []).length, 1);
+  assert.match(onGroup, /checked[^]*?On - cheap tier answers/);
 });
 
 // The repo editor moved to the Trust matrix; the panel now summarizes the grant and
@@ -114,6 +128,44 @@ test("Foreman exposes separate compatible defaults for fresh backlog launches", 
   assert.match(html, /id="foreman-backlog-task-model-codex"/);
   assert.match(html, /already names one/);
   assert.match(html, /existing session.{0,50}unchanged/);
+});
+
+test("completion safeguards render as independent default-on settings", () => {
+  const html = renderPanel(mkState());
+  assert.match(html, /Completion safeguards/);
+  for (const label of [
+    "Skip automatic completion for Scout tasks",
+    "Skip automatic completion for mockups and review artifacts",
+  ]) {
+    const input = inputWithLabel(html, label);
+    assert.notEqual(input, "", label);
+    assert.match(input, /checked/);
+  }
+  assert.match(html, /matching either enabled safeguard/);
+});
+
+test("completion safeguards show persisted off values and old-daemon defaults honestly", () => {
+  const off = renderPanel(mkState({
+    skipScoutWrapup: false,
+    skipReviewArtifactWrapup: false,
+  }));
+  for (const label of [
+    "Skip automatic completion for Scout tasks",
+    "Skip automatic completion for mockups and review artifacts",
+  ]) {
+    assert.doesNotMatch(inputWithLabel(off, label), /checked/);
+  }
+
+  const state = mkState();
+  delete (state.config as Partial<ForemanConfig>).skipScoutWrapup;
+  delete (state.config as Partial<ForemanConfig>).skipReviewArtifactWrapup;
+  const oldDaemon = renderPanel(state);
+  for (const label of [
+    "Skip automatic completion for Scout tasks",
+    "Skip automatic completion for mockups and review artifacts",
+  ]) {
+    assert.match(inputWithLabel(oldDaemon, label), /checked/);
+  }
 });
 
 // ---- candidate filtering ----

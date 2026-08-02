@@ -230,7 +230,7 @@ test("filter compaction keeps the review control visible", () => {
 
 test("Dispatch never degrades, and the labels that do are marked", () => {
   const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
-  const cluster = bar.slice(0, bar.indexOf("<UsageBar"));
+  const cluster = bar.slice(0, bar.indexOf("</header>"));
   const dispatch = cluster.slice(cluster.indexOf('className="dispatch-btn"'));
   assert.doesNotMatch(
     dispatch.slice(0, dispatch.indexOf("</button>")),
@@ -256,11 +256,38 @@ test("Dispatch never degrades, and the labels that do are marked", () => {
   );
 });
 
+test("the cost chip survives every rung; only its duplicated rate is shed", () => {
+  // The chip is now the ONLY cost surface in the app's chrome - the row it replaced could
+  // afford to fold away because folding left the figure beside the toggle, and there is no
+  // toggle any more. A rung that hid it would take the fleet's economics off screen
+  // entirely at half a 16" screen, silently.
+  for (const rung of RUNGS) {
+    for (const [sel, body] of rung.rules) {
+      const hidesChip = sel
+        .split(",")
+        .some((part) => /\.spend-chip(-wrap)?$/.test(part.trim()));
+      if (!hidesChip) continue;
+      assert.doesNotMatch(
+        body,
+        /display:\s*none/,
+        `the ${rung.width}px rung hides the cost chip itself`,
+      );
+    }
+  }
+  // And the one segment that IS shed is still shed, so the bar has something to give back.
+  const shed = RUNGS.flatMap((r) => r.rules).filter(
+    ([sel, body]) => sel.trim().endsWith(".spend-chip-rate") && /display:\s*none/.test(body),
+  );
+  assert.equal(shed.length, 1, "the chip's rate segment no longer collapses with the bar");
+});
+
 test("a control that keeps only a glyph still says what it is", () => {
   // Every button the ladder strips to an icon has to carry its own name - the visually
   // hidden label covers the ones that have one, an `aria-label` covers the rest.
   const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
-  const cluster = bar.slice(0, bar.indexOf("<UsageBar"));
+  // `</header>` rather than `<UsageBar`: the usage row this used to stop at is gone, and
+  // the cost chip that replaced it lives inside the bar.
+  const cluster = bar.slice(0, bar.indexOf("</header>"));
   const missions = cluster.indexOf("missions-btn");
   assert.match(
     cluster.slice(missions, cluster.indexOf("</button>", missions)),

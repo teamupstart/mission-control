@@ -140,7 +140,17 @@ export const SETTINGS_CATEGORIES = [
     blurb: "The auto-responder's posture and trusted repos",
     group: "background",
     scope: "machine",
-    keywords: ["auto-responder", "triage", "cheap tier", "allowlist", "backlog"],
+    keywords: [
+      "auto-responder",
+      "triage",
+      "cheap tier",
+      "allowlist",
+      "backlog",
+      "scout",
+      "mockup",
+      "review artifact",
+      "automatic completion",
+    ],
   },
   {
     id: "workflows",

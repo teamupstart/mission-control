@@ -225,9 +225,17 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
   await dispatch(dashboard, daemon);
   const card = dashboard.locator("article.card").first();
   await expect(card).toBeVisible();
-  await expect.poll(async () =>
-    (await api<Array<{ id: string }>>(daemon, "/api/sessions")).length
-  ).toBe(1);
+  // IDLE, not merely present. `dispatch` returns when the modal closes, which is well before
+  // the launch turn ends - and the end of that turn runs the wrap-up flow, which ANSWERS the
+  // ask this test is about to arm. Arming it first is a race the test loses about one run in
+  // three under load: the Queue panel opens on time and simply has no Ship it choice in it,
+  // because something answered it in between. Waiting here is the same gate the workflow
+  // specs use, and it is what the note below was reaching for.
+  await expect.poll(async () => {
+    const live = (await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
+      .filter((session) => session.state !== "exited");
+    return live.length === 1 ? live[0]!.state : `${live.length} sessions`;
+  }, { timeout: 30_000 }).toBe("idle");
   const sessions = await api<Array<{ id: string }>>(daemon, "/api/sessions");
   expect(sessions).toHaveLength(1);
   const sessionId = sessions[0]!.id;

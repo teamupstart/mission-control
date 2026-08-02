@@ -324,6 +324,14 @@ test("computeRuntimeMeta defaults a marker-less long-context model (Opus 4.x) to
   assert.equal(m?.longContext, true);
 });
 
+test("computeRuntimeMeta uses Fable 5's 1M default for an Agent SDK transcript", () => {
+  const m = computeRuntimeMeta([asstUsage("claude-fable-5", { input_tokens: 184_000 })]);
+  assert.equal(m?.contextTokens, 184_000);
+  assert.equal(m?.contextWindow, 1_000_000);
+  assert.equal(m?.contextPct, 18);
+  assert.equal(m?.longContext, true);
+});
+
 test("computeRuntimeMeta infers a 1M window from the model id", () => {
   const m = computeRuntimeMeta([asstUsage("claude-opus-4-8[1m]", { input_tokens: 100_000 })]);
   assert.equal(m?.contextWindow, 1_000_000);

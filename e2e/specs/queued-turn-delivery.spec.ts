@@ -159,6 +159,9 @@ test(`a queued turn still lands after the ${agent} driver takes a mid-turn messa
   await composer.fill(QUEUED_TURN);
   await composer.press("Enter");
   await expect(card.getByRole("status").filter({ hasText: /^queued$/ })).toBeVisible();
+  // The state the operator was stranded in: a queued message behind a turn that has already
+  // absorbed one. Captured while the driver is still working, the only moment it is correct.
+  await shoot(dashboard, `${agent}-mid-turn-queued`);
 
   // The held turn ends, answering both the prompt it started on and the one it absorbed.
   // Scoped to the transcript rather than the card, because the card's activity ticker
@@ -177,5 +180,8 @@ test(`a queued turn still lands after the ${agent} driver takes a mid-turn messa
   await expect(
     replies.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
   ).toBeVisible({ timeout: 15_000 });
+  // The recovery, and the frame worth looking at: the outbox is empty, the queued message is
+  // an ordinary turn with an answer under it, and the card is idle rather than stuck busy.
+  await shoot(dashboard, `${agent}-mid-turn-delivered`);
 });
 }

@@ -379,6 +379,46 @@ test("a steered follow-up leaves no completion outstanding once the turn ends", 
   }
 });
 
+// The durable half of the race above: an idle-only delivery accepted in the gap between a
+// `result` and the first frame of a turn the CLI started for itself, which then absorbs it.
+//
+// The reservation this send makes is retired by that turn's single completion, because the
+// turn was never counted separately - the pump only adopts an unobserved turn when nothing is
+// outstanding and no send is in flight (`unfinishedTurns === 0 && !acceptingTurns.has(id)`),
+// and this send has already made both false. So the sequence ends at zero rather than one,
+// and the row does not claim a restart owes this conversation a continuation.
+test("a delivery absorbed by a vendor-started turn is retired by that turn's completion", async () => {
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  try {
+    const supervisor = new SdkSupervisor(new Registry());
+    const session = await supervisor.start(START);
+    handle.push({ kind: "turn_done", usage: null });
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+
+    // Accepted: the CLI has begun a follow-up of its own but has not spoken, so the driver
+    // has nothing to refuse on.
+    assert.equal(
+      await supervisor.sendWhenIdle(session.id, { text: "sent into the gap" }),
+      "started",
+    );
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === true);
+
+    // That turn speaks - and must not be adopted as a SECOND outstanding turn on top of the
+    // send's own reservation, or its one completion would leave the count at one for ever.
+    handle.push({ kind: "state", state: "working", activity: null });
+    handle.push({ kind: "turn_done", usage: null });
+
+    await waitFor(() => getSdkSession(session.id)?.turnInProgress === false);
+    assert.equal(
+      await supervisor.sendWhenIdle(session.id, { text: "still reachable" }),
+      "started",
+    );
+  } finally {
+    fake.restore();
+  }
+});
+
 test("a rejected follow-up releases only its recovery reservation", async () => {
   const handle = fakeHandle();
   const fake = withFakeDriver(async () => handle);

@@ -309,6 +309,45 @@ test("a mid-turn follow-up is steered, and one result still leaves the driver id
   query.end();
 });
 
+// The transition between a `result` and the first frame of whatever the CLI does next. The
+// driver cannot see into it - no vendor signal says "my queue is empty" - so a send can be
+// accepted here and then absorbed by a turn the CLI had already begun for itself.
+//
+// What matters is that losing that race stays BALANCED. The absorbed message is answered by
+// the turn that took it, and that turn's single `result` retires the one reservation the
+// send made, so the driver ends idle and reachable rather than owing a completion for ever.
+// The waiting belongs one layer up and is already there: `PendingTurnManager` holds a 1.5s
+// settle window (`DEFAULT_IDLE_SETTLE_MS`) after an idle transition before it drains, and a
+// vendor turn that speaks inside it flips the card back to working and cancels the drain. A
+// second timer down here would be a weaker copy of that, and a second source of truth about
+// idleness besides.
+test("a send that loses the race to a vendor-started turn still ends balanced", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+
+  query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  await collect(handle.events, (e) => e.kind === "turn_done");
+
+  // The CLI has silently begun a follow-up it dequeued for itself. Nothing has been said yet,
+  // so this is accepted.
+  assert.equal(await handle.sendIfIdle({ text: "sent into the gap" }), "started");
+
+  // That turn was real, and it absorbed the message: frames, then ONE result for both.
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    message: { content: [{ type: "text", text: "answering both" }] },
+  } as ClaudeSdkMessage);
+  query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
+  await collect(handle.events, (e) => e.kind === "turn_done");
+
+  // Reachable, not wedged. A driver that ended this sequence still holding the door shut is
+  // the exact defect the mid-turn case above pins, reached by a different route.
+  assert.equal(await handle.sendIfIdle({ text: "still reachable" }), "started");
+  query.end();
+});
+
 test("a turn the driver did not start still closes the door on its first frame", async () => {
   const { deps, started } = fakeDeps();
   const handle = await claudeSdkSpec(deps).launch(launchOpts());

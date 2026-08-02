@@ -473,9 +473,9 @@ export function ConsoleDetail({
               requestNonce={
                 diffSelection.sessionId === session.id ? diffSelection.requestNonce : undefined
               }
-              // The same route a transcript's file link takes - `files.select` plus a
-              // Files-tab request - rather than a second way to open a file.
-              onOpenInFiles={(href) => view.onOpenFile(session.id, href)}
+              // The destination a transcript file link reaches, without its prose
+              // parsing: a diff path is exact (see `diffFileOpenTarget`).
+              onOpenInFiles={(path) => view.onOpenFilePath(session.id, path)}
             />
           ) : (
             <div className="detail-pane">

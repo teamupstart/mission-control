@@ -17,23 +17,23 @@ function mkFile(overrides: Partial<DiffFile> = {}): DiffFile {
   };
 }
 
-test("a changed file resolves to an absolute href under the session cwd", () => {
+test("a changed file resolves to a path relative to the session cwd", () => {
   const target = diffFileOpenTarget(mkFile(), "/repo", "/repo");
   assert.equal(target.reason, null);
-  assert.equal(target.href, "/repo/src/web/App.tsx");
+  assert.equal(target.path, "src/web/App.tsx");
 });
 
 test("every non-deleted status gets a route, not just modified", () => {
   for (const status of ["added", "renamed", "modified"] as const) {
     const target = diffFileOpenTarget(mkFile({ status }), "/repo", "/repo");
     assert.equal(target.reason, null, `${status} should be openable`);
-    assert.equal(target.href, "/repo/src/web/App.tsx");
+    assert.equal(target.path, "src/web/App.tsx");
   }
 });
 
 test("a deleted file has no working-tree copy, so it reports why instead of a route", () => {
   const target = diffFileOpenTarget(mkFile({ status: "deleted" }), "/repo", "/repo");
-  assert.equal(target.href, null);
+  assert.equal(target.path, null);
   assert.match(target.reason ?? "", /deleted/i);
 });
 
@@ -49,19 +49,19 @@ test("a changed file outside the session's cwd is refused, not silently rebased"
     "/repo",
     "/repo/packages/app",
   );
-  assert.equal(target.href, null, "must not resolve to /repo/packages/app/src/index.ts");
+  assert.equal(target.path, null, "must not resolve to the package's own src/index.ts");
   assert.match(target.reason ?? "", /outside/i);
 });
 
-test("a changed file inside a subdirectory cwd keeps its full repo-root path", () => {
+test("a changed file inside a subdirectory cwd is rebased onto that cwd", () => {
   const target = diffFileOpenTarget(
     mkFile({ path: "packages/app/src/index.ts" }),
     "/repo",
     "/repo/packages/app",
   );
   assert.equal(target.reason, null);
-  // Absolute, so the one resolver downstream re-derives "src/index.ts" relative to cwd.
-  assert.equal(target.href, "/repo/packages/app/src/index.ts");
+  // Rebased onto the cwd the Files workspace is actually rooted at.
+  assert.equal(target.path, "src/index.ts");
 });
 
 test("a sibling directory that shares a name prefix with the cwd is still outside it", () => {
@@ -70,23 +70,40 @@ test("a sibling directory that shares a name prefix with the cwd is still outsid
     "/repo",
     "/repo/app",
   );
-  assert.equal(target.href, null);
+  assert.equal(target.path, null);
   assert.match(target.reason ?? "", /outside/i);
 });
 
 test("a missing cwd or repo root disables the jump with its own reason", () => {
   const noCwd = diffFileOpenTarget(mkFile(), "/repo", null);
-  assert.equal(noCwd.href, null);
+  assert.equal(noCwd.path, null);
   assert.match(noCwd.reason ?? "", /working directory/i);
 
   const noRoot = diffFileOpenTarget(mkFile(), null, "/repo");
-  assert.equal(noRoot.href, null);
+  assert.equal(noRoot.path, null);
   assert.match(noRoot.reason ?? "", /checkout root/i);
 });
 
-test("a trailing slash on the repo root does not double up in the href", () => {
-  const target = diffFileOpenTarget(mkFile(), "/repo/", "/repo");
-  assert.equal(target.href, "/repo/src/web/App.tsx");
+test("a trailing slash on either directory does not corrupt the path", () => {
+  assert.equal(diffFileOpenTarget(mkFile(), "/repo/", "/repo").path, "src/web/App.tsx");
+  assert.equal(diffFileOpenTarget(mkFile(), "/repo", "/repo/").path, "src/web/App.tsx");
+});
+
+/**
+ * `workspaceFileTarget` reads a trailing `:12` as a line number, which is right for a
+ * path a human typed in a sentence and wrong for one git emitted. Routing the diff
+ * through it opened `notes` for a file genuinely named `notes:12` - enabled, and the
+ * wrong file. The diff path is exact and must stay that way.
+ */
+test("a filename ending in a colon and digits is not read as a line number", () => {
+  assert.equal(diffFileOpenTarget(mkFile({ path: "notes:12" }), "/repo", "/repo").path, "notes:12");
+  assert.equal(diffFileOpenTarget(mkFile({ path: "a/b:3:4" }), "/repo", "/repo").path, "a/b:3:4");
+});
+
+test("a path with a parent segment is refused rather than escaping the checkout", () => {
+  const target = diffFileOpenTarget(mkFile({ path: "../outside.ts" }), "/repo", "/repo");
+  assert.equal(target.path, null);
+  assert.match(target.reason ?? "", /cannot be resolved/i);
 });
 
 test("the jump renders for every file, and says why when it cannot act", () => {
@@ -98,7 +115,7 @@ test("the jump renders for every file, and says why when it cannot act", () => {
   // One control per rendered file, driven by the resolver rather than by `file.status`
   // at the call site - so "deleted" and "outside the checkout" cannot drift apart.
   assert.match(viewer, /diffFileOpenTarget\(active, diff\.repoRoot, session\.cwd\)/);
-  assert.match(viewer, /aria-disabled=\{target\.href === null\}/);
+  assert.match(viewer, /aria-disabled=\{target\.path === null\}/);
   assert.match(viewer, /label=\{target\.reason \?\? `Open \$\{file\.path\} in the Files tab`\}/);
   // `aria-disabled`, never `disabled`: a disabled button is not focusable and its tooltip
   // is unreachable, which is where the reason lives.
@@ -115,8 +132,11 @@ test("both diff hosts route the jump through the one open-a-file path", () => {
     "utf8",
   );
 
-  // Console and Board: the same callback a transcript file link uses.
-  assert.match(detail, /onOpenInFiles=\{\(href\) => view\.onOpenFile\(session\.id, href\)\}/);
+  // Console and Board: the shared destination, without the prose parsing.
+  assert.match(detail, /onOpenInFiles=\{\(path\) => view\.onOpenFilePath\(session\.id, path\)\}/);
   // Cards: no Files tab, so the diff overlay stands down before the Files window opens.
-  assert.match(app, /closeDiff\(\);\s*\n\s*openSessionFile\(sessionId, href\);/);
+  assert.match(app, /closeDiff\(\);\s*\n\s*openSessionPath\(sessionId, path\);/);
+  // One destination, two entry points: prose hrefs still funnel through the exact-path
+  // opener rather than duplicating the layout branching.
+  assert.match(app, /openSessionPath\(sessionId, target\.path\);/);
 });

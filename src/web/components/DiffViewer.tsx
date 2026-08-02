@@ -29,7 +29,7 @@ export function DiffViewer({
   session: Session;
   commit?: string | null;
   onClose: () => void;
-  onOpenInFiles?: (href: string) => void;
+  onOpenInFiles?: (path: string) => void;
 }): React.JSX.Element {
   const viewerKeyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   return (
@@ -66,7 +66,7 @@ export function InlineDiffViewer({
   session: Session;
   commit?: string | null;
   requestNonce?: number;
-  onOpenInFiles?: (href: string) => void;
+  onOpenInFiles?: (path: string) => void;
 }): React.JSX.Element {
   return (
     <DiffViewerContent
@@ -94,7 +94,7 @@ function DiffViewerContent({
   inline?: boolean;
   onViewerKeyRef?: MutableRefObject<((e: KeyboardEvent) => void) | null>;
   requestNonce?: number;
-  onOpenInFiles?: (href: string) => void;
+  onOpenInFiles?: (path: string) => void;
 }): React.JSX.Element {
   const [diff, setDiff] = useState<SessionDiff | null>(null);
   const [loading, setLoading] = useState(true);
@@ -306,7 +306,7 @@ function FileDiff({
 }: {
   file: DiffFile;
   target: DiffFileTarget;
-  onOpenInFiles?: (href: string) => void;
+  onOpenInFiles?: (path: string) => void;
 }): React.JSX.Element {
   return (
     <section className="diff-file">
@@ -328,9 +328,9 @@ function FileDiff({
           <Tooltip label={target.reason ?? `Open ${file.path} in the Files tab`}>
             <button
               className="diff-open-file"
-              aria-disabled={target.href === null}
+              aria-disabled={target.path === null}
               onClick={() => {
-                if (target.href) onOpenInFiles(target.href);
+                if (target.path) onOpenInFiles(target.path);
               }}
             >
               Open in Files

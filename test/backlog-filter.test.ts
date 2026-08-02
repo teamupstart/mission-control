@@ -42,6 +42,7 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     onOpenDiff: () => {},
     onOpenFiles: () => {},
     onOpenFile: () => false,
+    onOpenFilePath: () => {},
     fileTabRequest: null,
     conversationTabRequest: null,
     workflowsTabRequest: null,

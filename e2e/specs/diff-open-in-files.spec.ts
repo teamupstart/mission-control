@@ -94,6 +94,9 @@ test("a changed file in the Diff tab opens in the Files tab", async ({ dashboard
   // rather than on the first file in the list.
   writeFileSync(join(cwd, "alpha.txt"), "first change\n");
   writeFileSync(join(cwd, "beta.txt"), "second change\n");
+  // A name ending in `:<digits>`, which the transcript's href parser would read as a
+  // line number and truncate to `notes`. A diff path is exact; see the third case.
+  writeFileSync(join(cwd, "notes:12"), "colon named\n");
 
   await useConsoleLayout(dashboard, daemon);
 
@@ -126,6 +129,40 @@ test("a changed file in the Diff tab opens in the Files tab", async ({ dashboard
   // The file's contents are what the diff was showing, so this is the same file and not
   // just a matching name in the list.
   await expect(dashboard.getByText("second change")).toBeVisible();
+});
+
+test("a changed file whose name ends in a line-number suffix opens as itself", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  const cwd = await sessionCwd(daemon);
+  writeFileSync(join(cwd, "notes:12"), "colon named\n");
+  await useConsoleLayout(dashboard, daemon);
+
+  await dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .getByRole("button", { name: /Open a Changed File/i })
+    .click();
+
+  const tabs = dashboard.getByRole("tablist", { name: "Session detail" });
+  await tabs.getByRole("tab", { name: /Diff$/ }).click();
+  await dashboard
+    .getByRole("navigation", { name: "Changed files" })
+    .getByRole("button", { name: /notes:12/ })
+    .click();
+
+  await dashboard.getByRole("button", { name: "Open in Files" }).click();
+
+  // `notes`, not `notes:12`, is what the prose href parser would have selected - and
+  // there is no such file, so the pane would have shown an error instead of the diff's
+  // subject.
+  const files = dashboard.getByRole("listbox", { name: "Session files" });
+  await expect(files.getByRole("option", { name: "notes:12" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(dashboard.getByText("colon named")).toBeVisible();
 });
 
 test("a deleted file offers the jump but disables it, and says why", async ({

@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The ensemble decision dossier - an inverted hierarchy, and three ways to right it</title>
+<title>The ensemble decision dossier - righting an inverted hierarchy</title>
 <style>
   :root {
     --page: #ffffff; --ink: #1b1f24; --ink-2: #4b5563; --ink-3: #6b7280;
     --rule: #e3e7ec; --rule-2: #f1f3f6; --soft: #f7f9fb; --accent: #1f6feb; --warn: #b45309;
-    --code-bg: #f4f6f9;
+    --code-bg: #f4f6f9; --ok: #2f9e6e;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --page: #0f1216; --ink: #e6eaf0; --ink-2: #a9b3c1; --ink-3: #8892a1;
       --rule: #242b34; --rule-2: #1a2028; --soft: #151a20; --accent: #6ea8fe; --warn: #e5a13a;
-      --code-bg: #161b22;
+      --code-bg: #161b22; --ok: #35c08a;
     }
   }
   * { box-sizing: border-box; }
@@ -31,14 +31,12 @@
   h1 { font-size: 34px; line-height: 1.18; letter-spacing: -.021em; margin: 0 0 18px; font-weight: 680; }
   h2 {
     font-size: 22px; line-height: 1.3; letter-spacing: -.012em; font-weight: 660;
-    margin: 60px 0 16px; padding-top: 22px; border-top: 1px solid var(--rule);
+    margin: 58px 0 16px; padding-top: 22px; border-top: 1px solid var(--rule);
   }
   h3 { font-size: 17px; font-weight: 660; margin: 34px 0 10px; letter-spacing: -.006em; }
-  h4 { font-size: 14px; font-weight: 680; margin: 22px 0 8px; }
   p { margin: 0 0 14px; }
   ul, ol { margin: 0 0 14px; padding-left: 22px; }
   li { margin: 0 0 6px; }
-  a { color: var(--accent); }
   strong { font-weight: 650; }
   code {
     font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .87em;
@@ -51,7 +49,7 @@
   .lede { font-size: 17px; color: var(--ink-2); margin-bottom: 8px; }
   .meta { font-size: 13px; color: var(--ink-3); line-height: 1.7; margin: 0 0 26px; }
   .scroller { overflow-x: auto; margin: 0 0 18px; -webkit-overflow-scrolling: touch; }
-  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 520px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 480px; }
   th, td { text-align: left; padding: 7px 12px 7px 0; border-bottom: 1px solid var(--rule-2); vertical-align: top; }
   th { font-weight: 650; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); border-bottom-color: var(--rule); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
@@ -61,6 +59,19 @@
     background: var(--soft); padding: 14px 18px; margin: 0 0 20px; font-size: 15px;
   }
   .callout p:last-child { margin-bottom: 0; }
+  .decided {
+    border: 1px solid var(--rule); border-left: 3px solid var(--ok); border-radius: 10px;
+    background: var(--soft); padding: 16px 18px 6px; margin: 0 0 24px;
+  }
+  .decided table { min-width: 0; font-size: 14px; }
+  .decided th, .decided td { border-bottom: 1px solid var(--rule-2); }
+  .tag {
+    display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .09em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 999px; vertical-align: 2px;
+    margin-left: 8px; border: 1px solid currentColor;
+  }
+  .tag-in { color: var(--ok); }
+  .tag-out { color: var(--ink-3); }
   figure { margin: 24px 0 30px; }
   figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 10px; line-height: 1.6; }
   figure img { width: 100%; display: block; border: 1px solid var(--rule); border-radius: 10px; }
@@ -82,12 +93,9 @@
     background: color-mix(in oklab, var(--working) 13%, transparent); color: var(--fg);
   }
   .mc-inner { min-width: 640px; }
-  .mc h5, .mc h6 { margin: 0; font-weight: 600; }
   .mc ul { margin: 0; padding-left: 15px; }
   .mc li { margin: 0 0 3px; }
-  .eyeb {
-    font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--dim);
-  }
+  .eyeb { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); }
   .mc-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
   .mc-title { font-size: 15px; font-weight: 650; letter-spacing: -.008em; }
   .mc-sub { font-size: 11.5px; color: var(--muted); }
@@ -96,28 +104,24 @@
     letter-spacing: .02em; border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
   }
   .chip-rec { color: var(--idle); border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); background: color-mix(in oklab, var(--idle) 11%, transparent); }
-  .chip-sub { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; }
-  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
-  /* ---- A: scoreboard ---- */
   .ruler { margin: 16px 0 20px; padding: 12px 14px 8px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-2); }
   .ruler-axis { position: relative; height: 34px; margin: 16px 4px 0; }
   .ruler-line { position: absolute; left: 0; right: 0; top: 11px; height: 1px; background: var(--border); }
   .ruler-fill { position: absolute; left: 0; top: 11px; height: 1px; background: color-mix(in oklab, var(--idle) 55%, var(--border)); }
   .tick { position: absolute; top: 0; transform: translateX(-50%); text-align: center; }
   .tick i { display: block; width: 1px; height: 23px; margin: 0 auto; background: var(--muted); }
-  .tick.win i { width: 2px; background: var(--idle); height: 23px; }
+  .tick.win i { width: 2px; background: var(--idle); }
   .tick b { display: block; font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--muted); margin-top: 3px; }
   .tick.win b { color: var(--idle); }
   .ruler-gap {
     position: absolute; top: -1px; height: 12px;
-    border-left: 1px solid var(--idle); border-right: 1px solid var(--idle);
-    border-top: 1px solid var(--idle);
+    border-left: 1px solid var(--idle); border-right: 1px solid var(--idle); border-top: 1px solid var(--idle);
   }
   .ruler-gap b {
     position: absolute; left: 50%; top: -14px; transform: translateX(-50%);
-    font-size: 10px; color: var(--idle); letter-spacing: .05em;
-    text-transform: uppercase; font-weight: 700; white-space: nowrap;
+    font-size: 10px; color: var(--idle); letter-spacing: .05em; text-transform: uppercase;
+    font-weight: 700; white-space: nowrap;
   }
   .sb { display: grid; grid-template-columns: 104px repeat(3, minmax(150px, 1fr)); gap: 0 14px; }
   .sb-crit {
@@ -142,108 +146,54 @@
   .clamp3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .more { display: inline-block; margin-top: 6px; font-size: 11px; color: var(--muted); border: 0; background: none; padding: 0; border-bottom: 1px dashed var(--border); }
   .claim { font-size: 12.5px; line-height: 1.55; }
-
-  /* ---- B: verdict sheet ---- */
-  .vs-verdict { display: grid; grid-template-columns: 1fr 132px; gap: 26px; align-items: start; margin: 14px 0 4px; }
-  .vs-prose { font-size: 13px; line-height: 1.62; max-width: 68ch; }
-  .res {
-    display: inline-flex; align-items: baseline; gap: 5px; border-radius: 5px; padding: 0 5px;
-    background: color-mix(in oklab, var(--working) 15%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--working) 34%, transparent);
-    white-space: nowrap;
-  }
-  /* A resolved label may be immediately followed by punctuation ("Submission A's"). Trimming the
-     trailing pad keeps the possessive attached to the word rather than floating off the chip. */
-  .res.poss { padding-right: 1px; }
-  .res u { text-decoration: none; font-family: var(--mono); font-size: 10.5px; color: var(--working); letter-spacing: .04em; }
-  .res b { font-weight: 620; font-size: 12.5px; }
-  .seal { text-align: right; border-left: 1px solid var(--border); padding-left: 18px; }
-  .seal-rank { font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--idle); }
-  .seal-fig { font-family: var(--mono); font-size: 34px; font-weight: 600; letter-spacing: -.045em; line-height: 1.05; color: var(--idle); font-variant-numeric: tabular-nums; }
-  .seal-fig s { text-decoration: none; font-size: 10px; color: var(--dim); font-weight: 500; letter-spacing: 0; }
-  .seal-meta { font-size: 10.5px; color: var(--dim); margin-top: 4px; }
-  .docket { border-top: 1px solid var(--border); margin-top: 20px; }
-  .dk-row {
-    display: grid; grid-template-columns: 24px 1fr 54px 92px 62px; gap: 12px; align-items: center;
-    padding: 9px 8px; border-bottom: 1px solid var(--border-soft); font-size: 11.5px;
-  }
-  .dk-row.open { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--working); }
-  .dk-rank { font-family: var(--mono); font-size: 11px; color: var(--dim); }
-  .dk-name { font-size: 12.5px; font-weight: 620; }
-  .dk-name span { font-weight: 400; color: var(--dim); font-size: 11px; margin-left: 6px; }
-  .dk-score { font-family: var(--mono); font-size: 14px; font-variant-numeric: tabular-nums; text-align: right; }
-  .dk-panel { padding: 14px 8px 18px 34px; border-bottom: 1px solid var(--border-soft); background: color-mix(in oklab, var(--panel) 60%, transparent); }
-  .dk-read { font-size: 13px; line-height: 1.62; max-width: 68ch; }
-  .dk-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 14px; }
-  .caveats { margin-top: 18px; padding: 12px 14px; border: 1px solid var(--border-soft); border-left: 3px solid var(--attention); border-radius: 10px; background: var(--bg-2); font-size: 12px; line-height: 1.55; }
-
-  /* ---- C: ledger ---- */
-  .lg { display: grid; grid-template-columns: minmax(0, 1fr) minmax(228px, 268px); gap: 28px; align-items: start; }
-  .lg > * { min-width: 0; }
-  .lg table { width: 100%; border-collapse: collapse; font-size: 11.5px; table-layout: auto; }
-  .lg th {
-    font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--dim);
-    text-align: left; padding: 0 8px 7px 0; border-bottom: 1px solid var(--border);
-  }
-  .lg th.r, .lg td.r { text-align: right; padding-right: 0; }
-  .lg td { padding: 9px 8px 9px 0; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
-  .lg tr.sel td { background: color-mix(in oklab, var(--working) 8%, transparent); }
-  .lg .gut { width: 30px; padding-right: 0; }
-  .gutwrap { display: flex; align-items: center; gap: 7px; }
-  .radio { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--muted); flex: none; }
-  .radio.on { border-color: var(--idle); box-shadow: inset 0 0 0 2.5px var(--bg), inset 0 0 0 12px var(--idle); }
-  .bar { width: 3px; height: 30px; background: color-mix(in oklab, var(--border) 70%, transparent); border-radius: 2px; position: relative; overflow: hidden; flex: none; }
-  .bar i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--neutral); border-radius: 2px; }
-  .bar.win i { background: var(--idle); }
-  .lg .nm { font-size: 12px; font-weight: 620; }
-  .lg .md { font-size: 10.5px; color: var(--dim); }
-  .lg .sc { font-family: var(--mono); font-size: 13.5px; font-variant-numeric: tabular-nums; }
-  .lg .sc.win { color: var(--idle); }
-  .peek { border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-2); padding: 13px 14px; }
-  .peek-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
-  .peek p { font-size: 12.5px; line-height: 1.55; margin: 0 0 11px; }
-  .peek h6 { font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); margin: 0 0 5px; }
-  .peek ul { font-size: 12px; line-height: 1.5; margin-bottom: 11px; }
-  .kbd {
-    font-family: var(--mono); font-size: 10px; border: 1px solid var(--border); border-radius: 4px;
-    padding: 1px 4px; color: var(--dim);
-  }
   .decide { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--border); flex-wrap: wrap; }
   .btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 540; }
   .btn-p { background: color-mix(in oklab, var(--idle) 16%, var(--panel-2)); border-color: color-mix(in oklab, var(--idle) 45%, var(--border)); color: var(--fg); }
 
   .mock-cap { font-size: 12.5px; color: var(--ink-3); line-height: 1.6; margin: 10px 0 34px; }
   .mock-cap b { color: var(--ink-2); font-weight: 650; }
-  svg.flow { width: 100%; height: auto; display: block; }
   .sig { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--warn); margin-bottom: 6px; }
-  @media (max-width: 720px) {
-    .wrap { padding: 36px 18px 90px; } h1 { font-size: 27px; }
-    .vs-verdict { grid-template-columns: 1fr; gap: 14px; }
-    .seal { border-left: 0; padding-left: 0; text-align: left; }
-  }
+  .aside { border-left: 2px solid var(--rule); padding-left: 18px; margin: 0 0 18px; color: var(--ink-2); font-size: 15px; }
+  .aside h4 { font-size: 14px; font-weight: 680; margin: 0 0 6px; color: var(--ink); }
+  @media (max-width: 720px) { .wrap { padding: 36px 18px 90px; } h1 { font-size: 27px; } }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<p class="eyebrow">Frontend design review &middot; Mission Control</p>
-<h1>The ensemble decision dossier: an inverted hierarchy, and three ways to right it</h1>
+<p class="eyebrow">Frontend design review &middot; Mission Control &middot; approved</p>
+<h1>The ensemble decision dossier: righting an inverted hierarchy</h1>
 <p class="lede">The screen where an operator irreversibly picks a winner sets unverified agent prose 33% larger than the judge&rsquo;s score, and spreads the sections you need to compare 1,900px apart.</p>
 <p class="meta">
-  Status: proposed, awaiting direction &middot; 2026-08-01<br>
-  Surface: <code>#/workflows/ensembles/&lt;runId&gt;</code> &ndash; <code>results/BestOfN.tsx</code>, <code>results/dossier.tsx</code>, <code>results/DecisionPanel.tsx</code>, <code>styles.css:8785-9354</code><br>
-  Every measurement below was read off the live DOM of a completed three-candidate run at 1440&times;900 and 1024&times;900. Every figure in the mockups is that run&rsquo;s real data.
+  Status: <strong>direction approved 2026-08-01 &ndash; Direction A, The Scoreboard.</strong> Phasing follows.<br>
+  Surface: <code>#/workflows/ensembles/&lt;runId&gt;</code> &ndash; <code>results/BestOfN.tsx</code>, <code>results/dossier.tsx</code>, <code>results/DecisionPanel.tsx</code>, <code>EnsembleTimeline.tsx</code>, <code>styles.css:8785-9354</code><br>
+  Every measurement below was read off the live DOM of a completed three-candidate run at 1440&times;900 and 1024&times;900. Every figure in the mockup is that run&rsquo;s real data.
 </p>
+
+<div class="decided">
+  <table>
+    <tbody>
+      <tr><th>Direction</th><td><strong>A &ndash; The Scoreboard</strong></td></tr>
+      <tr><th>Floor fixes in scope</th><td><strong>Declare the prose type scale</strong>, plus bounding the prose (constitutive of A)</td></tr>
+      <tr><th>Event log rewrite</th><td><strong>Include it now</strong></td></tr>
+      <tr><th>Follow-up</th><td>Create phased implementation plan</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:13.5px;color:var(--ink-2);margin:12px 0 10px">
+    Deferred deliberately: resolving the anonymised <code>Submission A/B/C</code> labels (&sect;2.3) and the status-colour cascade onto body prose (&sect;2.4). The evidence for both is kept below because it is measured and still true; only the fixes are out of scope.
+    <strong>This plan therefore changes no data flow</strong> &ndash; <code>subjectLabel</code> was the only wire change proposed and it belonged to label resolution. What ships is entirely client-side rendering plus copy.
+  </p>
+</div>
 
 <h2>1. Why this screen</h2>
 <p>The dossier is where an operator picks a winner. The decision is one-shot and destructive: it promotes one snapshot, reaps the losing worktrees, and refuses a second <code>decide</code> on <code>expectedStatus</code>. <code>DecisionPanel</code> is honest about it:</p>
 <blockquote>Recorded once. A decision cannot be replayed or revised.</blockquote>
 <p>So the screen has exactly one job: <strong>make the choice defensible in under a minute.</strong> Everything below is measured against that job, not against taste.</p>
-<p>The feature&rsquo;s information architecture is already good. The strategy renderers preserve the judge&rsquo;s reasoning, the reported-versus-observed split is a genuinely principled distinction, and the CSS carries load-bearing comments explaining most layout choices. This review is not about what the screen knows. It is about the fact that the screen&rsquo;s typography ranks its content in almost exactly the reverse of its evidential value.</p>
+<p>The feature&rsquo;s information architecture is already good. The strategy renderers preserve the judge&rsquo;s reasoning, the reported-versus-observed split is a genuinely principled distinction, and the CSS carries load-bearing comments explaining most layout choices. This is not about what the screen knows. It is about the fact that the screen&rsquo;s typography ranks its content in almost exactly the reverse of its evidential value.</p>
 
-<h2>2. What the measurements say</h2>
+<h2>2. The evidence</h2>
 
-<h3>2.1 The type hierarchy is inverted</h3>
+<h3>2.1 The type hierarchy is inverted <span class="tag tag-in">in scope</span></h3>
 <div class="scroller">
 <table>
   <thead><tr><th>Element</th><th>Selector</th><th class="num">Size</th><th class="num">Weight</th><th>Colour</th></tr></thead>
@@ -269,11 +219,11 @@
   <figcaption>Today, at 1440&times;900. The recommended card&rsquo;s inline &ldquo;Recommended&rdquo; text pushes its score 27px below its peers&rsquo;. Below the fold, each column keeps running: 2,806px, 1,932px and 936px tall.</figcaption>
 </figure>
 
-<h3>2.2 The comparison grid does not compare</h3>
+<h3>2.2 The comparison grid does not compare <span class="tag tag-in">in scope</span></h3>
 <p><code>.dossier-cols</code> is <code>repeat(auto-fit, minmax(min(320px, 100%), 1fr))</code> with <code>align-items: start</code>. Three columns, no shared rows. Each candidate&rsquo;s prose is unbounded, so each column is an independent essay and peer sections drift apart vertically. Offsets from each card&rsquo;s own top, at 1440&times;900:</p>
 <div class="scroller">
 <table>
-  <thead><tr><th>Section</th><th class="num">Candidate 1</th><th class="num">Candidate 2</th><th class="num">Candidate 3</th><th class="num">Spread</th></tr></thead>
+  <thead><tr><th>Section</th><th class="num">Cand 1</th><th class="num">Cand 2</th><th class="num">Cand 3</th><th class="num">Spread</th></tr></thead>
   <tbody>
     <tr><td>Score line</td><td class="num">+71</td><td class="num">+71</td><td class="num">+44</td><td class="num">27px</td></tr>
     <tr><td>Reported by this candidate</td><td class="num">+97</td><td class="num">+97</td><td class="num">+70</td><td class="num">27px</td></tr>
@@ -286,49 +236,39 @@
 <p>Card heights: <strong>2,806px / 1,932px / 936px</strong>. The row is 3.1 viewports tall. To compare the three candidates&rsquo; risks &ndash; the reason a person is on this screen &ndash; you scroll roughly 1,900px between each one. At 1024px the columns stack entirely and the same spread grows past 3,600px.</p>
 <p>The layout that exists to prevent holding a candidate in your head requires holding two of them in your head. The CSS comment at <code>styles.css:8905</code> anticipates the mechanism exactly &ndash; <em>&ldquo;a column that outgrows it neither clips nor scrolls&rdquo;</em> &ndash; and what follows from it is that nothing bounds the growth.</p>
 
-<h3>2.3 The judge&rsquo;s headline sentence cannot be resolved</h3>
-<p>The comparison summary renders verbatim:</p>
-<blockquote>Submission B best addresses the half-screen requirement with a measured responsive ladder and the strongest reported verification. Submission A is a solid, smaller redesign but less complete responsive coverage&hellip;</blockquote>
-<p>The cards beneath it are titled <code>Candidate 2 (claude &middot; claude-opus-5)</code>, <code>Candidate 3 (claude &middot; claude-sonnet-5)</code>, <code>Candidate 1 (codex &middot; gpt-5.6-terra)</code>, ranked <code>#1 #2 #3</code>. <strong>Nothing on the screen says which candidate is Submission B.</strong></p>
-<p>Three numbering systems name the same three objects on one page &ndash; the anonymised label the judge saw, the roster ordinal, and the judge&rsquo;s rank &ndash; none of them agree, and no legend maps them. In the Timeline the collision lands inside <strong>a single bullet list, two lines apart</strong>:</p>
-<blockquote>Submission C provides no test evidence beyond unverified check claims.<br>Candidate 2 (claude &middot; claude-opus-5) confidence: 90%</blockquote>
-<p>The cause is precise and the fix is small. <code>packet.ts:211-217</code> builds <code>labelToArtifact</code>. <code>comparative.ts:102</code> uses it to de-anonymise the <strong>structured</strong> entries, so scores and strengths land on the right candidate. The <strong>free text</strong> &ndash; <code>summary</code>, <code>caveats</code>, per-subject <code>rationale</code> &ndash; is passed through untouched, and the map is discarded when the packet goes out of scope. The payload is de-anonymised; the prose never is, and the key is thrown away. See section 5.</p>
+<h3>2.3 The judge&rsquo;s headline sentence cannot be resolved <span class="tag tag-out">deferred</span></h3>
+<p>Kept as evidence; the fix is out of scope for this plan.</p>
+<p>The comparison summary renders verbatim: <em>&ldquo;Submission B best addresses the half-screen requirement&hellip;&rdquo;</em>. The cards beneath it are titled <code>Candidate 2 (claude &middot; claude-opus-5)</code>, <code>Candidate 3</code>, <code>Candidate 1</code>, ranked <code>#1 #2 #3</code>. <strong>Nothing on the screen says which candidate is Submission B.</strong> Three numbering systems name the same three objects, none agree, and no legend maps them. In the Timeline the collision lands inside a single bullet list, two lines apart.</p>
+<p>Cause, for whoever picks this up: <code>packet.ts:211-217</code> builds <code>labelToArtifact</code>; <code>comparative.ts:102</code> and <code>panel.ts:137</code> use it to de-anonymise the <strong>structured</strong> entries only. The <strong>free text</strong> passes through untouched and the map is discarded. Carrying <code>subjectLabel</code> on each de-anonymised entry, a value already in hand at both call sites, would let the client resolve the prose.</p>
 
-<h3>2.4 Status colour is applied to body prose</h3>
-<p><code>.ensemble-member.ensemble-tone-done</code> sets a tone colour that cascades to its whole subtree. Measured live, a member lane&rsquo;s evidence list computes to <code>rgb(53, 192, 138)</code> &ndash; <code>--idle</code> green &ndash; for multiple paragraphs of ordinary prose. An eliminated member renders its neutral facts (<code>Attempt #1 &middot; selected</code>, <code>commit capture #1</code>) in <code>--danger</code> red.</p>
-<p>Two failures at once. Red and green stop meaning pass and fail once they are also the identity of a lane, so a red neutral fact reads as a problem it is not. And saturated hues at 16px over hundreds of words is the least legible body text in the app.</p>
+<h3>2.4 Status colour is applied to body prose <span class="tag tag-out">deferred</span></h3>
+<p>Kept as evidence; the fix is out of scope for this plan.</p>
+<p><code>.ensemble-member.ensemble-tone-done</code> sets a tone colour that cascades to its whole subtree. Measured live, a member lane&rsquo;s evidence list computes to <code>rgb(53, 192, 138)</code> &ndash; <code>--idle</code> green &ndash; for multiple paragraphs of ordinary prose. An eliminated member renders its neutral facts in <code>--danger</code> red. Red and green stop meaning pass and fail once they are also the identity of a lane. This lives in the Members section, not the dossier, so it does not block anything here.</p>
 
-<h3>2.5 Structure that does not encode information</h3>
+<h3>2.5 Structure that does not encode information <span class="tag tag-in">in scope</span></h3>
 <ul>
   <li><code>#1 #2 #3</code> at 16px/800 are the loudest thing on each card, but rank is derivable and already implied by document order. The quantity that is <em>not</em> derivable &ndash; <strong>the margin</strong>, 92 against 84 against 67 &ndash; is set in 12px muted grey. A decisive win and a coin flip look identical.</li>
   <li><code>Recommended</code> is bare green text inline in the header, not a badge. Because it sits in the flow, it pushes the recommended card&rsquo;s contents 27px down relative to its peers. The one card you most want to line up against the others is the only one that cannot line up.</li>
-  <li>The Events list renders raw enum members &ndash; <code>run_completed</code>, <code>member_eliminated</code>, <code>finalization_blocked</code>, <code>winner_materialized</code>, <code>stage_succeeded</code> &ndash; in bold at body size, beside 18 identical grey <code>5d ago</code> stamps. The system&rsquo;s internal vocabulary is the most prominent text in the block, and the only column that varies carries no information.</li>
+  <li>The Events list renders raw enum members &ndash; <code>run_completed</code>, <code>member_eliminated</code>, <code>winner_materialized</code>, <code>stage_succeeded</code> &ndash; in bold at body size, beside 18 identical grey <code>5d ago</code> stamps. The system&rsquo;s internal vocabulary is the most prominent text in the block, and the only column that varies carries no information.</li>
 </ul>
 
-<h2>3. The floor: what every direction fixes</h2>
-<p>These are not alternatives. They are the defects any redesign must clear, and they are cheap.</p>
-<ol>
-  <li><strong>Declare the type scale on ensemble prose.</strong> Set an explicit size and <code>line-height</code> on <code>.ensemble-reported</code>, <code>.ensemble-checks</code> and <code>.ensemble-scorecard-cols</code> so nothing inherits the 16px UA default. Body prose lands at 12.5px/1.55, inside the app&rsquo;s existing ramp.</li>
-  <li><strong>Bound the prose.</strong> No cell may set the height of a comparison row. Clamp with an explicit expander.</li>
-  <li><strong>Resolve the anonymised labels.</strong> Carry <code>subjectLabel</code> through to the client and render <code>Submission B</code> as the candidate it is, everywhere the judge&rsquo;s free text appears.</li>
-  <li><strong>Stop tinting prose with status colour.</strong> Tone stays on the stripe, the dot and the pill. Body copy stays <code>--fg</code>.</li>
-  <li><strong>Write the event log in the operator&rsquo;s words.</strong> <code>winner_materialized</code> becomes <em>Winner restored to a checkout</em>; <code>member_eliminated</code> becomes <em>Candidate 3 eliminated</em>. Group by stage rather than listing 18 flat rows.</li>
-  <li><strong>Promote the score, demote the rank.</strong> The number that carries the judgement outranks the ordinal that repeats the sort.</li>
-</ol>
+<h2>3. What ships</h2>
 
-<h2>4. Three directions</h2>
-<p>The palette is fixed by the brief. Mission Control is dark-only, one <code>:root</code>, six state hues, no web fonts, <code>color-mix</code> off the existing tokens. <strong>None of these directions introduces a colour.</strong> The distinctiveness is spent on structure, type hierarchy, and one signature element each.</p>
-<p>The subject supplies the vocabulary. The data model already speaks the language of blind adjudication &ndash; sealed submissions, ballots, dissent, contested rulings, evidence, what is at stake, a one-shot ruling that reaps. The current visual design spends none of it. That is the material.</p>
-<p>Each mockup below uses the real run&rsquo;s data: Candidate 2 (opus-5) scored 92 in 49 minutes with a 6-file, +817/&minus;195 diff; Candidate 3 (sonnet-5) scored 84 in 5h 24m; Candidate 1 (gpt-5.6-terra) scored 67 in 4h 38m.</p>
+<h3>3.1 The type scale</h3>
+<p>Set an explicit size and <code>line-height</code> on <code>.ensemble-reported</code>, <code>.ensemble-checks</code> and <code>.ensemble-scorecard-cols</code> so nothing inherits the 16px UA default. Body prose lands at <strong>12.5px/1.55</strong>, inside the app&rsquo;s existing ramp. Scores and figures get <code>font-variant-numeric: tabular-nums</code>.</p>
+<p>This is the root defect and it is independent of layout, so it can land first and alone.</p>
 
-<h3>Direction A &ndash; The Scoreboard</h3>
-<p><strong>Concept.</strong> Transpose the grid. Rows become comparison criteria, columns become candidates. Every row answers one question across all three at once. Scanning a row is the whole interaction.</p>
+<h3>3.2 Bounded prose</h3>
+<p>No cell may set the height of a comparison row. The claim clamps to three lines with an explicit <em>Read the full claim</em> expander; strengths and risks clamp to three items with an <em>N more</em> expander. Required by 3.3: the Scoreboard&rsquo;s criteria rows only work if no cell can blow out.</p>
+
+<h3>3.3 Direction A &ndash; The Scoreboard</h3>
+<p>Transpose the grid. Rows become comparison criteria, columns become candidates. Every row answers one question across all three at once. Scanning a row is the whole interaction.</p>
 <p><span class="sig">Signature &middot; the margin ruler</span><br>A single 0&ndash;100 axis under the header, plotting all three scores as ticks on one line. The gap between ticks is the margin of victory &ndash; the fact that decides whether the recommendation is worth accepting or worth overriding, and the fact today&rsquo;s <code>score 92/100</code> in 12px grey completely hides. It encodes a real quantity spatially, which is what a structural device is for.</p>
 
 <div class="mc"><div class="mc-inner">
   <div class="mc-head">
     <span class="mc-title">Ensemble test one</span>
-    <span class="mc-sub">Best of N &middot; 3 candidates &middot; base <span class="num">35c27a2009</span> &middot; <span class="num">$34.22</span></span>
+    <span class="mc-sub">Best of N &middot; 3 candidates &middot; base <span class="sb-fig">35c27a2009</span> &middot; <span class="sb-fig">$34.22</span></span>
   </div>
 
   <div class="ruler">
@@ -351,19 +291,19 @@
       <div class="sb-rank">RANK 1</div>
       <div class="sb-name">Candidate 2</div>
       <div class="sb-model">claude &middot; opus-5 &middot; high</div>
-      <div class="sb-flag"><span class="chip chip-rec">Recommended</span> <span class="chip chip-sub">was B</span></div>
+      <div class="sb-flag"><span class="chip chip-rec">Recommended</span></div>
     </div>
     <div class="sb-cell first">
       <div class="sb-rank">RANK 2</div>
       <div class="sb-name">Candidate 3</div>
       <div class="sb-model">claude &middot; sonnet-5 &middot; xhigh</div>
-      <div class="sb-flag"><span class="chip chip-sub">was A</span></div>
+      <div class="sb-flag"></div>
     </div>
     <div class="sb-cell first">
       <div class="sb-rank">RANK 3</div>
       <div class="sb-name">Candidate 1</div>
       <div class="sb-model">codex &middot; gpt-5.6-terra &middot; xhigh</div>
-      <div class="sb-flag"><span class="chip chip-sub">was C</span></div>
+      <div class="sb-flag"></div>
     </div>
 
     <div class="sb-crit">Score</div>
@@ -409,240 +349,38 @@
     <span style="font-size:11px;color:var(--dim)">Reaps the other two worktrees. Snapshots are kept.</span>
   </div>
 </div></div>
-<p class="mock-cap"><b>What changed.</b> Score is 26px mono with tabular figures; the unverified claim is 12.5px/1.55 clamped to three lines. Every criterion is one row, so comparing risks is a horizontal glance instead of a 1,900px scroll. <code>Recommended</code> is a badge in a fixed-height slot, so the winning column still aligns with its peers. <b>Elapsed</b> is new: the winner was also six times faster, and today that fact appears nowhere on the screen. The <code>was B</code> chips resolve the judge&rsquo;s prose.<br><b>Risk taken.</b> The prose &ndash; the thing agents produce most of &ndash; becomes the least prominent element. Deliberate: the interface already says it is unverified. <b>Trade-off.</b> Closest to conventional of the three; it reads as a spreadsheet if the rules and spacing are careless.</p>
+<p class="mock-cap"><b>What changed.</b> Score is 26px mono with tabular figures; the unverified claim is 12.5px/1.55 clamped to three lines. Every criterion is one row, so comparing risks is a horizontal glance instead of a 1,900px scroll. <code>Recommended</code> is a badge in a fixed-height slot, so the winning column still aligns with its peers. <b>Elapsed</b> is new: the winner was also six times faster (49m against 5h 24m and 4h 38m), and today that fact appears nowhere on the screen.<br><b>Not shown, by decision.</b> The judge&rsquo;s prose still says &ldquo;Submission B&rdquo; with nothing mapping it to a candidate &ndash; label resolution is deferred (&sect;2.3), so no <code>was B</code> chips appear here.</p>
 
-<h3>Direction B &ndash; The Verdict Sheet</h3>
-<p><strong>Concept.</strong> Lead with the ruling, not the roster. One full-measure verdict block carries the judge&rsquo;s summary at a readable measure, with the anonymised labels <strong>resolved inline</strong>. Today&rsquo;s worst comprehension defect becomes the page&rsquo;s signature moment. Beneath it, candidates are a docket of one-line rows; selecting one swaps a single full-measure reading column. Comparison happens by switching, not by scrolling.</p>
-<p><span class="sig">Signature &middot; the seal</span><br>Rank and score set as a letterpress lockup in <code>--mono</code> at 34px, ranged against a hairline rule. Exactly one per page, on the recommended candidate. This is the app&rsquo;s first display type, and it is spent once.</p>
+<h3>3.4 The event log in the operator&rsquo;s words</h3>
+<p><code>winner_materialized</code> becomes <em>Winner restored to a checkout</em>; <code>member_eliminated</code> becomes <em>Candidate 3 eliminated</em>. Group by stage rather than listing 18 flat rows. Timestamps carry information or they go. This touches <code>EnsembleTimeline.tsx</code>, outside the dossier proper, and was explicitly included.</p>
 
-<div class="mc"><div class="mc-inner">
-  <div class="mc-head">
-    <span class="mc-title">Ensemble test one</span>
-    <span class="mc-sub">Best of N &middot; the comparison has ruled &middot; you have not decided</span>
-  </div>
+<h2>4. Considered and set aside</h2>
+<p>Two other directions were mocked up and reviewed at commit <code>578fbc9</code>, where their mockups remain if anyone wants them.</p>
+<div class="aside">
+  <h4>B &ndash; The Verdict Sheet</h4>
+  <p style="margin:0">Lead with the ruling at a 68ch measure, resolve the anonymised labels inline, and put candidates in a docket that opens one at a time. Signature was a mono seal at 34px, the app&rsquo;s first display type. Set aside because it gives up simultaneous three-way comparison, and because its central move depends on the label resolution that is deferred.</p>
+</div>
+<div class="aside">
+  <h4>C &ndash; The Ledger</h4>
+  <p style="margin:0">A dense blotter at native density with a score gutter whose fill height is the score, and a peek pane that swaps as you arrow through rows. Set aside as less self-explanatory for an infrequent reader, though it remains the strongest option if ensemble volume rises.</p>
+</div>
 
-  <div class="vs-verdict">
-    <div>
-      <div class="eyeb" style="margin-bottom:8px">The ruling</div>
-      <p class="vs-prose" style="margin:0">
-        <span class="res"><u>B</u><b>Candidate 2</b></span> best addresses the half-screen requirement with a measured responsive ladder and the strongest reported verification.
-        <span class="res"><u>A</u><b>Candidate 3</b></span> is a solid, smaller redesign with sensible grouping but less complete responsive coverage.
-        <span class="res"><u>C</u><b>Candidate 1</b></span> makes the multi-row layout intentional yet preserves substantial vertical overhead and provides the weakest evidence.
-      </p>
-      <div class="caveats">
-        <div class="eyeb" style="margin-bottom:6px">The judge qualified this</div>
-        <ul style="padding-left:14px">
-          <li>Visual and test claims are author-reported rather than independently verified.</li>
-          <li><span class="res poss"><u>A</u><b>Candidate 3</b></span>&rsquo;s visual-verification claim is truncated.</li>
-          <li><span class="res"><u>B</u><b>Candidate 2</b></span> has a large, higher-risk diff and reports one failing test, even though it claims the failure is pre-existing.</li>
-          <li><span class="res"><u>C</u><b>Candidate 1</b></span> provides no test evidence beyond unverified check claims.</li>
-        </ul>
-      </div>
-    </div>
-    <div class="seal">
-      <div class="seal-rank">Recommends</div>
-      <div class="seal-fig">92<s>/100</s></div>
-      <div class="seal-meta">Candidate 2<br>90% confident<br>8 clear of next</div>
-    </div>
-  </div>
+<h2>5. Scope</h2>
+<p><strong>In scope:</strong> <code>dossier.tsx</code>, <code>BestOfN.tsx</code>, <code>DecisionPanel.tsx</code>, the <code>.ensemble-scorecard</code> / <code>.dossier-*</code> CSS, and <code>EnsembleTimeline.tsx</code> for the event log.</p>
+<p>Panel vote and Consensus reuse <code>CandidateColumn</code> and inherit the type-scale and bounding fixes for free. Their strategy-specific surfaces &ndash; the rank matrix, ballots, divergence cards &ndash; are out of scope and should follow the Scoreboard in a later pass.</p>
+<p><strong>Not in scope:</strong> label resolution and the <code>subjectLabel</code> wire change (&sect;2.3), the tone-cascade fix (&sect;2.4), the Compare workspace file matrix, the dispatch flow, run list, artifacts, and the ensembles-live-under-Workflows navigation question.</p>
+<p><strong>No server change. No schema change. No wire change.</strong></p>
 
-  <div class="docket">
-    <div class="eyeb" style="padding:10px 8px 8px">The docket &middot; 3 submissions</div>
-
-    <div class="dk-row open">
-      <span class="dk-rank">1</span>
-      <span class="dk-name">Candidate 2 <span>claude &middot; opus-5 &middot; high</span></span>
-      <span class="chip chip-rec">Rec</span>
-      <span class="num" style="font-size:11px;color:var(--dim)">6f +817 &minus;195</span>
-      <span class="dk-score" style="color:var(--idle)">92</span>
-    </div>
-    <div class="dk-panel">
-      <div class="eyeb" style="margin-bottom:6px">Why the judge ranked it first</div>
-      <p class="dk-read" style="margin:0 0 14px">It most completely fulfills the stated responsive title-bar goal and presents the strongest relevant evidence, despite meaningful complexity and the reported test failure.</p>
-      <div class="eyeb" style="margin-bottom:6px">Claimed by this candidate &middot; not verified</div>
-      <p class="dk-read" style="margin:0">Rebuilt the topbar around three ranked zones plus a measured <code>@container</code> degradation ladder, so it stays ONE row from a maximised window down to half screen (864px) instead of wrapping into three. Verified live at 14 widths from 1728px down to 830px: topbar height 110px throughout, previously 110 &rarr; 153 &rarr; 191.</p>
-      <div class="dk-cols">
-        <div>
-          <div class="eyeb" style="margin-bottom:5px">Strengths</div>
-          <ul class="sb-list"><li>Directly targets half-screen single-row behavior.</li><li>Measured container-query breakpoints; keeps the Dispatch label.</li><li>Adds focused tests for responsive and accessibility invariants.</li></ul>
-        </div>
-        <div>
-          <div class="eyeb" style="margin-bottom:5px">Risks</div>
-          <ul class="sb-list"><li>Large 817-line change increases regression surface.</li><li>One full-suite test reported failing.</li><li>Source-inspection tests are brittle.</li></ul>
-        </div>
-      </div>
-      <div style="margin-top:13px;display:flex;gap:8px"><span class="btn">Open the diff</span><span class="btn">Restore this checkout</span></div>
-    </div>
-
-    <div class="dk-row">
-      <span class="dk-rank">2</span>
-      <span class="dk-name">Candidate 3 <span>claude &middot; sonnet-5 &middot; xhigh</span></span>
-      <span></span>
-      <span class="num" style="font-size:11px;color:var(--dim)">3f +255 &minus;151</span>
-      <span class="dk-score">84</span>
-    </div>
-    <div class="dk-row">
-      <span class="dk-rank">3</span>
-      <span class="dk-name">Candidate 1 <span>codex &middot; gpt-5.6-terra &middot; xhigh</span></span>
-      <span></span>
-      <span class="num" style="font-size:11px;color:var(--dim)">2f +183 &minus;92</span>
-      <span class="dk-score">67</span>
-    </div>
-  </div>
-
-  <div class="decide">
-    <span class="btn btn-p">Confirm Candidate 2</span>
-    <span class="btn">Pick another</span>
-    <span class="btn">No consensus</span>
-    <span style="font-size:11px;color:var(--dim)">Reaps the other two worktrees. Snapshots are kept.</span>
-  </div>
-</div></div>
-<p class="mock-cap"><b>What changed.</b> The ruling is the hero, set at 13px/1.62 in a 68ch measure &ndash; the only genuinely readable long-form setting of the three directions. Every <code>Submission A/B/C</code> is resolved in place, so the sentence that decides the run can actually be followed. The caveats get their own block instead of being a fourth bullet list. One candidate is open at a time, at full measure.<br><b>Risk taken.</b> Introduces a display treatment into an app that has none, and gives up simultaneous three-way comparison. Justified because the subject is adjudication, <code>--mono</code> is already a token, and today&rsquo;s &ldquo;simultaneous&rdquo; comparison is a fiction &ndash; 1,927px of scroll between peer sections is not simultaneity. <b>Trade-off.</b> Strongest for reading and defending a decision, weakest for spotting a narrow numeric difference.</p>
-
-<h3>Direction C &ndash; The Ledger</h3>
-<p><strong>Concept.</strong> No cards. A blotter at the app&rsquo;s native density: candidates as rows, hairline rules, tabular numerals, the decision control in the leftmost gutter. All prose lives in a peek pane that swaps as you arrow through rows, so reading a claim never costs your place. The entire decision fits one viewport with no scrolling.</p>
-<p><span class="sig">Signature &middot; the score gutter</span><br>A 3px vertical stripe on each row whose fill height <em>is</em> the score. Ranking becomes legible peripherally, without reading a digit &ndash; the structural device carries the quantity rather than decorating it.</p>
-
-<div class="mc"><div class="mc-inner">
-  <div class="mc-head">
-    <span class="mc-title">Ensemble test one</span>
-    <span class="mc-sub">Best of N &middot; 3 submissions &middot; <span class="kbd">&uarr;&darr;</span> move &middot; <span class="kbd">&crarr;</span> confirm</span>
-  </div>
-  <p style="font-size:12.5px;line-height:1.55;color:var(--muted);max-width:68ch;margin:10px 0 16px">
-    The judge recommends <b style="color:var(--fg)">Candidate 2</b> &ndash; 8 points clear, 90% confident &ndash; on the strongest reported verification, despite the largest diff.
-  </p>
-
-  <div class="lg">
-   <div>
-    <table>
-      <thead><tr>
-        <th class="gut"></th><th>Candidate</th><th class="r">Score</th><th class="r">Conf</th><th class="r">Diff</th><th class="r">Elapsed</th>
-      </tr></thead>
-      <tbody>
-        <tr class="sel">
-          <td class="gut"><div class="gutwrap"><span class="radio on"></span><span class="bar win"><i style="height:92%"></i></span></div></td>
-          <td><div class="nm">Candidate 2 <span class="chip chip-rec" style="margin-left:4px">Rec</span></div><div class="md">claude &middot; opus-5 &middot; high &middot; was B</div></td>
-          <td class="r"><span class="sc win">92</span></td>
-          <td class="r num" style="color:var(--muted)">90%</td>
-          <td class="r num"><span class="ins">+817</span> <span class="del">&minus;195</span></td>
-          <td class="r num" style="color:var(--muted)">49m</td>
-        </tr>
-        <tr>
-          <td class="gut"><div class="gutwrap"><span class="radio"></span><span class="bar"><i style="height:84%"></i></span></div></td>
-          <td><div class="nm">Candidate 3</div><div class="md">claude &middot; sonnet-5 &middot; xhigh &middot; was A</div></td>
-          <td class="r"><span class="sc">84</span></td>
-          <td class="r num" style="color:var(--muted)">84%</td>
-          <td class="r num"><span class="ins">+255</span> <span class="del">&minus;151</span></td>
-          <td class="r num" style="color:var(--muted)">5h 24m</td>
-        </tr>
-        <tr>
-          <td class="gut"><div class="gutwrap"><span class="radio"></span><span class="bar"><i style="height:67%"></i></span></div></td>
-          <td><div class="nm">Candidate 1</div><div class="md">codex &middot; gpt-5.6-terra &middot; xhigh &middot; was C</div></td>
-          <td class="r"><span class="sc">67</span></td>
-          <td class="r num" style="color:var(--muted)">87%</td>
-          <td class="r num"><span class="ins">+183</span> <span class="del">&minus;92</span></td>
-          <td class="r num" style="color:var(--muted)">4h 38m</td>
-        </tr>
-        <tr>
-          <td class="gut"><div class="gutwrap"><span class="radio"></span></div></td>
-          <td colspan="5"><div class="nm" style="color:var(--muted)">No consensus &ndash; keep every snapshot, promote none</div></td>
-        </tr>
-      </tbody>
-    </table>
-    <div style="margin-top:14px;padding:10px 12px;border:1px solid var(--border-soft);border-left:3px solid var(--attention);border-radius:10px;background:var(--bg-2)">
-      <div class="eyeb" style="margin-bottom:5px">At stake</div>
-      <p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--muted)">Present me an idea for improving the title bar of this app, it&rsquo;s jumbled, and doesn&rsquo;t work on smaller screens well. It should look ok at half-screen.</p>
-    </div>
-   </div>
-
-    <div class="peek">
-      <div class="peek-h"><span class="eyeb">Candidate 2</span><span class="chip chip-sub">was B</span></div>
-      <h6>Why first</h6>
-      <p>It most completely fulfills the stated responsive title-bar goal and presents the strongest relevant evidence, despite meaningful complexity and the reported test failure.</p>
-      <h6>Strengths</h6>
-      <ul class="sb-list"><li>Directly targets half-screen single-row behavior.</li><li>Measured container-query breakpoints.</li><li>Extensive live-width verification reported.</li></ul>
-      <h6>Risks</h6>
-      <ul class="sb-list"><li>Large 817-line change increases regression surface.</li><li>One full-suite test reported failing.</li></ul>
-      <div style="display:flex;gap:6px;margin-top:4px"><span class="btn">Full claim</span><span class="btn">Diff</span></div>
-    </div>
-  </div>
-
-  <div class="decide">
-    <span class="btn btn-p">Confirm Candidate 2</span>
-    <span style="font-size:11px;color:var(--dim)">Reaps the other two worktrees. Snapshots are kept, so a change of mind is a restore.</span>
-  </div>
-</div></div>
-<p class="mock-cap"><b>What changed.</b> Nothing new in the type system &ndash; 11.5px rows, 10.5px eyebrows, 12.5px/1.55 in the peek pane, all already in use. Numerals are tabular throughout, so the diff and score columns align optically. The whole decision, including the control that makes it, sits in one viewport. The gutter stripe means you can rank the rows without reading them.<br><b>Risk taken.</b> Restraint. It is the least visually bold of the three and wins on precision in spacing, alignment and rule weight or not at all. <b>Trade-off.</b> Fastest for an operator who runs ensembles often; least self-explanatory for a first-time reader.</p>
-
-<h2>5. The one flow change</h2>
-<p>Directions B and C depend on resolving <code>Submission A/B/C</code> to real candidates in the client, and the floor requires it regardless. That is the only change to how data moves.</p>
-<p>Today the anonymisation key is built, used to de-anonymise the structured payload, and discarded. The prose keeps the anonymised labels and reaches the browser unresolvable.</p>
-
-<svg class="flow" viewBox="0 0 860 340" role="img" aria-labelledby="flowtitle flowdesc">
-  <title id="flowtitle">Before and after: carrying the submission label to the client</title>
-  <desc id="flowdesc">Today the label-to-artifact map is built in packet.ts, used to de-anonymise structured entries in comparative.ts, then discarded, leaving the prose unresolvable in the browser. The proposal carries subjectLabel onto each entry so the client can resolve the prose.</desc>
-  <defs>
-    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
-    </marker>
-    <marker id="arx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0 0 L10 5 L0 10 z" fill="#b45309"/>
-    </marker>
-  </defs>
-  <style>
-    .bx { fill: none; stroke: var(--rule); stroke-width: 1.4; rx: 8; }
-    .bx-s { fill: none; stroke: var(--ink-3); stroke-width: 1.4; stroke-dasharray: 4 3; rx: 8; }
-    .lbl { fill: var(--ink); font: 600 12px system-ui, sans-serif; }
-    .sub { fill: var(--ink-3); font: 400 10.5px ui-monospace, Menlo, monospace; }
-    .ln { stroke: var(--ink-3); stroke-width: 1.3; fill: none; color: var(--ink-3); }
-    .bad { stroke: #b45309; stroke-width: 1.3; fill: none; stroke-dasharray: 4 3; color: #b45309; }
-    .cap { fill: var(--ink-3); font: 700 10px system-ui, sans-serif; letter-spacing: .1em; }
-    .note { fill: #b45309; font: 600 10.5px system-ui, sans-serif; }
-    .good { fill: #2f9e6e; font: 600 10.5px system-ui, sans-serif; }
-  </style>
-
-  <text class="cap" x="0" y="12">TODAY</text>
-  <rect class="bx" x="0" y="26" width="150" height="52"/>
-  <text class="lbl" x="12" y="47">packet.ts</text><text class="sub" x="12" y="63">builds labelToArtifact</text>
-  <rect class="bx" x="196" y="26" width="150" height="52"/>
-  <text class="lbl" x="208" y="47">judge LLM</text><text class="sub" x="208" y="63">sees Submission A/B/C</text>
-  <rect class="bx" x="392" y="26" width="176" height="52"/>
-  <text class="lbl" x="404" y="47">comparative.ts</text><text class="sub" x="404" y="63">de-anonymises entries</text>
-  <rect class="bx" x="614" y="26" width="176" height="52"/>
-  <text class="lbl" x="626" y="47">dossier.tsx</text><text class="sub" x="626" y="63">prose unresolvable</text>
-  <path class="ln" d="M150 52 H190" marker-end="url(#ar)"/>
-  <path class="ln" d="M346 52 H386" marker-end="url(#ar)"/>
-  <path class="ln" d="M568 52 H608" marker-end="url(#ar)"/>
-  <path class="bad" d="M75 78 V104 H300" marker-end="url(#arx)"/>
-  <text class="note" x="308" y="108">map discarded &ndash; the key that would resolve the prose is thrown away</text>
-
-  <line x1="0" y1="150" x2="860" y2="150" stroke="var(--rule)" stroke-width="1"/>
-
-  <text class="cap" x="0" y="186">PROPOSED</text>
-  <rect class="bx" x="0" y="200" width="150" height="52"/>
-  <text class="lbl" x="12" y="221">packet.ts</text><text class="sub" x="12" y="237">builds labelToArtifact</text>
-  <rect class="bx" x="196" y="200" width="150" height="52"/>
-  <text class="lbl" x="208" y="221">judge LLM</text><text class="sub" x="208" y="237">sees Submission A/B/C</text>
-  <rect class="bx" x="392" y="200" width="176" height="52"/>
-  <text class="lbl" x="404" y="221">comparative.ts</text><text class="sub" x="404" y="237">+ carries subjectLabel</text>
-  <rect class="bx" x="614" y="200" width="176" height="52"/>
-  <text class="lbl" x="626" y="221">dossier.tsx</text><text class="sub" x="626" y="237">resolves prose inline</text>
-  <path class="ln" d="M150 226 H190" marker-end="url(#ar)"/>
-  <path class="ln" d="M346 226 H386" marker-end="url(#ar)"/>
-  <path class="ln" d="M568 226 H608" marker-end="url(#ar)"/>
-  <path class="ln" d="M75 252 V286 H690 V258" marker-end="url(#ar)"/>
-  <text class="good" x="200" y="303">entry.subjectLabel = &quot;Submission B&quot; &ndash; one string, already in hand at comparative.ts:102</text>
-</svg>
-
-<p>The change is additive: one existing string, already in hand at <code>comparative.ts:102</code> and <code>panel.ts:137</code>, persisted on the de-anonymised entry and carried to the client. No new call, no new service, no change to what the judge sees. <strong>The anonymity that matters &ndash; the judge never learning which agent produced which submission &ndash; is unaffected</strong>, because it is enforced when the prompt is built, not when the result is read.</p>
-
-<h2>6. Scope</h2>
-<p><strong>In scope:</strong> the Best-of-N dossier and the shared pieces it uses &ndash; <code>dossier.tsx</code>, <code>BestOfN.tsx</code>, <code>DecisionPanel.tsx</code>, the <code>.ensemble-scorecard</code> / <code>.dossier-*</code> CSS, the prose type scale, the tone-cascade fix, the event log copy, and the <code>subjectLabel</code> wire addition.</p>
-<p>Panel vote and Consensus reuse <code>CandidateColumn</code> and inherit the floor fixes for free. Their strategy-specific surfaces &ndash; the rank matrix, ballots, divergence cards &ndash; are out of scope for this pass and should follow the chosen direction in a later one.</p>
-<p><strong>Not in scope:</strong> the Compare workspace file matrix, the dispatch flow, run list, artifacts, or the ensembles-live-under-Workflows navigation question. Each is a real topic and none of them is this one.</p>
-
-<h2>7. What ships regardless of direction</h2>
-<p>The floor in section 3, and a Playwright spec in <code>e2e/</code> covering the decision dossier: that the judge&rsquo;s summary names a candidate a person can find on the page, that no candidate column exceeds a bounded height, and that the score is reachable and readable at 1024px. The repository requires a spec for any UI change, and this surface currently has none that asserts what the operator can actually read.</p>
+<h2>6. Proof</h2>
+<p>A Playwright spec in <code>e2e/</code> covering the decision dossier, since this surface currently has none that asserts what the operator can actually read:</p>
+<ul>
+  <li>No candidate cell exceeds its bounded height, and the criteria rows align across all three columns.</li>
+  <li>The score is present, readable, and larger than the claim prose.</li>
+  <li>The margin ruler renders a tick per candidate.</li>
+  <li>At 1024px the page body does not scroll horizontally.</li>
+  <li>The event log renders operator words, not raw enum members.</li>
+</ul>
+<p>Plus the existing suites: <code>npm run typecheck</code>, <code>npm test</code>, <code>npm run lint</code>, and <code>npm run build</code> before the e2e run.</p>
 
 </div>
 </body>

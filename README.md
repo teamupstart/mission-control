@@ -1352,9 +1352,20 @@ every new single-agent dispatch. New installations start on the built-in
 each new binding takes the newest immutable version shipped at the time (see
 [Built-in workflows](#built-in-workflows)) while older bindings stay pinned. The dispatch
 form can override that choice for one task, including an explicit **None** that finishes
-without a Workflow. Once the task has a session, this selection is frozen so the task row and
+without a Workflow.
+
+Choosing **scout** under **Kind** moves that selection to **None** for you, because a scout
+investigates and reports rather than delivering a change and so has no diff for a review
+Workflow to run over. Switching back to **ship** hands back the exact choice scout put
+aside, so the reversal loses nothing. It is a default rather than a lock: pick a Workflow
+after choosing scout and it sticks, and a choice you make by hand is never reverted by a
+later kind switch. This is a behavior of the dispatch form, so it applies to the kind you
+pick there and not to the inheriting paths below.
+
+Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
-Recurring Missions inherit the same machine default when they create an ordinary task.
+Recurring Missions inherit the same machine default when they create an ordinary task,
+whatever their kind.
 Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
 Workflow belongs only at its final N-to-one handoff.
 

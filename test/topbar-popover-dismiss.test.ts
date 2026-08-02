@@ -1,7 +1,7 @@
 /**
- * What is at stake: the Foreman and Alerts popovers are lightweight topbar dropdowns with
- * their own `open` state - NOT entries in the overlay registry, so App's global Escape does
- * not know they exist and cannot close them. Each has to dismiss itself. A click outside
+ * What is at stake: the Foreman, Alerts and Spend popovers are lightweight topbar dropdowns
+ * with their own `open` state - NOT entries in the overlay registry, so App's global Escape
+ * does not know they exist and cannot close them. Each has to dismiss itself. A click outside
  * already does; Escape has to as well, or the keyboard has no way to back out of a menu the
  * mouse opened.
  *
@@ -33,7 +33,7 @@ function escapeHandler(source: string): string {
   return source.slice(start, end);
 }
 
-for (const file of ["ForemanBar.tsx", "AlertBar.tsx"]) {
+for (const file of ["ForemanBar.tsx", "AlertBar.tsx", "SpendChip.tsx"]) {
   test(`${file}: the popover closes on Escape and keeps it from App's global Escape`, () => {
     const source = src(file);
 

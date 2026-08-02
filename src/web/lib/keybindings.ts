@@ -90,9 +90,13 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "global",
   },
   {
+    // Named "workflows" before the authoring surfaces became the Library, and the id keys
+    // persisted overrides in `app_config.ui.keybindings` - so it stays put while the label
+    // moves on, exactly as "roundup" did when its panel became the Sitrep. Renaming it here
+    // would silently reset every operator's rebinding of this key.
     id: "workflows",
-    label: "Toggle Workflows",
-    description: "Open the Workflows page, or return to the fleet.",
+    label: "Toggle Library",
+    description: "Open the Library of workflows, Personas and actions, or return to the fleet.",
     defaultBinding: "w",
     group: "global",
   },

@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
+import { WorkflowLibrary } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { WorkflowProperties } from "../src/web/workflows/WorkflowProperties.tsx";
 import { WorkflowVersionDetail, WorkflowVersionHistory } from "../src/web/workflows/WorkflowVersionHistory.tsx";
 import {
@@ -41,9 +41,8 @@ const workflow: WorkflowDefinition = {
 };
 
 test("empty workflow library is an active Phase 2 builder, not a future-feature shell", () => {
-  const html = renderToStaticMarkup(createElement(WorkflowPage, {
-    tab: "workflows", personas: [], workflowSummaries: [], llm,
-    isOverlayOpen: () => false, onTab: () => {}, onDirtyChange: () => {},
+  const html = renderToStaticMarkup(createElement(WorkflowLibrary, {
+    summaries: [], personas: [], hasSnapshot: true, onDirtyChange: () => {},
   }));
   assert.match(html, /Build a review workflow/);
   assert.match(html, /New workflow/);
@@ -206,9 +205,14 @@ test("generated create and duplicate names honor normalized durable uniqueness",
   assert.match(secondCopy, / copy 2$/);
 });
 
-test("top-bar workflow navigation opens the builder tab", () => {
+test("the top-bar segment reaches the Library, and the builder is one level under it", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
-  assert.match(source, /route\.page === "fleet"[\s\S]*\{ page: "workflows", tab: "workflows" \}/);
+  // The segment navigates to the two homes and nothing deeper: the builder is reached from
+  // a Workflows shelf card, which is what makes the shelf the place you learn what a
+  // workflow is before you open one.
+  assert.match(source, /id === "fleet" \? \{ page: "fleet" \} : \{ page: "library" \}/);
+  assert.match(source, /<WorkflowLibrary[\s\S]*?initialWorkflowId=\{libraryAssetId\}/);
+  assert.match(source, /onOpenAsset=\{\(shelf, assetId\) => navigate\(\{ page: "library", shelf, assetId \}\)\}/);
 });
 
 test("workflow detail load failures remain visible without a loaded workflow", () => {

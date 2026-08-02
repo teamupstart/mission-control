@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AGENT_TYPES, type FleetCost, type Session, type Task } from "@shared/types.ts";
+import { AGENT_TYPES, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
 import { backlogTasks, canCycleMode } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
@@ -24,7 +24,10 @@ import { DEFAULT_SETTINGS_CATEGORY } from "./lib/settings-registry.ts";
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
-import { compactFleetCost, FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
+import { SpendChip } from "./components/SpendChip.tsx";
+import { LineStrip } from "./components/LineStrip.tsx";
+import { LINE_STAGE_TARGETS } from "./lib/line-targets.ts";
+import type { LineStageId } from "@shared/line.ts";
 import { Keycap } from "./components/Keycap.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
@@ -41,7 +44,6 @@ import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode } from "./lib/layout.ts";
-import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
@@ -61,7 +63,13 @@ import { FilePicker } from "./components/FilePicker.tsx";
 import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
 import { WorkflowPage } from "./workflows/WorkflowPage.tsx";
-import { useWorkflowRoute, workflowsToggleRoute } from "./workflows/useWorkflowRoute.ts";
+import { pageToggleRoute, useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
+import type { LibrarySurface } from "./workflows/useWorkflowRoute.ts";
+import { LibraryPage } from "./library/LibraryPage.tsx";
+import type { EnsembleStrategyId } from "@shared/ensemble.ts";
+import { PersonaLibrary } from "./workflows/PersonaLibrary.tsx";
+import { SessionActionLibrary } from "./workflows/SessionActionLibrary.tsx";
+import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
@@ -115,6 +123,28 @@ function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null 
   }
 }
 
+/**
+ * The topbar's page segment: the app's two homes, in reading order.
+ *
+ * Settings is not here on purpose. It is a place you visit and leave, reached by the gear and
+ * returned from by the same control; Fleet and Library are the two places you WORK, and a
+ * three-way segment would have flattened that difference.
+ */
+const PAGE_SEGMENTS = [
+  {
+    id: "fleet",
+    label: "Fleet",
+    glyph: "▦",
+    hint: "The fleet of running sessions, their tasks and their reviews",
+  },
+  {
+    id: "library",
+    label: "Library",
+    glyph: "⌗",
+    hint: "The Library - workflows, Personas, actions, ensemble strategies and intake",
+  },
+] as const;
+
 export function App(): React.JSX.Element {
   const {
     sessions,
@@ -126,13 +156,14 @@ export function App(): React.JSX.Element {
     workflowRunSummaries: workflowRuns,
     ensembleSummaries,
     fleetCost,
+    lineSummary,
     settingsStatus,
     schedules,
     connected,
     hasSnapshot,
   } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
-  const { route, navigate, pendingRoute, confirmPending, cancelPending } =
+  const { route, navigate, replace, pendingRoute, confirmPending, cancelPending } =
     useWorkflowRoute(workflowDirty);
   const [alertSettings, updateAlerts] = useAlertSettings();
   const { away, setAway, digest, dismissDigest, buffered } = useAwayMode();
@@ -148,17 +179,26 @@ export function App(): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [keybindingHints] = useKeybindingHints();
   const [layout, setLayout] = useLayoutMode();
-  const [usageBarCollapsed, setUsageBarCollapsed] = useUsageBarCollapsed();
   const foreman = useForeman();
-  // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar strip
-  // and the Cost panel read the same `view` setting, so a local copy in the page would
-  // leave the strip showing the old choice until the next reload - and double-poll.
+  // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar spend
+  // popover and the Cost panel read the same `view` setting, so a local copy in the page
+  // would leave the popover showing the old choice until the next reload - and double-poll.
   const cost = useCost();
   const llm = useLlm();
   // The worst subsystem status, inherited by the topbar gear from the settings rail dots.
   // Null status ("unknown", pre-snapshot) and an all-clear both render no dot.
   const gearDot = settingsGearDot(settingsStatus);
   const gearPhrase = gearDotPhrase(gearDot);
+  // Which segment the page-toggle chord would reach from here, or null where it stands down
+  // (Settings, which the gear owns). Asked of the same pure function the key handler uses, so
+  // the keycap the segment draws cannot promise a jump the chord will not make.
+  const toggleTargetPage = pageToggleRoute({
+    active: true,
+    typing: false,
+    renaming: false,
+    overlayOpen: false,
+    page: route.page,
+  })?.page ?? null;
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
   // target of its own - what it draws is `attention` below, folded from state App already has -
@@ -194,6 +234,12 @@ export function App(): React.JSX.Element {
   // task being dispatched out from under the modal - is seen here rather than shadowed
   // by a copy taken at open time.
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  // What this opening of the dispatch modal is FOR, when it is not an ordinary dispatch.
+  // Only the Library's strategy launchers set it, and only the modal reads it - the draft
+  // and the launch mode stay where they are, in `DispatchLayer`.
+  const [dispatchIntent, setDispatchIntent] = useState<{ strategyId: EnsembleStrategyId } | null>(
+    null,
+  );
   const [reportOpen, setReportOpen] = useState(false);
   // Whether the ⌘K settings search palette is open. Owned here, not in SettingsPage, so
   // the shortcut can open it from the fleet: App navigates to the settings page and sets
@@ -440,6 +486,7 @@ export function App(): React.JSX.Element {
   const closeDispatch = useCallback(() => {
     setDispatchOpen(false);
     setEditingTaskId(null);
+    setDispatchIntent(null);
   }, []);
   /**
    * Open the dispatch modal over a backlog task.
@@ -455,6 +502,20 @@ export function App(): React.JSX.Element {
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
   const openDispatch = useCallback(() => {
     setEditingTaskId(null);
+    setDispatchIntent(null);
+    setDispatchOpen(true);
+  }, []);
+  /**
+   * The third way in: a Library strategy launcher, which opens the same modal already in
+   * Ensemble mode on that strategy.
+   *
+   * The intent is cleared by `openDispatch` and by `closeDispatch`, so an ordinary Dispatch
+   * after one of these is an ordinary Dispatch rather than an Ensemble the operator did not
+   * ask for.
+   */
+  const launchEnsemble = useCallback((strategyId: EnsembleStrategyId) => {
+    setEditingTaskId(null);
+    setDispatchIntent({ strategyId });
     setDispatchOpen(true);
   }, []);
   const closeMissions = useCallback(() => {
@@ -488,6 +549,37 @@ export function App(): React.JSX.Element {
     setMissionsTarget(null);
     setMissionsOpen(true);
   }, [closeDispatch]);
+  /**
+   * Run a Line stage click.
+   *
+   * The mapping itself is not here - it is `LINE_STAGE_TARGETS`, one table in one file, so
+   * the next phase can repoint all six at drawers without touching this. This only knows
+   * how to perform the four kinds of destination the dashboard has.
+   */
+  const onLineStage = useCallback(
+    (stage: LineStageId) => {
+      const target = LINE_STAGE_TARGETS[stage];
+      switch (target.kind) {
+        case "route":
+          navigate(target.route);
+          break;
+        case "missions":
+          openMissions();
+          break;
+        case "sitrep":
+          setReportOpen(true);
+          break;
+        case "fleet":
+          // Already the page under the strip, so the useful half is the filter: the stage
+          // counts every live session and a filter box with something in it means the board
+          // is showing fewer. Clearing it makes the count and the cards agree again.
+          navigate({ page: "fleet" });
+          setFilter("");
+          break;
+      }
+    },
+    [navigate, openMissions],
+  );
   const closeDiff = useCallback(() => {
     setDiffSessionId(null);
     setDiffCommit(null);
@@ -538,6 +630,27 @@ export function App(): React.JSX.Element {
       nonce: (request?.nonce ?? 0) + 1,
     }));
   }, [layout]);
+  /**
+   * Show one EXACT checkout-relative path in the session's Files workspace.
+   *
+   * The destination half of `openSessionFile`, split out because not every caller has
+   * prose to parse. A path that came from `git diff` is already exact, and running it
+   * through `workspaceFileTarget` would apply that function's `:line[:column]` rule to
+   * it - correct for a path a human typed in a sentence, wrong for a file genuinely
+   * named `notes:12`, which would silently open `notes` instead.
+   */
+  const openSessionPath = useCallback((sessionId: string, path: string): void => {
+    files.ensure(sessionId);
+    files.select(sessionId, path);
+    if (layout === "grid") {
+      setFilesSessionId(sessionId);
+    } else {
+      setSelectedId(sessionId);
+      if (layout === "board") setBoardOpen(true);
+      requestFilesTab(sessionId);
+    }
+  }, [files.ensure, files.select, layout, requestFilesTab]);
+
   const openSessionFile = useCallback((
     sessionId: string,
     href: string,
@@ -551,17 +664,9 @@ export function App(): React.JSX.Element {
     }) : null;
     if (!target) return false;
     if (probe) return ambiguousRoot ? files.probe(sessionId, target.path) : true;
-    files.ensure(sessionId);
-    files.select(sessionId, target.path);
-    if (layout === "grid") {
-      setFilesSessionId(sessionId);
-    } else {
-      setSelectedId(sessionId);
-      if (layout === "board") setBoardOpen(true);
-      requestFilesTab(sessionId);
-    }
+    openSessionPath(sessionId, target.path);
     return true;
-  }, [files.ensure, files.probe, files.select, layout, requestFilesTab, sessions]);
+  }, [files.probe, openSessionPath, sessions]);
 
   /**
    * The overlays keyed on a session id, and how to drop that id.
@@ -823,6 +928,7 @@ export function App(): React.JSX.Element {
     onOpenDiff: openDiff,
     onOpenFiles: setFilesSessionId,
     onOpenFile: openSessionFile,
+    onOpenFilePath: openSessionPath,
     fileTabRequest,
     diffTabRequest,
     conversationTabRequest,
@@ -1016,21 +1122,21 @@ export function App(): React.JSX.Element {
         return;
       }
 
-      // The Workflows toggle is navigation TO and FROM that page, not a session action, so
-      // it is the one chord that fires while Workflows is open too - the same key that opens
-      // it returns to the fleet, mirroring the top-bar button. It sits ABOVE the page guard
+      // The page toggle is navigation TO and FROM the Library, not a session action, so it
+      // is the one chord that fires off the fleet too - the same key that opens the Library
+      // returns to the fleet, mirroring the topbar segment. It sits ABOVE the page guard
       // below for exactly that reason. The decision (and its typing/rename/overlay
-      // stand-downs) is `workflowsToggleRoute`, kept pure so it is testable without a DOM.
-      const workflowsTarget = workflowsToggleRoute({
+      // stand-downs) is `pageToggleRoute`, kept pure so it is testable without a DOM.
+      const toggleTarget = pageToggleRoute({
         active: chord === bindings.workflows,
         typing,
         renaming: Boolean(renamingId),
         overlayOpen: overlaysRef.current.anyOpen,
         page: route.page,
       });
-      if (workflowsTarget) {
+      if (toggleTarget) {
         e.preventDefault();
-        navigate(workflowsTarget);
+        navigate(toggleTarget);
         return;
       }
 
@@ -1442,6 +1548,131 @@ export function App(): React.JSX.Element {
     if (id && expandedId === id) actionHandles.current.get(id)?.startSend();
   }, [expandedId]);
 
+  /**
+   * Record which asset a Library surface has open, in the address bar, without a history
+   * entry and without waking the dirty-draft gate.
+   *
+   * The surface owns the selection and has already asked its own discard question by the
+   * time this runs, so `replace` rather than `navigate`: routing it would raise the router's
+   * "leave anyway?" dialog on top of the editor's, about a draft the operator just answered
+   * for, on a page they are not leaving.
+   */
+  const replaceLibrarySelection = useCallback(
+    (shelf: LibrarySurface, assetId: string | null): void => {
+      replace({
+        page: "library",
+        shelf,
+        // No asset open on a surface that was asked for a blank draft means the draft IS what
+        // is open, so `/new` stays in the address bar rather than being replaced by the bare
+        // shelf - which would have reloaded into somebody else's first Persona. It gives way
+        // the moment a real asset is selected or the draft is saved.
+        ...(assetId ? { assetId } : creatingRef.current ? { creating: true as const } : {}),
+      });
+    },
+    [replace],
+  );
+  // Per-shelf and memoized, because each is a dependency of the effect inside its surface
+  // that reports the selection: a callback rebuilt every render would re-run that effect on
+  // every render.
+  const onWorkflowSelected = useCallback(
+    (id: string | null) => replaceLibrarySelection("workflows", id),
+    [replaceLibrarySelection],
+  );
+  const onPersonaSelected = useCallback(
+    (id: string | null) => replaceLibrarySelection("personas", id),
+    [replaceLibrarySelection],
+  );
+  const onActionSelected = useCallback(
+    (id: string | null) => replaceLibrarySelection("actions", id),
+    [replaceLibrarySelection],
+  );
+
+  const libraryShelf = route.page === "library" ? route.shelf ?? null : null;
+  const libraryAssetId = route.page === "library" ? route.assetId ?? null : null;
+  const libraryCreating = route.page === "library" && route.creating === true;
+  // Mirrored so `replaceLibrarySelection` can read it without becoming a new function on
+  // every route change - it is a dependency of the effect inside each surface that reports
+  // the selection, and rebuilding it would re-run that effect on every render.
+  const creatingRef = useRef(libraryCreating);
+  creatingRef.current = libraryCreating;
+  /**
+   * The Library page: the shelves, or one authoring surface one level deeper.
+   *
+   * The surfaces are the same components the Workflows page used to mount by tab id, moved
+   * rather than reimplemented. They learned exactly two things on the way: which asset the
+   * route named as they mount, and how to say which one they have open. Selection itself,
+   * and the discard question that guards it, stayed where the draft is.
+   */
+  const libraryBody = libraryShelf === "workflows"
+    ? (
+      <main className="lib-surface">
+        <WorkflowLibrary
+          summaries={workflowSummaries}
+          personas={personas}
+          sessionActions={sessionActions}
+          hasSnapshot={hasSnapshot}
+          initialWorkflowId={libraryAssetId}
+          startNew={libraryCreating}
+          onDirtyChange={setWorkflowDirty}
+          onSelectionChange={onWorkflowSelected}
+          onBindVersion={(version) => setWorkflowBindingTarget({
+            workflowVersionId: version.id,
+            workflowId: version.workflowId,
+            workflowVersion: version.version,
+            bindingDefaults: version.bindingDefaults,
+          })}
+          onBindWorkflow={() => setWorkflowBindingTarget({})}
+        />
+      </main>
+    )
+    : libraryShelf === "personas"
+      ? (
+        <main className="lib-surface">
+          <PersonaLibrary
+            personas={personas}
+            providers={llm.status?.runners ?? []}
+            defaults={llm.personaDefaults}
+            initialPersonaId={libraryAssetId}
+            startNew={libraryCreating}
+            isOverlayOpen={isOverlayOpen}
+            onDirtyChange={setWorkflowDirty}
+            onSelectionChange={onPersonaSelected}
+          />
+        </main>
+      )
+      : libraryShelf === "actions"
+        ? (
+          <main className="lib-surface">
+            <SessionActionLibrary
+              sessionActions={sessionActions}
+              hasSnapshot={hasSnapshot}
+              initialActionId={libraryAssetId}
+              startNew={libraryCreating}
+              isOverlayOpen={isOverlayOpen}
+              onDirtyChange={setWorkflowDirty}
+              onSelectionChange={onActionSelected}
+            />
+          </main>
+        )
+        : (
+          <LibraryPage
+            workflowSummaries={workflowSummaries}
+            personas={personas}
+            sessionActions={sessionActions}
+            workflowRuns={workflowRuns}
+            ensembleSummaries={ensembleSummaries}
+            ensembleAttentionCount={ensembleAttentionCount}
+            schedules={schedules}
+            onOpenAsset={(shelf, assetId) => navigate({ page: "library", shelf, assetId })}
+            onCreateAsset={(shelf) => navigate({ page: "library", shelf, creating: true })}
+            onLaunchEnsemble={launchEnsemble}
+            onOpenRuns={() => navigate({ page: "workflows", tab: "runs" })}
+            onOpenEnsembles={() => navigate({ page: "workflows", tab: "ensembles" })}
+            onOpenMissions={openMissions}
+            onOpenTaskSources={() => navigate({ page: "settings", category: "task-sources" })}
+          />
+        );
+
   return (
     <OverlayHost value={overlays}>
       <div className={`app app-${layout}`}>
@@ -1450,6 +1681,37 @@ export function App(): React.JSX.Element {
             <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
             <h1>Mission Control</h1>
           </div>
+          {/* The two homes, as one control: what is HAPPENING, and what you AUTHOR. It
+              replaces the single Workflows toggle button that used to sit among the actions
+              on the right - a destination pair reads as a place you are, which a lone button
+              that renames itself never did. `aria-current` rather than `aria-pressed`: these
+              are navigation, and only one of them is where you are. */}
+          <nav className="page-seg" aria-label="Pages">
+            {PAGE_SEGMENTS.map(({ id, label, glyph, hint }) => {
+              const current = route.page === id;
+              return (
+                <Tooltip
+                  key={id}
+                  label={
+                    toggleTargetPage === id ? `${hint} (${formatChord(bindings.workflows)})` : hint
+                  }
+                >
+                  <button
+                    className={`page-seg-btn${current ? " is-current" : ""}`}
+                    {...(current ? { "aria-current": "page" as const } : {})}
+                    onClick={() => navigate(id === "fleet" ? { page: "fleet" } : { page: "library" })}
+                  >
+                    <span aria-hidden>{glyph}</span>
+                    <span className="tb-label">{label}</span>
+                    {/* On the page the chord would take you TO, never on the one you are
+                        on: the binding is a toggle, so a keycap on both would promise that
+                        either of them is one keystroke away. */}
+                    {toggleTargetPage === id && <Keycap action="workflows" />}
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </nav>
           {/* A <label>, not a <div>: at narrow widths the input collapses to zero and the
               box is just its ⌕, so the click that opens it lands on the glyph rather than
               on the field. An implicit label makes that click focus the input, which is
@@ -1502,6 +1764,15 @@ export function App(): React.JSX.Element {
               {launcherFocusError}
             </span>
           )}
+          {/* A READOUT, so it sits with the pulse rather than inside the action cluster
+              below - which is three ranked groups of CONTROLS, and a figure dropped into
+              them would break the rank it teaches. The bar's whole right-hand side is
+              this phase's; the page segment arriving on the left is another's. */}
+          <SpendChip
+            fleet={fleetCost}
+            view={cost.status?.config.view ?? "usd"}
+            onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}
+          />
           {/* Twelve peers at one weight is what made this bar unreadable, so the
               cluster is THREE groups with a rank, not one rhythm: destinations you
               navigate to, the two controls that act on the fleet (Foreman's posture and
@@ -1516,36 +1787,6 @@ export function App(): React.JSX.Element {
               the one control you would hunt for keeps its word at every width. */}
           <div className="topbar-actions">
             <div className="tb-group">
-              <Tooltip
-                label={
-                  route.page === "fleet"
-                    ? `Open Workflows - author and run the personas agents follow (${formatChord(bindings.workflows)})`
-                    : route.page === "workflows"
-                      ? `Return to the fleet of running sessions (${formatChord(bindings.workflows)})`
-                      : "Return to the fleet of running sessions"
-                }
-              >
-                <button
-                  className="ghost-btn workflow-nav-btn"
-                  onClick={() =>
-                    navigate(
-                      route.page === "fleet"
-                        ? { page: "workflows", tab: "workflows" }
-                        : { page: "fleet" },
-                    )
-                  }
-                  aria-label={route.page === "fleet" ? "Open Workflows" : "Return to Fleet"}
-                >
-                  {/* Trailing, unlike Dispatch's: this button's glyph is a real icon (and
-                      "←" says which way it goes), so the keycap joins it rather than
-                      taking its place. */}
-                  <span aria-hidden>{route.page === "fleet" ? "⌘" : "←"}</span>
-                  <span className="tb-label">
-                    {route.page === "fleet" ? "Workflows" : "Fleet"}
-                  </span>
-                  <Keycap action="workflows" />
-                </button>
-              </Tooltip>
               <Tooltip label="Recurring missions - schedule tasks on a cadence, preview, and audit run history">
                 <button
                   className="ghost-btn missions-btn"
@@ -1641,22 +1882,14 @@ export function App(): React.JSX.Element {
               />
             </div>
           </div>
-          <UsageBar
-            fleet={fleetCost}
-            view={cost.status?.config.view ?? "usd"}
-            collapsed={usageBarCollapsed}
-            onToggleCollapsed={() => setUsageBarCollapsed(!usageBarCollapsed)}
-          />
         </header>
 
         <AppPageShell
           page={route.page}
+          library={libraryBody}
           workflows={(
             <WorkflowPage
-              tab={route.page === "workflows" ? route.tab : "workflows"}
-              personas={personas}
-              sessionActions={sessionActions}
-              workflowSummaries={workflowSummaries}
+              tab={route.page === "workflows" ? route.tab : "runs"}
               workflowRuns={workflowRuns}
               selectedRunId={
                 route.page === "workflows" && route.tab === "runs"
@@ -1678,8 +1911,6 @@ export function App(): React.JSX.Element {
                   ? route.ensembleId ?? null
                   : null
               }
-              llm={llm}
-              isOverlayOpen={isOverlayOpen}
               onTab={(tab) => navigate({ page: "workflows", tab })}
               onRun={(runId) => navigate({
                 page: "workflows",
@@ -1733,16 +1964,9 @@ export function App(): React.JSX.Element {
               onOpenWorkflowSettings={() => {
                 navigate({ page: "settings", category: "workflows" });
               }}
-              onBindVersion={(version) => setWorkflowBindingTarget({
-                workflowVersionId: version.id,
-                workflowId: version.workflowId,
-                workflowVersion: version.version,
-                bindingDefaults: version.bindingDefaults,
-              })}
               // No session and no version pinned: the dialog already supports being opened
               // empty and asking for both.
               onBindWorkflow={() => setWorkflowBindingTarget({})}
-              onDirtyChange={setWorkflowDirty}
             />
           )}
           settings={(
@@ -1773,6 +1997,12 @@ export function App(): React.JSX.Element {
           fleet={(
             <>
 
+        {/* The Line. Above every layout and outside the `layoutHasContent` gate below, on
+            purpose: it is the one thing on this page that is worth reading when the board
+            is empty. A fleet with no sessions still has a backlog, sources due to sweep and
+            pull requests that shipped this week, and the strip is where that is said. */}
+        <LineStrip summary={lineSummary} onStage={onLineStage} />
+
         {/* Nothing to arrange means no layout: one of the two empty states below says why,
             and every layout would otherwise dress that silence up as furniture - an empty
             rail beside a "no session selected" pane, five empty board columns.
@@ -1791,7 +2021,19 @@ export function App(): React.JSX.Element {
         )}
 
         {diffSession && (
-          <DiffViewer session={diffSession} commit={diffCommit} onClose={closeDiff} />
+          <DiffViewer
+            session={diffSession}
+            commit={diffCommit}
+            onClose={closeDiff}
+            // Cards have no Files tab, so `openSessionPath` opens the Files WINDOW here.
+            // The diff has to stand down first or it sits on top of the file it just
+            // asked for - the one case where opening a file also closes something.
+            onOpenInFiles={(path) => {
+              const sessionId = diffSession.id;
+              closeDiff();
+              openSessionPath(sessionId, path);
+            }}
+          />
         )}
 
         {filesSession && (
@@ -1944,6 +2186,7 @@ export function App(): React.JSX.Element {
                 personas={personas}
                 workflowSummaries={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
+                launchIntent={dispatchIntent}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
                 onEnsembleLaunched={(runId) =>
@@ -2396,59 +2639,6 @@ function FleetPulse({
           tip={`${inbox} thing${inbox === 1 ? " is" : "s are"} waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox`}
         />
       )}
-    </div>
-  );
-}
-
-/**
- * The topbar's second row: the fleet strip, foldable.
- *
- * A row of its own rather than sharing the fleet pulse's row: `flex-basis: 100%` on
- * `.topbar-usage` forces it below the primary controls, so its meters never interleave with
- * them regardless of width.
- *
- * Still rendered INSIDE `<header className="topbar">`: `--topbar-h` is measured live off
- * `topbarRef` with a ResizeObserver, so anything inside the header is accounted for
- * automatically while a sibling after `</header>` is not - focus mode would then overflow
- * by exactly this row's height. The strip is the tallest thing the topbar can grow, which
- * is the whole reason it folds.
- *
- * The fold mirrors `WorkQueue`'s `Header`: the caret is the button, and today's estimate
- * stays visible even collapsed (the work queue's precedent is its `count`) so folding the
- * strip away never hides the one figure worth a glance.
- */
-function UsageBar({
-  fleet,
-  view,
-  collapsed,
-  onToggleCollapsed,
-}: {
-  fleet: FleetCost | null;
-  view: "usd" | "plan";
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
-}): React.JSX.Element | null {
-  if (!fleetStripHasContent(fleet) || !fleet) return null;
-  const compactCost = compactFleetCost(fleet);
-  return (
-    <div className={`topbar-usage${collapsed ? " collapsed" : ""}`}>
-      <Tooltip label={collapsed ? "Show fleet cost and usage" : "Fold fleet cost and usage away"}>
-        <button
-          type="button"
-          className="topbar-usage-toggle"
-          aria-expanded={!collapsed}
-          onClick={onToggleCollapsed}
-        >
-          <span className="topbar-usage-caret" aria-hidden>
-            {collapsed ? "▸" : "▾"}
-          </span>
-          Usage
-          {collapsed && compactCost && (
-            <span className="topbar-usage-compact">{compactCost}</span>
-          )}
-        </button>
-      </Tooltip>
-      {!collapsed && <FleetStrip fleet={fleet} view={view} />}
     </div>
   );
 }

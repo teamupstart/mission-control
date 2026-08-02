@@ -12,12 +12,10 @@ import { missionRouteHash, parseMissionRoute } from "../src/web/workflows/useWor
 
 test("workflow hashes parse and serialize without aliases drifting", () => {
   assert.deepEqual(parseMissionRoute("#/fleet"), { page: "fleet" });
-  assert.deepEqual(parseMissionRoute("#/workflows"), { page: "workflows", tab: "workflows" });
-  assert.deepEqual(parseMissionRoute("#/workflows/personas"), { page: "workflows", tab: "personas" });
   assert.deepEqual(parseMissionRoute("#/workflows/runs/"), { page: "workflows", tab: "runs" });
   assert.deepEqual(parseMissionRoute("#/unknown"), { page: "fleet" });
   assert.equal(missionRouteHash({ page: "fleet" }), "#/fleet");
-  assert.equal(missionRouteHash({ page: "workflows", tab: "personas" }), "#/workflows/personas");
+  assert.equal(missionRouteHash({ page: "workflows", tab: "runs" }), "#/workflows/runs");
 });
 
 test("the ensembles tab parses and serializes, with an id and back to the list", () => {
@@ -52,7 +50,8 @@ test("the Ensembles tab is registered once in the tab source of truth and stays 
   // One registry drives the tablist, arrow-nav, and labels - a hand-kept count elsewhere is what drifts.
   assert.match(page, /WORKFLOW_TABS = \[[\s\S]*?\["ensembles",/);
   assert.match(page, /tab === "ensembles"/);
-  // Ensembles is a Workflows-page tab, not a new top-level page: the shell union is unchanged.
+  // Ensembles is a Workflows-page tab, not a new top-level page: the shell union names pages,
+  // and this is not one of them.
   const shell = readFileSync(
     fileURLToPath(new URL("../src/web/components/AppPageShell.tsx", import.meta.url)),
     "utf8",
@@ -75,10 +74,12 @@ test("ensemble deep links wait for the live snapshot and preserve direct 404 rea
 });
 
 test("global overlays stay mounted on every page, and only one page body renders", () => {
-  for (const page of ["fleet", "workflows", "settings"] as const) {
+  const pages = ["fleet", "library", "workflows", "settings"] as const;
+  for (const page of pages) {
     const html = renderToStaticMarkup(createElement(AppPageShell, {
       page,
       fleet: createElement("main", null, "fleet body"),
+      library: createElement("main", null, "library body"),
       workflows: createElement("main", null, "workflows body"),
       settings: createElement("main", null, "settings body"),
       overlays: createElement("aside", null, "global overlays"),
@@ -86,7 +87,7 @@ test("global overlays stay mounted on every page, and only one page body renders
     assert.match(html, new RegExp(`${page} body`));
     // Exactly one, which is what keeps the settings page's five polling hooks (and the
     // workflows page's fetches) from mounting while you are on the fleet.
-    for (const other of ["fleet", "workflows", "settings"].filter((p) => p !== page)) {
+    for (const other of pages.filter((p) => p !== page)) {
       assert.doesNotMatch(html, new RegExp(`${other} body`), `${other} rendered under ${page}`);
     }
     assert.match(html, /global overlays/);
@@ -100,17 +101,15 @@ test("global overlays stay mounted on every page, and only one page body renders
   }
 });
 
-test("Settings and Workflows share config-aware LLM state", () => {
-  const workflowPage = readFileSync(
-    fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url)),
-    "utf8",
-  );
-  assert.match(workflowPage, /providers=\{llm\.status\?\.runners \?\? \[\]\}/);
-  assert.match(workflowPage, /defaults=\{llm\.personaDefaults\}/);
-
+test("Settings and the Library share config-aware LLM state", () => {
+  // The Persona editor moved to the Library with its surface, so the provider list and the
+  // defaults it offers are threaded from the same one hook Settings reads. Two reads would
+  // be two answers to "which providers does this daemon have", and the Persona editor's copy
+  // is the one an operator would author against.
   const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
   assert.match(app, /const llm = useLlm\(\)/);
-  assert.match(app, /<WorkflowPage[\s\S]*?llm=\{llm\}/);
+  assert.match(app, /<PersonaLibrary[\s\S]*?providers=\{llm\.status\?\.runners \?\? \[\]\}/);
+  assert.match(app, /<PersonaLibrary[\s\S]*?defaults=\{llm\.personaDefaults\}/);
   assert.match(app, /<SettingsPage[\s\S]*?llm=\{llm\}/);
 
   const hook = readFileSync(fileURLToPath(new URL("../src/web/useLlm.ts", import.meta.url)), "utf8");

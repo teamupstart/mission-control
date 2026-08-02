@@ -230,38 +230,79 @@ test("filter compaction keeps the review control visible", () => {
 
 test("Dispatch never degrades, and the labels that do are marked", () => {
   const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
-  const cluster = bar.slice(0, bar.indexOf("<UsageBar"));
+  const cluster = bar.slice(0, bar.indexOf("</header>"));
   const dispatch = cluster.slice(cluster.indexOf('className="dispatch-btn"'));
   assert.doesNotMatch(
     dispatch.slice(0, dispatch.indexOf("</button>")),
     /tb-label/,
     "Dispatch took a `.tb-label` - the primary action must keep its word at every width",
   );
-  // The three that do shed, so a rung has something to act on.
-  for (const btn of ["workflow-nav-btn", "missions-btn"]) {
-    const at = cluster.indexOf(btn);
-    assert.notEqual(at, -1, `${btn} is gone from the action cluster`);
-    assert.match(
-      cluster.slice(at, cluster.indexOf("</button>", at)),
-      /tb-label/,
-      `${btn} lost its \`.tb-label\`, so the ladder can no longer collapse it`,
-    );
+  // The ones that DO shed, so a rung has something to act on.
+  const at = cluster.indexOf("missions-btn");
+  assert.notEqual(at, -1, "missions-btn is gone from the action cluster");
+  assert.match(
+    cluster.slice(at, cluster.indexOf("</button>", at)),
+    /tb-label/,
+    "missions-btn lost its `.tb-label`, so the ladder can no longer collapse it",
+  );
+  // The page segment sheds too, and it lives at the LEFT of the bar rather than in the
+  // action cluster - so it is read from the whole topbar. It is still inside the container,
+  // so the same rung reaches it.
+  const seg = app.slice(app.indexOf('<nav className="page-seg"'));
+  assert.match(
+    seg.slice(0, seg.indexOf("</nav>")),
+    /tb-label/,
+    "the page segment lost its `.tb-label`, so the ladder can no longer collapse it",
+  );
+});
+
+test("the cost chip survives every rung; only its duplicated rate is shed", () => {
+  // The chip is now the ONLY cost surface in the app's chrome - the row it replaced could
+  // afford to fold away because folding left the figure beside the toggle, and there is no
+  // toggle any more. A rung that hid it would take the fleet's economics off screen
+  // entirely at half a 16" screen, silently.
+  for (const rung of RUNGS) {
+    for (const [sel, body] of rung.rules) {
+      const hidesChip = sel
+        .split(",")
+        .some((part) => /\.spend-chip(-wrap)?$/.test(part.trim()));
+      if (!hidesChip) continue;
+      assert.doesNotMatch(
+        body,
+        /display:\s*none/,
+        `the ${rung.width}px rung hides the cost chip itself`,
+      );
+    }
   }
+  // And the one segment that IS shed is still shed, so the bar has something to give back.
+  const shed = RUNGS.flatMap((r) => r.rules).filter(
+    ([sel, body]) => sel.trim().endsWith(".spend-chip-rate") && /display:\s*none/.test(body),
+  );
+  assert.equal(shed.length, 1, "the chip's rate segment no longer collapses with the bar");
 });
 
 test("a control that keeps only a glyph still says what it is", () => {
   // Every button the ladder strips to an icon has to carry its own name - the visually
   // hidden label covers the ones that have one, an `aria-label` covers the rest.
   const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
-  const cluster = bar.slice(0, bar.indexOf("<UsageBar"));
-  for (const btn of ["workflow-nav-btn", "missions-btn"]) {
-    const at = cluster.indexOf(btn);
-    assert.match(
-      cluster.slice(at, cluster.indexOf("</button>", at)),
-      /aria-label=/,
-      `${btn} is drawn as a bare glyph on narrow windows and has no aria-label`,
-    );
-  }
+  // `</header>` rather than `<UsageBar`: the usage row this used to stop at is gone, and
+  // the cost chip that replaced it lives inside the bar.
+  const cluster = bar.slice(0, bar.indexOf("</header>"));
+  const missions = cluster.indexOf("missions-btn");
+  assert.match(
+    cluster.slice(missions, cluster.indexOf("</button>", missions)),
+    /aria-label=/,
+    "missions-btn is drawn as a bare glyph on narrow windows and has no aria-label",
+  );
+  // The page segment takes the other route: its `.tb-label` IS its accessible name, and the
+  // rung hides it visually rather than removing it, so "Fleet" and "Library" survive the
+  // collapse. That is checked by the `display: none` sweep below, which is what makes this
+  // the safe option rather than the lazy one - an `aria-label` here would be a second name
+  // beside the visible word, and the two would drift.
+  const seg = app.slice(app.indexOf('<nav className="page-seg"'));
+  const segMarkup = seg.slice(0, seg.indexOf("</nav>"));
+  assert.match(segMarkup, /aria-label="Pages"/, "the segment is a landmark and must be named");
+  assert.match(segMarkup, /aria-current/, "the segment must say which page you are on");
   const foreman = readFileSync(
     fileURLToPath(new URL("../src/web/components/ForemanBar.tsx", import.meta.url)),
     "utf8",

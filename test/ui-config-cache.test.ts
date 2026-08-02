@@ -30,7 +30,6 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.layout, "grid");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
-  assert.equal(config.usageBarCollapsed, false);
   assert.equal(config.keybindingHints, true);
 });
 
@@ -40,7 +39,6 @@ test("a written cache round-trips", () => {
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
-    usageBarCollapsed: true,
     keybindingHints: false,
     trustStaged: ["/work/staged"],
   });
@@ -49,7 +47,6 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
-  assert.equal(config.usageBarCollapsed, true);
   assert.equal(config.keybindingHints, false);
   assert.deepEqual(config.trustStaged, ["/work/staged"]);
 });

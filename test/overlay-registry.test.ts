@@ -100,10 +100,19 @@ test("only the Overlay primitive renders a backdrop", () => {
  * a live session, so kill/reset - which target the selected session - do not reach through
  * it the way they do the other two; it joins the list for the same registry gap all the
  * same, not for a distinct one.
+ *
+ * `SpendChip.tsx` is the topbar's spend popover, and it is here for exactly the reason the
+ * other two topbar popovers are: it is anchored to its chip rather than owning the screen,
+ * and routing it through `<Overlay>` would give it a backdrop and a modal posture that a
+ * dropdown should not have. It carries the same unfixed consequence, and it is READ-ONLY,
+ * which is the one thing that makes its share of the gap smaller: nothing inside it can act
+ * on the session behind it, so a stray shortcut reaching through hits the same card it
+ * would have hit with no popover open at all.
  */
 const UNREGISTERED_DIALOGS = [
   "components/AlertBar.tsx",
   "components/ForemanBar.tsx",
+  "components/SpendChip.tsx",
   "components/session-bits.tsx",
 ];
 

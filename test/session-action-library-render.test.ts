@@ -33,7 +33,6 @@ import {
   sessionActionUpdatePatch,
   type SessionActionDraftSeed,
 } from "../src/web/workflows/SessionActionEditor.tsx";
-import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import {
   missionRouteHash,
   parseMissionRoute,
@@ -107,30 +106,20 @@ const editor = (
     onArchive: () => {},
   }));
 
-test("the Actions tab is a real route, and the page renders a panel for it", () => {
-  assert.deepEqual(parseMissionRoute("#/workflows/actions"), {
-    page: "workflows",
-    tab: "actions",
+test("the Actions shelf is a real route, and the legacy tab hash still reaches it", () => {
+  assert.deepEqual(parseMissionRoute("#/library/actions"), {
+    page: "library",
+    shelf: "actions",
   });
-  // The word an operator sees in the tab is the word in the URL, so a link copied out of the
-  // address bar comes back to the same place.
-  assert.equal(missionRouteHash({ page: "workflows", tab: "actions" }), "#/workflows/actions");
-
-  const page = renderToStaticMarkup(createElement(WorkflowPage, {
-    tab: "actions",
-    personas: [],
-    sessionActions: [action()],
-    hasSnapshot: true,
-    llm: { status: null, personaDefaults: null } as never,
-    isOverlayOpen: () => false,
-    onTab: () => {},
-    onDirtyChange: () => {},
-  }));
-  assert.match(page, /id="workflow-panel-actions"/);
-  assert.match(page, /aria-labelledby="workflow-tab-actions"/);
-  assert.match(page, /Author the instructions a workflow stage sends to its bound session/);
-  // Beside Personas, and never instead of it.
-  assert.match(page, /id="workflow-tab-personas"/);
+  // The word an operator sees on the shelf is the word in the URL, so a link copied out of
+  // the address bar comes back to the same place.
+  assert.equal(missionRouteHash({ page: "library", shelf: "actions" }), "#/library/actions");
+  // And the hash this surface lived at for its whole life before the split still lands here,
+  // rather than on the fleet.
+  assert.deepEqual(parseMissionRoute("#/workflows/actions"), {
+    page: "library",
+    shelf: "actions",
+  });
 });
 
 test("the list names what a row needs, what proves it, and whose it is", () => {

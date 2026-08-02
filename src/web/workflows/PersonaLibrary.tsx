@@ -61,14 +61,30 @@ export function PersonaLibrary({
   personas,
   providers,
   defaults,
+  initialPersonaId = null,
+  startNew = false,
   isOverlayOpen,
   onDirtyChange,
+  onSelectionChange,
 }: {
   personas: PersonaView[];
   providers: readonly LlmProviderView[];
   defaults: PersonaDefaultsView | null;
+  /**
+   * The Persona the ROUTE asked for, read once as this surface mounts.
+   *
+   * Only the entry point is the route's business. Selection itself stays here, because the
+   * discard question a switch has to ask belongs to the editor that owns the draft - and
+   * routing every sidebar click would raise the router's "leave anyway?" dialog on top of it.
+   * `onSelectionChange` closes the loop the other way: what is open is reported back so the
+   * address bar names it.
+   */
+  initialPersonaId?: string | null;
+  /** Mount straight into a blank draft, for the Library's "＋ New Persona" card. */
+  startNew?: boolean;
   isOverlayOpen: () => boolean;
   onDirtyChange: (dirty: boolean) => void;
+  onSelectionChange?: (personaId: string | null) => void;
 }): React.JSX.Element {
   const ordered = useMemo(
     () => personasForDisplay(personas)
@@ -78,8 +94,10 @@ export function PersonaLibrary({
   const active = useMemo(() => ordered.filter((persona) => persona.archivedAt === null), [ordered]);
   const [personaState, setPersonaState] = useState<"active" | "archived">("active");
   const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(() => active[0]?.id ?? null);
-  const [seed, setSeed] = useState<PersonaDraftSeed | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => (startNew ? null : initialPersonaId ?? active[0]?.id ?? null),
+  );
+  const [seed, setSeed] = useState<PersonaDraftSeed | null>(() => (startNew ? EMPTY_SEED : null));
   const [localPersona, setLocalPersona] = useState<PersonaView | null>(null);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +121,21 @@ export function PersonaLibrary({
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+  // Report what is open, however it came to be open - a click, a save, an import, or the
+  // adopt-the-first-row effect below. One effect on the id rather than a call at each of
+  // those sites, because the invariant is about the id and not about the path to it.
+  useEffect(() => onSelectionChange?.(selectedId), [onSelectionChange, selectedId]);
+  // `startNew` seeds the first paint (above) and is watched after it, on the EDGE of the
+  // request: a route that asks for a blank draft while this surface is already up - a `/new`
+  // link pasted into the address bar, a Back step onto one - is honoured too, and through
+  // `start`, so it still asks before discarding an unsaved draft. `start` is hoisted and
+  // deliberately not a dependency; the edge is the control.
+  const newDraftAsked = useRef(startNew);
+  useEffect(() => {
+    const asked = startNew && !newDraftAsked.current;
+    newDraftAsked.current = startNew;
+    if (asked) start(EMPTY_SEED);
+  }, [startNew]);
   useEffect(() => {
     // The first SSE snapshot can arrive after this page mounts. Adopt its first active row only
     // while the workspace is genuinely untouched, never over a New/import draft.

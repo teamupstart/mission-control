@@ -51,7 +51,8 @@ captures from that same command make both visible states reviewable:
   that click, selected in the Runs monitor with its workflow name, version, state, stages,
   evidence, model-call ledger, and timeline.
 
-Regenerate all three with:
+Regenerate the two PNGs with (the transcript above is this command's stdout, captured
+separately - see the Line section below for the redirection that does it):
 
 ```sh
 env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
@@ -130,6 +131,63 @@ transcript file on disk the dashboard reads separately.
 ```sh
 MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
   e2e/specs/queued-turn-delivery.spec.ts --reporter=list
+```
+
+### The Line
+
+[`docs/evidence/line-strip/`](../docs/evidence/line-strip/) carries three artifacts, and they
+answer different questions. Two of them the spec writes itself under `MC_E2E_EVIDENCE`; the
+third is the run's stdout, which nothing writes to disk on its own - the command below
+redirects it, and that redirection is not optional.
+
+The two frames are the ones only a picture answers: `line-live.png` is the strip after a
+task is filed, with the Backlog stage naming what autopilot would take next, and
+`line-attention.png` is the same strip after that task is parked - amber border, glyph,
+name, count and sentence, with the wire feeding it lit to match. "Amber when it needs the
+operator" is checkable in the DOM as a class name and readable as a strip only here.
+
+[`transcript.txt`](../docs/evidence/line-strip/transcript.txt) is the run's own verbatim
+stdout, and it exists because `2 passed` is a verdict rather than evidence: it says some
+assertions held, not that the strip rendered six stages, took an SSE update with no reload,
+went amber, and navigated on click. Each `OBSERVED` line is printed only after the assertion
+it describes has already succeeded, so the transcript cannot narrate a step that did not
+happen. The spec only *prints* those lines - it writes no transcript file, so capturing one
+is the caller's job.
+
+Regenerate all three with:
+
+```sh
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/line-strip.spec.ts \
+  --workers=1 --reporter=list \
+  | tee docs/evidence/line-strip/transcript.txt
+```
+
+Three parts of that are load-bearing. `MC_E2E_EVIDENCE` is what turns the screenshots and the
+`OBSERVED` lines on at all. `--workers=1` keeps the two tests' output from interleaving,
+which is what makes the committed transcript readable and stable between runs. And the `tee`
+is the only thing that produces `transcript.txt` - without it you regenerate two files out of
+three and the third silently keeps describing an older run.
+
+Actual output from the captured run:
+
+```text
+Running 2 tests using 1 worker
+
+OBSERVED the strip rendered 6 stages in pipeline order: Intake -> Backlog -> Working -> Review -> Decide -> Shipped
+OBSERVED a filed backlog task reached the strip over SSE, no reload: Backlog 0 -> 1, "next up: Fix pane focus stealing"
+CAPTURED docs/evidence/line-strip/line-live.png
+OBSERVED parking that task turned Backlog amber (tone-attention), and it is the only amber stage
+CAPTURED docs/evidence/line-strip/line-attention.png
+OBSERVED clicking the Review stage navigated to #/workflows/runs with the Runs tab selected
+OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
+  ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:79:1 › the Line renders every stage, tracks the fleet live, and its stages navigate (2.4s)
+OBSERVED the strip renders once, outside <header class="topbar">, so --topbar-h and .card.expanded are untouched
+  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:148:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (1.5s)
+
+  2 passed (5.4s)
 ```
 
 ## Steering a workflow reviewer

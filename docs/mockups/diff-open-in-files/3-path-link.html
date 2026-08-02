@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Option 3 - The path is the link - Open a diff file in Files</title>
+<link rel="stylesheet" href="shell.css">
+<style>
+  /* ---- the proposal: no new control. The path already in the header becomes the
+     link, dressed in the app's existing `.workspace-path` language (styles.css:3409) -
+     the same treatment every clickable path in a transcript already wears. ---- */
+  .diff-file-path.workspace-path {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    text-align: left;
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    cursor: pointer;
+  }
+  /* The link fills the bar so the +/− counts stay right-aligned exactly as they do
+     today, but only the path text carries the rule - the affordance is the width of
+     the path, not the width of the bar. */
+  .diff-file-path.workspace-path .fl-inner {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+  }
+  .diff-file-path.workspace-path .fl-text {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    border-bottom: 1px dotted color-mix(in oklab, var(--working) 55%, transparent);
+  }
+  .diff-file-path.workspace-path .fl-glyph {
+    flex: none;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--dim);
+    transition: color .12s ease;
+  }
+  .diff-file-path.workspace-path:hover,
+  .diff-file-path.workspace-path:focus-visible,
+  .diff-file-path.workspace-path.hovered {
+    color: var(--working);
+  }
+  .diff-file-path.workspace-path:hover .fl-text,
+  .diff-file-path.workspace-path:focus-visible .fl-text,
+  .diff-file-path.workspace-path.hovered .fl-text {
+    border-bottom-color: var(--working);
+  }
+  .diff-file-path.workspace-path:hover .fl-glyph,
+  .diff-file-path.workspace-path.hovered .fl-glyph {
+    color: var(--working);
+  }
+  /* A deleted file has no counterpart in the checkout. It keeps the path and drops the
+     link, rather than offering a jump that can only fail. */
+  .diff-file-path.gone {
+    color: var(--muted);
+  }
+  /* The ring hugs the link, not the bar it stretches across. */
+  .spot.fl-inner::after { inset: -5px -6px; }
+  .cmp .state-row,
+  .states .state-row { grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
+
+  /* the transcript, shown for comparison */
+  .cmp {
+    max-width: 1240px;
+    margin: 26px auto 0;
+    padding: 0 24px;
+  }
+  .cmp h2 {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    margin-bottom: 12px;
+  }
+  .cmp-pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 10px;
+  }
+  .cmp-card {
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: var(--bg-2);
+    padding: 12px 14px 14px;
+  }
+  .cmp-card .cap {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    display: block;
+    margin-bottom: 10px;
+  }
+  .markdown {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .markdown a.workspace-path {
+    color: inherit;
+    text-decoration: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    border-bottom: 1px dotted color-mix(in oklab, var(--working) 55%, transparent);
+  }
+  .markdown a.workspace-path.hovered {
+    color: var(--working);
+    border-bottom-color: var(--working);
+  }
+  .mini-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+  }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="eyebrow">Mission Control - UI exploration - diff file → Files tab</div>
+  <h1><span class="num">3/3</span>The path is the link</h1>
+  <p class="stand">
+    No new control at all. The full path already printed on the file bar becomes clickable,
+    wearing the app's existing <b>workspace path</b> treatment - inherited colour, a dotted rule
+    underneath, the accent arriving on hover. That is not a new idea being introduced here: the
+    dashboard already uses exactly this to mean <i>"this path opens in Files"</i> everywhere an
+    agent names a file in a transcript. The diff header is the one place printing a path that
+    does not honour it.
+  </p>
+  <nav>
+    <a href="index.html">← All three</a>
+    <a href="1-header-action.html">1 · Header action</a>
+    <a href="2-list-row-action.html">2 · List row action</a>
+    <a href="3-path-link.html" aria-current="page">3 · The path is the link</a>
+  </nav>
+</header>
+
+<p class="framecap">Session detail · Diff tab · pointer resting on the path</p>
+<div class="frame">
+  <div class="app">
+
+    <div class="detail-tabs" role="tablist" aria-label="Session detail">
+      <button class="detail-tab" role="tab" aria-selected="false"><kbd class="kb-hint">g</kbd>Conversation</button>
+      <button class="detail-tab" role="tab" aria-selected="false"><kbd class="kb-hint">q</kbd>Work queue</button>
+      <button class="detail-tab" role="tab" aria-selected="false"><kbd class="kb-hint">y</kbd>Workflows</button>
+      <button class="detail-tab on" role="tab" aria-selected="true"><kbd class="kb-hint">d</kbd>Diff</button>
+      <button class="detail-tab" role="tab" aria-selected="false"><kbd class="kb-hint">f</kbd>Files</button>
+    </div>
+
+    <div class="diff-viewer-content">
+      <header class="diff-head">
+        <div class="diff-title">
+          <span class="diff-sub mono">
+            <span class="branch">diff-open-in-files</span> vs <span class="branch">main</span>
+          </span>
+          <span class="diff-stat">5 files <span class="diff-add">+162</span> <span class="diff-del">−49</span></span>
+        </div>
+      </header>
+
+      <div class="diff-body">
+        <nav class="diff-filelist" aria-label="Changed files">
+          <button class="diff-fileitem active" aria-current="true">
+            <span class="diff-file-dot" aria-hidden="true">M</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">DiffViewer.tsx</span><span class="fp-dir">src/web/components</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-add">+34</span><span class="diff-del">−6</span></span>
+          </button>
+          <button class="diff-fileitem">
+            <span class="diff-file-dot" aria-hidden="true">M</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">ConsoleDetail.tsx</span><span class="fp-dir">src/web/components/layouts</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-add">+14</span><span class="diff-del">−2</span></span>
+          </button>
+          <button class="diff-fileitem">
+            <span class="diff-file-dot" aria-hidden="true">M</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">styles.css</span><span class="fp-dir">src/web</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-add">+26</span></span>
+          </button>
+          <button class="diff-fileitem">
+            <span class="diff-file-dot status-added" aria-hidden="true">A</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">diff-open-in-files.spec.ts</span><span class="fp-dir">e2e</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-add">+88</span></span>
+          </button>
+          <button class="diff-fileitem">
+            <span class="diff-file-dot status-deleted" aria-hidden="true">D</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">legacy-file-link.ts</span><span class="fp-dir">src/web/lib</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-del">−41</span></span>
+          </button>
+        </nav>
+
+        <div class="diff-detail">
+          <section class="diff-file">
+            <div class="diff-file-head">
+              <span class="diff-file-status">modified</span>
+              <button class="diff-file-path workspace-path mono hovered"
+                      title="src/web/components/DiffViewer.tsx · open it in the Files tab">
+                <span class="fl-inner spot">
+                  <span class="fl-text">src/web/components/DiffViewer.tsx</span>
+                  <span class="fl-glyph" aria-hidden="true">↗</span>
+                </span>
+              </button>
+              <span class="diff-file-stat"><span class="diff-add">+34</span><span class="diff-del">−6</span></span>
+            </div>
+            <div class="diff-lines">
+              <table><tbody>
+                <tr class="dl dl-hunk"><td class="dl-num"></td><td class="dl-num"></td><td class="dl-sign"></td><td class="dl-text">@@ -278,15 +278,23 @@</td></tr>
+                <tr class="dl"><td class="dl-num">278</td><td class="dl-num">278</td><td class="dl-sign"></td><td class="dl-text">function FileDiff({ file, onOpenInFiles }: {</td></tr>
+                <tr class="dl"><td class="dl-num">279</td><td class="dl-num">279</td><td class="dl-sign"></td><td class="dl-text">  file: DiffFile;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">280</td><td class="dl-sign">+</td><td class="dl-text">  onOpenInFiles?: (path: string) =&gt; void;</td></tr>
+                <tr class="dl"><td class="dl-num">280</td><td class="dl-num">281</td><td class="dl-sign"></td><td class="dl-text">}): React.JSX.Element {</td></tr>
+                <tr class="dl"><td class="dl-num">281</td><td class="dl-num">282</td><td class="dl-sign"></td><td class="dl-text">  return (</td></tr>
+                <tr class="dl"><td class="dl-num">282</td><td class="dl-num">283</td><td class="dl-sign"></td><td class="dl-text">    &lt;section className="diff-file"&gt;</td></tr>
+                <tr class="dl"><td class="dl-num">283</td><td class="dl-num">284</td><td class="dl-sign"></td><td class="dl-text">      &lt;div className="diff-file-head"&gt;</td></tr>
+                <tr class="dl dl-del"><td class="dl-num">284</td><td class="dl-num"></td><td class="dl-sign">−</td><td class="dl-text">        &lt;Tooltip label={file.path}&gt;</td></tr>
+                <tr class="dl dl-del"><td class="dl-num">285</td><td class="dl-num"></td><td class="dl-sign">−</td><td class="dl-text">          &lt;span className="diff-file-path mono"&gt;{file.path}&lt;/span&gt;</td></tr>
+                <tr class="dl dl-del"><td class="dl-num">286</td><td class="dl-num"></td><td class="dl-sign">−</td><td class="dl-text">        &lt;/Tooltip&gt;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">285</td><td class="dl-sign">+</td><td class="dl-text">        &lt;Tooltip label={`${file.path} · open it in the Files tab`}&gt;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">286</td><td class="dl-sign">+</td><td class="dl-text">          &lt;button</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">287</td><td class="dl-sign">+</td><td class="dl-text">            className="diff-file-path workspace-path mono"</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">288</td><td class="dl-sign">+</td><td class="dl-text">            onClick={() =&gt; onOpenInFiles?.(file.path)}</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">289</td><td class="dl-sign">+</td><td class="dl-text">          &gt;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">290</td><td class="dl-sign">+</td><td class="dl-text">            &lt;span className="fl-text"&gt;{file.path}&lt;/span&gt;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">291</td><td class="dl-sign">+</td><td class="dl-text">            &lt;span className="fl-glyph" aria-hidden&gt;↗&lt;/span&gt;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">292</td><td class="dl-sign">+</td><td class="dl-text">          &lt;/button&gt;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">293</td><td class="dl-sign">+</td><td class="dl-text">        &lt;/Tooltip&gt;</td></tr>
+              </tbody></table>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<section class="cmp">
+  <h2>Why this treatment and not another one</h2>
+  <div class="cmp-pair">
+    <div class="cmp-card">
+      <span class="cap">Already shipping · a path in a transcript</span>
+      <div class="markdown">
+        I moved the handler into
+        <a class="workspace-path hovered" href="#">src/web/components/DiffViewer.tsx</a>
+        and left the tab plumbing in
+        <a class="workspace-path" href="#">src/web/App.tsx</a>.
+      </div>
+      <p class="why" style="margin-top:11px; font-size:11.5px; color:var(--muted);">
+        <code style="font-family:var(--mono); color:var(--fg)">a.workspace-path</code> - inherited
+        colour, dotted rule, accent on hover. Clicking it opens the file in the Files tab. This is
+        the behaviour the request is asking for, already built.
+      </p>
+    </div>
+    <div class="cmp-card">
+      <span class="cap">Proposed · the same path on the diff bar</span>
+      <div class="mini-head">
+        <span class="diff-file-status">modified</span>
+        <button class="diff-file-path workspace-path mono hovered" style="flex:1">
+          <span class="fl-inner">
+            <span class="fl-text">src/web/components/DiffViewer.tsx</span>
+            <span class="fl-glyph" aria-hidden="true">↗</span>
+          </span>
+        </button>
+        <span class="diff-file-stat"><span class="diff-add">+34</span><span class="diff-del">−6</span></span>
+      </div>
+      <p class="why" style="margin-top:11px; font-size:11.5px; color:var(--muted);">
+        Same class, same meaning, same destination. The only addition is the ↗, which the
+        transcript links do not need because prose gives them context and a bare bar does not.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="states">
+  <h2>The header, at size, in every state</h2>
+  <div class="state-row">
+    <div class="state">
+      <span class="cap">Rest</span>
+      <div class="mini-head">
+        <span class="diff-file-status">modified</span>
+        <button class="diff-file-path workspace-path mono" style="flex:1">
+          <span class="fl-inner">
+            <span class="fl-text">src/web/components/DiffViewer.tsx</span>
+            <span class="fl-glyph" aria-hidden="true">↗</span>
+          </span>
+        </button>
+        <span class="diff-file-stat"><span class="diff-add">+34</span></span>
+      </div>
+      <span class="why">A dotted rule and a dim arrow. The bar keeps the density it has today.</span>
+    </div>
+    <div class="state">
+      <span class="cap">Hover / focus</span>
+      <div class="mini-head">
+        <span class="diff-file-status">modified</span>
+        <button class="diff-file-path workspace-path mono hovered" style="flex:1">
+          <span class="fl-inner">
+            <span class="fl-text">src/web/components/DiffViewer.tsx</span>
+            <span class="fl-glyph" aria-hidden="true">↗</span>
+          </span>
+        </button>
+        <span class="diff-file-stat"><span class="diff-add">+34</span></span>
+      </div>
+      <span class="why">Accent on the path, rule goes solid. One path says "clickable", loudly.</span>
+    </div>
+    <div class="state">
+      <span class="cap">Deleted file</span>
+      <div class="mini-head">
+        <span class="diff-file-status status-deleted">deleted</span>
+        <span class="diff-file-path gone mono" style="flex:1">src/web/lib/legacy-file-link.ts</span>
+        <span class="diff-file-stat"><span class="diff-del">−41</span></span>
+      </div>
+      <span class="why">Plain text, no rule, no arrow. Nothing offers a jump that cannot land.</span>
+    </div>
+  </div>
+</section>
+
+<div class="notes">
+  <div class="note good"><b>Zero new chrome.</b> No button, no glyph column, no width taken from
+    anything. The bar has the same three elements it has today; one of them became clickable.</div>
+  <div class="note good"><b>It is the app's existing idiom.</b> <code>a.workspace-path</code> already
+    means "a path that opens in Files". Reusing it teaches nothing new and makes the diff header
+    consistent with the transcript instead of the exception to it.</div>
+  <div class="note good"><b>The obvious target.</b> The path is what a reader points at when they
+    want the file. Today that click does nothing at all.</div>
+  <div class="note cost"><b>Quieter than a button.</b> A dotted rule is a smaller promise than
+    <i>Open in Files</i>. Discoverable on hover, not at a glance - mitigated by the ↗ and by the
+    tooltip the path already carries.</div>
+  <div class="note cost"><b>One file at a time.</b> Like option 1, it acts on the file you have
+    open. Selecting a different one is still a separate click.</div>
+  <div class="note src"><b>Where it changes.</b> <code>FileDiff</code> only
+    (<code>DiffViewer.tsx:278</code>). The path is already inside a <code>Tooltip</code>, which
+    becomes the natural place to say where the click goes.</div>
+</div>
+
+</body>
+</html>

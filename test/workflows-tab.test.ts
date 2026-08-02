@@ -35,6 +35,7 @@ function view(session: Session, over: Partial<SessionViewProps> = {}): SessionVi
     onOpenDiff: () => {},
     onOpenFiles: () => {},
     onOpenFile: () => false,
+    onOpenFilePath: () => {},
     fileTabRequest: null,
     conversationTabRequest: null,
     workflowsTabRequest: null,

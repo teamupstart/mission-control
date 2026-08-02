@@ -78,10 +78,10 @@ test("a hash no decoder can read falls back instead of throwing", () => {
   });
 });
 
-test("the fleet and workflows routes are untouched by the new page", () => {
+test("the fleet, library and workflows routes are untouched by the settings page", () => {
   assert.deepEqual(parseMissionRoute("#/fleet"), { page: "fleet" });
-  assert.deepEqual(parseMissionRoute("#/workflows"), { page: "workflows", tab: "workflows" });
-  assert.deepEqual(parseMissionRoute("#/workflows/personas"), { page: "workflows", tab: "personas" });
+  assert.deepEqual(parseMissionRoute("#/library"), { page: "library" });
+  assert.deepEqual(parseMissionRoute("#/library/personas"), { page: "library", shelf: "personas" });
   assert.deepEqual(parseMissionRoute("#/workflows/runs/r1"), {
     page: "workflows",
     tab: "runs",
@@ -89,7 +89,7 @@ test("the fleet and workflows routes are untouched by the new page", () => {
   });
   assert.deepEqual(parseMissionRoute("#/unknown"), { page: "fleet" });
   assert.equal(missionRouteHash({ page: "fleet" }), "#/fleet");
-  assert.equal(missionRouteHash({ page: "workflows", tab: "personas" }), "#/workflows/personas");
+  assert.equal(missionRouteHash({ page: "library", shelf: "personas" }), "#/library/personas");
 });
 
 // The default is a real category, not a string somebody typed twice.

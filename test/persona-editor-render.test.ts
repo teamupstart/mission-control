@@ -9,6 +9,7 @@ import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
 import type { LlmProviderView } from "../src/shared/types.ts";
 import type { LlmState } from "../src/web/useLlm.ts";
+import { WorkflowLibrary } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import {
   PersonaLibrary,
@@ -342,13 +343,11 @@ test("import replaces editor identity only when no concurrent workspace edit occ
   assert.match(library, /setEditorKey\(\(key\) => key \+ 1\)/);
 });
 
-test("Workflows and the Phase 3 Runs surface are both active", () => {
-  const workflows = renderToStaticMarkup(createElement(WorkflowPage, {
-    tab: "workflows",
+test("the builder and the Runs surface are both active, one home apart", () => {
+  const workflows = renderToStaticMarkup(createElement(WorkflowLibrary, {
+    summaries: [],
     personas: [],
-    llm: LLM_STATE,
-    isOverlayOpen: () => false,
-    onTab: () => {},
+    hasSnapshot: true,
     onDirtyChange: () => {},
   }));
   assert.match(workflows, /Build a review workflow/);
@@ -356,11 +355,7 @@ test("Workflows and the Phase 3 Runs surface are both active", () => {
 
   const runs = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "runs",
-    personas: [],
-    llm: LLM_STATE,
-    isOverlayOpen: () => false,
     onTab: () => {},
-    onDirtyChange: () => {},
   }));
   assert.match(runs, /Loading workflow runs/);
 });

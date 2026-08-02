@@ -1,37 +1,25 @@
-import type {
-  PersonaView,
-  SessionAction,
-  WorkflowRunSummary,
-  WorkflowSummary,
-  WorkflowVersion,
-} from "@shared/workflow.ts";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
-import type { LlmState } from "../useLlm.ts";
 import type { WorkflowRunFilters, WorkflowTab } from "./useWorkflowRoute.ts";
-import { PersonaLibrary } from "./PersonaLibrary.tsx";
-import { SessionActionLibrary } from "./SessionActionLibrary.tsx";
-import { WorkflowLibrary } from "./WorkflowLibrary.tsx";
 import { WorkflowRuns } from "./WorkflowRuns.tsx";
 import { EnsembleRuns } from "./EnsembleRuns.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 
+/**
+ * What is watched here, now that everything AUTHORED moved to the Library.
+ *
+ * Two tabs is an interim shape, not a destination: both of these become top-level pages hung
+ * off the Line, and this page retires with the last of them. It keeps its own tabs until then
+ * because a one-tab page pretending to be five is worse than a small honest one.
+ */
 const WORKFLOW_TABS = [
-  ["workflows", "Author the review workflows agents are bound to"],
-  ["personas", "Author the reviewer Personas workflow nodes run"],
-  // Beside Personas rather than under Workflows, because it is the same kind of thing: a
-  // reusable library a stage points at. The hint says what an action DOES, since the one
-  // mistake to prevent is reading it as a second kind of reviewer.
-  ["actions", "Author the instructions a workflow stage sends to its bound session"],
   ["runs", "Watch workflow runs and their verdicts"],
   ["ensembles", "Watch multi-agent ensembles, their evidence, and decisions"],
 ] as const;
 
 export function WorkflowPage({
   tab,
-  personas,
-  sessionActions = [],
-  workflowSummaries = [],
   workflowRuns = [],
   selectedRunId = null,
   runFilters,
@@ -41,32 +29,17 @@ export function WorkflowPage({
   reviews = [],
   selectedEnsembleId = null,
   hasSnapshot = false,
-  llm,
-  isOverlayOpen,
   onTab,
-  onDirtyChange,
   onRun = () => {},
   onRunFilters = () => {},
   onEnsemble = () => {},
   onOpenTask = () => {},
-  onBindVersion = () => {},
   onBindWorkflow,
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
   onOpenWorkflowSettings = () => {},
 }: {
   tab: WorkflowTab;
-  personas: PersonaView[];
-  /**
-   * The SessionAction catalog, archived rows included.
-   *
-   * One list for three jobs: the Actions tab lists it, the builder's add controls pick from
-   * the addressable part of it, and every surface that draws a stage names its action from
-   * it. Archived rows stay in because a draft may already point at one - dropping them here
-   * would make an existing stage read "Missing session action".
-   */
-  sessionActions?: SessionAction[];
-  workflowSummaries?: WorkflowSummary[];
   workflowRuns?: WorkflowRunSummary[];
   selectedRunId?: string | null;
   runFilters?: WorkflowRunFilters;
@@ -85,15 +58,11 @@ export function WorkflowPage({
   reviews?: ReviewItem[];
   selectedEnsembleId?: string | null;
   hasSnapshot?: boolean;
-  llm: LlmState;
-  isOverlayOpen: () => boolean;
   onTab: (tab: WorkflowTab) => void;
-  onDirtyChange: (dirty: boolean) => void;
   onRun?: (id: string) => void;
   onRunFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onEnsemble?: (id: string | null) => void;
   onOpenTask?: (id: string) => void;
-  onBindVersion?: (version: WorkflowVersion) => void;
   /**
    * Opens the binding dialog with no session pinned. Both the builder's right rail and the
    * Runs empty state reach it, so "there is nothing here yet" carries the action that fixes
@@ -113,8 +82,11 @@ export function WorkflowPage({
     <main className="workflow-page">
       <header className="workflow-page-head">
         <div>
-          <p className="workflow-eyebrow">Review automation</p>
-          <h2>Workflows</h2>
+          {/* The eyebrow says what this page still IS after the split, because its title no
+              longer does: workflows are authored in the Library, and what is left here is
+              the watching. */}
+          <p className="workflow-eyebrow">Execution</p>
+          <h2>Workflow runs</h2>
         </div>
         <nav className="workflow-tabs" aria-label="Workflow sections" role="tablist">
           {WORKFLOW_TABS.map(([id, hint], index) => (
@@ -168,52 +140,6 @@ export function WorkflowPage({
         </Tooltip>
       </header>
 
-      {tab === "personas" && (
-        <section
-          id="workflow-panel-personas"
-          role="tabpanel"
-          aria-labelledby="workflow-tab-personas"
-        >
-          <PersonaLibrary
-            personas={personas}
-            providers={llm.status?.runners ?? []}
-            defaults={llm.personaDefaults}
-            isOverlayOpen={isOverlayOpen}
-            onDirtyChange={onDirtyChange}
-          />
-        </section>
-      )}
-      {tab === "actions" && (
-        <section
-          id="workflow-panel-actions"
-          role="tabpanel"
-          aria-labelledby="workflow-tab-actions"
-        >
-          <SessionActionLibrary
-            sessionActions={sessionActions}
-            hasSnapshot={hasSnapshot}
-            isOverlayOpen={isOverlayOpen}
-            onDirtyChange={onDirtyChange}
-          />
-        </section>
-      )}
-      {tab === "workflows" && (
-        <section
-          id="workflow-panel-workflows"
-          role="tabpanel"
-          aria-labelledby="workflow-tab-workflows"
-        >
-          <WorkflowLibrary
-            summaries={workflowSummaries}
-            personas={personas}
-            sessionActions={sessionActions}
-            hasSnapshot={hasSnapshot}
-            onDirtyChange={onDirtyChange}
-            onBindVersion={onBindVersion}
-            onBindWorkflow={onBindWorkflow}
-          />
-        </section>
-      )}
       {tab === "runs" && (
         <section
           id="workflow-panel-runs"

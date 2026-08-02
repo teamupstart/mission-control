@@ -1006,13 +1006,6 @@ body {
 .is-desktop .topbar select,
 .is-desktop .topbar [role="button"],
 .is-desktop .topbar .filter-box,
-/* The fleet strip's figures are divs, not buttons, so they need naming here for a reason
-   that is not clicks: a drag region swallows the mouse entirely, so a hover inside one
-   never reaches the renderer and the tooltip - which is where "your bill may differ" and
-   the reset time live - simply never appears. Only the figures opt out; the panel's own
-   padding stays draggable, so the row is still somewhere you can pick the window up. */
-.is-desktop .topbar .fs-stat,
-.is-desktop .topbar .fs-runway,
 /* The fleet pulse, for the same reason and more sharply. Four of its five segments are
    divs, and on the narrow rungs of the ladder below they are drawn as a dot and a figure
    with the word taken away - so its tooltip is the ONLY place a bare "3" says "need you".
@@ -1033,14 +1026,17 @@ body {
 
    That is why the settings and dispatch modals' ✕ was mostly dead - the modal starts
    48px down and its ✕ lands around y=63-86, inside a bar that measures 110-127px tall.
-   The bar's height is not fixed either (the foldable usage row, and wrapping on a narrow
-   window), so the dead zone moves, which reads as a flaky button rather than a rectangle.
-   The alerts popover, which opens at y=57, had the same top strip eaten.
+   The bar's height is not fixed either (wrapping on a narrow window), so the dead zone
+   moves, which reads as a flaky button rather than a rectangle. The alerts popover, which
+   opens at y=57, had the same top strip eaten.
 
    Anything fixed- or absolute-positioned that can land inside the bar belongs in this
    list. Test: desktop-drag-region.test.ts. */
 .is-desktop .modal-backdrop,
 .is-desktop .alert-pop,
+/* The spend popover hangs off the cost chip IN the bar, so it opens entirely inside the
+   drag rectangle - every row it draws, and the Cost settings link in its footer. */
+.is-desktop .spend-pop,
 .is-desktop .combobox-list,
 .is-desktop .cmdbar,
 /* The ⌘K search palette panel opens near the top of the viewport, so it can land inside
@@ -1077,6 +1073,51 @@ body {
   font-weight: 650;
   letter-spacing: 0.2px;
   margin: 0;
+}
+
+/* ---- the page segment: the app's two homes ----
+
+   One control rather than the lone self-renaming button it replaces. A segment states that
+   there are exactly two places to be and which one you are in; a button that says "Workflows"
+   and then "Fleet" states neither, and cost a click to discover. It sits at the LEFT, beside
+   the brand, because that is where a person looks for "where am I" - the right side is the
+   fleet's actions. */
+.page-seg {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  padding: 2px;
+  gap: 2px;
+  flex: none;
+}
+.page-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 26px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+.page-seg-btn:hover {
+  color: var(--fg);
+}
+/* Keyed off `aria-current`, not a class, so the styling cannot disagree with what a screen
+   reader is told. */
+.page-seg-btn[aria-current] {
+  color: var(--fg);
+  font-weight: 600;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 /* ---- nav-bar filter ---- */
@@ -1238,116 +1279,178 @@ body {
   }
 }
 
-/* The topbar's foldable second row: the fleet strip. `flex-basis: 100%` on a flex-wrap
-   parent forces it below the primary controls, so its meters can never interleave with
-   them. Still INSIDE the topbar, because --topbar-h is measured off the header with a
-   ResizeObserver - a sibling placed after </header> would overflow focus mode by exactly
-   this row's height. */
-.topbar-usage {
-  flex-basis: 100%;
-  display: flex;
-  align-items: stretch;
-  gap: 12px;
-  padding-top: 12px;
-  margin-top: 2px;
-  border-top: 1px solid var(--border-soft);
+/* ---- the cost chip and its spend popover ----
+   These replace a foldable SECOND TOPBAR ROW. That row cost every full-height surface in
+   the app its height all day (`--topbar-h` is measured off the header), for figures that
+   are consulted occasionally rather than every glance - so the glance became a chip and
+   the rest moved one click away, where it can afford labels instead of tooltips.
+
+   Sized and shaped like the pulse beside it, because it is the same kind of thing: a
+   readout, in the row's readout half, not a control in the action cluster. */
+.spend-chip-wrap {
+  position: relative;
 }
-.topbar-usage-toggle {
-  display: flex;
-  align-self: center;
+.spend-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 0;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  font: inherit;
   font-size: 12px;
-  font-weight: 650;
-  color: var(--muted);
-  letter-spacing: 0.02em;
-  background: transparent;
-  border: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--cost);
+  background: color-mix(in oklab, var(--cost) 8%, var(--panel));
+  border: 1px solid color-mix(in oklab, var(--cost) 32%, var(--border));
+  border-radius: 999px;
   cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease;
 }
-.topbar-usage-toggle:hover {
-  color: var(--fg);
+.spend-chip:hover,
+.spend-chip[aria-expanded="true"] {
+  border-color: var(--cost);
+  background: color-mix(in oklab, var(--cost) 15%, var(--panel));
 }
-.topbar-usage-caret {
-  font-size: 10px;
+/* The chip escalates on the RUNWAY rather than on the dollars - see `spendChipTone`, and
+   the reason is in @shared/cost.ts: those thresholds are per SESSION, and a fleet total
+   clears them most afternoons. Re-declaring `--cost` rather than each property re-tints
+   the border, the figure and the hover from one line, the same trick `.cost-attention`
+   plays on the session chip. */
+.spend-chip[data-tone="warn"] {
+  --cost: var(--attention);
+}
+.spend-chip[data-tone="high"] {
+  --cost: var(--danger);
+}
+.spend-chip-rate {
   color: var(--dim);
 }
-.topbar-usage-compact {
+/* The escalated chip's quota reading. Inherits the chip's re-declared `--cost`, so it is
+   the same amber or red as the border around it: the figure and the alarm are one thing. */
+.spend-chip-alert {
   color: var(--cost);
-  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.spend-chip-caret {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
 }
 
-/* The fleet strip: a panel, not a row of pills. The figures on it are the only ones in
-   the app that describe the WHOLE fleet rather than one card, so they are drawn at a size
-   nothing else in the topbar competes with, and the panel's tinted border is what says
-   "this is a different scope" without a heading costing a line. */
-.fleet-strip {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px 22px;
-  flex-wrap: wrap;
-  padding: 10px 15px;
-  border: 1px solid color-mix(in oklab, var(--cost) 26%, var(--border));
-  border-radius: 11px;
-  background: color-mix(in oklab, var(--cost) 6%, var(--panel));
-}
-/* Whichever half lands last goes to the far edge, so `usd` and `plan` are the same
-   two-block shape mirrored rather than two different layouts. `:not(:only-child)` is
-   load-bearing: either half can be absent on its own (no telemetry, or no rate limits),
-   and a lone surviving group pushed to the right edge would read as a layout fault. */
-.fleet-strip > :last-child:not(:only-child) {
-  margin-left: auto;
-}
-.fs-stats {
-  display: flex;
-  align-items: center;
-  gap: 22px;
-  flex-wrap: wrap;
-}
-/* Wider than the stats' gap: two runway bars at 22px read as one ruler with a nick in it,
-   and the whole point of them is that they are two independent windows. */
-.fs-windows {
-  display: flex;
-  align-items: center;
-  gap: 30px;
-  flex-wrap: wrap;
-}
-.fs-stat {
+/* The popover. Hangs off `.spend-chip-wrap`'s `position: relative`, and is listed in the
+   desktop shell's no-drag rule above - a layer painted over the title bar does not take
+   its own clicks back unless it says so explicitly. */
+.spend-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 322px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+/* Divider by ADJACENCY rather than a border on each block, because the blocks swap order:
+   `view: "plan"` leads with the windows, and a border-bottom on the head plus a border-top
+   on whichever block came first would double up in one of the two orders. */
+.spend-pop > * + * {
+  border-top: 1px solid var(--border-soft);
+}
+.spend-pop-head {
+  margin: 0;
+  padding: 11px 14px 9px;
+  font-size: 10px;
+  font-weight: 640;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.spend-rows {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+}
+.spend-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 14px;
+  font-size: 12.5px;
   cursor: default;
 }
-.fs-n {
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.05;
-  letter-spacing: -0.3px;
+.spend-k {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+.spend-v {
   font-variant-numeric: tabular-nums;
 }
-.fs-n-cost {
+.spend-v-cost {
   color: var(--cost);
 }
-.fs-unit {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0;
+/* The qualifier a figure is meaningless without - the PR count the money was divided by.
+   Small and dim because it is the denominator, not a second figure. */
+.spend-v small {
+  margin-left: 5px;
+  font-size: 10px;
   color: var(--dim);
 }
-.fs-l {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.55px;
+/* Overhead, tinted whole so it never reads as one more line of fleet work. */
+.spend-row.is-automation .spend-k,
+.spend-row.is-automation .spend-v {
+  color: var(--cost);
+}
+.spend-sub {
+  margin: -2px 0 4px;
+  padding: 0 14px;
+  font-size: 10.5px;
   color: var(--dim);
+}
+.spend-runways {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 14px 13px;
+}
+.spend-sec {
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.spend-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.spend-config-link {
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.spend-config-link:hover {
+  color: var(--fg);
+  text-decoration: underline;
 }
 
 /* A rate-limit window: consumption as a bar, the projected runway as the figure. */
-.fs-runway {
-  min-width: 172px;
+.spend-runway {
   cursor: default;
 }
 .runway-head {
@@ -1362,10 +1465,10 @@ body {
   color: var(--idle);
   font-variant-numeric: tabular-nums;
 }
-.fs-runway[data-tone="warn"] .runway-head b {
+.spend-runway[data-tone="warn"] .runway-head b {
   color: var(--attention);
 }
-.fs-runway[data-tone="high"] .runway-head b {
+.spend-runway[data-tone="high"] .runway-head b {
   color: var(--danger);
 }
 .runway-meter {
@@ -1394,8 +1497,11 @@ body {
 
    The thresholds are MEASURED, and they carry HEADROOM on purpose. In each state the bar
    needs roughly 1552 / 1364 / 1226 / 1072 / 1004 / 724px of content including gaps, and
-   its container is the window less about 106px of chrome and padding. But those figures
-   are not constants: the pulse is sized by its own text, so a fleet that reaches three
+   its container is the window less about 106px of chrome and padding. They predate the
+   cost chip, which adds roughly 130px in full and about 70px once rung 1 takes its rate
+   back, so the widest state is tighter than these numbers say and `flex-wrap` below
+   catches it sooner on a busy fleet. And those figures were never constants anyway: the
+   pulse is sized by its own text, so a fleet that reaches three
    digits, or a review count appearing, moves them 10-25px on its own. A rung set to the
    exact width its state stops fitting therefore opens a band - tens of px wide - where the
    bar has already wrapped and its rung has not yet fired. Sampling at round window widths
@@ -1421,12 +1527,17 @@ body {
    decorative rather than a control's name: the mark beside it and the window itself
    already say which app this is. */
 @container topbar (max-width: 1600px) {
-  /* Rung 1 (-188px): the two labelled destinations become glyphs. Both already carry a real
-     icon (the ⌘/← and the ◷) and an `aria-label`, so this costs the word and nothing else.
+  /* Rung 1: the Missions button becomes a glyph. It already carries a real icon (the ◷) and
+     an `aria-label`, so this costs the word and nothing else.
+
+     The page SEGMENT is deliberately not here. It sheds at rung 4, with Foreman: it is the
+     one control that answers "where am I", and two unlabelled squares beside the brand is
+     the question rather than the answer. A 16" laptop sits at 1512px - inside this rung -
+     so shedding it here would mean most windows never see the words at all.
+
      Foreman's word survives here and gives up its mode chip instead - the dot beside it
      already carries live/off, and the chip is the wider of the two. Dispatch has no
      `.tb-label` at all and so never degrades: it is the one control you would hunt for. */
-  .workflow-nav-btn .tb-label,
   .missions-btn .tb-label {
     position: absolute;
     width: 1px;
@@ -1439,9 +1550,13 @@ body {
   .foreman-chip {
     display: none;
   }
-  /* The chord hint goes with its word: a keycap floating beside a bare glyph reads as a
-     second glyph. The chord still works, and the tooltip still names it. */
-  .workflow-nav-btn .kb-hint {
+  /* The cost chip's rate segment, and it belongs at the first rung because it is the most
+     redundant ink the chip carries: the popover behind it states the same figure in a
+     labelled row, one click away. `display: none` is correct here where it would not be on
+     a `.tb-label` - this is a duplicated FIGURE, not a control's name, and the chip's
+     `aria-label` carries both figures at every width. The chip itself never degrades
+     further: a readout you cannot find is one you stop trusting. */
+  .spend-chip-rate {
     display: none;
   }
 
@@ -1532,7 +1647,8 @@ body {
      deliberately - bundled, the two shed 349px at once, and a rung that saves far more than
      the width it was crossed at leaves the bar visibly half empty for the next 300px of
      window. A rung cannot restyle `.topbar` itself because `.topbar` is its container. */
-  .foreman-btn .tb-label {
+  .foreman-btn .tb-label,
+  .page-seg-btn .tb-label {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -1540,6 +1656,11 @@ body {
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+  /* The chord hint goes with its word: a keycap floating beside a bare glyph reads as a
+     second glyph. The chord still works, and the tooltip still names it. */
+  .page-seg-btn .kb-hint {
+    display: none;
   }
 }
 @container topbar (max-width: 1045px) {
@@ -6550,6 +6671,61 @@ select:not([multiple]) option:focus-visible {
   display: flex;
   gap: 7px;
 }
+/* Jump from the file you are reading to the same file in the Files tab. Weighted like
+   the +/- counts it sits beside rather than like a primary action - the diff is for
+   reading, and this is the way out of it, not the point of it. */
+.diff-open-file {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 3px 5px 3px 9px;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+.diff-open-file:hover {
+  color: var(--fg);
+  border-color: var(--dim);
+  background: var(--bg-2);
+}
+.diff-open-file-glyph {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--dim);
+}
+.diff-open-file:hover .diff-open-file-glyph {
+  color: var(--working);
+}
+/* Deleted, or outside the cwd the Files tab is rooted at. Still focusable (see the
+   `aria-disabled` note in FileDiff) so its tooltip can say which.
+
+   It keeps its border and drops its fill. Dimming the border too - or stacking an
+   `opacity` on top of the dimmed text - left the label floating on the bar with no
+   edge, reading as a stray word rather than as a control that is switched off. The
+   fill is what carries "pressable"; the border is what carries "this is a button". */
+.diff-open-file[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--dim);
+  background: none;
+}
+.diff-open-file[aria-disabled="true"] .diff-open-file-glyph {
+  color: color-mix(in oklab, var(--dim) 45%, transparent);
+}
+.diff-open-file[aria-disabled="true"]:hover {
+  color: var(--dim);
+  border-color: var(--border);
+  background: none;
+}
 .diff-binary {
   padding: 12px;
   color: var(--muted);
@@ -9142,11 +9318,217 @@ select.ensemble-judge-persona {
   }
 }
 
-/* ---- workflows page + Persona library ---- */
-.workflow-nav-btn {
-  gap: 6px;
+/* ---- the Library page ----
+
+   Shelves of authored assets. The question is the heading and the system noun is the mono
+   eyebrow above it, which is the whole point of the layout: an operator learns what a
+   workflow is for by reading the shelf rather than by opening one. Nothing here shows live
+   execution state - each shelf carries one link to where its assets are actually running. */
+.lib-page,
+.lib-surface {
+  min-width: 0;
+  padding: 4px 0 40px;
+}
+.app-console > .lib-page,
+.app-board > .lib-page,
+.app-console > .lib-surface,
+.app-board > .lib-surface {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 22px;
+}
+/* `end`, not `baseline`: the left column is an eyebrow stacked over the title, so its
+   baseline is the EYEBROW's - baseline alignment floated the sentence up beside "AUTHORING"
+   rather than beside "Library". */
+.lib-head {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-bottom: 8px;
+}
+.lib-head > div > * {
+  margin: 0;
+}
+.lib-head h2 {
+  margin-top: 2px;
+  font-size: 26px;
+  letter-spacing: -0.025em;
+}
+.lib-sub {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.lib-shelf {
+  margin-top: 26px;
+}
+.lib-shelf-top {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.lib-shelf-eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+/* A button rather than an anchor: every route change in this app goes through the router's
+   `navigate`, which is what the dirty-draft gate hangs off. */
+.lib-shelf-live {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--working);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
   white-space: nowrap;
 }
+.lib-shelf-live:hover {
+  text-decoration: underline;
+}
+.lib-shelf-live.is-attention {
+  color: var(--attention);
+}
+.lib-shelf h3 {
+  margin: 3px 0 2px;
+  font-size: 16px;
+  font-weight: 650;
+}
+.lib-shelf-why {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  max-width: 82ch;
+}
+.lib-shelf-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 11px;
+  margin-top: 12px;
+}
+.lib-shelf-empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--dim);
+  align-self: center;
+}
+
+.lib-asset {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-height: 104px;
+  padding: 12px 14px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.14s ease;
+}
+.lib-asset:hover {
+  border-color: var(--border);
+}
+.lib-asset-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lib-asset-glyph {
+  color: var(--muted);
+  font-size: 13px;
+}
+.lib-asset-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  /* Wraps rather than truncating. Four of the five shipped Personas have names long enough
+     to hit the ellipsis at this column width, and "Documentation Ste…" beside "Intent
+     Conformanc…" is a shelf an operator cannot read. The tag beside it is `flex: none` and
+     the row wraps, so a long name pushes the tag down instead of eating it. */
+  overflow-wrap: anywhere;
+}
+.lib-tag {
+  flex: none;
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 9.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.lib-tag-builtin {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 40%, transparent);
+}
+.lib-tag-attention {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 40%, transparent);
+}
+/* `flex: 1` is what pushes every card's fact line down onto its hairline, so a row of cards
+   aligns on the line that matters rather than on whatever the descriptions happen to wrap to. */
+.lib-asset-desc {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+  /* Clamped, because these descriptions are authored without a length budget: the shipped
+     No-Mistakes Review carries a full paragraph, and unclamped it set a 260px row height
+     that left every card beside it mostly empty. The card is an index entry - the whole
+     text is one click away in the editor. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.lib-asset-fact {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  border-top: 1px solid var(--border-soft);
+  padding-top: 7px;
+}
+.lib-asset-fact.is-warn {
+  color: var(--attention);
+}
+.lib-asset-new {
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+  border-style: dashed;
+  border-color: var(--border);
+  background: none;
+  color: var(--dim);
+}
+.lib-asset-new:hover {
+  color: var(--fg);
+  border-color: var(--dim);
+}
+.lib-asset-new-label {
+  font-size: 12.5px;
+}
+.lib-asset-new-sub {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* ---- workflows page + Persona library ---- */
 .workflow-page {
   min-width: 0;
   padding: 4px 0 40px;
@@ -13812,6 +14194,218 @@ select.sc-input {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--danger);
+}
+
+/* ============================================================================
+   THE LINE - the fleet's pipeline strip
+   ----------------------------------------------------------------------------
+   Six stages and five wires above whichever layout is showing. Deliberately OUTSIDE
+   `<header class="topbar">`, and that placement is load-bearing twice over.
+
+   First, `--topbar-h` is measured off the header, and `.card.expanded` sizes itself
+   as `100dvh - var(--topbar-h) - ...`. A strip inside the header would silently take
+   ~90px off every focus-expanded card on the grid - a surface that has nothing to do
+   with the Line and whose height is already tuned against the reply box.
+
+   Second, the header renders on all three pages and the Line is fleet-only.
+
+   Being outside costs nothing in the two full-height shells because they are flex
+   columns: `.topbar` and `.line` are both `flex: none`, `.console`/`.board` are
+   `flex: 1; min-height: 0`, so the strip takes its height out of the layout rather
+   than out of the viewport and nothing overflows. On the grid the page scrolls, so
+   the strip simply scrolls away above the cards.
+   ============================================================================ */
+.line {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  /* The topbar's own `padding: 18px 4px` inside the same `.app` gutter. Without it the
+     strip's first stage sits 4px to the left of the brand and its last 4px to the right of
+     the dispatch button - which is exactly the kind of misalignment that reads as "slightly
+     wrong" from across the room without ever being nameable. */
+  padding-inline: 4px;
+  margin-bottom: 18px;
+}
+/* The two full-height shells run edge to edge and set their own topbar gutter, so
+   the strip matches it here rather than inheriting `.app`'s. The hairline attaches
+   it to the bar above: in those layouts nothing scrolls, so without one the strip
+   and the board read as one undifferentiated field of panels. */
+.app-console .line,
+.app-board .line {
+  margin-bottom: 0;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.line-stage {
+  flex: 1 1 0;
+  /* Lets a long sentence ellipsize instead of setting the stage's width. Without it a
+     flex item's min-width is its content, so one wordy stage would squeeze the other
+     five and the strip would reflow every time a workflow name changed. */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 13px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.line-stage:hover {
+  border-color: var(--dim);
+  background: var(--panel-2);
+}
+
+.ls-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ls-glyph {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+}
+.ls-name {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ls-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--dim);
+}
+.ls-sub {
+  /* Reserves the second line even when the sentence is empty. The strip is permanent
+     chrome directly above the board, so a stage that lost its sentence would shorten
+     the whole strip and step every card underneath it up by a line. */
+  min-height: 1.4em;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Tone, and the colour budget is deliberately small. Blue says machines are moving, amber
+   says you are needed, and those two are the whole reading of the strip - a six-stage row
+   is exactly where a third accent stops being a signal and becomes decoration. So a stage
+   that simply HAS something is plain foreground, and an empty one is dim.
+
+   That is one departure from the mockup, which paints the Shipped count green. Green means
+   "idle, and fine" everywhere else in this app, and spending it here would have put it at
+   both ends of the strip competing with the one colour that is asking for a person. */
+.line-stage.tone-working .ls-count {
+  color: var(--working);
+}
+.line-stage.tone-idle .ls-count {
+  color: var(--fg);
+}
+.line-stage.tone-attention {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.line-stage.tone-attention .ls-glyph,
+.line-stage.tone-attention .ls-name,
+.line-stage.tone-attention .ls-count,
+.line-stage.tone-attention .ls-sub {
+  color: var(--attention);
+}
+
+.line-wire {
+  flex: none;
+  align-self: center;
+  position: relative;
+  width: 26px;
+  height: 2px;
+  background: var(--border);
+}
+.line-wire::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--working);
+  animation: line-flow 2.6s linear infinite;
+}
+/* Staggered so the six dots read as flow rather than as a metronome. The wires are the
+   even children between the stages, hence the positional selectors. */
+.line-wire:nth-child(4)::after {
+  animation-delay: 0.5s;
+}
+.line-wire:nth-child(6)::after {
+  animation-delay: 1s;
+}
+.line-wire:nth-child(8)::after {
+  animation-delay: 1.5s;
+}
+.line-wire:nth-child(10)::after {
+  animation-delay: 2s;
+}
+.line-wire.hot {
+  background: color-mix(in oklab, var(--attention) 35%, var(--border));
+}
+.line-wire.hot::after {
+  background: var(--attention);
+}
+@keyframes line-flow {
+  from {
+    left: 0;
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  to {
+    left: calc(100% - 6px);
+    opacity: 0;
+  }
+}
+/* Removed, not merely stilled: a dot frozen mid-wire looks like a stalled pipeline. The
+   wire itself stays, because the connection between stages is information. */
+@media (prefers-reduced-motion: reduce) {
+  .line-wire::after {
+    display: none;
+    animation: none;
+  }
+}
+
+/* Narrow: the wires go before the stages do. They are decoration, and a stage squeezed
+   past its glyph and count stops being readable, which is the opposite trade. */
+@media (max-width: 1180px) {
+  .line-wire {
+    width: 14px;
+  }
+  .line-stage {
+    padding: 11px 10px;
+  }
+}
+@media (max-width: 1000px) {
+  .line {
+    gap: 6px;
+  }
+  .line-wire {
+    display: none;
+  }
 }
 
 /* ============================================================================

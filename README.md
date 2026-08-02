@@ -54,10 +54,10 @@ and get your decision back.
   moment a session needs input, a review lands, a session **gets stuck**, or a
   dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
-- **Tracks fleet economics**: a badge on every priced card and a topbar strip carrying
-  the sessions' Claude + Codex API-equivalent estimate, tokens, estimated cost per pull
-  request, and rate-limit runway. A separate automation figure attributes the Foreman's
-  and Inspector's own model spend by role. See [Cost telemetry](#cost-telemetry).
+- **Tracks fleet economics**: a badge on every priced card and a topbar cost chip whose
+  popover carries the sessions' Claude + Codex API-equivalent estimate, tokens, estimated
+  cost per pull request, and rate-limit runway. A separate automation figure attributes the
+  Foreman's and Inspector's own model spend by role. See [Cost telemetry](#cost-telemetry).
 - **Says what each prompt-reporting session is for**: its card carries a one-sentence
   **Goal** - what that session is currently trying to solve - derived from your own
   prompts and refreshed as you steer it. No API key: it runs the configured local
@@ -1030,17 +1030,18 @@ npm run install-hooks -- --uninstall   # removes that block - and the hooks, and
 ```
 
 Once any session or automation source has data, every priced session card carries a **cost
-badge** beside its model / thinking / context row, and the topbar grows a foldable **Usage**
-row:
+badge** beside its model / thinking / context row, and the topbar grows a **cost chip** -
+`≈$12.40 · $3.10/hr`, in the machinery purple cost wears everywhere. Clicking it opens the
+**Spend** popover, which carries the rest:
 
-| Figure | What it is |
-|---|---|
-| **Estimated cost today** | Claude- plus Codex-estimated session usage since local midnight |
-| **Estimated rate** | the last hour of that same session estimate |
-| **Tokens today** | session input, output and cache, every tier summed |
-| **Cost / PR** | today's session estimate over pull requests either agent opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
-| **Automation today** | API-equivalent estimated cost for the Foreman's and Inspector's own model calls since midnight. Hover for the per-role split |
-| **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
+| Figure | Where | What it is |
+|---|---|---|
+| **Fleet today** | chip and popover | Claude- plus Codex-estimated session usage since local midnight |
+| **Rate now** | chip and popover | the last hour of that same session estimate |
+| **Tokens today** | popover | session input, output and cache, every tier summed |
+| **Per shipped PR** | popover | today's session estimate over pull requests either agent opened today, with the count it was divided by. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
+| **Automation** | popover | API-equivalent estimated cost for the Foreman's and Inspector's own model calls since midnight, with the per-role split printed under it |
+| **Runway** | popover, and the chip's colour | per rate-limit window: how much is used and how long the rest lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
 
 The runway is the only forward-looking number in the app, and it is an average
 extrapolated forward - which is why it is written `~41 min`, and why a window the current
@@ -1050,10 +1051,16 @@ meters, so deriving one from the other would be a confident number about the wro
 An average cannot see a burst; a fleet that idled all morning and then started six
 sessions reads as calm for a while.
 
-Folding the row away keeps today's estimate visible beside the toggle, and the choice
-persists per machine like the layout.
+The chip is the one thing cost keeps permanently on screen, so it is also what carries the
+warning: when a quota window is projected to run out it turns amber and then red, trades
+its rate for the reading that escalated it (`≈$12.40 · 96%`), and names that window in its
+accessible name rather than leaving the alarm to colour alone. It does **not** escalate on
+the dollars - those thresholds are per session, and a fleet clears them most afternoons, so
+a chip wired to them would be red by lunchtime every day. A fleet with no usage and no quota
+reading at all renders no chip, rather than a confident `$0.00`. `Esc` or a click outside
+closes the popover; `Cost settings →` in its footer opens **Settings · Cost**.
 
-Five transports feed the strip, each kept to the facts it actually reports:
+Five transports feed these figures, each kept to the facts it actually reports:
 
 | Source | Provides |
 |---|---|
@@ -1138,9 +1145,9 @@ A plan meter disappears once its window resets rather than holding the last perc
 a quota that has already rolled over is not a figure worth showing, and the same rule
 already governs an account with no rate limits to report.
 
-**Every dollar figure is one API-equivalent estimate.** Session cards mark it `≈$`; in the
-Usage row, the session labels say estimated and **Automation today** follows the valuation
-described above. Claude Code calculates its rows from request usage; Mission Control prices
+**Every dollar figure is one API-equivalent estimate.** Session cards mark it `≈$`; so does
+the cost chip, and the Spend popover says so once in its footer rather than five times.
+**Automation** follows the valuation described above. Claude Code calculates its rows from request usage; Mission Control prices
 Codex requests at an immutable snapshot of OpenAI Standard API rates, including cache and
 long-context rules.
 Estimator provenance remains on each session, but both values have the same economic
@@ -2312,17 +2319,56 @@ The count on the card comes from `GET /api/away/buffer`, a read-only look at the
 still open - deliberately a separate route from `GET /api/away/digest`, which hands the
 buffer over exactly once and reports nothing at all until you are back at the desk.
 
-## Workflows and Personas
+## The Library
 
-The **Workflows** button in the top bar changes only the dashboard body. The fleet header,
-live SSE connection, and Cards, Console, or Board selection stay mounted, so returning to
-**Fleet** does not reconnect or discard the fleet view. The page uses bookmarkable hashes:
-`#/workflows` for the graph library and builder, `#/workflows/personas` for the Persona
-library, `#/workflows/actions` for the [session action](#session-actions) library,
-`#/workflows/runs` for run history, `#/workflows/runs/:id` for one run's evidence
-and timeline, and `#/fleet` to return.
-The top-bar button opens the graph library and restores the last active workflow selected
-in this browser when it is still available.
+Mission Control has two homes, and the top bar's segmented **▦ Fleet / ⌗ Library** control
+names both. The Fleet is what is happening; the **Library** is everything you author once and
+reuse. Nothing on the Library runs - each shelf carries a single cross-link to where its
+assets are executing, and no live state beyond it.
+
+Switching homes changes only the dashboard body. The fleet header, live SSE connection, and
+Cards, Console, or Board selection stay mounted, so returning to **Fleet** does not reconnect
+or discard the fleet view.
+
+`#/library` opens five shelves, each headed by the question it answers rather than by its own
+noun:
+
+| Shelf | Question | What is on it |
+| --- | --- | --- |
+| Workflows | What counts as done? | Workflow cards - version, reviewer count, draft validation errors. The builder is one level deeper |
+| Personas | Who does the reviewing? | Persona cards with the provider and model each resolves to |
+| Actions | What can a run tell the session to do? | [Session action](#session-actions) cards - required skill and what proves completion |
+| Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
+| Missions · Sources | Where does work come from? | Recurring missions and a link to task sources in Settings |
+
+The three authoring surfaces mount one level deeper, unchanged, at bookmarkable hashes:
+
+| Hash | Surface |
+| --- | --- |
+| `#/library` | The five shelves |
+| `#/library/workflows[/:id]` | The workflow builder, on that workflow |
+| `#/library/personas[/:id]` | The Persona library and editor |
+| `#/library/actions[/:id]` | The session action library and editor |
+| `#/library/<shelf>/new` | The same surface, opened on a blank draft |
+
+The asset id follows what the editor actually has open: selecting a second Persona rewrites
+the hash without adding a history entry, so the address bar is always a shareable link to what
+you are looking at and **Back** still means the page you came from. `new` is reserved and
+never an asset id.
+
+The three legacy authoring hashes redirect permanently, and the address bar is rewritten to
+the new spelling so a kept bookmark stops being a legacy one: `#/workflows` → `#/library`,
+`#/workflows/personas` → `#/library/personas`, `#/workflows/actions` → `#/library/actions`.
+
+Execution keeps its own page for now. `#/workflows/runs`, `#/workflows/runs/:id`,
+`#/workflows/ensembles` and `#/workflows/ensembles/:id` are unchanged, and that page is down
+to its two watching tabs - **Runs** and **Ensembles**. A later phase re-homes both to
+top-level routes and retires it.
+
+An editor with unsaved changes still holds a navigation away from it and asks first, whichever
+home you are leaving for.
+
+## Workflows and Personas
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or Inspector setting. Personas you create or import live in Mission Control's SQLite
@@ -2546,7 +2592,7 @@ claims that success afterwards. A workflow whose final gate is None shows no foo
 A **session action** is a reusable instruction a workflow stage sends to the session it is
 bound to. It is not a third kind of reviewer. A Persona reads one immutable submission and
 returns a verdict; an action writes to the bound conversation, may change the repository, and
-returns only "this finished". `#/workflows/actions` is its library, beside Personas.
+returns only "this finished". `#/library/actions` is its shelf and editor, beside Personas.
 
 An action's fields are its name, description, the **exact Markdown instruction** the session
 receives, an optional **required skill**, and the **completion** Mission Control must observe
@@ -4172,6 +4218,50 @@ screen instead of scattered across three panels.
   Shipping's own dependency warnings link straight here. The rail's Trust dot summarizes the
   same blind spot.
 
+## The Line (the pipeline strip above the fleet)
+
+A permanent ~90px strip sits above every fleet layout: **intake → backlog → working → review
+→ decide → shipped**. Six stages, wired left to right, each carrying a glyph, a count and one
+sentence - the fleet's whole pipeline in one glance, in the order work actually moves through
+it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
+
+| Stage | The count is | The sentence says | Amber when |
+|-------|--------------|-------------------|------------|
+| ⇊ **Intake** | Enabled [task sources](#task-sources-pulling-work-into-the-backlog) plus enabled [Recurring Missions](#recurring-missions) | When the most recent source last swept, and when the next mission is due | A source failed its last sweep, or a mission's health is `attention` |
+| ☰ **Backlog** | Tasks with status `backlog` | What [autopilot](#backlog-autopilot-foreman-schedules-the-fleet) would take next, and how many are blocked | Nothing in the backlog is ready - every item is [parked](#hold-a-backlog-item-back) or waiting on a prerequisite, so capacity will never clear it |
+| ▶ **Working** | Sessions that have not exited | The split: needs you / working / idle | Any session needs you - the same [`reportBucket`](#session-status-colors) the Roundup counts with |
+| ⌁ **Review** | [Workflow runs](#watching-a-run) that are not `completed`, `cancelled` or `failed` | The workflow doing most of them, and how many are waiting on you | A run is `blocked`, or its session action is parked on one of the three wait reasons only a person can clear |
+| ⧉ **Decide** | [Ensemble runs](#multi-agent-ensembles) that have not finished | Which strategy, how many artifacts are ready, or who it is waiting on | The daemon flagged the run (`awaiting_decision`, a failure, or a member sitting on your answer) |
+| ⚑ **Shipped** | Pull requests your agents adopted **this week** | The **per-PR cost** from today's [cost telemetry](#cost-telemetry) | Never. Shipping is not an obligation |
+
+Two windows on the Shipped stage, and it says which is which: the count is the **week**,
+because a Monday morning would otherwise read as zero on a fleet that shipped four things on
+Friday, while the per-PR figure is **today's** - the only window `FleetCost` offers, and
+dividing a day's spend by a week's pull requests would mean nothing.
+
+**The strip never computes anything.** Every count, sentence and tone is folded on the daemon
+and pushed as one `line_summary` SSE event, change-gated exactly like the cost figures - so an
+unchanged fleet emits nothing. That is not an implementation detail: two of the six stages read
+inputs that never cross the wire at all (task-source sweep recency, the Inspector's adoption
+ledger), and every other stage reuses the daemon's *existing* derivation - `reportBucket`,
+`readyBacklog`, `ensembleNeedsAttention`, `deriveScheduleHealth` - rather than inventing a
+second opinion that agrees until it doesn't.
+
+Clicking a stage takes you to the surface that already reads it:
+
+| Stage | Opens |
+|-------|-------|
+| Intake | [Recurring Missions](#recurring-missions) |
+| Backlog | The [Roundup](#roundup), which lists the backlog with its blockers |
+| Working | The fleet, with the filter cleared - so the count and the cards agree again |
+| Review | `#/workflows/runs` |
+| Decide | `#/workflows/ensembles` |
+| Shipped | `#/workflows/runs` filtered to completed. There is no pull-request list surface in the app; the list of work that finished is the nearest true thing |
+
+Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
+clipped to one row so the strip's height never moves. The flowing dots on the wires respect
+`prefers-reduced-motion`: with it set, the wires stay and the dots go.
+
 ## Layout (cards, console, or board)
 
 The same fleet, three shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)
@@ -4362,6 +4452,26 @@ Markdown open in Preview by default, while ordinary text opens in the editor. HT
 remains inert: a bounded set of checkout-local stylesheets is inlined through the contained
 file reader, without granting the sandbox scripts or network access.
 
+**The Diff tab has the same door.** The bar naming the file you are reading carries an
+**Open in Files** action, on every file, which opens that file in the Files tab beside it -
+the same route, the same containment rules. Two files it will not open, and it says which
+rather than failing on the click: a **deleted** file, which has no copy left in the checkout
+to read, and a file **outside the session's working directory**. The second is possible
+because the two readers measure paths from different places - git writes them relative to
+the repository root, while the Files tab lists the working directory it was opened in - so a
+session started in a subdirectory can see changed files that its Files tab has no route to.
+The path is rebased through the repository root rather than handed over as written, which is
+what keeps a shared relative path like `src/index.ts` from opening the wrong file, and it is
+used exactly as git wrote it, so a file named `notes:12` opens as itself rather than as
+`notes`.
+
+That second refusal is a decision rather than a gap. Making those files openable means
+rooting the Files workspace at the repository root, which would widen the daemon's read and
+write containment from the working-directory subtree to the whole repository for every
+session - a larger and more security-relevant change than the affordance it serves. Every
+dispatched session works in a worktree, whose root **is** the repository root, so nothing is
+refused there.
+
 **Paths the agent merely typed are links too.** Markdown gives an agent no way to say
 "this word is a file" other than writing a link, and agents don't - they write
 `docs/plans/x/plan.md` bare in a sentence or in backticks, because that is how it reads in
@@ -4451,10 +4561,10 @@ shortcut works in every layout:
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open the settings search palette - from the fleet it jumps to Settings first, then opens; press again to close | Anywhere |
-| <kbd>w</kbd> | Open the Workflows page, or press again to return to the fleet | Fleet or Workflows |
+| <kbd>w</kbd> | Open the **Library**, or press again to return to the fleet | Fleet or Library |
 | <kbd>e</kbd> | Expand / collapse the selected session. **Cards**: focus-expands the card and drops the cursor in its reply box, ready to type. **Board**: opens (and closes) the drill-in detail, the same thing <kbd>Enter</kbd> opens. Console already shows the selected session expanded, so there is nothing to toggle | Selected session |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>e</kbd> owns the toggle | Selected session |
-| <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the fleet-wide Workflows page instead | Selected session (Console or Board) |
+| <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
@@ -5125,7 +5235,7 @@ cleanup broke" from "the build passed and then cleanup broke".
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](#cost-telemetry) installers edit. Overridable so tests never touch your real one |
 
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
-shortcuts, alert delivery, message formatting, and the usage row's fold all live in the
+shortcuts, alert delivery, and message formatting all live in the
 daemon's database (`app_config`), alongside the Foreman, Skills, Harnesses, Task sources, Models, and
 Cost settings - so they are the same in every tab, on `localhost` and `127.0.0.1` alike, in the
 desktop app and in a browser, and they survive an upgrade. The browser keeps a copy in
@@ -5197,6 +5307,26 @@ npm run session-actions # recompile the built-in session actions from docs/sessi
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```
+
+The `make` wrappers for the build and verification commands - `make build`, `make test`,
+`make lint`, `make check`, `make smoke` - install dependencies first, through a stamp file
+(`node_modules/.install-stamp`) that carries `package.json` and `package-lock.json` as its
+prerequisites. So they install in a tree that has never been installed, re-install after a
+pull or a branch switch moves either manifest, and do nothing at all the rest of the time.
+
+The stamp is what makes the second of those work: make is satisfied by any target that
+exists, and `node_modules/` exists forever once anything has been installed into it - so
+depending on the directory would install once and then silently run the gates against stale
+dependencies. The stamp lives inside `node_modules/` so `rm -rf node_modules` invalidates it
+too, and is touched only after a successful install, so a failed one is retried rather than
+recorded as done.
+
+A never-installed tree is routine rather than exotic: a [Workflow check](#check-nodes) runs
+its command in a freshly leased [pool worktree](#check-leases), and `node_modules/` is
+gitignored, so every check starts from a tree with no dependencies at all. Without this it
+fails with `TS2688: Cannot find type definition file for 'node'`, which reads like a type
+error in the diff under review and is really just a missing `@types/node`. The `npm run …`
+forms are unchanged and assume an installed tree.
 
 `npm run test:e2e` is the browser layer: it boots the built daemon against a throwaway state
 dir, loads the built dashboard in Chromium, and drives real flows - dispatching an agent,

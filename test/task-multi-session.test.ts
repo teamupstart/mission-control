@@ -489,6 +489,7 @@ function viewFor(session: Session): SessionViewProps {
     onOpenDiff: () => {},
     onOpenFiles: () => {},
     onOpenFile: () => false,
+    onOpenFilePath: () => {},
     fileTabRequest: null,
     conversationTabRequest: null,
     workflowsTabRequest: null,

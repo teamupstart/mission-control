@@ -203,7 +203,10 @@ export function WorkflowLibrary({
   personas,
   sessionActions = [],
   hasSnapshot,
+  initialWorkflowId = null,
+  startNew = false,
   onDirtyChange,
+  onSelectionChange,
   onBindVersion = () => {},
   onBindWorkflow,
 }: {
@@ -216,7 +219,19 @@ export function WorkflowLibrary({
    */
   sessionActions?: SessionAction[];
   hasSnapshot: boolean;
+  /**
+   * The workflow the ROUTE asked for, read once as this surface mounts.
+   *
+   * It outranks the remembered id below for exactly one mount: a link naming a workflow has
+   * to win over "whatever this browser had open last", or a shared deep link opens someone
+   * else's draft. Everything after that mount is this surface's own selection, reported back
+   * through `onSelectionChange`.
+   */
+  initialWorkflowId?: string | null;
+  /** Create a draft as this surface mounts, for the Library's "＋ New workflow" card. */
+  startNew?: boolean;
   onDirtyChange: (dirty: boolean) => void;
+  onSelectionChange?: (workflowId: string | null) => void;
   onBindVersion?: (version: WorkflowVersion) => void;
   /** Opens the binding dialog with no session pinned. Absent in surfaces App does not host. */
   onBindWorkflow?: () => void;
@@ -228,7 +243,9 @@ export function WorkflowLibrary({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [transitioning, setTransitioning] = useState(false);
   const transitionRef = useRef(false);
-  const selectionInitialized = useRef(false);
+  // `startNew` decides the first selection by creating one, so the restore below must stand
+  // down rather than flash the first workflow in the list on the way there.
+  const selectionInitialized = useRef(startNew);
   const observedWorkflowIds = useRef(new Set<string>());
   const [selection, setSelection] = useState<WorkflowSelection>(null);
   const streamed = ordered.find((workflow) => workflow.id === selectedId) ?? null;
@@ -339,13 +356,17 @@ export function WorkflowLibrary({
   useEffect(() => {
     const explicitlyRequestedId = ordered.find((summary) =>
       readRequestedWorkflowVersion(summary.id) !== null)?.id ?? null;
+    // A route-named workflow is treated exactly as a version request is: it is BOTH the
+    // remembered id and the explicit one, which is the pair `workflowSelectionRestore` reads
+    // as "open this, even if it is archived". Passing it only as the remembered id would
+    // silently fall back to the first active row for an archived deep link.
     const next = workflowSelectionRestore(
       selectionInitialized.current,
       selectedId,
       active,
-      readLastWorkflowId(),
+      initialWorkflowId ?? readLastWorkflowId(),
       ordered,
-      explicitlyRequestedId,
+      initialWorkflowId ?? explicitlyRequestedId,
     );
     if (next === undefined) return;
     selectionInitialized.current = true;
@@ -354,7 +375,11 @@ export function WorkflowLibrary({
       setShowArchived(true);
     }
     setSelectedId(next);
-  }, [active, ordered, selectedId]);
+  }, [active, initialWorkflowId, ordered, selectedId]);
+  // What is open, reported back so the address bar can name it. One effect on the id rather
+  // than a call inside `openWorkflow`, because the restore above and the removal handler
+  // below both set it without going through there.
+  useEffect(() => onSelectionChange?.(selectedId), [onSelectionChange, selectedId]);
   useEffect(() => {
     if (removalTarget === undefined) return;
     const next = workflowSelectionAfterRemoval(
@@ -474,6 +499,27 @@ export function WorkflowLibrary({
     if (requireTombstoneDiscard(() => void createNow())) return;
     await createNow();
   };
+
+  // The Library's "＋ New workflow" card, honoured here rather than by the card: a workflow
+  // draft is a durable row, so the create goes through the same `create` the sidebar's New
+  // button uses - CAS, transition lock, unsaved-draft save and all - rather than a second
+  // POST beside it.
+  //
+  // It fires on the EDGE of the request, not on its presence. That is what makes it run once
+  // per ask under StrictMode's double-invoked mount effects (which would otherwise leave an
+  // orphan "Untitled workflow 2" behind on every visit in development), while still honouring
+  // a later ask - a `/new` link pasted while this surface is already up. App replaces the
+  // `/new` hash with the created id as soon as the selection is reported, so a reload cannot
+  // repeat it either.
+  //
+  // `create` is deliberately not a dependency: it is rebuilt every render from live state,
+  // and the edge above is the whole control.
+  const newDraftAsked = useRef(false);
+  useEffect(() => {
+    const asked = startNew && !newDraftAsked.current;
+    newDraftAsked.current = startNew;
+    if (asked) void create();
+  }, [startNew]);
 
   const duplicate = async (): Promise<void> => {
     await runTransition(async () => {

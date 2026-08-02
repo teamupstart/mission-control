@@ -95,6 +95,61 @@ export function skillsDirs(): string[] {
   return [...seen];
 }
 
+/**
+ * Every path this daemon would WRITE to if nothing redirected it - one per harness,
+ * under the operator's actual home.
+ *
+ * Not `skillsDirs()`, which answers "where do we write?" and honours every override.
+ * This one answers the different question `assertTestSkillIsolation` needs: "which
+ * paths are the machine's live install?" - so it deliberately ignores `dirEnvVar` and
+ * `MISSION_HOME` and reads `homeDir` alone.
+ */
+function operatorSkillsDirs(): string[] {
+  const out: string[] = [];
+  for (const agent of AGENT_TYPES) {
+    const spec = HARNESS_CAPABILITIES[agent].skills;
+    if (spec) out.push(join(homedir(), ...spec.homeDir));
+  }
+  return out;
+}
+
+/**
+ * Refuse to reconcile the operator's real skills directory from inside the test runner.
+ *
+ * `openDb`'s `assertTestStateIsolation`, for the other half of this app's blast radius,
+ * and for the same reason: a test file that reaches a real home directory fails SILENTLY
+ * into it. This one has been exercised. `install-hooks.test.ts` pinned `CLAUDE_SKILLS_DIR`
+ * and nothing else, which was total isolation on the day it was written - Claude was the
+ * only harness with a `skills` spec. Codex and pi then declared theirs, `uninstallSkillLinks`
+ * began folding over `skillsDirs()`, and that one pinned variable stopped covering the
+ * walk. From then on every `npm run test` unlinked the operator's live `mission-*` skills
+ * out of `~/.agents/skills` and `~/.pi/agent/skills` and reported sixteen passing tests.
+ *
+ * Nothing announced it. The panel went on drawing three switched-on toggles, and the next
+ * Codex session to reach a workflow's Pull Request action was refused with
+ * `required_skill_unavailable` for a skill the operator had never switched off. Agents run
+ * the suite before every PR, so it happened again on the next run.
+ *
+ * A deny-list of the REAL paths rather than an allow-list of isolated ones, so a test that
+ * hands over its own temp directory needs no ceremony, and so a fourth harness is covered
+ * by declaring `homeDir` - the same declaration that puts it in harm's way. Throwing rather
+ * than skipping the directory, because a quiet skip is how this arrived: the walk has to
+ * stop being possible, not merely stop being harmful.
+ */
+function assertTestSkillIsolation(dir: string): void {
+  if (!process.env.NODE_TEST_CONTEXT) return;
+  if (!operatorSkillsDirs().includes(dir)) return;
+  const pins = AGENT_TYPES.map((agent) => HARNESS_CAPABILITIES[agent].skills?.dirEnvVar)
+    .filter((name): name is string => name !== undefined);
+  throw new Error(
+    `refusing to reconcile ${dir} under the test runner: this is the machine's real skills `
+      + "directory, and a pass over it uninstalls the operator's live skills from every "
+      + "session on the machine. Set MISSION_HOME to a fresh temp dir, which isolates every "
+      + `harness at once, or pin all of ${pins.join(", ")} - see skills-multi-harness.test.ts `
+      + "for the pattern.",
+  );
+}
+
 /** What one pass changed, and anything it refused to. */
 export interface ReconcileResult {
   /**
@@ -196,6 +251,9 @@ function reconcileOneDir(
   catalog: Catalog,
   dir: string,
 ): ReconcileResult {
+  // Before anything is read, and long before anything is written: from here on this
+  // function only ever decides what to unlink.
+  assertTestSkillIsolation(dir);
   const out: ReconcileResult = { changed: false, linked: [], unlinked: [], problems: [], blocked: [] };
 
   // An unreadable catalog is not an empty one. Every id would look deleted, and this

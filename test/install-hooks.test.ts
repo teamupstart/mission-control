@@ -23,8 +23,18 @@ const RUN = ["--import", "tsx", INSTALLER];
  * down with it. Every run gets one: `--uninstall` really does remove skill symlinks
  * now, so a test that let `claudeSkillsDir()` fall through to the real homedir would
  * delete the skills off the machine of whoever ran the suite.
+ *
+ * This variable alone is NOT that isolation, and believing it was is what let this suite
+ * uninstall the operator's live Codex and pi skills on every run for as long as those
+ * harnesses have declared a `skills` spec. `--uninstall` walks `skillsDirs()` - one
+ * directory per harness - so pinning Claude's redirected exactly one third of the walk and
+ * left the rest pointed at the real home. `MISSION_HOME` below is the isolation; this
+ * stays because the assertions want a path they can read back.
  */
 const skillsDirFor = (settingsPath: string): string => join(settingsPath, "..", "claude-skills");
+
+/** The throwaway `MISSION_HOME` for a settings file, likewise beside it. */
+const homeDirFor = (settingsPath: string): string => join(settingsPath, "..", "home");
 
 /** Run the installer with an isolated state dir (for the status line sidecar). */
 function runInstallerHome(settingsPath: string, homeDir: string, args: string[] = []): string {
@@ -60,12 +70,20 @@ const SETTINGS_WITH_STATUSLINE = `{
 }
 `;
 
-/** Run the installer against a throwaway settings file and return its text. */
+/**
+ * Run the installer against a throwaway settings file.
+ *
+ * Delegates rather than assembling its own environment, so there is ONE answer to what an
+ * isolated installer run looks like. The two used to differ in exactly the way that
+ * mattered: this one named `CLAUDE_SKILLS_DIR` and no home, so `skillsDirs()` resolved
+ * Codex's and pi's directories under the operator's real one and `--uninstall` cleared
+ * their live skill links. `MISSION_HOME` isolates every harness at once, including the
+ * ones that do not exist yet.
+ */
 function runInstaller(settingsPath: string, args: string[] = []): void {
-  execFileSync(process.execPath, [...RUN, ...args], {
-    env: { ...process.env, CLAUDE_SETTINGS_PATH: settingsPath, CLAUDE_SKILLS_DIR: skillsDirFor(settingsPath) },
-    stdio: "ignore",
-  });
+  const home = homeDirFor(settingsPath);
+  mkdirSync(home, { recursive: true });
+  runInstallerHome(settingsPath, home, args);
 }
 
 function withTempSettings(initial: string, fn: (path: string) => void): void {

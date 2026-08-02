@@ -2,9 +2,11 @@ import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
+import { AGENT_TYPES } from "../src/shared/types.ts";
 import type { SkillCatalogEntry } from "../src/shared/types.ts";
 import type { Catalog } from "../src/server/skills/catalog.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
@@ -128,6 +130,49 @@ test("drift notices a link missing from a harness the operator never looks at", 
   const drift = skillDrift(mkCfg({ skills: { alpha: true } }), CATALOG);
   assert.equal(drift.length, 1, "one sentence per skill, however many directories miss it");
   assert.match(drift[0] ?? "", /alpha is switched on but isn't installed/);
+});
+
+test("a pass over the machine's REAL skills directory is refused under the test runner", () => {
+  // The fold's isolation is one env var per harness, and the count of harnesses grows.
+  // `install-hooks.test.ts` pinned `CLAUDE_SKILLS_DIR` and nothing else, which was complete
+  // isolation until Codex and pi declared a `skills` spec - after which every `npm run test`
+  // unlinked the operator's live `mission-*` skills out of `~/.agents/skills` and
+  // `~/.pi/agent/skills`, went green, and left the next Codex session refused at a workflow's
+  // Pull Request action for a skill nobody had switched off.
+  //
+  // So the walk refuses the real paths outright rather than trusting every test file to
+  // remember a list that keeps growing. Asserted for EVERY declaring harness, so the harness
+  // added next year is covered by declaring `homeDir` - the same declaration that would
+  // otherwise put it in harm's way.
+  for (const agent of AGENT_TYPES) {
+    const spec = HARNESS_CAPABILITIES[agent].skills;
+    if (!spec) continue;
+    const real = join(homedir(), ...spec.homeDir);
+    const cfg = mkCfg({ skills: { alpha: true } });
+    assert.throws(
+      () => reconcileSkillLinks(cfg, CATALOG, [real]),
+      /refusing to reconcile/,
+      `${agent}'s real directory must be refused`,
+    );
+    // Uninstall takes the same walk, and it is the path that did the damage: a config
+    // nobody has enabled anything in wants an EMPTY set, so every live link is "no longer
+    // desired" and comes out.
+    assert.throws(() => uninstallSkillLinks([real]), /refusing to reconcile/, `${agent}'s uninstall`);
+  }
+});
+
+test("the refusal names a fix the caller can apply", () => {
+  // A guard whose message is "no" is a guard someone deletes. This one has to say which
+  // knob restores isolation, because the caller it fires on is a test file whose author
+  // believed they had already set it.
+  const real = join(homedir(), ...(HARNESS_CAPABILITIES.claude.skills?.homeDir ?? []));
+  assert.throws(() => uninstallSkillLinks([real]), (err: Error) => {
+    assert.match(err.message, /MISSION_HOME/, "the one variable that isolates every harness");
+    assert.match(err.message, /CLAUDE_SKILLS_DIR/);
+    assert.match(err.message, /CODEX_SKILLS_DIR/);
+    assert.match(err.message, /PI_SKILLS_DIR/);
+    return true;
+  });
 });
 
 test("an isolated home keeps EVERY harness's directory inside itself", () => {

@@ -86,7 +86,34 @@ status: ## Show whether the daemon is running
 logs: ## Tail the background daemon log
 	@touch $(LOG); tail -f $(LOG)
 
-build: ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
+# Dependencies, installed only when they are genuinely absent.
+#
+# This is a REAL directory target with no prerequisites, which is the whole of its
+# behaviour: make skips it entirely whenever `node_modules/` exists, so an ordinary
+# working tree pays nothing and nobody's installed tree is ever wiped or re-resolved
+# behind their back. It fires in exactly one situation - a checkout that has never
+# been installed.
+#
+# That situation is not hypothetical. A Workflow Check runs its command in a freshly
+# leased pool worktree pinned to the run's commit (see "Check leases" in the README),
+# and `node_modules/` is gitignored - so a clean checkout genuinely has none. Every
+# target below would otherwise fail on the first `tsc` with
+#
+#   error TS2688: Cannot find type definition file for 'node'.
+#
+# which reads like a type error in the diff and is nothing of the kind: it is the
+# absence of `@types/node`. `make setup` installs too, but it also builds and rewires
+# hooks, so it is not something a check can be asked to run first.
+#
+# `npm ci` rather than `npm install`: the lockfile is the point in a fresh tree, and
+# its usual downside (it deletes `node_modules` first) cannot bite here, since this
+# only ever runs when there is nothing to delete.
+#
+# Deliberately NOT in `.PHONY` - a phony prerequisite would reinstall on every target.
+node_modules:
+	npm ci
+
+build: node_modules ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
 	npm run build
 
 app: ## Build and package the macOS app (.app + .dmg) into release/
@@ -99,16 +126,16 @@ install-app: app ## Build, package, and copy Mission Control.app into /Applicati
 icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
 	node scripts/gen-icons.mjs
 
-test: ## Run the full test suite
+test: node_modules ## Run the full test suite
 	npm test
 
-lint: ## Lint src, hooks, test, scripts (oxlint)
+lint: node_modules ## Lint src, hooks, test, scripts (oxlint)
 	npm run lint
 
-check: ## Typecheck
+check: node_modules ## Typecheck
 	npm run typecheck
 
-smoke: ## Boot the built bundles to prove they run (needs `make build` first)
+smoke: node_modules ## Boot the built bundles to prove they run (needs `make build` first)
 	npm run smoke
 
 hooks: ## Install the Claude status hooks

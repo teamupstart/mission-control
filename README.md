@@ -5216,6 +5216,17 @@ node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from t
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
 ```
 
+The `make` wrappers for the build and verification commands - `make build`, `make test`,
+`make lint`, `make check`, `make smoke` - install dependencies first **when, and only when,
+`node_modules/` is absent**. An installed tree pays nothing and is never re-resolved behind
+your back; a checkout that has never been installed no longer fails with
+`TS2688: Cannot find type definition file for 'node'`, which reads like a type error in your
+diff and is really just a missing `@types/node`. That case is routine rather than exotic: a
+[Workflow check](#check-nodes) runs its command in a freshly leased
+[pool worktree](#check-leases), and `node_modules/` is gitignored, so every check starts from
+a tree with no dependencies at all. The `npm run …` forms are unchanged and assume an
+installed tree.
+
 `npm run test:e2e` is the browser layer: it boots the built daemon against a throwaway state
 dir, loads the built dashboard in Chromium, and drives real flows - dispatching an agent,
 typing into a conversation - end to end. It spends no model tokens, because every agent

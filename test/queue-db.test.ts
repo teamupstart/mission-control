@@ -568,7 +568,7 @@ test("pruneDeadQueues collects an EMPTY row at any age, but keeps one holding wr
   // card, a human's answer, and the once-per-episode guard that stops the prompted
   // trigger re-verifying an idle session every tick.
   upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, updatedAt: Date.now() });
-  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "/no-mistakes", promptedGoal: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "ship directly", promptedGoal: null, updatedAt: Date.now() });
   upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", updatedAt: Date.now() });
 
   pruneDeadQueues(new Set(), 1);

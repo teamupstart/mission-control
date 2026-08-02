@@ -118,7 +118,6 @@ test("the judgment policy is identical on both runtimes", () => {
     "NEVER auto-approve these",
     "YOUR OPERATOR'S STANDING INSTRUCTIONS",
     "PHRASING answer.text",
-    "never skip merely for being a gate",
   ];
   for (const runtime of ["terminal", "sdk"] as const) {
     const p = policyFor({ child: "Claude Code", menus: true, runtime });

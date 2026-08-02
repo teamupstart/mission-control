@@ -336,13 +336,19 @@ export async function applyQueueAction(
       await actions.markWrapupAsked(session.id);
       return { kind: "done", what: "the queue drained - asked about wrapping up" };
 
+    case "workflow-wrapup":
+      // The worker resolves this through the workflow completion-claim API before
+      // reaching the generic apply path. Keeping the action explicit prevents an
+      // internal workflow marker from ever being typed into a live session.
+      return { kind: "noop" };
+
     case "auto-wrapup": {
       // Mark FIRST, then type, then record the answer. The order is the entire safety
       // argument here, and it is the opposite of the send path's - deliberately.
       //
       // A queue item is idempotent-ish under a double delivery: the agent re-reads an
-      // instruction it already has. This is not. `/no-mistakes` PUSHES and opens a PR,
-      // so typing it twice is two pipelines racing on one branch - the exact harm the
+      // instruction it already has. This is not. A shipping instruction can push and open
+      // a PR, so typing it twice creates two attempts racing on one branch - the harm the
       // card's `wrapupSent` latch was added for after a remount did it once.
       //
       // So the write that RETIRES this action lands before the irreversible act:

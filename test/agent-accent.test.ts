@@ -62,10 +62,6 @@ test("Foreman has its own token, and no rule borrows an agent's", () => {
   // `-foreman` pattern because `.fe-ask` - the escalation's terminal capture - carries
   // the accent without carrying the word.
   for (const sel of [
-    ".nm-byline-foreman",
-    ".nm-who-foreman",
-    ".nm-foreman-tag",
-    ".nm-reply-foreman",
     ".turn-foreman .turn-role",
     ".fe-ask",
   ]) {

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Start a new agent session in its own pre-warmed, no-mistakes-gated worktree.
+// Start a new agent session in its own pre-warmed worktree.
 //
 // It leases a worktree from this repo's treehouse pool (creating one if the pool
-// is empty, up to max_trees), prepares it (warm deps + gate), and then drops you
+// is empty, up to max_trees), prepares it (warm deps), and then drops you
 // into it - so two agents never share one working tree, which is exactly the
 // clobbering this harness exists to watch for.
 //

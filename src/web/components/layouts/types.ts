@@ -45,8 +45,6 @@ export interface SessionViewProps {
    * its own poll.
    */
   backlogPlan: BacklogPlan | null;
-  /** Sessions whose parked no-mistakes gate actually needs you (computed cross-session). */
-  gateAlerts: ReadonlySet<string>;
   selectedId: string | null;
   /**
    * Which half of the Console holds the keyboard - the rail selector or the open
@@ -80,7 +78,7 @@ export interface SessionViewProps {
   conversationTabRequest: { sessionId: string; nonce: number } | null;
   /**
    * One-shot request from the session-workflows shortcut to reveal a session's Workflows
-   * tab - its workflow ladder and no-mistakes gate. Nonce for the same reason the others
+   * tab and its workflow ladder. Nonce for the same reason the others
    * carry one: the request is consumed by a mounted detail, not stored as a tab preference.
    */
   workflowsTabRequest: { sessionId: string; nonce: number } | null;
@@ -175,7 +173,6 @@ export interface SessionViewProps {
 export function cardProps(p: SessionViewProps, s: Session) {
   return {
     session: s,
-    gateNeedsYou: p.gateAlerts.has(s.id),
     selected: s.id === p.selectedId,
     onSelect: () => p.onSelect(s.id),
     expanded: p.expandedId === s.id,

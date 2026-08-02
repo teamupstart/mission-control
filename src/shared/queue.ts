@@ -1,6 +1,4 @@
-import { AGENT_TYPES } from "./types.ts";
-import type { AgentType, SessionQueueSummary, WorkItem, WorkItemState } from "./types.ts";
-import { skillCommand } from "./harness-capabilities.ts";
+import type { SessionQueueSummary, WorkItem, WorkItemState } from "./types.ts";
 
 // The work item lifecycle's two load-bearing state sets, defined ONCE.
 //
@@ -58,10 +56,10 @@ export function inFlightItem(items: WorkItem[]): WorkItem | null {
  * and the card MUST send the same bytes. A copy that drifts is a copy that ships a
  * different thing depending on who pressed the button.
  */
-export type WrapupMode = "ask" | "no-mistakes" | "pr";
+export type WrapupMode = "ask" | "workflow" | "pr";
 
 /** The enum's values, for the config schema. Spelled once so zod can't drift from the type. */
-export const WRAPUP_MODES = ["ask", "no-mistakes", "pr"] as const satisfies readonly WrapupMode[];
+export const WRAPUP_MODES = ["ask", "workflow", "pr"] as const satisfies readonly WrapupMode[];
 
 /**
  * WHEN a wrap-up fires, as opposed to WHAT it sends (`WrapupMode`).
@@ -96,34 +94,6 @@ export function wrapupTriggerOn(
 }
 
 /**
- * The skill the `no-mistakes` wrap-up mode runs. The skill's NAME, which is the same
- * everywhere - what differs is how each harness's composer is told to run it.
- */
-export const NO_MISTAKES_SKILL = "no-mistakes";
-
-/**
- * The wrap-up instruction that runs the no-mistakes gate, spelled for ONE harness.
- *
- * This is agent-scoped rather than a constant because the invocation genuinely is: it is
- * `/no-mistakes` on Claude, `$no-mistakes …` on Codex and `/skill:no-mistakes` on pi (see
- * `SkillsSpec.invoke`, which carries the captures). It was a single constant carrying
- * Claude's spelling, typed at every agent - so a Codex session got a string its TUI has
- * no command for, and whether the gate ran at all came down to the model reaching for the
- * skill on its own.
- *
- * Still one line, whichever harness asks: `sendText` submits on every embedded newline,
- * so a wrapped instruction is several half-instructions typed in sequence. It also pushes
- * and opens the PR itself, which is why the card's "both ticked" case prefills this alone
- * rather than asking for both.
- *
- * Null when the harness has no way to run a skill by name. Callers must treat that as
- * "there is nothing to type" and fall back to asking the human - never as a blank send.
- */
-export function wrapupNoMistakes(agent: AgentType): string | null {
-  return skillCommand(agent, NO_MISTAKES_SKILL);
-}
-
-/**
  * The PR instruction, and it does not stop at `gh pr create`: an unattended wrap-up
  * that opens a red or unmergeable PR has handed the human the work back, which is the
  * one thing this mode exists not to do. So it names the finish line - green CI, no
@@ -131,20 +101,12 @@ export function wrapupNoMistakes(agent: AgentType): string | null {
  * unconditionally rather than "if there are conflicts", because an agent that has to
  * first decide whether a conflict exists is an agent that decides wrong and stops.
  *
- * One line, for the same reason the gate instruction is: `sendText` submits on every
- * embedded newline, so a wrapped string here is several half-instructions typed in
- * sequence.
- *
- * NOT harness-scoped, deliberately, though it names the gate. It is PROSE - a prohibition
- * - and `wrapupNoMistakes` returns a runnable LINE, which for Codex carries a trailing
- * "run this skill now" clause that would invert the sentence it was pasted into. The
- * product name plus "or any no-mistakes command" already covers every spelling, and a
- * second per-harness field existing only so this sentence could name a sigil would be
- * paid for on every future harness.
+ * One line because `sendText` submits on every embedded newline, so a wrapped string
+ * would otherwise become several half-instructions typed in sequence.
  */
 export const WRAPUP_PR =
-  "Do not run /no-mistakes or any no-mistakes command. Use git and gh directly: commit this" +
-  " work, push the branch, and open a PR. Then merge the default branch into yours and resolve" +
+  "Use git and gh directly: commit this work, push the branch, and open a PR. Then merge the" +
+  " default branch into yours and resolve" +
   " any conflicts, and follow the PR's CI to completion - fix whatever fails and push again" +
   " until every check passes and the PR has no merge conflicts.";
 
@@ -159,12 +121,6 @@ export const WRAPUP_PR =
  * PR for work it already shipped. Retiring a payload therefore means moving it here,
  * never deleting it.
  *
- * A harness's `SkillsSpec.invoke` is now one of the things that can retire a payload:
- * `isWrapupPayload` composes the gate instruction per agent, so re-spelling an invocation
- * silently drops whatever that harness was sent before. Append the old composed line here
- * when you change one. Nothing was retired by making the gate instruction harness-scoped
- * in the first place - Claude's `/no-mistakes` is what every session was sent, and it is
- * still composed, byte for byte, by `wrapupNoMistakes("claude")`.
  */
 const RETIRED_WRAPUP_PAYLOADS: readonly string[] = [
   "Please commit this work, push the branch, and open a PR.",
@@ -172,23 +128,6 @@ const RETIRED_WRAPUP_PAYLOADS: readonly string[] = [
     " yours and resolve any conflicts, and follow the PR's CI to completion - fix whatever fails" +
     " and push again until every check passes and the PR has no merge conflicts.",
 ];
-
-/**
- * The composed wrap-up instruction for the card's two checkboxes, for the harness whose
- * pane it will be typed into. A guess, which is exactly why the card's textarea is
- * editable.
- *
- * A ticked gate box on a harness with no skill invocation falls through to the PR text
- * rather than composing a blank: the box does not render there (see `Wrapup`), so this is
- * the belt to that braces, and an empty prefill next to a live Send is the one outcome
- * that reads as broken.
- */
-export function composeWrapup(pr: boolean, nm: boolean, agent: AgentType): string {
-  const gate = nm ? wrapupNoMistakes(agent) : null;
-  if (gate) return gate;
-  if (pr) return WRAPUP_PR;
-  return "";
-}
 
 /**
  * What the Ship it? question says, worded for the trigger that actually raised it.
@@ -262,14 +201,11 @@ export function newWrapupAsk(
  * Null is not "do nothing" - it's "fall back to the human", so the caller must still
  * mark the drain. See `decideQueueTick` step 5.
  *
- * `agent` is the session this will be typed into, and it is required rather than
- * defaulted: the gate instruction is spelled differently per harness, and a default would
- * quietly hand every future harness Claude's slash command - the exact bug this argument
- * exists to close. It is also a second source of null (a harness that cannot run a skill
- * by name), which needs no new handling: the caller already treats null as "ask".
+ * The built-in workflow is claimed through the workflow API before this projection is
+ * consulted, so it has no prompt payload. Only direct PR mode types into the session.
  */
-export function autoWrapupPayload(mode: WrapupMode, agent: AgentType): string | null {
-  if (mode === "no-mistakes") return wrapupNoMistakes(agent);
+export function autoWrapupPayload(mode: WrapupMode): string | null {
+  if (mode === "workflow") return null;
   if (mode === "pr") return WRAPUP_PR;
   return null;
 }
@@ -281,11 +217,8 @@ export function autoWrapupPayload(mode: WrapupMode, agent: AgentType): string | 
  * This is what stops the `prompted` trigger looping forever, and the loop it closes
  * is not hypothetical. The goal is captured from `UserPromptSubmit`, which fires for
  * an INJECTED prompt exactly as it does for a typed one, and `substantivePrompt`
- * filters only `/clear` and `/compact` - so `/no-mistakes` lands as the session's new
- * goal. The prompted trigger re-arms on a new goal, so without this check the cycle
- * is: fire -> type `/no-mistakes` -> goal becomes `/no-mistakes` -> the run finishes
- * and the session parks -> re-armed -> fire again. Forever, on a live repo, each pass
- * opening another PR.
+ * filters only `/clear` and `/compact`. A prompt emitted by an older build can therefore
+ * remain the captured goal after an upgrade and must stay recognised as Foreman's own.
  *
  * Deliberately a comparison against the payloads rather than a general "did Foreman
  * type this" lookup: turn authorship (see `injections.ts`) is in-memory, unpersisted,
@@ -294,16 +227,11 @@ export function autoWrapupPayload(mode: WrapupMode, agent: AgentType): string | 
  * emitted itself is something it can always recognise - including the ones it emitted
  * before the last upgrade, which is what `RETIRED_WRAPUP_PAYLOADS` is for.
  *
- * Every harness's spelling of the gate, not just the one this session runs, and the fold
- * is the whole point: a session's goal outlives the session, a `/clear` re-keys it, and a
- * card can be re-attached across harnesses - so "was this us?" must not depend on which
- * agent happens to be holding the pane when the question is asked. It also keeps Claude's
- * `/no-mistakes` recognised on a Codex session, which is what every Codex session that
- * has ever been auto-wrapped has sitting in its goal today.
+ * The retired list is append-only because captured goals outlive the process and can be
+ * re-attached to another harness after an upgrade.
  */
 export function isWrapupPayload(text: string | null | undefined): boolean {
   const t = text?.trim();
   if (t === undefined) return false;
-  if (t === WRAPUP_PR || RETIRED_WRAPUP_PAYLOADS.includes(t)) return true;
-  return AGENT_TYPES.some((agent) => wrapupNoMistakes(agent) === t);
+  return t === WRAPUP_PR || RETIRED_WRAPUP_PAYLOADS.includes(t);
 }

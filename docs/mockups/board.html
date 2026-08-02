@@ -193,7 +193,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      /* Progress rail: the no-mistakes pipeline compressed to a hairline the tile
+      /* Progress rail: the review workflow compressed to a hairline the tile
          can always afford - the detail drawer carries the full strip. */
       .tile-rail {
         display: flex;
@@ -417,7 +417,7 @@
           <span class="tile-head">
             <span class="agent-dot agent-${s.agent}"></span>
             <h3>${s.name}</h3>
-            ${s.gated ? `<span class="gated" title="gated by no-mistakes">◇</span>` : ""}
+            ${s.gated ? `<span class="gated" title="gated by review workflow">◇</span>` : ""}
           </span>
           ${s.goal ? `<p class="tile-goal ${s.goal.source}">${s.goal.text}</p>` : `<p class="tile-goal none">No goal · Codex doesn't expose prompts</p>`}
           ${s.nm ? `<span class="tile-rail" title="${s.nm.line}">${s.nm.steps.map((st) => `<span class="${NM_TONE[st]}"></span>`).join("")}</span>` : ""}
@@ -467,7 +467,7 @@
             ${s.activity ? `<p class="activity">${s.activity}</p>` : ""}
             ${s.note ? `<div class="note"><span class="note-head">◆ Foreman escalated a decision</span><p>${s.note.text}</p><div class="note-acts"><button class="act">Approve draft</button><button class="act">Edit</button><button class="act">Dismiss</button></div></div>` : ""}
             ${s.nm ? nmStrip(s, needsYou) : ""}
-            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>no-mistakes fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
+            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>review workflow fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
             ${transcript(s)}
             ${composeBox(s)}
           </div>

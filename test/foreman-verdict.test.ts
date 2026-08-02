@@ -238,7 +238,6 @@ test("applyVerdict: live answer sends first, then records the answered note", as
     selectOption: async () => (calls.push("selectOption"), {}),
     submitForm: async () => (calls.push("submitForm"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
-    logGateReply: async () => (calls.push("logGateReply"), {}),
   };
   const plan = planFromVerdict(ANSWER, ctx(), true);
   await applyVerdict(actions, ctx(), plan);
@@ -255,7 +254,6 @@ test("applyVerdict: a failed send records purpose only (no marker) and rethrows"
     selectOption: async () => ({}),
     submitForm: async () => ({}),
     resolveReview: async () => ({}),
-    logGateReply: async () => ({}),
   };
   const plan = planFromVerdict(ANSWER, ctx(), true);
   await assert.rejects(applyVerdict(actions, ctx(), plan), /pane gone/);
@@ -273,7 +271,6 @@ test("applyVerdict: dry-run draft writes the note and sends nothing", async () =
     selectOption: async () => (calls.push("selectOption"), {}),
     submitForm: async () => (calls.push("submitForm"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
-    logGateReply: async () => (calls.push("logGateReply"), {}),
   };
   await applyVerdict(actions, ctx(), planFromVerdict(ANSWER, ctx(), false));
   assert.deepEqual(calls, ["putNote"]);
@@ -468,7 +465,7 @@ test("a wrapped label that fits two rows is refused - the wrap can't be told fro
 });
 
 test("with no menu on screen, prose is still typed as it always was", () => {
-  // The majority path - a parked no-mistakes gate, an ordinary question - must not regress
+  // The majority path, an ordinary question, must not regress
   // into escalating for want of an option that has nothing to select.
   const plan = planFromVerdict(ANSWER, ctx({ menu: null }), true);
   assert.equal(plan.send?.text, ANSWER.answer?.text);
@@ -504,7 +501,6 @@ test("applyVerdict selects the row and never types at a menu", async () => {
     selectOption: async () => (calls.push("selectOption"), {}),
     submitForm: async () => (calls.push("submitForm"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
-    logGateReply: async () => (calls.push("logGateReply"), {}),
   };
   const c = ctx({ menu: TRAY_MENU });
   await applyVerdict(actions, c, planFromVerdict(MENU_ANSWER, c, true));
@@ -523,7 +519,6 @@ test("a refused selection leaves the session unanswered and retryable", async ()
     },
     submitForm: async () => ({}),
     resolveReview: async () => ({}),
-    logGateReply: async () => ({}),
   };
   const c = ctx({ menu: TRAY_MENU });
   await assert.rejects(applyVerdict(actions, c, planFromVerdict(MENU_ANSWER, c, true)), /menu changed/);
@@ -554,59 +549,8 @@ test("a label that fits two rows is escalated - an ambiguous match may not confi
   assert.match(plan.note.recommendation ?? "", /Approve it once/);
 });
 
-test("the gate byline quotes the row that was delivered, never the prose that wasn't", async () => {
-  // `text` is the rationale on a menu - it is never typed. A byline quoting it would put
-  // words on the fix card that the child never saw, which is the one fabrication that is
-  // invisible downstream.
-  const logged: string[] = [];
-  const actions: ForemanActions = {
-    putNote: async () => ({}),
-    sendText: async () => ({}),
-    selectOption: async () => ({}),
-    submitForm: async () => ({}),
-    resolveReview: async () => ({}),
-    logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
-  };
-  const c = ctx({ menu: TRAY_MENU, gate: { runId: "r1", step: "review", findingIds: ["f1"] } });
-  await applyVerdict(actions, c, planFromVerdict(MENU_ANSWER, c, true));
-  assert.deepEqual(logged, ["Make the tray uninstall durable"]);
-});
 
-test("a menu send is logged even with submit false - selecting a row always presses the Enter", async () => {
-  // `submit` is a question about typing, and nothing is typed here. Gating the byline on it
-  // would drop the author of a reply that did land.
-  const logged: string[] = [];
-  const actions: ForemanActions = {
-    putNote: async () => ({}),
-    sendText: async () => ({}),
-    selectOption: async () => ({}),
-    submitForm: async () => ({}),
-    resolveReview: async () => ({}),
-    logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
-  };
-  const v: Verdict = { ...MENU_ANSWER, answer: { ...MENU_ANSWER.answer!, submit: false } };
-  const c = ctx({ menu: TRAY_MENU, gate: { runId: "r1", step: "review", findingIds: ["f1"] } });
-  await applyVerdict(actions, c, planFromVerdict(v, c, true));
-  assert.deepEqual(logged, ["Make the tray uninstall durable"]);
-});
 
-test("an unsubmitted PROSE send still logs no byline - it's sitting in the pane, unread", async () => {
-  const logged: string[] = [];
-  const actions: ForemanActions = {
-    putNote: async () => ({}),
-    sendText: async () => ({}),
-    selectOption: async () => ({}),
-    submitForm: async () => ({}),
-    resolveReview: async () => ({}),
-    logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
-  };
-  const v: Verdict = { ...ANSWER, answer: { ...ANSWER.answer!, submit: false } };
-  const c = ctx({ menu: null, gate: { runId: "r1", step: "review", findingIds: ["f1"] } });
-  await applyVerdict(actions, c, planFromVerdict(v, c, true));
-  assert.deepEqual(logged, []);
-});
-
-// --- Which tier can answer a menu --------------------------------------------------
 
 test("menuBlocksAnswer: an answer naming no row is blocked by a menu, so the ladder can route up", () => {
   // The Tier 1 router's schema has no `option` field at all, so every answer it reaches on a

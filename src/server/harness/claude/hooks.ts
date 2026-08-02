@@ -72,10 +72,7 @@ const MATCHER_EVENTS = ["PreToolUse", "PostToolUse"] as const;
  * both are a `Stop` followed by this same nudge - so it now reads `idle` and won't
  * nag at 60s.
  *
- * Foreman recovers the case it can identify structurally: a parked no-mistakes gate
- * classifies as `gate-parked` (see foreman/pending.ts) off the run summary, and its
- * reviewer reads the relayed finding out of the transcript. A bare prose question with
- * no gate behind it stays invisible - nothing in the hook stream distinguishes it from
+ * A bare prose question stays invisible: nothing in the hook stream distinguishes it from
  * an idle prompt, and `no-question` disposes it without a model call. Recovering that
  * one needs a signal this stream doesn't carry, not a smarter reader.
  */

@@ -11,7 +11,7 @@ import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
  *
  * The detail is a bespoke, tabbed reading of the session (see ConsoleDetail) - NOT the
  * grid's card dropped into a column. It's built from the same leaf pieces the card is
- * (transcript, work queue, gate strip, action bar, session-bits), arranged for a pane
+ * (transcript, work queue, action bar, session-bits), arranged for a pane
  * that has room the card never does: the conversation is permanent, and the sections
  * that share a card's height in the grid get a tab each here.
  *
@@ -26,7 +26,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   // an ensemble's siblings sit together under one header. Empty groups are dropped here (and
   // only here - the contract is that `orderSessions` returns them all, because App's board
   // column arrays depend on the indices lining up whether or not a column is on screen).
-  const groups = orderSessions(props.sessions, props.gateAlerts).groups.filter(
+  const groups = orderSessions(props.sessions).groups.filter(
     (g) => g.sessions.length > 0,
   );
 
@@ -39,7 +39,6 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
-      gateNeedsYou={props.gateAlerts.has(s.id)}
       onSelect={() => props.onSelect(s.id)}
       registerEl={props.registerEl}
       workflowRun={props.workflowRunBySession?.get(s.id) ?? null}
@@ -93,7 +92,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
         {active ? (
           // Keyed by id so switching sessions remounts: the tab resets to the
           // conversation and the transcript starts clean, instead of showing the
-          // previous session's Gate tab.
+          // previous session's selected tab.
           <ConsoleDetail key={active.id} view={props} session={active} />
         ) : (
           <div className="console-empty">

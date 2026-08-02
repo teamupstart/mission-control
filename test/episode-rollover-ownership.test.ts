@@ -57,7 +57,6 @@ function dispatched(
     gitBranch: over.startBranch === undefined ? "codex/phase-4-live" : over.startBranch,
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys001",
     terminals: [handle],

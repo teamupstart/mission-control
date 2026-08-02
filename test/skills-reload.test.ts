@@ -27,7 +27,6 @@ function mkSession(over: Partial<Session> = {}): Session {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys001",
     permissionMode: null,
@@ -44,10 +43,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     // Settled well past settleMs, so a test opts INTO un-settled.
     lastActivity: NOW - 60_000,
     pendingReviews: 0,
-    nomistakes: null,
-    nomistakesFixes: [],
     task: null,
-    nomistakesNarration: null,
     prUrl: null,
     prState: null,
     prChecks: null,

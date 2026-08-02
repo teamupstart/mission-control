@@ -27,16 +27,6 @@ a category, and the durable configuration moves there.
 
 ## What moves where
 
-| Control | Today | After |
-|---|---|---|
-| Enable Foreman | popover | **popover** (quick) |
-| Mode (dry-run / semi-auto / live) | popover | **popover** (quick) |
-| Auto-approve non-destructive access | popover | **popover** (quick) |
-| Work queues (fix attempts, fix rounds) | popover | **popover** (quick) |
-| On drain (ask / no-mistakes / pr) | popover | **popover** (quick) |
-| **Tier (cheap tier: off / shadow / on)** | popover | **Settings → Foreman** |
-| **Live repo allowlist** | popover textarea (Live mode only) | **Settings → Foreman** (picker + list) |
-
 The split is deliberate: the popover keeps what you reach for while watching the fleet
 (is it on, what mode, how deep the queue); the settings page holds what you set up once
 (which tier posture, which repos are trusted for live sends).

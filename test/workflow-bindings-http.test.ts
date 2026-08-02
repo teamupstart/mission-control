@@ -21,6 +21,7 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { NO_MISTAKES_REVIEW_WORKFLOW_ID } = await import("../src/shared/builtin-workflow.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
@@ -35,7 +36,6 @@ function discovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
     terminals: [],
@@ -431,6 +431,145 @@ test("binding routes pin immutable versions, enforce one active owner, and refus
   });
   assert.equal(rebound.status, 201);
   await workflows.stop();
+});
+
+test("the Ship it review route starts the built-in workflow and never replaces another binding", async () => {
+  const graph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 100, y: 0 } },
+    ],
+    edges: [
+      { id: "end", source: "session", sourcePort: "submitted", target: "end", targetPort: "terminal" },
+    ],
+  };
+  seedRuntimeVersion("manual-review-conflict", graph);
+  setWorkflowConfig({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
+
+  const registry = new Registry();
+  registry.applyDiscovery([
+    discovered({
+      syntheticId: "review-session",
+      tty: "ttys-review",
+      terminals: [mkMuxHandle({ paneId: "%review" })],
+    }),
+    discovered({
+      syntheticId: "conflict-session",
+      tty: "ttys-conflict",
+      terminals: [mkMuxHandle({ paneId: "%conflict" })],
+    }),
+  ]);
+  registry.applyHook({
+    agent: "claude",
+    event: "PostToolUse",
+    sessionId: "agent-review",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: { tmuxPane: "%review" },
+  });
+  registry.applyHook({
+    agent: "claude",
+    event: "PostToolUse",
+    sessionId: "agent-conflict",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: { tmuxPane: "%conflict" },
+  });
+  const personas = new PersonaManager(registry);
+  const queues = new QueueManager(registry);
+  assert.equal(registry.ensureQueue("review-session", 1), "agent-review");
+  const workflows = new WorkflowManager(registry, personas.store, {
+    readContextRaw: async (_registry, binding) => {
+      const raw = {
+        primaryGoal: { rawPrompt: "Review this", refined: "Review this", sourceNoteKey: binding.noteKey },
+        humanDecisions: [],
+        priorPersonaFeedback: [],
+        session: { agent: "claude", name: "work", cwd: "/repo", branch: "feature" },
+        evidence: {
+          headSha: "abc",
+          diffFingerprint: "diff",
+          diff: "patch",
+          diffTruncated: false,
+          workingTreeDirty: true,
+          workingTreeStatus: [" M file.ts"],
+          workingTreeStatusTruncated: false,
+          transcript: [],
+          transcriptAnchor: 1,
+          transcriptTruncated: false,
+          standards: [],
+          standardsTruncated: false,
+        },
+      };
+      return {
+        raw,
+        context: fallbackWorkflowContext(raw, null),
+        boundary: {
+          noteKey: binding.noteKey,
+          sessionId: binding.sessionId!,
+          headSha: "abc",
+          transcriptPath: null,
+          transcriptSize: 1,
+          repositoryFingerprint: "repository",
+        },
+      };
+    },
+    boundaryChanged: async () => false,
+    compactContext: async (raw) => fallbackWorkflowContext(raw, "test fallback"),
+  });
+  const app = buildApp(
+    registry,
+    new ReviewManager(registry),
+    new TaskManager(registry),
+    queues,
+    undefined,
+    personas,
+    workflows,
+  );
+
+  const started = await request(
+    app,
+    "/api/sessions/review-session/workflow-review",
+    { requestId: "ship-review-1" },
+  );
+  assert.equal(started.status, 200);
+  const first = await started.json() as {
+    run: { id: string };
+    submission: { id: string };
+    idempotent: boolean;
+  };
+  const binding = workflows.store.activeBindingForNote("agent-review");
+  assert.ok(binding);
+  assert.equal(
+    workflows.store.getWorkflowVersionById(binding.workflowVersionId)?.workflowId,
+    NO_MISTAKES_REVIEW_WORKFLOW_ID,
+  );
+  assert.equal(binding.triggerMode, "manual");
+  assert.equal(binding.deliveryMode, "preview");
+  assert.equal(queues.get("review-session")?.wrapupAnswer, "workflow:no-mistakes-review");
+
+  const repeated = await request(
+    app,
+    "/api/sessions/review-session/workflow-review",
+    { requestId: "ship-review-2" },
+  );
+  assert.equal(repeated.status, 200);
+  const second = await repeated.json() as typeof first;
+  assert.equal(second.run.id, first.run.id);
+  assert.equal(second.submission.id, first.submission.id);
+  assert.equal(second.idempotent, true);
+
+  const conflicting = workflows.createBinding({
+    workflowVersionId: "v-manual-review-conflict",
+    sessionId: "conflict-session",
+  });
+  assert.equal(conflicting.ok, true);
+  const refused = await request(
+    app,
+    "/api/sessions/conflict-session/workflow-review",
+    { requestId: "ship-review-conflict" },
+  );
+  assert.equal(refused.status, 409);
+  assert.match((await refused.json() as { error: string }).error, /different workflow binding/);
 });
 
 test("positive disappearance orphans, compatible reattach is explicit, and conversation changes pause", async () => {

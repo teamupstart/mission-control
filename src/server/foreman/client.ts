@@ -39,9 +39,13 @@ import type {
 } from "@shared/types.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { InjectError } from "./queue-apply.ts";
-import type { GateRef } from "./pending.ts";
 import type { ForemanActions } from "./verdict.ts";
-import type { WorkflowCompletionClaim, WorkflowCompletionClaimResult } from "@shared/workflow.ts";
+import type {
+  WorkflowCompletionClaim,
+  WorkflowCompletionClaimResult,
+  WorkflowRunPage,
+  WorkflowRunSummary,
+} from "@shared/workflow.ts";
 
 // The worker's client for the daemon's localhost API. All `/api/*` routes are
 // loopback-gated (not token-gated), and the worker runs on the same host, so a
@@ -935,6 +939,14 @@ export class ForemanClient implements ForemanActions {
     return get<Session[]>("/api/sessions");
   }
 
+  /** Runs bound to this stable session id or note key, newest first. */
+  async workflowRuns(session: string): Promise<WorkflowRunSummary[]> {
+    const page = await get<WorkflowRunPage>(
+      `/api/workflow-runs?session=${enc(session)}&limit=200`,
+    );
+    return page.items;
+  }
+
   reviews(): Promise<ReviewItem[]> {
     return get<ReviewItem[]>("/api/reviews");
   }
@@ -1368,14 +1380,4 @@ export class ForemanClient implements ForemanActions {
     await flushSpend();
   }
 
-  async logGateReply(id: string, gate: GateRef, text: string): Promise<unknown> {
-    const res = await send("POST", `/api/sessions/${enc(id)}/gate-reply`, {
-      runId: gate.runId,
-      step: gate.step,
-      findingIds: gate.findingIds,
-      text,
-    });
-    if (!res.ok) throw new Error(`logGateReply ${id} -> ${res.status}`);
-    return res.json();
-  }
 }

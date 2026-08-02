@@ -19,8 +19,8 @@ import type {
 // caller, so a second caller cannot forget it.
 //
 // The catalog here is FABRICATED on purpose. These are rules about merging, not about what
-// the four shipped documents happen to say, and asserting them against the real No-Mistakes
-// Review would make "a name an operator already took" mean whatever that graph is called.
+// the four shipped documents happen to say, and asserting them against the real shipped
+// review workflow would make "a name an operator already took" mean whatever that graph is called.
 
 const home = mkdtempSync(join(tmpdir(), "mission-builtin-workflows-store-"));
 process.env.HARNESS_HOME = join(home, "state");

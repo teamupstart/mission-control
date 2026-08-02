@@ -50,7 +50,7 @@ CI runs typecheck, tests, build, and bundle smoke tests on Node.js 24 and 26, th
 6. New UI features and UI behavior changes require a Playwright spec in `e2e/`. See below.
 7. Commit only task-related files on a feature branch.
 
-When using no-mistakes, follow its gate until it passes. After it passes, do not rerun it to address Inspector feedback. Fix the feedback, resolve conflicts, push, and monitor the existing PR and CI until green.
+When a review workflow passes, do not rerun it to address Inspector feedback. Fix the feedback, resolve conflicts, push, and monitor the existing PR and CI until green.
 
 ## Code style and examples
 

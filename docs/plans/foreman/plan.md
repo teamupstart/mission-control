@@ -72,39 +72,6 @@ Notes must survive polls and restarts and stay attached to the *same Claude sess
 the synthetic discovery id churns, so key them on `agentSessionId` when present, else the
 synthetic `session.id`.
 
-- **`src/server/db.ts`** — new table in the `openDb()` migration block:
-  ```sql
-  CREATE TABLE IF NOT EXISTS session_notes (
-    note_key     TEXT PRIMARY KEY,   -- agentSessionId ?? synthetic session id
-    purpose      TEXT,               -- 1–2 sentence "what is this session for + latest context"
-    brief        TEXT,               -- decision brief markdown (escalated / dry-run proposal)
-    recommendation TEXT,             -- Foreman's recommended answer
-    disposition  TEXT NOT NULL,      -- 'answered' | 'escalated' | 'pending' | 'skipped'
-    last_action  TEXT,               -- one-line audit ("approved Bash: npm test")
-    handled_marker TEXT,             -- reviewId / last transcript turn id it acted on (idempotency)
-    updated_at   INTEGER NOT NULL
-  );
-  ```
-  Helpers mirroring the review/task ones: `upsertSessionNote`, `getSessionNote(key)`,
-  `loadSessionNotes()` (rehydrate into the registry on start).
-- **`src/shared/types.ts`** — add `SessionNote` + a compact `SessionNoteSummary`
-  (`purpose, brief, recommendation, disposition, lastAction, updatedAt`) and a
-  `note: SessionNoteSummary | null` field on `Session`. No new `ServerEvent` — the note rides
-  the existing `session_upsert` (whole Session) just like `task`/`nomistakes` do.
-- **`src/server/registry.ts`** — hold `notes: Map<noteKey, SessionNote>`; add `noteKeyFor(s)`
-  and `noteSummaryFor(s)`; set `base.note` in `mergeDiscovered` (read-only over the map, like
-  `taskSummaryForCwd`); add `upsertNote(...)` that persists + re-denormalizes onto every
-  matching live session (like `syncSessionsForWorktree`) + emits; add `note` to `sessionEqual`.
-- **`src/server/routes.ts`** (localhost-only, like the other actions):
-  - `PUT /api/sessions/:id/note` — body `SetNoteSchema` (`purpose?, brief?, recommendation?,
-    disposition?, lastAction?, handledMarker?`); resolves the note key from the session and
-    upserts.
-  - `GET /api/sessions/:id/transcript?turns=N` — **non-streaming** JSON transcript for the
-    reviewer, returning `{ messages, truncated }` with the **head** (opening turns = the
-    original goal) **and tail** (recent context). Thin wrapper over the existing tail reader.
-- **`src/shared/protocol.ts`** — `SetNoteSchema` (all fields optional but at least one
-  required).
-
 ### 2. Server — Foreman config + status
 
 - Persisted config (a `foreman_config` single-row table, or a JSON file under `HARNESS_HOME`):
@@ -260,11 +227,3 @@ server → worker → UI in that order (each independently testable).
 
 Current harness support has moved beyond this original v1 scope; see
 [Foreman](../../../README.md#foreman-auto-responder).
-
-- Daemon-managed auto-launch of the worker (v1 is `npm run foreman`).
-- ~~Auto-answering no-mistakes gates (that path already has `nomistakes/respond`; could fold in later).~~
-  **Resolved:** folded in. A parked gate whose driving agent has stopped classifies as the
-  `gate-parked` situation (see `foreman/pending.ts`) and reaches the full reviewer, which reads the
-  relayed finding off the transcript and judges it against the session's goal. The cheap tier is
-  never allowed to dispose one - see backstop 4 in `docs/plans/foreman-watcher/plan.md`.
-- Learning/att­ribution memory of your past decisions to sharpen its defaults.

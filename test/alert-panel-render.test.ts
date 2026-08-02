@@ -32,7 +32,6 @@ const awayOn: AwayConfig = {
   detectStalls: true,
   stallWorkingMinutes: 10,
   stallUnfinishedMinutes: 20,
-  stallGateMinutes: 5,
   stallEscalationMinutes: 5,
 };
 const awayOff: AwayConfig = { ...awayOn, away: false, awaySince: null };

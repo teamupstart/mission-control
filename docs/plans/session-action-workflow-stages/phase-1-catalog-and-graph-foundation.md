@@ -29,7 +29,7 @@ Before editing:
    contracts, workflow builder plan, workflow pipeline plan, and built-in workflow plan.
 2. Run `git status --short` and preserve unrelated work.
 3. Run `npm run typecheck` on the merged base.
-4. Verify the current No-Mistakes version catalog and append-only workflow tuples rather than
+4. Verify the current No-Mistakes Review version catalog and append-only workflow tuples rather than
    trusting the planning branch's observed version number.
 
 ## Scope

@@ -56,7 +56,11 @@ import {
   resolveLiveSession,
 } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
-import { advanceFollowupMark, decideReviewFollowup } from "./review-followup.ts";
+import {
+  activeWorkflowOwnsSession,
+  advanceFollowupMark,
+  decideReviewFollowup,
+} from "./review-followup.ts";
 import type { FollowupMark } from "./review-followup.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
@@ -69,7 +73,7 @@ import {
   drainCompletionClaim,
   promptedCompletionClaim,
   tryWorkflowCompletionClaim,
-  withNoMistakesFallback,
+  withBuiltinReviewFallback,
 } from "./workflow-claim.ts";
 
 /**
@@ -803,12 +807,18 @@ async function runReviewFollowup(
     const mark = advanceFollowupMark(reviewNudged.get(session.id) ?? null, session);
     reviewNudged.set(session.id, mark);
 
+    // A workflow is another writer to this pane and checkout. Failure to read ownership
+    // is a reason to hold, never permission to type across an owner we could not observe.
+    const workflowRuns = await client.workflowRuns(noteKeyOf(session)).catch(() => null);
+    if (!workflowRuns) continue;
+
     const decision = decideReviewFollowup({
       session,
       // The real fleet, not a one-element list: `reportBucket` needs it to tell a gate
       // this session is driving from one that needs a human.
       bucket: reportBucket(session, sessions),
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
+      workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
       mark,
       cfg: { enabled: cfg.trackReviewFeedback, settleMs: SETTLE_MS },
       now,
@@ -824,6 +834,11 @@ async function runReviewFollowup(
     const fresh = resolveLiveSession(freshSessions, noteKeyOf(session));
     if (!fresh || paneKeyOf(fresh) !== paneKeyOf(session)) continue;
 
+    // Re-read workflow ownership at the same freshness boundary as session/config. A run
+    // may have been bound after the first decision but before this pane was about to move.
+    const freshWorkflowRuns = await client.workflowRuns(noteKeyOf(fresh)).catch(() => null);
+    if (!freshWorkflowRuns) continue;
+
     // Re-observe against the fresh snapshot, carrying the mark across an id re-mint. This
     // is what stops the freshness recheck from discarding a recovery the first read saw.
     const priorMark =
@@ -838,6 +853,7 @@ async function runReviewFollowup(
       session: fresh,
       bucket: reportBucket(fresh, freshSessions),
       mayActLive: foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot),
+      workflowOwnsSession: activeWorkflowOwnsSession(freshWorkflowRuns),
       mark: freshMark,
       cfg: { enabled: freshCfg.trackReviewFeedback, settleMs: SETTLE_MS },
       now: Date.now(),
@@ -932,16 +948,7 @@ async function processTarget(
   // A FAILED read is not evidence of anything, so it decides nothing: skip the
   // target and re-decide next tick. Falling back to the stale `session` would
   // reintroduce the exact bug this re-resolve exists to close, and a one-element
-  // fallback would also lie to `reportBucket`, which needs the real session list to tell a
-  // gate this agent is driving from one that needs you.
-  //
-  // This read sits ABOVE the no-queue branch because that branch needs both answers
-  // just as much: it called `reportBucket(session, [session])`, and a one-element
-  // list cannot see that a SIBLING session is driving the same no-mistakes run, so
-  // a gate nobody needs to answer read as "needs-you" and spawned a full `claude -p`
-  // triage from a possibly minutes-old snapshot. In dry-run that never reaches
-  // `pendingStillLive` (the one guard that does re-read the sessions), so it landed as a
-  // spurious escalation note nagging the human about a gate that was already handled.
+  // fallback would also lie to `reportBucket`, whose classification uses fleet context.
   const live = await client.sessions().catch(() => null);
   if (!live) return false;
   // A successful read that no longer lists this session (or lists it as exited) says
@@ -1020,11 +1027,13 @@ async function processTarget(
     return true;
   }
 
-  if (action.kind === "ask-wrapup" || action.kind === "auto-wrapup") {
-    const useNoMistakesFallback = action.kind === "auto-wrapup"
-      && cfg.wrapup === "no-mistakes"
-      && foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot);
-    const completionIntent = action.kind === "auto-wrapup"
+  if (
+    action.kind === "ask-wrapup"
+    || action.kind === "auto-wrapup"
+    || action.kind === "workflow-wrapup"
+  ) {
+    const useBuiltinReviewFallback = action.kind === "workflow-wrapup";
+    const completionIntent = action.kind === "auto-wrapup" || action.kind === "workflow-wrapup"
       ? action.intentGuard
       : resolvedSessionIntent(intent);
     if (completionIntent) {
@@ -1035,14 +1044,14 @@ async function processTarget(
       const claim = await tryWorkflowCompletionClaim(
         client,
         fresh.id,
-        withNoMistakesFallback(
+        withBuiltinReviewFallback(
           drainCompletionClaim(
             action.queue,
             diff?.ok ? diff.headSha : null,
             transcriptAnchor,
             completionIntent,
           ),
-          useNoMistakesFallback,
+          useBuiltinReviewFallback,
         ),
       );
       if (claim.kind === "failed") {
@@ -1053,17 +1062,17 @@ async function processTarget(
         log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
         return true;
       }
-      if (useNoMistakesFallback) {
+      if (useBuiltinReviewFallback) {
         if (claim.result.reason === "no_binding") {
           // A current daemon creates the built-in binding before it can answer this way.
           // Treat an older or inconsistent daemon as unavailable rather than falling back
           // to the legacy skill invocation and launching a second shipping system.
-          log(`${fresh.name}: no-mistakes workflow fallback was not bound; held for retry`);
+          log(`${fresh.name}: built-in review fallback was not bound; held for retry`);
           return false;
         }
         // A Manual binding is an existing operator choice and must neither be replaced nor
         // auto-submitted. Degrade to the same Ship it? card dry-run uses; do not also type
-        // the no-mistakes skill beside a workflow the operator deliberately left Manual.
+        // the review workflow beside a binding the operator deliberately left Manual.
         const outcome = await applyQueueAction(
           queueActions(client, cfg),
           fresh,
@@ -1078,9 +1087,11 @@ async function processTarget(
   }
 
   if (
-    action.kind === "auto-wrapup" &&
+    (action.kind === "auto-wrapup" || action.kind === "workflow-wrapup") &&
     !sessionIntentMatches(await client.goal(fresh.id).catch(() => null), action.intentGuard)
   ) return false;
+
+  if (action.kind === "workflow-wrapup") return false;
 
   const outcome = await applyQueueAction(
     queueActions(client, cfg),
@@ -1127,9 +1138,8 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
  * only does I/O and ordering.
  *
  * THE ORDERING IS THE SAFETY ARGUMENT, and it is the same one `auto-wrapup` makes:
- * the write that RETIRES the episode lands BEFORE the irreversible act. `/no-mistakes`
- * pushes and opens a PR, so a crash between "typed" and "recorded that we typed" must
- * leave the trigger disarmed, never re-armed. Concretely:
+ * the write that RETIRES the episode lands BEFORE the shipping instruction, so a crash
+ * between "typed" and "recorded that we typed" must leave the trigger disarmed. Concretely:
  *
  *   verify -> stamp `promptedGoal` -> type -> record the answer
  *
@@ -1279,13 +1289,13 @@ async function processPromptedWrapup(
     result.verdict.complete
     && !result.verdict.gaps.some((gap) => gap.severity === "blocking")
   ) {
-    const useNoMistakesFallback = cfg.wrapup === "no-mistakes"
+    const useBuiltinReviewFallback = cfg.wrapup === "workflow"
       && foremanMayActLive(cfg, session.cwd, session.repoRoot);
     const transcriptAnchor = await client.transcriptSize(session.id).catch(() => null);
     const claim = await tryWorkflowCompletionClaim(
       client,
       session.id,
-      withNoMistakesFallback(
+      withBuiltinReviewFallback(
         promptedCompletionClaim({
           noteKey: noteKeyOf(session),
           intent: intentGuard,
@@ -1293,7 +1303,7 @@ async function processPromptedWrapup(
           transcriptAnchor,
           summary: result.verdict.summary,
         }),
-        useNoMistakesFallback,
+        useBuiltinReviewFallback,
       ),
     );
     if (claim.kind === "failed") {
@@ -1304,20 +1314,19 @@ async function processPromptedWrapup(
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
     }
-    if (useNoMistakesFallback && claim.result.reason === "no_binding") {
-      log(`${session.name}: no-mistakes workflow fallback was not bound; held for retry`);
+    if (useBuiltinReviewFallback && claim.result.reason === "no_binding") {
+      log(`${session.name}: built-in review fallback was not bound; held for retry`);
       return false;
     }
-    if (useNoMistakesFallback && claim.result.reason === "manual_trigger") {
+    if (useBuiltinReviewFallback && claim.result.reason === "manual_trigger") {
       // Preserve the active Manual binding and surface the boundary to the human. Passing
       // `false` below selects `ask-wrapup`, which retires this verified episode without
-      // typing the no-mistakes skill alongside that binding.
+      // starting the review workflow alongside that binding.
       const plan = planPromptedWrapup(
         candidate.episodeKey,
         result.verdict,
         pcfg,
         false,
-        session.agent,
       );
       // Retire the verified episode and raise its card in ONE daemon write. If that
       // write fails, neither marker lands, this returns not-advanced, and a later tick
@@ -1332,7 +1341,6 @@ async function processPromptedWrapup(
     result.verdict,
     pcfg,
     foremanMayActLive(cfg, session.cwd, session.repoRoot),
-    session.agent,
   );
 
   if (plan.kind === "ask-wrapup") {
@@ -1684,10 +1692,6 @@ async function processSession(
     promptMarker: pending.marker,
     inputReviewId: pending.inputReviewId,
     canSend: pending.canSend,
-    // Read off the pending classification, not re-derived from the session: the two
-    // would be answering the same question from the same object, and the one that
-    // drifted would file replies against the wrong gate.
-    gate: pending.gate ?? null,
     // What "answering" means on this surface: a menu is selected, not typed at. Parsed
     // with this session's OWN grammar - the reviewer is shown whatever rows its agent drew,
     // and a harness we cannot read reports no menu rather than another agent's reading of

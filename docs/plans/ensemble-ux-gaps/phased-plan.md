@@ -1,7 +1,7 @@
 # Ensemble UX gaps - phased implementation plan
 
 Status: phases authored 2026-07-26, tasks scheduled from this index.
-Source plan: `docs/plans/ensemble-ux-gaps/plan.md` (rendered: `plan.html`).
+Source plan: `docs/plans/ensemble-ux-gaps/plan.md`.
 Rendered index: `phased-plan.html` beside this file.
 
 ## Incorporated human decisions (submitted 2026-07-26)

@@ -711,7 +711,7 @@
           <span class="tile-head">
             <span class="agent-dot agent-${s.agent}"></span>
             <h3>${s.name}</h3>
-            ${s.gated ? `<span class="gated" title="gated by no-mistakes">◇</span>` : ""}
+            ${s.gated ? `<span class="gated" title="gated by review workflow">◇</span>` : ""}
           </span>
           ${s.goal ? `<p class="tile-goal">${s.goal.text}</p>` : `<p class="tile-goal none">No goal · Codex doesn't expose prompts</p>`}
           ${s.nm ? `<span class="tile-rail">${s.nm.steps.map((st) => `<span class="${NM_TONE[st]}"></span>`).join("")}</span>` : ""}

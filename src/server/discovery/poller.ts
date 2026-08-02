@@ -8,8 +8,8 @@ import { discover } from "./correlate.ts";
  * Re-read the live Git facts for every driver-run session's checkout, and adopt them.
  *
  * Runs on the discovery cadence rather than a timer of its own because it answers the same
- * questions the sweep already answers for pane-backed sessions - "what branch is this cwd
- * on now, and is its repository gated by no-mistakes?" - through the same `gitInfo`, which
+ * question the sweep already answers for pane-backed sessions - "what branch is this cwd
+ * on now?" - through the same `gitInfo`, which
  * is pure filesystem and explicitly cheap enough to run for every session every poll. One
  * cadence and one reader is what keeps the two runtimes from disagreeing about Git state.
  *
@@ -21,7 +21,7 @@ import { discover } from "./correlate.ts";
  */
 export function refreshDriverGit(
   registry: Registry,
-  read: (cwd: string) => { branch: string | null; nomistakesGated: boolean } = gitInfo,
+  read: (cwd: string) => { branch: string | null } = gitInfo,
 ): void {
   const targets = registry.driverGitTargets();
   if (targets.length === 0) return;

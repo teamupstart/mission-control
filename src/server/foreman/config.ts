@@ -1,6 +1,7 @@
 import type { ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type { ForemanConfig, ForemanConfigPatch, ForemanLeaseResult } from "@shared/protocol.ts";
+import { WRAPUP_MODES } from "@shared/queue.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { readyBacklog } from "@shared/backlog.ts";
 import { resolveForemanModels } from "@shared/foreman-models.ts";
@@ -46,9 +47,27 @@ interface ForemanLease {
   expiresAt: number;
 }
 
+/**
+ * Normalize the removed automatic-review enum before validating stored settings.
+ *
+ * The API schema remains strict for new writes. This read-only upgrade applies only to an
+ * existing app_config blob whose wrap-up value is no longer part of the public enum, and
+ * preserves its automatic workflow behavior without retaining the retired spelling.
+ */
+function migrateStoredForemanConfig(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const config = value as Record<string, unknown>;
+  if (typeof config.wrapup !== "string" || WRAPUP_MODES.some((mode) => mode === config.wrapup)) {
+    return value;
+  }
+  return { ...config, wrapup: "workflow" };
+}
+
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getForemanConfig(): ForemanConfig {
-  return ForemanConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
+  return ForemanConfigSchema.parse(
+    migrateStoredForemanConfig(getAppConfig<unknown>(CONFIG_KEY) ?? {}),
+  );
 }
 
 /**

@@ -32,7 +32,6 @@ import type {
   WorkItem,
   WorkItemState,
 } from "../src/shared/types.ts";
-import { wrapupNoMistakes } from "../src/shared/queue.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The queue's decision core. It's pure with `now` always injected, so the whole
@@ -61,7 +60,6 @@ function mkSession(over: Partial<Session> = {}): Session {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys001",
     permissionMode: null,
@@ -78,10 +76,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     // Settled well past settleMs by default, so a test opts INTO un-settled.
     lastActivity: NOW - 60_000,
     pendingReviews: 0,
-    nomistakes: null,
-    nomistakesFixes: [],
     task: null,
-    nomistakesNarration: null,
     prUrl: null,
     prNumber: null,
     prState: null,
@@ -438,64 +433,6 @@ test("tickTargets still requires hook authorization for an operator-started Code
   );
 });
 
-test("tickTargets triages an operator-started Codex session only when no-mistakes is parked", () => {
-  const parkedRun: NonNullable<Session["nomistakes"]> = {
-    id: "run-parked",
-    status: "running",
-    branch: "feature",
-    startedAt: NOW - 60_000,
-    endedAt: null,
-    prUrl: null,
-    awaitingAgent: "parked 1m",
-    findingsSummary: "1 awaiting",
-    gateStep: "review",
-    gateSummary: null,
-    gateRisk: null,
-    steps: [],
-    activeSteps: [],
-    findings: [
-      {
-        id: "review-error",
-        severity: "error",
-        file: "src/a.ts",
-        action: "ask-user",
-        description: "The fallback persists state outside this session.",
-      },
-    ],
-    response: null,
-    outcome: null,
-  };
-  const operatorCodex = mkSession({
-    id: "operator-codex-gate",
-    agent: "codex",
-    hooksSeen: false,
-    instrumented: false,
-    state: "idle",
-    nomistakes: parkedRun,
-  });
-
-  assert.deepEqual(
-    tickTargets([operatorCodex], ["drain"]).map((s) => s.id),
-    ["operator-codex-gate"],
-    "the independently-polled gate reaches triage without widening ordinary Codex automation",
-  );
-  assert.equal(
-    tick({ session: operatorCodex, bucket: "needs-you", items: [mkItem()] }).kind,
-    "triage",
-    "a queue behind the gate yields to the gate instead of being escalated as hookless",
-  );
-
-  const stillDriving = mkSession({
-    ...operatorCodex,
-    id: "same-run-driver",
-    state: "working",
-  });
-  assert.deepEqual(
-    tickTargets([operatorCodex, stillDriving], ["drain"]),
-    [],
-    "a sibling still driving the same run keeps the gate out of Foreman's queue",
-  );
-});
 
 test("tickTargets ignores exited sessions and includes a Codex queue", () => {
   const gone = mkSession({ id: "gone", state: "exited", queue: mkSummary({ openCount: 1 }) });
@@ -636,9 +573,8 @@ test("5. an empty queue asks nothing", () => {
   assert.equal(tick({ items: [] }).kind, "none");
 });
 
-// Step 5's `wrapup` branch. The gates are the interesting part, not the happy path:
-// what this types PUSHES (`/no-mistakes` opens a PR at the end of its pipeline), so
-// every "don't" below is load-bearing.
+// Step 5's `wrapup` branch. The safety checks are the interesting part because
+// direct shipping writes externally and workflow mode starts a review run.
 
 const DRAINED = () => [mkItem({ state: "verified" })];
 
@@ -650,7 +586,7 @@ test("5. an UNTICKED drain trigger fires nothing at all, whatever the action say
   // "Trigger on: Queue drain" unchecked means the human ships their own batches. The
   // action radio is still set to something - it always is - so this must not read as
   // "no action configured" and fall through to it.
-  for (const w of ["ask", "no-mistakes", "pr"] as const) {
+  for (const w of ["ask", "workflow", "pr"] as const) {
     const a = tick({ items: DRAINED(), cfg: { wrapup: w, wrapupTriggers: [] } });
     assert.equal(a.kind, "none", w);
   }
@@ -676,22 +612,9 @@ test("5. an unticked drain trigger does not CONSUME the ask - re-ticking it stil
   );
 });
 
-test("5. wrapup=no-mistakes types it when live, instrumented, settled and paned", () => {
-  // The fixture session is a Claude one, which is why this literal is safe here and
-  // why the Codex case below has to exist beside it.
-  const a = tick({ items: DRAINED(), cfg: { wrapup: "no-mistakes" } });
-  assert.equal(a.kind, "auto-wrapup");
-  assert.equal(a.kind === "auto-wrapup" && a.payload, "/no-mistakes");
-  assert.deepEqual(a.kind === "auto-wrapup" && a.intentGuard, {
-    objective: "Ship the feature",
-    objectiveVersion: 1,
-    promptRevision: 1,
-    episodeKey: "intent:1:1",
-  });
-});
 
 test("5. automatic wrap-up waits while the latest intent is unresolved", () => {
-  for (const wrapup of ["no-mistakes", "pr"] as const) {
+  for (const wrapup of ["workflow", "pr"] as const) {
     assert.equal(
       tick({
         items: DRAINED(),
@@ -707,32 +630,13 @@ test("5. automatic wrap-up waits while the latest intent is unresolved", () => {
   }
 });
 
-test("5. the drain payload is spelled for THIS session's harness, not for Claude", () => {
-  // The defect: this path typed one constant, `/no-mistakes`, into whatever session
-  // drained. Codex has no such command, so the gate ran only if the model reached for
-  // the skill on its own.
-  //
-  // Asserted at the DRAIN boundary rather than only on `wrapupNoMistakes`, because the
-  // helper being right is not the same claim as this path calling it with the session's
-  // own agent - `decideQueueTick` could regress to a literal, or to a hard-coded
-  // "claude", while a helper-only test stayed green. Compared against the composed
-  // value AND against Claude's, so it fails whichever way it regresses.
-  const a = tick({ items: DRAINED(), cfg: { wrapup: "no-mistakes" }, session: { agent: "codex" } });
-  assert.equal(a.kind, "auto-wrapup");
-  assert.equal(a.kind === "auto-wrapup" && a.payload, wrapupNoMistakes("codex"));
-  assert.notEqual(a.kind === "auto-wrapup" && a.payload, wrapupNoMistakes("claude"));
-
-  // And it must be the line Codex can actually submit: a bare `$no-mistakes` at the end
-  // of its composer leaves the skill-mention popup open, and that popup eats the single
-  // Enter this harness's delivery spends. See `SkillsSpec.invoke`.
-  const payload = a.kind === "auto-wrapup" ? a.payload : "";
-  assert.ok(payload.startsWith("$no-mistakes "), payload);
+test("5. workflow mode returns a workflow claim action, never a pane payload", () => {
+  const action = tick({ items: DRAINED(), cfg: { wrapup: "workflow" } });
+  assert.equal(action.kind, "workflow-wrapup");
 });
 
-test("5. the PR payload is NOT harness-scoped - it is prose, not an invocation", () => {
-  // Both harnesses get identical bytes here on purpose: `WRAPUP_PR` forbids the gate
-  // rather than running it, and splicing Codex's runnable line (which ends "run this
-  // skill now.") into "Do not run …" would invert the sentence it sits in.
+test("5. the PR payload is not harness-scoped", () => {
+  // Both harnesses get identical bytes because this is ordinary prose.
   const claude = tick({ items: DRAINED(), cfg: { wrapup: "pr" } });
   const codex = tick({ items: DRAINED(), cfg: { wrapup: "pr" }, session: { agent: "codex" } });
   assert.equal(
@@ -750,7 +654,7 @@ test("5. wrapup=pr types the PR instruction instead", () => {
 test("5. dry-run NEVER types the wrap-up, however it is configured", () => {
   // The instruction pushes, so a dry-run that typed it would be a dry-run that
   // shipped. It degrades to the ask - the card IS the proposal for this action.
-  for (const w of ["no-mistakes", "pr"] as const) {
+  for (const w of ["workflow", "pr"] as const) {
     assert.equal(tick({ items: DRAINED(), cfg: { wrapup: w }, mayActLive: false }).kind, "ask-wrapup");
   }
 });
@@ -760,14 +664,14 @@ test("5. an agent still working WAITS - it must not fall back to the ask", () =>
   // once-only guard. Asking here would retire the auto path permanently over a moment
   // of drain-time noise, and the feature would silently never fire for the busy
   // sessions it exists for. `none` costs one poll.
-  const a = tick({ items: DRAINED(), cfg: { wrapup: "no-mistakes" }, session: { state: "working" } });
+  const a = tick({ items: DRAINED(), cfg: { wrapup: "workflow" }, session: { state: "working" } });
   assert.equal(a.kind, "none");
 });
 
 test("5. an un-settled but idle agent waits too - settleMs is not yet satisfied", () => {
   const a = tick({
     items: DRAINED(),
-    cfg: { wrapup: "no-mistakes" },
+    cfg: { wrapup: "workflow" },
     session: { lastActivity: NOW - 1 },
   });
   assert.equal(a.kind, "none");
@@ -779,7 +683,7 @@ test("5. a stale overlay asks rather than typing on 30-minute-old evidence", () 
   // ask. The two false-y halves of settledIdle genuinely want opposite answers.
   const a = tick({
     items: DRAINED(),
-    cfg: { wrapup: "no-mistakes" },
+    cfg: { wrapup: "workflow" },
     session: { instrumented: false },
   });
   assert.equal(a.kind, "ask-wrapup");
@@ -788,7 +692,7 @@ test("5. a stale overlay asks rather than typing on 30-minute-old evidence", () 
 test("5. nowhere to type: ask", () => {
   const a = tick({
     items: DRAINED(),
-    cfg: { wrapup: "no-mistakes" },
+    cfg: { wrapup: "pr" },
     session: { terminals: [] },
   });
   assert.equal(a.kind, "ask-wrapup");
@@ -797,7 +701,7 @@ test("5. nowhere to type: ask", () => {
 test("5. the auto wrap-up fires exactly once, exactly like the ask", () => {
   const a = tick({
     items: DRAINED(),
-    cfg: { wrapup: "no-mistakes" },
+    cfg: { wrapup: "workflow" },
     queue: { wrapupAskedAt: NOW - 5 },
   });
   assert.equal(a.kind, "none");

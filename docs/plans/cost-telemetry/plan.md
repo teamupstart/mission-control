@@ -206,8 +206,7 @@ their config.
 A **new table**, not a new `kind` in `session_events`. `db.ts:900-910` documents a
 load-bearing invariant: that table has exactly one writer, and `hooksEverSeen` asks "any
 row?", not "any row of a hook kind". A second writer would make every session it touched
-claim hooks it never emitted. The remedy the file names is a separate table, as
-`gate_replies` got.
+claim hooks it never emitted. The remedy is a separate table.
 
 **Key on `note_key`, not `session_id`.** `db.ts:74-80`: a session id is synthetic
 (tty+pid+start) and re-mints on restart, so it is the wrong key for a record meant to
@@ -260,10 +259,9 @@ DO UPDATE SET <col> = excluded.<col>;   -- <col> from a fixed whitelist, never i
 No `migrate()` entry is needed; `db.ts:341-346` records that a brand-new table is created
 identically on fresh and upgraded DBs.
 
-**Retention: age-based, 180 days**, on the `gate_replies` precedent (`db.ts:613-628`) -
-session-scoped pruning is wrong because the record becomes interesting precisely once the
-session is gone. Add a fourth `try` block in `registry.pruneQueues` (`registry.ts:341-364`),
-where each prune is independently caught.
+**Retention: age-based, 180 days.** Session-scoped pruning is wrong because the record becomes
+interesting precisely once the session is gone. Add an independently caught prune operation in
+`registry.pruneQueues`.
 
 Rate-limit percentages are **not** stored. They are a live gauge with a server-supplied
 reset time; persisting them would invite treating a stale percentage as current.

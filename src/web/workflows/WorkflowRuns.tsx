@@ -1032,7 +1032,7 @@ export function WorkflowRunView({
                 ) : "not resolved"}
               </dd>
             </div>
-            <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source ?? "not adopted"}</dd></div>
+            <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source === "hook" ? "hook" : inspectorGate.inspection ? "legacy import" : "not adopted"}</dd></div>
             <div><dt>Inspector</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
             <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
             <div><dt>Target head</dt><dd><code>{shortSha(inspectorGate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>

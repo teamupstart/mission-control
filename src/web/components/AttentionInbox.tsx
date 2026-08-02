@@ -9,7 +9,7 @@ import { ReviewCard } from "./ReviewModal.tsx";
  * One place to drain everything that is waiting on a person.
  *
  * It replaces a chip that opened the FIRST answerable review's session modal: a second blocked
- * session, a run parked on your decision, a stuck finalization and a parked shipping gate were
+ * session, a run parked on your decision, and a stuck finalization were
  * all things the operator found by noticing them. What is drawn here is the fold in
  * `lib/attention.ts` and nothing else - this component decides no ordering, no counting and no
  * severity, so the chip's figure and the list cannot disagree, and the app keeps ONE alert
@@ -36,7 +36,6 @@ const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   session_reviews: "Questions from agents",
   member_dialog: "Members parked on a menu",
   parked_finalization: "Stuck finalizations",
-  gate: "Shipping gates",
 };
 
 export function AttentionInbox({
@@ -49,13 +48,8 @@ export function AttentionInbox({
   onClose: () => void;
   /** Open a run's detail (the dossier, when it is parked on a decision). */
   onOpenEnsemble: (runId: string) => void;
-  /**
-   * Focus a session on the fleet, optionally landing on the surface that answers this
-   * item. A parked gate asks for `"workflows"`: in Cards the strip is on the card, but in
-   * Console and the Board drill-in it is a tab, and a deep link that dropped the operator
-   * on the Conversation instead would be a link to the wrong half of the answer.
-   */
-  onOpenSession: (sessionId: string, reveal?: "workflows") => void;
+  /** Focus a session on the fleet. */
+  onOpenSession: (sessionId: string) => void;
 }): React.JSX.Element {
   // Every deep link LEAVES: what it opens is somewhere else, and an inbox still covering it
   // would hide the thing the click asked for. Answering a review in place does not close.
@@ -75,7 +69,7 @@ export function AttentionInbox({
       <header className="modal-head">
         <div>
           <strong>{fold.total > 0 ? `${fold.total} need you` : "Nothing needs you"}</strong>
-          <span className="dim"> · answers, decisions and parked gates</span>
+          <span className="dim"> · answers, decisions and stuck finalizations</span>
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
           <button className="btn btn-ghost" onClick={onClose}>
@@ -86,7 +80,7 @@ export function AttentionInbox({
       <div className="modal-body">
         {fold.items.length === 0 && (
           <p className="inbox-empty">
-            You are all clear. Agents' questions, ensemble decisions and parked shipping gates
+            You are all clear. Agents' questions, ensemble decisions and stuck finalizations
             collect here as they arrive.
           </p>
         )}
@@ -99,9 +93,7 @@ export function AttentionInbox({
               <InboxItem
                 item={item}
                 onOpenEnsemble={(runId) => leave(() => onOpenEnsemble(runId))()}
-                onOpenSession={(sessionId, reveal) =>
-                  leave(() => onOpenSession(sessionId, reveal))()
-                }
+                onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
               />
             </div>
           );
@@ -118,7 +110,7 @@ function InboxItem({
 }: {
   item: AttentionItem;
   onOpenEnsemble: (runId: string) => void;
-  onOpenSession: (sessionId: string, reveal?: "workflows") => void;
+  onOpenSession: (sessionId: string) => void;
 }): React.JSX.Element {
   switch (item.kind) {
     case "ensemble_decision":
@@ -203,28 +195,6 @@ function InboxItem({
             </Tooltip>
           </div>
           <p className="inbox-line inbox-error">{item.error}</p>
-        </section>
-      );
-    case "gate":
-      return (
-        <section className="inbox-item inbox-gate">
-          <div className="inbox-head">
-            <AgentDot agent={item.session.agent} />
-            <strong>{item.session.name || "(unnamed)"}</strong>
-            <span className="inbox-meta">shipping gate</span>
-            <span className="inbox-spacer" />
-            <Tooltip label="Focus this session - the gate is answered on its card, or its Workflows tab">
-              <button
-                className="btn btn-ghost"
-                onClick={() => onOpenSession(item.session.id, "workflows")}
-              >
-                Open session
-              </button>
-            </Tooltip>
-          </div>
-          <p className="inbox-line">
-            A shipping run is parked on a decision and no agent is driving it.
-          </p>
         </section>
       );
   }

@@ -130,7 +130,7 @@ test("the detail honours the request, and the tab wears the chord it answers to"
   // than ConsoleDetail's source: the table moved out to `detailTabs` when the Workflows tab
   // was added, and this pair is a fact about the tab, not about where it happens to be
   // written down.
-  const conversation = detailTabs({ queueCount: 0, gateNeedsYou: false })[0];
+  const conversation = detailTabs({ queueCount: 0 })[0];
   assert.equal(conversation?.id, "conversation", "the conversation is still the first tab");
   assert.equal(conversation.label, "Conversation");
   assert.equal(conversation.action, "conversation");

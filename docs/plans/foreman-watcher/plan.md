@@ -74,17 +74,6 @@ structurally determined:
   escalation built from it names neither the goal nor the command, so the full reviewer frames it
   instead; no-pane sessions are rare, so the Opus cost is negligible.)*
 
-### Tier 1 — cheap model triage (Haiku, trimmed transcript)
-For sessions that reach here there IS an answerable surface (an `input` review, a terminal prompt
-with a pane, or a parked no-mistakes gate - the last is why backstop 4 below has to exist).
-Reuse the same `claude -p --tools ""` subprocess machinery from `review.ts`,
-but with `--model claude-haiku-4-5` and a smaller window (fetch `turns=12` instead of 48). The
-endpoint targets that many recent turns but may also return the opening turns, or a small transcript
-whole, so `triageSession` applies the exact recent bound client-side. It keeps the opening turns in
-the prompt so the Purpose still describes what the session is *for* rather than its last ten
-minutes. The denylist scan stays narrower than that (the recent turns only), since its patterns
-over-match by design. A narrow routing prompt asks Haiku to *bucket* the ask, not solve it:
-
 - `human-only` (design fork, unclear intent, product preference) ⇒ `escalate` or `skip`; Haiku
   writes the Purpose. No Opus call.
 - `routine-access` (non-destructive approval: run tests, read files, normal dependency, routine
@@ -92,26 +81,6 @@ over-match by design. A narrow routing prompt asks Haiku to *bucket* the ask, no
   under the existing gates; otherwise draft/escalate.
 - `needs-judgment` (implementation trade-offs, anything Haiku isn't confident on) ⇒ route **up**
   to Tier 2.
-
-Five hard backstops in *code*, applied after Haiku, that Haiku cannot override:
-1. The destructive denylist the `POLICY` already enumerates (`rm -rf`, force-push, drop/delete
-   data, prod changes, secrets, exfiltration, disabling safety checks) — if it matches, force
-   `escalate` regardless of Haiku. Scanned over what the child said and did (the pending ask, the
-   recent window, Haiku's own reply), never over a question Foreman synthesized itself.
-2. Low-confidence default is route-up, never skip-answerable.
-3. An unscannable window withholds the auto-answer — the only outcome that acts. No prose for the
-   denylist to have read (`hasProse`), or turns that can't be placed in the session
-   (`boundaryUnknown`), means "unknown" rather than "safe", so it routes up.
-4. A parked no-mistakes gate is never Tier 1's to answer or skip. The router is only ever taught
-   permission prompts, so it has no notion of what a gate is; a gate may only be escalated (cheap,
-   safe, in front of the human) or routed up to the tier that was taught.
-5. An answer this tier cannot *deliver* is a route-up, not a decision (`menuBlocksAnswer`). A menu
-   is answered by selecting a row, and the router's schema has no field to name one - so on a menu,
-   which is what a permission prompt is, every answer it reaches is handed to the reviewer that can
-   name a row. Route-up rather than escalate on purpose: escalating would put a human in front of
-   every routine approval when the tier is `on`, having spent the cheap call to learn nothing. Falling
-   back to typing the prose is the bug this exists to make unreachable - see the "never confirm a
-   row we did not verify" invariant in `docs/plans/foreman/plan.md`.
 
 ### Tier 2 — full review (unchanged)
 The existing `reviewSession` + full `POLICY` + 48-turn window. Fires only for sessions Tier 1

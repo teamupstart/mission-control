@@ -263,14 +263,19 @@ export async function startDaemon(): Promise<DaemonHandle> {
   // `Dispatcher.dispatch` returns before every terminal-only step. Set through the real
   // route rather than a seeded DB row, so this configures the daemon the way the Settings
   // panel does and cannot drift from it.
+  // Codex alongside Claude, for the same reason and with the same fake behind it: its
+  // driver speaks `codex app-server` over stdio, which is as headless as Claude's, while a
+  // terminal Codex would need the pane CI does not have.
   const configured = await fetch(`${baseURL}/api/harnesses/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionRuntime: { claude: "sdk" } }),
+    body: JSON.stringify({ sessionRuntime: { claude: "sdk", codex: "sdk" } }),
   });
   if (!configured.ok) {
     await stop();
-    throw new Error(`could not switch claude to the sdk runtime: ${configured.status} ${await configured.text()}`);
+    throw new Error(
+      `could not switch claude and codex to the sdk runtime: ${configured.status} ${await configured.text()}`,
+    );
   }
 
   return { baseURL, home, recordDir, workspace, repo, readLog: () => log, stop };

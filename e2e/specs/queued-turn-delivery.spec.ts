@@ -29,13 +29,14 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
 }
 
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+async function dispatch(page: Page, daemon: DaemonHandle, agent: "claude" | "codex"): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill("exercise queued turn delivery");
+  await dialog.getByPlaceholder("What should this agent do?").fill(`exercise queued turn delivery on ${agent}`);
+  await dialog.locator("select").filter({ hasText: "Claude Code" }).selectOption(agent);
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
@@ -50,12 +51,19 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
  * when a turn ends is the only chance the outbox gets. A queued row that survives that
  * transition is stuck for the life of the session, and the only place that is visible is
  * here, where the browser can watch the row leave and the reply come back.
+ *
+ * Run against BOTH embedded harnesses, because the claim the fix rests on is that the outbox
+ * never branches on the agent - it reacts to registry state every driver reports through the
+ * same path. A pair of runs is how that stops being a code-reading argument: Claude's driver
+ * accepts a turn into its own queue, Codex's would turn one into a `turn/steer`, and the row
+ * has to survive the idle transition on each.
  */
-test("a queued conversation turn is delivered once the agent goes idle", async ({
+for (const agent of ["codex", "claude"] as const) {
+test(`a queued conversation turn is delivered once the ${agent} agent goes idle`, async ({
   dashboard,
   daemon,
 }) => {
-  await dispatch(dashboard, daemon);
+  await dispatch(dashboard, daemon, agent);
 
   const card = dashboard.locator("article.card").first();
   await card.getByRole("button", { name: "Expand conversation" }).click();
@@ -76,7 +84,7 @@ test("a queued conversation turn is delivered once the agent goes idle", async (
   await expect(card.getByRole("status").filter({ hasText: /^queued$/ })).toBeVisible();
   // The state the bug left behind for ever. Captured while the driver is still working, which
   // is the only moment it is legitimate.
-  await shoot(dashboard, "queued-while-working");
+  await shoot(dashboard, `${agent}-queued-while-working`);
 
   // The held turn finishes and the session goes idle. That is the outbox's cue.
   await expect(
@@ -91,5 +99,6 @@ test("a queued conversation turn is delivered once the agent goes idle", async (
   await expect(
     card.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
   ).toBeVisible({ timeout: 15_000 });
-  await shoot(dashboard, "delivered-and-answered");
+  await shoot(dashboard, `${agent}-delivered-and-answered`);
 });
+}

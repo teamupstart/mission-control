@@ -1,36 +1,49 @@
 # Queued turn delivery evidence
 
-Both captures come from one green run of `e2e/specs/queued-turn-delivery.spec.ts`, taken
-between the assertions that spec already makes. They are photographs of the run that passed,
-not of a scripted walk staged to look like it: the same test that asserts the row leaves is
-the one that takes the pictures.
+Four frames from one green run of `e2e/specs/queued-turn-delivery.spec.ts`, taken between the
+assertions that spec already makes. They are photographs of the run that passed, not of a
+scripted walk staged to look like it: the same test that asserts the row leaves takes the
+pictures, so a frame exists only because the assertions under it held.
 
-The behaviour they prove is the fix for a queued conversation turn that never left the
-editable outbox on an Agent SDK session. The outbox armed its delivery timer only when the
-session was already *settled* idle, but a driver reports idle with `lastActivity` set to that
-same instant, so a session is never settled at the moment it announces going idle. The one
-event that should have armed the timer cancelled it instead. An embedded session has no
-poller to ask again, so the row stayed queued for the life of the session.
+The spec runs the identical flow against **both** embedded harnesses. That pairing is the
+point rather than thoroughness for its own sake: the fix rests on the claim that the outbox
+never branches on the agent, and two harnesses arriving at the same two frames is how that
+stops being a code-reading argument. The drivers disagree underneath it - Claude's `send`
+accepts a second turn into its own queue, Codex's would turn one into a `turn/steer` - and the
+row has to survive the idle transition on each.
 
-## Queued while the driver is working
+The behaviour is the fix for a queued conversation turn that never left the editable outbox on
+an Agent SDK session. The outbox armed its delivery timer only when the session was already
+*settled* idle, but a driver reports idle with `lastActivity` set to that same instant, so a
+session is never settled at the moment it announces going idle. The one event that should have
+armed the timer cancelled it instead. An embedded session has no poller to ask again, so the
+row stayed queued for the life of the session.
 
-The fake holds `hold the current turn open` for five seconds. The second message meets a
-genuinely busy driver, so it lands in the durable outbox: the card reads **working**, the held
+## Codex
+
+The fake holds `hold the current turn open` for five seconds, so the second message meets a
+genuinely busy driver and lands in the durable outbox. The card reads **working**, the held
 turn is a real `YOU` turn, and the queued message is a `YOU · QUEUED` row with its **Edit**
 affordance. This state is legitimate and expected - it is the state the bug never left.
 
-![A queued conversation turn while the agent is working](queued-while-working.png)
-
-## Delivered and answered once the session goes idle
+![A queued turn on a Codex session while the agent is working](codex-queued-while-working.png)
 
 The held turn finishes, the driver emits its single idle transition, and the settle window
 elapses. The queued row leaves the outbox as an ordinary `YOU` turn - no `QUEUED` badge, no
-pending styling - and the agent answers it. The card reads **idle**.
+pending styling - and Codex answers it. The card reads **idle**.
 
-Before the fix this second frame never arrived: the reply to the held turn appeared, the card
-went idle, and the `QUEUED` row from the first capture simply stayed there.
+![The queued turn delivered and answered in a Codex conversation](codex-delivered-and-answered.png)
 
-![The queued turn delivered as a real turn and answered by the agent](delivered-and-answered.png)
+Before the fix the second frame never arrived: the reply to the held turn appeared, the card
+went idle, and the `QUEUED` row from the first frame simply stayed there.
+
+## Claude
+
+The same two moments on the other embedded harness.
+
+![A queued turn on a Claude session while the agent is working](claude-queued-while-working.png)
+
+![The queued turn delivered and answered in a Claude conversation](claude-delivered-and-answered.png)
 
 ## The run
 
@@ -39,37 +52,38 @@ Verbatim, from the repository root after `npm run build`:
 ```
 $ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts e2e/specs/queued-turn-delivery.spec.ts --reporter=list
 
-Running 1 test using 1 worker
+Running 2 tests using 2 workers
 
-  ✓  1 [chromium] › e2e/specs/queued-turn-delivery.spec.ts:54:1 › a queued conversation turn is delivered once the agent goes idle (10.7s)
+  ✓  2 [chromium] › e2e/specs/queued-turn-delivery.spec.ts:62:1 › a queued conversation turn is delivered once the claude agent goes idle (10.6s)
+  ✓  1 [chromium] › e2e/specs/queued-turn-delivery.spec.ts:62:1 › a queued conversation turn is delivered once the codex agent goes idle (10.7s)
 
-  1 passed (11.3s)
+  2 passed (11.1s)
 ```
 
-That command also regenerates both PNGs. Without `MC_E2E_EVIDENCE` the spec asserts exactly
-the same things and writes nothing, so an ordinary `npm run test:e2e` does not rewrite the
-binaries - the same bargain `docs/evidence/workflow-session-action-authoring/` strikes.
+That command also regenerates all four PNGs. Without `MC_E2E_EVIDENCE` the spec asserts
+exactly the same things and writes nothing, so an ordinary `npm run test:e2e` does not rewrite
+the binaries - the same bargain `docs/evidence/workflow-session-action-authoring/` strikes.
 
-## Which harness these captures show, and why that is the whole story
+## That these frames are load-bearing
 
-The session above is driven by the **Claude** Agent SDK fake, because that is the only agent
-`e2e/fixtures/fake-agents.ts` implements; `fake-codex` deliberately exits non-zero so nothing
-can silently reach a real binary. The defect was reported against Codex.
+Restore the pre-fix manager and run the same two tests, and both fail on the assertion that
+the outbox is empty - Codex included:
 
-That substitution costs nothing here, and it is checkable rather than asserted:
+```
+$ git show 32fccb43:src/server/pending-turns.ts > src/server/pending-turns.ts && npm run build
+$ npx playwright test --config e2e/playwright.config.ts e2e/specs/queued-turn-delivery.spec.ts
 
-- The defect and the fix live in `src/server/pending-turns.ts`, which never branches on the
-  agent. `grep -nE '"claude"|"codex"|"pi"|\.agent\b' src/server/pending-turns.ts` returns
-  nothing. The manager reacts to registry state - `stateConfirmed`, `state`, `lastActivity`,
-  `paneDialog` - all of which every harness reports through the same `applyDriverEvent` path.
-- What the bug actually keys on is `runtime === "sdk"`, not the agent: an embedded session of
-  any harness is event-driven and has no poller to re-emit its card. A terminal session of any
-  harness recovers because the discovery poller sweeps it again.
-- The Codex case is pinned in `test/pending-turn-manager.test.ts` by
-  `an embedded session's only idle transition still drains the queued row`, which registers its
-  session with `agent: "codex"` and fails against the pre-fix manager.
+  ✘  1 … › a queued conversation turn is delivered once the claude agent goes idle (24.5s)
+  ✘  2 … › a queued conversation turn is delivered once the codex agent goes idle (25.0s)
+    Error: expect(locator).toHaveCount(expected) failed
 
-So the browser proves the user-visible half on the harness the suite can drive without
-spending tokens, and the unit regression proves the reported harness. Giving Codex its own
-browser capture would mean building an app-server JSON-RPC fake - worth doing when Codex needs
-end-to-end coverage of its own, and not something this fix depends on.
+  2 failed
+```
+
+## Neither run spends a token
+
+Both sessions are driven by fakes. `e2e/fixtures/fake-codex.mjs` speaks `codex app-server`
+JSON-RPC over stdio and writes the rollout JSONL the dashboard renders the conversation from;
+`e2e/fixtures/fake-claude.mjs` does the equivalent for Claude's control protocol. The cards
+above are real embedded sessions - real subprocess, real pid, real `bound` event, real
+transcript file - with no model behind either of them.

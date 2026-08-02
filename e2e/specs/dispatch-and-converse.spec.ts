@@ -50,7 +50,7 @@ async function api<T>(
  * the very next `fill` lands on a covered control. The combobox's own Escape handler calls
  * `stopPropagation`, so this closes the list and NOT the modal.
  */
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+async function dispatch(page: Page, daemon: DaemonHandle, model?: string): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
@@ -59,6 +59,9 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  if (model) {
+    await dialog.getByLabel("Model").selectOption(model);
+  }
 
   // Pin the post-work Workflow to none. Left at "Dispatch default" the daemon's configured
   // default applies, and this repo is not allowlisted for Live delivery, so the dispatch is
@@ -94,6 +97,17 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   // The model the fake reported through the SDK's `system/init` frame, proving the card's
   // model line is fed by the driver rather than by a default.
   await expect(card).toContainText("Claude e2e Mock");
+});
+
+test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, "claude-fable-5");
+
+  const card = dashboard.locator("article.card").first();
+  await expect(card).toContainText("Agent SDK");
+  await expect(card).toContainText("Fable 5");
+  await expect(card).toContainText("1M");
+  await expect(card).toContainText("18%");
+  await expect(card).not.toContainText("92%");
 });
 
 test("typing into the conversation gets a reply back from the agent", async ({ dashboard, daemon }) => {

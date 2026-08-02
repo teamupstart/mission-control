@@ -690,7 +690,10 @@ you: a plain `npm run install-hooks`, and the packaged app's integrations, leave
 It makes the model / thinking / context figures on the cards exact (without it they come
 from a passive transcript read), and supplies the [cost telemetry](#cost-telemetry) plan
 meters for terminal Claude sessions. Embedded Claude SDK sessions have no terminal status
-line; they fetch the same account windows through the SDK instead.
+line; they fetch the same account windows through the SDK instead. For the passive context
+meter, Mission Control applies each recognized model's default window: Fable 5, Opus 4.6+
+and Sonnet 4.6+ use 1M, while Opus/Sonnet 4.5 and Haiku 4.5 use 200k. An explicit window
+reported by Claude remains authoritative.
 
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the

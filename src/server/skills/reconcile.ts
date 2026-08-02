@@ -1,6 +1,16 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { CLAUDE_SKILLS, HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
@@ -114,6 +124,81 @@ function operatorSkillsDirs(): string[] {
 }
 
 /**
+ * One directory, spelled the single way the FILESYSTEM would spell it.
+ *
+ * `assertTestSkillIsolation` compares paths to decide whether a walk may proceed, and a
+ * raw string comparison answers a question nobody asked: not "is this the operator's live
+ * directory?" but "is this the same sequence of characters?". Those come apart constantly
+ * and always in the unsafe direction - a trailing slash, a `..` segment, `TMPDIR` on macOS
+ * living under `/var -> /private/var`, or a fixture that symlinks a scratch path at a real
+ * one. Each spells the same directory differently, and each was enough to walk straight
+ * past the guard and unlink the operator's live skills. Verified, both shapes, before this
+ * existed.
+ *
+ * `resolve` fixes the spelling; `realpathSync` fixes the symlinks, which is the half that
+ * matters, because a symlink makes two genuinely different paths one directory and no
+ * amount of string normalisation will ever see it.
+ *
+ * The walk up is for the path that does not exist yet. `realpathSync` throws on a missing
+ * leaf, and reconciling a directory we are about to `mkdir` is the ordinary case, not an
+ * edge one - so this resolves the deepest ancestor that DOES exist and re-appends the rest.
+ * That is not pedantry: the symlink that redirects a scratch path into a real skills
+ * directory lives in the parent chain, which is exactly the part that exists.
+ */
+function canonical(path: string): string {
+  let head = resolve(path);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return join(realpathSync(head), ...tail);
+    } catch {
+      const parent = dirname(head);
+      // The root, and nothing along the way existed. Every symlink that could have been
+      // followed has been; the resolved spelling is the best answer available.
+      if (parent === head) return join(head, ...tail);
+      tail.unshift(basename(head));
+      head = parent;
+    }
+  }
+}
+
+/**
+ * `dev:ino` for a directory that exists, or null when nothing is there to identify.
+ *
+ * `statSync` and not `lstatSync`: a symlink AT the path is a way of naming the directory
+ * it points at, and naming it is what the guard is trying to catch.
+ */
+function directoryIdentity(path: string): string | null {
+  const stat = statSync(path, { throwIfNoEntry: false });
+  return stat ? `${stat.dev}:${stat.ino}` : null;
+}
+
+/**
+ * Whether two paths name the SAME directory - asked of the filesystem, not of the strings.
+ *
+ * `canonical` above gets the spellings and the symlinks, and that is most of it, but it
+ * still cannot answer case. `~/.AGENTS/skills` is the operator's live directory on macOS's
+ * default case-insensitive APFS and a different directory on ext4, and `realpath` on macOS
+ * reports back the casing it was handed - so a string comparison silently allows the walk on
+ * exactly the machine most operators run. Verified: that spelling deleted a live link.
+ *
+ * Case-folding the comparison would trade a real deletion on macOS for a phantom refusal on
+ * Linux, and both answers would be a guess about a filesystem this code cannot see. The
+ * inode pair is not a guess: two paths are the same directory when the filesystem says they
+ * are, on every platform, and it settles hard links and bind mounts in the same breath.
+ *
+ * Identity needs both paths to EXIST, which is why it is the first answer and not the only
+ * one. A directory a reconcile is about to create has no inode yet, and creating one in the
+ * operator's home is its own kind of wrong, so the canonical spellings decide that case.
+ */
+function sameDirectory(a: string, b: string): boolean {
+  const idA = directoryIdentity(a);
+  const idB = directoryIdentity(b);
+  if (idA !== null && idB !== null) return idA === idB;
+  return canonical(a) === canonical(b);
+}
+
+/**
  * Refuse to reconcile the operator's real skills directory from inside the test runner.
  *
  * `openDb`'s `assertTestStateIsolation`, for the other half of this app's blast radius,
@@ -135,10 +220,18 @@ function operatorSkillsDirs(): string[] {
  * by declaring `homeDir` - the same declaration that puts it in harm's way. Throwing rather
  * than skipping the directory, because a quiet skip is how this arrived: the walk has to
  * stop being possible, not merely stop being harmful.
+ *
+ * `sameDirectory` and not `===`, because a deny-list is only ever as good as its ability to
+ * recognise what it is denying. The first cut compared raw strings, which is a guard against
+ * one spelling rather than against one directory: a trailing slash, a symlinked scratch path,
+ * and a case variant on APFS each walked past it and took the operator's live links with
+ * them. All three are pinned in `skills-multi-harness.test.ts`.
  */
 function assertTestSkillIsolation(dir: string): void {
+  // First, so production pays nothing for the stat and realpath calls below - a live daemon
+  // reconciles the operator's real directory on every start, which is the point.
   if (!process.env.NODE_TEST_CONTEXT) return;
-  if (!operatorSkillsDirs().includes(dir)) return;
+  if (!operatorSkillsDirs().some((real) => sameDirectory(real, dir))) return;
   const pins = AGENT_TYPES.map((agent) => HARNESS_CAPABILITIES[agent].skills?.dirEnvVar)
     .filter((name): name is string => name !== undefined);
   throw new Error(

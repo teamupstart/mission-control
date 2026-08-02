@@ -132,6 +132,22 @@ test("drift notices a link missing from a harness the operator never looks at", 
   assert.match(drift[0] ?? "", /alpha is switched on but isn't installed/);
 });
 
+// ---- the test-runner guard ----
+//
+// These name the machine's ACTUAL skills directories, which is the one thing every other
+// test in this suite exists to avoid. So they are built so that a guard which has stopped
+// working fails the assertion instead of performing the deletion:
+//
+//   `cfg.enabled` with an UNREADABLE catalog returns from `reconcileOneDir` before it reads
+//   the directory, let alone writes to it. Absence of evidence is not evidence, and this
+//   file leans on that: with the guard removed the call is inert and `assert.throws` simply
+//   fails. A regression here costs a red test, never the operator's skills.
+//
+// `uninstallSkillLinks` cannot be defused that way - it supplies its own config, and the
+// empty desired set is precisely what unlinks everything - so it is exercised in the child
+// process below, against a fake `$HOME`, where a failed guard has nothing real to destroy.
+const INERT: Catalog = { readable: false, skills: [], present: new Set(), problems: ["unreadable"] };
+
 test("a pass over the machine's REAL skills directory is refused under the test runner", () => {
   // The fold's isolation is one env var per harness, and the count of harnesses grows.
   // `install-hooks.test.ts` pinned `CLAUDE_SKILLS_DIR` and nothing else, which was complete
@@ -147,17 +163,11 @@ test("a pass over the machine's REAL skills directory is refused under the test 
   for (const agent of AGENT_TYPES) {
     const spec = HARNESS_CAPABILITIES[agent].skills;
     if (!spec) continue;
-    const real = join(homedir(), ...spec.homeDir);
-    const cfg = mkCfg({ skills: { alpha: true } });
     assert.throws(
-      () => reconcileSkillLinks(cfg, CATALOG, [real]),
+      () => reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), INERT, [join(homedir(), ...spec.homeDir)]),
       /refusing to reconcile/,
       `${agent}'s real directory must be refused`,
     );
-    // Uninstall takes the same walk, and it is the path that did the damage: a config
-    // nobody has enabled anything in wants an EMPTY set, so every live link is "no longer
-    // desired" and comes out.
-    assert.throws(() => uninstallSkillLinks([real]), /refusing to reconcile/, `${agent}'s uninstall`);
   }
 });
 
@@ -166,13 +176,123 @@ test("the refusal names a fix the caller can apply", () => {
   // knob restores isolation, because the caller it fires on is a test file whose author
   // believed they had already set it.
   const real = join(homedir(), ...(HARNESS_CAPABILITIES.claude.skills?.homeDir ?? []));
-  assert.throws(() => uninstallSkillLinks([real]), (err: Error) => {
+  assert.throws(() => reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), INERT, [real]), (err: Error) => {
     assert.match(err.message, /MISSION_HOME/, "the one variable that isolates every harness");
     assert.match(err.message, /CLAUDE_SKILLS_DIR/);
     assert.match(err.message, /CODEX_SKILLS_DIR/);
     assert.match(err.message, /PI_SKILLS_DIR/);
     return true;
   });
+});
+
+/**
+ * The child that proves the guard by trying to defeat it, run against a throwaway `$HOME`
+ * so a spelling that gets through destroys a fake install and not the operator's.
+ *
+ * Written as a real reconcile against a real seeded link, because the assertion that matters
+ * is "the link is still there", and a guard is only worth what the disk says afterwards.
+ * Both entry points, because `uninstallSkillLinks` is the one that did the damage.
+ */
+const GUARD_PROBE = `
+import { mkdirSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+const { reconcileSkillLinks, uninstallSkillLinks } = await import("./src/server/skills/reconcile.ts");
+
+const home = homedir();
+const live = join(home, ".agents", "skills");
+const source = join(home, "their-skill");
+const aliasDir = join(home, "alias-agents");
+const OFF = { enabled: false, skills: {}, generation: 0, generationAt: 0 };
+const READABLE = { readable: true, skills: [], present: new Set(), problems: [] };
+
+function seed() {
+  rmSync(live, { recursive: true, force: true });
+  mkdirSync(live, { recursive: true });
+  mkdirSync(source, { recursive: true });
+  symlinkSync(source, join(live, "mission-alpha"), "dir");
+  rmSync(aliasDir, { force: true });
+  symlinkSync(join(home, ".agents"), aliasDir, "dir");
+}
+
+// String concatenation, not join(): join() would normalise the spelling away before the
+// guard ever saw it, which is how the first cut of these cases passed against a guard that
+// could not handle them.
+const SPELLINGS = {
+  exact: () => live,
+  trailingSlash: () => live + "/",
+  doubleSlash: () => join(home, ".agents") + "//skills",
+  dotDot: () => join(home, ".agents") + "/skills/../skills",
+  symlinkedParent: () => join(aliasDir, "skills"),
+  upperCase: () => join(home, ".AGENTS", "skills"),
+};
+
+seed();
+// Whether ".AGENTS" and ".agents" are one directory HERE. macOS ships case-insensitive
+// APFS, Linux CI is case-sensitive, and the honest assertion differs between them.
+const caseInsensitive = statSync(join(home, ".AGENTS"), { throwIfNoEntry: false }) !== undefined;
+
+const out = { caseInsensitive, results: {} };
+for (const [name, spell] of Object.entries(SPELLINGS)) {
+  out.results[name] = {};
+  for (const [entry, call] of [
+    ["reconcile", (d) => reconcileSkillLinks(OFF, READABLE, [d])],
+    ["uninstall", (d) => uninstallSkillLinks([d])],
+  ]) {
+    seed();
+    let refused = false;
+    try {
+      call(spell());
+    } catch (err) {
+      refused = /refusing to reconcile/.test(err.message);
+    }
+    out.results[name][entry] = { refused, survived: readdirSync(live).includes("mission-alpha") };
+  }
+}
+console.log(JSON.stringify(out));
+`;
+
+test("no spelling of a live skills directory gets past the guard", () => {
+  // The review finding this pins: the first guard compared raw strings, so it was a guard
+  // against one SPELLING rather than against one DIRECTORY. Verified before the fix -
+  // `CODEX_SKILLS_DIR` with a trailing slash, and a symlinked scratch path, each walked
+  // straight through and deleted the seeded link. On macOS so did a case variant, which no
+  // amount of string normalisation catches, and which is why the check ends at the inode.
+  const fakeHome = join(home, "guard-probe-home");
+  mkdirSync(fakeHome, { recursive: true });
+
+  const out = execFileSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "-e", GUARD_PROBE],
+    {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      env: { ...process.env, HOME: fakeHome },
+      encoding: "utf8",
+    },
+  );
+
+  const { caseInsensitive, results } = JSON.parse(
+    out.trim().split("\n").filter(Boolean).at(-1) ?? "{}",
+  ) as { caseInsensitive: boolean; results: Record<string, Record<string, { refused: boolean; survived: boolean }>> };
+
+  assert.deepEqual(
+    Object.keys(results).sort(),
+    ["dotDot", "doubleSlash", "exact", "symlinkedParent", "trailingSlash", "upperCase"],
+    "every spelling was attempted",
+  );
+
+  for (const [name, entries] of Object.entries(results)) {
+    for (const [entry, { refused, survived }] of Object.entries(entries)) {
+      // The assertion that actually matters, and it holds on every filesystem: whatever the
+      // guard decided, the operator's link is still on disk afterwards.
+      assert.equal(survived, true, `${entry} via ${name} destroyed a live link`);
+      // A case variant only NAMES the live directory where the filesystem folds case. On
+      // ext4 it is a different directory and letting it through is correct, so this asks the
+      // child which kind of disk it ran on rather than assuming CI's.
+      if (name === "upperCase" && !caseInsensitive) continue;
+      assert.equal(refused, true, `${entry} via ${name} was not refused`);
+    }
+  }
 });
 
 test("an isolated home keeps EVERY harness's directory inside itself", () => {

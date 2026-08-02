@@ -33,7 +33,7 @@ import { stateDir } from "../src/shared/harness-runtime.mjs";
 // TypeScript, and reachable because this script's entry point is `tsx hooks/install.mjs`
 // (see package.json) - unlike harness-hook.mjs, which bare `node` runs at hook time and
 // which is why the runtime module above is .mjs at all.
-import { claudeSkillsDir, uninstallSkillLinks } from "../src/server/skills/reconcile.ts";
+import { skillsDirs, uninstallSkillLinks } from "../src/server/skills/reconcile.ts";
 // One definition of the OTel env block, shared with the packaged app's installer and the
 // dashboard's Cost panel - three writers of the same six keys is exactly how half a block
 // gets left behind that nothing owns. See src/shared/claude-settings.ts.
@@ -236,7 +236,10 @@ function reportSkills() {
   if (!skills) return;
   if (skills.unlinked.length > 0) {
     const names = skills.unlinked.sort().join(", ");
-    console.log(`  removed ${skills.unlinked.length} skill link(s) from ${claudeSkillsDir()}: ${names}`);
+    // Every harness's directory, not Claude's. `uninstallSkillLinks` has walked them all
+    // since Codex and pi declared a `skills` spec, and naming one of the three understated
+    // what the command had just done to the machine.
+    console.log(`  removed ${skills.unlinked.length} skill link(s) from ${skillsDirs().join(", ")}: ${names}`);
   }
   // Say so rather than exiting 0 over it - a link we couldn't remove is still loaded
   // by every Claude on the machine, and the operator is the only one who can finish it.

@@ -16,6 +16,10 @@ LOG  := .harness.log
 MATCH := src/server/index.ts
 # The Foreman worker's argv marker (unique to the auto-responder worker).
 FOREMAN_MATCH := src/server/foreman/worker.ts
+# Proof that the installed tree matches the manifests. Defined up here because make
+# expands a rule's prerequisites as it parses that rule, so a definition below the first
+# use would silently leave that target with no prerequisite. See the rule for why.
+NPM_STAMP := node_modules/.install-stamp
 
 .DEFAULT_GOAL := help
 .PHONY: help init session claude dev desktop start server web up down restart stop-all status logs build app install-app icons test lint check smoke hooks setup
@@ -86,7 +90,7 @@ status: ## Show whether the daemon is running
 logs: ## Tail the background daemon log
 	@touch $(LOG); tail -f $(LOG)
 
-build: node_modules ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
+build: $(NPM_STAMP) ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
 	npm run build
 
 app: ## Build and package the macOS app (.app + .dmg) into release/
@@ -105,21 +109,30 @@ icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-con
 # `make test` fails EVERY test file - a broken environment that reads as a broken change,
 # which is exactly how it reads to a review workflow running the gates for you.
 #
-# A real file target, never `.PHONY`: make is satisfied by the directory existing, so a
-# warm worktree pays nothing and only an empty one installs.
-node_modules:
+# A STAMP rather than the `node_modules` directory itself. Make is satisfied by a target
+# that exists, and a directory always exists once anything has been installed into it -
+# so depending on it directly would install once and then never again, quietly running
+# the gates against stale dependencies after a pull or a branch switch moved
+# `package.json` or the lockfile. The stamp carries the manifests as prerequisites, so
+# it goes out of date exactly when they change.
+#
+# It lives INSIDE `node_modules` so `rm -rf node_modules` invalidates it too, and it is
+# touched only after a successful install, so a failed one is retried rather than
+# recorded as done. Never `.PHONY`, or every gate reinstalls.
+$(NPM_STAMP): package.json package-lock.json
 	npm install
+	@touch $@
 
-test: node_modules ## Run the full test suite
+test: $(NPM_STAMP) ## Run the full test suite
 	npm test
 
-lint: node_modules ## Lint src, hooks, test, scripts (oxlint)
+lint: $(NPM_STAMP) ## Lint src, hooks, test, scripts (oxlint)
 	npm run lint
 
-check: node_modules ## Typecheck
+check: $(NPM_STAMP) ## Typecheck
 	npm run typecheck
 
-smoke: node_modules ## Boot the built bundles to prove they run (needs `make build` first)
+smoke: $(NPM_STAMP) ## Boot the built bundles to prove they run (needs `make build` first)
 	npm run smoke
 
 hooks: ## Install the Claude status hooks

@@ -76,31 +76,60 @@ export function IntakeDrawer({
   onOpenMissions: () => void;
   onOpenTaskSources: () => void;
 }): React.JSX.Element {
-  const [sources, setSources] = useState<TaskSourcesView | null>(null);
+  // THREE states, not two, and the third is the whole point of this hook.
+  //
+  // `fetchTaskSources` swallows every failure - network, non-2xx, unparseable body - and
+  // resolves `null`. Held as `null` here, that is indistinguishable from "has not answered
+  // yet", and both then render as `0 sources`: a drawer whose ONE job is to say whether
+  // anything feeding the backlog is broken would report a daemon it cannot reach as a tidy,
+  // empty, healthy intake. Silence is the one answer this surface must never give.
+  //
+  // A successful read of an empty configuration is `{ sources: [], … }`, so `null` means
+  // failure unambiguously and the three states never collapse.
+  const [sources, setSources] = useState<TaskSourcesView | "loading" | "failed">("loading");
   useEffect(() => {
     let alive = true;
-    void fetchTaskSources().then((view) => {
-      if (alive && view) setSources(view);
-    });
+    void fetchTaskSources()
+      .then((view) => {
+        if (alive) setSources(view ?? "failed");
+      })
+      // `fetchJson` cannot currently reject, and this is here anyway: it is a shared helper
+      // several surfaces call, and the day it grows a throw this drawer must not answer with
+      // a permanent "loading" that reads as an empty intake.
+      .catch(() => {
+        if (alive) setSources("failed");
+      });
     return () => {
       alive = false;
     };
   }, []);
 
+  const loaded = typeof sources === "object" ? sources : null;
+  const failed = sources === "failed";
   const missions = schedules.filter((schedule) => schedule.archivedAt === null);
-  const configured = sources?.sources ?? [];
-  const statusById = new Map((sources?.status ?? []).map((status) => [status.sourceId, status]));
+  const configured = loaded?.sources ?? [];
+  const statusById = new Map((loaded?.status ?? []).map((status) => [status.sourceId, status]));
+  // A load that failed counts as needing a look. Unknown health is not health, and the count
+  // beside the title is what an operator reads before deciding whether to open anything.
   const unhealthy = missions.filter((m) => m.health === "attention").length
-    + configured.filter((source) => statusById.get(source.id)?.lastError != null).length;
+    + configured.filter((source) => statusById.get(source.id)?.lastError != null).length
+    + (failed ? 1 : 0);
+  // Only ever asked of a LOADED view - see the empty state below.
   const total = missions.length + configured.length;
+  const sourceCount = loaded
+    ? `${configured.length} source${configured.length === 1 ? "" : "s"}`
+    : failed
+      ? "sources unavailable"
+      : "sources loading…";
 
   return (
     <LineDrawer
       stage="intake"
       // Counted separately rather than summed. They are two different machineries with two
       // different remedies, and "3 in intake" would hide a fleet whose only source is off.
-      count={`${configured.length} source${configured.length === 1 ? "" : "s"} · ${
-        missions.length} mission${missions.length === 1 ? "" : "s"}`}
+      // The sources half is a phrase rather than a number while it is not known, because a
+      // `0` an operator cannot distinguish from a real zero is worse than no figure at all.
+      count={`${sourceCount} · ${missions.length} mission${missions.length === 1 ? "" : "s"}`}
       attention={unhealthy > 0 ? `${unhealthy} need${unhealthy === 1 ? "s" : ""} a look` : ""}
       onClose={onClose}
       actions={(
@@ -118,13 +147,37 @@ export function IntakeDrawer({
         </>
       )}
     >
-      {total === 0 ? (
+      {/* The empty state is a CLAIM - "nothing files work on its own yet" - so it is made
+          only from a view that actually arrived. Claiming it over a failed read is how a
+          fleet with four configured sources reports itself as having none. */}
+      {loaded && total === 0 ? (
         <LineDrawerEmpty>
           Nothing files work on its own yet. A recurring mission files a task on a cadence; a
           task source pulls your real backlog in. Neither ever launches an agent.
         </LineDrawerEmpty>
+      ) : !loaded && !failed && missions.length === 0 ? (
+        // The one tick between opening the drawer and the read landing, on a fleet with no
+        // missions to fill it. Saying so beats a blank panel, and it must not be the sentence
+        // above - which would assert an absence nobody has confirmed yet.
+        <LineDrawerEmpty>Reading task sources…</LineDrawerEmpty>
       ) : (
         <ul className="line-drawer-rows">
+          {/* A read that failed is drawn as a row rather than tucked into the header,
+              because at triage grain that is exactly what it is: the machinery that pulls
+              work in is not answering, which is a thing to go and look at. It sits where the
+              source rows would be, and the missions below it still render - one half being
+              unreadable is no reason to withhold the other. */}
+          {failed && (
+            <IntakeRow
+              name="Task sources"
+              kind="source"
+              fact="could not be read - the daemon did not answer"
+              tone="warn"
+              openLabel="Settings"
+              onOpen={onOpenTaskSources}
+              hint="Open task sources in Settings and check what is configured"
+            />
+          )}
           {configured.map((source) => {
             const status = statusById.get(source.id);
             const failing = status?.lastError != null;

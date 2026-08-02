@@ -469,6 +469,12 @@ export function openDb(): DatabaseSync {
       ON workflow_runs(trigger_key);
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_binding
       ON workflow_runs(binding_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_updated
+      ON workflow_runs(updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_status_updated
+      ON workflow_runs(status, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_version_updated
+      ON workflow_runs(workflow_version_id, updated_at DESC, id DESC);
 
     -- One immutable evidence snapshot, identified by (round, segment).
     --

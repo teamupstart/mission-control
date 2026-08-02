@@ -287,6 +287,14 @@ test("binding routes pin immutable versions, enforce one active owner, and refus
   const registry = new Registry();
   registry.applyDiscovery([discovered()]);
   const personas = new PersonaManager(registry);
+  let releaseCompaction!: () => void;
+  const compactionBlocked = new Promise<void>((resolve) => {
+    releaseCompaction = resolve;
+  });
+  let markCompactionStarted!: () => void;
+  const compactionStarted = new Promise<void>((resolve) => {
+    markCompactionStarted = resolve;
+  });
   const workflows = new WorkflowManager(registry, personas.store, {
     readContextRaw: async (_registry, binding) => {
       const raw = {
@@ -323,7 +331,11 @@ test("binding routes pin immutable versions, enforce one active owner, and refus
       };
     },
     boundaryChanged: async () => false,
-    compactContext: async (raw) => fallbackWorkflowContext(raw, "test fallback"),
+    compactContext: async (raw) => {
+      markCompactionStarted();
+      await compactionBlocked;
+      return fallbackWorkflowContext(raw, "test fallback");
+    },
   });
   workflows.start();
   const app = buildApp(
@@ -376,9 +388,11 @@ test("binding routes pin immutable versions, enforce one active owner, and refus
   const submitted = await request(app, `/api/workflow-bindings/${binding.id}/submit`, {
     requestId: "submit-1",
   });
-  assert.equal(submitted.status, 200);
+  assert.equal(submitted.status, 202);
   const first = await submitted.json() as { run: { id: string; status: string }; submission: { id: string } };
-  assert.equal(first.run.status, "completed");
+  assert.equal(first.run.status, "capturing");
+  await compactionStarted;
+  assert.equal(workflows.store.getRun(first.run.id)?.status, "capturing");
 
   const duplicateSubmit = await request(app, `/api/workflow-bindings/${binding.id}/submit`, {
     requestId: "submit-1",
@@ -392,6 +406,15 @@ test("binding routes pin immutable versions, enforce one active owner, and refus
   assert.equal(repeated.idempotent, true);
   assert.equal(repeated.run.id, first.run.id);
   assert.equal(repeated.submission.id, first.submission.id);
+
+  releaseCompaction();
+  const completionStarted = Date.now();
+  while (workflows.store.getRun(first.run.id)?.status !== "completed") {
+    if (Date.now() - completionStarted > 3_000) {
+      throw new Error("timed out waiting for accepted workflow submission to complete");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 
   const detail = await request(app, `/api/workflow-runs/${first.run.id}`, undefined, "GET");
   assert.equal(detail.status, 200);

@@ -57,6 +57,12 @@ test("the complete Phase 1 table family and required indexes exist", () => {
         (db.prepare(`PRAGMA index_info(${index.name})`).all() as Array<{ name: string }>).map((column) => column.name),
       );
 
+  const indexes = (table: string): string[][] =>
+    (db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string }>)
+      .map((index) =>
+        (db.prepare(`PRAGMA index_info(${index.name})`).all() as Array<{ name: string }>)
+          .map((column) => column.name));
+
   assert.ok(uniqueIndexes("personas").some((columns) => columns.join(",") === "normalized_name"));
   assert.ok(uniqueIndexes("workflow_versions").some((columns) => columns.join(",") === "workflow_id,version"));
   assert.ok(
@@ -68,6 +74,15 @@ test("the complete Phase 1 table family and required indexes exist", () => {
   assert.ok(
     uniqueIndexes("workflow_deliveries").some(
       (columns) => columns.join(",") === "submission_id,kind,payload_sha256",
+    ),
+  );
+  assert.ok(indexes("workflow_runs").some((columns) => columns.join(",") === "updated_at,id"));
+  assert.ok(
+    indexes("workflow_runs").some((columns) => columns.join(",") === "status,updated_at,id"),
+  );
+  assert.ok(
+    indexes("workflow_runs").some(
+      (columns) => columns.join(",") === "workflow_version_id,updated_at,id",
     ),
   );
 });

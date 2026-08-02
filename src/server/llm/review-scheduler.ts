@@ -1,5 +1,3 @@
-import { createLimiter } from "./structured.ts";
-
 // One daemon-owned ceiling on tool-less REVIEW work, and the reason it is created rather
 // than imported.
 //
@@ -17,8 +15,13 @@ import { createLimiter } from "./structured.ts";
 // constructs exactly one of these at startup and injects it into the subsystems that share
 // the budget, which also lets a test drive a scheduler it can observe.
 
+export type ReviewPriority = "normal" | "capture";
+
 /** Runs `fn` once the shared review budget has a slot. */
-export type ReviewScheduler = <T>(fn: () => Promise<T>) => Promise<T>;
+export type ReviewScheduler = <T>(
+  fn: () => Promise<T>,
+  priority?: ReviewPriority,
+) => Promise<T>;
 
 /**
  * How many review calls the daemon runs at once.
@@ -31,5 +34,35 @@ export const DEFAULT_REVIEW_CONCURRENCY = 3;
 export function createReviewScheduler(
   concurrency: number = DEFAULT_REVIEW_CONCURRENCY,
 ): ReviewScheduler {
-  return createLimiter(concurrency);
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new RangeError("Review concurrency must be a positive integer");
+  }
+
+  let active = 0;
+  const waiting: Record<ReviewPriority, Array<() => void>> = {
+    capture: [],
+    normal: [],
+  };
+  const release = (): void => {
+    active--;
+    (waiting.capture.shift() ?? waiting.normal.shift())?.();
+  };
+
+  return async function schedule<T>(
+    fn: () => Promise<T>,
+    priority: ReviewPriority = "normal",
+  ): Promise<T> {
+    // Re-check after waking. A newly submitted task can observe the released slot before
+    // this continuation resumes, and treating a wake-up as a reservation would then exceed
+    // the daemon-wide ceiling.
+    while (active >= concurrency) {
+      await new Promise<void>((resolve) => waiting[priority].push(resolve));
+    }
+    active++;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
 }

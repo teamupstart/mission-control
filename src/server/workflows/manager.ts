@@ -397,7 +397,7 @@ export class WorkflowManager {
   private inspectionUnsubscribe: (() => void) | null = null;
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
-  private readonly deliveryTasks = new Set<Promise<void>>();
+  private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
   private readonly rememberInjection: typeof recordInjection;
@@ -573,7 +573,7 @@ export class WorkflowManager {
     if (this.resumptionTimer) clearInterval(this.resumptionTimer);
     this.resumptionTimer = null;
     await this.engine.stop();
-    await Promise.allSettled(this.deliveryTasks);
+    await Promise.allSettled(this.backgroundTasks);
   }
 
   list(includeArchived = false): WorkflowSummary[] {
@@ -994,6 +994,39 @@ export class WorkflowManager {
     input: SubmitWorkflow,
     now = Date.now(),
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    const prepared = this.prepareSubmit(bindingId, input, now);
+    if (!prepared.ok) return prepared;
+    const { binding, ...value } = prepared.value;
+    if (prepared.idempotent) return { ok: true, value, idempotent: true };
+    return this.captureAndActivate(binding, value.run, value.submission);
+  }
+
+  /**
+   * Make a manual submission durable, then let capture continue outside the request.
+   *
+   * The returned run is deliberately still `capturing`. The dashboard can open that run
+   * immediately, and every later transition continues through the ordinary run event path.
+   */
+  enqueueSubmit(
+    bindingId: string,
+    input: SubmitWorkflow,
+    now = Date.now(),
+  ): WorkflowRuntimeMutation<WorkflowSubmitResult> {
+    const prepared = this.prepareSubmit(bindingId, input, now);
+    if (!prepared.ok) return prepared;
+    const { binding, ...value } = prepared.value;
+    if (prepared.idempotent) return { ok: true, value, idempotent: true };
+    this.trackBackgroundTask(
+      this.captureAndActivate(binding, value.run, value.submission).then(() => undefined),
+    );
+    return { ok: true, value };
+  }
+
+  private prepareSubmit(
+    bindingId: string,
+    input: SubmitWorkflow,
+    now: number,
+  ): WorkflowRuntimeMutation<WorkflowSubmitResult & { binding: WorkflowBinding }> {
     const binding = this.store.getBinding(bindingId);
     if (!binding) return { ok: false, reason: "not_found", message: "No such workflow binding" };
     if (binding.state !== "active") {
@@ -1004,7 +1037,7 @@ export class WorkflowManager {
     if (existing) {
       const run = this.store.getRun(existing.runId);
       return run
-        ? { ok: true, value: { run, submission: existing }, idempotent: true }
+        ? { ok: true, value: { binding, run, submission: existing }, idempotent: true }
         : { ok: false, reason: "not_found", message: "The idempotent run is missing" };
     }
     const active = this.store.activeRunForBinding(binding.id);
@@ -1016,10 +1049,17 @@ export class WorkflowManager {
       { id: randomUUID(), triggerSource: "manual", triggerKey: key, context: {}, evidence: {}, now },
     );
     if (created.idempotent) {
-      return { ok: true, value: { run: created.run, submission: created.submission }, idempotent: true };
+      return {
+        ok: true,
+        value: { binding, run: created.run, submission: created.submission },
+        idempotent: true,
+      };
     }
     this.publishRun(created.run.id);
-    return this.captureAndActivate(binding, created.run, created.submission);
+    return {
+      ok: true,
+      value: { binding, run: created.run, submission: created.submission },
+    };
   }
 
   /**
@@ -2451,7 +2491,7 @@ export class WorkflowManager {
         });
         this.publishRun(runId);
       });
-    this.trackDeliveryTask(task);
+    this.trackBackgroundTask(task);
   }
 
   private transitionInspectorGate(
@@ -3191,7 +3231,7 @@ export class WorkflowManager {
     submissionId: string,
     nudge: number,
   ): void {
-    this.trackDeliveryTask(
+    this.trackBackgroundTask(
       this.prepareUnchangedEvidenceNudge(runId, submissionId, nudge).catch((error) => {
         const run = this.store.getRun(runId);
         if (!run || runIsTerminal(run)) return;
@@ -3273,7 +3313,7 @@ export class WorkflowManager {
   }
 
   private scheduleWaitingDelivery(submissionId: string): void {
-    this.trackDeliveryTask(this.prepareAndMaybeDeliver(submissionId).catch((error) => {
+    this.trackBackgroundTask(this.prepareAndMaybeDeliver(submissionId).catch((error) => {
       const submission = this.store.getSubmission(submissionId);
       const run = submission ? this.store.getRun(submission.runId) : null;
       if (!submission || !run || runIsTerminal(run)) return;
@@ -3291,7 +3331,7 @@ export class WorkflowManager {
   }
 
   private scheduleAutomaticPr(runId: string, submissionId: string, now = Date.now()): void {
-    this.trackDeliveryTask(
+    this.trackBackgroundTask(
       this.preparePr(runId, `automatic:${submissionId}`, now)
         .then((result) => {
           if (result.ok) return;
@@ -3324,7 +3364,7 @@ export class WorkflowManager {
   }
 
   private schedulePreparedDelivery(deliveryId: string): void {
-    this.trackDeliveryTask(this.deliverPrepared(deliveryId, false).catch((error) => {
+    this.trackBackgroundTask(this.deliverPrepared(deliveryId, false).catch((error) => {
       const delivery = this.store.getDelivery(deliveryId);
       const run = delivery ? this.store.getRun(delivery.runId) : null;
       if (!delivery || !run || runIsTerminal(run)) return;
@@ -3355,7 +3395,7 @@ export class WorkflowManager {
   // capture fresh evidence, and activate only the routes that completion authorizes.
 
   private scheduleSessionActionDelivery(attemptId: string): void {
-    this.trackDeliveryTask(this.prepareSessionAction(attemptId).catch((error) => {
+    this.trackBackgroundTask(this.prepareSessionAction(attemptId).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       this.blockSessionAction(attemptId, "capture_failed", message);
     }));
@@ -3767,7 +3807,7 @@ export class WorkflowManager {
       if (!attempt.sessionAction) continue;
       if (!completionWatchesPullRequests(attempt.sessionAction.completion.kind)) continue;
       const sessions = this.registry.snapshot().sessions;
-      this.trackDeliveryTask(
+      this.trackBackgroundTask(
         this.observeSessionAction(attempt.id, sessions, now).catch((error) => {
           workflowLog("error", {
             event: "session_action_observe_failed",
@@ -4052,11 +4092,11 @@ export class WorkflowManager {
     }));
   }
 
-  private trackDeliveryTask(task: Promise<void>): void {
-    this.deliveryTasks.add(task);
+  private trackBackgroundTask(task: Promise<void>): void {
+    this.backgroundTasks.add(task);
     void task.then(
-      () => this.deliveryTasks.delete(task),
-      () => this.deliveryTasks.delete(task),
+      () => this.backgroundTasks.delete(task),
+      () => this.backgroundTasks.delete(task),
     );
   }
 
@@ -4343,7 +4383,7 @@ export class WorkflowManager {
       let context: WorkflowContextSnapshot;
       const compact = this.options.compactContext;
       if (compact) {
-        context = await this.schedule(() => compact(captured.raw));
+        context = await this.schedule(() => compact(captured.raw), "capture");
       } else {
         const config = getLlmConfig();
         const contextRunner = llmRunnerChoice(config);
@@ -4393,7 +4433,7 @@ export class WorkflowManager {
           runner: contextRunner.id,
           model: contextModel.id,
           observer,
-        }));
+        }), "capture");
       }
       const currentRun = this.store.getRun(run.id);
       const currentSubmission = this.store.getSubmission(submission.id);
@@ -4595,7 +4635,7 @@ export class WorkflowManager {
         // runs on the daemon's start path, and blocking it on git for every waiting action
         // would delay every other run's recovery behind one repository. The sequence inside
         // is what has to be ordered, and it is.
-        this.trackDeliveryTask(this.recoverSessionActionCapture(attempt.id, child).catch((error) => {
+        this.trackBackgroundTask(this.recoverSessionActionCapture(attempt.id, child).catch((error) => {
           this.blockSessionAction(
             attempt.id,
             "capture_failed",

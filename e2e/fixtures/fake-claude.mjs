@@ -47,6 +47,8 @@ function argvValue(flag) {
 const MODEL = argvValue("--model") ?? "claude-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = 5_000;
+const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
+const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
@@ -92,8 +94,21 @@ if (process.argv.includes("-p")) {
   process.stdin.on("data", (c) => chunks.push(c));
   process.stdin.on("end", () => {
     const prompt = Buffer.concat(chunks).toString("utf8");
-    process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
-    process.exit(0);
+    const finish = () => {
+      process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
+      process.exit(0);
+    };
+    // Keep one workflow compaction visibly in flight so the browser can prove an accepted
+    // submission opens its run before this provider child finishes. The marker sits in the
+    // dispatched session's intent, and the prompt prefix keeps its title call instant.
+    if (
+      prompt.includes(SLOW_WORKFLOW_CONTEXT)
+      && prompt.includes("Compact workflow intent without rewriting it.")
+    ) {
+      setTimeout(finish, SLOW_WORKFLOW_CONTEXT_MS);
+    } else {
+      finish();
+    }
   });
 } else {
   runSession();
@@ -116,6 +131,12 @@ if (process.argv.includes("-p")) {
  * including the titler, keeps the fixed title reply below.
  */
 function headlessAnswer(prompt) {
+  if (
+    prompt.includes(SLOW_WORKFLOW_CONTEXT)
+    && prompt.includes("Compact workflow intent without rewriting it.")
+  ) {
+    return JSON.stringify({ constraints: [], acceptanceCriteria: [] });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",

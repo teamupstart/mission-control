@@ -117,6 +117,7 @@ test("mockup context does not block a task that also asks for implementation", (
     "Implement a research dashboard for onboarding patterns.",
     "Create mockups and update the dashboard UI.",
     "Research onboarding patterns, then refactor the dashboard.",
+    "Investigate the login failure, then implement a fix.",
     "Write a report, then implement the feature.",
     "Review the code and submit a pull request.",
     "Audit the fix, then open a PR.",

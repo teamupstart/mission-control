@@ -106,14 +106,23 @@ test("the topbar segment moves between the two homes, and the chord does the sam
   // The same swing on the keyboard. It is the one chord that fires OFF the fleet too, which
   // is what lets the single key return.
   //
-  // Polled between presses rather than pressed twice in a row: the key handler reads the
-  // current page from a subscription React re-arms after the render that follows a
-  // navigation, so a second synthetic keypress landing inside that window is answered by the
-  // handler for the page you just left. A person cannot outrun a frame; Playwright can.
+  // Each press waits for the SEGMENT to move, not for the hash. `navigate` sets
+  // `location.hash` synchronously, so the hash is the new page one line after the keypress -
+  // while the key handler is still the one React armed for the page you just left, because
+  // it re-subscribes on the render that trails the `hashchange`. Polling the hash therefore
+  // waits for something that is already true and lets a second synthetic press land inside
+  // that window, where it is answered by the stale handler and does nothing. `aria-current`
+  // only moves on that render, so waiting for it is both the honest user-visible assertion
+  // and the correct barrier. (A person cannot type inside one frame; Playwright can.)
   await dashboard.keyboard.press("w");
-  await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/library");
+  await expect(pages.getByRole("button", { name: /Library/ }))
+    .toHaveAttribute("aria-current", "page");
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/library");
+
   await dashboard.keyboard.press("w");
-  await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/fleet");
+  await expect(pages.getByRole("button", { name: /Fleet/ }))
+    .toHaveAttribute("aria-current", "page");
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/fleet");
 
   // And it stands down while a text field has focus, so `w` types instead of navigating.
   // Focused through the app's own `/` chord rather than by clicking: the topbar's container

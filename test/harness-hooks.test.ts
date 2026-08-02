@@ -39,7 +39,6 @@ process.env.HARNESS_DISPATCH_SETTLE_MS = "10";
 const { HARNESSES, hooksFor } = await import("../src/server/harness/index.ts");
 const { claudeHooks } = await import("../src/server/harness/claude/hooks.ts");
 const { CODEX_HOOK_EVENTS, codexHooks } = await import("../src/server/harness/codex/hooks.ts");
-const { AGENT_TYPES } = await import("@shared/types.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { codexHookOverride, prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
@@ -63,7 +62,6 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nameSource: "process",
     cwd: "/wt/one",
     gitBranch: null,
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys015",
     terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: PANE })],

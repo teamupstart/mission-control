@@ -162,7 +162,7 @@ function todoWriteItems(o: unknown): Array<Record<string, unknown>> | null {
 }
 
 /**
- * The "what's happening now" narration for the no-mistakes strip: the present-
+ * The current TodoWrite narration: the present-
  * tense `activeForm` (falling back to `content`) of the in-progress item in the
  * most recent main-thread TodoWrite. The newest TodoWrite is authoritative, so
  * we stop at the first one found scanning newest-first - if it has nothing in

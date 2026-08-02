@@ -60,6 +60,26 @@ test("getConfig throws on a non-2xx, like every other read", async () => {
   await assert.rejects(withDaemon({}, () => client.getConfig(), false), /\/api\/foreman\/config -> 500/);
 });
 
+test("workflow ownership reads the session-filtered run page", async () => {
+  const real = globalThis.fetch;
+  let requested = "";
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    requested = String(input);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [{ id: "run-1", status: "running" }], nextCursor: null }),
+    } as Response;
+  }) as typeof fetch;
+  try {
+    const runs = await client.workflowRuns("claude:session/1");
+    assert.equal(runs[0]?.id, "run-1");
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.match(requested, /\/api\/workflow-runs\?session=claude%3Asession%2F1&limit=200$/);
+});
+
 test("submitted Foreman replies use settled prompt injection; unsubmitted drafts do not", async () => {
   const real = globalThis.fetch;
   const calls: Array<{ url: string; body: unknown }> = [];

@@ -630,9 +630,6 @@ npm test
 npm run build
 ```
 
-The repository has no separate formatter or lint script; `npm run typecheck` is its configured
-static-analysis gate. Shipping validation is driven through the no-mistakes pipeline.
-
 ## Rollout sequence
 
 1. Add shared cost provenance and fleet fields, updating fixtures so typecheck describes every

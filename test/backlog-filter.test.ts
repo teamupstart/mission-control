@@ -31,7 +31,6 @@ function props(sessions: Session[], tasks: Task[], backlog: Task[]): SessionView
     backlog,
     onEditTask: () => {},
     backlogPlan: null,
-    gateAlerts: new Set<string>(),
     selectedId: null,
     consoleZone: "rail",
     onConsoleZoneChange: () => {},

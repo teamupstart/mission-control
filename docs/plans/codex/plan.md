@@ -215,40 +215,6 @@ Three states, of which one is meaningless:
 
 And a set of downstream consequences, in rough order of how much they cost:
 
-- **Foreman never sees a Codex session at all.** `tickTargets` (`queue-machine.ts:216-224`)
-  filters **both** halves on `capabilitiesFor(s.agent).workQueue`. So `promptHarness`'s Codex
-  branch (`foreman/prompt.ts:170-171`), the Codex-glyph menu parse at `worker.ts:1310`, and
-  `classifyPending`'s `terminal-pane` branch - all written for exactly this case - are
-  **unreachable in production**.
-- **`src/shared/session.ts:175-178` states something false.** It claims reading the dialog
-  widens `tickTargets` "to sessions parked on a dialog it has not been told about by a hook".
-  For Codex it does not: `tickTargets` filters it out one line before the bucket is consulted.
-  The claim holds only for an uninstrumented *Claude* session.
-- **The needs-you badge disagrees with the card.** `foreman/config.ts:156-163` gates
-  `countNeedsYou` on the same capability, so a Codex card visibly parked on an approval prompt
-  contributes 0 to the badge.
-- **`test/backlog-machine.test.ts:358-363` pins a path that cannot occur.** It asserts "a
-  codex task IS handed to a free codex agent"; `agentIsFree` requires `s.hooksSeen`
-  (`backlog-machine.ts:196`), which only hook ingest sets, which Codex never produces. The
-  test passes only because `mkSession` hard-codes `hooksSeen: true` (`:73`).
-- **Inspector adoption is unreachable.** The `"hook"` route runs inside `applyHook`
-  (`registry.ts:723-733`), which returns early for a hookless harness. The `"no-mistakes"`
-  route is driven by a skill Codex cannot load. Meanwhile `pr.ts:8-10` exists specifically to
-  find "PRs the hook never saw (**Codex sessions**…)" and feeds only the chip, never
-  `adoptPr` - so a Codex card shows a PR chip with no inspector chip, a combination
-  `inspector/worker.ts:921-923` says means "we didn't open this one". For Codex that reading
-  is wrong.
-- **Dispatch is typed at blind, three times over.** No boot-ready signal (`hooksFor` null →
-  2s `sleep`, `dispatcher.ts:188-198`), no paste-landed signal (`pastePlaceholder: null`), no
-  prompt-ingested signal (`instrumented: false` → no `waitForPromptAcceptedAtCwd`). A Codex
-  dispatch is marked `running` with zero evidence the agent read its intent.
-- **No ask channel.** `ask-channel.ts:215-216` is a hard `if (agent !== "claude") return []`.
-  The arm-B failure the file documents at `:22-30` - "the agent asked IN PROSE AND STOPPED" -
-  is Codex's permanent state.
-- **The dispatch modal discloses none of it.** Every refusal above is stated somewhere -
-  Settings badges, card empty states, the work-queue panel - i.e. *after* the task launched.
-  The one surface where the choice is made says nothing (`DispatchModal.tsx:502-523`).
-
 ### Where a Codex card's state comes from
 
 Today two of the three channels are closed by declaration, so the only live signal is the
@@ -396,12 +362,6 @@ Three decisions the parser must make, all of which have a precedent in `claude/t
 
 **Narration**: `task_complete.payload.last_agent_message` and `agent_message` with
 `phase:"commentary"`. There is no TodoWrite equivalent.
-
-**Unlocks for free**: `GET /api/sessions/:id/transcript`, the transcript size anchor
-(`routes.ts:365`), no-mistakes narration (`nomistakes.ts:250`), the goal refiner's Tier 2
-window, and Foreman's Tier 1 evidence. Tier 1 stays degraded - `goal/prompt.ts:64` takes the
-prompt from a hook - but `goal/prompt.ts:104` already handles `prompt: null` with "none
-captured - infer the goal from the conversation below".
 
 ---
 
@@ -608,7 +568,6 @@ Per CLAUDE.md, and none of these is a follow-up:
   decision criteria are met, its front-runner option is chosen, and parts of it are already
   stale (it describes a `resolveTranscriptPath` that no longer exists and a rollout reader
   that was since built).
-- **`plan.html`** beside this file, per `skills/html-plans/SKILL.md`.
 
 ## Provenance
 

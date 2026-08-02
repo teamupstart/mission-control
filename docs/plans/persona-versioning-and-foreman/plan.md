@@ -4,10 +4,6 @@ Status: **proposed**
 
 ## Outcome
 
-Mission Control should treat a Persona as a first-class configuration resource. A Persona may
-be eligible for a workflow review stage, but workflow membership is a use of the resource, not
-its owner or identity.
-
 The same model should expose Foreman's standing instructions as a system Persona:
 
 - the shipped `FOREMAN.md` remains a built-in, read-only default;

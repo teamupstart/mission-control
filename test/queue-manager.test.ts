@@ -36,7 +36,6 @@ function mkDiscovered(
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: `ttys${++paneN}`,
     terminals: [mkMuxHandle({ paneId: `%${paneN}` })],
@@ -280,7 +279,6 @@ test("re-attach is refused before the sessions has ever been observed", () => {
   // finding. The daemon answers routes the instant it binds its port, so a tab that
   // survives a restart can land a click in exactly that window.
   const registry = new Registry();
-  const queues = new QueueManager(registry);
 
   // A queue exists in the DB (it is durable), but no sweep has run in this registry.
   const fresh = new Registry();

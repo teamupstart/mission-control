@@ -27,7 +27,7 @@ raw.exec(`
      adopted_at, updated_at)
   VALUES
     ('mancej/ai-harness#146', 'https://github.com/mancej/ai-harness/pull/146',
-     'mancej', 'ai-harness', 146, 'no-mistakes', 'open', 'abc', 1, 1, 1);
+     'mancej', 'ai-harness', 146, 'retired-provenance', 'open', 'abc', 1, 1, 1);
 `);
 raw.close();
 
@@ -38,6 +38,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 test("legacy reviewed heads gain nullable posture and cannot count as live", () => {
   const legacy = getInspectorPr("mancej/ai-harness#146");
   assert.equal(legacy?.headSha, "abc");
+  assert.equal(legacy?.source, "legacy");
   assert.equal(legacy?.reviewPosture, null);
 });
 

@@ -1,22 +1,19 @@
 #!/usr/bin/env node
 // One-time bootstrap that makes Mission Control fully functional and wires up the
-// two companion tools it builds on:
+// companion tool it builds on:
 //
 //   • treehouse   - a pool of pre-warmed git worktrees, so parallel agent
 //                   sessions never fight over one working tree.
-//   • no-mistakes - the push gate this harness surfaces and drives.
-//
-// Steps: install deps, build, wire the Claude status hooks, make sure both
-// tools are installed, write this repo's treehouse.toml, and gate this repo
-// with no-mistakes. Every step detects whether it is already done, so this is
-// safe to run repeatedly.
+// Steps: install deps, build, wire the Claude status hooks, make sure treehouse
+// is installed, and write this repo's treehouse.toml. Every step detects whether
+// it is already done, so this is safe to run repeatedly.
 //
 // Usage: node scripts/init.mjs [--dry-run] [--skip-hooks] [--skip-build]
 //   --dry-run     print what each step would do, change nothing
 //   --skip-hooks  don't touch ~/.claude/settings.json (the Claude hooks)
 //   --skip-build  don't run the web/MCP build
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -115,28 +112,7 @@ if (existsSync(join(repo, "treehouse.toml"))) {
   ok("wrote treehouse.toml");
 }
 
-// 4. no-mistakes (push gate) -------------------------------------------------
-heading("no-mistakes - push gate");
-if (!have("no-mistakes")) {
-  warn(
-    "no-mistakes not installed. It is optional (the harness runs without it; " +
-      "gating just won't be available). Install it from " +
-      "https://github.com/kunchenguid/no-mistakes, then re-run `make init`.",
-  );
-} else {
-  ok(`installed (${ver("no-mistakes")})`);
-  const remotes = cap("git", ["remote"]).split("\n").map((r) => r.trim());
-  if (remotes.includes("no-mistakes")) {
-    ok("this repo is already gated");
-  } else if (!remotes.includes("origin")) {
-    warn("no `origin` remote - add one, then `no-mistakes init` to gate this repo");
-  } else {
-    doing("gating this repo (no-mistakes init)…");
-    if (run("no-mistakes", ["init"])) ok("repo gated");
-  }
-}
-
-// 5. Claude status hooks -----------------------------------------------------
+// 4. Claude status hooks -----------------------------------------------------
 heading("Claude status hooks");
 if (skipHooks) {
   ok("skipped (--skip-hooks) - wire later with `npm run install-hooks`");
@@ -155,5 +131,5 @@ if (problems.length === 0) {
 }
 console.log("\nNext:");
 console.log("  make dev       # daemon + dashboard (http://127.0.0.1:5173)");
-console.log("  make session   # start an agent in a fresh, gated worktree");
+console.log("  make session   # start an agent in a fresh worktree");
 if (dryRun) console.log("\n(dry-run: nothing was changed)");

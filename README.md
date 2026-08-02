@@ -51,8 +51,8 @@ and get your decision back.
 - **Rounds up** every session: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
 - **Alerts** you when a session needs you: a desktop notification + sound the
-  moment a session needs input, a review lands, a no-mistakes gate parks, a session
-  **gets stuck**, or a dispatched task fails - with an **Away mode** that buffers the
+  moment a session needs input, a review lands, a session **gets stuck**, or a
+  dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
 - **Tracks fleet economics**: a badge on every priced card and a topbar strip carrying
   the sessions' Claude + Codex API-equivalent estimate, tokens, estimated cost per pull
@@ -89,13 +89,13 @@ and get your decision back.
 ## Quick start
 
 ```sh
-make init          # one-time bootstrap (deps, build, hooks, treehouse + no-mistakes)
+make init          # one-time bootstrap (deps, build, hooks, treehouse)
 make dev           # daemon + Vite, open http://127.0.0.1:5173
 ```
 
 `make init` is idempotent - it installs dependencies, builds, wires the Claude
-hooks, makes sure [treehouse](#isolated-worktrees-per-session-treehouse) and
-[no-mistakes](#no-mistakes) are installed, and gates this repo. If you'd rather
+hooks, and makes sure [treehouse](#isolated-worktrees-per-session-treehouse) is
+installed. If you'd rather
 do the minimum by hand:
 
 ```sh
@@ -191,8 +191,8 @@ every terminal backend it knows about (today `tmux list-panes`, `cmux tree`,
 that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in SQLite
 (`node:sqlite`).
 
-That same sweep re-reads the mutable Git facts in each session's checkout: its branch and
-whether the repo is gated by no-mistakes. Sessions the daemon runs itself (Agent SDK
+That same sweep re-reads the mutable Git facts in each session's checkout, including its
+branch. Sessions the daemon runs itself (Agent SDK
 `runtime`) are never carded by that sweep: it skips every agent process inside the daemon's
 own subtree, because those are the daemon's own subprocesses rather than somebody's session.
 Without that rule an embedded session's CLI subprocess - which inherits the terminal the
@@ -200,11 +200,9 @@ daemon itself was started from, since the Agent SDK owns the spawn - would appea
 time as a terminal card, named after the daemon's tab and claiming its session's branch and
 PR. Their Git facts are instead read directly from their working directory at launch or
 restoration and refreshed on the same cadence.
-This keeps both the **PR chip** and [no-mistakes](#no-mistakes) status honest without a
-terminal session sharing the checkout. A pooled worktree is often leased with no branch at
+This keeps the **PR chip** honest without a terminal session sharing the checkout. A pooled worktree is often leased with no branch at
 all, and the PR poller finds a session's pull request by asking
-`gh pr list --head <branch>`; similarly, the no-mistakes status poller visits only gated
-checkouts. Capturing either fact only once would leave live changes invisible.
+`gh pr list --head <branch>`. Capturing either fact only once would leave live changes invisible.
 
 ### The title bar stays compact at half-screen
 
@@ -692,7 +690,10 @@ you: a plain `npm run install-hooks`, and the packaged app's integrations, leave
 It makes the model / thinking / context figures on the cards exact (without it they come
 from a passive transcript read), and supplies the [cost telemetry](#cost-telemetry) plan
 meters for terminal Claude sessions. Embedded Claude SDK sessions have no terminal status
-line; they fetch the same account windows through the SDK instead.
+line; they fetch the same account windows through the SDK instead. For the passive context
+meter, Mission Control applies each recognized model's default window: Fable 5, Opus 4.6+
+and Sonnet 4.6+ use 1M, while Opus/Sonnet 4.5 and Haiku 4.5 use 200k. An explicit window
+reported by Claude remains authoritative.
 
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the
@@ -1349,14 +1350,25 @@ selection and add the task to the backlog while Foreman is off. When the task is
 Foreman must be enabled and the selected harness must support its completion boundary; the
 Workflow is then bound to the session and starts when Foreman reports **Complete**. Set the
 machine-wide choice under **Settings → Workflows → Dispatch default** to preselect it for
-every new single-agent dispatch. New installations start on the built-in **No-Mistakes
-Review** workflow. That default stores the workflow identity rather than today's version, so
+every new single-agent dispatch. New installations start on the built-in
+**No-Mistakes Review** workflow. That default stores the workflow identity rather than today's version, so
 each new binding takes the newest immutable version shipped at the time (see
 [Built-in workflows](#built-in-workflows)) while older bindings stay pinned. The dispatch
 form can override that choice for one task, including an explicit **None** that finishes
-without a Workflow. Once the task has a session, this selection is frozen so the task row and
+without a Workflow.
+
+Choosing **scout** under **Kind** moves that selection to **None** for you, because a scout
+investigates and reports rather than delivering a change and so has no diff for a review
+Workflow to run over. Switching back to **ship** hands back the exact choice scout put
+aside, so the reversal loses nothing. It is a default rather than a lock: pick a Workflow
+after choosing scout and it sticks, and a choice you make by hand is never reverted by a
+later kind switch. This is a behavior of the dispatch form, so it applies to the kind you
+pick there and not to the inheriting paths below.
+
+Once the task has a session, this selection is frozen so the task row and
 the already-armed Workflow cannot disagree. MCP-created tasks, task-source sweeps, and
-Recurring Missions inherit the same machine default when they create an ordinary task.
+Recurring Missions inherit the same machine default when they create an ordinary task,
+whatever their kind.
 Internal Ensemble member and replacement tasks opt out because an Ensemble's optional
 Workflow belongs only at its final N-to-one handoff.
 
@@ -1454,8 +1466,7 @@ control runs: `git reset --hard` onto origin's default branch, `git clean -fd`, 
 the branch, and clear the context (`/clear` for Claude Code and Codex, `/new` for Pi; an
 agent that declares no clear command has its context left alone rather than being sent a
 command it does not speak). Without it the next task inherits the last one's branch and
-context, and no-mistakes - seeing a non-default branch - validates and pushes onto it,
-putting two unrelated tasks in one PR.
+context, putting two unrelated tasks in one PR.
 
 So the drop **asks first whenever there's something to lose**: a dialog naming the agent's
 queued work items, the branch being released, and the context being cleared, and nothing
@@ -2213,8 +2224,7 @@ obligation:
    [option menu](#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
    inbox: it deep-links to the session card, while the member's live lane in the run detail
    also renders the verified pane dialog in place.
-4. **Stuck finalizations and shipping gates** - a promotion that stopped on an error, and
-   parked no-mistakes gates no agent is driving.
+4. **Stuck finalizations** - a promotion that stopped on an error.
 
 The count is **answers owed**, not rows: a session holding three questions is one row and
 three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides
@@ -2226,8 +2236,8 @@ review modal.
 ## Roundup
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live
-data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
-gates, sessions sitting on an [option menu](#answer-a-sessions-menu-from-the-dashboard)),
+data the grid shows: **who needs you** (needs-input, pending reviews, sessions sitting on an
+[option menu](#answer-a-sessions-menu-from-the-dashboard)),
 **who's working** (with their intent + activity), **what's idle**, the **backlog**,
 and **recent outcomes**. Dispatch a backlog task, [edit it](#edit-a-shelved-task) by
 clicking its name, or drop it right from the panel, and **Mark
@@ -2242,7 +2252,7 @@ needs you**. The daemon already streams every attention event over SSE; the brow
 turns those into a **desktop (Chrome) notification + a short sound** the moment a
 session goes to `needs-input`, a session stops on an
 [option menu](#answer-a-sessions-menu-from-the-dashboard) (which needs no hooks, and says
-how many options it's offering), a review lands, a no-mistakes gate parks, or a
+how many options it's offering), a review lands, or a
 dispatched task fails. It's zero extra tokens - the daemon (not an LLM) does the
 watching - and there's no phone/SMS piece; it's the open dashboard tab that alerts.
 
@@ -2258,8 +2268,7 @@ The daemon also watches for sessions that have **gone quiet**, which no state
 transition can announce - a stall is defined by nothing happening. Four rules, all
 deterministic: an instrumented session that claims to be working but hasn't reported
 in ~10 minutes; a session idle ~20 minutes with a task or queue still open against it
-(the "died with work unfinished" case); a no-mistakes gate parked with nobody driving
-it; and a Foreman escalation nobody answered. A stuck session is attention-level, so
+(the "died with work unfinished" case); and a Foreman escalation nobody answered. A stuck session is attention-level, so
 it breaks through even while you're away.
 
 ### Away mode
@@ -2336,8 +2345,7 @@ on the attempt so history never has to re-resolve them from current settings.
 
 ### Built-in Personas
 
-Four ready-made review roles ship with the application, distilled from the
-[no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline prompts. Nothing has to be
+Four ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -2822,8 +2830,7 @@ same workflow status.
 ### Watching a run
 
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
-ladder in the **Workflows** tab (<kbd>y</kbd>), alongside the no-mistakes gate for the same
-session. Passed stages collapse, the active or failed stage names its
+ladder in the **Workflows** tab (<kbd>y</kbd>). Passed stages collapse, the active or failed stage names its
 members, and an objection, Inspector wait, session-action wait, or uncertain delivery opens in
 place. A workflow whose final gate is Inspector ends the ladder with a fixed `Inspector` rung
 *after* the End outcome, marked `Fixed`, reading `Not reached` until the run gets there.
@@ -3103,8 +3110,8 @@ blocks the run for you to resolve, and any round that captures a real change res
 An Inspector completion policy adds a final stage after a successful End. End stays successful,
 but the run does not complete until Inspector has reviewed the exact PR head represented by that
 submission. A PR URL on the session is only a lookup hint. The gate can use it only when the
-durable Inspector ledger already says the hook saw `gh pr create` or no-mistakes reported its own
-PR. A URL alone never adopts a pull request and never grants permission to comment on it.
+durable Inspector ledger already says the hook saw `gh pr create`. A URL alone never adopts a
+pull request and never grants permission to comment on it.
 
 Gate entry records the local committed HEAD, then waits for a normal Inspector sweep observed
 after entry. It does not start a second GitHub poller. The observed PR must still be open, its
@@ -3288,18 +3295,12 @@ The dashboard tells you *who needs you*; **Foreman** can start draining that que
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
 Claude Code session or Mission Control-launched Codex session that has reported a hook,
 reads the transcript to understand the goal **and the session's terminal screen to see
-the ask itself**. A parked no-mistakes gate is the narrow exception to that hook boundary:
-the daemon observes and attributes the gate independently, so Foreman can review it for an
-operator-started Codex session without enabling automation for that session's ordinary menus,
-questions, work queue, or wrap-up. Foreman then:
+the ask itself**. Foreman then:
 
 - **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
   correct, secure, non-duplicative option) and non-destructive access requests;
 - **escalates** the genuine forks - a call that hinges on your intent, or anything
   destructive/risky - as a framed **decision brief** with its recommendation, and pings you;
-- **stands in for you at a parked [no-mistakes](#no-mistakes) gate** - when a run stops to put
-  an `ask-user` finding to you, Foreman reads the finding and the session's goal, answers when
-  the call is clear from that goal, and escalates when it turns on your intent;
 - writes a 1-2 sentence **Purpose** on every session it inspects - the recent context
   bearing on *this* decision, shown in the expanded card. It reads the session's
   [Goal](#goal) rather than re-deriving it, so the two don't say the same thing twice.
@@ -3511,9 +3512,7 @@ non-destructive access - and that answer flows through the *same* mode + allowli
 auto-approve gate the full reviewer's answers do, so it can never send under a looser config
 than Opus would. Five code backstops the router cannot override sit behind it: the destructive
 denylist above forces an escalation, low confidence routes up, a window with nothing to scan
-counts as *unknown* rather than safe and routes up, and a parked no-mistakes gate is never the
-cheap tier's to answer - it may only escalate (cheap, and puts the gate in front of you) or
-route up to the reviewer that was taught to judge one. The fifth is delivery: the router never
+counts as *unknown* rather than safe and routes up. The fifth is delivery: the router never
 names a menu row, so its answer to a permission prompt (which is a menu) routes up to the full
 reviewer that can name one, rather than putting every routine approval in front of you.
 
@@ -3684,8 +3683,8 @@ The action is the same whichever trigger fired:
 | Then | What it does |
 |---|---|
 | **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
-| **Run no-mistakes** | after Foreman verifies the original work, submits an existing **Foreman Complete** binding; if there is no active binding, it binds and immediately submits the current built-in **No-Mistakes Review** workflow |
-| **Straight to PR** | explicitly skip no-mistakes; use git and `gh` directly to commit, push, and open a PR - then merge the default branch in, resolve conflicts, and follow CI until every check passes |
+| **Run No-Mistakes Review automatically** | after Foreman verifies the original work, submits an existing **Foreman Complete** binding; if there is no active binding, it binds and immediately submits the current built-in **No-Mistakes Review** workflow |
+| **Straight to PR** | explicitly skip the review workflow; use git and `gh` directly to commit, push, and open a PR, then merge the default branch in, resolve conflicts, and follow CI until every check passes |
 
 The two automated actions can ultimately *push*, so they only fire in **live** mode on an
 **allowlisted** repo - until then Foreman asks, and the popover says so rather than letting
@@ -3699,18 +3698,15 @@ submission and one run instead of launching the review twice.
 The review starts either way; its repair delivery is **Live** only when Workflows Live
 separately authorizes that repository, and otherwise stays in **Preview** for approval.
 
-The manual **Run no-mistakes** button on the **Ship it?** card still invokes the skill in
-the session itself. **The gate instruction is spelled per harness**: `/no-mistakes` for Claude and a
-`$no-mistakes` instruction with a trailing clause for Codex. The clause is load-bearing
-rather than decorative - a bare `$name` at the end of Codex's composer leaves its
-skill-mention popup open, and that popup swallows the Enter that would have sent the
-message. Pi's invocation is `/skill:no-mistakes`, though Pi work queues are not currently
-supported.
+The manual **Run No-Mistakes Review** button on the **Ship it?** card follows the same
+workflow path. It reuses the active built-in binding when one exists, creates a manual
+built-in binding for an unbound conversation, and refuses to replace a different workflow.
+The review starts in **Live** only when Workflows Live authorizes the repository; otherwise
+it starts in **Preview**.
 
-**Verification is evidence-only by design.** It reads the diff and the transcript - it does
-not run tests. no-mistakes remains the gate that actually executes things; Foreman's job
-here is the narrower question no pipeline answers: *was the thing you asked for actually
-done?* Gaps carry a severity, and only **blocking** ones send the agent back - a style nit
+**Foreman verification is evidence-only by design.** It reads the diff and the transcript and
+does not run tests. Its job is the narrower question: *was the thing you asked for actually
+done?* The review workflow owns its configured checks and reviewers. Gaps carry a severity, and only **blocking** ones send the agent back - a style nit
 lands as advisory, shows on the card, and never costs a round. Two knobs in the Foreman
 popover bound it: **fix attempts per issue** (default 3) and **max fix rounds per item**
 (default 10, the hard stop).
@@ -3735,7 +3731,7 @@ attention.
 
 It applies to parked sessions on harnesses Foreman can reliably drive - currently Claude,
 and Codex sessions launched with Mission Control's scoped hooks - whether the PR came from
-**Straight to PR**, an automatic **no-mistakes** wrap-up, or one you shipped by hand.
+**Straight to PR**, a review workflow, or one you shipped by hand.
 
 The nudge is typed into the session's pane, so it carries the usual gates and one more:
 
@@ -3746,20 +3742,9 @@ The nudge is typed into the session's pane, so it carries the usual gates and on
   Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks
   recover, a later failure counts as new (so a red CI is never permanently silenced, and a
   CI that merely goes green does not re-nudge the comments already relayed);
-- it stands down while a **no-mistakes run is still driving the branch**, while the session
-  **needs you**, and while it has a live **work queue** (the drain trigger owns that
-  checkout);
-- **once that run has opened the PR and only its `ci` step remains running**, with no
-  approval gate waiting for an answer, it is parked in the PR monitor and the nudge is
-  back on for review comments. A no-mistakes run reports `running` for as long as that
-  step watches the PR - until the PR merges, closes, or the monitor times out - and so
-  covers the whole window in which Inspector comments normally arrive. The monitor keeps
-  ownership of the **CI half** (it watches the checks, rebases a branch that falls behind,
-  and fails the run when they go red), but it has no answer for review comments and is
-  waiting on a merge those comments [block](#shipping-yolo-mode). So unresolved
-  **Inspector comments** are relayed while CI is not failing; a **failing CI**, including
-  one alongside comments, is left to the monitor, which reports it before a later pass
-  relays anything still open;
+- it stands down while the session **needs you**, while it has a live **work queue**
+  (the drain trigger owns that checkout), and while a non-terminal **workflow run owns the
+  session and branch**;
 - the review-comment half counts only Inspector findings **already posted on the PR**
   (dry-run drafts and findings still being posted do not count) - the failing-CI half works
   regardless.
@@ -3973,8 +3958,8 @@ Three things worth knowing before you switch one on:
 - **The blast radius is the point, and it's global.** These are your own directories,
   shared by every agent of that kind on the machine. The harness only ever creates or
   removes entries under its own `mission-` prefix (and the `fleet-` one it used
-  before the rename), and only ones that are symlinks - your
-  `no-mistakes`, `implement-plan` and friends are untouchable by construction, not by
+  before the rename), and only ones that are symlinks - your own skill directories are
+  untouchable by construction, not by
   care. **Turning the master switch off is the real uninstall**: it's the only control
   that both removes every link and records that you wanted them gone, so nothing brings
   them back. Removing the links any other way is temporary - the daemon reconciles
@@ -4182,23 +4167,13 @@ earns two surfaces a card has nowhere to put:
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
   Workflows / Diff / Files** - because a split pane has room a card doesn't: the conversation
   is permanent, and the sections that share a card's height in the grid get a tab each. The
-  **Conversation tab is the transcript and nothing else**: the workflow ladder and the
-  no-mistakes gate strip used to stack above it, where between them a gated session on a long
-  workflow could push the first message off the bottom of the screen. Both live in
-  **Workflows** (<kbd>y</kbd>) now, which is the tab that answers *how is this run going*
-  while Conversation answers *what was said* - and which absorbed the old separate **Gate**
-  tab, since two adjacent tabs both answering "is this change allowed to land" was the split
-  that put one of them above the transcript to begin with. A parked gate still shows its
-  count on the tab's face, and is still **answered** there - the gate strip is not a
-  read-only progress bar, and Console and Board have no card to carry its Approve / Fix /
-  Skip actions the way Cards does. Both tabs are captured in
-  [`docs/evidence/workflows-tab/`](docs/evidence/workflows-tab/README.md).
+  **Conversation tab is the transcript and nothing else**: the workflow ladder lives in
+  **Workflows** (<kbd>y</kbd>), which is the tab that answers *how is this run going* while
+  Conversation answers *what was said*.
   The **Board** drills into that same detail when you open a card.
   In Console and Board, the
-  Diff tab contains the complete checkout diff reader; the footer action, <kbd>d</kbd>, and
-  a no-mistakes fix's **View diff** all reveal it in place. Opening the tab itself shows the
-  whole-checkout diff, while **View diff** shows that one fix commit. Cards keep the diff in
-  a modal viewer.
+  Diff tab contains the complete checkout diff reader; the footer action and <kbd>d</kbd>
+  reveal it in place. Cards keep the diff in a modal viewer.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:
   its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
   the tab row opens their history. The rail is deliberately *not* a sixth tab - Work queue,
@@ -4453,7 +4428,7 @@ shortcut works in every layout:
 | <kbd>w</kbd> | Open the Workflows page, or press again to return to the fleet | Fleet or Workflows |
 | <kbd>e</kbd> | Expand / collapse the selected session. **Cards**: focus-expands the card and drops the cursor in its reply box, ready to type. **Board**: opens (and closes) the drill-in detail, the same thing <kbd>Enter</kbd> opens. Console already shows the selected session expanded, so there is nothing to toggle | Selected session |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>e</kbd> owns the toggle | Selected session |
-| <kbd>y</kbd> | Show the selected session's **Workflows** tab - its workflow ladder and its no-mistakes gate, together. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the fleet-wide Workflows page instead | Selected session (Console or Board) |
+| <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the fleet-wide Workflows page instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
@@ -4525,12 +4500,8 @@ learns about PRs two loose ways - a URL sniffed out of any `Bash` result, and
 `gh pr list --head <branch>` - and neither can tell a PR you opened from one a colleague
 opened on the same branch. Neither adopts anything.
 
-A PR is adopted for review only from a signal that *proves* we opened it:
-
-- the hook saw the agent run **`gh pr create`** (matched on the command, not the output -
-  `gh pr view` prints the same URL), or
-- **no-mistakes reported it itself**, in the `pr:` line of `axi status`, from the process
-  that ran the `pr` step.
+A PR is adopted for review only when the hook saw the agent run **`gh pr create`**. It is
+matched on the command, not the output, because `gh pr view` prints the same URL.
 
 Adopted PRs are recorded durably and stay adopted while they are open, even after the
 session that opened them exits. A PR with no adoption record is never touched. Adoption is
@@ -4829,61 +4800,6 @@ The reclaim is conditional on purpose: a merge proves the *committed* work lande
 nothing about files still sitting unsaved in that checkout, and reclaiming runs
 `git worktree remove --force`. Anything that could be lost stays behind a human click.
 
-## no-mistakes
-
-The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)
-(a git-push gate with a daemon + approval channel). This harness reuses that
-shape - long-lived daemon, event stream, agent-report/approval channel - and
-runs no-mistakes as a **component**.
-
-If `no-mistakes` is installed and a session's repo is gated, the card surfaces
-the live run: a `◇ gated` chip plus a strip showing the pipeline
-(intent → review → test → … → ci as status dots), the active stage it's on
-(e.g. `review · step 3 of 9 · 1 finding so far`), what that stage last did in
-no-mistakes' own words (`↳ 2m43s ago: log: all CI checks passed - still
-monitoring until merged or closed`), a running findings summary in
-the header, the gate it's parked at, and the findings - all polled via
-`no-mistakes axi status` (its TOON agent interface).
-
-That last-activity line is there because a dot only carries a *status*, and
-"running" is the same word for a step mid-work and a `ci` step that went green an
-hour ago and is now just watching an open PR. A run that has pushed, opened its PR
-and passed CI sits on a blue `ci` dot until the PR is **merged or closed** - which
-is correct, and looks broken. The step says as much itself; the strip quotes it
-rather than guessing. It quotes and nothing more: a step reported quiet is idling
-between polls, not stuck (`ci` naps for hours, then completes the moment the PR
-merges), and `agent_pid` is empty even for a healthy monitor - so neither is read
-as a verdict on a run's health.
-
-A separate live narration
-line echoes what the skill is doing right now, read from the in-progress to-do in
-the session's Claude transcript. The active-stage, summary, and narration lines
-step aside while a run is parked, where the gate line already conveys that state.
-When a run is parked at a gate you can **approve / fix / skip** it right there;
-those map to `no-mistakes axi respond --action …` (fix lets you pick findings and
-add guidance). Approve and skip confirm first since they advance the pipeline
-toward pushing your branch. Once the dashboard accepts a response, the actions give
-way to its submission status while the blocking command runs. If that command fails,
-the strip shows its diagnostic and leaves the gate retryable. When the next gate arrives
-before the session's terminal has caught up, the strip labels the earlier response and
-distinguishes the new findings as a later round or pipeline step.
-[Foreman](#foreman-auto-responder), if enabled, can take
-the first look at a parked gate for you: it reads the finding the run relayed and
-either answers it or escalates it as a decision brief, rather than leaving the run
-parked until you get to it.
-
-Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>R</kbd>) also
-**retires the run the card was showing**, clearing the strip and its narration for
-good. The reset throws away the very work that run validated, but `axi status` keeps
-reporting it for that branch long after, so simply clearing the strip wouldn't hold:
-the next poll would put it straight back. The dismissal is remembered per run, so a **new** run on the same
-branch decorates the card again, and it's scoped to the checkout that was wiped
-(worktree root + branch): a session sharing that worktree clears too, while a session
-on the same branch in a *different* worktree keeps its strip, its work still being on
-disk. A reset that fails leaves the strip alone.
-
-Set `NOMISTAKES_BIN` if the binary isn't on the daemon's PATH.
-
 ## Isolated worktrees per session (treehouse)
 
 Running several agents in **one** working tree is a recipe for clobbering - one
@@ -4892,11 +4808,10 @@ solves this with a pool of pre-warmed git worktrees ("manage worktrees without
 managing worktrees"): each session gets its own isolated tree, and dependencies
 / build cache aren't re-paid every time.
 
-`make session` wires treehouse and no-mistakes together into a one-command
-"start a clean session":
+`make session` makes treehouse a one-command "start a clean session":
 
 ```sh
-make session                      # lease a worktree, warm it, gate it, drop you in a subshell
+make session                      # lease a worktree, warm it, drop you in a subshell
 make session ARGS="-- claude"     # …or launch an agent in it directly
 make session ARGS="--holder mine" # …under your own lease label (see below)
 node scripts/new-session.mjs -- claude   # equivalent, without make
@@ -4906,8 +4821,7 @@ Under the hood (`scripts/new-session.mjs`):
 
 1. **Lease** a worktree from this repo's pool (`treehouse get --lease`), creating
    one if the pool is empty (up to `max_trees` in `treehouse.toml`).
-2. **Warm + gate** it (`scripts/worktree-setup.mjs`): install dependencies so the
-   session starts fast, and run `no-mistakes init` so the tree is gated.
+2. **Warm** it (`scripts/worktree-setup.mjs`): install dependencies so the session starts fast.
 3. **Hand it over** - open your `$SHELL` (or the command after `--`) in the tree.
 
 The lease is durable, so a backgrounded agent keeps its tree after you exit.
@@ -4919,8 +4833,8 @@ treehouse return <path>          # give the worktree back to the pool
 ```
 
 Because treehouse ignores lifecycle hooks in the repo-level `treehouse.toml` for
-safety, the warm+gate step is run by `make session` itself. To make **every**
-`treehouse get` (not just `make session`) warm and gate automatically, add a
+safety, the warm step is run by `make session` itself. To make **every**
+`treehouse get` (not just `make session`) warm automatically, add a
 `post_create` hook to your user config - see the comments in `treehouse.toml`.
 
 ### Leaked leases are reclaimed for you
@@ -5133,7 +5047,6 @@ cleanup broke" from "the build passed and then cleanup broke".
 | `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker, and for the treehouse pools the leaked-lease sweep visits |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
-| `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | terminal-runtime dispatch: how long a discovered pane with no usable hook readiness signal must remain live before dispatch continues. This starts immediately for Pi, whose positional launch message needs no pane injection, and after a hook wait times out for a still-live session. An observed exit fails instead. Agent SDK dispatch does not use a settle delay |
@@ -5167,7 +5080,6 @@ cleanup broke" from "the build passed and then cleanup broke".
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `GHOSTTY_BIN` | `/Applications/Ghostty.app/Contents/MacOS/ghostty` | [Ghostty](#which-terminal-you-use-is-declared-not-assumed) path override, for a non-standard install location. It answers *is Ghostty installed* and is never executed - the app drives the GUI through AppleScript, not this binary. There is deliberately no bare `ghostty` on `PATH` fallback: on Linux that binary is normally present and this integration cannot work there at all, so it would report "installed" on the one platform where every call must fail |
 | `CMUX_BIN` | auto | cmux CLI path override. The default looks inside the app bundle (`/Applications/cmux.app/Contents/Resources/bin/cmux`) before PATH, because the cask does not symlink it |
-| `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working - and honored for the same things, dispatched agents included, since both now resolve through one chain; `MISSION_CLAUDE_BIN` wins when both are set |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
@@ -5237,8 +5149,8 @@ startup and the Cost panel says so on screen.
 ## Commands
 
 ```sh
-make init              # one-time bootstrap (deps, build, hooks, treehouse + no-mistakes)
-make session           # start an agent in a fresh, gated worktree
+make init              # one-time bootstrap (deps, build, hooks, treehouse)
+make session           # start an agent in a fresh worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, PR follow-up, backlog autopilot)

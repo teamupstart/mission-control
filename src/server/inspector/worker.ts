@@ -418,26 +418,6 @@ export function adoptPr(
   });
 }
 
-/**
- * Adopt any PR a no-mistakes run reports having opened.
- *
- * A PULL, where the hook's signal is a push, and the asymmetry is real rather than
- * sloppiness: the hook event is transient (nothing persists it, so it must be caught as
- * it happens), while this is durable state on the session, re-read on every nm poll.
- * Both land in `adoptPr`, which is idempotent, so neither has to know about the other.
- */
-function adoptFromSessions(registry: Registry, now: number): void {
-  for (const s of registry.snapshot().sessions) {
-    const url = s.nomistakes?.prUrl;
-    if (!url) continue;
-    if (adoptPr(url, { sessionId: s.id, cwd: s.cwd, repoRoot: s.repoRoot }, "no-mistakes", now)) {
-      const parsed = parsePrUrl(url);
-      registry.refreshInspections();
-      if (parsed) notifyInspection(registry, parsed.key, null, null, now);
-    }
-  }
-}
-
 /** Our open findings on a PR, keyed by fingerprint. */
 function existingByFingerprint(prKey: string): Map<string, InspectorComment> {
   const out = new Map<string, InspectorComment>();
@@ -1085,8 +1065,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   // dashboard with six open PRs must not fork six of them.
   const limit = createLimiter(1);
 
-  // The hook's signal is transient - nothing persists it - so it has to be caught as it
-  // happens rather than found later. See `adoptFromSessions` for the other half.
+  // The hook's signal is transient, so it has to be caught as it happens.
   //
   // Deliberately NOT gated on `enabled`. Adoption is not consent to post - `mayPost` is,
   // and it is checked separately every round - so the row costs nothing but a local
@@ -1116,8 +1095,6 @@ export function startInspector(registry: Registry, options: InspectorStartOption
     try {
       const cfg = getInspectorConfig();
       if (cfg.enabled) {
-        const now = Date.now();
-        adoptFromSessions(registry, now);
         for (const pr of loadOpenInspectorPrs()) {
           if (stopped) break;
           // Re-read per PR so turning the feature off mid-sweep is honoured now rather

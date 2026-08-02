@@ -11,7 +11,6 @@ import type {
 } from "../terminal/types.ts";
 import { gitInfo } from "../util/git.ts";
 import { readProcCwds } from "./proc-cwd.ts";
-import { annotateNomistakesLaunches } from "./nomistakes-launch.ts";
 import { annotatePaneState } from "./pane-mode.ts";
 import { annotateCodexRollouts } from "./codex-rollouts.ts";
 
@@ -39,7 +38,6 @@ export interface DiscoveredSession {
   gitRoot: string | null;
   /** Root of the repo that checkout belongs to (see `GitInfo.repoRoot`). */
   repoRoot: string | null;
-  nomistakesGated: boolean;
   pid: number;
   tty: string | null;
   /** Every terminal pane this session is reachable through. See `Session.terminals`. */
@@ -65,19 +63,6 @@ export interface DiscoveredSession {
    * capture to draw it from, which the registry leaves alone.
    */
   paneDialog?: PaneDialog | null;
-  /**
-   * Worktrees where this session is currently driving a no-mistakes run, seen as
-   * live `no-mistakes axi run/respond/...` processes in its subtree (added by
-   * annotateNomistakesLaunches). Present only while such a process is alive; the
-   * registry remembers the binding so attribution survives a parked gate.
-   */
-  nomistakesRuns?: NmLaunch[];
-}
-
-/** A worktree a session is driving a no-mistakes run in (its cwd + that checkout's branch). */
-export interface NmLaunch {
-  cwd: string;
-  branch: string | null;
 }
 
 export interface DiscoveryInput {
@@ -425,7 +410,6 @@ export function correlate(
       gitBranch: git.branch,
       gitRoot: git.root,
       repoRoot: git.repoRoot,
-      nomistakesGated: git.nomistakesGated,
       pid: root.pid,
       tty,
       terminals,
@@ -437,14 +421,13 @@ export function correlate(
   return sessions;
 }
 
-/** Convenience: gather + correlate in one call, annotating no-mistakes launches. */
+/** Convenience: gather + correlate in one call and add passive session annotations. */
 export async function discover(): Promise<DiscoveredSession[]> {
   const input = await gatherDiscoveryInput();
   const procCwds = await readProcCwds(representativeAgentPids(input.procs));
   const sessions = correlate(input, procCwds);
   await Promise.all([
     annotateCodexRollouts(sessions),
-    annotateNomistakesLaunches(sessions, input.procs),
     annotatePaneState(sessions),
   ]);
   return sessions;

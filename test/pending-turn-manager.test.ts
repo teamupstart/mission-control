@@ -82,7 +82,6 @@ function discovered(name: string): DiscoveredSession {
     nameSource: "process",
     cwd: `/repo/${name}`,
     gitBranch: "feature",
-    nomistakesGated: false,
     pid: 10,
     tty: `tty-${name}`,
     terminals: [mkMuxHandle({ session: name, paneId: `%${name}` })],

@@ -58,6 +58,17 @@ function freshDispatchDraft(): DispatchDraft {
 }
 
 /**
+ * "Nothing put aside", for the after-work choice a scout switch stashes.
+ *
+ * A sentinel rather than `undefined`, because `undefined` is itself one of the three
+ * values a stash can hold - it is the draft's way of saying "follow the dispatch default"
+ * - and a fresh form stashes exactly that. Conflating the two would turn the very common
+ * default-then-scout-then-ship reversal into a no-op.
+ */
+const NO_STASH = Symbol("no-stash");
+type StashedWorkflowId = DispatchDraft["workflowId"] | typeof NO_STASH;
+
+/**
  * True when a draft holds nothing worth keeping - so "Clear" has nothing to do.
  *
  * The seeded repo is not "something worth keeping": it was carried over from the last
@@ -594,6 +605,51 @@ function DispatchModal({
     onDraftChange({ ...draft, ...patch });
   }
 
+  /**
+   * What a ship-to-scout switch put aside, so switching back can hand it straight back.
+   *
+   * A ref rather than draft state: it is scratch belonging to one uninterrupted sequence
+   * of clicks, not something a shelved task should carry. Losing it on close is correct -
+   * a reopened form has no reversal in flight - and the no-stash path leaves the stored
+   * selection alone rather than inventing one.
+   */
+  const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
+
+  /**
+   * The after-work choice a kind switch carries with it, as a patch fragment.
+   *
+   * Kind carries this the same way switching harness carries model and effort: the
+   * dependent choice belongs to the kind now selected, not the one it replaced. A scout
+   * investigates and reports - there is no delivered change to hand off - so choosing it
+   * moves the selection to None, which would otherwise run a review Workflow over a task
+   * that never set out to produce a diff.
+   *
+   * Switching back HANDS BACK the exact choice scout put aside, rather than recomputing
+   * the machine default. That is what keeps the reversal lossless, and it is deliberately
+   * a pure function of what was already on screen: recomputing would need
+   * `workflowConfig`, which lands on its own fetch, so a scout-then-ship inside that
+   * window would resolve to `null` and SAVE an explicit None - fetch timing quietly
+   * converting a promised restoration into a task that finishes with no handoff at all.
+   * Reading the stash instead means there is no window in which this can be wrong.
+   *
+   * Still only a default, in both directions: the stash is dropped the moment the operator
+   * picks an after-work Workflow by hand, so their choice is never reverted underneath
+   * them by a later kind switch.
+   */
+  function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
+    if (kind === draft.kind) return {};
+    if (kind === "scout") {
+      stashedWorkflowId.current = draft.workflowId;
+      return { workflowId: null };
+    }
+    const stashed = stashedWorkflowId.current;
+    stashedWorkflowId.current = NO_STASH;
+    // Nothing to hand back - a modal opened on a scout, or an operator who has since
+    // chosen for themselves. Leave the selection exactly as it stands rather than
+    // inventing one: `taskUpdatePatch` reads an omitted key as "leave it alone".
+    return stashed === NO_STASH ? {} : { workflowId: stashed };
+  }
+
   useEffect(() => {
     intentRef.current?.focus();
   }, []);
@@ -961,11 +1017,14 @@ function DispatchModal({
             </label>
             <label className="field">
               <span className="field-label">Kind</span>
-              <Tooltip label="Whether this task asks for a delivered change or an investigation">
+              <Tooltip label="Whether this task asks for a delivered change or an investigation - scout also clears the after-work Workflow">
                 <select
                   className="field-input"
                   value={draft.kind}
-                  onChange={(e) => update({ kind: e.target.value as TaskKind })}
+                  onChange={(e) => {
+                    const kind = e.target.value as TaskKind;
+                    update({ kind, ...afterWorkForKind(kind) });
+                  }}
                 >
                   <option value="ship">ship</option>
                   <option value="scout">scout</option>
@@ -1040,6 +1099,9 @@ function DispatchModal({
                 }
                 onChange={(event) => {
                   const value = event.target.value;
+                  // Chosen by hand, so a later kind switch must not hand back what scout
+                  // put aside and revert this underneath the operator.
+                  stashedWorkflowId.current = NO_STASH;
                   update({
                     workflowId:
                       value === "__default"

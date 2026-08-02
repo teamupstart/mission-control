@@ -20,23 +20,6 @@ reimplementing it.
 
 Almost nothing here is new mechanism. The pieces already exist and are load-bearing elsewhere:
 
-- `app_config` (`src/server/db.ts:129`) is a JSON-blob KV with `getAppConfig`/`setAppConfig`
-  (`:1091`). A new key needs **no migration**.
-- `src/server/foreman/config.ts:44` is the exact template for a schema-validated,
-  server-persisted config bag.
-- `settledIdle` (`src/server/foreman/queue-machine.ts:103`) already encodes "safe to type into
-  this pane". We import it. We do not re-derive it.
-- `injectPrompt` (`src/server/actions.ts:98`) already types into panes, and
-  `autoWrapupPayload` (`src/shared/queue.ts:91`) already types a slash command
-  (`/no-mistakes`) into a live session. `/reload-skills` is the same move, and a safer one:
-  it does not push, does not commit, and is idempotent.
-- `hooks/install.mjs` is the house discipline for touching global config: marker-matched,
-  idempotent, preserves the user's formatting byte-for-byte. The skills reconciler copies it.
-- `discovery/pane-mode.ts` already reads panes with `tmux capture-pane`.
-- UI: `.kb-row` (`src/web/styles.css:3161`) is a label+description+control row already.
-  `ForemanBar.tsx:122` has the master-toggle + `fieldset disabled` cascade. `useForeman.ts:70`
-  has optimistic-update-with-revert.
-
 The one genuinely new thing is **the daemon typing into panes unprompted**. See Edge cases.
 
 ## Verified behaviour (tested, not assumed)
@@ -146,19 +129,6 @@ Mirror of `foreman/config.ts:44`. `getSkillsConfig` / `setSkillsConfig` over `ap
 
 ### `src/server/skills/reconcile.ts` (new)
 Sync `~/.claude/skills/mission-<id>` against the enabled set.
-
-- Marker: the directory prefix. **Only ever touch entries matching it.** The operator's
-  `cyc-prod-build`, `no-mistakes`, `fix-bugs`, `implement-plan`, `phase-plan` must be
-  untouchable by construction, not by care.
-- The marker is a newest-first LIST (`SKILL_DIR_PREFIXES`): `mission-` is what we WRITE,
-  and the whole list - `mission-` plus the legacy `fleet-` this shipped under before the
-  Mission Control rename - is what we RECOGNISE as ours. A directory name outlives a
-  rename, so a recogniser that knew only the current prefix would orphan every
-  already-installed `fleet-<id>`: never reconciled, never removed, and a `mission-`
-  duplicate installed beside it.
-- Idempotent. Re-running is a no-op.
-- Returns whether anything changed, so the caller knows whether to bump the generation.
-- Uninstall removes every prefixed link of ours and nothing else.
 
 ### `src/server/skills/reload.ts` (new) - the broadcast loop
 Hangs off the **existing 1500ms discovery tick** (`config.ts:25`) rather than keeping its own
@@ -333,24 +303,8 @@ transfer: there is no card, and the reload has exactly one sender. It's still on
 surface (it's typed into a pane, so the bytes need one definition), just not inside a module
 about the work-item lifecycle. The enforcement rungs needed a shared home anyway.
 
-**The reload loop has its own timer rather than riding `startPoller`.** It reuses
-`POLL_INTERVAL_MS`, so there's no new knob, and it matches the three sibling pollers
-(nomistakes, pr, runtime-meta). What "ride the poller" was actually protecting - a
-per-target re-read instead of a fan-out from one snapshot - is kept, and is the
-load-bearing half.
-
 **Two things the plan didn't have, both forced by the same question ("what does this
 feature owe an operator?"):**
-
-- `generationAt`. Without it every session discovered from here to the end of time gets an
-  unsolicited `/reload-skills` the first time it goes idle: no ack row, and `0 < generation`
-  forever. A session that booted after the symlink landed already loaded it.
-- A rollback on `pasted: false`. The plan inherited "never retry" from the auto-wrapup
-  path, whose reason - *"a retry IS the double-push"*, because `/no-mistakes` opens a PR -
-  is exactly what does not transfer. `/reload-skills` is idempotent, so here a silent miss
-  (the panel claiming a skill is live in a session that never heard) is worse than a
-  duplicate. The ack still lands before the keystroke; it's taken back only on the one
-  state actions.ts defines as positive evidence nothing reached the pane.
 
 **`applySkillsConfig` decides before it writes, and reconciles before it persists.** A
 half-applied patch would leave the config claiming a skill that isn't on disk, and every

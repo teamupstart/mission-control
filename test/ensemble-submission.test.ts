@@ -214,7 +214,6 @@ function discovered(cwd: string, agent: "claude" | "codex", pid: number) {
     gitBranch: null,
     gitRoot: cwd,
     repoRoot: cwd,
-    nomistakesGated: false,
     pid,
     tty: null,
     terminals: [],

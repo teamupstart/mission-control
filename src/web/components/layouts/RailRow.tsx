@@ -27,7 +27,6 @@ import { Tooltip } from "../Tooltip.tsx";
 export function RailRow({
   session,
   selected,
-  gateNeedsYou,
   onSelect,
   registerEl,
   workflowRun = null,
@@ -39,7 +38,6 @@ export function RailRow({
 }: {
   session: Session;
   selected: boolean;
-  gateNeedsYou: boolean;
   onSelect: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
@@ -52,7 +50,7 @@ export function RailRow({
   /** This member's run summary, for the glyph's hover copy. Null until its SSE summary lands. */
   ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
-  const st = stateDisplay(session, gateNeedsYou);
+  const st = stateDisplay(session);
   const ref = useRef<HTMLButtonElement>(null);
   const setRef = useCallback(
     (el: HTMLButtonElement | null) => {
@@ -75,8 +73,6 @@ export function RailRow({
   // past it, and a reader wondering why Focus is missing should find it immediately.
   const runtime = runtimeRailMark(session);
   if (runtime) marks.push(runtime);
-  if (session.nomistakesGated) marks.push("◇");
-  if (gateNeedsYou) marks.push("▮");
   if (session.note) marks.push("◆");
   if (session.queue && session.queue.openCount > 0) marks.push(`≡${session.queue.openCount}`);
   // Cost is the one signal the rail states as a GLYPH rather than a figure, and only once

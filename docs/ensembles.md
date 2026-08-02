@@ -345,18 +345,6 @@ after a crash.
 
 ## Costs
 
-- **Candidate (agent) cost** is summed from each member's session telemetry **at submission** and
-  frozen into its immutable artifact, so it survives the session exiting. The run detail shows the
-  aggregate, attributed per member. A runner that reports no cost is shown as **unreported**, never
-  `$0.00`; a run where some members reported and others did not shows the partial total and how many
-  reported.
-- **Evaluator cost** is a separate figure on its own ledger. Best of N records one comparison
-  evaluation; Panel vote records one evaluation per judge. Call count, provider, model, duration and
-  byte counts are always shown; the **monetary** cost appears only when the runner reports it
-  authoritatively, and stays *Not reported* otherwise.
-- **Linked workflow review cost** is owned by the workflow subsystem and shown separately, labelled
-  *Workflow-owned*. It is never folded into the ensemble's evaluation cost.
-
 The member agents' own token use is not estimated before launch: it is unbounded work, and inventing
 a number for it would be the dishonest half of an honest estimate.
 
@@ -517,7 +505,7 @@ layout-specific state machine, or a node in the Workflow graph.
   never a fresh compilation with today's defaults.
 - **No Ensemble node in the Workflow graph.** A workflow reviews exactly one session; an ensemble is
   the selection stage over several. They compose only at promotion, across the server-owned external
-  binding boundary - an Ensemble graph node would force multi-subject bindings and a second
+  binding boundary. An Ensemble graph node would force multi-subject bindings and a second
   orchestration engine hidden inside the review engine.
 
 Both invariants are enforced by `test/ensemble-extension-contract.test.ts`.

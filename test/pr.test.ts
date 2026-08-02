@@ -20,7 +20,6 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
     gitBranch: "feat/x",
     gitRoot: null,
     repoRoot: null,
-    nomistakesGated: false,
     pid: 1,
     tty: null,
     terminals: [],

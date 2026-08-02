@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { NmFinding, NmRunSummary, PaneDialog, ReviewItem, Session } from "@shared/types.ts";
-import { activePaneDialog, dialogIdentity, gateParked } from "@shared/session.ts";
+import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
+import { activePaneDialog, dialogIdentity } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 
 // Works out what a needs-you session is actually blocked on - the single pure
@@ -23,7 +23,6 @@ import { canMessage } from "@shared/pane.ts";
  *                        because the record on the card should say which it was - the two
  *                        are answerable by the same code and answerable in different words.
  * - `terminal-no-pane` - the same ask with no pane: a real question, no channel.
- * - `gate-parked`      - a no-mistakes gate whose agent has stopped: answerable by typing.
  * - `no-question`      - needs-you for some other state, with no answerable question.
  */
 export type PendingSituation =
@@ -32,25 +31,7 @@ export type PendingSituation =
   | "terminal-pane"
   | "structured-request"
   | "terminal-no-pane"
-  | "gate-parked"
   | "no-question";
-
-/**
- * Which no-mistakes gate round a `gate-parked` session sits on - enough to file a
- * reply against it later, and nothing more.
- *
- * The same three facts the marker above is built from, carried in structured form
- * rather than re-derived: the marker is a hash meant for an equality check and
- * can't be read back. Note what is NOT here: `findingsDigest`. The ids are the
- * discriminator (see `logGateReply`), because they survive `axi status`'
- * description truncation and a digest of that text does not.
- */
-export interface GateRef {
-  runId: string;
-  step: string;
-  /** Every finding up at the gate, ask-user and auto-fix alike. */
-  findingIds: string[];
-}
 
 export interface Pending {
   /** The rich block kind the Tier 0 gate branches on. */
@@ -68,64 +49,6 @@ export interface Pending {
   reviewKind?: string;
   /** For a non-input review: its title, if any. */
   reviewTitle?: string;
-  /** Set only for `gate-parked`: which gate round, so a send can be filed against it. */
-  gate?: GateRef;
-}
-
-/**
- * Frame a parked no-mistakes gate as a question a reviewer can actually answer.
- *
- * The `/no-mistakes` skill drives its own gates while the session works, and stops only to
- * put an `ask-user` finding to the human - relaying it "as the pipeline wrote it, verbatim"
- * and ending its turn. That stop is why this is needed at all: it fires `Stop`, so the state
- * reads `idle`, and the ask exists only as prose in the transcript and as findings on the run
- * summary. Naming the findings here means the reviewer gets the decision framed even before
- * it reads a single turn.
- *
- * `ask-user` rows lead because they ARE the decision: no-mistakes routed them to the user's
- * judgment instead of fixing them itself, which is precisely what Foreman stands in for.
- * `auto-fix` rows are the agent's own to drive and are noise on this card. This deliberately
- * frames them as the user's call to MAKE rather than as off-limits, because the reviewer POLICY
- * tells the reviewer to judge a gate - answer when the session's goal makes the call clear,
- * escalate when it turns on the user's intent or is risky. A heading declaring the rows
- * human-only would contradict that, and the model would be reading both. But the question never
- * *depends* on finding an ask-user row - see `classifyPending`.
- */
-function gateQuestion(nm: NmRunSummary): string {
-  const step = nm.gateStep ? `the "${nm.gateStep}" gate` : "a gate";
-  const lines = [
-    `The no-mistakes run on ${nm.branch} is parked at ${step} and the agent driving it has ` +
-      `stopped, so this decision is waiting on the user - and you are standing in for them. ` +
-      `Answer with what you want done and the child will translate it into the matching ` +
-      `\`no-mistakes axi respond\` call.`,
-  ];
-  const asks = nm.findings.filter((f) => f.action === "ask-user");
-  if (asks.length > 0) {
-    lines.push("", "Findings no-mistakes routed to the user's judgment rather than fixing itself:");
-    for (const f of asks) lines.push(`- ${f.id} [${f.severity}] ${f.file}: ${f.description}`);
-  } else if (nm.findingsSummary) {
-    // No ask-user row scraped (yet, or at all) - say what IS known rather than invent a reason.
-    lines.push("", `Findings: ${nm.findingsSummary}`);
-  }
-  return lines.join("\n");
-}
-
-/**
- * A stable digest of the gate's findings - the discriminator that keeps two parkings at the
- * SAME step within one run apart. A run works its review step in rounds (the pipeline applies
- * the fixes and re-runs it), so run id + step alone repeats across rounds 2..n, and the marker
- * being identical is read as "already handled" - silently dropping every round after the first.
- *
- * Built from only `id` + `description`: the two fields that say WHICH decision is up, and the
- * only ones that hold still while a gate sits parked. Sorted, so a scrape that reorders the same
- * findings is not a new episode. Findings arriving late (the poller scrapes them after the park)
- * does move it once, which is right - the first look was blind, the second reads the real ask.
- */
-function findingsDigest(findings: NmFinding[]): string {
-  const rows = findings
-    .map((f): [string, string] => [f.id, f.description])
-    .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
-  return createHash("sha1").update(JSON.stringify(rows)).digest("hex").slice(0, 12);
 }
 
 /**
@@ -134,7 +57,7 @@ function findingsDigest(findings: NmFinding[]): string {
  * Digested rather than carried whole because a marker is only ever compared for equality
  * (the worker's idempotency check), and `dialogIdentity` is a JSON blob of every row's
  * number and label. Same reason, same shape, and the same 12 hex chars as
- * `findingsDigest` above.
+ * the other compact episode markers in this module.
  */
 function dialogDigest(dialog: PaneDialog): string {
   return createHash("sha1").update(dialogIdentity(dialog)).digest("hex").slice(0, 12);
@@ -193,7 +116,7 @@ export function withOfferedOptions(review: ReviewItem): string {
  * reply. An `input` review is directly answerable (resolve it); any other kind -
  * plan, diff, plan-decisions - is not (Foreman can only frame it, so a plan's
  * decisions stay the human's to make); a stopped terminal - `awaiting_input`, a menu on
- * the screen, or a parked no-mistakes gate - is answerable by typing when a pane exists;
+ * the screen - is answerable by typing when a pane exists;
  * anything else is purpose-only. Pure.
  *
  * Every branch that reaches `no-question` is therefore a session with nothing to answer,
@@ -201,12 +124,6 @@ export function withOfferedOptions(review: ReviewItem): string {
  * cheapest disposition in the file and the one a mistake is most expensive on: it forces
  * `canSend: false`, which `planFromVerdict` can only resolve as "no reply channel", and an
  * escalation is the one outcome that costs a human's attention.
- *
- * `gateParked` is called WITHOUT a session list, which reduces it to "parked, and this agent has
- * stopped". The cross-session check (is a sibling still driving this run?) is the caller's,
- * via `reportBucket` - a run someone else is driving never reports needs-you, so it never
- * reaches here. This function assumes a needs-you session throughout and re-derives none of
- * that bucketing; passing the session list would duplicate it and let the two answers drift.
  */
 export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
   const pend = reviews.filter((r) => r.sessionId === s.id && r.status === "pending");
@@ -284,55 +201,6 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       // ask being read again - and hashing it holds the marker still for exactly as long as
       // the rows do.
       marker: dialog ? `dialog:${dialogDigest(dialog)}` : `await:${s.lastActivity ?? s.firstSeen}`,
-    };
-  }
-  // Ordered AFTER the live-prompt branch on purpose: a session can be both (a gate parks,
-  // then the agent puts the finding up as a live prompt), and the live prompt is the precise
-  // thing blocked right now - answering it is what unblocks the run. The gate behind it is
-  // context, and the reviewer reads it off the transcript either way.
-  //
-  // A MENU now reaches that branch too, which widens this by one case: a parked gate whose
-  // agent has drawn a dialog is classified as the dialog, so no `gate` ref attaches and the
-  // fix log gets no byline for it. That is the conservative answer the paragraph below argues
-  // for, not a gap. A parked gate relays its ask-user finding as prose and ends its turn - it
-  // draws no menu - so a menu on a parked session is the agent asking something else, which
-  // is exactly the "may be about anything" case that must not be filed against the gate.
-  //
-  // That ordering decides the BYLINE too, and deliberately so: `gate` below is set on this
-  // branch and nowhere else, so a send that answers a live prompt is filed against no gate
-  // and its fix is credited to nobody. The ref attaches only when the gate IS the live
-  // question. A prompt that's up may be about anything - the agent may be asking something
-  // the gate never raised - so filing our answer to it against the gate would claim the reply
-  // was about the gate when nothing establishes that. That's an OVERCLAIM, and it's the
-  // direction this byline keeps having to close; a missing byline is the safe side of the
-  // same trade. So the foreman is named only where it stopped a gate that stayed a gate.
-  if (gateParked(s) && s.nomistakes) {
-    return {
-      situation: "gate-parked",
-      surface: "terminal",
-      question: gateQuestion(s.nomistakes),
-      inputReviewId: null,
-      // The agent has stopped, so there is no blocked call to release - typing into its pane
-      // wakes it with a new prompt, exactly as a human answering this would.
-      canSend: canMessage(s),
-      // Keyed on the RUN id, not its branch (successive runs share one, and the second would
-      // inherit the first's handled marker and be silently skipped - the very thing NmRunSummary
-      // carries an id to prevent); on the step; and on the findings up at it (see
-      // `findingsDigest`, which separates that step's successive rounds). NOT on `awaitingAgent`
-      // ("parked 1m30s"), whose elapsed time ticks and would churn the marker into re-handling
-      // the same gate every loop.
-      marker: `gate:${s.nomistakes.id}:${s.nomistakes.gateStep ?? "parked"}:${findingsDigest(s.nomistakes.findings)}`,
-      // The same run/step/findings the marker hashes, kept readable so a send can be
-      // filed against this exact round (see `GateRef`). Only when the step is known:
-      // it is half the join key, and a reply filed under "parked" would attach to
-      // whatever step the fix log later asked about.
-      gate: s.nomistakes.gateStep
-        ? {
-            runId: s.nomistakes.id,
-            step: s.nomistakes.gateStep,
-            findingIds: s.nomistakes.findings.map((f) => f.id).filter(Boolean),
-          }
-        : undefined,
     };
   }
   return {

@@ -28,7 +28,6 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     gitBranch: null,
     gitRoot: null,
     repoRoot: null,
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
     terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],

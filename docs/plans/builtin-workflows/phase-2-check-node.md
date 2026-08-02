@@ -11,9 +11,6 @@ makes that gate operational against a captured submission. An operator configure
 or `lint` runs for a repository, and the completed pair can fail a submission on an exit code
 instead of spending four model calls to reach the same conclusion.
 
-This is the primitive the earlier mapping plan decided against and this plan's decision 4
-reverses. Every other no-mistakes gate already has a home; this is the last one.
-
 ## Entry criteria and dependencies
 
 - Direct prerequisite: the planning session's PR merges.

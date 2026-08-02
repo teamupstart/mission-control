@@ -12,12 +12,6 @@ row says shipping D alone means.
 
 ## The problem
 
-A no-mistakes run gets a whole embedded strip on the card: a named stage, a segmented rail, a
-ticking clock, findings, and the buttons to answer a gate (`NomistakesStrip.tsx:38`). A bound
-**workflow** run gets one pill that says `Preview · R2` (`session-bits.tsx:167`), and everything
-else - which stage is executing, who objected, what they said, whether a check actually ran -
-lives two clicks away on the Runs page.
-
 The asymmetry is not cosmetic. Three of the run states an operator most needs to act on are
 invisible from the session surface: a reviewer's actual objection, a run parked at the Inspector
 gate, and a repair delivery whose write may or may not have landed.
@@ -80,14 +74,6 @@ in `WorkflowManager.decorateRun` (`manager.ts:578-600`); `store.runDetail` sets 
 (`store.ts:3879`). The gate rung's PR number, findings and posture are reachable through that
 route and nowhere else.
 
-### The no-mistakes strip is not a usable precedent for fetching
-
-`NomistakesStrip` is fetch-free because `NmRunSummary` rides the session snapshot
-(`types.ts:397`). A workflow ladder has no equivalent and cannot get one without widening SSE,
-which is the thing Option D was chosen to avoid. There is no shared detail-fetching hook today:
-`WorkflowRuns.tsx` fetches inline via `workflowRequest` (`workflowApi.ts:12`) with a generation
-guard. A reusable hook is new work this plan owns.
-
 ### Three corrections to the mockups
 
 1. **`maxRepairRounds` defaults to 5, not 6.** `DEFAULT_WORKFLOW_BINDING_DEFAULTS`
@@ -147,12 +133,6 @@ invent a second one.
 
 `ConsoleDetail.tsx` offers three seams, all real:
 
-1. **Inline in `detail-conv`** (`:377-427`), beside `ForemanStrip` (`:382`) and
-   `NomistakesStrip` (`:393`). Matches the mockups, which draw the ladder as an embedded strip.
-2. **A sixth tab** - extend `type Tab` (`:39`), the `tabs` memo (`:189-207`) and add a body
-   branch. `registerReaderTab` (`:215`) picks it up automatically.
-3. **A drawer**, mirroring `ForemanDrawer` (`:317`) + the `foreman-rail` button (`:355-366`).
-
 ### Non-stage-expressible graphs are a case the mockups never drew
 
 `projectStages` returns `null` for a graph that is not stage-expressible, and `RunPipeline`
@@ -163,25 +143,6 @@ the detail pane does for such a run.
 ## Adopted decisions
 
 Submitted by the operator on 2026-07-27. These are requirements, not open questions.
-
-1. **The Runs page keeps `RunPipeline`.** The ladder is detail-pane only. Both surfaces draw
-   from the same `projectStages` + `run-model.ts` derivation, so they cannot disagree about a
-   run's status even though they differ in shape. This preserves what `RunPipeline`'s own doc
-   comment calls "the point of the whole migration": the runs monitor shares `pipeline-bits.tsx`
-   leaves with the Pipeline **editor**, so an operator watches the shape they authored. Moving
-   the monitor to a vertical ladder would have broken that pairing or dragged the authoring
-   editor vertical with it. **Two drawings, one derivation** - and the duplication that is
-   forbidden is of the derivation, never of the leaves.
-2. **The seam is an inline strip in the conversation tab**, beside `ForemanStrip` and
-   `NomistakesStrip` in `detail-conv`, which is how the mockups draw it. This keeps Option D's
-   pitch intact: the objection is where the operator is already looking. Height is controlled by
-   collapsing passed stages to a single line, as D2 and D3 already draw them.
-3. **A freehand-graph run shows today's chip plus an "Open run" link.** No ladder is claimed for
-   a graph that has no stages. The Runs page still draws it on its read-only canvas.
-4. **Option C's repeat-offender derivation is taken, on the run detail only.** "The same member
-   has failed N rounds running" is derived server-side beside `compactGate` and exposed on
-   `WorkflowRunDetail`. SSE and the chip are untouched, so Option D keeps its cleanest property:
-   it widens the SSE summary not at all.
 
 ## Non-goals
 

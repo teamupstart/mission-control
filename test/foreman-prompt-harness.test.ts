@@ -164,7 +164,6 @@ test("everything that is about JUDGMENT is the same for every harness", () => {
     "NEVER auto-approve these",
     "YOUR OPERATOR'S STANDING INSTRUCTIONS",
     "PHRASING answer.text",
-    "never skip merely for being a gate",
   ];
   for (const agent of AGENT_TYPES) {
     const prompt = buildReviewPrompt(input(agent));

@@ -180,11 +180,11 @@ test("a slash command shows as the human typed it, not as the tags around it", (
 
 test("a command's args stay attached to it, and stay separate words", () => {
   const m = toMessage(
-    userTurn("u6", "<command-name>/no-mistakes</command-name><command-args>fix the arrows</command-args>"),
+    userTurn("u6", "<command-name>/review-changes</command-name><command-args>fix the arrows</command-args>"),
   );
   // Each unwrapped block lands on its own line, so back-to-back tags with no whitespace
-  // between them can't fuse into "/no-mistakesfix the arrows".
-  assert.equal(m?.text, "/no-mistakes\n\nfix the arrows");
+  // between them can't fuse into "/review-changesfix the arrows".
+  assert.equal(m?.text, "/review-changes\n\nfix the arrows");
 });
 
 test("a caveat wrapping real prose loses the caveat and keeps the prose - with its shape", () => {
@@ -225,7 +225,7 @@ test("parseLines honors the tail limit and ignores malformed lines", () => {
   );
 });
 
-// ---- no-mistakes narration (current TodoWrite item) ----
+// ---- current TodoWrite narration ----
 
 const todoWrite = (uuid: string, todos: Array<Record<string, unknown>>, extra: object = {}): string =>
   JSON.stringify({
@@ -238,10 +238,10 @@ const todoWrite = (uuid: string, todos: Array<Record<string, unknown>>, extra: o
 test("latestTodoNarration returns the in-progress item's activeForm", () => {
   const line = todoWrite("t1", [
     { content: "Implement dispatch", status: "completed", activeForm: "Implementing dispatch" },
-    { content: "Run no-mistakes to open PR #2", status: "in_progress", activeForm: "Running no-mistakes to open PR #2" },
+    { content: "Run the review workflow", status: "in_progress", activeForm: "Running the review workflow" },
     { content: "Write docs", status: "pending", activeForm: "Writing docs" },
   ]);
-  assert.equal(latestTodoNarration([line]), "Running no-mistakes to open PR #2");
+  assert.equal(latestTodoNarration([line]), "Running the review workflow");
 });
 
 test("latestTodoNarration falls back to content when activeForm is absent", () => {
@@ -321,6 +321,14 @@ test("computeRuntimeMeta defaults a marker-less long-context model (Opus 4.x) to
   const m = computeRuntimeMeta([asstUsage("claude-opus-4-8", { input_tokens: 100_000 })]);
   assert.equal(m?.contextWindow, 1_000_000);
   assert.equal(m?.contextPct, 10); // 100k / 1M, not 50% of 200k
+  assert.equal(m?.longContext, true);
+});
+
+test("computeRuntimeMeta uses Fable 5's 1M default for an Agent SDK transcript", () => {
+  const m = computeRuntimeMeta([asstUsage("claude-fable-5", { input_tokens: 184_000 })]);
+  assert.equal(m?.contextTokens, 184_000);
+  assert.equal(m?.contextWindow, 1_000_000);
+  assert.equal(m?.contextPct, 18);
   assert.equal(m?.longContext, true);
 });
 
@@ -537,7 +545,7 @@ test("computeSessionActivity does not count a client-side slash command as a tur
 });
 
 test("computeSessionActivity still counts a prompt-expanding slash command as a turn", () => {
-  // `/no-mistakes` writes the SAME <command-name> tag but opens a real turn, and no
+  // `/review-changes` writes the SAME <command-name> tag but opens a real turn, and no
   // local_command marker follows it. Skipping on the tag alone would report a working
   // session as idle - worse than the bug above, because it invites a wrap-up mid-turn.
   const a = computeSessionActivity([
@@ -545,7 +553,7 @@ test("computeSessionActivity still counts a prompt-expanding slash command as a 
     rec({
       role: "user",
       uuid: "cmd-2",
-      content: "<command-message>no-mistakes</command-message>\n<command-name>/no-mistakes</command-name>",
+      content: "<command-message>review-changes</command-message>\n<command-name>/review-changes</command-name>",
       timestamp: "2026-07-11T02:07:00.000Z",
     }),
     rec({

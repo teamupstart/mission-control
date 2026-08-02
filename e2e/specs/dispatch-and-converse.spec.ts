@@ -26,6 +26,21 @@ import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.
 
 const TASK = "write a haiku about flexbox";
 
+async function api<T>(
+  daemon: DaemonHandle,
+  path: string,
+  body?: unknown,
+  method?: string,
+): Promise<T> {
+  const response = await fetch(`${daemon.baseURL}${path}`, {
+    method: method ?? (body === undefined ? "GET" : "POST"),
+    headers: { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  if (!response.ok) throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
+  return await response.json() as T;
+}
+
 /**
  * Dispatch one agent from the modal.
  *
@@ -35,7 +50,7 @@ const TASK = "write a haiku about flexbox";
  * the very next `fill` lands on a covered control. The combobox's own Escape handler calls
  * `stopPropagation`, so this closes the list and NOT the modal.
  */
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+async function dispatch(page: Page, daemon: DaemonHandle, model?: string): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
@@ -44,6 +59,9 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill(TASK);
+  if (model) {
+    await dialog.getByLabel("Model").selectOption(model);
+  }
 
   // Pin the post-work Workflow to none. Left at "Dispatch default" the daemon's configured
   // default applies, and this repo is not allowlisted for Live delivery, so the dispatch is
@@ -79,6 +97,17 @@ test("dispatching an agent puts a live session on the fleet", async ({ dashboard
   // The model the fake reported through the SDK's `system/init` frame, proving the card's
   // model line is fed by the driver rather than by a default.
   await expect(card).toContainText("Claude e2e Mock");
+});
+
+test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, "claude-fable-5");
+
+  const card = dashboard.locator("article.card").first();
+  await expect(card).toContainText("Agent SDK");
+  await expect(card).toContainText("Fable 5");
+  await expect(card).toContainText("1M");
+  await expect(card).toContainText("18%");
+  await expect(card).not.toContainText("92%");
 });
 
 test("typing into the conversation gets a reply back from the agent", async ({ dashboard, daemon }) => {
@@ -136,6 +165,98 @@ test("typing into the conversation gets a reply back from the agent", async ({ d
     await card.screenshot({
       path: fileURLToPath(new URL("../evidence/conversation.png", import.meta.url)),
     });
+  }
+});
+
+test("Ship it starts No-Mistakes Review through the workflow route", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon);
+  const card = dashboard.locator("article.card").first();
+  await expect(card).toBeVisible();
+  await expect.poll(async () =>
+    (await api<Array<{ id: string }>>(daemon, "/api/sessions")).length
+  ).toBe(1);
+  const sessions = await api<Array<{ id: string }>>(daemon, "/api/sessions");
+  expect(sessions).toHaveLength(1);
+  const sessionId = sessions[0]!.id;
+
+  // Keep this on the manual path. Foreman's shipped workflow mode can otherwise claim the
+  // ask between the route below and the click, proving automation rather than this control.
+  await api(daemon, "/api/foreman/config", { wrapup: "ask" }, "PUT");
+  await api(daemon, `/api/sessions/${sessionId}/queue/wrapup/asked`, {
+    clearAnswer: true,
+  });
+  await card.getByRole("button", { name: "Queue" }).click();
+  const review = card.getByRole("button", { name: "Run No-Mistakes Review" });
+  await expect(review).toBeVisible();
+  await expect(card.getByLabel("Direct shipping instruction")).toBeVisible();
+  await expect(card.getByRole("button", { name: "Send direct PR instruction" })).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    // eslint-disable-next-line no-console
+    console.log('OBSERVED Ship it panel exposes "Run No-Mistakes Review" beside the direct shipping path');
+    await card.screenshot({
+      path: fileURLToPath(new URL("../evidence/ship-it-review-control.png", import.meta.url)),
+    });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/evidence/ship-it-review-control.png");
+  }
+
+  const request = dashboard.waitForRequest((candidate) =>
+    candidate.method() === "POST"
+    && candidate.url().endsWith(
+      `/api/sessions/${encodeURIComponent(sessionId)}/workflow-review`,
+    )
+  );
+  await review.click();
+  const sent = await request;
+  expect(sent.postDataJSON()).toEqual({ requestId: expect.any(String) });
+  if (process.env.MC_E2E_EVIDENCE) {
+    // eslint-disable-next-line no-console
+    console.log("OBSERVED POST /api/sessions/:id/workflow-review with a requestId");
+  }
+
+  await expect(review).toBeHidden();
+  let runId = "";
+  let runVersion = 0;
+  await expect.poll(async () => {
+    const page = await api<{
+      items: Array<{
+        id: string;
+        workflowName: string;
+        workflowVersion: number;
+        sessionId: string;
+      }>;
+    }>(daemon, "/api/workflow-runs");
+    const run = page.items.find((candidate) =>
+      candidate.workflowName === "No-Mistakes Review" && candidate.sessionId === sessionId
+    );
+    runId = run?.id ?? "";
+    runVersion = run?.workflowVersion ?? 0;
+    return Boolean(run);
+  }).toBe(true);
+
+  // Finish on the user-visible result, not only the durable API record. This is the same
+  // run the Ship it control created through the request observed above.
+  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${encodeURIComponent(runId)}`);
+  const selectedRun = dashboard.locator(".wf-run-row.active");
+  await expect(selectedRun).toContainText("No-Mistakes Review");
+  await expect(selectedRun).toContainText(`v${runVersion}`);
+  await expect(dashboard.locator(".wf-run-reader")).toContainText("No-Mistakes Review");
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `OBSERVED Runs monitor selected the created No-Mistakes Review v${runVersion} run`,
+    );
+    await dashboard.screenshot({
+      path: fileURLToPath(new URL("../evidence/ship-it-review-run.png", import.meta.url)),
+      fullPage: true,
+    });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/evidence/ship-it-review-run.png");
   }
 });
 

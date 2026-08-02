@@ -7,7 +7,6 @@ Aligned with: `docs/plans/best-of-n-swarm-dispatch/plan.md` (the Ensemble engine
 its release decisions.
 Companion to: `docs/plans/feature-ideas/plan.md` (where the idea started as "Best-of-N
 swarm dispatch")
-Rendered: `plan.html` beside this file - open that for the visual version.
 
 The engine plan settled the foundation: a reusable **Ensemble** orchestration layer above
 Tasks and the Dispatcher, with Best-of-N shipping as its first versioned strategy
@@ -24,19 +23,6 @@ needs beyond `best_of_n` v1, and which are worth building next.
 The first draft of this document assumed the feature-ideas framing: race N builds, a judge
 scores, the winner survives, the rest are reaped. The engine plan materially corrects
 those assumptions:
-
-| Earlier assumption | Engine plan reality | Consequence for these ideas |
-|---|---|---|
-| The judge picks and reaps | The comparative evaluator **recommends; it does not promote**. A human confirms; destructive finalization always requires human confirmation | Every strategy below is advisory evaluation plus human authority; none may auto-select, auto-reap, or auto-publish |
-| Losers are discarded | Loser worktrees are reaped only after promotion; **immutable snapshot refs survive** until explicit delete | Synthesis, restore, and audit stay possible after any strategy completes; "no wasted ideas" is a kernel property, not a strategy |
-| Candidates race from whatever HEAD | One full **base SHA is pinned** before any member launches; provisioning verifies it | Comparison validity is the kernel's job; strategies never re-solve it |
-| Idle means done | Completion is an explicit `submit_candidate_result` **MCP submission** (plus a manual fallback) | Every strategy's barriers key off submissions and artifacts, never hook silence |
-| Each strategy is its own feature | One `EnsembleStrategyRecipe` composes **seven policies** (launch, information, artifact, stages, stop, finalization, member-workflow) over a small durable stage vocabulary | A "new strategy" is a composition plus at most one new primitive; if it needs new tables/routes/events, that is evidence of a new primitive, not a new strategy |
-| The rubric's tests feed the no-mistakes gate directly | v1 runs **no repository commands**; evidence is split into *reported by member* vs *observed by Mission Control*; safe repo-owned evaluation profiles are a follow-up | "Rubric-first" splits into what v1 already gives (snapshotted evaluator guidance) and what needs the evaluation-profile follow-up (executed acceptance checks) |
-| Agents could debate freely | Unmediated agent-to-agent communication is a non-goal; **information topology is explicit** and collaboration is artifact-mediated, bounded, and attributed | "Structured debate" collapses into critique/feedback stages over immutable artifacts |
-| Design-offs just reuse html-plans | Artifacts go through a pluggable **ArtifactAdapter**; v1 ships `git_snapshot` only, and scout/plan ensembles are an explicit v1 non-goal | Plan-first fan-out is a `plan` artifact adapter follow-up, not a v1 mode - the seam is designed for it |
-| Race then verify then ship, one pipeline | Ensemble is the **exploration/selection** stage over N sessions; the one-Session **Workflow** owns review/repair/gates after promotion; they compose at the promotion boundary, never as one graph | The "composed endgame" is a chain of ensemble runs and a Workflow handoff, not a mega-strategy |
-| 3-8 candidates whenever useful | `best_of_n` v1 is a fixed roster of 2-5; **launch caps are per-strategy policy** (a tournament may allow 8 at concurrency 4; adaptive waves may show a 2-8 range) | Larger N belongs to the strategies whose evaluation shape can afford it - cheap artifacts or pairwise prompts |
 
 One idea from the first draft survived by landing in v1 already: **persona-seeded
 diversity** is the roster's per-member `approach` hint. Two to five members with
@@ -76,53 +62,6 @@ select-one).
   instinct.
 
 ### Named in the engine plan's pattern table
-
-- **Deterministic gate then rank** - a hybrid evaluator pipeline: tests/static evidence
-  eliminate ineligible artifacts, the comparative model ranks survivors. Blocked on the
-  *evaluation profiles* follow-up, because v1 has no safe repository-neutral command to
-  run; until then gates can use only observed evidence (diff stats, no-mistakes state when
-  present).
-- **Persona panel vote** - shipped as `panel_vote` in
-  [Phase 1](phase-1-panel-vote.md). M independent single-lens judges review the same
-  artifacts, with rank aggregation and visible disagreement; the phase document owns its
-  implementation and durable contracts.
-- **Pairwise tournament** - bracket / Swiss / round-robin pair comparisons; judges are
-  more reliable at "which of these two" than at absolute scores, and each pair is a small
-  checkable evaluation row. New primitive: pair scheduler and accumulated standings. This
-  is also the strategy that earns rosters larger than five, because its prompts stay
-  small.
-- **Successive halving (cascade)** - waves: cheap first evaluation culls, the top fraction
-  advances to deeper work or review. With matrix launch templates this expresses
-  "cheap model drafts wide, expensive model builds the culled few" without any new
-  transport. New primitive: multi-wave advancement (spawn -> collect -> evaluate ->
-  advance -> repeat).
-- **Adaptive sampling** - start small, add batches until a stop rule or hard cap. New
-  primitive: the pure strategy driver and spawn-more command, already specified with the
-  closed command union and persisted command keys.
-- **Critique then revise** - N proposals, cross-assigned critiques, one bounded revision
-  round, then compare revised artifacts. All sharing is server-rendered from immutable
-  artifacts (this is where the earlier "structured debate" idea lands - an
-  artifact-mediated exchange, not a conversation). New primitive: feedback stage and
-  revision artifact lineage.
-- **Proposer-critic-verifier** - a role roster instead of identical candidates, with
-  directed artifact visibility; the verifier accepts, rejects, or requests bounded
-  repair. New primitive: role-specific prompts and directed dependencies.
-- **Red-team / defender** - one builder plus adversarial reviewers; the terminal artifact
-  is the patched work plus a residual-risk report. The earlier draft's "attacks become
-  regression tests" survives in two compliant forms: attack findings ride the winner into
-  the post-promotion Workflow as review evidence, and executed attack checks arrive with
-  evaluation profiles.
-- **Top-K synthesis** - select K, then a fresh synthesis member sees exactly those
-  artifacts and produces a new combined artifact with explicit lineage
-  (`parentArtifactIds`, the `synthesized` outcome). This is the engine-shaped version of
-  the earlier "graft the best ideas onto the winner".
-- **Consensus / no-consensus** - N independent answers; the run may legitimately end with
-  agreement, a minority report, or no consensus, retaining all artifacts. The
-  non-destructive terminal outcome already exists in the outcome union.
-- **Map-reduce** - shard roster plus a reducer that sees all outputs; comparison may be
-  absent entirely. The earlier "facet decomposition" is this pattern; its known risk (the
-  seams between independently produced facets) is why the reducer is a first-class member
-  whose artifact is the thing evaluated.
 
 ### Extensions this document adds beyond the engine plan
 
@@ -177,7 +116,7 @@ select-one).
    promotion boundaries - never one graph, exactly as the engine plan's Workflow
    separation requires.
 
-Flow of that composed sequence (prose form of the diagram in `plan.html`): a design-off
+Flow of that composed sequence: a design-off
 ensemble fans out cheap plan members from one pinned base; its consensus evaluator files
 agreements and posts divergences to the decision stage; the human's selections plus the
 winning plan brief a single implementation Task (via the artifact adapter's restore); if
@@ -193,7 +132,7 @@ review, repair, and gates.
 2. **This document's extensions are folded into the engine plan**: divergence mining, the
    plan ArtifactAdapter, and spec-first guidance now appear in
    `docs/plans/best-of-n-swarm-dispatch/plan.md`'s "Likely follow-ups" (and its
-   `plan.html`), each marked as adopted from this review, along with the priority order
+   source plan), each marked as adopted from this review, along with the priority order
    above.
 3. **A phased implementation plan follows**: phase documents live beside this file and are
    scheduled as dependency-linked Mission Control tasks, sequenced after the engine plan's

@@ -796,7 +796,7 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
         repoRoot: "/repo",
         cwd: "/repo",
         sessionId: "session",
-        source: "no-mistakes",
+        source: "legacy",
         state: "open",
         headSha: "newhead0123456789",
         reviewPosture: "live",
@@ -836,7 +836,7 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.match(html, /Inspector final gate/);
   assert.match(html, /Inspector left findings that have to be resolved/);
   assert.match(html, /#91/);
-  assert.match(html, /no-mistakes/);
+  assert.match(html, /legacy import/);
   assert.match(html, /Target head/);
   assert.match(html, /Observed head/);
   assert.match(html, /Reviewed head/);

@@ -74,7 +74,6 @@ test("authorship is announced once per session per PR, on either evidence path",
     nameSource: "process",
     cwd: "/wt/a",
     gitBranch: "feature",
-    nomistakesGated: false,
     pid: 900,
     tty: "ttys7",
     terminals: [pane],
@@ -144,7 +143,7 @@ test("inspection tallies distinguish posted findings from pending rows", () => {
   assert.equal(row?.resolvedFindings, 1);
 });
 
-// Both signals call this freely, from different places, on different schedules. The
+// Older persisted provenance and the current hook signal can both reach this path. The
 // second one to arrive must be a no-op rather than a re-adoption: rewriting the row would
 // reset `head_sha` and make the Inspector review the whole PR again from scratch, posting
 // duplicates of everything it had already said.
@@ -152,7 +151,7 @@ test("adopting twice is a no-op, whichever signal gets there second", () => {
   assert.equal(adoptPr(URL_1, CTX, "hook", 1000), true);
   updateInspectorPr("mancej/ai-harness#56", { headSha: "abc123", round: 4 }, 2000);
 
-  assert.equal(adoptPr(URL_1, CTX, "no-mistakes", 3000), false, "second adoption is a no-op");
+  assert.equal(adoptPr(URL_1, CTX, "legacy", 3000), false, "second adoption is a no-op");
   const row = getInspectorPr("mancej/ai-harness#56");
   assert.equal(row?.headSha, "abc123", "progress must survive a re-sighting");
   assert.equal(row?.round, 4);
@@ -271,7 +270,7 @@ test("everything that merely mentions or prints a PR is not opening one", () => 
     "gh issue create --title x",
     "ghpr create",
     "mygh pr create",
-    "no-mistakes --push", // how PRs are actually opened in this repo - signal (b)'s job
+    "review-tool --push",
     "",
   ]) {
     assert.equal(opensPullRequest(cmd), false, `should NOT open a PR: ${cmd}`);

@@ -3,7 +3,7 @@
 Status: direction approved 2026-07-26 - phased composition (see Section 8). Date: 2026-07-26.
 Basis: a full read of the shipped surfaces (`src/web/ensembles/*`, `src/web/workflows/EnsembleRuns.tsx` / `EnsembleDetail.tsx` / `EnsembleMembers.tsx` / `EnsembleArtifacts.tsx` / `EnsembleActions.tsx`, `session-bits.tsx`), the server lifecycle (`src/server/ensembles/*`), `docs/ensembles.md`, and the 31 `test/ensemble-*.test.ts` files.
 
-This document maps the start-to-finish user story of the ensemble feature as it exists today, catalogs every gap that can leave the operator confused or lost, and proposes three separate solution directions. A rendered copy with mockups lives beside this file as `plan.html`.
+This document maps the start-to-finish user story of the ensemble feature as it exists today, catalogs every gap that can leave the operator confused or lost, and proposes three separate solution directions.
 
 ---
 

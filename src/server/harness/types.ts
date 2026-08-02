@@ -259,8 +259,8 @@ export interface TranscriptMessages {
   /** Whatever complete turns were appended since `pos`. Throws if unreadable. */
   appended(path: string, pos: number): TranscriptStreamRead;
   /**
-   * The "what's happening now" narration for the no-mistakes strip, or null when there
-   * is none. Null is also the right answer for a harness with no such notion - it is a
+   * The current active narration, or null when there is none. Null is also the right
+   * answer for a harness with no such notion. It is a
    * one-line status, so absence degrades to showing nothing rather than to being wrong.
    */
   narration(path: string): string | null;

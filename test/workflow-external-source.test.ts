@@ -47,7 +47,6 @@ function discovered(id: string): DiscoveredSession {
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: `ttys-${id}`,
     terminals: [],

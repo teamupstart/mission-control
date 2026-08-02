@@ -40,7 +40,6 @@ function setup(over: {
     gitBranch: "harness/cancelled-owner",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 1,
     tty: null,
     terminals,

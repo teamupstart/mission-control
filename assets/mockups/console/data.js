@@ -321,7 +321,7 @@ function nmStrip(s, needsYou) {
     ? `<ul class="nm-findings">${s.nm.findings.map((f) => `<li>${f}</li>`).join("")}</ul>`
     : "";
   return `<div class="nm-strip${needsYou && s.nm.gate ? " needs-you" : ""}">
-      <div class="nm-head"><span class="nm-brand">◇ no-mistakes</span><span class="nm-line">${s.nm.line}</span><span class="nm-dots">${dots}</span></div>
+      <div class="nm-head"><span class="nm-brand">◇ review workflow</span><span class="nm-line">${s.nm.line}</span><span class="nm-dots">${dots}</span></div>
       ${gate}${findings}
     </div>`;
 }

@@ -92,9 +92,9 @@ test("a patch that doesn't mention away leaves the window alone", () => {
 
 test("a patch merges over the stored config rather than replacing it", () => {
   setAwayConfig({ stallWorkingMinutes: 45 });
-  const next = setAwayConfig({ stallGateMinutes: 3 });
+  const next = setAwayConfig({ stallEscalationMinutes: 3 });
   assert.equal(next.stallWorkingMinutes, 45);
-  assert.equal(next.stallGateMinutes, 3);
+  assert.equal(next.stallEscalationMinutes, 3);
 });
 
 test("thresholds convert the human's minutes into the detector's ms", () => {
@@ -102,14 +102,12 @@ test("thresholds convert the human's minutes into the detector's ms", () => {
     setAwayConfig({
       stallWorkingMinutes: 10,
       stallUnfinishedMinutes: 20,
-      stallGateMinutes: 5,
       stallEscalationMinutes: 2,
     }),
   );
   assert.deepEqual(th, {
     workingMs: 600_000,
     unfinishedMs: 1_200_000,
-    gateMs: 300_000,
     escalationMs: 120_000,
   });
 });

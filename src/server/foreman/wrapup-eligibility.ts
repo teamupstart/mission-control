@@ -38,6 +38,10 @@ const SHIPPABLE_OUTPUT =
 const SHIPPABLE_ACTION =
   /\bimplement(?:ed|ing)?\b|\b(?:build|create|develop|ship|fix|refactor|update|deliver)\b[^.?!\n]{0,80}\b(?:implementation|source\s+code|code\s+changes?|working\s+(?:feature|application|app)|test\s+suites?|tests?|features?|applications?|apps?|components?|services?|endpoints?|modules?|codebase|bugs?|issues?)\b/i;
 
+/** An implementation verb is sufficient when its own clause names no review artifact. */
+const GENERIC_IMPLEMENTATION_ACTION =
+  /\b(?:build|create|develop|ship|fix|refactor|update|deliver)\b/i;
+
 /** `a plan for code changes` names a topic, not a second implementation deliverable. */
 const REVIEW_ARTIFACT_TOPIC =
   /\b(?:mock[- ]?ups?|wireframes?|prototypes?|storyboards?|design\s+(?:concepts?|explorations?|options?)|plans?|reports?|analys(?:is|es)|research|audit\s+findings?|recommendations?)\b[^.?!\n]{0,30}\b(?:for|on|about|of|to)\b/i;
@@ -73,7 +77,12 @@ function naturalLanguageRequestsShipping(objective: string): boolean {
   // makes the code phrase its topic: "write a report on code changes" is not a request to code.
   return objective
     .split(/(?:[.!?;\n]|\bthen\b|\band\b)/i)
-    .some((clause) => SHIPPABLE_ACTION.test(clause) && !REVIEW_ARTIFACT_TOPIC.test(clause));
+    .some((clause) => {
+      if (REVIEW_ARTIFACT_TOPIC.test(clause)) return false;
+      return SHIPPABLE_ACTION.test(clause) || (
+        GENERIC_IMPLEMENTATION_ACTION.test(clause) && !REVIEW_ARTIFACT.test(clause)
+      );
+    });
 }
 
 function objectiveRequestsReviewArtifacts(objective: string): boolean {

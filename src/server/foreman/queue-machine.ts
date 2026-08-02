@@ -388,16 +388,25 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
       ? { kind: "skip-wrapup", queue, reason: block.reason }
       : null;
 
+    // A non-shipping contract changes WHAT happens after completion, not WHEN Foreman may
+    // declare the episode complete. Keep it behind the same settled-idle evidence as an
+    // automatic Workflow or PR. This branch still sits before every `ask-wrapup` return, so
+    // an eligible retirement cannot claim an existing Workflow or briefly expose a Ship it?
+    // card while the agent is finishing its report.
+    if (blockedAction) {
+      return settledIdle(session, now, cfg.settleMs) ? blockedAction : { kind: "none" };
+    }
+
     // Nothing to automate (`ask`), or Foreman may not type here at all. `mayActLive` is
     // the same gate a queue send passes, and it binds harder here: the instruction
     // can ultimately PUSH, so a dry-run that typed it would be a dry-run that shipped.
     // Dry-run degrades to the ask rather than to a `propose` because the Wrapup card is
     // already the human decision surface.
     if ((!payload && !workflowWrapup) || !mayActLive) {
-      return blockedAction ?? { kind: "ask-wrapup", queue };
+      return { kind: "ask-wrapup", queue };
     }
     if (!workflowWrapup && !hasPane(session)) {
-      return blockedAction ?? { kind: "ask-wrapup", queue };
+      return { kind: "ask-wrapup", queue };
     }
 
     // Automation is on and allowed. It needs a FRESH idle signal, and `settledIdle`
@@ -413,7 +422,7 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // Collapsing them breaks one case or the other: treat stale as "wait" and the ask
     // stalls forever on a signal that stopped coming; treat moving as "ask" and see below.
     if (!session.instrumented) {
-      return blockedAction ?? { kind: "ask-wrapup", queue };
+      return { kind: "ask-wrapup", queue };
     }
 
     // Not settled: wait, and DO NOT fall back to the ask. `ask-wrapup` stamps
@@ -424,12 +433,6 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // (`queueWantsATick` stays true while drained and unasked).
     if (!settledIdle(session, now, cfg.settleMs)) return { kind: "none" };
 
-    // Automatic completion is only for shippable work. This sits ABOVE the configured
-    // action because even `ask` may claim an existing Foreman-complete Workflow before it
-    // renders a card. Degrading a scout or mockup task to `ask-wrapup` would therefore still
-    // start the very review this gate excludes. `skip-wrapup` retires the settled drain
-    // without a Workflow claim, a PR instruction, or a Ship it? card.
-    if (blockedAction) return blockedAction;
     if (!intentGuard) return { kind: "none" };
 
     if (workflowWrapup) return { kind: "workflow-wrapup", queue, intentGuard };

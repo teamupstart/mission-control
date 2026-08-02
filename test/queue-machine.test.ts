@@ -647,16 +647,31 @@ test("5. a scout drain retires without a Workflow claim or Straight-to-PR action
   }
 });
 
-test("5. a scout drain still waits for the session to settle before retiring", () => {
-  const action = tick({
-    session: {
-      task: mkTaskSummary({ kind: "scout" }),
-      lastActivity: NOW - 1,
-    },
+test("5. blocked drains still wait for the session to settle before retiring", () => {
+  for (const { wrapup, mayActLive } of [
+    { wrapup: "ask", mayActLive: true },
+    { wrapup: "workflow", mayActLive: false },
+    { wrapup: "pr", mayActLive: true },
+  ] as const) {
+    const action = tick({
+      session: {
+        task: mkTaskSummary({ kind: "scout" }),
+        lastActivity: NOW - 1,
+      },
+      items: DRAINED(),
+      cfg: { wrapup },
+      mayActLive,
+    });
+    assert.equal(action.kind, "none", `${wrapup}; mayActLive=${mayActLive}`);
+  }
+
+  const artifactAction = tick({
+    session: { lastActivity: NOW - 1 },
     items: DRAINED(),
-    cfg: { wrapup: "workflow" },
+    intent: { objective: "Present the navigation options.\n\nOutput: mockups" },
+    cfg: { wrapup: "ask" },
   });
-  assert.equal(action.kind, "none");
+  assert.equal(artifactAction.kind, "none", "review-artifact outputs wait too");
 });
 
 test("5. a review-artifact objective retires before even ask mode can claim a Workflow", () => {

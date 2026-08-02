@@ -51,6 +51,7 @@ function session(over: Partial<Session> = {}): Session {
     cost: null,
     goal: null,
     queue: null,
+    pendingTurns: [],
     orphanedQueue: null,
     ...over,
   } as Session;

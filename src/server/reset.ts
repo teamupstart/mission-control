@@ -12,6 +12,18 @@ export interface SdkClearer {
 }
 
 /**
+ * The pending-turn manager's reset boundary, kept structural for the same reason as
+ * `SdkClearer`: reset policy owns the sequencing without importing the live manager.
+ */
+export interface PendingTurnResetBoundary {
+  /** Stop and settle a claimed delivery. IDs returned here may already have crossed a
+   * runtime boundary, so successful reset cleanup must retain them as uncertain. */
+  invalidateForReset(id: string): Promise<readonly string[]>;
+  /** Re-arm safe queued work after the registry's reset marker has been removed. */
+  finishReset(id: string): void;
+}
+
+/**
  * The supervisor as a `DriverClear`, or undefined when this build has no supervisor.
  *
  * One adapter, at the boundary, because all three reset callers need the identical lambda
@@ -59,20 +71,29 @@ export async function resetSession(
    * that path gave before this parameter existed.
    */
   driverClear?: DriverClear,
+  pendingTurns?: PendingTurnResetBoundary,
 ): Promise<ResetResult> {
+  const pendingTurnKey = noteKeyFor(session);
   registry.beginSessionReset(session.id);
   try {
+    // Marking the registry comes first, so every SDK acceptance and terminal write guard
+    // refuses immediately. Then wait for a delivery that already owned the row to settle:
+    // clearing SQLite first would let that detached promise reach the agent afterwards.
+    const preservePendingTurnIds = pendingTurns
+      ? await pendingTurns.invalidateForReset(session.id)
+      : [];
     return await withPaneLockWait(session, async (lockOwner) => {
       const r = reset
         ? await reset(session, clear, lockOwner, driverClear)
         : await resetToOrigin(session, clear, undefined, lockOwner, driverClear);
 
-      // The reset discarded the task these queued items were authored for - the branch is
-      // gone and (with `clear`) the agent's context is wiped - so clear the whole batch.
+      // The reset discarded the task these queued items were authored for, so discard every
+      // safely queued row. A claimed row whose handoff may have crossed stays `uncertain`:
+      // deleting it would hide a message that the reset could not prove was refused.
       // This is the deliberate "start over", the one case that overrides the re-attach
-      // affordance a bare /clear leans on. Keyed on the PRE-reset session, whose note key
-      // still names the queue: a /clear only rotates that key once the agent processes it,
-      // which is after this returns.
+      // affordance a bare /clear leans on. Clear both the pre-reset key and a live rebound
+      // key because an SDK delivery can publish its conversation identity while invalidation
+      // is waiting for that same handoff to settle.
       let workIdentityReady = false;
       if (r.ok) {
         // A successful git reset and a successful context reset are separate claims.
@@ -93,6 +114,12 @@ export async function resetSession(
               await registry.waitForWorkEpisodeReady(session.id, episode.episodeId, 5000)))
         );
         registry.clearObservedSessionEffort(session.id);
+        registry.clearPendingTurns(pendingTurnKey, preservePendingTurnIds);
+        const currentSession = registry.getSession(session.id);
+        const currentPendingTurnKey = currentSession ? noteKeyFor(currentSession) : pendingTurnKey;
+        if (currentPendingTurnKey !== pendingTurnKey) {
+          registry.clearPendingTurns(currentPendingTurnKey, preservePendingTurnIds);
+        }
         registry.clearQueue(noteKeyFor(session));
         registry.clearWorkflowState(noteKeyFor(session));
       }
@@ -101,5 +128,6 @@ export async function resetSession(
     });
   } finally {
     registry.endSessionReset(session.id);
+    pendingTurns?.finishReset(session.id);
   }
 }

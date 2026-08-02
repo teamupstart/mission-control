@@ -115,6 +115,18 @@
 .workflow-failed { color: var(--danger); }
 .workflow-passed { color: var(--idle); }
 
+/* Statuses with a reason are hoverable and keyboard-focusable without reading as actions. */
+.wf-status-explained {
+  cursor: help;
+  text-decoration: underline dotted color-mix(in srgb, currentColor 58%, transparent);
+  text-underline-offset: 3px;
+}
+.wf-status-explained:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 .rail-workflow {
   cursor: pointer;
   font-weight: 800;
@@ -634,6 +646,11 @@
    across three surfaces. The card's own heading and chip already name it, so the edge is a
    confirmation rather than the claim. */
 .wf-run-action { border-left-color: color-mix(in oklab, #a878ff 70%, var(--border)); }
+/* The proven pull request reads as a fact rather than a call to action: it sits in the meta
+   row with the rest of the lifecycle, and the commit beside it is monospaced because it is an
+   object id somebody will compare against another one by eye. */
+.wf-run-action-pr { display: flex; gap: 4px; align-items: baseline; flex-wrap: wrap; }
+.wf-run-action-pr a { font-variant-numeric: tabular-nums; }
 .wf-run-check.is-passed { border-left-color: var(--idle); }
 .wf-run-check.is-failed { border-left-color: var(--danger); }
 .wf-run-check.is-skipped,
@@ -2838,11 +2855,61 @@ body {
 }
 .compose {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   width: 100%;
 }
+.compose-pending-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.compose-pending {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-left: 2px dashed color-mix(in oklab, var(--working) 48%, var(--border));
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in oklab, var(--working) 7%, var(--bg-2));
+  font: 11px/1.35 var(--sans);
+}
+.compose-pending.is-uncertain {
+  border-left-color: var(--attention);
+}
+.compose-pending-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.compose-pending-state {
+  flex: none;
+  color: var(--dim);
+}
+.compose-pending button {
+  flex: none;
+  border: 0;
+  padding: 0;
+  color: var(--working);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.compose-pending button:hover:not(:disabled),
+.compose-pending button:focus-visible {
+  color: var(--fg);
+  text-decoration: underline;
+  outline: none;
+}
 .compose-input {
   flex: 1;
+  min-width: 0;
+  resize: vertical;
   font: inherit;
   font-size: 12.5px;
   color: var(--fg);
@@ -4004,6 +4071,60 @@ kbd {
 .turn-user .turn-text {
   background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
   border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft));
+}
+.pending-turn {
+  border-left: 2px dashed color-mix(in oklab, var(--working) 48%, var(--border));
+  padding-left: 9px;
+}
+.pending-turn.is-sending {
+  opacity: 0.72;
+}
+.pending-turn.is-uncertain {
+  border-left-color: var(--attention);
+}
+.pending-turn-role {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.pending-turn-state {
+  color: var(--working);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.pending-turn.is-uncertain .pending-turn-state,
+.pending-turn-error {
+  color: var(--attention);
+}
+.pending-turn-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-height: 18px;
+  font: 10.5px/1.3 var(--sans);
+  color: var(--dim);
+}
+.pending-turn-action {
+  font: inherit;
+  color: var(--working);
+  background: transparent;
+  border: 0;
+  padding: 1px 0;
+  cursor: pointer;
+}
+.pending-turn-action:hover:not(:disabled),
+.pending-turn-action:focus-visible {
+  color: var(--fg);
+  text-decoration: underline;
+  outline: none;
+}
+.pending-turn-action:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+.pending-turn-error {
+  flex-basis: 100%;
 }
 /* Foreman's turns, told apart from the human's at a glance - in a supervised session
    most of the "user" side of the conversation is Foreman, and a reader who can't see
@@ -9997,6 +10118,15 @@ select.ensemble-judge-persona {
   align-items: start;
   column-gap: 8px;
   row-gap: 6px;
+  /* `flex: none`, exactly as every stage and terminus card in the strip declares.
+     Without it this was the ONE card that shrank: the strip is a flex row whose content is
+     routinely wider than the pane, so flex-shrink runs before `overflow-x` ever scrolls, and
+     an item with a `width` but no `flex: none` collapses toward min-content. The grid's
+     `minmax(0, 1fr)` then let the text overflow the box rather than the box keeping its
+     width - so the dashed border, which is this card's whole "not authored" signal, drew a
+     ~40px sliver with the sentence spilling out beside it. Invisible on a pipeline short
+     enough to fit, which is why it survived until a version with four stages was captured. */
+  flex: none;
   width: 236px;
   padding: 9px 10px;
   border: 1px dashed color-mix(in oklab, var(--border) 70%, var(--dim));
@@ -10047,9 +10177,9 @@ select.ensemble-judge-persona {
   outline: 2px solid var(--working);
   outline-offset: 2px;
 }
-/* The third chip site, laid out like the other two. A stage's own chip reaches "Passed, 2 not
-   run", which beside the title left "2 checks · all must pass" folded into three lines while
-   the chip kept its full width - the same trade the terminus refuses. Note that `flex-wrap`
+/* The third chip site, laid out like the other two. A stage's own chip reaches "Passed, 2
+   skipped", which beside the title left "2 checks · all must pass" folded into three lines
+   while the chip kept its full width - the same trade the terminus refuses. Note that `flex-wrap`
    would NOT have fixed this: `.wf-pipeline-stage-title` is `flex: 1`, whose `flex-basis: 0`
    contributes nothing to line-breaking, so the chip always "fits" and the wrap never fires. */
 .wf-pipeline-stage-head {

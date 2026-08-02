@@ -105,6 +105,47 @@ export type SessionRuntime = (typeof SESSION_RUNTIMES)[number];
 export type SdkSendDisposition = "started" | "steered" | "queued";
 
 /**
+ * Where a conversation-composer submission went.
+ *
+ * `pending` is Mission Control's editable outbox, before any runtime has accepted the
+ * turn. The other three are the embedded-driver acknowledgements above. Keeping the two
+ * vocabularies distinct at the type boundary prevents a buffered message from being
+ * mistaken for Claude's already-accepted internal FIFO, where editing is no longer
+ * possible.
+ */
+export type MessageSendDisposition = SdkSendDisposition | "pending";
+
+/** The durable lifecycle of one human-authored turn waiting to enter a conversation. */
+export const PENDING_TURN_STATES = ["queued", "sending", "uncertain"] as const;
+export type PendingTurnState = (typeof PENDING_TURN_STATES)[number];
+
+/**
+ * A human message Mission Control still owns.
+ *
+ * Queued rows are editable. `sending` means the row has crossed the atomic claim boundary
+ * and may be entering a terminal or SDK driver, so recalling it would risk editing text
+ * the agent already received. `uncertain` is the fail-closed recovery state whenever a
+ * handoff may have crossed its runtime boundary but its outcome cannot be proven.
+ */
+export interface PendingTurn {
+  id: string;
+  /** Stable conversation key (`agentSessionId ?? session.id`), never a transient pane id. */
+  noteKey: string;
+  /** FIFO delivery order within the conversation. */
+  seq: number;
+  text: string;
+  state: PendingTurnState;
+  /** CAS token used by recall/retry actions. */
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+  /** When delivery claimed the row, or null while it remains editable. */
+  claimedAt: number | null;
+  /** Positive non-delivery detail retained beside an editable row. */
+  lastError: string | null;
+}
+
+/**
  * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex
  * (`model_reasoning_effort` / rollout `effort`). A tuple because the settings and
  * dispatch pickers need the same values as the wire schemas and launch adapters.
@@ -491,6 +532,8 @@ export interface Session {
    * key. Null when the session has no queue.
    */
   queue: SessionQueueSummary | null;
+  /** Human-authored turns Mission Control still owns, in FIFO delivery order. */
+  pendingTurns: PendingTurn[];
   /**
    * A queue left behind by a PREVIOUS session at this same cwd (its note key died
    * - a `/clear` or a crash-relaunch mints a new agent session id). A hint on a
@@ -1824,6 +1867,31 @@ export interface InspectorPr {
    * merging nothing while saying nothing.
    */
   mergeBlock: string | null;
+  /**
+   * The pull request's remote head as of the last POLL, not the last review.
+   *
+   * `headSha` above advances only when a review round completes, which makes it useless for
+   * the question "has the branch reached the pull request yet". That question is what a
+   * `pull_request` session action has to answer before it lets downstream stages read fresh
+   * evidence, so the tick writes down what `fetchPr` already told it.
+   *
+   * Null means this build has not looked since the column existed. Every reader treats that
+   * as "unknown", never as "unchanged" - a session action waits for the next tick rather than
+   * completing on a head nobody observed.
+   */
+  observedHeadSha: string | null;
+  /** What that same poll saw the pull request's state to be, or null when never polled. */
+  observedState: "OPEN" | "CLOSED" | "MERGED" | null;
+  /** When that observation was made, epoch ms, or null when never polled. */
+  observedAt: number | null;
+  /**
+   * The branch the pull request is opened FROM, as GitHub reports it.
+   *
+   * Stored because a session action proves its pull request by repository AND branch: a commit
+   * id match alone cannot tell a pull request opened from this work apart from one that
+   * happens to include the same commit. Null until the first poll after adoption.
+   */
+  headRefName: string | null;
   adoptedAt: number;
   updatedAt: number;
 }

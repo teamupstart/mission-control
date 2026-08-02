@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { z } from "zod";
 import type { ReviewItem, Session, TranscriptMessage } from "@shared/types.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
@@ -22,6 +23,7 @@ import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
 import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
+import { FULL_SHA } from "./commit-id.ts";
 
 const MAX_GOAL = 16_000;
 const MAX_DECISIONS = 200;
@@ -520,6 +522,105 @@ export function probeMatchesEvidence(
     && probe.workingTreeStatus.length === evidence.workingTreeStatus.length
     && probe.workingTreeStatus.every((line, index) => line === evidence.workingTreeStatus[index])
     && probe.diffFingerprint === evidence.diffFingerprint;
+}
+
+/**
+ * The bound checkout's identity and current commit, without capturing evidence.
+ *
+ * Three `rev-parse` calls, which is what makes this affordable on the action observer's
+ * fifteen-second sweep. `readWorkflowEvidenceProbe` above answers a different question - "has
+ * the work moved?" - and pays for a whole diff to answer it; a `pull_request` action asks only
+ * "which repository, which branch, which commit", and asking it the expensive way would put a
+ * full diff of every bound repository on a timer.
+ *
+ * `HEAD^{commit}` is asked for in FULL, deliberately. Evidence capture stores
+ * `rev-parse --short HEAD`, and a pull request's head arrives from GitHub as a 40-character
+ * object id, so an abbreviation here would make the one comparison this feature turns on into
+ * a prefix match. `HEAD` is a symbolic ref rather than an abbreviation, so unlike a captured
+ * head it needs no disambiguation - see `resolveCapturedCommit` for the side that does.
+ *
+ * Every field is null-safe rather than throwing: a reaped worktree, a directory that is not a
+ * repository, an unborn branch and a detached HEAD are all states a bound session can really
+ * be in, and the caller's answer to all of them is to keep waiting.
+ */
+export interface WorkflowRepositoryHead {
+  /**
+   * Which REPOSITORY this checkout belongs to, as git's common directory.
+   *
+   * Not the working tree's toplevel, and that distinction is the whole point. Mission Control
+   * dispatches agents into linked worktrees, so a bound session's toplevel is a per-session
+   * path while the pull request it opens is adopted against the repository the worktree was
+   * cut from. Comparing toplevels made those two look like different repositories for every
+   * dispatched session - which is the ordinary case, not an edge one - and a `pull_request`
+   * action could then never complete. `--git-common-dir` is identical for a main checkout and
+   * all of its linked worktrees, which is exactly the identity being compared.
+   */
+  repositoryId: string;
+  /** The working tree's own toplevel. Reported for diagnostics, never for identity. */
+  root: string;
+  branch: string | null;
+  headOid: string | null;
+}
+
+export async function readWorkflowRepositoryHead(
+  cwd: string | null,
+): Promise<WorkflowRepositoryHead | null> {
+  if (!cwd) return null;
+  const top = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 15_000 });
+  const root = top.code === 0 ? top.stdout.trim() : "";
+  if (!root) return null;
+  const repositoryId = await readWorkflowRepositoryId(cwd);
+  if (!repositoryId) return null;
+  const branchResult = await run(
+    "git",
+    ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+    { timeoutMs: 15_000 },
+  );
+  const branchName = branchResult.code === 0 ? branchResult.stdout.trim() : "";
+  // "HEAD" is what `--abbrev-ref` answers on a detached HEAD, and it is not a branch. Reported
+  // as null so a caller cannot match a pull request against the literal string.
+  const branch = branchName && branchName !== "HEAD" ? branchName : null;
+  const headResult = await run(
+    "git",
+    ["-C", cwd, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    { timeoutMs: 15_000 },
+  );
+  // `FULL_SHA` rather than a 40-character literal, so a SHA-256 repository - whose HEAD is 64
+  // characters - reports a head instead of null. Null here means "unborn branch" to every
+  // caller, and an adapter that reads it waits for a commit that already exists.
+  const headOid = headResult.code === 0 && FULL_SHA.test(headResult.stdout.trim())
+    ? headResult.stdout.trim()
+    : null;
+  return { repositoryId, root, branch, headOid };
+}
+
+/**
+ * The repository a checkout belongs to, as git's common directory, or null when it is not one.
+ *
+ * Shared by the repository facts a completion adapter compares and by the resolution of an
+ * adoption ledger row, because the two must answer identically or a correct pull request reads
+ * as belonging elsewhere. `--path-format=absolute` is required: without it git answers a linked
+ * worktree with a RELATIVE path, which would compare unequal against the main checkout's
+ * absolute one and reinstate the bug this exists to close.
+ */
+export async function readWorkflowRepositoryId(cwd: string | null): Promise<string | null> {
+  if (!cwd) return null;
+  const result = await run(
+    "git",
+    ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { timeoutMs: 15_000 },
+  );
+  const dir = result.code === 0 ? result.stdout.trim() : "";
+  if (!dir) return null;
+  // Resolved, because the two sides are reached by different paths: a session's cwd is the
+  // string it was launched with, while a ledger row holds the repository root recorded at
+  // adoption. On macOS every `/tmp` and `/var/folders` checkout differs between the two
+  // spellings, and so does any repository behind a symlinked home or workspace.
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
 }
 
 export async function captureBoundaryChanged(

@@ -77,6 +77,10 @@ adoptInspectorPr({
   lastAttemptSha: null,
   mergedAt: null,
   mergeBlock: null,
+  observedHeadSha: null,
+  observedState: null,
+  observedAt: null,
+  headRefName: null,
   adoptedAt: 1,
   updatedAt: 1,
 });

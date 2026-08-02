@@ -16,6 +16,8 @@ import type {
   InspectorSeverity,
   NoteDisposition,
   PaneDialogSummary,
+  PendingTurn,
+  PendingTurnState,
   PlanDecision,
   PlanDecisionAnswer,
   ReviewActor,
@@ -856,6 +858,27 @@ export function openDb(): DatabaseSync {
       updated_at        INTEGER NOT NULL
     );
 
+    -- Human turns the daemon still owns. Unlike a harness's internal queue, rows here have
+    -- not been accepted by Claude or Codex and can therefore be recalled into the composer.
+    -- note_key follows session notes and work queues so a transient pane replacement does
+    -- not strand the outbox. A claimed row remains durable until delivery is acknowledged.
+    CREATE TABLE IF NOT EXISTS pending_turns (
+      id          TEXT PRIMARY KEY NOT NULL,
+      note_key    TEXT NOT NULL,
+      seq         INTEGER NOT NULL,
+      text        TEXT NOT NULL,
+      state       TEXT NOT NULL,
+      revision    INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      claimed_at  INTEGER,
+      last_error  TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_order
+      ON pending_turns(note_key, seq);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turns_sending
+      ON pending_turns(note_key) WHERE state = 'sending';
+
     CREATE TABLE IF NOT EXISTS foreman_queues (
       note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
       cwd             TEXT,               -- + branch: the re-attach hint when the key dies
@@ -923,6 +946,16 @@ export function openDb(): DatabaseSync {
       last_attempt_sha TEXT,             -- the head the backoff was earned on
       merged_at        INTEGER,          -- when YOLO mode landed it; null = we did not
       merge_block      TEXT,             -- why it has not merged itself (see shipping.ts)
+      -- What the LAST poll saw on GitHub, as opposed to what the last completed REVIEW was
+      -- about. head_sha above only advances when a review finishes, so it cannot answer
+      -- "has the branch reached the PR yet" - which is exactly the question a pull_request
+      -- session action has to answer before it lets downstream stages read fresh evidence.
+      -- Written every tick from the snapshot fetchPr already pays for, so this is the
+      -- durable form of a signal that was otherwise transient, not a second poller.
+      observed_head_sha  TEXT,
+      observed_state     TEXT,           -- OPEN | CLOSED | MERGED
+      observed_at        INTEGER,
+      head_ref_name      TEXT,           -- the branch the PR is opened FROM
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -1712,6 +1745,18 @@ function migrate(d: DatabaseSync): void {
   // fail-closed for rows written by older builds: their reviewed head must be run again
   // before it can authorize a merge.
   addColumn(d, "inspector_prs", "review_posture", "TEXT");
+  // What the last poll SAW, as against what the last review was about.
+  //
+  // All four nullable with no default, and NULL reads as "this build has not looked at this
+  // pull request since the columns existed" - which is the only truthful answer for a row
+  // written before them. It is also the fail-closed one for the reader that needs them: a
+  // `pull_request` session action waits when it cannot name the pull request's remote head,
+  // so an unobserved legacy row makes it wait for the next tick rather than completing on
+  // an assumption. The tick fills all four within one poll interval of the daemon starting.
+  addColumn(d, "inspector_prs", "observed_head_sha", "TEXT");
+  addColumn(d, "inspector_prs", "observed_state", "TEXT");
+  addColumn(d, "inspector_prs", "observed_at", "INTEGER");
+  addColumn(d, "inspector_prs", "head_ref_name", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -4218,6 +4263,314 @@ export function pruneUsageSources(cutoff: number): number {
   return Number(openDb().prepare(`DELETE FROM usage_sources WHERE updated_at < ?`).run(cutoff).changes);
 }
 
+// ---- Editable pending conversation turns ----
+
+interface PendingTurnRow {
+  id: string;
+  note_key: string;
+  seq: number;
+  text: string;
+  state: string;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+  claimed_at: number | null;
+  last_error: string | null;
+}
+
+const PENDING_TURN_STATE_SET = new Set<PendingTurnState>(["queued", "sending", "uncertain"]);
+
+function rowToPendingTurn(row: PendingTurnRow): PendingTurn {
+  const state = PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
+    ? (row.state as PendingTurnState)
+    : "uncertain";
+  return {
+    id: row.id,
+    noteKey: row.note_key,
+    seq: row.seq,
+    text: row.text,
+    state,
+    revision: row.revision,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    claimedAt: row.claimed_at,
+    lastError:
+      state === "uncertain" && !PENDING_TURN_STATE_SET.has(row.state as PendingTurnState)
+        ? `unrecognized pending-turn state: ${row.state}`
+        : row.last_error,
+  };
+}
+
+export function listPendingTurns(noteKey: string): PendingTurn[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM pending_turns WHERE note_key = ? ORDER BY seq ASC`)
+    .all(noteKey) as unknown as PendingTurnRow[];
+  return rows.map(rowToPendingTurn);
+}
+
+export function createPendingTurn(input: {
+  id: string;
+  noteKey: string;
+  text: string;
+  now: number;
+}): PendingTurn {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(input.noteKey) as unknown as { seq: number };
+    d.prepare(
+      `INSERT INTO pending_turns
+         (id, note_key, seq, text, state, revision, created_at, updated_at, claimed_at, last_error)
+       VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL)`,
+    ).run(input.id, input.noteKey, row.seq, input.text, input.now, input.now);
+    d.exec("COMMIT");
+    return {
+      id: input.id,
+      noteKey: input.noteKey,
+      seq: row.seq,
+      text: input.text,
+      state: "queued",
+      revision: 0,
+      createdAt: input.now,
+      updatedAt: input.now,
+      claimedAt: null,
+      lastError: null,
+    };
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** Claim only the FIFO head, and only while no delivery for this conversation is unresolved. */
+export function claimNextPendingTurn(noteKey: string, now: number): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const unresolved = d
+      .prepare(
+        `SELECT 1 AS present FROM pending_turns
+          WHERE note_key = ? AND state <> 'queued' LIMIT 1`,
+      )
+      .get(noteKey) as unknown as { present: number } | undefined;
+    if (unresolved) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const row = d
+      .prepare(
+        `SELECT * FROM pending_turns
+          WHERE note_key = ? AND state = 'queued' ORDER BY seq ASC LIMIT 1`,
+      )
+      .get(noteKey) as unknown as PendingTurnRow | undefined;
+    if (!row) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const changed = d
+      .prepare(
+        `UPDATE pending_turns
+            SET state = 'sending', revision = revision + 1, updated_at = ?,
+                claimed_at = ?, last_error = NULL
+          WHERE id = ? AND state = 'queued' AND revision = ?`,
+      )
+      .run(now, now, row.id, row.revision).changes;
+    if (changed !== 1) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    d.exec("COMMIT");
+    return {
+      ...rowToPendingTurn(row),
+      state: "sending",
+      revision: row.revision + 1,
+      updatedAt: now,
+      claimedAt: now,
+      lastError: null,
+    };
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** Move the newest still-editable row back to the composer. */
+export function recallPendingTurn(
+  noteKey: string,
+  id: string,
+  revision: number,
+): PendingTurn | null {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const newest = d
+      .prepare(
+        `SELECT * FROM pending_turns
+          WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1`,
+      )
+      .get(noteKey) as unknown as PendingTurnRow | undefined;
+    if (!newest || newest.id !== id || newest.revision !== revision) {
+      d.exec("COMMIT");
+      return null;
+    }
+    const changed = d
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND revision = ?`)
+      .run(id, revision).changes;
+    if (changed !== 1) {
+      d.exec("ROLLBACK");
+      return null;
+    }
+    d.exec("COMMIT");
+    return rowToPendingTurn(newest);
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+function transitionPendingTurn(
+  id: string,
+  revision: number,
+  from: PendingTurnState,
+  to: PendingTurnState,
+  now: number,
+  lastError: string | null,
+): PendingTurn | null {
+  const d = openDb();
+  const changed = d
+    .prepare(
+      `UPDATE pending_turns
+          SET state = ?, revision = revision + 1, updated_at = ?,
+              claimed_at = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_at END,
+              last_error = ?
+        WHERE id = ? AND state = ? AND revision = ?`,
+    )
+    .run(to, now, to, lastError, id, from, revision).changes;
+  if (changed !== 1) return null;
+  const row = d.prepare(`SELECT * FROM pending_turns WHERE id = ?`).get(id) as
+    | unknown as PendingTurnRow
+    | undefined;
+  return row ? rowToPendingTurn(row) : null;
+}
+
+export function releasePendingTurn(
+  id: string,
+  revision: number,
+  error: string,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "sending", "queued", now, error);
+}
+
+export function markPendingTurnUncertain(
+  id: string,
+  revision: number,
+  error: string,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "sending", "uncertain", now, error);
+}
+
+export function retryPendingTurn(
+  id: string,
+  revision: number,
+  now: number,
+): PendingTurn | null {
+  return transitionPendingTurn(id, revision, "uncertain", "queued", now, null);
+}
+
+export function deleteClaimedPendingTurn(id: string, revision: number): boolean {
+  return (
+    openDb()
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'sending' AND revision = ?`)
+      .run(id, revision).changes === 1
+  );
+}
+
+export function resolveUncertainPendingTurn(id: string, revision: number): boolean {
+  return (
+    openDb()
+      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'uncertain' AND revision = ?`)
+      .run(id, revision).changes === 1
+  );
+}
+
+export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): number {
+  const d = openDb();
+  if (preserveIds.length === 0) {
+    return Number(d.prepare(`DELETE FROM pending_turns WHERE note_key = ?`).run(noteKey).changes);
+  }
+  const placeholders = preserveIds.map(() => "?").join(", ");
+  return Number(
+    d.prepare(
+      `DELETE FROM pending_turns WHERE note_key = ? AND id NOT IN (${placeholders})`,
+    ).run(noteKey, ...preserveIds).changes,
+  );
+}
+
+/** Carry pre-binding outbox rows from a synthetic session id onto the real conversation. */
+export function rekeyPendingTurns(fromKey: string, toKey: string, now: number): boolean {
+  if (fromKey === toKey) return true;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const source = d
+      .prepare(`SELECT COUNT(*) AS n FROM pending_turns WHERE note_key = ?`)
+      .get(fromKey) as unknown as { n: number };
+    if (source.n === 0) {
+      d.exec("COMMIT");
+      return true;
+    }
+    const sending = d
+      .prepare(
+        `SELECT note_key FROM pending_turns
+          WHERE note_key IN (?, ?) AND state = 'sending' GROUP BY note_key`,
+      )
+      .all(fromKey, toKey) as unknown as Array<{ note_key: string }>;
+    if (sending.length > 1) {
+      d.exec("COMMIT");
+      return false;
+    }
+    const target = d
+      .prepare(`SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM pending_turns WHERE note_key = ?`)
+      .get(toKey) as unknown as { seq: number };
+    d.prepare(
+      `UPDATE pending_turns
+          SET note_key = ?, seq = seq + ?, updated_at = ?
+        WHERE note_key = ?`,
+    ).run(toKey, target.seq, now, fromKey);
+    d.exec("COMMIT");
+    return true;
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/** A daemon crash can leave delivery possible but unacknowledged, so never auto-resend it. */
+export function recoverSendingPendingTurns(now: number): number {
+  return Number(
+    openDb()
+      .prepare(
+        `UPDATE pending_turns
+            SET state = 'uncertain', revision = revision + 1, updated_at = ?,
+                last_error = 'Mission Control restarted during delivery; confirm before retrying.'
+          WHERE state = 'sending'`,
+      )
+      .run(now).changes,
+  );
+}
+
 // ---- Foreman session work queues ----
 
 interface QueueRow {
@@ -4715,6 +5068,10 @@ interface InspectorPrRow {
   last_attempt_sha: string | null;
   merged_at: number | null;
   merge_block: string | null;
+  observed_head_sha: string | null;
+  observed_state: string | null;
+  observed_at: number | null;
+  head_ref_name: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -4742,6 +5099,10 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     lastAttemptSha: r.last_attempt_sha,
     mergedAt: r.merged_at,
     mergeBlock: r.merge_block,
+    observedHeadSha: r.observed_head_sha,
+    observedState: (r.observed_state as InspectorPr["observedState"]) ?? null,
+    observedAt: r.observed_at,
+    headRefName: r.head_ref_name,
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -4761,8 +5122,9 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
           head_sha, review_posture, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
-          next_attempt_at, last_attempt_sha, merged_at, merge_block, adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          next_attempt_at, last_attempt_sha, merged_at, merge_block,
+          observed_head_sha, observed_state, observed_at, head_ref_name, adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -4787,6 +5149,10 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.lastAttemptSha,
       pr.mergedAt,
       pr.mergeBlock,
+      pr.observedHeadSha,
+      pr.observedState,
+      pr.observedAt,
+      pr.headRefName,
       pr.adoptedAt,
       pr.updatedAt,
     );
@@ -4819,6 +5185,10 @@ export function updateInspectorPr(
     lastAttemptSha?: string | null;
     mergedAt?: number | null;
     mergeBlock?: string | null;
+    observedHeadSha?: string | null;
+    observedState?: InspectorPr["observedState"];
+    observedAt?: number | null;
+    headRefName?: string | null;
   },
   now: number,
 ): void {
@@ -4831,7 +5201,9 @@ export function updateInspectorPr(
           SET state = ?, head_sha = ?, review_posture = ?, round = ?,
               last_reviewed_at = ?, last_error = ?, fail_count = ?, last_fail_kind = ?,
               next_attempt_at = ?, last_attempt_sha = ?,
-              merged_at = ?, merge_block = ?, updated_at = ?
+              merged_at = ?, merge_block = ?,
+              observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
+              updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -4847,6 +5219,10 @@ export function updateInspectorPr(
       next.lastAttemptSha,
       next.mergedAt,
       next.mergeBlock,
+      next.observedHeadSha,
+      next.observedState,
+      next.observedAt,
+      next.headRefName,
       now,
       key,
     );
@@ -4864,6 +5240,38 @@ export function loadOpenInspectorPrs(): InspectorPr[] {
   const rows = openDb()
     .prepare(`SELECT * FROM inspector_prs WHERE state = 'open' ORDER BY adopted_at ASC`)
     .all() as unknown as InspectorPrRow[];
+  return rows.map(rowToInspectorPr);
+}
+
+/**
+ * Every open adoption, plus the ones RETIRED since a given instant.
+ *
+ * The open set alone cannot answer a `pull_request` session action, and the reason is a
+ * one-tick race in the poller: it records what it saw - including `observed_state = 'CLOSED'` -
+ * and then, in the very next statement, sets `state = 'closed'` to retire the row. So a pull
+ * request closed while an action was waiting for it leaves the open set on the same tick that
+ * first observed the closure, and the adapter never sees the state it is supposed to BLOCK on.
+ * It would report an ordinary "no pull request yet" wait for a durable contradiction that
+ * needs a human, and wait for ever.
+ *
+ * Bounded by the caller's own instant rather than by a window constant, because there is a
+ * principled one available: an action asks about pull requests observed since its instruction
+ * was delivered. That keeps the extra set at approximately zero rows in the ordinary case,
+ * which matters - the caller resolves a repository identity per distinct root, and that is a
+ * git subprocess.
+ *
+ * Retired rows OLDER than the bound stay out. A pull request closed last year is history, not
+ * a contradiction this turn produced, and the branch's next pull request is a new row.
+ */
+export function loadAdoptedInspectorPrsSince(observedSince: number): InspectorPr[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE state = 'open'
+           OR (observed_at IS NOT NULL AND observed_at >= ?)
+        ORDER BY adopted_at ASC`,
+    )
+    .all(observedSince) as unknown as InspectorPrRow[];
   return rows.map(rowToInspectorPr);
 }
 

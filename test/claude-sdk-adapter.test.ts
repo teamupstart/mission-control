@@ -284,6 +284,7 @@ test("a follow-up reports whether Claude queued it behind an active turn", async
 
   // Turn one was seeded at launch, so the SDK accepts this message but will not present it
   // as a new transcript turn until the current result arrives.
+  assert.equal(await handle.sendIfIdle({ text: "must remain in Mission Control" }), null);
   assert.equal(await handle.send({ text: "after that, run the tests" }), "queued");
 
   query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
@@ -296,7 +297,7 @@ test("a follow-up reports whether Claude queued it behind an active turn", async
   query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
   query.emit({ type: "result", subtype: "success", session_id: "agent-1" });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(await handle.send({ text: "now idle" }), "started");
+  assert.equal(await handle.sendIfIdle({ text: "now idle" }), "started");
   query.end();
 });
 

@@ -197,3 +197,41 @@ test("every chip render site is one of the containers the escape was checked on"
       "class to CHIP_CONTAINERS so its label is held to the same rule.",
   );
 });
+
+/**
+ * Every card the strip lays out side by side, and the one property that keeps each of them the
+ * width it declares.
+ *
+ * `.wf-pipeline-strip` is a flex row whose content is routinely wider than the pane - that is
+ * what its `overflow-x: auto` is for - and flex-shrink runs BEFORE overflow ever scrolls. So a
+ * card with a `width` and no `flex: none` does not get the width it asked for; it collapses
+ * toward min-content while its own grid, sized `minmax(0, 1fr)`, lets the text spill out past
+ * the border. The Inspector footer was the one card missing it, and because it is the only one
+ * that draws a visible dashed edge, the collapse showed up as a ~40px sliver with the sentence
+ * printed beside it rather than inside it.
+ *
+ * Only visible on a pipeline long enough to overflow, which is why four stages had to ship
+ * before anyone saw it. This asserts the property directly so the next card cannot inherit the
+ * same gap.
+ */
+const STRIP_CARDS = [
+  "wf-pipeline-stage",
+  "wf-pipeline-terminus",
+  "wf-pipeline-inspector",
+];
+
+test("no card in the pipeline strip can be shrunk below the width it declares", () => {
+  const offenders = STRIP_CARDS.filter((cls) => {
+    const declaresWidth = declaredOn(cls, "width").length > 0;
+    const holds = declaredOn(cls, "flex").some((value) => /^none\b/.test(value))
+      || declaredOn(cls, "flex-shrink").some((value) => value.trim() === "0");
+    return declaresWidth && !holds;
+  });
+  assert.deepEqual(
+    offenders,
+    [],
+    "A strip card declares a `width` but nothing stopping flex from shrinking it. The strip "
+      + "scrolls rather than reflows, so the card has to keep its declared width: add "
+      + "`flex: none`. Offenders: " + offenders.join(", "),
+  );
+});

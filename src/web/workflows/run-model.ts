@@ -12,6 +12,7 @@ import type {
   WorkflowNodeAttempt,
   SessionActionAttemptState,
   SessionActionBlockCode,
+  SessionActionContinuationExpectation,
   SessionActionDeliveryAnchor,
   SessionActionWaitReason,
   WorkflowNodeAttemptState,
@@ -163,6 +164,31 @@ export function latestAttemptsFor(
     newest.set(attempt.nodeId, attempt);
   }
   return newest;
+}
+
+/** The newest full-workflow submission before the round being viewed, by node id. */
+export function previousFullWorkflowAttempts(
+  detail: WorkflowRunDetail,
+  submission: WorkflowSubmission | null,
+): Map<string, WorkflowNodeAttempt> {
+  if (!submission) return new Map();
+  const ordered = orderedSubmissions(detail);
+  const index = ordered.findIndex((candidate) => candidate.id === submission.id);
+  if (index < 1) return new Map();
+  const previous = ordered.slice(0, index).reverse()
+    .find((candidate) => candidate.mode === "full_workflow");
+  return latestAttemptsFor(detail, previous?.id ?? null);
+}
+
+/** Whether a prior attempt earned the green Inspector-repair bypass treatment. */
+export function priorAttemptPassed(
+  kind: "persona" | "check" | "session_action",
+  attempt: WorkflowNodeAttempt | undefined,
+): boolean {
+  if (!attempt) return false;
+  if (kind === "check") return checkOutcomeOf(attempt)?.status === "passed";
+  if (kind === "session_action") return sessionActionProgress(attempt)?.complete === true;
+  return verdictOf(attempt)?.verdict === "pass";
 }
 
 export function verdictOf(attempt: WorkflowNodeAttempt): PersonaVerdict | null {
@@ -328,6 +354,41 @@ export function inspectorOnlyRoundSentence(): string {
   return "Persona review bypassed for Inspector repair.";
 }
 
+const INSPECTOR_ONLY_SKIP_TOOLTIP =
+  "Skipped because this stage passed in the prior full workflow round. This Inspector repair round only rechecks Inspector.";
+
+/** A previously-passed stage intentionally bypassed by an Inspector-only repair round. */
+export function inspectorOnlySkipStatus(): PipelineStatus {
+  return {
+    tone: "passed",
+    label: "Skipped",
+    tooltip: INSPECTOR_ONLY_SKIP_TOOLTIP,
+    skipKind: "inspector_repair",
+  };
+}
+
+/**
+ * Whether one authored pipeline member can inherit the prior-pass treatment in an
+ * Inspector-only round.
+ *
+ * The Inspector-only policy proves why a valid, attempt-free node was bypassed. It says
+ * nothing about a malformed pipeline member, so a missing id or a stale id that resolves to
+ * no graph node must keep the ordinary waiting status instead of borrowing a green skip.
+ */
+export function canShowInspectorOnlySkip(
+  inspectorOnly: boolean,
+  memberNodeId: string | null,
+  nodeExists: boolean,
+  hasCurrentAttempt: boolean,
+  passedPriorFullRound: boolean,
+): boolean {
+  return inspectorOnly
+    && memberNodeId !== null
+    && nodeExists
+    && !hasCurrentAttempt
+    && passedPriorFullRound;
+}
+
 const REVIEWER_STATUSES: Record<
   WorkflowNodeAttemptState | PersonaVerdict["verdict"],
   PipelineStatus
@@ -392,8 +453,20 @@ const CHECK_OUTCOME_STATUSES: Record<WorkflowCheckStatus, PipelineStatus | null>
   // Ran and succeeded: the ordinary verdict mapping already says it correctly.
   passed: null,
   failed: null,
-  skipped: { tone: "waiting", label: "Skipped", degraded: true },
-  unavailable: { tone: "waiting", label: "Not run", degraded: true },
+  skipped: {
+    tone: "waiting",
+    label: "Skipped",
+    tooltip: "Skipped because no command is configured for this check.",
+    skipKind: "unconfigured_check",
+    degraded: true,
+  },
+  unavailable: {
+    tone: "waiting",
+    label: "Not run",
+    tooltip: "This check could not run. Open the run details for its recorded reason.",
+    skipKind: "unavailable_check",
+    degraded: true,
+  },
 };
 
 /**
@@ -500,9 +573,26 @@ export function stageStatus(
     if (notRun === 0) {
       return { tone: "passed", label: members.length > 1 ? "All passed" : "Passed" };
     }
+    const skipped = members.filter((status) =>
+      status.skipKind === "unconfigured_check").length;
+    const allSkipped = skipped === members.length;
+    const tooltip = allSkipped
+      ? "Skipped because no command is configured for the checks in this stage."
+      : "One or more checks in this stage did not run. Hover each check for its reason.";
     return notRun === members.length
-      ? { tone: "waiting", label: notRun > 1 ? "None ran" : "Did not run", degraded: true }
-      : { tone: "waiting", label: `Passed, ${notRun} not run`, degraded: true };
+      ? {
+          tone: "waiting",
+          label: allSkipped ? "Skipped" : notRun > 1 ? "None ran" : "Did not run",
+          tooltip,
+          ...(allSkipped ? { skipKind: "unconfigured_check" as const } : {}),
+          degraded: true,
+        }
+      : {
+          tone: "waiting",
+          label: `Passed, ${notRun} ${skipped === notRun ? "skipped" : "not run"}`,
+          tooltip,
+          degraded: true,
+        };
   }
   return { tone: "waiting", label: "Waiting" };
 }
@@ -666,6 +756,16 @@ const ACTION_WAIT_SENTENCES: Record<SessionActionWaitReason, string> = {
   needs_operator: "The session is waiting on an answer from you before it can continue.",
   awaiting_proof: "The turn finished. Waiting for the proof this action requires.",
   capturing: "Capturing fresh evidence before the downstream stages run.",
+  awaiting_pull_request:
+    "The turn finished. Waiting for a pull request on this branch that Mission Control opened.",
+  awaiting_pushed_head:
+    "The pull request is open. Waiting for the reviewed commit to reach it.",
+  pull_request_wrong_repository:
+    "This turn opened a pull request in a different repository, so it is not the one this "
+    + "action is for. Open one on this repository, or reset the run.",
+  pull_request_wrong_branch:
+    "This turn opened a pull request from a different branch, so it does not carry the "
+    + "reviewed commit. Open one from this branch, or reset the run.",
 };
 
 export function actionWaitSentence(reason: SessionActionWaitReason): string {
@@ -695,6 +795,20 @@ const ACTION_WAIT_STATUSES: Record<SessionActionWaitReason, PipelineStatus> = {
   needs_operator: { tone: "waiting", label: "Needs you" },
   awaiting_proof: { tone: "running", label: "Verifying" },
   capturing: { tone: "running", label: "Capturing evidence" },
+  // Both are `awaiting_proof` with the pull request's own vocabulary, and both stay in the
+  // running tone: neither is a gate a human has to clear. The split exists because the two
+  // point at different work - one is "no pull request yet", the other is "the commit has not
+  // reached the pull request" - and a single "Verifying" chip left an operator with no way to
+  // tell a session that never ran the skill from one whose push had not landed.
+  awaiting_pull_request: { tone: "running", label: "Awaiting PR" },
+  awaiting_pushed_head: { tone: "running", label: "Awaiting push" },
+  // The one pair here that is NOT the running tone. Everything else in this table is the
+  // runtime working and needing nothing; these two are a turn that finished and put its pull
+  // request somewhere else, which no amount of waiting corrects on its own. Amber-as-attention
+  // is the tone the fleet already uses for that - and deliberately not "failed", because
+  // nothing has judged the work and a later adoption can still resolve it.
+  pull_request_wrong_repository: { tone: "waiting", label: "PR on another repo" },
+  pull_request_wrong_branch: { tone: "waiting", label: "PR on another branch" },
 };
 
 /**
@@ -743,6 +857,9 @@ const ACTION_BLOCK_SENTENCES: Record<SessionActionBlockCode, string> = {
   delivery_uncertain: "The write may or may not have landed. Check the pane, then resolve it below.",
   capture_failed: "The turn finished, but fresh evidence could not be captured afterwards.",
   expectation_unmet: "The turn finished without the proof this action's completion requires.",
+  pull_request_closed:
+    "The pull request for this branch is closed or already merged, so this action cannot "
+    + "finish against it.",
 };
 
 export function actionBlockSentence(code: SessionActionBlockCode): string {
@@ -787,6 +904,15 @@ export interface SessionActionProgress {
   anchor: SessionActionDeliveryAnchor | null;
   pickedUpAt: number | null;
   settledAt: number | null;
+  /**
+   * What the completion adapter requires of the capture, or has already proven.
+   *
+   * The same field on both durable shapes, which is what lets one card explain a waiting
+   * action and a finished one without asking which it is reading. `{ kind: "none" }` and null
+   * are both "nothing to show" - a `session_turn` action constrains nothing, and a row written
+   * by an older daemon recorded nothing.
+   */
+  expectation: SessionActionContinuationExpectation | null;
   /** The action ran to completion and authorized a continuation segment. */
   complete: boolean;
 }
@@ -802,6 +928,7 @@ export function sessionActionProgress(
       anchor: waiting.anchor,
       pickedUpAt: waiting.pickedUpAt,
       settledAt: waiting.settledAt,
+      expectation: waiting.expectation,
       complete: false,
     };
   }
@@ -813,8 +940,22 @@ export function sessionActionProgress(
     anchor: done.data.anchor,
     pickedUpAt: done.data.pickedUpAt,
     settledAt: done.data.settledAt,
+    expectation: done.data.expectation,
     complete: true,
   };
+}
+
+/**
+ * The pull request an action proved, or null when this action proved no such thing.
+ *
+ * One narrowing helper rather than a `expectation?.kind === "pull_request"` check at each
+ * surface, so the ladder, the peek and the run card cannot disagree about when there is a
+ * pull request to name.
+ */
+export function provenPullRequest(
+  state: SessionActionProgress | null,
+): Extract<SessionActionContinuationExpectation, { kind: "pull_request" }> | null {
+  return state?.expectation?.kind === "pull_request" ? state.expectation : null;
 }
 
 export function attemptStateLabel(state: WorkflowNodeAttemptState): string {

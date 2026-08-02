@@ -192,6 +192,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
     cost: null,
     goal: { text: "Add retry handling.", source: "model", updatedAt: now },
     queue: null,
+    pendingTurns: [],
     orphanedQueue: null,
     inspector: null,
     paneDialog: null,
@@ -239,7 +240,13 @@ const goalRecord = {
  * would make the assertions flaky rather than just slow.
  */
 async function runWorker(
-  opts: { port: number; claudeBin: string; claudeLog: string; ms: number },
+  opts: {
+    port: number;
+    claudeBin: string;
+    claudeLog: string;
+    ms: number;
+    until?: () => boolean;
+  },
 ): Promise<string> {
   let out = "";
   const child: ChildProcess = spawn(
@@ -265,7 +272,10 @@ async function runWorker(
   child.stderr?.setEncoding("utf8");
   child.stdout?.on("data", (d: string) => (out += d));
   child.stderr?.on("data", (d: string) => (out += d));
-  await sleep(opts.ms);
+  const deadline = Date.now() + opts.ms;
+  do {
+    await sleep(Math.min(50, Math.max(1, deadline - Date.now())));
+  } while (Date.now() < deadline && !opts.until?.());
   child.kill("SIGTERM");
   await new Promise<void>((resolve) => {
     const hard = setTimeout(() => child.kill("SIGKILL"), 3000);
@@ -296,7 +306,6 @@ function cfg(over: Record<string, unknown> = {}): Record<string, unknown> {
     ...over,
   };
 }
-
 
 test("a daemon blip on the queue read never double-fires a wrap-up, and never stalls triage", async () => {
   // The bug this pins: `client.queue()` used to coerce a throw to `null`, and `null` is

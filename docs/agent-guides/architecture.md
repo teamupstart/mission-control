@@ -91,3 +91,5 @@ Terminal vendors are hidden behind `MULTIPLEXERS`, `EMULATORS`, and `bindPane`. 
 The Inspector stays in the daemon so it is present in packaged Electron builds and its state survives restarts.
 
 The Inspector comment marker `mission-inspector:v1` is append-only because it already exists on GitHub. Parse a future version alongside it rather than replacing it.
+
+The Inspector's poll is also the only place a PR's remote state is READ. Its tick writes what it saw - `observed_head_sha`, `observed_state`, `head_ref_name` - onto the adoption ledger beside `head_sha`, which records only what the last completed review was about. That split matters: "has the branch reached the pull request yet" is a question the review head cannot answer, and it is the question a `pull_request` session action must answer before downstream stages read fresh evidence. Anything else that needs a PR's remote state reads those columns; adding a second poller would double the API cost of every open PR to answer a question this one already answers.

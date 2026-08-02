@@ -23,10 +23,14 @@ import type {
 } from "../src/shared/workflow.ts";
 import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
 import { WorkflowRunView, WorkflowRunsEmpty } from "../src/web/workflows/WorkflowRuns.tsx";
-import { workflowRunLoadError } from "../src/web/workflows/run-model.ts";
+import {
+  inspectorOnlySkipStatus,
+  workflowRunLoadError,
+} from "../src/web/workflows/run-model.ts";
 import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
 import type { Session } from "../src/shared/types.ts";
+import { tooltipLabels } from "./helpers/markup.ts";
 
 /**
  * Graph identities are real UUIDs on purpose: the leak this file guards against is a node
@@ -741,6 +745,11 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
     evidence: { prHeadSha: "newhead0123456789" },
     prHeadSha: "newhead0123456789",
   });
+  const prior = {
+    ...base.submissions[1]!,
+    status: "completed" as const,
+    completedAt: 8,
+  };
   const html = render({
     ...base,
     summary: {
@@ -762,7 +771,19 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
       },
     },
     run: { ...base.run, status: "waiting_for_new_head", currentPhase: "inspector_findings" },
-    submissions: [...base.submissions, inspectorOnly],
+    submissions: [base.submissions[0]!, prior, inspectorOnly],
+    attempts: [
+      ...base.attempts.filter((attempt) => attempt.submissionId !== prior.id),
+      attempt("prior-quality", prior.id, NODE.quality, snapshot("p-quality", "Quality reviewer"), {
+        verdict: passVerdict,
+      }),
+      attempt("prior-security", prior.id, NODE.security, snapshot("p-security", "Security reviewer"), {
+        verdict: passVerdict,
+      }),
+      attempt("prior-docs", prior.id, NODE.docs, snapshot("p-docs", "Documentation steward"), {
+        verdict: passVerdict,
+      }),
+    ],
     inspectorGate: {
       state,
       inspector: { enabled: true, mode: "live", posture: "live" },
@@ -830,6 +851,8 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.match(html, /Open Inspector settings/);
   assert.match(html, /Open PR/);
   assert.match(html, /This Inspector repair round ran no Personas/);
+  assert.match(html, /wf-pipeline-status workflow-passed wf-status-explained/);
+  assert.ok(tooltipLabels(html).includes(inspectorOnlySkipStatus().tooltip!));
   assertNoGraphIds(html);
 });
 

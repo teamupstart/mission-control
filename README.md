@@ -103,6 +103,19 @@ npm install
 npm run dev        # daemon + Vite, open http://127.0.0.1:5173
 ```
 
+Vite serves within a moment; the daemon takes a few seconds longer, and requests the
+dashboard makes in that window have nowhere to go. That is expected, and it prints one
+line rather than a stack per request:
+
+```
+8:15:10 AM [vite] daemon at http://127.0.0.1:7317 is not answering - proxied requests fail until it is up (further failures are summarized)
+8:15:14 AM [vite] daemon at http://127.0.0.1:7317 is answering again - 17 requests failed while it was down
+```
+
+The same pair appears whenever a server edit restarts the daemon under `tsx watch`. Any
+proxy failure other than a refused connection while the daemon is not listening still prints
+in full.
+
 Discovery works immediately - your live sessions show up with coarse grey
 "running" status. To light up precise **working / idle / needs-input** states
 (blue / green / amber) and the review channel, add the two optional integrations
@@ -332,11 +345,34 @@ through a pane. That is a session's **runtime**, and there are two.
   is a bracketed paste and an Enter; a permission prompt is a menu read off the screen.
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
   `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
-  There is no pane. A submitted message is *acknowledged* as a new turn, added to Codex's
-  current turn, or queued behind Claude's current turn. Both the conversation reply box and
-  the compact Send box show that disposition, so accepted input does not disappear while an
-  agent is busy. A permission prompt or an approval arrives as data - what is being asked,
-  and the exact rows to offer - which the card renders directly.
+  There is no pane. A permission prompt or an approval arrives as data, including what is
+  being asked and the exact rows to offer, which the card renders directly.
+
+Human messages from either conversation composer first enter Mission Control's **editable
+outbox**, on both runtimes. The full message appears as a `You · queued` turn instead of a
+count or a hidden driver queue. Press <kbd>↑</kbd> in an empty composer, or choose **Edit**,
+to remove the newest queued message atomically and put its exact text back in the box. Other
+queued messages stay in FIFO order.
+
+Delivery begins only after the session positively reports idle and no question is covering
+its input. An Agent SDK driver rechecks that condition at its own acceptance boundary, so a
+Codex message never becomes an implicit steer and a Claude message never enters Claude's
+private follow-up FIFO while it is still shown as editable. A terminal session uses the
+same Stop and task-complete lifecycle signals, plus passive transcript or rollout state,
+then waits for prompt-pickup evidence after pasting. A refusal before any terminal text was
+written returns the row to `queued`. If text may have landed but pickup cannot be proved,
+the row becomes `delivery uncertain` and offers **Retry** and **Mark sent** instead of
+risking a duplicate.
+
+The outbox is stored in SQLite under the native conversation id when Mission Control knows
+it, and otherwise under the discovered session id. It survives browser and daemon restarts.
+A row that was being delivered when the daemon stopped recovers as `delivery uncertain` and
+is never resent automatically. Reset discards rows that are still safely queued along with
+the conversation drafts and work they described. If a claimed row may already have crossed
+the runtime boundary, reset retains it as `delivery uncertain` for explicit resolution.
+Work Queue automation, its explicit wrap-up send, and a human-approved Foreman draft retain
+their direct acknowledged delivery path because their durable audit records claim the text
+was delivered.
 
 For dispatched Claude and Codex sessions, **Agent SDK is the recommended runtime**: it
 replaces probabilistic paste-and-Enter delivery and screen-scraped questions with
@@ -620,10 +656,11 @@ with `MISSION_CODEX_HOOK`), and passes them on the command line. So a **dispatch
 session is instrumented from its first breath, and a Codex session **you** started
 yourself sends nothing but still reports confirmed **working** and **idle** states from
 explicit lifecycle markers in its rollout file. That passive evidence is enough to place
-the session in the right board column; it does not enable readiness, prompt delivery,
-task handover, queues, or other safeguards that specifically require live hooks. If the
-bridge bundle is missing - `npm run build` never ran - the launch drops the overrides and
-runs uninstrumented rather than failing.
+the session in the right board column and lets the editable outbox wait for confirmed idle
+before delivering a human message. It does not enable task handover, work queues, or other
+safeguards that specifically require live hooks. If the bridge bundle is missing because
+`npm run build` never ran, the launch drops the overrides and runs uninstrumented rather
+than failing.
 
 Those overrides ride with `--dangerously-bypass-hook-trust`, and never without them.
 Codex would otherwise stop at a trust prompt for hooks the dashboard itself just injected,
@@ -772,8 +809,9 @@ few sweeps rather than lingering as rows nothing can reach.
 
 **The reply box is closed while a menu is up**, deliberately. A dialog isn't a text box: it
 discards typed characters, and the Enter that follows confirms whichever row was already
-highlighted - so a reply sent at a menu doesn't fail, it silently answers with the default
-under your name. The buttons are the only safe way to answer one.
+highlighted. The outbox rechecks for a dialog at the terminal write boundary, so a queued
+reply waits if a menu appears after the card's last refresh. The buttons are the only way to
+answer one.
 
 Because the card's copy of the menu is up to one sweep old, a click sends back the **label**
 you were shown and the daemon re-reads the pane before pressing anything: if the screen has
@@ -925,6 +963,10 @@ later instructions also update the tactical focus immediately. The daemon then r
 queue in capture order, one instruction at a time, using the prompt and a small conversation
 window. Rapid prompts are never coalesced, so an objective change cannot disappear behind later
 steering.
+
+An instruction still in the editable pending-turn outbox has not reached this pipeline. Once
+the agent accepts it, the instruction leaves the outbox, enters the reconciliation queue, and
+can update the card's tactical focus immediately.
 
 Each reconciliation records one of five relationships:
 
@@ -2331,7 +2373,7 @@ your copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 6 are preserved for bindings that already pin them, and version 7 is current. There is
+through 7 are preserved for bindings that already pin them, and version 8 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -2343,7 +2385,7 @@ command's own output and **no Persona runs**.
 
 Those checks are live from version 3 onward, on a machine where you have switched checks on and
 configured a command - the graph did not change, the runtime behind it arrived. Where you have
-not, the gates report Not run and pass, and versions 3 through 6 follow the same Persona review
+not, the gates report Not run and pass, and versions 3 onward follow the same Persona review
 path version 2 does while preserving the deterministic stage in the graph. The
 [Check nodes](#check-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
@@ -2353,18 +2395,32 @@ Conformance Judge is stage 2, the cheap gate: there is no point spending three d
 on a change that has already drifted from what was asked. Code Risk Reviewer, Test Evidence
 Auditor and Documentation Steward are stage 3, running **in parallel on the same submission**
 and aggregating into one combined repair packet at their All-pass Join. Every fail returns to
-the session for repair. A passed review is gated on the
+the session for repair.
+
+**Version 8 adds a fourth stage: the built-in [Pull Request action](#pull-request-actions),
+after the reviews and before End.** That is a change of *where the pull request comes from*.
+Versions 5 through 7 reach End first and then have the completion policy type a handoff, so the
+run is already successful at the moment the pull request is asked for and nothing proves one
+arrived. In version 8 the pull request is an authored stage: it types the same skill, and its
+`complete` route reaches End only once an open pull request has been observed at the commit the
+continuation captured. End still means the authored graph succeeded - and by the time the
+Inspector claims that success there is provably something for it to review. Because the graph
+cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
+pull request has met a state its own preparation would not fix, and typing a second handoff
+would ask for one the run already has.
+
+A passed review is then gated on the
 [Inspector final gate](#inspector-final-gate) finding nothing on the pull request:
-in versions 4 through 6, findings require the session to fix, verify, commit and push, then
+in versions 4 onward, findings require the session to fix, verify, commit and push, then
 Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
-through 3 retain their original whole-workflow restart behavior. Versions 5 and 6
+through 3 retain their original whole-workflow restart behavior. Versions 5 through 7
 automatically return a passed, PR-less review to the session to prepare the pull request;
-earlier versions offer **Prepare PR in session** instead. Both paths explicitly invoke the
-bound harness's **Pull Request** skill; if the skill is disabled, its link has drifted, or
-the live session has not loaded the current skill generation yet, the handoff refuses
-without advancing the run or falling back to an ordinary prose instruction.
+versions 1 through 4 offer **Prepare PR in session** instead. Every one of those paths
+explicitly invokes the bound harness's **Pull Request** skill; if the skill is disabled, its
+link has drifted, or the live session has not loaded the current skill generation yet, the
+handoff refuses without advancing the run or falling back to an ordinary prose instruction.
 Versions 2 through 5 retain their
-Manual trigger and Live delivery defaults, while current version 6 defaults to Foreman
+Manual trigger and Live delivery defaults, while versions 6 onward default to Foreman
 complete and Live. Live still requires the subsystem switch and repository allowlist, and
 every binding can override the version default. Version 1 retains its original Manual and
 Preview defaults for existing pinned bindings.
@@ -2392,13 +2448,15 @@ to, so an existing binding keeps running exactly the graph it was bound to until
 Versions 3 through 7 are that rule in practice. Version 3 added the deterministic check
 stage; version 4 preserves that graph and changes only the immutable Inspector-findings
 policy; version 5 automatically prepares a missing pull request; version 6 makes Foreman
-complete the default trigger; and version 7 changes only the immutable
-[repair-resumption policy](#repair-resumption) to `auto`. Every earlier version remains in the
+complete the default trigger; version 7 changes only the immutable
+[repair-resumption policy](#repair-resumption) to `auto`; and version 8 appends the Pull
+Request stage and sets its missing-PR policy to `wait`. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
-binding defaults - including versions 1 through 6, which stay `manual` and still wait for you.
-New bindings take version 7 because it is current. Adopting the newer version on an existing
-binding means creating a new binding, which is the same gesture adopting any newly published
-version already requires.
+binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
+and versions 1 through 7, none of which carries an action node or has its post-End handoff
+changed. New bindings take version 8 because it is current. Adopting the newer version on an
+existing binding means creating a new binding, which is the same gesture adopting any newly
+published version already requires.
 
 The graph is not stored in your database at all, which is what makes all of that true without
 a seeding step that could half-run. It is compiled into the build beside the Persona documents.
@@ -2503,7 +2561,12 @@ from the browser's own copy of the list:
 | Completion | What the daemon must observe |
 |---|---|
 | Session turn finishes | The session verifiably picked the instruction up, then settled. A pre-existing idle never counts. |
-| Pull request is opened and verified | The same turn boundary plus durable matching pull-request provenance. **Not available yet** - the verified adapter is a later change, so this build offers it nowhere and refuses to publish a workflow that names it. |
+| Pull request is opened and verified | The same turn boundary, plus an **open pull request Mission Control adopted, on this repository and this branch, observed at the exact commit the continuation captured**. See [Pull request actions](#pull-request-actions). |
+
+A completion is **code with proof and recovery tests**, not a string you type or a skill you
+name. That is why the list comes from the daemon: a build that cannot prove a completion
+offers it nowhere, and refuses to publish a workflow that names it, rather than running a
+stage whose guarantee nothing keeps.
 
 An action stage may sit anywhere a stage may sit, and a pipeline may hold more than one. When
 the turn finishes, Mission Control captures **fresh evidence** and resumes from that action's
@@ -2515,6 +2578,71 @@ Publishing snapshots the action exactly as it snapshots a Persona - name, descri
 instruction, required skill, completion, source id and source revision. Editing or archiving
 the source afterwards cannot reach a version already published; version history marks the
 snapshot outdated or its source archived and shows the exact instruction that version froze.
+
+#### Pull request actions
+
+The shipped **Pull Request** action invokes the [`pull-request`](#skills) skill and completes
+only on durable proof. Duplicating it keeps that completion and that skill, so you can rewrite
+the instruction without losing the verification.
+
+What the daemon has to see before the stages below it run, and before End:
+
+1. the packet was confirmed sent, something newer than the send anchor proved the session read
+   it, and the session has since settled without a question outstanding;
+2. Mission Control has **adopted** a pull request - the same ledger the
+   [Inspector](#inspector) reviews from, which only records pull requests it can prove are
+   ours;
+3. that pull request is on the **same repository root and the same branch** as the bound
+   session's checkout;
+4. it is **open**, and the last poll saw its remote head at the **exact commit** the
+   continuation captured.
+
+None of that can be satisfied by the session saying so. A pull request URL on the session card
+is a lookup hint and nothing more, the branch name is not proof, and a pull request merely
+existing is not proof. The head comparison is between full object ids on both sides: evidence
+capture records an abbreviated commit, so the abbreviation is resolved against the repository's
+object database rather than prefix-matched.
+
+**Mission Control never polls GitHub for this.** The Inspector's existing poller is the only
+thing that talks to a provider, and the action reads what it wrote down - which is also why a
+freshly opened pull request can take up to one poll interval to be seen.
+
+While it waits, the run says which of four things it is waiting for, because the remedies
+differ:
+
+| State | What it means |
+|---|---|
+| **Awaiting PR** | The turn finished and no adopted pull request names this repository and branch yet. |
+| **Awaiting push** | The pull request is open, and the reviewed commit has not reached it. |
+| **PR on another repo** | This turn opened a pull request, and it is against a different repository. |
+| **PR on another branch** | This turn opened a pull request on this repository, from a different branch. |
+
+The last two are the ones worth having separately. "No pull request yet" and "a pull request
+was opened somewhere else" look identical from the outside and are opposite problems - one is
+work that has not finished, the other is work that finished and landed off target - so an
+operator told only "awaiting" would keep watching for something that already exists where they
+are not looking. Both are still waits rather than blocks: a turn that opened a stray pull
+request first and the right one second recovers on its own, with nothing retyped.
+
+Mission Control claims a stray only when it can prove one: the pull request has to have been
+adopted from the bound session after this action's instruction was delivered, and its
+repository or branch has to be **known and different**. A pull request the poller has not
+looked at yet has neither recorded, and that reads as *Awaiting PR* - the ordinary case for one
+opened seconds ago - rather than as your session's mistake.
+
+If the checkout moves between the proof and the capture - an agent that pushed and then kept
+working - the captured segment is held to the commit it actually holds, and the action waits
+for the pull request to catch up with *that*. It never sends a second instruction to get there.
+
+One state blocks instead of waiting: a pull request at the reviewed commit that is **closed or
+merged**. Nothing the daemon waits for reopens it, so the run stops for you to reopen it,
+replace it, or reset the run. That holds for a pull request closed *while the action was
+waiting*, which is the ordinary way it happens. Everything else - a provider that could not be reached, a
+checkout that could not be read, a pull request on the wrong branch - waits, because a later
+observation can still change the answer.
+
+A blocked action is never a review failure. It writes no verdict, sends no repair packet back
+to the session, and spends no repair round.
 
 ### Check nodes
 
@@ -2712,7 +2840,10 @@ refreshes from the compact SSE summary's `updatedAt` signal; the SSE payload its
 The **Runs** tab reads a run on **the pipeline it was authored on** - the same Session,
 stages and End the Pipeline view draws, with a live status on every member. Reviewers show
 queued, reviewing, passed, or changes requested; Checks show their corresponding command
-state. A stage of two or more members shows each one and passes only when all do. A version
+state. Inspector-only repair rounds show their previously passed stages as green **Skipped**;
+the tooltip explains that only Inspector is being rerun. A check skipped because its command
+is not configured stays amber, with its reason available on the check and stage status.
+A stage of two or more members shows each one and passes only when all do. A version
 drawn freehand in the Graph view is not a pipeline, so its run falls back to that graph,
 read-only, carrying the same statuses. No surface prints a node id. The same fixed
 **Inspector** footer the author saw follows End here, carrying the gate's live state.
@@ -2729,8 +2860,17 @@ because it judged nothing:
 | Session working | Pickup proven, and the turn has not settled. |
 | Needs you | Picked up and parked on a question. Never a settled turn. |
 | Verifying | Settled, and the completion this action asks for wants evidence it does not have yet. |
+| Awaiting PR | Settled, and no adopted pull request names this repository and branch yet. |
+| Awaiting push | The pull request is open, and the reviewed commit has not reached it. |
+| PR on another repo | This turn opened a pull request against a different repository. |
+| PR on another branch | This turn opened a pull request from a different branch. |
 | Capturing evidence | The completion is satisfied and the fresh evidence is being captured. |
 | Complete | The turn finished and the downstream evidence exists. |
+
+A finished [Pull Request action](#pull-request-actions) also names **what it proved**: the pull
+request it verified, and the short commit its remote head was observed at. That link appears
+only once the proof exists - offering to open a pull request nothing has verified would be the
+claim this whole completion refuses to make.
 | Could not run | A delivery or infrastructure problem, stated as a sentence. Never a repair packet, never a spent round. |
 
 Each waiting or blocked action also carries the sentence behind its chip, and its own card
@@ -3714,8 +3854,8 @@ answerable without reading a log.
 
 ## Half-written text is kept
 
-A session card **keeps what you've typed** until it's actually delivered. Three of its
-boxes hold a draft:
+A session card **keeps what you've typed** until it is successfully submitted. Conversation
+messages then remain visible in the editable outbox until delivery. Three boxes hold a draft:
 
 - the **Work queue** panel's add box,
 - the **reply** box under the transcript on an expanded card, and
@@ -3737,14 +3877,24 @@ card, and **Cancel** / <kbd>Esc</kbd> on the send box. Glance at the grid mid-se
 come back - your text is still there, exactly as the [dispatch form](#dispatch-an-agent)
 treats a half-written task.
 
-A draft is forgotten on **successful delivery**: a send that lands for the reply and
-send boxes, an **Add** that lands for the queue box. **Resetting the session** also forgets
-the reply and send drafts - a reset discards the task those boxes were replying to, so their
-half-written text goes with it, and an open reply box empties on the spot rather than keeping
-stale text behind the closing modal. The **queue add box is kept** through a reset, since it
-composes new work rather than a reply to the discarded task. A send that *fails* deliberately
-keeps your text - it's all you have and you're about to retry it. Drafts are per session and
-never bleed from one card into another.
+A draft is forgotten on **successful submission**: a send that creates a durable pending
+turn for the reply and send boxes, or an **Add** that lands for the queue box. **Resetting
+the session** also forgets the reply and send drafts - a reset discards the task those boxes
+were replying to, so their half-written text goes with it, and an open reply box empties on
+the spot rather than keeping stale text behind the closing modal. The **queue add box is
+kept** through a reset, since it composes new work rather than a reply to the discarded task.
+A send that *fails* deliberately keeps your text - it's all you have and you're about to retry
+it. Drafts are per session and never bleed from one card into another.
+
+Once **Send** succeeds, the composer draft becomes a durable queued turn. The full conversation
+turn stays visible beneath the conversation while Mission Control owns it. The compact Send
+surface shows a single-line, ellipsized preview of that same queued text. Recalling it with
+<kbd>↑</kbd> moves the full text back into the same draft system with the caret at the end.
+If the recall response is lost after the daemon may have committed it, the browser restores
+the exact text it already held and warns you to confirm the queued copy disappears before
+sending; an explicit stale-revision conflict leaves the composer untouched.
+Recalled attachment uploads return as their already-inserted file paths; the thumbnail strip
+is not reconstructed.
 
 Two things worth knowing:
 
@@ -4269,6 +4419,7 @@ shortcut works in every layout:
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
+| <kbd>↑</kbd> | Recall the newest editable queued message into the box, with the caret at the end. The box must be empty and have no attachments | Empty message composer |
 | <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. If its conversation is not visible, reveals it first, then opens the terminal chooser | Selected session |
 | <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or reveal the conversation and choose a terminal in which to resume it | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
@@ -4580,11 +4731,11 @@ task's durable record, so a later prompt cannot outrun it; if several of the age
 episodes merged, the **most recent** merge is the one recorded.
 
 An idle agent cannot tell you whether it is finished or merely waiting to be typed at, so
-that conclusion is **reversible**: if you send a follow-up prompt, the task goes back to
-running and drops the outcome. Only conclusions Mission Control drew from idleness are
-undone this way - an outcome you recorded yourself is never overwritten. This correction
-is deliberately limited to the current daemon run; after a restart, a completed task
-stays done.
+that conclusion is **reversible**: once a follow-up prompt is delivered, the task goes back
+to running and drops the outcome. Only conclusions Mission Control drew from idleness are
+undone this way - an outcome you recorded yourself is never overwritten. This correction is
+deliberately limited to the current daemon run; after a restart, a completed task stays
+done.
 
 #### A merge that lands when nobody is watching
 

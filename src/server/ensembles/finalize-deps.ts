@@ -2,7 +2,12 @@ import type { Registry } from "../registry.ts";
 import { TaskIdCollisionError, type TaskManager } from "../tasks.ts";
 import type { WorkflowManager } from "../workflows/manager.ts";
 import { injectPrompt, paneAcceptsPrompt, resetToCommit } from "../actions.ts";
-import { driverClearFor, resetSession, type SdkClearer } from "../reset.ts";
+import {
+  driverClearFor,
+  resetSession,
+  type PendingTurnResetBoundary,
+  type SdkClearer,
+} from "../reset.ts";
 import { resolveEnsembleRef } from "../git/ensemble-snapshot.ts";
 import { run } from "../util/exec.ts";
 import { SUBMIT_ENSEMBLE_RESULT_TOOL } from "./submission-tool.ts";
@@ -31,6 +36,8 @@ export function createFinalizeDeps(deps: {
   workflows: WorkflowManager;
   /** Present so an embedded winner's context can be cleared - see `restoreWinner`. */
   sdk?: SdkClearer;
+  /** Coordinates pending delivery with the winner reset boundary. */
+  pendingTurns?: PendingTurnResetBoundary;
 }): EnsembleFinalizeDeps {
   const { registry, tasks, workflows } = deps;
 
@@ -100,6 +107,7 @@ export function createFinalizeDeps(deps: {
         (s, clear, lockOwner, driverClear) =>
           resetToCommit(s, snapshotSha, clear, undefined, lockOwner, driverClear),
         driverClearFor(deps.sdk),
+        deps.pendingTurns,
       );
       if (!result.ok) {
         return { ok: false, detail: result.error ?? "the winner reset failed" };

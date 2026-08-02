@@ -20,7 +20,7 @@
 #   post_create = ["node /ABSOLUTE/PATH/TO/ai-harness/scripts/worktree-setup.mjs"]
 
 # Maximum number of worktrees kept in the pool.
-max_trees = 16
+max_trees = 32
 
 # Worktree root. "" = $HOME, so worktrees live under ~/.treehouse/<repo>-<hash>/.
 # May be relative to the repo root or an absolute path.

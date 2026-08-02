@@ -9,6 +9,7 @@ import {
   LADDER_NODE,
   ladderDetail,
 } from "./helpers/workflow-ladder.ts";
+import { hasTooltip } from "./helpers/markup.ts";
 
 test("a skipped check never reads as passed", () => {
   const detail = ladderDetail("reviewing");
@@ -43,6 +44,12 @@ test("a skipped check never reads as passed", () => {
     /<li class="wf-ladder-member[^"]*"[^>]*>[\s\S]*?Check · typecheck[\s\S]*?<\/li>/,
   )?.[0] ?? "";
   assert.match(row, /Skipped/);
+  assert.match(row, /workflow-waiting/);
   assert.doesNotMatch(row, />Passed</);
   assert.ok(html.includes(checkStatusView("skipped").sentence));
+  assert.ok(hasTooltip(html, "Skipped because no command is configured for this check."));
+  assert.ok(hasTooltip(
+    html,
+    "One or more checks in this stage did not run. Hover each check for its reason.",
+  ));
 });

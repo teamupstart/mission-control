@@ -82,6 +82,28 @@ test("nested summaries are compared structurally", () => {
   // Same shape, different object identity: equal, or every poll would re-emit.
   assert.equal(sessionEqual(base, mkSession({ queue: null, orphanedQueue: null })), true);
   assert.equal(sessionEqual(mkSession(), mkSession({ goal: null })), false);
+  assert.equal(
+    sessionEqual(
+      mkSession(),
+      mkSession({
+        pendingTurns: [
+          {
+            id: "pending-1",
+            noteKey: "agent-1",
+            seq: 0,
+            text: "visible queued text",
+            state: "queued",
+            revision: 0,
+            createdAt: 1,
+            updatedAt: 1,
+            claimedAt: null,
+            lastError: null,
+          },
+        ],
+      }),
+    ),
+    false,
+  );
 });
 
 test("schedule provenance rides inside Session.task, and a change to it still emits", () => {

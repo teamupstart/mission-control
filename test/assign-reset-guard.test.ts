@@ -43,7 +43,7 @@ function sess(cwd: string | null): Session {
     instrumented: false, stateConfirmed: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
     lastActivity: null, pendingReviews: 0, task: null,
     prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null,
-    meta: null, effortBaselineReady: false, note: null, cost: null, goal: null, queue: null, orphanedQueue: null, paneDialog: null,
+    meta: null, effortBaselineReady: false, note: null, cost: null, goal: null, queue: null, pendingTurns: [], orphanedQueue: null, paneDialog: null,
   };
 }
 

@@ -100,6 +100,10 @@ function fakeHandle(): {
       sent.push(turn.text);
       return "started";
     },
+    sendIfIdle: async (turn) => {
+      sent.push(turn.text);
+      return "started";
+    },
     interrupt: async () => {},
     answer: async () => {},
     setPermissionMode: null,

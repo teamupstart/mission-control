@@ -19,6 +19,7 @@ import type { PipelineStatus } from "./pipeline-bits.tsx";
 import {
   actionBlockSentence,
   actionWaitSentence,
+  canShowInspectorOnlySkip,
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
@@ -28,8 +29,11 @@ import {
   gateWaitSentence,
   inspectorFooterStatus,
   inspectorOnlyRoundSentence,
+  inspectorOnlySkipStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
+  previousFullWorkflowAttempts,
+  priorAttemptPassed,
   reviewerStatus,
   runStatusLabel,
   selectedSubmission,
@@ -151,6 +155,14 @@ function Rung({
   fixed?: boolean;
   children?: React.ReactNode;
 }): React.JSX.Element {
+  const state = (
+    <span
+      className={`wf-ladder-state${status.tooltip ? " wf-status-explained" : ""}`}
+      tabIndex={status.tooltip ? 0 : undefined}
+    >
+      {status.label}
+    </span>
+  );
   return (
     <li
       className={[
@@ -167,7 +179,7 @@ function Rung({
           {fixed && <span className="wf-ladder-fixed">Fixed</span>}
           {sub && <span className="wf-ladder-sub">{sub}</span>}
         </span>
-        <span className="wf-ladder-state">{status.label}</span>
+        {status.tooltip ? <Tooltip label={status.tooltip}>{state}</Tooltip> : state}
       </div>
       {children}
     </li>
@@ -228,6 +240,9 @@ export function WorkflowLadder({
   const session = submissionStatus(submission, changesRequested);
   const end = endStatus(detail, submission, true);
   const inspectorOnly = submission?.mode === "inspector_only";
+  const previousFullAttempts = inspectorOnly
+    ? previousFullWorkflowAttempts(detail, submission)
+    : new Map();
   const gate = detail.inspectorGate
     && detail.inspectorGate.state.waitReason !== null
     ? detail.inspectorGate
@@ -270,7 +285,10 @@ export function WorkflowLadder({
             const nodeId = member.nodeId;
             const node = nodeId ? nodes.get(nodeId) : undefined;
             const attempt = nodeId ? attempts.get(nodeId) : undefined;
-            const outcome = attempt ? checkOutcomeOf(attempt) : null;
+            const priorAttempt = nodeId ? previousFullAttempts.get(nodeId) : undefined;
+            const outcome = attempt
+              ? checkOutcomeOf(attempt)
+              : inspectorOnly && priorAttempt ? checkOutcomeOf(priorAttempt) : null;
             // The runs monitor's override, read-only here and under the same boundary: a
             // switched-off gate the round has not reached reads Disabled, while an outcome
             // this round already recorded keeps its real chip on the session tile too. An
@@ -287,17 +305,25 @@ export function WorkflowLadder({
             const actionState = member.kind === "session_action" && attempt
               ? sessionActionProgress(attempt)
               : null;
-            const status = (member.kind === "session_action"
-              ? null
-              : disabledStatusFor(detail.run.disabledNodeIds, nodeId, attempt))
-              ?? (member.kind === "session_action"
-                ? sessionActionStatus(
-                    nodeId ? statuses[nodeId] : undefined,
-                    actionState?.wait ?? null,
-                  )
-                : member.kind === "check"
-                  ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
-                  : reviewerStatus(nodeId ? statuses[nodeId] : undefined));
+            const status = canShowInspectorOnlySkip(
+              inspectorOnly,
+              nodeId,
+              node !== undefined,
+              attempt !== undefined,
+              priorAttemptPassed(member.kind, priorAttempt),
+            )
+              ? inspectorOnlySkipStatus()
+              : (member.kind === "session_action"
+                ? null
+                : disabledStatusFor(detail.run.disabledNodeIds, nodeId, attempt))
+                ?? (member.kind === "session_action"
+                  ? sessionActionStatus(
+                      nodeId ? statuses[nodeId] : undefined,
+                      actionState?.wait ?? null,
+                    )
+                  : member.kind === "check"
+                    ? checkStatus(nodeId ? statuses[nodeId] : undefined, outcome?.status ?? null)
+                    : reviewerStatus(nodeId ? statuses[nodeId] : undefined));
             const name = node
               ? nodeLabel(graph, node, personaNames, actionNames)
               : member.kind === "check"
@@ -307,7 +333,11 @@ export function WorkflowLadder({
             const meta = attempt ? verdictMeta(attempt, calls) : null;
             return { member, name, attempt, outcome, status, verdict, meta, actionState };
           });
-          const status = stageStatus(members.map((member) => member.status), stage.kind);
+          const status = inspectorOnly
+            && members.length > 0
+            && members.every((member) => member.status.skipKind === "inspector_repair")
+            ? inspectorOnlySkipStatus()
+            : stageStatus(members.map((member) => member.status), stage.kind);
           const expanded = status.tone === "running"
             || status.tone === "failed"
             || members.some((member) => member.status.degraded);
@@ -364,7 +394,18 @@ export function WorkflowLadder({
                             {statusGlyph(member.status)}
                           </span>
                           <span className="wf-ladder-member-name">{member.name}</span>
-                          <span className="wf-ladder-member-state">{member.status.label}</span>
+                          {member.status.tooltip ? (
+                            <Tooltip label={member.status.tooltip}>
+                              <span
+                                className="wf-ladder-member-state wf-status-explained"
+                                tabIndex={0}
+                              >
+                                {member.status.label}
+                              </span>
+                            </Tooltip>
+                          ) : (
+                            <span className="wf-ladder-member-state">{member.status.label}</span>
+                          )}
                         </span>
                         {meta && <span className="wf-ladder-member-meta">{meta}</span>}
                         {checkExplanation && (

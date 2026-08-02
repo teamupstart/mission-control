@@ -31,6 +31,7 @@ import {
   InjectPromptSchema,
   MarkItemSentSchema,
   OtlpMetricsSchema,
+  PendingTurnRevisionSchema,
   ReattachQueueSchema,
   RescheduleTaskSchema,
   RenameSchema,
@@ -129,6 +130,7 @@ import { summarizeBuffer } from "@shared/away-buffer.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
+import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
@@ -468,6 +470,8 @@ export function buildApp(
   launchSessionTerminal?: typeof launchTerminal,
   /** Optional for existing route-unit stubs; the daemon always supplies it. */
   sessionActions?: SessionActionManager,
+  /** Durable editable outbox. Optional only for legacy route-unit construction. */
+  pendingTurns?: PendingTurnManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -1883,6 +1887,10 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.submit && pendingTurns) {
+      const result = pendingTurns.submit(session.id, parsed.data.text);
+      return c.json(result, result.ok ? 200 : 409);
+    }
     // An embedded session has no composer to type into, and `submit` has no meaning for it:
     // a turn is one acked call, not a paste followed by an Enter that may or may not land.
     // `canMessage` is what the Send box asks, so this arm is what makes that button honest.
@@ -2032,6 +2040,10 @@ export function buildApp(
     // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
+    if (parsed.data.origin === "human" && parsed.data.buffer && pendingTurns) {
+      const result = pendingTurns.submit(session.id, parsed.data.text);
+      return c.json(result, result.ok ? 200 : 409);
+    }
     // The same delivery, reported in this route's own vocabulary. Both of its ambiguous
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
     // here is positive evidence that nothing landed, which is the only state a caller may
@@ -2047,6 +2059,42 @@ export function buildApp(
     // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
     if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
     return c.json(r, r.ok ? 200 : 500);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/recall", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const turn = pendingTurns.recall(session.id, c.req.param("turnId"), parsed.data.revision);
+    return turn
+      ? c.json({ ok: true as const, text: turn.text })
+      : c.json({ ok: false as const, error: "that queued message is no longer editable" }, 409);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/retry", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const turn = pendingTurns.retry(session.id, c.req.param("turnId"), parsed.data.revision);
+    return turn
+      ? c.json({ ok: true as const })
+      : c.json({ ok: false as const, error: "that message can no longer be retried" }, 409);
+  });
+
+  app.post("/api/sessions/:id/pending-turns/:turnId/resolve", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!pendingTurns) return c.json({ error: "pending turns are unavailable" }, 503);
+    const parsed = await parseBody(c, PendingTurnRevisionSchema);
+    if (!parsed.ok) return parsed.res;
+    const resolved = pendingTurns.resolve(session.id, c.req.param("turnId"), parsed.data.revision);
+    return resolved
+      ? c.json({ ok: true as const })
+      : c.json({ ok: false as const, error: "that message can no longer be resolved" }, 409);
   });
 
   // Park a dropped image on disk and hand back its path, which the caller pastes
@@ -2260,6 +2308,7 @@ export function buildApp(
       parsed.data.clear,
       undefined,
       driverClearFor(sdkSessions),
+      pendingTurns,
     );
     return c.json(r, r.ok ? 200 : 500);
   });

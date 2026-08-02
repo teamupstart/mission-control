@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { canCycleMode } from "@shared/session.ts";
-import { canMessage, canWriteTo, muxHandle } from "@shared/pane.ts";
+import { canMessage, muxHandle } from "@shared/pane.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
+import {
+  latestEditablePendingTurn,
+  pendingTurnStatus,
+  RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
+  recallPendingTurnIntoDraft,
+  shouldRecallPendingTurn,
+} from "../lib/pending-turns.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -111,7 +118,7 @@ export function ActionBar({
   const [composing, setComposing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showFlash(next: { text: string; ok: boolean }, duration: number): void {
@@ -143,6 +150,7 @@ export function ActionBar({
   // Queued work is the reason to open a hidden panel, so the button carries the count
   // rather than making you press it to find out whether anything is waiting.
   const openQueued = session.queue?.openCount ?? 0;
+  const latestEditable = latestEditablePendingTurn(session.pendingTurns);
 
   // Written once and used by both variants, so the two rows cannot drift into telling
   // different stories about the same click.
@@ -153,7 +161,7 @@ export function ActionBar({
     ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" - confirms first (${formatChord(bindings.kill)})`
     : `Terminates the agent process - confirms first (${formatChord(bindings.kill)})`;
 
-  async function run(label: string, fn: () => Promise<ActionResult>) {
+  async function run<T extends ActionResult>(label: string, fn: () => Promise<T>): Promise<T> {
     setBusy(label);
     const r = await fn();
     setBusy(null);
@@ -175,9 +183,48 @@ export function ActionBar({
       // Sent, so the draft is spent. On failure it stays: `run` has already put the
       // reason on screen next to the text it's about.
       clearDraft(session.id, "send");
-      setComposing(false);
+      if (r.delivery !== "pending") setComposing(false);
       if (inputRef.current) inputRef.current.value = "";
     }
+  }
+
+  async function recallPending(): Promise<void> {
+    const input = inputRef.current;
+    if (!input || !latestEditable || busy) return;
+    if (input.value.length > 0) {
+      showFlash({ text: "Clear the current draft before editing a queued message.", ok: false }, 3500);
+      return;
+    }
+    const result = await run("pending", () =>
+      recallPendingTurnIntoDraft({
+        client: api,
+        sessionId: session.id,
+        turn: latestEditable,
+        restore: (text) => {
+          input.value = text;
+          writeDraft(session.id, "send", text);
+          input.focus();
+          input.setSelectionRange(text.length, text.length);
+        },
+      }),
+    );
+    if (result.acknowledgementLost) {
+      showFlash(
+        {
+          text: RECALL_ACKNOWLEDGEMENT_LOST_MESSAGE,
+          ok: false,
+        },
+        6000,
+      );
+    }
+  }
+
+  async function retryPending(id: string, revision: number): Promise<void> {
+    await run("pending", () => api.retryPendingTurn(session.id, id, revision));
+  }
+
+  async function resolvePending(id: string, revision: number): Promise<void> {
+    await run("pending", () => api.resolvePendingTurn(session.id, id, revision));
   }
 
   function startSend() {
@@ -273,10 +320,50 @@ export function ActionBar({
     <div className="actions">
       {composing ? (
         <div className="compose">
-          <input
+          {session.pendingTurns.length > 0 && (
+            <div className="compose-pending-list" aria-label="Pending messages">
+              {session.pendingTurns.map((turn) => (
+                <div className={`compose-pending is-${turn.state}`} key={turn.id}>
+                  <span className="compose-pending-text">{turn.text}</span>
+                  <span className="compose-pending-state">{pendingTurnStatus(turn)}</span>
+                  {turn.id === latestEditable?.id && (
+                    <Tooltip label="Move this queued message back into the send box">
+                      <button type="button" disabled={busy !== null} onClick={() => void recallPending()}>
+                        Edit
+                      </button>
+                    </Tooltip>
+                  )}
+                  {turn.state === "uncertain" && (
+                    <>
+                      <Tooltip label="Queue this message again because it was not delivered">
+                        <button
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => void retryPending(turn.id, turn.revision)}
+                        >
+                          Retry
+                        </button>
+                      </Tooltip>
+                      <Tooltip label="Remove this warning because the agent already received the message">
+                        <button
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => void resolvePending(turn.id, turn.revision)}
+                        >
+                          Mark sent
+                        </button>
+                      </Tooltip>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          <textarea
             ref={inputRef}
             className="compose-input"
             placeholder="Message to send…"
+            rows={1}
             autoFocus
             // Cancel and Escape only close this box - they unmount the input, so
             // without these the text died with it and reopening Send showed a blank.
@@ -284,7 +371,25 @@ export function ActionBar({
             defaultValue={readDraft(session.id, "send")}
             onChange={(e) => writeDraft(session.id, "send", e.currentTarget.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void submitMessage();
+              if (
+                latestEditable &&
+                shouldRecallPendingTurn({
+                  key: e.key,
+                  value: e.currentTarget.value,
+                  selectionStart: e.currentTarget.selectionStart,
+                  selectionEnd: e.currentTarget.selectionEnd,
+                  composing: e.nativeEvent.isComposing,
+                  modified: e.altKey || e.ctrlKey || e.metaKey || e.shiftKey,
+                  busy: busy !== null,
+                  hasAttachments: false,
+                })
+              ) {
+                e.preventDefault();
+                void recallPending();
+              } else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void submitMessage();
+              }
               if (e.key === "Escape") setComposing(false);
             }}
           />

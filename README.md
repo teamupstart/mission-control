@@ -4146,6 +4146,50 @@ screen instead of scattered across three panels.
   Shipping's own dependency warnings link straight here. The rail's Trust dot summarizes the
   same blind spot.
 
+## The Line (the pipeline strip above the fleet)
+
+A permanent ~90px strip sits above every fleet layout: **intake → backlog → working → review
+→ decide → shipped**. Six stages, wired left to right, each carrying a glyph, a count and one
+sentence - the fleet's whole pipeline in one glance, in the order work actually moves through
+it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
+
+| Stage | The count is | The sentence says | Amber when |
+|-------|--------------|-------------------|------------|
+| ⇊ **Intake** | Enabled [task sources](#task-sources-pulling-work-into-the-backlog) plus enabled [Recurring Missions](#recurring-missions) | When the most recent source last swept, and when the next mission is due | A source failed its last sweep, or a mission's health is `attention` |
+| ☰ **Backlog** | Tasks with status `backlog` | What [autopilot](#backlog-autopilot-foreman-schedules-the-fleet) would take next, and how many are blocked | Nothing in the backlog is ready - every item is [parked](#hold-a-backlog-item-back) or waiting on a prerequisite, so capacity will never clear it |
+| ▶ **Working** | Sessions that have not exited | The split: needs you / working / idle | Any session needs you - the same [`reportBucket`](#session-status-colors) the Roundup counts with |
+| ⌁ **Review** | [Workflow runs](#watching-a-run) that are not `completed`, `cancelled` or `failed` | The workflow doing most of them, and how many are waiting on you | A run is `blocked`, or its session action is parked on one of the three wait reasons only a person can clear |
+| ⧉ **Decide** | [Ensemble runs](#multi-agent-ensembles) that have not finished | Which strategy, how many artifacts are ready, or who it is waiting on | The daemon flagged the run (`awaiting_decision`, a failure, or a member sitting on your answer) |
+| ⚑ **Shipped** | Pull requests your agents adopted **this week** | The **per-PR cost** from today's [cost telemetry](#cost-telemetry) | Never. Shipping is not an obligation |
+
+Two windows on the Shipped stage, and it says which is which: the count is the **week**,
+because a Monday morning would otherwise read as zero on a fleet that shipped four things on
+Friday, while the per-PR figure is **today's** - the only window `FleetCost` offers, and
+dividing a day's spend by a week's pull requests would mean nothing.
+
+**The strip never computes anything.** Every count, sentence and tone is folded on the daemon
+and pushed as one `line_summary` SSE event, change-gated exactly like the cost figures - so an
+unchanged fleet emits nothing. That is not an implementation detail: two of the six stages read
+inputs that never cross the wire at all (task-source sweep recency, the Inspector's adoption
+ledger), and every other stage reuses the daemon's *existing* derivation - `reportBucket`,
+`readyBacklog`, `ensembleNeedsAttention`, `deriveScheduleHealth` - rather than inventing a
+second opinion that agrees until it doesn't.
+
+Clicking a stage takes you to the surface that already reads it:
+
+| Stage | Opens |
+|-------|-------|
+| Intake | [Recurring Missions](#recurring-missions) |
+| Backlog | The [Roundup](#roundup), which lists the backlog with its blockers |
+| Working | The fleet, with the filter cleared - so the count and the cards agree again |
+| Review | `#/workflows/runs` |
+| Decide | `#/workflows/ensembles` |
+| Shipped | `#/workflows/runs` filtered to completed. There is no pull-request list surface in the app; the list of work that finished is the nearest true thing |
+
+Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
+clipped to one row so the strip's height never moves. The flowing dots on the wires respect
+`prefers-reduced-motion`: with it set, the wires stay and the dots go.
+
 ## Layout (cards, console, or board)
 
 The same fleet, three shapes. **Settings → Display → Layout** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>)

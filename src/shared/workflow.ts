@@ -567,6 +567,31 @@ export const SESSION_ACTION_WAIT_REASONS = [
 export type SessionActionWaitReason = (typeof SESSION_ACTION_WAIT_REASONS)[number];
 
 /**
+ * The wait reasons no amount of waiting clears - a person has to act.
+ *
+ * The list above is mostly the daemon waiting on ITSELF: `awaiting_send`, `awaiting_pickup`,
+ * `working`, `awaiting_proof`, `capturing`, `awaiting_pull_request` and `awaiting_pushed_head`
+ * all resolve on their own, and a surface that lit them amber would report a healthy run as
+ * blocked for most of its life. These three do not: `needs_operator` is a session parked on a
+ * question, and the two `pull_request_wrong_*` reasons are, in their own words, states "no
+ * amount of waiting moves".
+ *
+ * APPEND-ONLY alongside `SESSION_ACTION_WAIT_REASONS`.
+ */
+export const SESSION_ACTION_OPERATOR_WAIT_REASONS: readonly SessionActionWaitReason[] = [
+  "needs_operator",
+  "pull_request_wrong_repository",
+  "pull_request_wrong_branch",
+];
+
+/** True when this wait is one only a person can end. */
+export function sessionActionWaitsOnOperator(
+  reason: SessionActionWaitReason | null | undefined,
+): boolean {
+  return reason != null && SESSION_ACTION_OPERATOR_WAIT_REASONS.includes(reason);
+}
+
+/**
  * Why a session action can no longer proceed. APPEND-ONLY for `SESSION_ACTION_WAIT_REASONS`'
  * reason.
  *
@@ -1019,6 +1044,24 @@ export const WORKFLOW_RUN_STATUSES = [
   "waiting_for_action",
 ] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
+
+/**
+ * The statuses a run never leaves. Derived, never written out again - see
+ * `ENSEMBLE_TERMINAL_STATUSES` and `SCHEDULE_TERMINAL_STATUSES` for the same argument.
+ *
+ * This existed only as the string `status NOT IN ('completed','cancelled','failed')`,
+ * spelled eleven times across `src/server/workflows/store.ts`. Naming it stops the twelfth
+ * copy from being the one that forgets a status.
+ */
+export const WORKFLOW_RUN_TERMINAL_STATUSES: readonly WorkflowRunStatus[] =
+  WORKFLOW_RUN_STATUSES.filter(
+    (status) => status === "completed" || status === "cancelled" || status === "failed",
+  );
+
+/** True while a run can still change on its own. */
+export function workflowRunIsLive(status: WorkflowRunStatus): boolean {
+  return !WORKFLOW_RUN_TERMINAL_STATUSES.includes(status);
+}
 
 export const WORKFLOW_GATE_WAIT_REASONS = [
   "missing_pr",

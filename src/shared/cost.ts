@@ -11,6 +11,27 @@ import type { AgentType, RateLimitWindow, SessionCost } from "./types.ts";
 // Deliberately NOT a session tone: `TONE_ORDER` drives grid sort, rail sections and board
 // columns, and none of those should reorder by estimated cost. This is a chip modifier only.
 
+/**
+ * A dollar figure for a chip: `$0.42`, `$12.40`, `$1,204`.
+ *
+ * Cents are dropped past three figures because they stop being information there - the
+ * estimate's own error bar is wider than a cent by then, and the extra glyphs cost room
+ * on the tightest surfaces. Below a cent reads as `<$0.01` rather than `$0.00`, since a
+ * session that has spent SOMETHING and one that has spent nothing are different states
+ * and the second one renders no chip at all.
+ *
+ * Here rather than in `src/web/lib/format.ts` (which re-exports it) because the daemon
+ * words the Line's Shipped sentence, and money has to be spelled the same way in a
+ * server-built string as in the chip beside it. A second `toFixed(2)` on the server is
+ * how `$4.1` ends up next to `$4.10`.
+ */
+export function fmtUsd(usd: number | null | undefined): string {
+  if (usd == null || !Number.isFinite(usd)) return "-";
+  if (usd > 0 && usd < 0.01) return "<$0.01";
+  if (usd >= 1000) return "$" + Math.round(usd).toLocaleString("en-US");
+  return "$" + usd.toFixed(2);
+}
+
 /** Where a session's API-equivalent estimate sits, for the chip's colour and rail glyph. */
 export type CostTone = "normal" | "attention" | "danger";
 

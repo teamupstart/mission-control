@@ -25,6 +25,9 @@ import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
 import { compactFleetCost, FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
+import { LineStrip } from "./components/LineStrip.tsx";
+import { LINE_STAGE_TARGETS } from "./lib/line-targets.ts";
+import type { LineStageId } from "@shared/line.ts";
 import { Keycap } from "./components/Keycap.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
@@ -126,6 +129,7 @@ export function App(): React.JSX.Element {
     workflowRunSummaries: workflowRuns,
     ensembleSummaries,
     fleetCost,
+    lineSummary,
     settingsStatus,
     schedules,
     connected,
@@ -488,6 +492,37 @@ export function App(): React.JSX.Element {
     setMissionsTarget(null);
     setMissionsOpen(true);
   }, [closeDispatch]);
+  /**
+   * Run a Line stage click.
+   *
+   * The mapping itself is not here - it is `LINE_STAGE_TARGETS`, one table in one file, so
+   * the next phase can repoint all six at drawers without touching this. This only knows
+   * how to perform the four kinds of destination the dashboard has.
+   */
+  const onLineStage = useCallback(
+    (stage: LineStageId) => {
+      const target = LINE_STAGE_TARGETS[stage];
+      switch (target.kind) {
+        case "route":
+          navigate(target.route);
+          break;
+        case "missions":
+          openMissions();
+          break;
+        case "sitrep":
+          setReportOpen(true);
+          break;
+        case "fleet":
+          // Already the page under the strip, so the useful half is the filter: the stage
+          // counts every live session and a filter box with something in it means the board
+          // is showing fewer. Clearing it makes the count and the cards agree again.
+          navigate({ page: "fleet" });
+          setFilter("");
+          break;
+      }
+    },
+    [navigate, openMissions],
+  );
   const closeDiff = useCallback(() => {
     setDiffSessionId(null);
     setDiffCommit(null);
@@ -1772,6 +1807,12 @@ export function App(): React.JSX.Element {
           )}
           fleet={(
             <>
+
+        {/* The Line. Above every layout and outside the `layoutHasContent` gate below, on
+            purpose: it is the one thing on this page that is worth reading when the board
+            is empty. A fleet with no sessions still has a backlog, sources due to sweep and
+            pull requests that shipped this week, and the strip is where that is said. */}
+        <LineStrip summary={lineSummary} onStage={onLineStage} />
 
         {/* Nothing to arrange means no layout: one of the two empty states below says why,
             and every layout would otherwise dress that silence up as furniture - an empty

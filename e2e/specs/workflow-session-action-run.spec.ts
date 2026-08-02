@@ -431,6 +431,7 @@ test("e toggles the selected Board workflow card without opening session detail"
   // press expands and moves focus into Reply; Escape hands focus back before Enter collapses.
   await api(daemon, "/api/ui/config", { layout: "grid" }, "PUT");
   await dashboard.reload();
+  await expect(dashboard.locator("article.card")).toBeVisible();
   await dashboard.keyboard.press("ArrowRight");
   const card = dashboard.locator("article.card.selected");
   await expect(card).not.toHaveClass(/expanded/);

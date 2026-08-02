@@ -18,7 +18,43 @@ MATCH := src/server/index.ts
 FOREMAN_MATCH := src/server/foreman/worker.ts
 
 .DEFAULT_GOAL := help
-.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs build app install-app icons test lint check smoke hooks setup
+.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs build app install-app icons deps test lint check smoke hooks setup
+
+# Every quality gate below needs DEV dependencies, and used to assume them. `tsc`,
+# `@types/node` and `tsx` are all devDependencies, so a checkout that was never installed -
+# or installed production-only - fails them in a way that looks like broken source rather
+# than a broken environment:
+#
+#   make check -> error TS2688: Cannot find type definition file for 'node'
+#   make test  -> every test file fails in 60-70ms with a bare 'test failed', because
+#                 `--import tsx` cannot resolve before a single assertion runs
+#
+# Neither message names the real cause, and the test one in particular reads as if the whole
+# suite is broken. So the gates now depend on the dependencies they need instead of hoping.
+#
+# Checked by PRESENCE of the three packages the gates actually need, not only by npm's
+# `.package-lock.json` timestamp. The timestamp alone has a hole that matters here: an
+# `npm install --omit=dev` writes that marker too, so a production-only tree looks installed
+# and current while `tsc`, `@types/node` and `tsx` are all still missing - which is the exact
+# state that produces the two failures above. Presence catches that; the timestamp catches
+# the ordinary case of a manifest edited since the last install.
+#
+# Three `test -e` calls in the normal case, so this costs nothing on a healthy checkout.
+NPM_STAMP := node_modules/.package-lock.json
+DEV_DEPS  := node_modules/typescript node_modules/tsx node_modules/@types/node
+
+deps: ## Install dev dependencies if they are missing or older than the manifests
+	@for d in $(DEV_DEPS); do \
+		if [ ! -e "$$d/package.json" ]; then \
+			echo "make: $$d is missing - installing dev dependencies"; \
+			npm install --include=dev; \
+			exit $$?; \
+		fi; \
+	done; \
+	if [ ! -e "$(NPM_STAMP)" ] || [ package.json -nt "$(NPM_STAMP)" ] || [ package-lock.json -nt "$(NPM_STAMP)" ]; then \
+		echo "make: dependencies are older than the manifests - installing"; \
+		npm install --include=dev; \
+	fi
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -86,7 +122,7 @@ status: ## Show whether the daemon is running
 logs: ## Tail the background daemon log
 	@touch $(LOG); tail -f $(LOG)
 
-build: ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
+build: deps ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
 	npm run build
 
 app: ## Build and package the macOS app (.app + .dmg) into release/
@@ -99,16 +135,16 @@ install-app: app ## Build, package, and copy Mission Control.app into /Applicati
 icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
 	node scripts/gen-icons.mjs
 
-test: ## Run the full test suite
+test: deps ## Run the full test suite
 	npm test
 
-lint: ## Lint src, hooks, test, scripts (oxlint)
+lint: deps ## Lint src, hooks, test, scripts (oxlint)
 	npm run lint
 
-check: ## Typecheck
+check: deps ## Typecheck
 	npm run typecheck
 
-smoke: ## Boot the built bundles to prove they run (needs `make build` first)
+smoke: deps ## Boot the built bundles to prove they run (needs `make build` first)
 	npm run smoke
 
 hooks: ## Install the Claude status hooks

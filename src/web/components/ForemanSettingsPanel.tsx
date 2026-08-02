@@ -23,8 +23,8 @@ import {
 
 // Foreman's set-once configuration, as a settings category. The topbar popover keeps the
 // in-the-moment knobs (enable, mode, work queues, on-drain); the durable posture lives
-// here: the cheap-tier stance, which model each call runs as, and the list of repos
-// Foreman is trusted to send in live.
+// here: the cheap-tier stance, completion safeguards, which model each call runs as, and
+// the list of repos Foreman is trusted to send in live.
 //
 // It is drawn as a CONSOLE (`settings-console.tsx`), and the reason is the ledger. Every
 // decision Foreman makes has been written to `foreman_episodes` since that table shipped -
@@ -245,6 +245,11 @@ export function ForemanSettingsPanel({
   const triage = config?.triage ?? "shadow";
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
+  // A web build newer than its daemon can receive neither key. Render those absences as on,
+  // matching the schema default the daemon applies, instead of showing an unticked safeguard
+  // while the server is enforcing it.
+  const skipScoutWrapup = config?.skipScoutWrapup !== false;
+  const skipReviewArtifactWrapup = config?.skipReviewArtifactWrapup !== false;
   const now = Date.now();
   const [filter, setFilter] = useState<string | null>(null);
   const tallies = episodeTallies(episodes);
@@ -268,8 +273,9 @@ export function ForemanSettingsPanel({
     <section className="settings-section sc-section">
       <p className="settings-hint sc-lede">
         Foreman's set-once configuration, and the record of what it has decided. Turning it
-        on, its mode, the work queues, and the on-drain action stay in the topbar Foreman
-        control - the things you reach for while watching the fleet.
+        on, its mode, the work queues, and the wrap-up action stay in the topbar Foreman
+        control. Completion safeguards and model posture live here because they change what
+        Foreman considers eligible, not what it does in one moment.
       </p>
 
       <div className="sc-split">
@@ -399,6 +405,63 @@ export function ForemanSettingsPanel({
                   }
                 />
               ))}
+            </div>
+          </ConsoleCard>
+
+          <ConsoleCard title="Completion safeguards">
+            <p className="settings-hint">
+              Choose which finished work Foreman retires without showing Ship it, running
+              No-Mistakes Review, or typing Straight to PR. A task matching either enabled
+              safeguard is kept out of every automatic completion action.
+            </p>
+
+            <div className="kb-row" data-anchor="foreman/skip-scout-wrapup">
+              <div className="kb-row-text">
+                <span className="kb-row-label">Skip automatic completion for Scout tasks</span>
+                <span className="kb-row-desc">
+                  Uses the task's durable Kind. The scout's findings remain the finished output.
+                </span>
+              </div>
+              <div className="kb-row-controls">
+                <Tooltip label="Keep Scout tasks out of Ship it, No-Mistakes Review, and Straight to PR">
+                  <label className="skill-switch">
+                    <input
+                      type="checkbox"
+                      checked={skipScoutWrapup}
+                      disabled={!config}
+                      aria-label="Skip automatic completion for Scout tasks"
+                      onChange={(e) => void update({ skipScoutWrapup: e.target.checked })}
+                    />
+                  </label>
+                </Tooltip>
+              </div>
+            </div>
+
+            <div className="kb-row" data-anchor="foreman/skip-review-artifact-wrapup">
+              <div className="kb-row-text">
+                <span className="kb-row-label">
+                  Skip automatic completion for mockups and review artifacts
+                </span>
+                <span className="kb-row-desc">
+                  Reads the resolved objective and artifact-only changed paths. Mixed work that
+                  also requests implementation still follows the normal completion action.
+                </span>
+              </div>
+              <div className="kb-row-controls">
+                <Tooltip label="Keep mockups and review-only artifacts out of automatic completion actions">
+                  <label className="skill-switch">
+                    <input
+                      type="checkbox"
+                      checked={skipReviewArtifactWrapup}
+                      disabled={!config}
+                      aria-label="Skip automatic completion for mockups and review artifacts"
+                      onChange={(e) =>
+                        void update({ skipReviewArtifactWrapup: e.target.checked })
+                      }
+                    />
+                  </label>
+                </Tooltip>
+              </div>
             </div>
           </ConsoleCard>
 

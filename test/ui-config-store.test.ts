@@ -18,7 +18,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-ui-cfg-"));
 // Set before importing anything that resolves the state dir.
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, setAppConfig } = await import("../src/server/db.ts");
 const { getUiConfig, setUiConfig, uiConfigView } = await import("../src/server/ui-config.ts");
 const { UI_CONFIG_DEFAULTS } = await import("../src/shared/protocol.ts");
 
@@ -34,7 +34,17 @@ test("an unset key reads as the shipped defaults", () => {
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.deepEqual(config.keybindings, {});
-  assert.equal(config.usageBarCollapsed, false);
+  assert.equal(config.keybindingHints, true);
+});
+
+test("a key from a retired preference is dropped rather than carried forever", () => {
+  // `usageBarCollapsed` folded the topbar's second row, which the spend popover retired.
+  // The schema is not `.strict()`, so a config saved by an older build still OPENS - the
+  // dead key is simply not read back out. This is the whole migration.
+  setAppConfig("ui", { layout: "board", usageBarCollapsed: true });
+  const config = getUiConfig();
+  assert.equal(config.layout, "board");
+  assert.ok(!("usageBarCollapsed" in config));
 });
 
 test("the defaults the schema applies are the ones the web paints from", () => {

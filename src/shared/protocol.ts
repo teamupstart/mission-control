@@ -968,6 +968,26 @@ export const ForemanConfigSchema = z.object({
    */
   maxFixRounds: z.number().int().min(1).max(50).default(10),
   /**
+   * Whether a task whose durable Kind is `scout` is retired at completion instead of
+   * reaching any automatic wrap-up action.
+   *
+   * On by default because scout work is an investigation contract: its useful output is
+   * the finding itself, not a Workflow submission or a prompt that asks the session to open
+   * a pull request. Turning it off deliberately restores the ordinary wrap-up path, subject
+   * to the independent review-artifact safeguard below.
+   */
+  skipScoutWrapup: z.boolean().default(true),
+  /**
+   * Whether mockups and other explicit review-only artifacts are retired at completion
+   * instead of reaching any automatic wrap-up action.
+   *
+   * The classifier reads the resolved objective and, when available, the completed diff's
+   * paths. It stays independent from `skipScoutWrapup`: a ship-kind task can still request
+   * only mockups, while a scout task can also match both safeguards. On by default to keep
+   * No-Mistakes Review and Straight-to-PR for work that actually asks for implementation.
+   */
+  skipReviewArtifactWrapup: z.boolean().default(true),
+  /**
    * WHICH moments count as "this session has finished its work" and should wrap up.
    * Independent of `wrapup`, which says what to DO at whichever moment fires.
    *
@@ -1551,7 +1571,6 @@ export const UI_CONFIG_DEFAULTS = {
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
-  usageBarCollapsed: false,
   keybindingHints: true,
   trustStaged: [],
 } as const;
@@ -1575,8 +1594,11 @@ export const UiConfigSchema = z.object({
     .default(UI_CONFIG_DEFAULTS.alerts),
   /** Render agent/human turns as markdown. On by default: agents write markdown. */
   richText: z.boolean().default(UI_CONFIG_DEFAULTS.richText),
-  /** Whether the topbar's fleet-cost/rate-limit strip is folded away. */
-  usageBarCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.usageBarCollapsed),
+  /* `usageBarCollapsed` lived here and is gone: the topbar's second row it folded was
+     retired for the spend popover, and a preference nothing reads is a preference that
+     lies about what the app can do. The key is simply dropped from stored configs on the
+     next parse - this object is not `.strict()`, so an existing bag still opens - and no
+     migration is owed, because forgetting a fold state costs nothing. */
   /**
    * Whether a button that a keyboard shortcut also drives prints that shortcut on its
    * face. On by default: the shortcut table is only discoverable if the buttons teach

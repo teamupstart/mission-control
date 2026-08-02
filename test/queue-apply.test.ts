@@ -28,6 +28,8 @@ const CFG: QueueConfig = {
   pickupTimeoutMs: 45_000,
   wrapupTriggers: ["drain"],
   wrapup: "ask",
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
 };
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -112,6 +114,8 @@ const LIVE_CFG: ForemanConfig = {
   triage: "off",
   maxFixAttempts: 3,
   maxFixRounds: 10,
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
   autoBacklog: false,
   backlogRespectOpenPrs: true,
   backlogDefaultModel: { claude: null, codex: null, pi: null },
@@ -789,6 +793,25 @@ test("ask-wrapup stamps the ask and types nothing", async () => {
   assert.equal(out.kind, "done");
   assert.equal(fake.wrapups, 1);
   assert.deepEqual(fake.injected, [], "the ask hands the decision to the human - it never types");
+});
+
+test("skip-wrapup answers before retiring and never exposes or types a shipping action", async () => {
+  const session = mkSession();
+  const fake = mkFake({ session });
+  const queue = await fake.queue("s1");
+  const out = await applyQueueAction(
+    fake,
+    session,
+    { kind: "skip-wrapup", queue: queue!, reason: "the linked task kind is scout" },
+    CFG,
+    NOW,
+  );
+
+  assert.equal(out.kind, "done");
+  assert.deepEqual(fake.order, ["answer", "mark"]);
+  assert.deepEqual(fake.wrapupAnswers, ["foreman:automatic-wrapup-skipped"]);
+  assert.equal(fake.wrapups, 1);
+  assert.deepEqual(fake.injected, []);
 });
 
 // ---- auto-wrapup: the drain Foreman answers itself (the `wrapup` config) ----

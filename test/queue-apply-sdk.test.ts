@@ -44,6 +44,8 @@ const CFG: QueueConfig = {
   pickupTimeoutMs: 45_000,
   wrapupTriggers: ["drain"],
   wrapup: "ask",
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
 };
 
 const LIVE_CFG: ForemanConfig = {
@@ -57,6 +59,8 @@ const LIVE_CFG: ForemanConfig = {
   triage: "off",
   maxFixAttempts: 3,
   maxFixRounds: 10,
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
   autoBacklog: false,
   backlogRespectOpenPrs: true,
   backlogDefaultModel: { claude: null, codex: null, pi: null },

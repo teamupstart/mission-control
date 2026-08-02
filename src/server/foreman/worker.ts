@@ -75,6 +75,7 @@ import {
   tryWorkflowCompletionClaim,
   withBuiltinReviewFallback,
 } from "./workflow-claim.ts";
+import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
 
 /**
  * The menu on a pane, read with that agent's own grammar - or null when this harness draws
@@ -1041,6 +1042,31 @@ async function processTarget(
         client.diff(fresh.id).catch(() => null),
         client.transcriptSize(fresh.id).catch(() => null),
       ]);
+      // The pure machines catch durable task kind and explicit output contracts before
+      // reaching this point. The evidence read adds the last case they cannot see: a
+      // completed diff made entirely of conventional review artifacts. This check must stay
+      // before `tryWorkflowCompletionClaim`, because even an `ask-wrapup` action claims an
+      // existing Foreman-complete binding before it would render the card.
+      const block = automaticWrapupBlock({
+        taskKind: fresh.task?.kind ?? null,
+        objective: completionIntent.objective,
+        // A truncated patch is not a complete file list. Treating its visible prefix as
+        // exhaustive could hide a later source file and incorrectly classify a mixed change.
+        changedPaths: diff?.ok && !diff.truncated ? changedPaths(diff.patch) : null,
+        skipScoutWrapup: cfg.skipScoutWrapup,
+        skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
+      });
+      if (block) {
+        const outcome = await applyQueueAction(
+          queueActions(client, cfg),
+          fresh,
+          { kind: "skip-wrapup", queue: action.queue, reason: block.reason },
+          qcfg,
+          Date.now(),
+        );
+        log(`${fresh.name}: ${block.reason}; skipped automatic wrap-up`);
+        return outcome.kind !== "noop";
+      }
       const claim = await tryWorkflowCompletionClaim(
         client,
         fresh.id,
@@ -1117,6 +1143,8 @@ function queueConfig(cfg: ForemanConfig): QueueConfig {
     pickupTimeoutMs: PICKUP_TIMEOUT_MS,
     wrapupTriggers: cfg.wrapupTriggers,
     wrapup: cfg.wrapup,
+    skipScoutWrapup: cfg.skipScoutWrapup,
+    skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   };
 }
 
@@ -1126,6 +1154,8 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
     triggers: cfg.wrapupTriggers,
     wrapup: cfg.wrapup,
     settleMs: SETTLE_MS,
+    skipScoutWrapup: cfg.skipScoutWrapup,
+    skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   };
 }
 
@@ -1178,6 +1208,11 @@ async function processPromptedWrapup(
     now: Date.now(),
   });
   if (candidate.kind === "skip") return false;
+  if (candidate.kind === "retire") {
+    if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;
+    log(`${session.name}: prompted automatic wrap-up skipped - ${candidate.why}`);
+    return true;
+  }
 
   // Foreman already gave up on this episode - see `promptedFailures`, which counts both
   // the failures below that can repeat forever. Checked HERE, above every read, because
@@ -1213,6 +1248,23 @@ async function processPromptedWrapup(
     // also serves hook ingest and SSE - for as long as the write stays broken.
     if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;
     log(`${session.name}: prompted wrap-up held - the session changed nothing`);
+    return true;
+  }
+
+  // The resolved objective gate above catches explicit mockup-style contracts. The diff
+  // adds a content-shaped backstop for terse prompts whose only changes landed in the
+  // repository's review-artifact paths. Retire before transcript gathering or verification:
+  // the result cannot become eligible for automatic shipping later in this same episode.
+  const block = automaticWrapupBlock({
+    taskKind: session.task?.kind ?? null,
+    objective: candidate.objective,
+    changedPaths: diff.truncated ? null : changedPaths(diff.patch),
+    skipScoutWrapup: cfg.skipScoutWrapup,
+    skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
+  });
+  if (block) {
+    if (!(await retirePromptedEpisode(client, session, candidate.episodeKey))) return false;
+    log(`${session.name}: prompted automatic wrap-up skipped - ${block.reason}`);
     return true;
   }
 

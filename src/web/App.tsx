@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AGENT_TYPES, type FleetCost, type Session, type Task } from "@shared/types.ts";
+import { AGENT_TYPES, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
 import { backlogTasks, canCycleMode } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
@@ -24,7 +24,7 @@ import { DEFAULT_SETTINGS_CATEGORY } from "./lib/settings-registry.ts";
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
-import { compactFleetCost, FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
+import { SpendChip } from "./components/SpendChip.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
 import { LINE_STAGE_TARGETS } from "./lib/line-targets.ts";
 import type { LineStageId } from "@shared/line.ts";
@@ -44,7 +44,6 @@ import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode } from "./lib/layout.ts";
-import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
@@ -152,11 +151,10 @@ export function App(): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [keybindingHints] = useKeybindingHints();
   const [layout, setLayout] = useLayoutMode();
-  const [usageBarCollapsed, setUsageBarCollapsed] = useUsageBarCollapsed();
   const foreman = useForeman();
-  // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar strip
-  // and the Cost panel read the same `view` setting, so a local copy in the page would
-  // leave the strip showing the old choice until the next reload - and double-poll.
+  // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar spend
+  // popover and the Cost panel read the same `view` setting, so a local copy in the page
+  // would leave the popover showing the old choice until the next reload - and double-poll.
   const cost = useCost();
   const llm = useLlm();
   // The worst subsystem status, inherited by the topbar gear from the settings rail dots.
@@ -1537,6 +1535,15 @@ export function App(): React.JSX.Element {
               {launcherFocusError}
             </span>
           )}
+          {/* A READOUT, so it sits with the pulse rather than inside the action cluster
+              below - which is three ranked groups of CONTROLS, and a figure dropped into
+              them would break the rank it teaches. The bar's whole right-hand side is
+              this phase's; the page segment arriving on the left is another's. */}
+          <SpendChip
+            fleet={fleetCost}
+            view={cost.status?.config.view ?? "usd"}
+            onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}
+          />
           {/* Twelve peers at one weight is what made this bar unreadable, so the
               cluster is THREE groups with a rank, not one rhythm: destinations you
               navigate to, the two controls that act on the fleet (Foreman's posture and
@@ -1676,12 +1683,6 @@ export function App(): React.JSX.Element {
               />
             </div>
           </div>
-          <UsageBar
-            fleet={fleetCost}
-            view={cost.status?.config.view ?? "usd"}
-            collapsed={usageBarCollapsed}
-            onToggleCollapsed={() => setUsageBarCollapsed(!usageBarCollapsed)}
-          />
         </header>
 
         <AppPageShell
@@ -2437,59 +2438,6 @@ function FleetPulse({
           tip={`${inbox} thing${inbox === 1 ? " is" : "s are"} waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox`}
         />
       )}
-    </div>
-  );
-}
-
-/**
- * The topbar's second row: the fleet strip, foldable.
- *
- * A row of its own rather than sharing the fleet pulse's row: `flex-basis: 100%` on
- * `.topbar-usage` forces it below the primary controls, so its meters never interleave with
- * them regardless of width.
- *
- * Still rendered INSIDE `<header className="topbar">`: `--topbar-h` is measured live off
- * `topbarRef` with a ResizeObserver, so anything inside the header is accounted for
- * automatically while a sibling after `</header>` is not - focus mode would then overflow
- * by exactly this row's height. The strip is the tallest thing the topbar can grow, which
- * is the whole reason it folds.
- *
- * The fold mirrors `WorkQueue`'s `Header`: the caret is the button, and today's estimate
- * stays visible even collapsed (the work queue's precedent is its `count`) so folding the
- * strip away never hides the one figure worth a glance.
- */
-function UsageBar({
-  fleet,
-  view,
-  collapsed,
-  onToggleCollapsed,
-}: {
-  fleet: FleetCost | null;
-  view: "usd" | "plan";
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
-}): React.JSX.Element | null {
-  if (!fleetStripHasContent(fleet) || !fleet) return null;
-  const compactCost = compactFleetCost(fleet);
-  return (
-    <div className={`topbar-usage${collapsed ? " collapsed" : ""}`}>
-      <Tooltip label={collapsed ? "Show fleet cost and usage" : "Fold fleet cost and usage away"}>
-        <button
-          type="button"
-          className="topbar-usage-toggle"
-          aria-expanded={!collapsed}
-          onClick={onToggleCollapsed}
-        >
-          <span className="topbar-usage-caret" aria-hidden>
-            {collapsed ? "▸" : "▾"}
-          </span>
-          Usage
-          {collapsed && compactCost && (
-            <span className="topbar-usage-compact">{compactCost}</span>
-          )}
-        </button>
-      </Tooltip>
-      {!collapsed && <FleetStrip fleet={fleet} view={view} />}
     </div>
   );
 }

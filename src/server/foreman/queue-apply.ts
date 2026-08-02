@@ -342,6 +342,15 @@ export async function applyQueueAction(
       // internal workflow marker from ever being typed into a live session.
       return { kind: "noop" };
 
+    case "skip-wrapup":
+      // Retire the automatic drain without raising a Ship it? card. Answer FIRST, so a
+      // crash between these two harmless writes can only leave an unasked, already-answered
+      // row. Marking first would briefly surface the very shipping choices this policy says
+      // do not apply. A failed mark is retried next tick; a repeated answer is idempotent.
+      await actions.setWrapupAnswer(session.id, "foreman:automatic-wrapup-skipped");
+      await actions.markWrapupAsked(session.id);
+      return { kind: "done", what: `automatic wrap-up skipped: ${action.reason}` };
+
     case "auto-wrapup": {
       // Mark FIRST, then type, then record the answer. The order is the entire safety
       // argument here, and it is the opposite of the send path's - deliberately.

@@ -32,7 +32,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "../src/shared/types.ts";
-import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // The queue's decision core. It's pure with `now` always injected, so the whole
 // state machine is a table - which is the point: two earlier designs of the
@@ -46,6 +46,8 @@ const CFG: QueueConfig = {
   pickupTimeoutMs: 45_000,
   wrapupTriggers: ["drain"],
   wrapup: "ask",
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
 };
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -633,6 +635,96 @@ test("5. automatic wrap-up waits while the latest intent is unresolved", () => {
 test("5. workflow mode returns a workflow claim action, never a pane payload", () => {
   const action = tick({ items: DRAINED(), cfg: { wrapup: "workflow" } });
   assert.equal(action.kind, "workflow-wrapup");
+});
+
+test("5. a scout drain retires without a Workflow claim or Straight-to-PR action", () => {
+  for (const wrapup of ["workflow", "pr"] as const) {
+    const action = tick({
+      session: { task: mkTaskSummary({ kind: "scout" }) },
+      items: DRAINED(),
+      cfg: { wrapup },
+    });
+    assert.equal(action.kind, "skip-wrapup", wrapup);
+    assert.match(action.kind === "skip-wrapup" ? action.reason : "", /scout/);
+  }
+});
+
+test("5. disabled completion safeguards restore the configured queue action", () => {
+  const scout = tick({
+    session: { task: mkTaskSummary({ kind: "scout" }) },
+    items: DRAINED(),
+    cfg: { wrapup: "workflow", skipScoutWrapup: false },
+  });
+  assert.equal(scout.kind, "workflow-wrapup");
+
+  const mockups = tick({
+    items: DRAINED(),
+    intent: { objective: "Output: mockups" },
+    cfg: { wrapup: "workflow", skipReviewArtifactWrapup: false },
+  });
+  assert.equal(mockups.kind, "workflow-wrapup");
+});
+
+test("5. blocked drains still wait for the session to settle before retiring", () => {
+  for (const { wrapup, mayActLive } of [
+    { wrapup: "ask", mayActLive: true },
+    { wrapup: "workflow", mayActLive: false },
+    { wrapup: "pr", mayActLive: true },
+  ] as const) {
+    const action = tick({
+      session: {
+        task: mkTaskSummary({ kind: "scout" }),
+        lastActivity: NOW - 1,
+      },
+      items: DRAINED(),
+      cfg: { wrapup },
+      mayActLive,
+    });
+    assert.equal(action.kind, "none", `${wrapup}; mayActLive=${mayActLive}`);
+  }
+
+  const artifactAction = tick({
+    session: { lastActivity: NOW - 1 },
+    items: DRAINED(),
+    intent: { objective: "Present the navigation options.\n\nOutput: mockups" },
+    cfg: { wrapup: "ask" },
+  });
+  assert.equal(artifactAction.kind, "none", "review-artifact outputs wait too");
+});
+
+test("5. a review-artifact objective retires before even ask mode can claim a Workflow", () => {
+  const action = tick({
+    items: DRAINED(),
+    intent: { objective: "Compare the navigation ideas.\n\nOutput: mockups" },
+    cfg: { wrapup: "ask" },
+  });
+  assert.equal(action.kind, "skip-wrapup");
+  assert.match(action.kind === "skip-wrapup" ? action.reason : "", /review artifact/);
+});
+
+test("5. a work-queue item can declare the non-shipping output", () => {
+  const action = tick({
+    items: DRAINED().map((item) => ({ ...item, intent: "Compare the ideas.\nOutput: wireframes" })),
+    // Isolate the item's completion contract. The fixture default is `Ship the feature`,
+    // which would make this a mixed shipping + wireframe objective by design.
+    intent: null,
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(action.kind, "skip-wrapup");
+});
+
+test("5. an implementation that cites mockups keeps the configured automatic action", () => {
+  for (const objective of [
+    "Use the approved mockups to deliver the production-ready implementation.",
+    "Implement the session viewer.\nOutput: mockups",
+  ]) {
+    const action = tick({
+      items: DRAINED(),
+      intent: { objective },
+      cfg: { wrapup: "workflow" },
+    });
+    assert.equal(action.kind, "workflow-wrapup", objective);
+  }
 });
 
 test("5. the PR payload is not harness-scoped", () => {

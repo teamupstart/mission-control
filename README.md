@@ -4369,7 +4369,16 @@ because the two readers measure paths from different places - git writes them re
 the repository root, while the Files tab lists the working directory it was opened in - so a
 session started in a subdirectory can see changed files that its Files tab has no route to.
 The path is rebased through the repository root rather than handed over as written, which is
-what keeps a shared relative path like `src/index.ts` from opening the wrong file.
+what keeps a shared relative path like `src/index.ts` from opening the wrong file, and it is
+used exactly as git wrote it, so a file named `notes:12` opens as itself rather than as
+`notes`.
+
+That second refusal is a decision rather than a gap. Making those files openable means
+rooting the Files workspace at the repository root, which would widen the daemon's read and
+write containment from the working-directory subtree to the whole repository for every
+session - a larger and more security-relevant change than the affordance it serves. Every
+dispatched session works in a worktree, whose root **is** the repository root, so nothing is
+refused there.
 
 **Paths the agent merely typed are links too.** Markdown gives an agent no way to say
 "this word is a file" other than writing a link, and agents don't - they write

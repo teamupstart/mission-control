@@ -66,6 +66,14 @@ function trimTrailingSlash(path: string): string {
  * reads a trailing `:12` as a line number because a path in prose means it that way.
  * A path from `git diff` is exact, and a file genuinely named `notes:12` would be
  * routed to `notes` - enabled, and opening the wrong file.
+ *
+ * DECIDED, not overlooked: review asked that no non-deleted file be disabled, and the
+ * human ruled to keep the refusal above. The alternative is re-rooting the Files
+ * workspace at the repo root, which widens the daemon's read and write containment
+ * from the cwd subtree to the whole repository for every session - a bigger and more
+ * security-relevant change than the affordance it would serve. Every dispatched
+ * session is at its worktree root, where `cwd === repoRoot` and nothing is refused.
+ * Revisit this with that re-rooting, not by loosening the check.
  */
 export function diffFileOpenTarget(
   file: DiffFile,
@@ -90,7 +98,10 @@ export function diffFileOpenTarget(
   const base = trimTrailingSlash(cwd);
   const absolute = `${root}/${file.path}`;
   if (base !== root && !absolute.startsWith(`${base}/`)) {
-    return { path: null, reason: "This file is outside the session's checkout." };
+    return {
+      path: null,
+      reason: "This file is outside the session's working directory, so the Files tab cannot open it.",
+    };
   }
   return { path: absolute.slice(base.length + 1), reason: null };
 }

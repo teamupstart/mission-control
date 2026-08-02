@@ -41,7 +41,14 @@ test("a deleted file has no working-tree copy, so it reports why instead of a ro
  * The bug this function exists to prevent. Git writes toplevel-relative paths, the Files
  * tab is rooted at the session's cwd, and a session opened inside a package sees both.
  * Handing the patch's `src/index.ts` straight to the Files tab would open the package's
- * OWN `src/index.ts` - a real file, wrong file, no error anywhere.
+ * OWN `src/index.ts` - a real file, wrong file, no error anywhere. Verified against the
+ * daemon: `readSessionFile("/mono/packages/app", "src/index.ts")` returns the package's
+ * file, and the only path that reaches the root's is refused 403.
+ *
+ * Refusing here is a HUMAN DECISION, taken after review asked for the opposite. Making
+ * this file openable means re-rooting the Files workspace at the repo root, not
+ * relaxing this check - see `diffFileOpenTarget`. Do not "fix" this test by asserting a
+ * path; that would reinstate the wrong-file read.
  */
 test("a changed file outside the session's cwd is refused, not silently rebased", () => {
   const target = diffFileOpenTarget(

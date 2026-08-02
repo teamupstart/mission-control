@@ -72,7 +72,7 @@ test("Bind and submit opens the durable capturing run before compaction finishes
   );
 
   // Reload after API seeding so the browser's SSE snapshot includes the published version.
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs`);
   await dashboard.reload();
   await dashboard.getByRole("button", { name: "Bind to a session…" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Bind workflow" });
@@ -94,7 +94,7 @@ test("Bind and submit opens the durable capturing run before compaction finishes
   }
 
   await expect(dialog).toBeHidden();
-  await expect(dashboard).toHaveURL(new RegExp(`/workflows/runs/${accepted.run.id}$`));
+  await expect(dashboard).toHaveURL(new RegExp(`#/runs/${accepted.run.id}$`));
 
   // The provider fake is still holding compaction open. This API read proves the visible
   // run is the durable in-progress row, not a completed run rendered after a long request.

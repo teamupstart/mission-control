@@ -46,6 +46,11 @@ test("a natural-language review-artifact request is blocked without an Output fi
     "Write a report on code changes.",
     "Prepare a migration plan for operator review.",
     "Prepare a plan to implement the feature.",
+    "Research the current onboarding patterns.",
+    "Analyze the competing session layouts.",
+    "Audit the reset flow for gaps.",
+    "Next, investigate why operators miss the queue.",
+    "Compare the current onboarding patterns.",
   ]) {
     assert.equal(block({ objective })?.kind, "review_artifact", objective);
   }
@@ -64,6 +69,7 @@ test("mockup context does not block a task that also asks for implementation", (
     "Create a mockup viewer component.",
     "Implement the session viewer. Output: mockups",
     "Build an updated React component.\nDeliverables: wireframes",
+    "Implement a research dashboard for onboarding patterns.",
   ]) {
     assert.equal(block({ objective }), null, objective);
   }

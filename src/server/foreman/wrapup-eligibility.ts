@@ -50,6 +50,10 @@ const OUTPUT_FIELD =
 const REVIEW_ARTIFACT_REQUEST =
   /\b(?:create|produce|prepare|present|draft|generate|write|deliver|compare|explore)\b[^.?!\n]{0,100}\b(?:mock[- ]?ups?|wireframes?|prototypes?|storyboards?|design\s+(?:concepts?|explorations?|options?)|plans?|reports?|analys(?:is|es)|research|audit\s+findings?|recommendations?)\b/i;
 
+/** A review-only investigation stated directly as an imperative, without an output noun. */
+const DIRECT_REVIEW_REQUEST =
+  /(?:^|[.!?;:\n]\s*)(?:[-*]\s+)?(?:(?:please|first|next|then)\s*,?\s+)?(?:research|investigate|analy[sz]e|audit|assess|evaluate|review|study|survey|compare|explore|recommend)\b/im;
+
 /** Conventional homes for review-only artifacts. Mixed code plus artifacts remains eligible. */
 const REVIEW_ARTIFACT_PATH =
   /(?:^|\/)(?:(?:docs\/)?(?:mockups?|wireframes?|prototypes?|plans?|research|design[-_ ]explorations?)(?:\/|$)|[^/]*(?:mock[-_ ]?up|wireframe|prototype)[^/]*\.(?:html?|md|png|jpe?g|gif|svg|webp)$)/i;
@@ -89,7 +93,9 @@ function objectiveRequestsReviewArtifacts(objective: string): boolean {
   // Natural-language fallback for prompts like "Present at least three HTML mockups". A prompt
   // that also explicitly asks for implementation remains eligible, which keeps "mock up, then
   // implement" from being mistaken for an artifact-only task.
-  return REVIEW_ARTIFACT_REQUEST.test(objective) && !naturalLanguageRequestsShipping(objective);
+  return (
+    REVIEW_ARTIFACT_REQUEST.test(objective) || DIRECT_REVIEW_REQUEST.test(objective)
+  ) && !naturalLanguageRequestsShipping(objective);
 }
 
 function diffContainsOnlyReviewArtifacts(paths: readonly string[]): boolean {

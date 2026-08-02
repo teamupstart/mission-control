@@ -158,6 +158,7 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
   ).json()) as { defaultWorkflowId: string };
   expect(config.defaultWorkflowId, "the daemon should ship a default Workflow").toBeTruthy();
 
+  const title = "Audit The Retry Policy";
   const created = (await (
     await fetch(`${daemon.baseURL}/api/tasks`, {
       method: "POST",
@@ -165,15 +166,18 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
       body: JSON.stringify({
         repoRoot: daemon.repo,
         intent: "audit the retry policy",
-        title: "Audit The Retry Policy",
+        title,
         agent: "claude",
         kind: "ship",
         backlog: true,
         workflowId: config.defaultWorkflowId,
       }),
     })
-  ).json()) as { id: string; workflowId: string | null };
+  ).json()) as { id: string; title: string; workflowId: string | null };
   expect(created.workflowId).toBe(config.defaultWorkflowId);
+  // Titled explicitly rather than derived, so the row can be found by name without
+  // waiting on the async model retitle a dispatch would otherwise apply.
+  expect(created.title).toBe(title);
 
   await dashboard.route("**/api/workflows/config", () => {
     /* never fulfilled: the config request stays out for the whole test */
@@ -181,7 +185,7 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
   await dashboard.reload();
 
   await dashboard.getByRole("button", { name: "Sitrep" }).first().click();
-  await dashboard.getByRole("button", { name: created.title ?? "Audit The Retry Policy" }).click();
+  await dashboard.getByRole("button", { name: title, exact: true }).click();
 
   const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
   await expect(dialog).toBeVisible();

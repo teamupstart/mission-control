@@ -128,3 +128,85 @@ test("scout only defaults the Workflow, it does not lock it", async ({ dashboard
   await expect(kind).toHaveValue("scout");
   await expect(dialog.getByText("Foreman complete")).toBeVisible();
 });
+
+test("a hand-picked Workflow is not reverted by a later kind switch", async ({ dashboard }) => {
+  const { kind, afterWork } = await openDispatch(dashboard);
+  const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review");
+
+  // Scout puts the dispatch default aside, then the operator chooses for themselves.
+  await kind.selectOption("scout");
+  await afterWork.selectOption(builtinId);
+
+  await kind.selectOption("ship");
+
+  // Their choice stands. Handing back what scout put aside here would revert a selection
+  // the operator made after it, underneath them.
+  await expect(afterWork).toHaveValue(builtinId);
+});
+
+test("an edit keeps its Workflow when kind flips before the config has loaded", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The reversal must not depend on a fetch. `workflowConfig` arrives on its own request,
+  // and recomputing the machine default to restore it would resolve to None while that
+  // request is still out - so a scout-then-ship inside the window would SAVE an explicit
+  // "no handoff" over a task that had one. Held open for the whole test, so the window is
+  // the entire interaction rather than a race this spec would only sometimes catch.
+  const config = (await (
+    await fetch(`${daemon.baseURL}/api/workflows/config`)
+  ).json()) as { defaultWorkflowId: string };
+  expect(config.defaultWorkflowId, "the daemon should ship a default Workflow").toBeTruthy();
+
+  const created = (await (
+    await fetch(`${daemon.baseURL}/api/tasks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repoRoot: daemon.repo,
+        intent: "audit the retry policy",
+        title: "Audit The Retry Policy",
+        agent: "claude",
+        kind: "ship",
+        backlog: true,
+        workflowId: config.defaultWorkflowId,
+      }),
+    })
+  ).json()) as { id: string; workflowId: string | null };
+  expect(created.workflowId).toBe(config.defaultWorkflowId);
+
+  await dashboard.route("**/api/workflows/config", () => {
+    /* never fulfilled: the config request stays out for the whole test */
+  });
+  await dashboard.reload();
+
+  await dashboard.getByRole("button", { name: "Sitrep" }).first().click();
+  await dashboard.getByRole("button", { name: created.title ?? "Audit The Retry Policy" }).click();
+
+  const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  await expect(dialog).toBeVisible();
+  const kind = dialog.getByRole("combobox", { name: "Kind", exact: true });
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await expect(afterWork).toHaveValue(config.defaultWorkflowId);
+
+  await kind.selectOption("scout");
+  await expect(afterWork).toHaveValue("__none");
+  await kind.selectOption("ship");
+
+  // Handed back from what the scout switch put aside, with no config in sight.
+  await expect(afterWork).toHaveValue(config.defaultWorkflowId);
+
+  // And the durable row agrees, which is the failure the whole guard exists to prevent:
+  // saving here used to persist None and leave the task finishing with no handoff.
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(async () => {
+      const rows = (await (await fetch(`${daemon.baseURL}/api/tasks`)).json()) as {
+        id: string;
+        workflowId: string | null;
+      }[];
+      return rows.find((t) => t.id === created.id)?.workflowId ?? "missing";
+    })
+    .toBe(config.defaultWorkflowId);
+});

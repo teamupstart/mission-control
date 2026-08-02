@@ -132,6 +132,23 @@ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
   e2e/specs/queued-turn-delivery.spec.ts --reporter=list
 ```
 
+### The Line
+
+[`docs/evidence/line-strip/`](../docs/evidence/line-strip/) carries the two frames
+`specs/line-strip.spec.ts` takes between its own assertions, behind the same
+`MC_E2E_EVIDENCE` flag: the strip after a task is filed, with the Backlog stage naming what
+autopilot would take next, and the same strip after that task is parked - amber border,
+glyph, name, count and sentence, with the wire feeding it lit to match.
+
+Both are worth having as pictures rather than assertions because the claim is a colour and a
+shape: "amber when it needs the operator" is checkable in the DOM as a class name, and
+readable as a strip only here.
+
+```sh
+MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
+  e2e/specs/line-strip.spec.ts --reporter=list
+```
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

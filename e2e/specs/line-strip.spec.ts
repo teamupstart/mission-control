@@ -1,3 +1,7 @@
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { Locator, Page } from "@playwright/test";
+
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
@@ -32,6 +36,26 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
 }
 
 const STAGES = ["Intake", "Backlog", "Working", "Review", "Decide", "Shipped"];
+
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/line-strip/", import.meta.url));
+
+/**
+ * Photograph the strip this spec is already asserting on.
+ *
+ * Behind `MC_E2E_EVIDENCE` for the reason the other captures give: an ordinary run would
+ * rewrite the binaries for no added signal. Inside the regression test rather than in a
+ * staged capture spec of its own, because the point of the picture is that the assertions
+ * around it passed on the same run - a screenshot from a separate scripted walk proves the
+ * walk, not the feature.
+ */
+async function shoot(page: Page, line: Locator, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and on a
+  // strip of six adjacent buttons it lands squarely on the stage being photographed.
+  await page.mouse.move(0, 0);
+  await line.screenshot({ path: `${EVIDENCE}${name}.png` });
+}
 
 test("the Line renders every stage, tracks the fleet live, and its stages navigate", async ({
   dashboard,
@@ -69,6 +93,7 @@ test("the Line renders every stage, tracks the fleet live, and its stages naviga
   // client-side code in this build knows how to write "next up:".
   await expect(backlog).toHaveAccessibleName(/^Backlog, 1 task waiting - next up: Fix pane focus stealing$/);
   await expect(backlog).toContainText("next up: Fix pane focus stealing");
+  await shoot(dashboard, line, "line-live");
 
   // ---- amber when it needs the operator ----
 
@@ -84,6 +109,7 @@ test("the Line renders every stage, tracks the fleet live, and its stages naviga
   await expect(backlog).toHaveClass(/tone-attention/);
   // And it is the ONLY amber stage: a strip where everything glows says nothing.
   await expect(line.locator(".line-stage.tone-attention")).toHaveCount(1);
+  await shoot(dashboard, line, "line-attention");
 
   // ---- a stage click goes somewhere real ----
 

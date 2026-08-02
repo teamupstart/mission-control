@@ -15,8 +15,6 @@ import { moveSelection } from "../src/web/lib/layoutNav.ts";
 import { stateDisplay } from "../src/web/lib/format.ts";
 import { mkMemberSession, mkSession } from "./helpers/session-fixture.ts";
 
-const NO_GATES: ReadonlySet<string> = new Set();
-
 /** A plain working session, named so the alphabetical baseline is easy to reason about. */
 function plain(name: string, over: Partial<Session> = {}): Session {
   return mkSession({ id: `plain-${name}`, name, pid: 1, ...over });
@@ -33,7 +31,7 @@ function member(runId: string, ordinal: number, name: string, over: Partial<Sess
 }
 
 /** An idle session: a different tone group from the working default. */
-const IDLE: Partial<Session> = { state: "idle", nomistakes: null, activity: null };
+const IDLE: Partial<Session> = { state: "idle", activity: null };
 
 function names(sessions: readonly Session[]): string[] {
   return sessions.map((s) => s.name);
@@ -42,7 +40,7 @@ function names(sessions: readonly Session[]): string[] {
 test("with no ensemble anywhere, the order is exactly the tone/name/pid sort it always was", () => {
   // The regression that would be invisible: clustering must cost an ordinary fleet nothing.
   const fleet = [plain("charlie"), plain("alpha", IDLE), plain("bravo")];
-  const ordered = orderSessions(fleet, NO_GATES);
+  const ordered = orderSessions(fleet);
   assert.deepEqual(names(ordered.sessions), ["bravo", "charlie", "alpha"]);
   for (const group of ordered.groups) assert.deepEqual(group.clusters, []);
 });
@@ -50,7 +48,7 @@ test("with no ensemble anywhere, the order is exactly the tone/name/pid sort it 
 test("every tone group comes back, empty ones included, in TONE_GROUPS order", () => {
   // `groupByTone`'s contract, which App's board columns depend on: `moveSelection` indexes
   // columns positionally, so a dropped empty group is arrow keys crossing into the wrong one.
-  const ordered = orderSessions([plain("only")], NO_GATES);
+  const ordered = orderSessions([plain("only")]);
   assert.deepEqual(
     ordered.groups.map((g) => g.tone),
     TONE_GROUPS.map((g) => g.tone),
@@ -67,7 +65,7 @@ test("siblings of one run come out adjacent, in ordinal order, where the first o
     member("run-a", 1, "alpha"),
     member("run-a", 2, "november"),
   ];
-  const ordered = orderSessions(fleet, NO_GATES);
+  const ordered = orderSessions(fleet);
   assert.deepEqual(names(ordered.sessions), ["alpha", "november", "zulu", "mid"]);
 
   const working = ordered.groups.find((g) => g.tone === "working")!;
@@ -81,7 +79,7 @@ test("two runs in one column each cluster, without absorbing the other's members
     member("run-b", 2, "echo"),
     member("run-a", 1, "alpha"),
   ];
-  const ordered = orderSessions(fleet, NO_GATES);
+  const ordered = orderSessions(fleet);
   assert.deepEqual(names(ordered.sessions), ["alpha", "delta", "bravo", "echo"]);
 
   const working = ordered.groups.find((g) => g.tone === "working")!;
@@ -98,7 +96,7 @@ test("a cluster never crosses a tone boundary: a blocked member stays in needs-y
   // cluster header repeated, and the header's rollup is what ties the halves together.
   const blocked = member("run-a", 2, "beta", { pendingReviews: 1, state: "idle" });
   const fleet = [member("run-a", 1, "alpha"), blocked, member("run-a", 3, "gamma")];
-  const ordered = orderSessions(fleet, NO_GATES);
+  const ordered = orderSessions(fleet);
 
   const attention = ordered.groups.find((g) => g.tone === "attention")!;
   const working = ordered.groups.find((g) => g.tone === "working")!;
@@ -119,9 +117,9 @@ test("the flat order is exactly the groups concatenated, and loses nobody", () =
     plain("mid", IDLE),
     member("run-a", 1, "alpha"),
     plain("zulu"),
-    mkSession({ id: "gone", name: "ghost", pid: 9, state: "exited", terminals: [], nomistakes: null }),
+    mkSession({ id: "gone", name: "ghost", pid: 9, state: "exited", terminals: [] }),
   ];
-  const ordered = orderSessions(fleet, NO_GATES);
+  const ordered = orderSessions(fleet);
   assert.deepEqual(
     names(ordered.sessions),
     ordered.groups.flatMap((g) => names(g.sessions)),
@@ -131,7 +129,7 @@ test("the flat order is exactly the groups concatenated, and loses nobody", () =
   // Every session lands in the group its own tone names.
   for (const group of ordered.groups) {
     for (const s of group.sessions) {
-      assert.equal(stateDisplay(s, false).tone, group.tone, s.name);
+      assert.equal(stateDisplay(s).tone, group.tone, s.name);
     }
   }
 });
@@ -147,8 +145,8 @@ test("ordering is idempotent, which is what lets App and the views each compute 
     member("run-b", 1, "bravo"),
     member("run-a", 2, "zulu", IDLE),
   ];
-  const once = orderSessions(fleet, NO_GATES);
-  const twice = orderSessions(once.sessions, NO_GATES);
+  const once = orderSessions(fleet);
+  const twice = orderSessions(once.sessions);
   assert.deepEqual(names(twice.sessions), names(once.sessions));
   assert.deepEqual(
     twice.groups.map((g) => g.clusters),
@@ -166,7 +164,7 @@ test("board column id arrays derived from the order match the rendered sequence"
     member("run-a", 1, "alpha"),
     plain("mid", IDLE),
   ];
-  const ordered = orderSessions(fleet, NO_GATES);
+  const ordered = orderSessions(fleet);
   const columns = ordered.groups.map((g) => g.sessions.map((s) => s.id));
   const rendered = ordered.groups.map((g) =>
     fleetBlocks(g).flatMap((b) => (b.kind === "session" ? [b.session.id] : b.sessions.map((s) => s.id))),
@@ -176,7 +174,7 @@ test("board column id arrays derived from the order match the rendered sequence"
 
 test("fleetBlocks frames exactly the span, and a lone sibling still gets one", () => {
   const fleet = [plain("aaa"), member("run-a", 1, "bbb"), plain("ccc")];
-  const blocks = fleetBlocks(orderSessions(fleet, NO_GATES).groups.find((g) => g.tone === "working")!);
+  const blocks = fleetBlocks(orderSessions(fleet).groups.find((g) => g.tone === "working")!);
   assert.deepEqual(
     blocks.map((b) => (b.kind === "session" ? b.session.name : `cluster:${b.runId}`)),
     ["aaa", "cluster:run-a", "ccc"],
@@ -185,16 +183,6 @@ test("fleetBlocks frames exactly the span, and a lone sibling still gets one", (
   // column (the tone-boundary rule), and the header is precisely what says so.
   const lone = blocks.find((b) => b.kind === "cluster");
   assert.ok(lone && lone.kind === "cluster" && lone.sessions.length === 1);
-});
-
-test("a gate parked on an idle session moves it, and its cluster, with it", () => {
-  // `gateAlerts` is App's cross-session derivation and it changes a session's TONE. The ordering
-  // has to consult it, or a session the board draws in "needs you" would be indexed under "idle".
-  const gated = member("run-a", 1, "alpha", IDLE);
-  const ordered = orderSessions([gated, plain("zulu")], new Set([gated.id]));
-  const attention = ordered.groups.find((g) => g.tone === "attention")!;
-  assert.deepEqual(names(attention.sessions), ["alpha"]);
-  assert.deepEqual(attention.clusters, [{ runId: "run-a", startIndex: 0, length: 1 }]);
 });
 
 test("the arrow keys walk straight through a cluster boundary, in both layouts", () => {
@@ -209,7 +197,7 @@ test("the arrow keys walk straight through a cluster boundary, in both layouts",
     plain("zulu"),
     member("run-a", 1, "mmm"),
   ];
-  const ordered = orderSessions(fleet, NO_GATES);
+  const ordered = orderSessions(fleet);
   const working = ordered.groups.find((g) => g.tone === "working")!;
   assert.deepEqual(names(working.sessions), ["aaa", "mmm", "delta", "zulu"]);
 

@@ -21,7 +21,7 @@ export class ReviewResolutionError extends Error {}
  * Owns the review lifecycle and the long-poll waiters that let an agent block on
  * a human decision. The agent (via MCP) creates a review and calls `wait`; the
  * human resolves it from the UI, which unblocks every waiter. This is the
- * generalized analog of no-mistakes' `axi respond` approval gate.
+ * generalized approval and input channel for agents.
  */
 export class ReviewManager {
   private waiters = new Map<string, Set<Waiter>>();

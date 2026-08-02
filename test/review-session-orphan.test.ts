@@ -44,7 +44,6 @@ function mkDiscovered(id: string, over: Partial<DiscoveredSession> = {}): Discov
     nameSource: "process",
     cwd: "/wt/task-1",
     gitBranch: "harness/task-1",
-    nomistakesGated: false,
     pid: 1,
     tty: "ttys015",
     terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],

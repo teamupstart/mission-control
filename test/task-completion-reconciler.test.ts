@@ -58,7 +58,6 @@ function discovered(id: string, cwd: string, over: Partial<DiscoveredSession> = 
     gitBranch: "feat/work",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 100,
     tty: null,
     terminals: [],
@@ -593,7 +592,6 @@ test("a dependent unblocks, and the agent stops being refused its next task", as
     state: "idle",
     cwd: "/repo",
     repoRoot: "/repo",
-    nomistakes: null,
     lastActivity: NOW - 60_000,
   });
   assert.equal(agentIsFree(agent, [agent], f.registry.listTasks(), CFG, NOW), false);

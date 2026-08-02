@@ -14,8 +14,6 @@ import type {
   InspectorPr,
   InspectorPrState,
   InspectorSeverity,
-  InspectorSource,
-  NmFixReplySource,
   NoteDisposition,
   PaneDialogSummary,
   PendingTurn,
@@ -123,34 +121,6 @@ export function openDb(): DatabaseSync {
       payload    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, ts);
-
-    -- Who said what to a no-mistakes gate: the fix log's byline.
-    --
-    -- Its own table rather than a session_events kind, for three reasons that
-    -- only look like taste until you try it:
-    --  - hooksEverSeen reads ANY row in session_events for a session as "hooks
-    --    reached us from this session", and leans in its own comment on there
-    --    being exactly one writer. A second writer makes an uninstrumented
-    --    session claim hooks, silently, in a fact that gates escalation.
-    --  - the join key is the RUN, not the session. session_events is indexed
-    --    (session_id, ts), which this could not use: the fix log resolves from a
-    --    cwd and never holds a session id. Worse, a session id is synthetic
-    --    (tty+pid+start) and re-mints on restart, while a run id doesn't - so
-    --    session is the wrong key for a record meant to outlive the session.
-    --  - retention differs. session_events is an append-only hook stream; this is
-    --    a durable record that has to outlive its session but not forever.
-    -- session_id is kept for provenance only - never joined on.
-    CREATE TABLE IF NOT EXISTS gate_replies (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id  TEXT NOT NULL,
-      ts          INTEGER NOT NULL,
-      source      TEXT NOT NULL,  -- you | foreman
-      run_id      TEXT NOT NULL,  -- the no-mistakes run id, from axi status
-      step        TEXT NOT NULL,  -- the gate's step (review | document | ...)
-      finding_ids TEXT NOT NULL,  -- JSON string[]: which round, without hashing its text
-      text        TEXT            -- null: findings were selected but nothing was typed
-    );
-    CREATE INDEX IF NOT EXISTS idx_gate_replies_run ON gate_replies(run_id, step);
 
     CREATE TABLE IF NOT EXISTS session_agent_bindings (
       session_id       TEXT PRIMARY KEY,  -- the synthetic id (tty+pid+start)
@@ -778,8 +748,8 @@ export function openDb(): DatabaseSync {
     -- down at logEvent below: that table has exactly one writer, and hooksEverSeen asks
     -- "any row for this session?" - not "any row of a hook kind". A second writer would
     -- make every session it touched claim hooks it never emitted, which is the
-    -- installation fact the work queue gates on. gate_replies got its own table for
-    -- exactly this reason; so does this.
+    -- installation fact the work queue gates on. Non-hook records need their own
+    -- tables for exactly this reason.
     --
     -- Keyed on note_key, never on session_id: a session id is synthetic (tty+pid+start)
     -- and re-mints on every restart, while this record is meant to outlive the session
@@ -963,7 +933,7 @@ export function openDb(): DatabaseSync {
       repo_root        TEXT,              -- INSPECTOR.md + standards + the allowlist check
       cwd              TEXT,              -- a checkout to run gh from
       session_id       TEXT,              -- nullable: the PR outlives the session
-      source           TEXT NOT NULL,     -- hook | no-mistakes (how we know it's ours)
+      source           TEXT NOT NULL,     -- hook | legacy
       state            TEXT NOT NULL,     -- open | closed
       head_sha         TEXT,              -- head as of the last completed review
       review_posture   TEXT,              -- consent posture that produced head_sha
@@ -2086,139 +2056,6 @@ export function logEvent(sessionId: string, ts: number, kind: string, payload: u
     .run(sessionId, ts, kind, payload === undefined ? null : JSON.stringify(payload));
 }
 
-// ---- no-mistakes gate replies (the fix log's byline) ----
-
-/**
- * Longest reply text kept. The fix log clamps again for display; this is the
- * bound on what the DB carries, since a reply is free-text a human or a model
- * typed and nothing upstream limits it.
- */
-const MAX_GATE_REPLY_TEXT = 4000;
-/**
- * Most finding ids kept per reply. Ids are short and a gate's finding set is
- * small (22 was the extreme in live data), so this only ever catches a runaway.
- * The set is a discriminator between rounds, not a record - dropping the tail
- * costs precision on an already-unlikely tie, never correctness.
- */
-const MAX_GATE_REPLY_IDS = 200;
-
-/** One recorded reply to a no-mistakes gate. */
-export interface GateReplyRow {
-  sessionId: string;
-  ts: number;
-  source: NmFixReplySource;
-  runId: string;
-  step: string;
-  findingIds: string[];
-  text: string | null;
-}
-
-/**
- * Record who answered a no-mistakes gate. Returns the row's id, so a caller that
- * wrote optimistically can take it back (see `dropGateReply`).
- *
- * Keyed by (runId, step) + the finding ids up at the gate, which is what the fix
- * log joins on. NOT by `findingsDigest`: that hashes finding DESCRIPTIONS as
- * `axi status` rendered them, and `axi status` truncates at 600 runes with a
- * "… (truncated, %d chars total)" suffix - so matching on it would mean
- * replicating another tool's display constant and format string byte-for-byte,
- * forever, with nothing failing loudly when they changed. Ids are short, stable,
- * never truncated, and identify a round at least as precisely.
- */
-export function logGateReply(r: GateReplyRow): number {
-  const ids = r.findingIds.filter((i) => typeof i === "string" && i).slice(0, MAX_GATE_REPLY_IDS);
-  const text = r.text?.trim() ? r.text.trim().slice(0, MAX_GATE_REPLY_TEXT) : null;
-  const res = openDb()
-    .prepare(
-      `INSERT INTO gate_replies (session_id, ts, source, run_id, step, finding_ids, text)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(r.sessionId, r.ts, r.source, r.runId, r.step, JSON.stringify(ids), text);
-  return Number(res.lastInsertRowid);
-}
-
-/**
- * Take back a recorded reply - the compensating half of an optimistic write.
- *
- * Exists because a byline has to be stamped BEFORE we know the decision was
- * delivered: its `ts` is what the fix log's causality filter reads, so a row
- * written once the outcome is known would date from after the fix it explains and
- * be discarded (see the respond route). So the write is a claim, and this retracts
- * it when the claim turns out false. An unmatched id is a no-op: retracting a
- * byline that was never written is the same outcome as retracting one that was.
- */
-export function dropGateReply(id: number): void {
-  openDb().prepare(`DELETE FROM gate_replies WHERE id = ?`).run(id);
-}
-
-/**
- * Every recorded reply to one run's gate at `step`, oldest first.
- *
- * Bounded by the index on (run_id, step): a run works a step in a handful of
- * rounds, so this returns a handful of rows however long the daemon has run.
- *
- * A row whose `source` we don't recognise is DROPPED, not coerced. These rows live
- * for 90 days and outlive the daemon that wrote them, so a third source minted by a
- * newer daemon and read back by an older one is a real upgrade-window state rather
- * than a can't-happen. Coercing it would resolve "I don't know who did this" into
- * the most alarming claim the log can make - that a bot changed your branch. The
- * byline underclaims everywhere else; an unknown author is no byline.
- */
-export function gateRepliesFor(runId: string, step: string): GateReplyRow[] {
-  const rows = openDb()
-    .prepare(
-      `SELECT session_id, ts, source, run_id, step, finding_ids, text
-         FROM gate_replies WHERE run_id = ? AND step = ? ORDER BY ts ASC`,
-    )
-    .all(runId, step) as unknown as Array<Record<string, unknown>>;
-  return rows.flatMap((row) => {
-    const source = row.source;
-    if (source !== "you" && source !== "foreman") return [];
-    return [
-      {
-        sessionId: String(row.session_id ?? ""),
-        ts: Number(row.ts ?? 0),
-        source,
-        runId: String(row.run_id ?? ""),
-        step: String(row.step ?? ""),
-        findingIds: parseIdList(row.finding_ids),
-        text: typeof row.text === "string" ? row.text : null,
-      },
-    ];
-  });
-}
-
-/** A `finding_ids` JSON array back to a string[]; a bad blob costs precision, not the read. */
-function parseIdList(raw: unknown): string[] {
-  if (typeof raw !== "string") return [];
-  try {
-    const v = JSON.parse(raw);
-    return Array.isArray(v) ? v.filter((i): i is string => typeof i === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Age out gate replies. Returns how many rows went.
- *
- * Pruned by AGE and nothing else - deliberately, because the obvious alternative
- * is wrong. These are keyed to a session id, so session-scoped pruning is right
- * there and would drop a reply the moment its session exited; but the fix log
- * outlives the session BY DESIGN (it's read from git, and a finished run is
- * exactly when the log becomes interesting), so that would delete the byline for
- * the branch you sat down to review. Age is the only bound that doesn't fight
- * the feature.
- *
- * The window is a floor on how long a byline stays legible, not a bound on
- * anything the system needs: past it, the log still lists the fix and still shows
- * the reply - it just stops naming the author. One row per gate verdict makes
- * this a slow-growing table, so the window can afford to be generous.
- */
-export function pruneGateReplies(cutoff: number): number {
-  return Number(openDb().prepare(`DELETE FROM gate_replies WHERE ts < ?`).run(cutoff).changes);
-}
-
 /**
  * Longest pane capture kept per episode.
  *
@@ -2562,10 +2399,9 @@ function parseSentOption(raw: unknown): { number: number; label: string } | null
 /**
  * Age out episodes. Returns how many rows went.
  *
- * Aged rather than session-scoped for the same reason as `pruneGateReplies`: the
- * record is most interesting once the session is over, so dropping it when the
- * session exits would delete it exactly when it starts being read. Panes make these
- * rows fatter than a gate reply, so the retention window is the shorter of the two.
+ * Aged rather than session-scoped because the record is most interesting once the
+ * session is over, so dropping it when the session exits would delete it exactly
+ * when it starts being read.
  */
 export function pruneEpisodes(cutoff: number): number {
   return Number(
@@ -2583,11 +2419,9 @@ export function pruneEpisodes(cutoff: number): number {
  *
  * That single writer is LOad-BEARING, not incidental: this asks "any row?", not
  * "any row of a hook kind", so a second writer would make every session it
- * touched claim hooks it never emitted - silently, in a fact that decides whether
- * a session looks uninstrumented. Gate replies wanted a home here and were given
- * their own table partly for this reason (see `gate_replies`). Anything logged
- * against a session that is NOT a hook needs the same treatment, or this query
- * needs to start naming the kinds it counts.
+ * touched claim hooks it never emitted, silently, in a fact that decides whether a
+ * session looks uninstrumented. Anything logged against a session that is NOT a
+ * hook needs a different table, or this query needs to name the kinds it counts.
  *
  * The durability outlasts the process, which is the whole point: overlays are
  * in-memory, so on a daemon restart a live, healthy, hook-instrumented session
@@ -4380,8 +4214,8 @@ export function fleetTokensSince(tsMs: number): number {
  * How many pull requests we PROVED we opened since `tsMs`.
  *
  * `adopted_at` is the right column and the only one: a row exists here because a hook
- * caught the `gh pr create` or a no-mistakes run reported its own `pr:` line, which is
- * exactly the provenance rule the Inspector posts under. Counting `inspector_prs` rows by
+ * caught the `gh pr create` hook, which is exactly the provenance rule the Inspector posts
+ * under. Counting `inspector_prs` rows by
  * any other date - or counting `prUrl` off live sessions - would fold in pull requests we
  * merely stood next to.
  */
@@ -4414,8 +4248,8 @@ export function reportedUsageLedgerHasRows(): boolean {
 /**
  * Age out ledger rows. Returns how many went.
  *
- * Pruned by AGE and nothing else, on the `pruneGateReplies` precedent and for the same
- * reason: these are keyed to a session that will be long gone, and the record becomes
+ * Pruned by AGE and nothing else because these are keyed to a session that will be
+ * long gone, and the record becomes
  * interesting PRECISELY once it is - "what did last week cost?" is a question you ask
  * about finished work. Session-scoped pruning would delete the answer at the moment it
  * started to matter.
@@ -5252,7 +5086,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     repoRoot: r.repo_root,
     cwd: r.cwd,
     sessionId: r.session_id,
-    source: r.source as InspectorSource,
+    source: r.source === "hook" ? "hook" : "legacy",
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
     reviewPosture: (r.review_posture as InspectorPr["reviewPosture"]) ?? null,
@@ -5279,9 +5113,8 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
  *
  * `DO NOTHING` rather than an upsert, and that is the whole design of the function:
  * adoption is a fact about the past ("we opened this"), so a later sighting must never
- * be able to rewrite it. Both signals - the hook's `gh pr create` and no-mistakes' own
- * `pr:` line - land here, and the second one to arrive is a no-op instead of a
- * re-adoption that would reset the head sha and re-review a PR from scratch.
+ * be able to rewrite it. Repeated hook delivery is a no-op instead of a re-adoption
+ * that would reset the head sha and re-review a PR from scratch.
  */
 export function adoptInspectorPr(pr: InspectorPr): boolean {
   const res = openDb()

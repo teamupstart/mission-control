@@ -267,7 +267,6 @@ test("manager startup preserves prepared packets and makes every surviving send 
     gitBranch: "feature",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 92,
     tty: "tty-delivery-recovery",
     terminals: [],

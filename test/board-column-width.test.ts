@@ -43,7 +43,6 @@ function props(sessions: Session[]): SessionViewProps {
     backlog: [],
     onEditTask: noop,
     backlogPlan: null,
-    gateAlerts: new Set<string>(),
     selectedId: null,
     consoleZone: "rail",
     onConsoleZoneChange: noop,

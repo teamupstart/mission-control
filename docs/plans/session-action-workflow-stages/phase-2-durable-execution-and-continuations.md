@@ -342,7 +342,7 @@ a manual Live proof in a disposable repository and a Preview proof that no text 
 - Two actions execute in order in one repair round without consuming repair budget.
 - Restart tests prove no duplicate send, completion, segment, receipt, or downstream activation.
 - `pull_request` remains impossible to publish and has a clear capability diagnostic.
-- Old workflow versions, submissions, deliveries, and No-Mistakes behavior are unchanged.
+- Old workflow versions, submissions, deliveries, and No-Mistakes Review behavior are unchanged.
 - Typecheck, lint, tests, build, smoke, and manual runtime proofs pass.
 
 ## Downstream handoff to Phase 3

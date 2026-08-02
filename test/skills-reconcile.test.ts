@@ -155,10 +155,10 @@ test("disabling a skill removes only its link", () => {
 });
 
 test("THE test: a user's own skills are untouched, whatever we do", () => {
-  // The operator's real directory holds no-mistakes, implement-plan, phase-plan...
+  // The operator's real directory holds handmade skills that are not ours.
   // hand-authored, not ours, and irreplaceable.
-  mkdirSync(join(claudeSkills, "no-mistakes"), { recursive: true });
-  writeFileSync(join(claudeSkills, "no-mistakes", "SKILL.md"), "the user's work\n");
+  mkdirSync(join(claudeSkills, "handmade-skill"), { recursive: true });
+  writeFileSync(join(claudeSkills, "handmade-skill", "SKILL.md"), "the user's work\n");
   const theirLink = join(home, "their-skill-src");
   mkdirSync(theirLink, { recursive: true });
   symlinkSync(theirLink, join(claudeSkills, "implement-plan"), "dir");
@@ -169,8 +169,8 @@ test("THE test: a user's own skills are untouched, whatever we do", () => {
 
   // Not "we tried not to" - after linking, unlinking, and a full uninstall, both are
   // still exactly as they were. A symlink of theirs is no more ours than a directory.
-  assert.deepEqual(entries(), ["implement-plan", "no-mistakes"]);
-  assert.equal(readFileSync(join(claudeSkills, "no-mistakes", "SKILL.md"), "utf8"), "the user's work\n");
+  assert.deepEqual(entries(), ["handmade-skill", "implement-plan"]);
+  assert.equal(readFileSync(join(claudeSkills, "handmade-skill", "SKILL.md"), "utf8"), "the user's work\n");
   assert.equal(readlinkSync(join(claudeSkills, "implement-plan")), theirLink);
 });
 

@@ -28,31 +28,6 @@ never on agent id); any new UI surface.
 
 Inherits C1-C8. Findings binding this phase:
 
-- `promptHarness` (`foreman/prompt.ts:154-172`) projects `{ child, menus }`;
-  `policyFor` emits the `answer.option` grammar only when `menus`. The menu claims
-  ("typed characters are discarded", the cursor-walk framing) are pane facts - false for
-  SDK sessions.
-- `menuMismatch` (`foreman/verdict.ts:~530`) refuses multi-select forms outright - a
-  pane limitation, not a reviewer one.
-- Queue delivery (`foreman/queue-apply.ts`): `mayHaveLanded` / `paneBlocked` / the
-  pane-recreated guard (`paneKeyOf` snapshot) are all pane uncertainty; SDK sends are
-  acked or definitively failed.
-- `foremanAutomationAuthorized` (`harness/index.ts:183-187`) requires
-  `harness.workQueue && harness.hooks && (scope === "machine" || hooksSeen)`. SDK
-  sessions set `hooksSeen` at bind (C5), but pi has `hooks: null` - the runtime arm added
-  here is what phase 6 relies on (C9).
-- `resetSession` (`src/server/reset.ts`) is the single reset owner; `resetToOrigin`
-  reads `harness.clearContext`. Work-episode rebind expects both the rotated
-  `agentSessionId` and clear evidence that `canResolvePending` accepts. Phase 2's
-  `driver_identity` binding alone cannot resolve the pre-armed reset wait.
-- Skills reload (`skills/reload.ts`) gates on pane preconditions (`hasPane`, readable
-  mode line, `settledIdle`); Claude cost rides OTEL env from `~/.claude/settings.json`
-  (`@shared/claude-settings.ts`) - expected to fire from the SDK subprocess; verify.
-- PR provenance: only `prCreated` (command match) and `NmRunSummary.prUrl` reach
-  `adoptPr` (`inspector-adoption.test.ts` pins it). Phase 2 pairs `PreToolUse` command
-  evidence with the matching `PostToolUse` URL before emitting the driver's
-  `pr_created`; neither half is sufficient alone.
-
 ## Implementation steps
 
 1. **`foreman/prompt.ts` (C9)**: `PromptHarness` gains

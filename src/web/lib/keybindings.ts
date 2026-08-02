@@ -140,14 +140,14 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "selection",
   },
   {
-    // The detail's Workflows tab: this session's workflow ladder and its no-mistakes gate,
+    // The detail's Workflows tab: this session's workflow ladder,
     // which used to stack above the transcript and push it off the screen. Distinct from
     // the global `workflows` action above - that one opens the fleet-wide Workflows PAGE,
     // this reveals one session's run. `y` because every letter either verb owns is taken;
     // `w` is the page and the tab chords already spent `g`, `d` and `f`.
     id: "sessionWorkflows",
     label: "Open session workflows",
-    description: "Show the selected session's workflow ladder and no-mistakes gate.",
+    description: "Show the selected session's workflow ladder.",
     defaultBinding: "y",
     group: "selection",
   },

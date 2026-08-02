@@ -16,7 +16,6 @@ import {
 import type { Stall } from "../src/shared/stall.ts";
 import { chimeGate } from "../src/web/lib/chime.ts";
 import type {
-  NmRunSummary,
   Session,
   SessionQueueSummary,
   SessionState,
@@ -36,8 +35,6 @@ function mkSession(over: Partial<Session> = {}): Session {
     gitBranch: null,
     gitRoot: null,
     repoRoot: null,
-    nomistakesGated: false,
-    nomistakesNarration: null,
     pid: 1,
     tty: null,
     permissionMode: null,
@@ -53,8 +50,6 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastSeen: 0,
     lastActivity: null,
     pendingReviews: 0,
-    nomistakes: null,
-    nomistakesFixes: [],
     task: null,
     prUrl: null,
     prNumber: null,
@@ -129,34 +124,12 @@ test("a session entering awaiting_input alerts once (attention), then stays quie
   assert.equal(detectAlerts(scope([waiting]), scope([waiting])).length, 0);
 });
 
-test("a new pending review alerts as a review, a parked gate as a gate", () => {
+test("a new pending review alerts as a review", () => {
   const idle = mkSession({ id: "a", state: "idle" });
   const review = mkSession({ id: "a", state: "idle", pendingReviews: 2 });
   const r = detectAlerts(scope([idle]), scope([review]));
   assert.equal(r[0]?.kind, "review");
   assert.equal(r[0]?.body, "2 to review");
-
-  const gate: NmRunSummary = {
-    id: "01RUN_GATE",
-    status: "running",
-    branch: "x",
-    startedAt: null,
-    endedAt: null,
-    prUrl: null,
-    awaitingAgent: "parked 1m",
-    findingsSummary: null,
-    gateStep: "review",
-    gateSummary: null,
-    gateRisk: null,
-    steps: [],
-    activeSteps: [],
-    findings: [],
-    outcome: null,
-  };
-  const parked = mkSession({ id: "b", state: "idle", nomistakes: gate });
-  const g = detectAlerts(scope([mkSession({ id: "b" })]), scope([parked]));
-  assert.equal(g[0]?.kind, "gate");
-  assert.match(g[0]?.body ?? "", /gate parked at review/);
 });
 
 test("a menu appearing alerts, even with no hooks to report it", () => {
@@ -310,38 +283,6 @@ test("idle + task-done are always DETECTED, as info - delivery decides who hears
   assert.equal(r.filter(deliverable).length, 0);
 });
 
-test("backgrounding a no-mistakes run is not 'went idle'", () => {
-  // The idle alert fires on a working -> idle bucket transition. An agent that
-  // backgrounds its no-mistakes run and ends its turn goes `working` -> `idle` in
-  // hook state, but it hasn't finished a burst of work and it isn't waiting on
-  // you - the run is still going and will re-invoke it. Alerting here trains you
-  // to ignore the alert that matters.
-  const running: NmRunSummary = {
-    id: "01RUN_BACKGROUNDED",
-    status: "running",
-    branch: "feature/x",
-    startedAt: null,
-    endedAt: null,
-    prUrl: null,
-    awaitingAgent: null,
-    findingsSummary: null,
-    gateStep: null,
-    gateSummary: null,
-    gateRisk: null,
-    steps: [{ step: "review", status: "running", findings: 0 }],
-    activeSteps: [],
-    findings: [],
-    outcome: null,
-  };
-  const driving = mkSession({ id: "a", state: "working", nomistakes: running });
-  const backgrounded = mkSession({ id: "a", state: "idle", nomistakes: running });
-  assert.equal(detectAlerts(scope([driving]), scope([backgrounded])).length, 0);
-
-  // Once the run finishes and the agent is genuinely parked, it does fire.
-  const finished = mkSession({ id: "a", state: "idle", nomistakes: { ...running, status: "completed" } });
-  const r = detectAlerts(scope([driving]), scope([finished]));
-  assert.deepEqual(r.map((a) => a.kind), ["idle"]);
-});
 
 test("summarizeAlerts lists titles and caps the overflow", () => {
   const a = (title: string): Alert => ({

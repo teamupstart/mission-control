@@ -59,8 +59,3 @@ flowchart LR
 ```
 
 ## Verification
-
-- Update panel tests for the overview, health states, navigation and focus restoration.
-- Add sweeper regressions for disabling, paused manual sweeps and in-flight stale results.
-- Run the focused tests, typecheck and project test/lint commands.
-- Commit on a feature branch and run the repository’s no-mistakes PR workflow.

@@ -44,7 +44,6 @@ function discovered(id: string, cwd: string, over: Partial<DiscoveredSession> = 
     gitBranch: "feat/work",
     gitRoot: "/repo",
     repoRoot: "/repo",
-    nomistakesGated: false,
     pid: 100,
     tty: null,
     terminals: [],

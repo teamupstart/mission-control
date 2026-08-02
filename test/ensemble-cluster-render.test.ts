@@ -37,7 +37,6 @@ function member(ordinal: number, over: Partial<Session> = {}): Session {
 function blockedMember(ordinal: number): Session {
   return mkMemberSession({
     state: "idle",
-    nomistakes: null,
     activity: null,
     pendingReviews: 1,
     link: { ordinal, memberId: `m-${ordinal}`, maxMembers: 3, needsInput: true },
@@ -51,7 +50,6 @@ function view(over: Partial<SessionViewProps> = {}): SessionViewProps {
     backlog: [],
     onEditTask: () => {},
     backlogPlan: null,
-    gateAlerts: new Set<string>(),
     selectedId: null,
     consoleZone: "rail",
     onConsoleZoneChange: () => {},

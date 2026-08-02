@@ -44,7 +44,7 @@ export function mkOriginAndClone(prefix: string): OriginAndClone {
 
 /**
  * A clone sitting on `branch` with a local commit on top - the shape a session is
- * in when its no-mistakes run has just finished validating that work. Returns the
+ * in when a review has just finished validating that work. Returns the
  * clone dir, which is also its worktree root.
  */
 export function mkCloneOnBranch(prefix: string, branch: string): string {
@@ -57,7 +57,7 @@ export function mkCloneOnBranch(prefix: string, branch: string): string {
 
 /**
  * A second worktree of `clone`'s repo, checked out on `branch` - a real linked
- * worktree (its `.git` is a FILE), which is how a launcher-bound run's checkout
+ * worktree (its `.git` is a FILE), which is how another checkout
  * differs from the session that drives it.
  */
 export function mkLinkedWorktree(clone: string, branch: string, dir: string): string {

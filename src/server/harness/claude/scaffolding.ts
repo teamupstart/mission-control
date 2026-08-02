@@ -20,7 +20,7 @@
  *
  *   200 (51%)  <task-notification>   a background task reporting in
  *   188 (47%)  prose                 a human actually typed it
- *     6  (2%)  a slash command       "/no-mistakes"
+ *     6  (2%)  a custom slash command
  *
  * So without this filter 53% of goals would read `<task-notification> <task-id>byc4fw3pc…`.
  * A transcript read (the Tier 2 window) sees a different mix again - the `<command-*>` and
@@ -34,22 +34,22 @@ const DROP_TAGS = [
   "local-command-stdout",
   "system-reminder",
   "task-notification",
-  // The command's display name ("no-mistakes"), redundant beside <command-name> ("/no-mistakes").
+  // The command's display name, redundant beside its <command-name> value.
   "command-message",
 ] as const;
 
 /**
  * Scaffolding whose CONTENT is the human's ask, so it is unwrapped rather than dropped.
  *
- * A transcript records `/no-mistakes fix the arrow keys` as `<command-name>/no-mistakes
+ * A transcript records `/custom-review fix the arrow keys` as `<command-name>/custom-review
  * </command-name>` + `<command-args>fix the arrow keys</command-args>`, while the hook
  * reports the same thing as the flat string the human typed. Unwrapping both tags makes
  * the two sources agree, so Tier 1 (hook) and Tier 2 (transcript) can't disagree about
  * what was asked.
  *
  * Args are usually empty (17 of 387 sampled pairs carried any) but when they aren't they
- * are the whole goal - `/no-mistakes the changes for tab select, arrow movement, and hot
- * keys` is a far better sentence than `/no-mistakes`, so dropping them would throw away
+ * are the whole goal. The command plus its arguments is a far better sentence than the
+ * command name alone, so dropping them would throw away
  * the best signal these sessions have.
  */
 const UNWRAP_TAGS = ["command-name", "command-args"] as const;
@@ -104,9 +104,9 @@ export function conversationText(raw: string): string {
   if (LEADING_MACHINE_TAG_RE.test(stripped)) return "";
   return (
     stripped
-      // Onto its own line rather than in place: `<command-name>/no-mistakes</command-name>
+      // Onto its own line rather than in place: `<command-name>/custom-review</command-name>
       // <command-args>fix the arrows</command-args>` with no whitespace between the tags
-      // would otherwise unwrap to the single word "/no-mistakesfix the arrows". A newline
+      // would otherwise unwrap to the single word "/custom-reviewfix the arrows". A newline
       // can't glue two tokens together, and can't disturb the indentation of a paste the
       // way collapsing runs of spaces would.
       .replace(UNWRAP_RE, (_m, _tag, inner: string) => `\n${inner.trim()}\n`)
@@ -130,7 +130,7 @@ const ECHO_RE = /^(?:\[Request interrupted[^\]]*\]|Set (?:effort level|model) to
  * Neither reaches the hook path today - measured: 0 of 403 real `UserPromptSubmit` events
  * were `/clear` or `/compact`, though 198 transcripts contain a `/clear`; Claude Code handles
  * built-ins locally and reports them as SessionEnd/SessionStart/PreCompact lifecycle events
- * instead (only custom commands like `/no-mistakes` fire the prompt hook). This exists for
+ * instead (custom commands do fire the prompt hook). This exists for
  * the TRANSCRIPT path, where it matters a lot: a `/clear` mints a new session, and that new
  * session's transcript OPENS with the clear echo - 169 of 198 sampled files have it in their
  * first 5% - so a reader taking the first substantive turn of a freshly cleared session gets

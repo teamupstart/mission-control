@@ -14,7 +14,7 @@ import { TriageReportSchema } from "../src/server/foreman/triage.ts";
 
 /** The exact reviewer reply that was being thrown away, trimmed only in prose length. */
 const REAL_SKIP = {
-  purpose: "This session implements the byline on the no-mistakes fix log.",
+  purpose: "This session implements the review byline.",
   classification: "other",
   action: "skip",
   answer: { text: "" },

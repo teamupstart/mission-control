@@ -65,7 +65,6 @@ function discovered(syntheticId: string): DiscoveredSession {
     nameSource: "process",
     cwd: "/wt/pane",
     gitBranch: "main",
-    nomistakesGated: false,
     pid: 4242,
     tty: "ttys9",
     terminals: [mkMuxHandle({ session: "s", paneId: "%7" })],

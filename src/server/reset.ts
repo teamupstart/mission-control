@@ -1,6 +1,5 @@
 import type { ResetResult, Session } from "@shared/types.ts";
 import { resetToOrigin, withPaneLockWait, type DriverClear, type PaneLockToken } from "./actions.ts";
-import { forgetFixLog } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
 import { noteKeyFor } from "./registry.ts";
 
@@ -74,11 +73,7 @@ export async function resetSession(
   driverClear?: DriverClear,
   pendingTurns?: PendingTurnResetBoundary,
 ): Promise<ResetResult> {
-  // Sampled BEFORE the reset: the fetch inside can take ~30s, and the poller may swap
-  // or clear the run in that window.
-  const showing = session.nomistakes;
   const pendingTurnKey = noteKeyFor(session);
-
   registry.beginSessionReset(session.id);
   try {
     // Marking the registry comes first, so every SDK acceptance and terminal write guard
@@ -92,17 +87,6 @@ export async function resetSession(
         ? await reset(session, clear, lockOwner, driverClear)
         : await resetToOrigin(session, clear, undefined, lockOwner, driverClear);
 
-      // Retired against the checkout it wiped (root + the branch that was standing in it),
-      // not this session, so it holds for a sibling sharing the checkout and across a
-      // restart.
-      if (r.ok && showing) registry.dismissNomistakes(showing, r.root, session.gitBranch);
-      // The fix log needs no dismissal - the reset destroyed the commits it is read from, so
-      // it is empty by construction. But drop the cached read: it is keyed on HEAD, and the
-      // reset moved HEAD, so a stale entry could still be served.
-      if (r.ok && session.cwd) {
-        forgetFixLog(session.cwd);
-        registry.clearNomistakesFixes(session.id);
-      }
       // The reset discarded the task these queued items were authored for, so discard every
       // safely queued row. A claimed row whose handoff may have crossed stays `uncertain`:
       // deleting it would hide a message that the reset could not prove was refused.

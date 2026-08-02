@@ -86,7 +86,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // than threaded down - `orderSessions` is idempotent, so re-running it on the list App
   // already ordered returns that order, and both sides stay one fact. (This is exactly the
   // `groupByTone` arrangement it replaces, now with the cluster spans the frames need.)
-  const groups = orderSessions(props.sessions, props.gateAlerts).groups;
+  const groups = orderSessions(props.sessions).groups;
   // The dialog's target, resolved fresh every render: `null` here retires a confirm whose
   // agent has since disappeared, rather than leaving a dialog up over a session that is
   // no longer on the board.
@@ -103,7 +103,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // tone (working -> needs input), its column re-scopes with it, and the rail's rows
   // change under a detail that - keyed by id in the aside - stays put.
   const focusedTone = selected
-    ? stateDisplay(selected, props.gateAlerts.has(selected.id)).tone
+    ? stateDisplay(selected).tone
     : null;
 
   const modes = boardColumnModes(groups, revealed, focusedTone != null);
@@ -117,7 +117,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
-      gateNeedsYou={props.gateAlerts.has(s.id)}
       onOpen={() => props.onSelect(s.id)}
       registerEl={props.registerEl}
       draggingRepo={draggingRepo}
@@ -137,7 +136,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
-      gateNeedsYou={props.gateAlerts.has(s.id)}
       onSelect={() => props.onSelect(s.id)}
       // Register the element like the console rail does, so Shift+Tab/Escape out of the
       // reader can land focus back on the selected row here.

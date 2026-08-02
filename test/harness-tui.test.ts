@@ -148,7 +148,7 @@ test("the fix, end to end: a Codex session parked on an approval prompt needs yo
   assert.ok(menu);
 
   // Codex is uninstrumented by construction - it pushes no hooks - so before this capability
-  // there was no signal that could put it anywhere but "not confirmed busy". `nomistakes`
+  // there was no signal that could put it anywhere but "not confirmed busy". Status
   // is cleared too: a run in flight is a DIFFERENT reason to read as busy, and leaving it
   // set would let this pass for a reason that has nothing to do with the dialog.
   const blind = mkSession({
@@ -156,7 +156,6 @@ test("the fix, end to end: a Codex session parked on an approval prompt needs yo
     state: "idle",
     instrumented: false,
     hooksSeen: false,
-    nomistakes: null,
   });
   assert.equal(reportBucket(blind, [blind]), "idle");
   assert.equal(activePaneDialog(blind), null);

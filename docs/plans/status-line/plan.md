@@ -63,9 +63,6 @@ fresh statusLine value. Codex has a single source.
 
 ## Data model
 
-One cohesive value object (these three always arrive together from one source), hung off
-`Session` like `nomistakes` / `task` already are.
-
 ```ts
 // src/shared/types.ts
 export type ThinkingLevel = "low" | "medium" | "high" | "xhigh" | "max";
@@ -169,44 +166,9 @@ account default. Model + Context% are always in the tail, so those stay reliable
 
 ### 3. Codex - rollout reader (net-new)
 
-- **`src/server/codex-rollout.ts` (new)** - `CODEX_HOME` defaults to `~/.codex`; sessions
-  under `sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`.
-  - `findRolloutForSession(session): string | null` - the newest rollout whose
-    `session_meta.payload.cwd` equals `session.cwd` and whose `session_meta.payload.timestamp`
-    is closest to `session.startedAt`. Once matched, **cache the (session id -> rollout path)
-    binding** with a TTL (mirrors the no-mistakes launcher-binding approach) so we don't
-    re-scan directories every tick and don't flip between two rollouts in the same cwd.
-  - `readRolloutMeta(path): SessionMeta-ish | null` - tail-read; take the latest
-    `turn_context.payload.{model, effort}` and the latest `event_msg` with
-    `payload.type === "token_count"` -> `info.total_token_usage.total_tokens` /
-    `info.model_context_window` -> `contextPct`. `effort` maps straight to `thinkingLevel`.
-  - Correlation caveat (documented): two Codex sessions in the **same cwd** can't be told
-    apart beyond start-time proximity; we bind to the nearest and cache. Acceptable, and no
-    worse than what's possible without a Codex-provided session id.
-
 ### 4. A single runtime-meta poller
 
-- **`src/server/runtime-meta.ts` (new)** - `startRuntimeMetaPoller(registry)` on an interval
-  (`unref`'d timer, same shape as `startNomistakesPoller` at `nomistakes.ts:149`). Each tick,
-  for every live session:
-  - **Claude**: if `meta.source === "statusline"` and `updatedAt` is within a freshness TTL,
-    skip (statusLine is authoritative). Otherwise resolve the transcript and apply
-    `readRuntimeMeta` as `source: "transcript"`.
-  - **Codex**: apply `readRolloutMeta` as `source: "codex-rollout"`.
-  This keeps statusLine data winning while it's fresh, and fills gaps passively otherwise.
-  Reads are bounded tails + a cached path lookup - cheap, no subprocesses.
-
 ### 5. `registry.ts`
-
-- `applyStatusLine(ingest)` - resolve the target session (session id or env), build a
-  `SessionMeta` with `source: "statusline"`, upsert, emit on change.
-- `applyRuntimeMeta(sessionId, meta)` - upsert with the precedence rule above; emit on change.
-- Preserve `meta` across discovery polls like `nomistakesNarration` does
-  (`registry.ts:160`: `meta: prev?.meta ?? null`).
-- Add `meta` to `sessionEqual` (`registry.ts:610`) via `JSON.stringify(a.meta) ===
-  JSON.stringify(b.meta)` - **required**, or live context% / thinking changes won't emit.
-- Wire `startRuntimeMetaPoller` into the daemon bootstrap next to the other pollers; add
-  `POST /statusline` in `buildApp`.
 
 Serialization is automatic: `registry.snapshot()` -> `JSON.stringify` already ships whatever
 is on `Session` to the client (no DTO layer), so no SSE/endpoint change beyond the above.

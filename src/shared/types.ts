@@ -395,8 +395,6 @@ export interface Session {
    * allowlisted repo is allowlisted, and the card has to be able to say so.
    */
   repoRoot: string | null;
-  /** True when this session's repo is gated by no-mistakes. */
-  nomistakesGated: boolean;
   /** Leaf agent process pid; 0 for an SDK driver with no reported subprocess. */
   pid: number;
   /** Controlling tty without `/dev/` (e.g. `ttys012`); null for an SDK runtime. */
@@ -469,14 +467,6 @@ export interface Session {
   lastActivity: number | null; // epoch ms of last hook/report/driver event
   /** Count of pending review items for this session (denormalized for the card). */
   pendingReviews: number;
-  /** Live no-mistakes run status for this repo, when gated and a run exists. */
-  nomistakes: NmRunSummary | null;
-  /**
-   * Fixes no-mistakes committed on this session's branch. Derived from git, not
-   * from a run, so it outlives the run that produced it - and empties by itself
-   * when a reset discards the commits. Empty when there are none.
-   */
-  nomistakesFixes: NmFixSummary[];
   /**
    * The current task projected onto this session's views.
    *
@@ -484,12 +474,6 @@ export interface Session {
    * worktree path. A terminal task remains here until the session takes its next task.
    */
   task: TaskSummary | null;
-  /**
-   * "What the no-mistakes skill is doing right now" - the in-progress TodoWrite
-   * item read from this session's Claude transcript. Only populated while a
-   * no-mistakes run is present; null otherwise (or when nothing is in progress).
-   */
-  nomistakesNarration: string | null;
   /**
    * The GitHub PR whose head branch is this session's *current* git branch, else
    * null. Live decoration, never persisted: set optimistically when the agent
@@ -1583,7 +1567,7 @@ export interface BacklogPlan {
   generatedAt: number;
 }
 
-/** Compact task view denormalized onto a Session card (like NmRunSummary). */
+/** Compact task view denormalized onto a Session card. */
 export interface TaskSummary {
   id: string;
   title: string;
@@ -1614,246 +1598,6 @@ export interface TaskSummary {
    * task to its member row; nothing in the browser derives it.
    */
   ensemble: TaskEnsembleLink | null;
-}
-
-// ---- no-mistakes surfacing ----
-
-export interface NmStep {
-  step: string;
-  status: string; // pending | running | completed | awaiting_approval | skipped | failed
-  findings: number;
-}
-
-/**
- * A step `axi status` reports as active right now, from its `active_steps` block.
- *
- * Why this exists: `steps[]` gives a step nothing but a status, and "running" covers
- * both a step mid-work and a `ci` step that finished its checks hours ago and is
- * simply watching an open PR. That collapse is what makes a green, pushed, PR-opened
- * run look stuck - the dots say "running" and cannot say why. This block carries the
- * why, in no-mistakes' own words.
- *
- * Only the columns the card uses are kept; the block carries a couple more, and
- * ignoring them costs nothing (rows are read by column name). Deliberately NOT kept:
- * `agent_pid`. It is empty for a perfectly healthy `ci` monitor, so reading it as
- * "nothing is driving this" marks live steps dead - measured, not assumed.
- */
-export interface NmActiveStep {
-  step: string;
-  status: string;
-  /** How long the step has been active, e.g. "2h26m". */
-  activeFor: string;
-  /**
-   * What the step last did, in no-mistakes' words, e.g. `2m43s ago: log: all CI
-   * checks passed - still monitoring until merged or closed`. It may lead with
-   * `quiet …` when the gap grows - which is idling, NOT a stall: a `ci` monitor
-   * legitimately sits quiet for hours between polls, then completes the moment the
-   * PR merges. Surfaced verbatim; nothing here infers health from it.
-   */
-  lastActivity: string;
-}
-
-export interface NmFinding {
-  id: string;
-  severity: string; // error | warning | info
-  file: string;
-  action: string; // auto-fix | ask-user
-  description: string;
-}
-
-/** A dashboard gate decision and its retained asynchronous delivery state. */
-export interface NmGateResponse {
-  /** Monotonic daemon-local identity for this response attempt. */
-  responseId: number;
-  runId: string;
-  step: string;
-  action: "approve" | "fix" | "skip";
-  findingIds: string[];
-  status: "submitting" | "submitted" | "failed";
-  /** Present only after the CLI exits non-zero or cannot be spawned. */
-  error: string | null;
-}
-
-/** Compact view of a no-mistakes run, as surfaced on a session card. */
-export interface NmRunSummary {
-  /**
-   * The run's own id (a ULID from `axi status`). Identifies a run independently
-   * of its branch, which successive runs share - so retiring one run from a card
-   * never gags the next one on the same branch.
-   */
-  id: string;
-  status: string; // running | completed | failed
-  branch: string;
-  /**
-   * When the run started (epoch ms), decoded from the ULID id above - `axi status`
-   * carries no timestamps of its own. Null when the id isn't a ULID.
-   */
-  startedAt: number | null;
-  /**
-   * When the run stopped (epoch ms), or null while it's still going. Also null for
-   * a run that had already finished the first time the daemon saw it: nothing in
-   * `axi status` dates the end, so it can only be timed by watching (see timeRun).
-   */
-  endedAt: number | null;
-  /**
-   * The pull request this run's own `pr` step opened, or null before it gets there.
-   *
-   * This is the ONE signal in the app that PROVES Mission Control opened a PR - it is
-   * reported by the process that ran the step, not inferred from a branch or sniffed
-   * out of a tool result. The Inspector adopts a PR for review off the back of it, so
-   * dropping it here (as this did until the Inspector landed) is not a cosmetic loss:
-   * it is the difference between reviewing our own PRs and having no way to tell ours
-   * from a stranger's.
-   */
-  prUrl: string | null;
-  /** e.g. "parked 1m30s" while awaiting an agent decision, else null. */
-  awaitingAgent: string | null;
-  /** e.g. "1 awaiting" / "1 auto-fix". */
-  findingsSummary: string | null;
-  /** The step the run is parked at (e.g. "review"), or null when not parked. */
-  gateStep: string | null;
-  gateSummary: string | null;
-  gateRisk: string | null;
-  steps: NmStep[];
-  /**
-   * The steps no-mistakes reports as active, saying what each is actually doing.
-   * Empty when the block is absent - an older no-mistakes, or a run with nothing
-   * active - which costs the card an explanation, never a wrong one.
-   */
-  activeSteps: NmActiveStep[];
-  findings: NmFinding[];
-  /** Dashboard response state overlaid by the daemon; not part of `axi status`. */
-  response?: NmGateResponse | null;
-  outcome: string | null; // once landed: checks-passed | passed | failed | cancelled
-}
-
-// ---- no-mistakes fix log ----
-//
-// What the pipeline actually changed on a branch, and why. Sourced from git (the
-// fix commits themselves) joined to no-mistakes' own round records (the findings
-// that justified each fix, and the reply that authorized it). Two tiers: the card
-// carries `NmFixSummary`, and the bulky context is fetched per fix on demand - a
-// 22-finding fix runs ~20KB of description text, which has no business riding on
-// every session snapshot.
-
-/**
- * Who caused a fix to happen. `auto` - the pipeline fixed it under its own
- * round limit, nobody was asked. `replied` - it was fixed because someone
- * answered the gate; the reply text is on `NmFixDetail`.
- *
- * This is no-mistakes' own `selection_source` and nothing more: it says THAT
- * somebody answered, never who. The byline is a separate fact from a separate
- * source - see `NmFixAttribution`, which deliberately does not fold into this
- * union. `replied` stays honest that way: it means exactly what the pipeline
- * recorded, and an unattributed reply (the common case - the agent drove its own
- * gate) reads as `replied` with no byline rather than as a third enum member
- * that would have to mean "replied, source unknown".
- */
-export type NmFixDecision = "auto" | "replied";
-
-/**
- * Who the reply came from. `you` - typed into the dashboard's Fix box. `foreman`
- * - the foreman nudged the session's pane about this gate and the agent answered
- * it afterwards.
- *
- * Absent for the common case: the agent answered its own gate (via the
- * `/no-mistakes` skill), which no-mistakes records identically to a human reply
- * and which nothing on our side witnessed. So this is only ever ADDITIVE - it
- * names an author when we logged one, and says nothing when we didn't.
- */
-export type NmFixReplySource = "you" | "foreman";
-
-/**
- * The byline on a fix's reply, joined from our own record of who said what to
- * which gate.
- *
- * `foreman` attribution is INDIRECT and the shape says so. The foreman never
- * calls `axi respond`; it types into the session's pane, and the *agent* decides
- * what to send. So `text` is what the foreman said about this gate - context for
- * the reply, never the reply itself - and the agent was free to ignore it. The
- * UI must keep those two sentences visibly apart; collapsing them would be its
- * own attribution bug.
- */
-export interface NmFixAttribution {
-  source: NmFixReplySource;
-  /** What the author actually wrote. Null when they selected findings and typed nothing. */
-  text: string | null;
-  /** When it was said (epoch ms). Always before the fix it explains. */
-  at: number;
-}
-
-/** One no-mistakes fix commit on a session's branch. Card-weight. */
-export interface NmFixSummary {
-  /** Short sha. Also the key for fetching this fix's detail. */
-  sha: string;
-  step: string; // review | document | lint | test | ...
-  /** The commit subject with the `no-mistakes(<step>): ` prefix stripped. */
-  summary: string;
-  committedAt: number; // epoch ms
-  filesChanged: number;
-  added: number;
-  removed: number;
-  /** From the round that produced it; null when no round matched the commit. */
-  decision: NmFixDecision | null;
-  /**
-   * The reply's author, when we logged one. Card-weight (an enum, not the text)
-   * so a foreman-caused fix is spottable down the list without opening each row -
-   * which is the whole point: a bot changing your branch while you were away is
-   * the thing you'd want to catch at a glance. The text is on `NmFixDetail`.
-   */
-  repliedBy: NmFixReplySource | null;
-  /** How many findings justified it. The TRUE count, even if the detail caps its list. */
-  findingCount: number;
-}
-
-/** One finding no-mistakes reported as justification for a fix. */
-export interface NmFixFinding {
-  id: string;
-  severity: string; // error | warning | info
-  file: string;
-  line: number | null;
-  /** The justification, verbatim from the pipeline. Runs long (500-900 chars). */
-  description: string;
-}
-
-export interface NmFixFile {
-  path: string;
-  added: number;
-  removed: number;
-}
-
-/** Everything behind one fix: why it happened, who authorized it, what it changed. */
-export interface NmFixDetail {
-  sha: string;
-  step: string;
-  summary: string;
-  committedAt: number;
-  decision: NmFixDecision | null;
-  /**
-   * The reply that authorized the fix. no-mistakes stores this per-finding (it
-   * copies the `--instructions` text onto every selected finding), but it is one
-   * reply, so it belongs to the fix. Null when auto-fixed or unmatched.
-   */
-  reply: string | null;
-  /**
-   * Who wrote the reply, and what they said in their own words. Null when nobody
-   * we know about did - see `NmFixAttribution`.
-   */
-  attribution: NmFixAttribution | null;
-  /** Capped: compare against `findingCount` to know if this is the whole set. */
-  findings: NmFixFinding[];
-  /** The true number of findings, which can exceed `findings.length`. */
-  findingCount: number;
-  /** Capped: compare against `filesChanged` to know if this is every file. */
-  files: NmFixFile[];
-  /**
-   * The true number of files the commit touched. Distinct from `files.length`,
-   * which is capped - a card that showed the capped length would disagree with
-   * the row above it about the same commit.
-   */
-  filesChanged: number;
-  added: number;
-  removed: number;
 }
 
 export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
@@ -2014,11 +1758,8 @@ export interface MissionReport {
 /** How far the Inspector may go. `dry-run` computes everything and posts nothing. */
 export type InspectorMode = "dry-run" | "live";
 
-/**
- * How a PR came to be adopted. Recorded because the two signals have genuinely
- * different strength, and a row whose provenance is unknown is one nobody can audit.
- */
-export type InspectorSource = "hook" | "no-mistakes";
+/** How a PR came to be adopted. Older persisted provenance is normalized to `legacy`. */
+export type InspectorSource = "hook" | "legacy";
 
 /** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
 export type InspectorPrState = "open" | "closed";

@@ -78,7 +78,6 @@ function discovered(id: string, cwd: string): DiscoveredSession {
     gitBranch: BRANCH,
     gitRoot: cwd,
     repoRoot: cwd,
-    nomistakesGated: false,
     pid: 4242,
     tty: "ttys9",
     terminals: [mkMuxHandle({ session: id, windowName: "agent" })],
@@ -372,7 +371,7 @@ test("all four session surfaces show the task being executed after a second assi
   assert.equal(session.task?.id, f.taskB, "the summary the four surfaces read");
 
   const card = renderToStaticMarkup(
-    createElement(SessionCard, { session, gateNeedsYou: false, onOpenReviews: () => {} }),
+    createElement(SessionCard, { session, onOpenReviews: () => {} }),
   );
   const detail = renderToStaticMarkup(
     createElement(ConsoleDetail, { session, view: viewFor(session) }),
@@ -380,7 +379,6 @@ test("all four session surfaces show the task being executed after a second assi
   const tile = renderToStaticMarkup(
     createElement(SessionTile, {
       session,
-      gateNeedsYou: false,
       onOpen: () => {},
       draggingRepo: null,
       onDropped: () => {},
@@ -389,7 +387,7 @@ test("all four session surfaces show the task being executed after a second assi
     }),
   );
   const rail = renderToStaticMarkup(
-    createElement(RailRow, { session, selected: false, gateNeedsYou: false, onSelect: () => {} }),
+    createElement(RailRow, { session, selected: false, onSelect: () => {} }),
   );
 
   for (const [name, html] of [["card", card], ["console detail", detail], ["board tile", tile]] as const) {
@@ -480,7 +478,6 @@ function viewFor(session: Session): SessionViewProps {
     backlog: [],
     onEditTask: () => {},
     backlogPlan: null,
-    gateAlerts: new Set<string>(),
     selectedId: session.id,
     consoleZone: "rail",
     onConsoleZoneChange: () => {},

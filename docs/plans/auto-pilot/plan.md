@@ -9,12 +9,6 @@ Note: per the request, **no SMS / phone push** - alerts are a **browser notifica
 
 ## Goal
 
-Stop having to watch the grid. The dashboard actively **alerts you when a session
-needs you** - a desktop (Chrome) notification plus a sound - the moment a session
-goes to `needs-input`, a review lands, a no-mistakes gate parks, or a dispatched
-task finishes. An **AFK mode** escalates (alerts on more, and sends periodic
-digests) so you can step away.
-
 This is First Mate's "a bash watcher sleeps on the sessions and wakes you only when
 something needs you" - but the watcher is **the daemon we already run** (it detects
 every one of these events and streams them over SSE), and the browser turns those
@@ -22,53 +16,9 @@ events into alerts. Zero extra tokens, no new agent, no polling.
 
 ## Why it fits (and why it's almost all client-side)
 
-- The daemon already emits precise state over SSE: a session flipping to
-  `awaiting_input`, a `review_upsert`, a `nomistakes` gate parking, a `task_upsert`
-  reaching `done`/`failed`. The browser is already a live subscriber
-  (`useEventStream`). So the alert layer is a **consumer of the existing stream** -
-  no server changes required.
-- "Who needs you" is already defined once in `@shared/session.ts`
-  (`reportBucket` / `needsYouReason`, built for the roundup report). The alert engine
-  reuses it, so alerts and the report agree on what "attention" means.
-- The daemon runs as a login LaunchAgent and the dashboard is meant to be open, so
-  a browser Notification from the open tab (foreground or background) is exactly the
-  right delivery for a local, single-user dashboard - which is why SMS/phone push isn't
-  needed here.
-
 ## Architecture
 
 All new code is in `src/web` (plus one reused shared helper). No server changes.
-
-### `src/web/lib/alerts.ts` (new) - the alert engine (pure, unit-tested)
-```ts
-export type AlertKind = "needs-input" | "review" | "gate" | "task-done" | "task-failed" | "idle";
-export interface Alert {
-  id: string;          // stable per (kind, subject) so re-fires de-dupe via Notification tag
-  kind: AlertKind;
-  title: string;       // "auth-refactor needs you"
-  body: string;        // one-line detail
-  sessionId: string | null;
-  severity: "attention" | "info";
-}
-export interface AlertSettings {
-  notifications: boolean;
-  sound: boolean;
-  afk: boolean;
-  digestMinutes: number;
-}
-/** Diff the previous vs current session snapshot and return only the NEW alerts. */
-export function detectAlerts(prev: AlertScope, next: AlertScope, s: AlertSettings): Alert[];
-/** Compact "3 need you · 2 working · 1 done" digest line (reuses report bucketing). */
-export function digestLine(next: AlertScope): string;
-```
-- **What fires when:**
-  - Always (watching + AFK): a session entering `awaiting_input`; a new pending
-    review; a no-mistakes gate newly parked; a dispatched task reaching `failed`.
-  - AFK also fires on: a task reaching `done`; a session going `idle` after working;
-    and a **periodic digest** every `digestMinutes`.
-- **Transition-only**: alerts fire on the *edge* (not-attention → attention), computed
-  by diffing `prev` vs `next` using `reportBucket`, so a session sitting in
-  `awaiting_input` across many SSE ticks alerts once, not every tick.
 
 ### `src/web/useNotifier.ts` (new hook)
 - Takes the live `sessions/reviews/tasks` + `AlertSettings`, keeps a `ref` of the

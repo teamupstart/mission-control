@@ -87,7 +87,7 @@ test("a paste that never landed rolls the ack back, so the next tick retries", a
   // `pasted: false` is the codebase's one definition of positive evidence that nothing
   // reached the pane - the lock refused, or tmux rejected the target before writing.
   // This is where the reload deliberately parts from the auto-wrapup's "never retry":
-  // that rule exists because /no-mistakes PUSHES, so a retry IS a double-push.
+  // that rule exists because a shipping instruction pushes, so a retry is a double-push.
   // /reload-skills does not push, does not commit, and re-reading a directory twice
   // reaches the same answer - so a silent miss (the panel claiming a skill is live in
   // a session that never heard) is the worse failure, not the duplicate.

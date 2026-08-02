@@ -1,7 +1,6 @@
 # Phased implementation: built-in workflows and No-Mistakes Review
 
-Source plan: `docs/plans/builtin-workflows/plan.md` (decisions adopted 2026-07-26; rendered
-page `plan.html` beside it).
+Source plan: `docs/plans/builtin-workflows/plan.md` (decisions adopted 2026-07-26).
 
 ## Incorporated human decisions
 
@@ -14,9 +13,7 @@ page `plan.html` beside it).
    planning session, not submitted through the dashboard, because that channel was
    unavailable. Owned by Phase 2 and the first thing to revisit if it reads wrong.
 
-Decision 4 supersedes adopted decision 2 of
-`docs/plans/no-mistakes-workflow-mapping/plan.md`; that file now records the supersession in
-every place it asserted the old answer.
+Decision 4 supersedes the earlier choice to leave deterministic command gates outside the graph.
 
 ## Investigated findings (what the repository actually does)
 

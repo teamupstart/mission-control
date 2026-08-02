@@ -290,7 +290,7 @@ function seedSkills(settingsPath: string): string {
   for (const target of ["src-alpha", "src-theirs"]) mkdirSync(join(dir, "..", target), { recursive: true });
   symlinkSync(join(dir, "..", "src-alpha"), join(dir, "fleet-alpha"), "dir");
   // The operator's hand-authored skill, and a real directory wearing our prefix.
-  symlinkSync(join(dir, "..", "src-theirs"), join(dir, "no-mistakes"), "dir");
+  symlinkSync(join(dir, "..", "src-theirs"), join(dir, "handmade-skill"), "dir");
   mkdirSync(join(dir, "fleet-handmade"), { recursive: true });
   return dir;
 }
@@ -307,7 +307,7 @@ test("--uninstall removes our skill links from ~/.claude/skills", () => {
     assert.ok(existsSync(join(dir, "..", "src-alpha")), "the link's target is not ours to delete");
     // Marker discipline survives the uninstall: the prefix scopes what we may remove,
     // it does not license deleting a directory of someone's work because the name matched.
-    assert.ok(existsSync(join(dir, "no-mistakes")), "the operator's own skill is untouched");
+    assert.ok(existsSync(join(dir, "handmade-skill")), "the operator's own skill is untouched");
     assert.ok(existsSync(join(dir, "fleet-handmade")), "a real directory is never removed, prefix or no prefix");
   });
 });
@@ -322,7 +322,7 @@ test("--uninstall clears the links even when no hooks are left to strip", () => 
     runInstaller(path, ["--uninstall"]);
 
     assert.ok(!existsSync(join(dir, "fleet-alpha")), "the link is removed on the hooks-are-already-gone path");
-    assert.ok(existsSync(join(dir, "no-mistakes")), "and still only ours");
+    assert.ok(existsSync(join(dir, "handmade-skill")), "and still only ours");
   });
 });
 
@@ -334,6 +334,6 @@ test("an install leaves the skills directory exactly as it found it", () => {
     // the panel, applied from the config by the daemon - an installer that added links
     // would switch skills on across every session because someone wired up hooks, and one that
     // removed them would switch them off for the same reason.
-    assert.deepEqual(readdirSync(dir).sort(), ["fleet-alpha", "fleet-handmade", "no-mistakes"]);
+    assert.deepEqual(readdirSync(dir).sort(), ["fleet-alpha", "fleet-handmade", "handmade-skill"]);
   });
 });

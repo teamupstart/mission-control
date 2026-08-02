@@ -50,16 +50,6 @@ worktrees and the Board already puts sessions side by side. It also identified u
 ranking inputs such as tests, diff size, and review notes. The current checkout has since
 added foundations that make the feature stronger:
 
-| Brainstorm premise | Current reality | Design consequence |
-|---|---|---|
-| Dispatch isolates work | Dispatcher and TaskManager already own launch, cancellation, resource cleanup, and restart reconciliation | Reuse a normal Task per candidate |
-| Board can show candidates together | All three layouts share session state but render different signals | Add a small shared ensemble projection and preserve layout parity |
-| Judge can compare tests, diff size, and review notes | Diff capture, no-mistakes summaries, session metadata, and cost telemetry now exist | Build a typed evidence packet; distinguish observed evidence from agent claims |
-| A judge can select and reap | There is no group, explicit completion signal, immutable candidate snapshot, or promotion transaction | Add a durable EnsembleRun state machine and a submission MCP tool |
-| One model can judge | Provider-neutral LlmRunner and revisioned Personas now exist | Reuse Persona snapshots, shared review framing, and the structured LLM path |
-| Concurrent worktrees begin from the same state | Current dispatch provisions from whatever HEAD or pool lease is available at each launch | Pin one full base SHA before any candidate is launched |
-| Workflows can review the result | Phases 1–3 are implemented: immutable publishing, one-note-key bindings, stable evidence capture, concurrent Persona review, retries, recovery, SSE, and Run detail | Hand the exact winner into the shipped Preview engine after promotion; add a generic external-source seam, not a multi-session graph node |
-
 The implemented Workflow contracts make this separation load-bearing:
 
 - exactly one Session node exists in every published graph;
@@ -81,57 +71,9 @@ only after a human selects one winner.
 
 ### Operator flow
 
-1. Open Dispatch, switch from Single to Ensemble, choose Best-of-N, and enter one task and
-   repository.
-2. Configure two to five candidate rows. Each row selects agent, model, effort, and an
-   optional approach hint. Repeated configurations are valid.
-3. Submit once. The daemon snapshots best_of_n version 1, its compiled plan/budgets, and a full base
-   commit before launching any candidate.
-4. The existing Board, Cards, or Console shows every candidate as a normal session, with a
-   shared group badge and candidate number.
-5. Each candidate implements and tests independently. Its prompt prohibits pushing or
-   opening a PR and requires an explicit submission when its candidate is ready.
-6. Submission snapshots the complete working tree into an immutable Git commit and records
-   the candidate summary, reported checks, observed no-mistakes state, diff statistics, and
-   accumulated agent cost.
-7. When every live candidate has submitted or terminated, and at least two submitted, the
-   daemon runs one comparative evaluator over the immutable evidence.
-8. The Ensemble detail shows ranked scorecards, caveats, exact diffs, evidence provenance, and
-   aggregate candidate cost.
-9. The operator confirms a winner. The daemon persists that choice, restores the winner to
-   its exact submitted snapshot, and reaps loser worktrees.
-10. If Dispatch pinned a published Workflow version, promotion idempotently binds that exact version
-    to the winner and creates its first submission from the selected snapshot. Otherwise the daemon
-    tells the winner to continue through the normal shipping flow.
-11. Workflow then owns Persona repair rounds, optional Foreman resubmission, optional Inspector
-    final gate, and Shipping veto exactly as designed in the Workflow plans.
-
 ### Release decisions
 
 These are resolved design decisions, not launch-time configuration questions.
-
-| Area | Decision | Reason |
-|---|---|---|
-| Core product noun | Ensemble | Covers isolated comparison, voting, tournaments, critique, and synthesis without implying communication |
-| First strategy | best_of_n version 1 | Delivers the original value while exercising the reusable kernel |
-| Strategy identity | Append-only id plus integer version, snapshotted per run | Old runs must recover after strategy defaults or implementations change |
-| Strategy extension | Compose typed policies and generic stage primitives; use a driver only for adaptive decisions | New modes should not require new persistence or transport contracts |
-| Candidate count | Minimum 2, default 3, maximum 5 | Meaningful comparison without uncontrolled local resource use |
-| Candidate kind | Implementation Tasks only | Scouts may legitimately have no diff and need a different evidence model |
-| Base | One full commit SHA pinned before launch | Candidate comparison is invalid if starting points differ |
-| Completion | Explicit MCP submission plus manual UI fallback | Idle and Stop mean turn completion, not task completion |
-| Candidate artifact | Immutable private Git commit and ref | Exact comparison, recoverability, and safe worktree cleanup |
-| Judge | One tool-less, provider-neutral structured call | Fair input across providers and reduced prompt-injection surface |
-| Judge guidance | Built-in rubric or one snapshotted Persona | Reproducible judgment while reusing the existing Persona model |
-| Promotion | Human confirmation required | An LLM ranking must not trigger destructive cleanup on its own |
-| Loser policy | Reap worktrees after promotion; retain snapshot refs | Saves resources without discarding evidence |
-| Validation | Reported checks plus existing no-mistakes evidence in v1 | There is no safe repository-neutral command to run |
-| Candidate publishing | No pushes and no PRs before promotion | Avoids duplicate public branches and PRs |
-| Workflow relationship | Optional immutable Workflow version, executed only on the finalized result | Composes N-session selection with the existing one-Session review engine |
-| Workflow start | Bind and submit immediately after the exact winner is active | The selected candidate has already declared itself ready for review |
-| Workflow graph | No Ensemble node and no graph-port changes | Preserves the explicit one-Session workflow invariant |
-| Group UI | Dispatch mode plus an Ensembles tab in the Workflows page; no new shortcut in v1 | Keeps orchestration history together without another overlay/topbar surface |
-| Strategy builder | Built-in versioned presets first; no arbitrary user graph in v1 | Prevents a second unsafe Workflow language before runtime primitives are proven |
 
 ## Comparison and collaboration patterns worth supporting
 
@@ -917,10 +859,6 @@ appendix. Member prompts never expose ref namespaces or invite arbitrary sibling
 
 ### Why hooks are insufficient
 
-Stop, idle, and prompt-complete hooks report that one turn ended. A member can stop to
-ask a question, wait for approval, or report partial work. Existing Task completion is
-human-recorded and no-mistakes is optional. None is a reliable ready-for-comparison signal.
-
 Add submit_candidate_result as an MCP tool and a matching manual Submit result action in
 the Ensemble detail. The MCP request contains summary and checks, but never a caller-supplied
 ensemble/member/artifact id. The compiled stage decides which ArtifactAdapter captures the result.
@@ -998,12 +936,6 @@ the small summary.
 
 Record evidence in separate fields and label it in the UI and prompt:
 
-- Reported by member: summary and checks supplied to the MCP tool.
-- Observed by Mission Control: Git diff statistics, snapshot identity, no-mistakes outcome
-  if present, observed model, timestamps, and member cost.
-- Not known: a reported test command does not become tests-green merely because the agent
-  said it ran.
-
 The first release does not execute an arbitrary validation command. A follow-up can add
 repo-owned evaluation profiles with an explicit command, timeout, sandbox policy, and
 artifact contract.
@@ -1016,15 +948,6 @@ The best_of_n v1 compiler emits one all-at-once comparative evaluate stage after
 submitted, failed, or withdrawn. Require at least two eligible ready git_snapshot artifacts.
 
 Build one evidence packet with:
-
-- original task and acceptance intent,
-- exact pinned base SHA,
-- snapshotted evaluator guidance,
-- one stable anonymous label per subject artifact,
-- immutable diff and statistics,
-- member summary and clearly labeled reported checks,
-- observed no-mistakes status and agent cost when available,
-- truncation metadata.
 
 Anonymize agent, model, and member ordinal in the evaluator input. Those attributes are
 useful to the operator but invite brand and order bias. The mapping back to artifact/member ids

@@ -15,27 +15,9 @@ four things in sequence, you wait for each one to finish so you can type the nex
 you're the only one checking that what it just did was actually finished, tested, and up to the
 repo's standards before you pile more work on top.
 
-This adds a **per-agent work queue**. You queue a batch of work for a specific session; Foreman
-waits for the current work to land, judges whether it was genuinely completed (tests present,
-`AGENTS.md`/`CLAUDE.md` honoured), and only then releases the next item. When work falls short it
-hands the specific gaps back to the agent to fix, escalating only once an issue looks beyond the
-agent. When the queue drains it asks whether to open a PR and run no-mistakes.
-
 The outcome: you load up a session's work and walk away, and Foreman keeps it moving and honest.
 
 ### Decisions locked with the user
-
-- **Validation is evidence-only**: a fresh tool-less `claude -p` judges the item's diff +
-  transcript against the repo's standards docs. It does not run tests; no-mistakes stays the gate.
-- **Escalation is a last resort**: Foreman sends fix-it feedback and re-verifies. Strikes count
-  **per issue** (`maxFixAttempts`, default 3), not per attempt. A per-item round budget
-  (`maxFixRounds`, default 10) is the termination backstop.
-- **Sends obey the existing gate**: `foremanMayActLive` (enabled + live + repo allowlisted).
-  Verification is read-only and runs in any mode, so dry-run shows judgment before it ever types.
-- **Vocabulary**: "queue" means only a session's work queue. `DispatchSchema.queue: true` becomes
-  `backlog: true`; `TaskStatus "queued"` becomes `"backlog"`.
-- **Items are user-authored**, editable, drag-reorderable, and removable while waiting.
-- **The idle-Notification hook is fixed cross-session** (§0a), accepting the prose-question tradeoff.
 
 ## What a design review changed
 
@@ -76,11 +58,6 @@ sometimes remint an id for a semantically identical gap, resetting its strikes. 
 the only real termination guarantee. Hardened in §3.3, but not presented as a proof.
 
 ## Ordering finding
-
-There is no PR-creation API and no no-mistakes launcher in this codebase. Both subsystems are pure
-observers (`gh pr list` in `pr.ts`, `axi status` in `nomistakes.ts`), each with exactly one write
-(`axi respond`). The only way to make a session *act* is to type into its pane, so the wrap-up is a
-gated send, not an API call.
 
 Delivery must use `injectPrompt` so a multi-line intent remains one submission. The current
 terminal transport contract is owned by `AGENTS.md` and `src/server/terminal/`; this
@@ -654,33 +631,6 @@ the two subsystems actively fight.
 
 ## §4. Web UI
 
-- **`WorkQueue.tsx`** - rendered by `SessionCard.tsx` (since shipped as a drawer rather than a
-  fixed section of the expanded card; the README's "Work queues" section owns where it sits and
-  how it opens). Items with a drag handle, edit-in-place, remove (only while
-  `queued`/`proposed`); an add box; the in-flight item's state (blocking gaps, `round N/10`); the
-  wrap-up block. Drag-reorder is hand-rolled HTML5 (`draggable` + `onDragStart`/`onDragOver`/
-  `onDrop`) - there is no DnD library in a repo with 10 lean runtime deps, so this adds none.
-  Optimistic order, `PUT .../order` on drop.
-- **Mutations CAS on `revision`** and surface a 409 honestly ("Foreman just sent this item").
-  Without it the UI will happily let someone edit an item already typed into a pane.
-- **A drafted item shows the text it would send** ("Foreman would send:", collapsed). Approve is
-  consent to a *specific* prompt, and from round 1 that prompt is the rendered fix prompt rather than
-  the item's intent - so the card has to show it, or Approve means consenting to text never read.
-- **Wrap-up block** at drained: two checkboxes (Create PR / Run no-mistakes) over an editable
-  prefilled textarea, plus Send and Dismiss. Both ticked prefills the harness-specific gate
-  instruction (the pipeline pushes and opens the PR itself); the
-  [README's Work queues section](../../README.md#work-queues-load-a-session-up-and-walk-away)
-  owns the current invocation behavior. PR-only prefills a PR instruction; Dismiss closes and
-  sends nothing. Editable because the composed text is a guess. **The human's "yes" arrives
-  later**, so Send re-runs `queueSendStillValid` rather than trusting the drain-time snapshot.
-- **Allowlist honesty.** `foremanMayActLive`'s prefix match (`verdict.ts:288`) does not cover
-  dispatched-task worktrees under `WORKTREES_DIR` - they are not under the repo root. A queue on a
-  dispatched agent would silently never go live and every item would sit `proposed`, reading as a
-  bug. Say so in the panel: "this repo isn't allowlisted for live sends" + the path to add.
-- **Re-attach affordance** for an orphaned queue (§1.1).
-- Collapsed-card queue chip from `Session.queue`; `alerts.ts` learns escalated items;
-  `ForemanBar.tsx` gains `maxFixAttempts`/`maxFixRounds`; `api.ts` + `styles.css`.
-
 ## §5. Tests
 
 - `test/queue-machine.test.ts` - the heart. `decideQueueTick` as a table over every (bucket, state,
@@ -894,8 +844,3 @@ Current harness support and its launch-scoped safety boundary are documented in
 [Work queues](../../README.md#work-queues-load-a-session-up-and-walk-away).
 
 ## Out of scope (future)
-
-- Running tests/lint during verification (evidence-only by decision; no-mistakes is the gate).
-- Queueing via MCP so one agent can queue work for another; v1 is dashboard-authored.
-- Auto-rebinding an orphaned queue (re-attach stays manual, by design).
-- Auto-launching the wrap-up actions. Foreman always asks.

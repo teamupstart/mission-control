@@ -75,27 +75,12 @@ Out of scope:
    - Persist the verification result.
    - If the selected ref is missing or wrong, remain `finalizing` with a typed restore/ref remediation error and do not cancel any member.
 
-5. Make one exact winner available.
-   - Prefer the original selected Task only when its Session/worktree still match the member attempt and the pane is safely idle—not actively running, in copy mode, or awaiting approval/input.
-   - Restore that checkout to the selected snapshot with hard reset plus removal of nonignored untracked files, preserving ignored caches.
-   - Invoke the restore through `resetSession(registry, session, true, customArtifactReset)` so work queue, drafts, attachments, message log, no-mistakes caches, observed effort, work episode, and any other registered session-scoped state follow the existing reset contract.
-   - Re-read HEAD and cleanliness after reset. Persist exact winner readiness only on a full match.
-   - If the original Task/session cannot safely be rebound, create exactly one replacement normal Task using a deterministic request identity, persist `materializedTaskId` before dispatch, and launch from `snapshotSha` through the pinned Dispatcher seam.
-   - Reconcile a lost response/restart to that same replacement Task; never launch a second replacement.
-
 6. Tear down losers through TaskManager.
    - After winner preservation is durable, call `TaskManager.cancel` for every launching/active nonselected member.
    - Persist each cleanup result separately and mark the member eliminated only after Task state/resource observations agree.
    - A cleanup failure leaves the run in `finalizing` with the exact Task/member remediation; `completed` is forbidden while an unacknowledged loser resource remains.
    - Submitted private refs survive all Task cancellation.
    - On a replacement path, reconcile the superseded original winner as specified by the [operator guide](../../ensembles.md#where-the-selected-result-lands).
-
-7. Finish without a Workflow handoff.
-   - Build a bounded continuation containing original intent, selected member summary, evaluator recommendation/rationale/caveats, and explicit instruction to inspect and ship through the normal provenance-aware flow.
-   - For a retained live winner, deliver through existing pane readiness/locking/injection paths only after reset/rebind is ready.
-   - For a replacement Task, include the continuation in its initial intent rather than typing twice.
-   - Persist a deterministic delivery key and acknowledgement so restart cannot send the continuation twice.
-   - Do not open a PR, push, invoke no-mistakes, or mark the promoted Task done automatically.
 
 8. Resolve an optional Workflow handoff at creation.
    - Extend `POST /api/ensembles` preflight to resolve an operator-selected immutable Workflow version through WorkflowManager.

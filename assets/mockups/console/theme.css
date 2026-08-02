@@ -578,7 +578,7 @@ button {
   white-space: nowrap;
 }
 
-/* ---- no-mistakes strip ---- */
+/* ---- review workflow strip ---- */
 .nm-strip {
   display: flex;
   flex-direction: column;

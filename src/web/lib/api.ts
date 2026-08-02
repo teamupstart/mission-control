@@ -9,7 +9,6 @@ import type {
   InspectorStatus,
   LlmStatus,
   MessageSendDisposition,
-  NmFixDetail,
   PendingTurn,
   PermissionMode,
   PlanDecisionAnswer,
@@ -233,12 +232,6 @@ export async function fetchSessionDiff(id: string, commit?: string): Promise<Ses
     return fail(err instanceof Error ? err.message : String(err));
   }
 }
-
-/** The context behind one no-mistakes fix. Null when it can't be loaded. */
-export const fetchNomistakesFix = (id: string, sha: string): Promise<NmFixDetail | null> =>
-  fetchJson<NmFixDetail>(
-    `/api/sessions/${encodeURIComponent(id)}/nomistakes/fixes/${encodeURIComponent(sha)}`,
-  );
 
 // ---- ensembles ----
 //
@@ -870,12 +863,6 @@ export const api = {
     selections?: PlanDecisionAnswer[] | null,
   ) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
-  nomistakesRespond: (
-    id: string,
-    action: "approve" | "fix" | "skip",
-    opts: { findings?: string[]; instructions?: string } = {},
-  ) => post(`/api/sessions/${encodeURIComponent(id)}/nomistakes/respond`, { action, ...opts }),
-
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   /**
@@ -1018,6 +1005,11 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}/approve`),
   setWrapupAnswer: (id: string, answer: string | null) =>
     put(`/api/sessions/${encodeURIComponent(id)}/queue/wrapup`, { answer }),
+  startBuiltinReview: (id: string, requestId: string) =>
+    post<{ run?: { id: string } } & ActionResult>(
+      `/api/sessions/${encodeURIComponent(id)}/workflow-review`,
+      { requestId },
+    ),
   reattachQueue: (id: string, noteKey: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),
   /** Deliver a whole multi-line prompt as one bracketed-paste submission. */

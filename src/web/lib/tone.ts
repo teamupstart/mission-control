@@ -44,18 +44,12 @@ export interface ToneGroup {
  * `moveSelection` relies on the indices lining up with the tone order whether or not
  * a column happens to be on screen.
  *
- * `gateAlerts` is computed from the full fleet in App, even when `sessions` is the
- * filtered visible slice. A hidden sibling may still be driving the same no-mistakes
- * run, so recomputing from visible rows would turn filtering into a state change.
  */
-export function groupByTone(
-  sessions: readonly Session[],
-  gateAlerts: ReadonlySet<string>,
-): ToneGroup[] {
+export function groupByTone(sessions: readonly Session[]): ToneGroup[] {
   const groups: ToneGroup[] = TONE_GROUPS.map((g) => ({ ...g, sessions: [] }));
   const byTone = new Map(groups.map((g) => [g.tone, g]));
   for (const s of sessions) {
-    byTone.get(stateDisplay(s, gateAlerts.has(s.id)).tone)?.sessions.push(s);
+    byTone.get(stateDisplay(s).tone)?.sessions.push(s);
   }
   return groups;
 }

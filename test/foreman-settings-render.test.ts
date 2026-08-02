@@ -178,8 +178,8 @@ test("turning the open-PR guard off says what that now allows", () => {
 test("the wrap-up trigger group is a multi-select, and the action stays a radio group", () => {
   // The whole point of the split: any number of moments, exactly one action. A regression
   // to radios for the triggers would silently make the two mutually exclusive, and a
-  // regression to checkboxes for the action would let someone pick both `/no-mistakes`
-  // and `pr` - two pushes racing on one branch.
+  // regression to checkboxes for the action would let someone pick both the review
+  // workflow and `pr`, with two shipping paths racing on one branch.
   const html = renderPopover(mkState({ wrapupTriggers: ["drain", "prompted"] }));
   // Scoped to the trigger fieldset: counting checkboxes across the whole popover also
   // catches Enable Foreman and Auto-approve, which would make this pass for the wrong
@@ -193,7 +193,7 @@ test("the wrap-up trigger group is a multi-select, and the action stays a radio 
   assert.doesNotMatch(group, /type="radio"/, "triggers are never mutually exclusive");
   assert.equal((html.match(/name="foreman-wrapup"/g) ?? []).length, 3, "one radio group of 3");
   assert.match(html, /bind and submit No-Mistakes Review when none exists/);
-  assert.match(html, /Straight to PR - skip no-mistakes/);
+  assert.match(html, /Straight to PR - skip review/);
 });
 
 test("with no trigger armed the action group is disabled and says so", () => {

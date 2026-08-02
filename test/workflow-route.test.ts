@@ -1,62 +1,104 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AppPageShell } from "../src/web/components/AppPageShell.tsx";
+import type { MissionRoute } from "../src/web/workflows/useWorkflowRoute.ts";
 import { missionRouteHash, parseMissionRoute } from "../src/web/workflows/useWorkflowRoute.ts";
 
-// What is at stake: the Workflows surface must coexist with the fleet without a router or a
-// second app mount. These hashes are durable links, so unknown values must fall safely to Fleet.
+// What is at stake: the execution surfaces must coexist with the fleet without a router or a
+// second app mount. These hashes are durable links, so unknown values must fall safely to Fleet
+// and every retired spelling must keep resolving.
 
-test("workflow hashes parse and serialize without aliases drifting", () => {
+test("execution hashes parse and serialize without aliases drifting", () => {
   assert.deepEqual(parseMissionRoute("#/fleet"), { page: "fleet" });
-  assert.deepEqual(parseMissionRoute("#/workflows/runs/"), { page: "workflows", tab: "runs" });
+  assert.deepEqual(parseMissionRoute("#/runs/"), { page: "runs" });
   assert.deepEqual(parseMissionRoute("#/unknown"), { page: "fleet" });
   assert.equal(missionRouteHash({ page: "fleet" }), "#/fleet");
-  assert.equal(missionRouteHash({ page: "workflows", tab: "runs" }), "#/workflows/runs");
+  assert.equal(missionRouteHash({ page: "runs" }), "#/runs");
 });
 
-test("the ensembles tab parses and serializes, with an id and back to the list", () => {
-  assert.deepEqual(parseMissionRoute("#/workflows/ensembles"), { page: "workflows", tab: "ensembles" });
-  assert.deepEqual(parseMissionRoute("#/workflows/ensembles/run-7"), {
-    page: "workflows",
-    tab: "ensembles",
+test("the ensembles page parses and serializes, with an id and back to the list", () => {
+  assert.deepEqual(parseMissionRoute("#/ensembles"), { page: "ensembles" });
+  assert.deepEqual(parseMissionRoute("#/ensembles/run-7"), {
+    page: "ensembles",
     ensembleId: "run-7",
   });
   // An undecodable id lands on the list, never a blank pane - the same rule a run id follows.
-  assert.deepEqual(parseMissionRoute("#/workflows/ensembles/%E0%A4%A"), {
-    page: "workflows",
-    tab: "ensembles",
-  });
-  assert.equal(missionRouteHash({ page: "workflows", tab: "ensembles" }), "#/workflows/ensembles");
+  assert.deepEqual(parseMissionRoute("#/ensembles/%E0%A4%A"), { page: "ensembles" });
+  assert.equal(missionRouteHash({ page: "ensembles" }), "#/ensembles");
   assert.equal(
-    missionRouteHash({ page: "workflows", tab: "ensembles", ensembleId: "run 7" }),
-    "#/workflows/ensembles/run%207",
+    missionRouteHash({ page: "ensembles", ensembleId: "run 7" }),
+    "#/ensembles/run%207",
   );
   // A round-trip keeps the id (and its encoding) stable.
   assert.deepEqual(
-    parseMissionRoute(missionRouteHash({ page: "workflows", tab: "ensembles", ensembleId: "run 7" })),
-    { page: "workflows", tab: "ensembles", ensembleId: "run 7" },
+    parseMissionRoute(missionRouteHash({ page: "ensembles", ensembleId: "run 7" })),
+    { page: "ensembles", ensembleId: "run 7" },
   );
 });
 
-test("the Ensembles tab is registered once in the tab source of truth and stays inside Workflows", () => {
-  const page = readFileSync(
-    fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url)),
-    "utf8",
+// Every `#/workflows/*` spelling that ever shipped, and where it now lands.
+//
+// This is the whole redirect contract in one table, and it is a table because the failure it
+// guards against is per-spelling: a redirect written as a branch per route is a redirect that
+// gets one of them wrong, and the symptom is a bookmark or a desktop notification quietly
+// landing on the fleet. The run and ensemble rows also check that the QUERY survives - the
+// legacy prefix is stripped before matching precisely so filters cannot be dropped on the way
+// through.
+test("every legacy #/workflows spelling redirects to its new home, permanently", () => {
+  const redirects: [legacy: string, landed: MissionRoute][] = [
+    // Authoring, which moved to the Library one phase earlier.
+    ["#/workflows", { page: "library" }],
+    ["#/workflows/personas", { page: "library", shelf: "personas" }],
+    ["#/workflows/actions", { page: "library", shelf: "actions" }],
+    // Execution, which moves here.
+    ["#/workflows/runs", { page: "runs" }],
+    ["#/workflows/runs/", { page: "runs" }],
+    ["#/workflows/runs/r1", { page: "runs", runId: "r1" }],
+    ["#/workflows/runs/run%207", { page: "runs", runId: "run 7" }],
+    ["#/workflows/runs?status=completed", { page: "runs", filters: { status: "completed" } }],
+    [
+      "#/workflows/runs/r1?status=running",
+      { page: "runs", runId: "r1", filters: { status: "running" } },
+    ],
+    ["#/workflows/ensembles", { page: "ensembles" }],
+    ["#/workflows/ensembles/", { page: "ensembles" }],
+    ["#/workflows/ensembles/run-7", { page: "ensembles", ensembleId: "run-7" }],
+    // An undecodable id under the legacy prefix takes the new page's own fallback.
+    ["#/workflows/runs/%E0%A4%A", { page: "runs" }],
+    ["#/workflows/ensembles/%E0%A4%A", { page: "ensembles" }],
+  ];
+  for (const [legacy, landed] of redirects) {
+    assert.deepEqual(parseMissionRoute(legacy), landed, `${legacy} did not redirect`);
+    // PERMANENT means the address bar stops saying the old thing: the route a legacy hash
+    // parses to must serialize to a hash that is no longer legacy, or the next copy of that
+    // link keeps the retired spelling alive forever.
+    const canonical = missionRouteHash(landed);
+    assert.doesNotMatch(canonical, /^#\/workflows/, `${legacy} canonicalized to ${canonical}`);
+    // And the canonical spelling is a fixed point: parsing it again does not move.
+    assert.deepEqual(parseMissionRoute(canonical), landed, `${canonical} is not stable`);
+  }
+});
+
+test("the Workflows page is gone, not merely unreachable", () => {
+  const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+  assert.doesNotMatch(app, /WorkflowPage/, "App must not mount the retired page");
+  assert.ok(
+    !existsSync(fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url))),
+    "the retired page's module must be deleted, not left orphaned",
   );
-  // One registry drives the tablist, arrow-nav, and labels - a hand-kept count elsewhere is what drifts.
-  assert.match(page, /WORKFLOW_TABS = \[[\s\S]*?\["ensembles",/);
-  assert.match(page, /tab === "ensembles"/);
-  // Ensembles is a Workflows-page tab, not a new top-level page: the shell union names pages,
-  // and this is not one of them.
+  // Runs and Ensembles are top-level pages now, so the shell union must name both - the
+  // inverse of what this asserted while they were tabs.
   const shell = readFileSync(
     fileURLToPath(new URL("../src/web/components/AppPageShell.tsx", import.meta.url)),
     "utf8",
   );
-  assert.doesNotMatch(shell, /"ensembles"/);
+  assert.match(shell, /"ensembles"/);
+  assert.match(shell, /"runs"/);
+  assert.doesNotMatch(shell, /"workflows"/);
 });
 
 test("ensemble deep links wait for the live snapshot and preserve direct 404 reads", () => {
@@ -74,19 +116,22 @@ test("ensemble deep links wait for the live snapshot and preserve direct 404 rea
 });
 
 test("global overlays stay mounted on every page, and only one page body renders", () => {
-  const pages = ["fleet", "library", "workflows", "settings"] as const;
+  const pages = ["fleet", "library", "runs", "ensembles", "settings"] as const;
   for (const page of pages) {
     const html = renderToStaticMarkup(createElement(AppPageShell, {
       page,
       fleet: createElement("main", null, "fleet body"),
       library: createElement("main", null, "library body"),
-      workflows: createElement("main", null, "workflows body"),
+      runs: createElement("main", null, "runs body"),
+      ensembles: createElement("main", null, "ensembles body"),
       settings: createElement("main", null, "settings body"),
       overlays: createElement("aside", null, "global overlays"),
     }));
     assert.match(html, new RegExp(`${page} body`));
-    // Exactly one, which is what keeps the settings page's five polling hooks (and the
-    // workflows page's fetches) from mounting while you are on the fleet.
+    // Exactly one, which is what keeps the settings page's five polling hooks (and the runs
+    // rail's fetches, and the ensembles detail loader) from mounting while you are on the
+    // fleet. Two slots rather than one execution slot is what makes the ensembles half of
+    // that true while you are reading a run.
     for (const other of pages.filter((p) => p !== page)) {
       assert.doesNotMatch(html, new RegExp(`${other} body`), `${other} rendered under ${page}`);
     }
@@ -166,16 +211,14 @@ test("the dirty-draft gate holds a route through the overlay, not a browser dial
 // The header's drawer became a link into the settings rail. Grepped rather than rendered
 // because what is at stake is the WIRING: a button that opens nothing looks identical to
 // one that works until you click it, and the category it names has to be the registered one.
-test("the Workflows page links to its settings category rather than hosting a drawer", () => {
+// The subsystem's switches were a drawer on the Workflows page's header, then a link from it.
+// The page is gone and the link survived it: an operator still looks for retention, delivery
+// and health where the runs are, and Settings is still the one place they live.
+test("the runs page links to its settings category rather than hosting a drawer", () => {
   const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
-  assert.match(
-    app,
-    /onOpenWorkflowSettings=\{\(\) =>[\s\S]*?navigate\(\{ page: "settings", category: "workflows" \}\)[\s\S]*?\}/,
-  );
-  const page = readFileSync(
-    fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url)),
-    "utf8",
-  );
-  assert.match(page, /onClick=\{onOpenWorkflowSettings\}/);
-  assert.doesNotMatch(page, /WorkflowConfigPanel/, "the drawer is gone, not merely hidden");
+  const runsSlot = app.slice(app.indexOf("runs={("), app.indexOf("ensembles={("));
+  assert.ok(runsSlot.length > 0, "App must render a runs page slot");
+  assert.match(runsSlot, /Workflow settings/);
+  assert.match(runsSlot, /navigate\(\{ page: "settings", category: "workflows" \}\)/);
+  assert.doesNotMatch(app, /WorkflowConfigPanel/, "the drawer is gone, not merely hidden");
 });

@@ -7,19 +7,15 @@ import {
 import { WORKFLOW_RUN_STATUSES, type WorkflowRunStatus } from "@shared/workflow.ts";
 
 // The one mission router, despite the name it was born with: every full-screen page the
-// dashboard has - fleet, Library, Workflows, Settings - is a variant of `MissionRoute` here,
-// and `App.tsx` renders whichever one the hash names. A second router would be a second answer
-// to "which page is showing", and the dirty-draft gate below only guards one of them.
-
-/**
- * What is left of the Workflows page: the two EXECUTION tabs.
- *
- * Authoring moved to the Library, and the three tabs it took with it are gone from this union
- * rather than deprecated in place - a tab id the page can no longer render is a route App
- * would have to defend against on every read. The legacy hashes still parse (see
- * `parseMissionRoute`), but they parse into `library` routes.
- */
-export type WorkflowTab = "runs" | "ensembles";
+// dashboard has - fleet, Library, Runs, Ensembles, Settings - is a variant of `MissionRoute`
+// here, and `App.tsx` renders whichever one the hash names. A second router would be a second
+// answer to "which page is showing", and the dirty-draft gate below only guards one of them.
+//
+// The Workflows page is GONE. It spent one release as a two-tab holding pen for the execution
+// surfaces while the Library took the authoring ones, and both of its tabs are now top-level
+// pages hung off the Line. Every `#/workflows/*` spelling still parses - permanently, see
+// `parseMissionRoute` - but none of them parses into a `workflows` route, because there is no
+// longer such a page to parse into.
 
 /**
  * The Library's five shelves, in the order they are read on the page.
@@ -76,12 +72,16 @@ export type MissionRoute =
       creating?: true;
     }
   | {
-      page: "workflows";
-      tab: WorkflowTab;
+      /** Workflow runs: the rail and its reader, the Line's Review stage one click deeper. */
+      page: "runs";
       runId?: string;
-      /** The selected Ensemble run on the `ensembles` tab, mirroring `runId` for `runs`. */
-      ensembleId?: string;
       filters?: WorkflowRunFilters;
+    }
+  | {
+      /** Ensemble runs: the list and the full decision dossier. */
+      page: "ensembles";
+      /** The selected Ensemble run, mirroring `runId` for `runs`. */
+      ensembleId?: string;
     }
   | { page: "settings"; category: SettingsCategoryId };
 
@@ -160,41 +160,43 @@ export function parseMissionRoute(hash: string): MissionRoute {
     const assetId = segment(library[2]);
     return assetId ? { page: "library", shelf, assetId } : { page: "library", shelf };
   }
-  // The three legacy authoring routes, redirected permanently ON PARSE rather than by a
-  // component that would have to mount first. `useWorkflowRoute` rewrites the address bar to
-  // the canonical spelling, so a kept bookmark both lands and stops being legacy.
+  // `/runs` and `/workflows/runs` are ONE rule, and so are the two ensembles spellings. The
+  // legacy prefix is stripped before matching rather than handled by a parallel pair of
+  // branches, because a redirect that is a second copy of the parse is a redirect that stops
+  // agreeing with it: the day `?status=` grows a sibling, the copy nobody remembered would
+  // silently drop it from every kept bookmark. Redirected permanently ON PARSE rather than by
+  // a component that would have to mount first - `useWorkflowRoute` then rewrites the address
+  // bar to the canonical spelling, so a kept link both lands and stops being legacy.
+  const execution = path.startsWith("/workflows/") ? path.slice("/workflows".length) : path;
+  if (execution === "/runs") {
+    return { page: "runs", ...(withFilters ? { filters: withFilters } : {}) };
+  }
+  const run = /^\/runs\/([^/]+)$/.exec(execution);
+  if (run) {
+    // An id nothing can decode names no run, so it lands on the runs list - the same
+    // place an id that names a deleted run lands.
+    const runId = segment(run[1]!);
+    return {
+      page: "runs",
+      ...(runId ? { runId } : {}),
+      ...(withFilters ? { filters: withFilters } : {}),
+    };
+  }
+  if (execution === "/ensembles") return { page: "ensembles" };
+  const ensemble = /^\/ensembles\/([^/]+)$/.exec(execution);
+  if (ensemble) {
+    // Same rule as a run id: an undecodable or deleted-run id lands on the ensembles list
+    // rather than on a blank pane, for a link anyone can paste.
+    const ensembleId = segment(ensemble[1]!);
+    return { page: "ensembles", ...(ensembleId ? { ensembleId } : {}) };
+  }
+  // The three legacy AUTHORING routes. Below the execution pair because `/workflows` bare is
+  // the builder tab's old hash and must not be read as a prefix of anything.
   if (path === "/workflows") return { page: "library" };
   if (path === "/workflows/personas") return { page: "library", shelf: "personas" };
   // `actions`, not `session-actions`: the shelf is called Actions on screen, and the hash a
   // person copies out of the address bar has to be the word they read.
   if (path === "/workflows/actions") return { page: "library", shelf: "actions" };
-  if (path === "/workflows/runs") {
-    return { page: "workflows", tab: "runs", ...(withFilters ? { filters: withFilters } : {}) };
-  }
-  const run = /^\/workflows\/runs\/([^/]+)$/.exec(path);
-  if (run) {
-    // An id nothing can decode names no run, so it lands on the runs list - the same
-    // place an id that names a deleted run lands.
-    const runId = segment(run[1]!);
-    return runId
-      ? {
-          page: "workflows",
-          tab: "runs",
-          runId,
-          ...(withFilters ? { filters: withFilters } : {}),
-        }
-      : { page: "workflows", tab: "runs", ...(withFilters ? { filters: withFilters } : {}) };
-  }
-  if (path === "/workflows/ensembles") return { page: "workflows", tab: "ensembles" };
-  const ensemble = /^\/workflows\/ensembles\/([^/]+)$/.exec(path);
-  if (ensemble) {
-    // Same rule as a run id: an undecodable or deleted-run id lands on the ensembles list
-    // rather than on a blank pane, for a link anyone can paste.
-    const ensembleId = segment(ensemble[1]!);
-    return ensembleId
-      ? { page: "workflows", tab: "ensembles", ensembleId }
-      : { page: "workflows", tab: "ensembles" };
-  }
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
   if (settings) {
@@ -222,10 +224,8 @@ export function missionRouteHash(route: MissionRoute): string {
       ? `#/library/${route.shelf}/${encodeURIComponent(route.assetId)}`
       : `#/library/${route.shelf}`;
   }
-  if (route.tab === "runs") {
-    const path = route.runId
-      ? `#/workflows/runs/${encodeURIComponent(route.runId)}`
-      : "#/workflows/runs";
+  if (route.page === "runs") {
+    const path = route.runId ? `#/runs/${encodeURIComponent(route.runId)}` : "#/runs";
     const params = new URLSearchParams();
     if (route.filters?.status) params.set("status", route.filters.status);
     if (route.filters?.workflowId) params.set("workflowId", route.filters.workflowId);
@@ -234,8 +234,8 @@ export function missionRouteHash(route: MissionRoute): string {
     return query ? `${path}?${query}` : path;
   }
   return route.ensembleId
-    ? `#/workflows/ensembles/${encodeURIComponent(route.ensembleId)}`
-    : "#/workflows/ensembles";
+    ? `#/ensembles/${encodeURIComponent(route.ensembleId)}`
+    : "#/ensembles";
 }
 
 export interface MissionRouter {

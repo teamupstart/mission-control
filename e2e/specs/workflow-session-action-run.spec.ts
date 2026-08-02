@@ -263,7 +263,7 @@ test("Live types the authored instruction once and resumes on a fresh child segm
 
   // What the RUN VIEW makes of all that. Everything above is durable truth; this is the half
   // an operator reads, and it is the half that can lie by borrowing a reviewer's vocabulary.
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${runId}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
 
   // Two entries under ONE repair round, named as evidence rather than as a second attempt at
   // the same thing. A scrubber that showed "Round 1, Round 2" would say the run had spent
@@ -347,7 +347,7 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   // not proven: "ready" is not "sent", and neither is a verdict. A generic "Waiting" chip here
   // - which is what routing an action through the reviewer table produces - would leave an
   // operator with no way to tell a Preview packet nobody sent from a turn in flight.
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${runId}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const strip = dashboard.locator(".wf-pipeline-strip");
   await expect(strip.locator("li.wf-pipeline-reviewer .wf-pipeline-status"))
     .toHaveText("Ready to send");

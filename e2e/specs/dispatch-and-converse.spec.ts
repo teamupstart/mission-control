@@ -290,7 +290,7 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
 
   // Finish on the user-visible result, not only the durable API record. This is the same
   // run the Ship it control created through the request observed above.
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${encodeURIComponent(runId)}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${encodeURIComponent(runId)}`);
   const selectedRun = dashboard.locator(".wf-run-row.active");
   await expect(selectedRun).toContainText("No-Mistakes Review");
   await expect(selectedRun).toContainText(`v${runVersion}`);

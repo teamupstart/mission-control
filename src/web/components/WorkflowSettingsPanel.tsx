@@ -237,11 +237,10 @@ const STRIP_TILES = [
   count: (status: WorkflowStatus) => number;
 }[];
 
-/** Where a tile goes, as the hash the Workflows page's own filter chips would produce. */
+/** Where a tile goes, as the hash the runs page's own filter chips would produce. */
 function tileHref(filters: WorkflowRunFilters): string {
   return missionRouteHash({
-    page: "workflows",
-    tab: "runs",
+    page: "runs",
     ...(Object.keys(filters).length > 0 ? { filters } : {}),
   });
 }

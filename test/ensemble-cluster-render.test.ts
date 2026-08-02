@@ -19,8 +19,8 @@ import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import { BoardView } from "../src/web/components/layouts/BoardView.tsx";
 import { ConsoleView } from "../src/web/components/layouts/ConsoleView.tsx";
-import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import { EnsembleRuns } from "../src/web/workflows/EnsembleRuns.tsx";
+import { DecideDrawer } from "../src/web/components/line/DecideDrawer.tsx";
 import {
   EnsembleProgressDots,
   ensembleClusterHeadline,
@@ -433,20 +433,30 @@ test("the Ensembles list row finally renders the counts the wire has always carr
   assert.doesNotMatch(full, /ensemble-run-needs/);
 });
 
-test("the Ensembles tab wears the daemon's attention count, and nothing when calm", () => {
-  const page = (summaries: EnsembleSummary[], count: number): string =>
+// The Ensembles TAB used to wear this number, and the tab strip retired with the Workflows
+// page. The signal did not: it moved onto the Line, where the Decide stage goes amber off
+// the daemon's own fold and the drawer that opens under it states the figure in words. This
+// pins the drawer half - that the count it prints is the daemon's `attentionCount` and not a
+// recount of the summaries beside it, and that a calm fleet prints no amber phrase at all.
+test("the Decide drawer wears the daemon's attention count, and nothing when calm", () => {
+  const drawer = (summaries: EnsembleSummary[], count: number): string =>
     renderToStaticMarkup(
-      createElement(WorkflowPage, {
-        // Any tab draws the strip; `runs` is the page's own default and keeps this test
-        // about the badge rather than about what the other tab renders.
-        tab: "runs" as const,
-        ensembleSummaries: summaries,
-        ensembleAttentionCount: count,
-        onTab: () => {},
+      createElement(DecideDrawer, {
+        summaries,
+        attentionCount: count,
+        now: 5000,
+        onClose: () => {},
+        onOpenEnsemble: () => {},
+        onOpenAllEnsembles: () => {},
       }),
     );
-  const busy = page([mkEnsembleSummary({ attention: true })], 1);
-  assert.match(busy, /class="workflow-tab-badge"[^>]*>1</);
-  assert.match(busy, /aria-label="1 ensemble need attention"/);
-  assert.doesNotMatch(page([mkEnsembleSummary({})], 0), /workflow-tab-badge/);
+  const busy = drawer([mkEnsembleSummary({ attention: true })], 1);
+  assert.match(busy, /line-drawer-att">1 needs a look</);
+  assert.doesNotMatch(drawer([mkEnsembleSummary({})], 0), /line-drawer-att/);
+
+  // A run actually stopped for an answer outranks the generic count: "needs a look" and
+  // "waiting on you" are different asks, and the drawer must make the second one.
+  const deciding = drawer([mkEnsembleSummary({ status: "awaiting_decision", attention: true })], 1);
+  assert.match(deciding, /line-drawer-att">1 waiting on you</);
+  assert.match(deciding, />Decide</, "an ensemble awaiting a decision offers Decide");
 });

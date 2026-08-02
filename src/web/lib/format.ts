@@ -16,6 +16,28 @@ export function relativeTime(ms: number | null, now = Date.now()): string {
 }
 
 /**
+ * `relativeTime`'s forward-facing twin: how long until an instant that has not happened.
+ *
+ * A separate function rather than a sign branch inside `relativeTime`, because that one
+ * clamps at zero and therefore reads every future stamp as "just now" - which is not a
+ * rounding error but the exact wrong word for a mission due in three hours. Injectable
+ * `now` for the same reason `relativeTime` has one: a render test cannot own the clock.
+ * An instant already passed reads as "due", which is what a schedule the runner has not
+ * picked up yet actually is.
+ */
+export function untilTime(ms: number | null, now = Date.now()): string {
+  if (!ms) return "";
+  const s = Math.round((ms - now) / 1000);
+  if (s <= 0) return "due";
+  if (s < 60) return `in ${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `in ${h}h`;
+  return `in ${Math.floor(h / 24)}d`;
+}
+
+/**
  * A conversation turn's compact local timestamp: the clock time alone.
  *
  * The transcript stores an instant, not a display zone. Mission Control is local software,

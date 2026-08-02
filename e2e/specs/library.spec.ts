@@ -271,23 +271,31 @@ test("every legacy authoring link lands in the Library, and the address bar says
   await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/library");
 });
 
-test("the Workflows page keeps its two execution tabs and no authoring", async ({
+// The Workflows page kept two execution tabs for exactly one release while the Library took
+// the authoring ones. Both of those tabs are top-level pages hung off the Line now, and the
+// page they shared is deleted - so what this case checks is that the split is COMPLETE:
+// nothing is left behind a tablist, and the Library still owns every authoring surface.
+// The redirect table itself lives in `line-drawers.spec.ts`.
+test("the Workflows page is gone, and neither half of it came back as a tab", async ({
   dashboard,
   daemon,
 }) => {
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs`);
-
-  // Exhaustive, not membership: an authoring tab surviving here is a second home for the
-  // thing the Library now owns, and the two would drift apart quietly.
-  await expect(dashboard.getByRole("tab")).toHaveText(["Runs", "Ensembles"]);
+  await dashboard.goto(`${daemon.baseURL}/#/runs`);
   // Exact, or the empty state's "No workflow runs yet" matches this too.
   await expect(dashboard.getByRole("heading", { name: "Workflow runs", exact: true }))
     .toBeVisible();
+  await expect(dashboard.getByRole("tab")).toHaveCount(0);
 
-  // The surviving tab still works, and still routes.
-  await dashboard.getByRole("tab", { name: /Ensembles/ }).click();
-  await expect.poll(async () => dashboard.evaluate(() => location.hash))
-    .toBe("#/workflows/ensembles");
+  await dashboard.goto(`${daemon.baseURL}/#/ensembles`);
+  await expect(dashboard.getByRole("heading", { name: "Ensembles", exact: true })).toBeVisible();
+  await expect(dashboard.getByRole("tab")).toHaveCount(0);
+
+  // And the Library is still the only home for what it took: its shelves are here, and no
+  // execution surface reappeared among them.
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await expect(dashboard.getByRole("heading", { name: "What counts as done?" })).toBeVisible();
+  await expect(dashboard.getByRole("heading", { name: "Workflow runs", exact: true }))
+    .toHaveCount(0);
 });
 
 test("an unsaved draft still holds a navigation away from the editor", async ({

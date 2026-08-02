@@ -2356,14 +2356,23 @@ the hash without adding a history entry, so the address bar is always a shareabl
 you are looking at and **Back** still means the page you came from. `new` is reserved and
 never an asset id.
 
-The three legacy authoring hashes redirect permanently, and the address bar is rewritten to
-the new spelling so a kept bookmark stops being a legacy one: `#/workflows` → `#/library`,
-`#/workflows/personas` → `#/library/personas`, `#/workflows/actions` → `#/library/actions`.
+Execution is not a Library shelf. Workflow runs and ensembles are top-level pages hung off
+[the Line](#the-line), and the Workflows page that once held all five surfaces as sibling tabs
+is retired:
 
-Execution keeps its own page for now. `#/workflows/runs`, `#/workflows/runs/:id`,
-`#/workflows/ensembles` and `#/workflows/ensembles/:id` are unchanged, and that page is down
-to its two watching tabs - **Runs** and **Ensembles**. A later phase re-homes both to
-top-level routes and retires it.
+| Hash | Surface |
+| --- | --- |
+| `#/runs` | Every workflow run, its rail and reader. `?status=`, `?workflowId=` and `?session=` filter the list |
+| `#/runs/:id` | That run's reader - verdicts, deliveries, timeline, exports |
+| `#/ensembles` | Every ensemble run |
+| `#/ensembles/:id` | That run's full dossier and its one-shot decision |
+
+Every `#/workflows/*` spelling redirects permanently, and the address bar is rewritten to the
+new one so a kept bookmark stops being a legacy link: `#/workflows` → `#/library`,
+`#/workflows/personas` → `#/library/personas`, `#/workflows/actions` → `#/library/actions`,
+`#/workflows/runs[/:id]` → `#/runs[/:id]`, `#/workflows/ensembles[/:id]` →
+`#/ensembles[/:id]`. Query filters survive the redirect, so a saved
+`#/workflows/runs?status=completed` lands on the same filtered list it always did.
 
 An editor with unsaved changes still holds a navigation away from it and asks first, whichever
 home you are leaving for.
@@ -4125,14 +4134,15 @@ the one you are editing, instead of a drill-in that hid the other three while yo
 the one that failed. Adding a source is an inline form above that list; it still resolves the
 repo before the source exists, and the source still starts switched off.
 
-**Workflows** joined the rail later, from a floating drawer on the Workflows page. It carries
+**Workflows** joined the rail later, from a floating drawer on the page the run list used to
+share with the builder. It carries
 the same four things the drawer did - the [Live delivery](#live-repair-delivery-and-foreman-completion)
 switch and its explicit warning, the repositories Live delivery may send in, the
 [retention](#retention-history-exports-and-workflow-health) limits (shortening one still asks
 first), and the health counters - on the same routes, with nothing about the config changed. What
 it gains by being here is everything a drawer could not have: a rail row, a scope badge, a deep
 link, and a place in ⌘K, so the one switch in this app that can type into somebody's live agent
-session is findable by searching for what it does. The Workflows page header keeps a link to it.
+session is findable by searching for what it does. The runs page header keeps a link to it.
 
 **Inspector, Shipping and Foreman are consoles**, not forms: the controls sit in a narrow
 column and a per-item ledger takes the wide one, under a strip of counts. That is the
@@ -4147,7 +4157,7 @@ findings, 0, 0, 0" over a table of fifty.
 
 **Workflows takes the same cards without the split**, because the console shape is three
 separable things and a panel should take the ones it has the data to be honest about. It has
-no ledger to put in a wide column: the Workflows page already owns the run list, with paging,
+no ledger to put in a wide column: the runs page already owns the run list, with paging,
 live updates and per-run actions, and a second copy in a settings panel would disagree with
 the real one the first time either changed. So its single column stays a single column, and
 its health strip **navigates instead of filtering** - each tile opens the nearest
@@ -4256,20 +4266,58 @@ ledger), and every other stage reuses the daemon's *existing* derivation - `repo
 `readyBacklog`, `ensembleNeedsAttention`, `deriveScheduleHealth` - rather than inventing a
 second opinion that agrees until it doesn't.
 
-Clicking a stage takes you to the surface that already reads it:
+Clicking a stage either opens a **drawer** in place or takes you to the surface that already
+reads it:
 
-| Stage | Opens |
-|-------|-------|
-| Intake | [Recurring Missions](#recurring-missions) |
-| Backlog | The [Roundup](#roundup), which lists the backlog with its blockers |
-| Working | The fleet, with the filter cleared - so the count and the cards agree again |
-| Review | `#/workflows/runs` |
-| Decide | `#/workflows/ensembles` |
-| Shipped | `#/workflows/runs` filtered to completed. There is no pull-request list surface in the app; the list of work that finished is the nearest true thing |
+| Stage | Click opens |
+|-------|-------------|
+| ⇊ Intake | **Drawer** - every task source and recurring mission, with its health line |
+| ☰ Backlog | The [Roundup](#roundup), which lists the backlog with its blockers |
+| ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
+| ⌁ Review | **Drawer** - one ladder per live run |
+| ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble |
+| ⚑ Shipped | `#/runs` filtered to completed. There is no pull-request list surface in the app; the list of work that finished is the nearest true thing |
 
 Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
 clipped to one row so the strip's height never moves. The flowing dots on the wires respect
 `prefers-reduced-motion`: with it set, the wires stay and the dots go.
+
+### The stage drawers
+
+A drawer opens **between the strip and the board**, pushing the board down; closing it hands
+the space straight back. It is not an overlay and it is not inside a layout - **session cards
+are the same cards at the same size in every drawer state**, which the geometry tests measure
+rather than assert.
+
+- **Toggle.** A second click on the same stage closes it. So does <kbd>esc</kbd>, and so does
+  the **✕** in its header. Clicking a *different* stage swaps the content in place rather than
+  closing and reopening. Only one drawer is ever showing.
+- **The cap is hard.** The body is capped at three rows, or 38vh on a short window, whichever
+  is smaller, and scrolls inside itself past that. Every row is still in the panel - the cap is
+  on the drawer, not on the list - so nothing is silently dropped from a triage surface. A
+  drawer can never bury the board.
+- **Keyboard.** Focus moves into the drawer as it opens and returns to the stage button when it
+  closes. <kbd>esc</kbd> closes it only while the keyboard is inside it or on the strip, so a
+  drawer left open while you work in the console reader does not eat the <kbd>esc</kbd> that
+  hands the keyboard back to the rail - and any modal above it takes the key first.
+- **Leaving the fleet closes it.** Every route out - "Open run", "All ensembles →", the topbar -
+  drops the drawer, so returning to the fleet does not resurrect a panel you had finished with.
+
+Each drawer is a **triage projection**, built from the SSE summaries the fleet already holds.
+None of them fetches, and none of them mutates: every action that changes a run or records a
+decision stays on the full page, one click deeper.
+
+| Drawer | Each row says | Escalates to |
+|--------|---------------|--------------|
+| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing. A run stopped on *you* is marked amber - the same rule the strip counts with. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
+| **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
+| **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](#recurring-missions) |
+
+Two chips the Review drawer deliberately cannot draw: **how many** reviewers a run has, and a
+stage the run has not reached. A run summary carries no graph, so "reviewers 2 of 4" would be
+a denominator invented in the browser - the row says who is reviewing right now and points at
+the run for the rest. Chips for a session action or an Inspector gate appear only when the run
+actually has one, which makes their absence informative rather than grey furniture.
 
 ## Layout (cards, console, or board)
 

@@ -189,7 +189,7 @@ test("digestLine counts ensemble attention and hasReportable follows non-termina
 test("the notifier delivers the ensemble deep link through the one shared detector", () => {
   const source = readFileSync(new URL("../src/web/useNotifier.ts", import.meta.url), "utf8");
   assert.match(source, /a\.ensembleId/);
-  assert.match(source, /#\/workflows\/ensembles\/\$\{encodeURIComponent\(deepLink\.ensembleId\)\}/);
+  assert.match(source, /#\/ensembles\/\$\{encodeURIComponent\(deepLink\.ensembleId\)\}/);
   // No second detector: the ensemble path rides the same filter(deliverable) every kind does.
   assert.match(source, /detectAlerts\(withKnownStalls\(prev, scope\), scope\)\.filter\(deliverable\)/);
 });

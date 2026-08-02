@@ -137,7 +137,9 @@ const WORKFLOW_RUN_SUMMARY_SELECT = `
          (SELECT COUNT(*) FROM workflow_deliveries wd
            WHERE wd.run_id = r.id AND wd.state = 'uncertain') AS uncertain_delivery_count,
          (SELECT COUNT(*) FROM workflow_deliveries wd
-           WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count
+           WHERE wd.run_id = r.id AND wd.state = 'refused') AS refused_delivery_count,
+         c.source_kind AS claim_kind, c.source_id AS claim_source_id,
+         c.created_at AS claim_created_at
     FROM workflow_runs r
     JOIN workflow_bindings b ON b.id = r.binding_id
     LEFT JOIN workflow_versions v ON v.id = r.workflow_version_id
@@ -147,7 +149,17 @@ const WORKFLOW_RUN_SUMMARY_SELECT = `
        WHERE newest.run_id = r.id
        ORDER BY newest.round DESC, newest.segment DESC
        LIMIT 1
-    )`;
+    )
+    -- Display provenance for a run an external orchestrator started, matched on the RUN's own
+    -- trigger source and never on the binding merely having a claim: a claimed binding stays
+    -- usable by the manual and Foreman paths, so a later run on it is genuinely not the
+    -- external one, and reading provenance off the binding alone would put somebody else's
+    -- name on an operator's own run. A join rather than a lookup per run because these
+    -- summaries are folded for the whole fleet on every change; claims are unique per binding,
+    -- so at most one row joins. The opaque idempotency key is deliberately not selected - it
+    -- never leaves the store.
+    LEFT JOIN workflow_binding_claims c
+           ON c.binding_id = r.binding_id AND c.source_kind = r.trigger_source`;
 
 export function encodeWorkflowRunCursor(cursor: RunCursor): string {
   return Buffer.from(JSON.stringify([cursor.updatedAt, cursor.id]), "utf8").toString("base64url");
@@ -187,6 +199,24 @@ function compactGate(run: WorkflowRun, gate: WorkflowInspectorGateState | null):
   ) return "waiting_pr";
   if (run.status === "waiting_for_new_head" || gate.waitReason === "findings") return "findings";
   return "waiting_inspector";
+}
+
+/**
+ * Display provenance off the claim columns `WORKFLOW_RUN_SUMMARY_SELECT` joins in, or null.
+ *
+ * Validated rather than cast, and NULL-tolerant on every column, because the join is a LEFT
+ * one: the ordinary case is three nulls, and a `source_kind` this build has never heard of is
+ * a newer daemon's row read by an older browser. Both land on "no provenance", which is the
+ * same thing a run nobody claimed shows, rather than on a chip naming a kind nothing can
+ * render.
+ */
+function externalSourceFromRow(row: Record<string, unknown>): WorkflowExternalSource | null {
+  const kind = WorkflowExternalSourceKindSchema.safeParse(row.claim_kind);
+  const sourceId = row.claim_source_id;
+  const createdAt = Number(row.claim_created_at);
+  if (!kind.success || typeof sourceId !== "string") return null;
+  if (!Number.isSafeInteger(createdAt)) return null;
+  return { kind: kind.data, sourceId, createdAt };
 }
 
 export const WORKFLOW_TABLES = [
@@ -2599,6 +2629,7 @@ export class WorkflowStore {
   ): WorkflowRunSummary | null {
     try {
       const run = parseWorkflowRunRow(row);
+      const claim = externalSourceFromRow(row);
       const latestAttempts = new Map<string, WorkflowNodeAttempt>();
       for (const attempt of submissionAttempts) {
         latestAttempts.set(attempt.nodeId, attempt);
@@ -2658,6 +2689,11 @@ export class WorkflowStore {
           );
         }).length,
         bypassedPersonaReview: Number(row.bypassed_persona_review ?? 0) === 1,
+        // Spread rather than set, so a summary for a run nobody claimed carries no key at
+        // all. Summaries travel over SSE for EVERY run in the fleet on every change, and the
+        // overwhelming majority of them are operator- or Foreman-started - a `null` on each
+        // of those is bytes per run per event bought for nothing.
+        ...(claim ? { externalSource: claim } : {}),
         gate: compactGate(run, gateState),
         gatePrNumber: Number.isInteger(gatePrNumber) ? gatePrNumber : null,
         gateHeadShort: (gateState?.targetHeadSha ?? gateState?.observedHeadSha)?.slice(0, 8) ?? null,
@@ -5118,7 +5154,10 @@ export class WorkflowStore {
       llmCallCount,
       nextLlmCallAfter: llmCalls.nextAfter,
       ...(offenders.length === 0 ? {} : { repeatOffenders: offenders }),
-      externalSource: this.externalSourceForRun(run, binding.id),
+      // Taken off the summary the join already resolved, not looked up a second way. The
+      // detail's field predates the summary's and stays because the reader reads it here;
+      // what must not exist twice is the RULE deciding whether a claim is this run's.
+      externalSource: summary.externalSource ?? null,
       inspectorGate: null,
     };
   }
@@ -5135,21 +5174,6 @@ export class WorkflowStore {
       diagnose(error);
       return { kind: "corrupt" };
     }
-  }
-
-  /**
-   * Display provenance only - the opaque idempotency key never leaves the store.
-   *
-   * Matched on the RUN's own trigger source, not merely on the binding having a claim. A
-   * claimed binding stays usable by the manual and Foreman paths, so a later run on it is
-   * genuinely not the external one, and reading provenance off the binding alone would put
-   * somebody else's name on an operator's own run.
-   */
-  private externalSourceForRun(run: WorkflowRun, bindingId: string): WorkflowExternalSource | null {
-    const claim = this.claimForBinding(bindingId);
-    return claim && claim.kind === run.triggerSource
-      ? { kind: claim.kind, sourceId: claim.sourceId, createdAt: claim.createdAt }
-      : null;
   }
 
   cancelRun(id: string, reason: string, now = Date.now()): WorkflowRun | null {

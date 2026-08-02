@@ -149,7 +149,7 @@ function ExternalProvenance({
 }): React.JSX.Element {
   const href =
     source.kind === "ensemble"
-      ? `#/workflows/ensembles/${encodeURIComponent(source.sourceId)}`
+      ? `#/ensembles/${encodeURIComponent(source.sourceId)}`
       : null;
   return (
     <p className="wf-run-provenance">
@@ -723,8 +723,12 @@ export function WorkflowRunView({
               disabled={!version}
               onClick={() => {
                 if (!version) return;
+                // The version to reveal is handed over in session storage (the builder reads
+                // it as it mounts); the hash names the WORKFLOW, so the link is a real deep
+                // link rather than "the builder, on whatever it had open last".
                 requestWorkflowVersionOpen(version.workflowId, version.version);
-                window.location.hash = "#/workflows";
+                window.location.hash =
+                  `#/library/workflows/${encodeURIComponent(version.workflowId)}`;
               }}
             >
               Open version

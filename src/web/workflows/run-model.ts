@@ -18,6 +18,7 @@ import type {
   WorkflowNodeAttemptState,
   WorkflowRunDetail,
   WorkflowRunStatus,
+  WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
 import { isVerdictNode, verdictAuthor } from "@shared/workflow.ts";
@@ -1230,4 +1231,120 @@ export function eventLine(
 /** `completionKind` -> `completion kind`, `round` -> `round`. */
 function label(key: string): string {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+}
+
+/* ============================================================================
+   TRIAGE - one run, read off its SUMMARY alone
+   ----------------------------------------------------------------------------
+   Everything above this line reads a `WorkflowRunDetail`: the graph, the round's
+   attempts, the verdicts, the receipts. That is the right material for the reader,
+   and the wrong material for the Line's Review drawer, which lists EVERY live run
+   at once. A drawer that fetched a detail per row would put N bounded HTTP reads
+   behind one click on a strip, and the row it drew from them would be a smaller,
+   slower copy of the ladder that is already one click deeper.
+
+   So the projection below takes exactly what SSE already delivers for every run in
+   the fleet. The consequence is honest and worth stating: it cannot say "reviewers
+   2/4", because a summary does not carry the graph and therefore does not know the
+   denominator. It says what it can prove - who is reviewing right now, whether a
+   session action is parked, and where the Inspector gate stands - and points at the
+   run for the rest.
+   ============================================================================ */
+
+/** One chip in a triage row's compact pipeline. `key` is stable for React and tests. */
+export interface RunTriageStep {
+  key: "evidence" | "reviewers" | "action" | "inspector";
+  status: PipelineStatus;
+}
+
+function reviewerTriageStatus(summary: WorkflowRunSummary): PipelineStatus {
+  if (summary.bypassedPersonaReview) {
+    return {
+      tone: "passed",
+      label: "Reviewers skipped",
+      // Degraded, not plain passed: this round advanced without the reviewers running, and
+      // the flag is what lets the chip be green without claiming they agreed.
+      degraded: true,
+      tooltip: inspectorOnlyRoundSentence(),
+    };
+  }
+  if (summary.failedPersonaCount > 0) {
+    const n = summary.failedPersonaCount;
+    return { tone: "failed", label: `${n} reviewer${n === 1 ? "" : "s"} failed` };
+  }
+  const running = summary.activePersonaNames;
+  if (running.length > 0) {
+    return {
+      tone: "running",
+      label: running.length === 1 ? "1 reviewing" : `${running.length} reviewing`,
+      tooltip: running.join(" · "),
+    };
+  }
+  if (summary.status === "completed") return { tone: "passed", label: "Reviewers passed" };
+  return { tone: "waiting", label: "Reviewers" };
+}
+
+/**
+ * The compact pipeline for one live run: evidence, reviewers, the action if there is one,
+ * the Inspector gate if the workflow has one.
+ *
+ * The last two are CONDITIONAL rather than always drawn grey, which is the difference
+ * between a row that reads and a row that lies. A summary cannot see the graph, so an
+ * always-present "Session action" chip would appear on every run of every workflow that has
+ * no action stage at all - and the absent chip is exactly the signal a triage reader wants:
+ * four chips means this run has somewhere further to go than two.
+ */
+export function runTriageSteps(summary: WorkflowRunSummary): RunTriageStep[] {
+  const steps: RunTriageStep[] = [
+    {
+      key: "evidence",
+      status: summary.status === "capturing"
+        ? { tone: "running", label: "Capturing" }
+        : { tone: "passed", label: "Evidence" },
+    },
+    { key: "reviewers", status: reviewerTriageStatus(summary) },
+  ];
+  // `actionWait` is the compact fact the summary carries for exactly this purpose; the status
+  // is the fallback for a run whose daemon predates the field, where "there is an action and
+  // it is waiting" is still true and only the reason is missing.
+  const wait = summary.actionWait ?? null;
+  if (wait || summary.status === "waiting_for_action") {
+    steps.push({ key: "action", status: sessionActionStatus(wait ? undefined : "waiting", wait) });
+  }
+  if (summary.gate !== "none") {
+    steps.push({ key: "inspector", status: gateSummaryStatus(summary.gate) });
+  }
+  return steps;
+}
+
+/**
+ * What this run is doing, in one clipped line under the chips.
+ *
+ * The run's own status word leads, because it is the one fact that is true of the whole run
+ * rather than of one stage. What follows is only ever something the chips could not say: WHO
+ * is reviewing (the chip has the count, not the names, and on a narrow row the tooltip is
+ * unreachable by keyboard), and deliveries whose landing is unknown - the one state where
+ * doing nothing is the wrong answer and no chip above owns it.
+ */
+export function runTriageSentence(summary: WorkflowRunSummary): string {
+  const parts = [runStatusLabel(summary.status)];
+  const running = summary.activePersonaNames;
+  if (running.length > 0) parts.push(`${running.join(", ")} running`);
+  const uncertain = summary.uncertainDeliveryCount ?? 0;
+  if (uncertain > 0) parts.push(`${uncertain} uncertain deliver${uncertain === 1 ? "y" : "ies"}`);
+  return parts.join(" · ");
+}
+
+/**
+ * The round line: which repair round this run is on, out of what it is allowed.
+ *
+ * `round` is `MAX(submission.round)` and `maxRepairRounds` is the binding's budget, so the
+ * pair says how much rope is left - which is the fact that decides whether a failing run is
+ * about to give up. The denominator is the budget itself and not one more than it: the
+ * manager blocks a run when `round > maxRepairRounds`, so the last round it can spend IS
+ * that number. Round 1 of a run that has spent nothing prints bare, because "round 1/3" on
+ * every freshly submitted run is noise on every row.
+ */
+export function runTriageRound(summary: WorkflowRunSummary): string {
+  return summary.round <= 1 ? "round 1" : `round ${summary.round}/${summary.maxRepairRounds}`;
 }

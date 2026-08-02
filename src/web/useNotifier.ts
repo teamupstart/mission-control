@@ -30,9 +30,9 @@ function notify(
       // One deep link per toast, the same hash routes the dashboard already owns: a
       // workflow toast opens its Run, an ensemble toast its run detail beside it.
       if (deepLink?.workflowRunId) {
-        window.location.hash = `#/workflows/runs/${encodeURIComponent(deepLink.workflowRunId)}`;
+        window.location.hash = `#/runs/${encodeURIComponent(deepLink.workflowRunId)}`;
       } else if (deepLink?.ensembleId) {
-        window.location.hash = `#/workflows/ensembles/${encodeURIComponent(deepLink.ensembleId)}`;
+        window.location.hash = `#/ensembles/${encodeURIComponent(deepLink.ensembleId)}`;
       }
       n.close();
     };

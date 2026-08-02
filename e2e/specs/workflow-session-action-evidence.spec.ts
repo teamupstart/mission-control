@@ -182,7 +182,7 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
     { timeout: 60_000 },
   ).toBe("waiting_for_action");
 
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${run.run.id}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${run.run.id}`);
   await expect(dashboard.locator("article.wf-run-action")).toBeVisible();
   await shoot(dashboard, "05-run-waiting-on-action");
 
@@ -316,7 +316,7 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
     return detail.attempts.find((attempt) => attempt.nodeId === "a")?.state;
   }, { timeout: 90_000 }).toBe("completed");
 
-  await dashboard.goto(`${daemon.baseURL}/#/workflows/runs/${run.run.id}`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${run.run.id}`);
   // Two entries under ONE repair round, and the sentence saying the second cost no round.
   await expect(dashboard.getByRole("group", { name: "Select a round" }).locator(".wf-run-round-name"))
     .toHaveText(["Round 1 · evidence 1", "Round 1 · evidence 2"]);

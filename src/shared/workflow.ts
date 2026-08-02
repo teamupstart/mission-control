@@ -592,6 +592,25 @@ export function sessionActionWaitsOnOperator(
 }
 
 /**
+ * True when this RUN is stopped on something only a person can clear.
+ *
+ * The Line's Review fold counts these for the strip's "N waiting on you", and the Review
+ * drawer marks exactly these rows amber. Stated once, here, because the two are the same
+ * claim rendered at two grains: a strip that says one run needs you, above a drawer that
+ * marks none, is the surface arguing with itself - and both readings would be defensible
+ * if each carried its own copy of the rule.
+ *
+ * `blocked` and an operator-only action wait, and deliberately nothing else.
+ * `waiting_for_session` is absent because it is the workflow's ordinary repair loop: the
+ * session is being told what to fix and will resubmit on its own.
+ */
+export function workflowRunWaitsOnOperator(
+  run: Pick<WorkflowRunSummary, "status" | "actionWait">,
+): boolean {
+  return run.status === "blocked" || sessionActionWaitsOnOperator(run.actionWait);
+}
+
+/**
  * Why a session action can no longer proceed. APPEND-ONLY for `SESSION_ACTION_WAIT_REASONS`'
  * reason.
  *
@@ -2109,6 +2128,21 @@ export interface WorkflowRunSummary {
    * it from attempts or live session activity.
    */
   actionWait?: SessionActionWaitReason | null;
+  /**
+   * Provenance for a run an external orchestrator started - today, an ensemble handoff.
+   *
+   * OPTIONAL and append-only, for the reason every other optional field here is: a summary
+   * written by an older daemon must still parse in a newer browser, and absent reads as "an
+   * operator or Foreman started this", which is what every run predating claims genuinely
+   * was. Resolved by a single LEFT JOIN rather than a per-run lookup, because summaries are
+   * folded for the whole fleet on every change.
+   *
+   * It duplicates `WorkflowRunDetail.externalSource` on purpose. The detail's copy is the one
+   * a reader opens a run to see; this one is what lets a TRIAGE surface - the Line's Review
+   * drawer - say "this came out of an ensemble" without fetching a detail per row. Both come
+   * from `externalSourceForRun`, so there is one rule and two deliveries of it, not two rules.
+   */
+  externalSource?: WorkflowExternalSource | null;
   maxRepairRounds: number;
   activePersonaNames: string[];
   failedPersonaCount: number;

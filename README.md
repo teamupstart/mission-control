@@ -2317,17 +2317,56 @@ The count on the card comes from `GET /api/away/buffer`, a read-only look at the
 still open - deliberately a separate route from `GET /api/away/digest`, which hands the
 buffer over exactly once and reports nothing at all until you are back at the desk.
 
-## Workflows and Personas
+## The Library
 
-The **Workflows** button in the top bar changes only the dashboard body. The fleet header,
-live SSE connection, and Cards, Console, or Board selection stay mounted, so returning to
-**Fleet** does not reconnect or discard the fleet view. The page uses bookmarkable hashes:
-`#/workflows` for the graph library and builder, `#/workflows/personas` for the Persona
-library, `#/workflows/actions` for the [session action](#session-actions) library,
-`#/workflows/runs` for run history, `#/workflows/runs/:id` for one run's evidence
-and timeline, and `#/fleet` to return.
-The top-bar button opens the graph library and restores the last active workflow selected
-in this browser when it is still available.
+Mission Control has two homes, and the top bar's segmented **▦ Fleet / ⌗ Library** control
+names both. The Fleet is what is happening; the **Library** is everything you author once and
+reuse. Nothing on the Library runs - each shelf carries a single cross-link to where its
+assets are executing, and no live state beyond it.
+
+Switching homes changes only the dashboard body. The fleet header, live SSE connection, and
+Cards, Console, or Board selection stay mounted, so returning to **Fleet** does not reconnect
+or discard the fleet view.
+
+`#/library` opens five shelves, each headed by the question it answers rather than by its own
+noun:
+
+| Shelf | Question | What is on it |
+| --- | --- | --- |
+| Workflows | What counts as done? | Workflow cards - version, reviewer count, draft validation errors. The builder is one level deeper |
+| Personas | Who does the reviewing? | Persona cards with the provider and model each resolves to |
+| Actions | What can a run tell the session to do? | [Session action](#session-actions) cards - required skill and what proves completion |
+| Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
+| Missions · Sources | Where does work come from? | Recurring missions and a link to task sources in Settings |
+
+The three authoring surfaces mount one level deeper, unchanged, at bookmarkable hashes:
+
+| Hash | Surface |
+| --- | --- |
+| `#/library` | The five shelves |
+| `#/library/workflows[/:id]` | The workflow builder, on that workflow |
+| `#/library/personas[/:id]` | The Persona library and editor |
+| `#/library/actions[/:id]` | The session action library and editor |
+| `#/library/<shelf>/new` | The same surface, opened on a blank draft |
+
+The asset id follows what the editor actually has open: selecting a second Persona rewrites
+the hash without adding a history entry, so the address bar is always a shareable link to what
+you are looking at and **Back** still means the page you came from. `new` is reserved and
+never an asset id.
+
+The three legacy authoring hashes redirect permanently, and the address bar is rewritten to
+the new spelling so a kept bookmark stops being a legacy one: `#/workflows` → `#/library`,
+`#/workflows/personas` → `#/library/personas`, `#/workflows/actions` → `#/library/actions`.
+
+Execution keeps its own page for now. `#/workflows/runs`, `#/workflows/runs/:id`,
+`#/workflows/ensembles` and `#/workflows/ensembles/:id` are unchanged, and that page is down
+to its two watching tabs - **Runs** and **Ensembles**. A later phase re-homes both to
+top-level routes and retires it.
+
+An editor with unsaved changes still holds a navigation away from it and asks first, whichever
+home you are leaving for.
+
+## Workflows and Personas
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or Inspector setting. Personas you create or import live in Mission Control's SQLite
@@ -2551,7 +2590,7 @@ claims that success afterwards. A workflow whose final gate is None shows no foo
 A **session action** is a reusable instruction a workflow stage sends to the session it is
 bound to. It is not a third kind of reviewer. A Persona reads one immutable submission and
 returns a verdict; an action writes to the bound conversation, may change the repository, and
-returns only "this finished". `#/workflows/actions` is its library, beside Personas.
+returns only "this finished". `#/library/actions` is its shelf and editor, beside Personas.
 
 An action's fields are its name, description, the **exact Markdown instruction** the session
 receives, an optional **required skill**, and the **completion** Mission Control must observe
@@ -4411,6 +4450,26 @@ Markdown open in Preview by default, while ordinary text opens in the editor. HT
 remains inert: a bounded set of checkout-local stylesheets is inlined through the contained
 file reader, without granting the sandbox scripts or network access.
 
+**The Diff tab has the same door.** The bar naming the file you are reading carries an
+**Open in Files** action, on every file, which opens that file in the Files tab beside it -
+the same route, the same containment rules. Two files it will not open, and it says which
+rather than failing on the click: a **deleted** file, which has no copy left in the checkout
+to read, and a file **outside the session's working directory**. The second is possible
+because the two readers measure paths from different places - git writes them relative to
+the repository root, while the Files tab lists the working directory it was opened in - so a
+session started in a subdirectory can see changed files that its Files tab has no route to.
+The path is rebased through the repository root rather than handed over as written, which is
+what keeps a shared relative path like `src/index.ts` from opening the wrong file, and it is
+used exactly as git wrote it, so a file named `notes:12` opens as itself rather than as
+`notes`.
+
+That second refusal is a decision rather than a gap. Making those files openable means
+rooting the Files workspace at the repository root, which would widen the daemon's read and
+write containment from the working-directory subtree to the whole repository for every
+session - a larger and more security-relevant change than the affordance it serves. Every
+dispatched session works in a worktree, whose root **is** the repository root, so nothing is
+refused there.
+
 **Paths the agent merely typed are links too.** Markdown gives an agent no way to say
 "this word is a file" other than writing a link, and agents don't - they write
 `docs/plans/x/plan.md` bare in a sentence or in backticks, because that is how it reads in
@@ -4500,10 +4559,10 @@ shortcut works in every layout:
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open the settings search palette - from the fleet it jumps to Settings first, then opens; press again to close | Anywhere |
-| <kbd>w</kbd> | Open the Workflows page, or press again to return to the fleet | Fleet or Workflows |
+| <kbd>w</kbd> | Open the **Library**, or press again to return to the fleet | Fleet or Library |
 | <kbd>e</kbd> | Expand / collapse the selected session. **Cards**: focus-expands the card and drops the cursor in its reply box, ready to type. **Board**: opens (and closes) the drill-in detail, the same thing <kbd>Enter</kbd> opens. Console already shows the selected session expanded, so there is nothing to toggle | Selected session |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>e</kbd> owns the toggle | Selected session |
-| <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the fleet-wide Workflows page instead | Selected session (Console or Board) |
+| <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
 | <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
@@ -5248,15 +5307,24 @@ npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt o
 ```
 
 The `make` wrappers for the build and verification commands - `make build`, `make test`,
-`make lint`, `make check`, `make smoke` - install dependencies first **when, and only when,
-`node_modules/` is absent**. An installed tree pays nothing and is never re-resolved behind
-your back; a checkout that has never been installed no longer fails with
-`TS2688: Cannot find type definition file for 'node'`, which reads like a type error in your
-diff and is really just a missing `@types/node`. That case is routine rather than exotic: a
-[Workflow check](#check-nodes) runs its command in a freshly leased
-[pool worktree](#check-leases), and `node_modules/` is gitignored, so every check starts from
-a tree with no dependencies at all. The `npm run …` forms are unchanged and assume an
-installed tree.
+`make lint`, `make check`, `make smoke` - install dependencies first, through a stamp file
+(`node_modules/.install-stamp`) that carries `package.json` and `package-lock.json` as its
+prerequisites. So they install in a tree that has never been installed, re-install after a
+pull or a branch switch moves either manifest, and do nothing at all the rest of the time.
+
+The stamp is what makes the second of those work: make is satisfied by any target that
+exists, and `node_modules/` exists forever once anything has been installed into it - so
+depending on the directory would install once and then silently run the gates against stale
+dependencies. The stamp lives inside `node_modules/` so `rm -rf node_modules` invalidates it
+too, and is touched only after a successful install, so a failed one is retried rather than
+recorded as done.
+
+A never-installed tree is routine rather than exotic: a [Workflow check](#check-nodes) runs
+its command in a freshly leased [pool worktree](#check-leases), and `node_modules/` is
+gitignored, so every check starts from a tree with no dependencies at all. Without this it
+fails with `TS2688: Cannot find type definition file for 'node'`, which reads like a type
+error in the diff under review and is really just a missing `@types/node`. The `npm run …`
+forms are unchanged and assume an installed tree.
 
 `npm run test:e2e` is the browser layer: it boots the built daemon against a throwaway state
 dir, loads the built dashboard in Chromium, and drives real flows - dispatching an agent,

@@ -1,0 +1,223 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { MissionSchedule } from "../src/shared/schedules.ts";
+import type { PersonaView, SessionAction, WorkflowSummary } from "../src/shared/workflow.ts";
+import { LibraryPage } from "../src/web/library/LibraryPage.tsx";
+import {
+  actionCards,
+  ensembleStrategyCards,
+  missionsCrossLink,
+  personaCards,
+  workflowCards,
+  workflowRunsCrossLink,
+} from "../src/web/library/library-model.ts";
+
+// What is at stake: the Library exists because nothing in the product ever said what a
+// workflow, a Persona or an action was FOR. The shape that teaches it - question as the
+// heading, noun demoted to an eyebrow, one sentence of why - is the feature, so it is
+// asserted as markup rather than left to a mockup nobody runs.
+
+const workflow = (overrides: Partial<WorkflowSummary> = {}): WorkflowSummary => ({
+  id: "wf-1",
+  name: "No-Mistakes Review",
+  description: "Checks, four reviewers, then the Inspector gate.",
+  draftRevision: 3,
+  currentVersionId: "v8",
+  publishedVersion: 8,
+  archivedAt: null,
+  updatedAt: 0,
+  errorCount: 0,
+  warningCount: 0,
+  nodeCount: 7,
+  personaCount: 4,
+  builtin: true,
+  ...overrides,
+});
+
+const persona = (overrides: Partial<PersonaView> = {}): PersonaView => ({
+  id: "p-1",
+  name: "Code Risk Reviewer",
+  normalizedName: "code risk reviewer",
+  description: "Hunts regressions and contract drift in the diff.",
+  guidanceMarkdown: "# Code Risk Reviewer",
+  runner: null,
+  model: null,
+  builtin: true,
+  revision: 1,
+  archivedAt: null,
+  createdAt: 0,
+  updatedAt: 0,
+  execution: {
+    runner: { id: "claude", source: "default", unknown: null },
+    model: { id: "sonnet", source: "default", unknown: null },
+  },
+  ...overrides,
+} as PersonaView);
+
+const action = (overrides: Partial<SessionAction> = {}): SessionAction => ({
+  id: "a-1",
+  name: "Pull Request",
+  normalizedName: "pull request",
+  description: "Open or update the PR for this branch.",
+  promptMarkdown: "# Pull Request",
+  requiredSkillId: "pull-request",
+  completion: { kind: "pull_request" },
+  builtin: true,
+  revision: 1,
+  archivedAt: null,
+  createdAt: 0,
+  updatedAt: 0,
+  ...overrides,
+} as SessionAction);
+
+const schedule = (overrides: Partial<MissionSchedule> = {}): MissionSchedule => ({
+  id: "s-1",
+  name: "Dependency audit",
+  enabled: true,
+  archivedAt: null,
+  expression: "0 8 * * MON",
+  timezone: "UTC",
+  overlapPolicy: "skip",
+  missedPolicy: "skip",
+  executionMode: "dispatch",
+  runnerId: null,
+  revision: 1,
+  template: null,
+  nextRunAt: null,
+  lastOccurrence: null,
+  unreadable: null,
+  health: "healthy",
+  healthReasons: [],
+  createdAt: 0,
+  updatedAt: 0,
+  ...overrides,
+} as MissionSchedule);
+
+function page(overrides: Record<string, unknown> = {}): string {
+  return renderToStaticMarkup(createElement(LibraryPage, {
+    workflowSummaries: [workflow()],
+    personas: [persona()],
+    sessionActions: [action()],
+    schedules: [schedule()],
+    onOpenAsset: () => {},
+    onCreateAsset: () => {},
+    onLaunchEnsemble: () => {},
+    onOpenRuns: () => {},
+    onOpenEnsembles: () => {},
+    onOpenMissions: () => {},
+    onOpenTaskSources: () => {},
+    ...overrides,
+  }));
+}
+
+test("every shelf is headed by the question it answers, with the noun as its eyebrow", () => {
+  const html = page();
+  const questions = [
+    "What counts as done?",
+    "Who does the reviewing?",
+    "What can a run tell the session to do?",
+    "Not sure of the best approach?",
+    "Where does work come from?",
+  ];
+  for (const question of questions) {
+    // In an `h3`, which is what makes it the shelf's accessible name through the
+    // `aria-labelledby` the section carries.
+    assert.match(html, new RegExp(`<h3 id="lib-shelf-[a-z]+">${question.replace("?", "\\?")}</h3>`));
+  }
+  // The nouns are present, and demoted. A shelf that headed itself "Personas" would be the
+  // silence this page was built to end.
+  for (const noun of ["Workflows", "Personas", "Actions", "Ensembles", "Missions · Sources"]) {
+    assert.match(html, new RegExp(`class="lib-shelf-eyebrow">${noun}<`));
+  }
+  // Five shelves, each a labelled region.
+  assert.equal(html.match(/aria-labelledby="lib-shelf-/g)?.length, 5);
+});
+
+test("the page says out loud that nothing on it runs", () => {
+  // The one sentence that keeps the two homes apart in an operator's head. If a later phase
+  // puts live state on a shelf, this is the claim it breaks.
+  assert.match(page(), /Nothing here runs - live state stays on the runs and ensembles pages/);
+});
+
+test("cards carry durable facts, and a draft says so", () => {
+  const html = page({
+    workflowSummaries: [
+      workflow(),
+      workflow({ id: "wf-2", name: "Docs gate", builtin: false, publishedVersion: null, personaCount: 1 }),
+      workflow({ id: "wf-3", name: "Broken", builtin: false, errorCount: 2 }),
+    ],
+  });
+  assert.match(html, /v8 · 4 reviewers/);
+  assert.match(html, /class="lib-tag lib-tag-builtin">built-in</);
+  assert.match(html, /class="lib-tag lib-tag-attention">draft</);
+  assert.match(html, /Never published · 1 reviewer/);
+  // A validation error is a property of the DRAFT, which is why it belongs on an authoring
+  // card at all - and it is toned so it reads as something to fix.
+  assert.match(html, /class="lib-asset-fact is-warn">2 validation errors</);
+});
+
+test("an archived asset is off the shelf, not merely marked", () => {
+  const html = page({
+    personas: [persona(), persona({ id: "p-2", name: "Retired", normalizedName: "retired", archivedAt: 1 })],
+    sessionActions: [action(), action({ id: "a-2", name: "Old action", normalizedName: "old action", archivedAt: 1 })],
+  });
+  assert.match(html, /Code Risk Reviewer/);
+  assert.doesNotMatch(html, /Retired/);
+  assert.doesNotMatch(html, /Old action/);
+});
+
+test("the Ensembles shelf offers launchers and no way to author one", () => {
+  const html = page();
+  for (const strategy of ensembleStrategyCards()) {
+    assert.match(html, new RegExp(strategy.name));
+  }
+  assert.match(html, /Launch one →/);
+  // Every other shelf has a "＋ New" card; this one must not, because there is nothing to
+  // save - a strategy ships with the build.
+  assert.equal(
+    html.match(/class="lib-asset lib-asset-new"/g)?.length,
+    4,
+    "one dashed card per authoring shelf, and none on Ensembles",
+  );
+  assert.doesNotMatch(html, /New ensemble/);
+});
+
+test("the Missions shelf links to task sources without claiming to own them", () => {
+  const html = page();
+  assert.match(html, /Dependency audit/);
+  assert.match(html, /Task sources/);
+  assert.match(html, /Configured in Settings →/);
+});
+
+test("shelf cross-links count what is live without rendering any of it", () => {
+  assert.deepEqual(workflowRunsCrossLink([]), { label: "runs →", attention: false });
+  assert.deepEqual(
+    workflowRunsCrossLink([
+      { status: "running" },
+      { status: "completed" },
+      { status: "failed" },
+      { status: "waiting_for_session" },
+    ] as never),
+    { label: "2 running →", attention: false },
+  );
+  assert.deepEqual(missionsCrossLink([schedule()]), { label: "intake healthy →", attention: false });
+  assert.deepEqual(
+    missionsCrossLink([schedule({ health: "attention" })]),
+    { label: "1 need attention →", attention: true },
+  );
+});
+
+test("the card model sorts by name and never invents a description", () => {
+  const cards = workflowCards([
+    workflow({ id: "b", name: "Beta" }),
+    workflow({ id: "a", name: "Alpha" }),
+  ]);
+  assert.deepEqual(cards.map((card) => card.name), ["Alpha", "Beta"]);
+  assert.deepEqual(personaCards([persona({ description: "" })])[0]?.description, "");
+  // The honest answer is rendered, not stored: a card model that filled in "No description"
+  // would make an empty description indistinguishable from that literal text.
+  assert.match(page({ personas: [persona({ description: "" })] }), /No description/);
+  assert.equal(actionCards([action()])[0]?.fact, "Skill · pull-request · Pull request is opened and verified");
+});

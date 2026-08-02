@@ -68,6 +68,11 @@ export interface SessionViewProps {
   onOpenFiles: (id: string) => void;
   /** Open a Markdown href only when it resolves inside this session's checkout. */
   onOpenFile: (id: string, href: string, probe?: boolean) => boolean | Promise<boolean>;
+  /**
+   * Show one EXACT checkout-relative path in the Files workspace. For callers holding a
+   * path rather than prose - `onOpenFile` would read a trailing `:12` as a line number.
+   */
+  onOpenFilePath: (id: string, path: string) => void;
   /** One-shot request from a shortcut/picker to reveal a session's integrated Files tab. */
   fileTabRequest: { sessionId: string; nonce: number } | null;
   /**

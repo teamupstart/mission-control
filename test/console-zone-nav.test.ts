@@ -37,6 +37,7 @@ function props(over: Partial<SessionViewProps> = {}): SessionViewProps {
     onOpenDiff: () => {},
     onOpenFiles: () => {},
     onOpenFile: () => false,
+    onOpenFilePath: () => {},
     fileTabRequest: null,
     conversationTabRequest: null,
     workflowsTabRequest: null,

@@ -8,7 +8,7 @@ import { LINE_STAGES } from "@shared/line.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { readyBacklog } from "@shared/backlog.ts";
 import { ensembleIsTerminal } from "@shared/ensemble.ts";
-import { sessionActionWaitsOnOperator, workflowRunIsLive } from "@shared/workflow.ts";
+import { sessionActionWaitsOnOperator, workflowRunIsOpen } from "@shared/workflow.ts";
 import { fmtUsd } from "@shared/cost.ts";
 
 /**
@@ -238,7 +238,7 @@ function foldWorking(input: LineFoldInput): LineStageSummary {
  * end; `blocked` joins them because a blocked run has stopped and stated why.
  */
 function foldReview(input: LineFoldInput): LineStageSummary {
-  const live = input.workflowRuns.filter((r) => workflowRunIsLive(r.status));
+  const live = input.workflowRuns.filter((r) => workflowRunIsOpen(r.status));
   const count = live.length;
   if (count === 0) {
     return { stage: "review", count: 0, sentence: "no runs live", tone: "neutral" };

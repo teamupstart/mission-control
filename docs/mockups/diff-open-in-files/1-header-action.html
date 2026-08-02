@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Option 1 - Header action - Open a diff file in Files</title>
+<link rel="stylesheet" href="shell.css">
+<style>
+  /* ---- the proposal: a labelled action at the end of the file header bar ---- */
+  .open-in-files {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 3px 5px 3px 9px;
+    cursor: pointer;
+    transition: color .12s ease, border-color .12s ease, background .12s ease;
+  }
+  .open-in-files:hover {
+    color: var(--fg);
+    border-color: var(--dim);
+    background: var(--bg-2);
+  }
+  .open-in-files .glyph {
+    font-size: 12px;
+    line-height: 1;
+    color: var(--dim);
+  }
+  .open-in-files:hover .glyph { color: var(--working); }
+  .open-in-files[aria-disabled="true"] {
+    cursor: not-allowed;
+    color: var(--dim);
+    border-color: var(--border-soft);
+    background: none;
+    opacity: .7;
+  }
+  .open-in-files[aria-disabled="true"] .glyph { color: var(--border); }
+  .state .open-in-files.hovered {
+    color: var(--fg);
+    border-color: var(--dim);
+    background: var(--bg-2);
+  }
+  .state .open-in-files.hovered .glyph { color: var(--working); }
+  /* The bar's right padding is 12px; keep the callout ring inside the panel border. */
+  .diff-file-head .spot::after { inset: -5px -4px; }
+</style>
+</head>
+<body>
+
+<header class="doc">
+  <div class="eyebrow">Mission Control - UI exploration - diff file → Files tab</div>
+  <h1><span class="num">1/3</span>Header action: a labelled button on the file bar</h1>
+  <p class="stand">
+    The bar that already names the file you are reading gains one right-aligned control:
+    <b>Open in Files ↗</b>. It sits after the +/− counts, in the space that bar has always
+    had spare. Whichever file the reader has open, the button is on it - so it is on every
+    file, and it is never something you have to hover to discover.
+  </p>
+  <nav>
+    <a href="index.html">← All three</a>
+    <a href="1-header-action.html" aria-current="page">1 · Header action</a>
+    <a href="2-list-row-action.html">2 · List row action</a>
+    <a href="3-path-link.html">3 · The path is the link</a>
+  </nav>
+</header>
+
+<p class="framecap">Session detail · Diff tab</p>
+<div class="frame">
+  <div class="app">
+
+    <div class="detail-tabs" role="tablist" aria-label="Session detail">
+      <button class="detail-tab" role="tab" aria-selected="false"><kbd class="kb-hint">g</kbd>Conversation</button>
+      <button class="detail-tab" role="tab" aria-selected="false"><kbd class="kb-hint">q</kbd>Work queue</button>
+      <button class="detail-tab" role="tab" aria-selected="false"><kbd class="kb-hint">y</kbd>Workflows</button>
+      <button class="detail-tab on" role="tab" aria-selected="true"><kbd class="kb-hint">d</kbd>Diff</button>
+      <button class="detail-tab" role="tab" aria-selected="false"><kbd class="kb-hint">f</kbd>Files</button>
+    </div>
+
+    <div class="diff-viewer-content">
+      <header class="diff-head">
+        <div class="diff-title">
+          <span class="diff-sub mono">
+            <span class="branch">diff-open-in-files</span> vs <span class="branch">main</span>
+          </span>
+          <span class="diff-stat">5 files <span class="diff-add">+162</span> <span class="diff-del">−49</span></span>
+        </div>
+      </header>
+
+      <div class="diff-body">
+        <nav class="diff-filelist" aria-label="Changed files">
+          <button class="diff-fileitem active" aria-current="true">
+            <span class="diff-file-dot" aria-hidden="true">M</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">DiffViewer.tsx</span><span class="fp-dir">src/web/components</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-add">+34</span><span class="diff-del">−6</span></span>
+          </button>
+          <button class="diff-fileitem">
+            <span class="diff-file-dot" aria-hidden="true">M</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">ConsoleDetail.tsx</span><span class="fp-dir">src/web/components/layouts</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-add">+14</span><span class="diff-del">−2</span></span>
+          </button>
+          <button class="diff-fileitem">
+            <span class="diff-file-dot" aria-hidden="true">M</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">styles.css</span><span class="fp-dir">src/web</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-add">+26</span></span>
+          </button>
+          <button class="diff-fileitem">
+            <span class="diff-file-dot status-added" aria-hidden="true">A</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">diff-open-in-files.spec.ts</span><span class="fp-dir">e2e</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-add">+88</span></span>
+          </button>
+          <button class="diff-fileitem">
+            <span class="diff-file-dot status-deleted" aria-hidden="true">D</span>
+            <span class="diff-fileitem-path mono">
+              <span class="fp-name">legacy-file-link.ts</span><span class="fp-dir">src/web/lib</span>
+            </span>
+            <span class="diff-fileitem-stat"><span class="diff-del">−41</span></span>
+          </button>
+        </nav>
+
+        <div class="diff-detail">
+          <section class="diff-file">
+            <div class="diff-file-head">
+              <span class="diff-file-status">modified</span>
+              <span class="diff-file-path mono">src/web/components/DiffViewer.tsx</span>
+              <span class="diff-file-stat"><span class="diff-add">+34</span><span class="diff-del">−6</span></span>
+              <span class="spot">
+                <button class="open-in-files" title="Open this file in the Files tab">
+                  Open in Files <span class="glyph" aria-hidden="true">↗</span>
+                </button>
+              </span>
+            </div>
+            <div class="diff-lines">
+              <table><tbody>
+                <tr class="dl dl-hunk"><td class="dl-num"></td><td class="dl-num"></td><td class="dl-sign"></td><td class="dl-text">@@ -241,7 +243,13 @@</td></tr>
+                <tr class="dl"><td class="dl-num">241</td><td class="dl-num">243</td><td class="dl-sign"></td><td class="dl-text">const FileItem = ({</td></tr>
+                <tr class="dl"><td class="dl-num">242</td><td class="dl-num">244</td><td class="dl-sign"></td><td class="dl-text">  file,</td></tr>
+                <tr class="dl"><td class="dl-num">243</td><td class="dl-num">245</td><td class="dl-sign"></td><td class="dl-text">  active,</td></tr>
+                <tr class="dl"><td class="dl-num">244</td><td class="dl-num">246</td><td class="dl-sign"></td><td class="dl-text">  onSelect,</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">247</td><td class="dl-sign">+</td><td class="dl-text">  onOpenInFiles,</td></tr>
+                <tr class="dl"><td class="dl-num">245</td><td class="dl-num">248</td><td class="dl-sign"></td><td class="dl-text">  ref,</td></tr>
+                <tr class="dl"><td class="dl-num">246</td><td class="dl-num">249</td><td class="dl-sign"></td><td class="dl-text">}: {</td></tr>
+                <tr class="dl"><td class="dl-num">247</td><td class="dl-num">250</td><td class="dl-sign"></td><td class="dl-text">  file: DiffFile;</td></tr>
+                <tr class="dl"><td class="dl-num">248</td><td class="dl-num">251</td><td class="dl-sign"></td><td class="dl-text">  active: boolean;</td></tr>
+                <tr class="dl"><td class="dl-num">249</td><td class="dl-num">252</td><td class="dl-sign"></td><td class="dl-text">  onSelect: () =&gt; void;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">253</td><td class="dl-sign">+</td><td class="dl-text">  onOpenInFiles?: (path: string) =&gt; void;</td></tr>
+                <tr class="dl"><td class="dl-num">250</td><td class="dl-num">254</td><td class="dl-sign"></td><td class="dl-text">  ref?: React.Ref&lt;HTMLButtonElement&gt;;</td></tr>
+                <tr class="dl"><td class="dl-num">251</td><td class="dl-num">255</td><td class="dl-sign"></td><td class="dl-text">}): React.JSX.Element =&gt; {</td></tr>
+                <tr class="dl dl-hunk"><td class="dl-num"></td><td class="dl-num"></td><td class="dl-sign"></td><td class="dl-text">@@ -281,6 +291,16 @@</td></tr>
+                <tr class="dl"><td class="dl-num">281</td><td class="dl-num">291</td><td class="dl-sign"></td><td class="dl-text">      &lt;div className="diff-file-head"&gt;</td></tr>
+                <tr class="dl"><td class="dl-num">282</td><td class="dl-num">292</td><td class="dl-sign"></td><td class="dl-text">        &lt;span className={`diff-file-status status-${file.status}`}&gt;</td></tr>
+                <tr class="dl"><td class="dl-num">283</td><td class="dl-num">293</td><td class="dl-sign"></td><td class="dl-text">          {STATUS_LABEL[file.status]}</td></tr>
+                <tr class="dl"><td class="dl-num">284</td><td class="dl-num">294</td><td class="dl-sign"></td><td class="dl-text">        &lt;/span&gt;</td></tr>
+                <tr class="dl dl-del"><td class="dl-num">285</td><td class="dl-num"></td><td class="dl-sign">−</td><td class="dl-text">        &lt;Tooltip label={file.path}&gt;</td></tr>
+                <tr class="dl dl-add"><td class="dl-num"></td><td class="dl-num">295</td><td class="dl-sign">+</td><td class="dl-text">        &lt;Tooltip label={`${file.path} · open it in the Files tab`}&gt;</td></tr>
+                <tr class="dl"><td class="dl-num">286</td><td class="dl-num">296</td><td class="dl-sign"></td><td class="dl-text">          &lt;span className="diff-file-path mono"&gt;{file.path}&lt;/span&gt;</td></tr>
+                <tr class="dl"><td class="dl-num">287</td><td class="dl-num">297</td><td class="dl-sign"></td><td class="dl-text">        &lt;/Tooltip&gt;</td></tr>
+              </tbody></table>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<section class="states">
+  <h2>The control, at size, in every state</h2>
+  <div class="state-row">
+    <div class="state">
+      <span class="cap">Rest</span>
+      <span><button class="open-in-files">Open in Files <span class="glyph" aria-hidden="true">↗</span></button></span>
+      <span class="why">Muted, same weight as the +/− counts beside it. Present, not loud.</span>
+    </div>
+    <div class="state">
+      <span class="cap">Hover / focus</span>
+      <span><button class="open-in-files hovered">Open in Files <span class="glyph" aria-hidden="true">↗</span></button></span>
+      <span class="why">Label goes to full contrast, the arrow picks up the accent.</span>
+    </div>
+    <div class="state">
+      <span class="cap">Deleted file</span>
+      <span><button class="open-in-files" aria-disabled="true">Open in Files <span class="glyph" aria-hidden="true">↗</span></button></span>
+      <span class="why">The file is gone from the checkout, so there is nothing to open. Disabled with a
+        tooltip saying so beats a button that always fails.</span>
+    </div>
+  </div>
+</section>
+
+<div class="notes">
+  <div class="note good"><b>Nothing to discover.</b> A labelled, always-visible button. No hover,
+    no glyph to decode, no second meaning loaded onto an existing element.</div>
+  <div class="note good"><b>Free space.</b> <code>.diff-file-head</code> is a flex row whose path is
+    the only <code>flex: 1</code> child. A trailing <code>flex: none</code> control costs the path
+    ~120px of truncation room and nothing else.</div>
+  <div class="note good"><b>One call site.</b> Only <code>FileDiff</code> changes, and it already
+    holds the path. The row list, its keyboard walk, and its <code>&lt;button&gt;</code> structure
+    are untouched.</div>
+  <div class="note cost"><b>Only the open file.</b> To jump to a different file you select it
+    first, then click - two actions where option 2 needs one.</div>
+  <div class="note src"><b>Wiring.</b> <code>view.onOpenFile(session.id, path)</code> already does
+    exactly this for transcript links: <code>files.select</code> + <code>requestFilesTab</code>.
+    <code>InlineDiffViewer</code> needs one new prop threaded from <code>ConsoleDetail</code>.</div>
+  <div class="note src"><b>Optional chord.</b> <code>o</code> is unclaimed in
+    <code>keybindings.ts</code>. If it gets one, the button wears a <kbd class="kb-hint">o</kbd>
+    keycap like every other bound button in the app.</div>
+</div>
+
+</body>
+</html>

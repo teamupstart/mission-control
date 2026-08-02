@@ -44,6 +44,7 @@ import {
   useEnsembleLaunch,
 } from "../ensembles/dispatch/EnsembleDispatch.tsx";
 import { freshEnsembleDraft, type EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
+import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 
 /**
  * What a fresh dispatch form holds: nothing, except the repo the last one went to.
@@ -179,6 +180,7 @@ export function DispatchLayer({
   personas = [],
   workflowSummaries = [],
   foremanEnabled = false,
+  launchIntent = null,
   onClose,
   onOpenSchedule,
   onEnsembleLaunched,
@@ -194,6 +196,15 @@ export function DispatchLayer({
   workflowSummaries?: WorkflowSummary[];
   /** Whether the completion detector needed by an after-work Workflow is running. */
   foremanEnabled?: boolean;
+  /**
+   * What the caller wants this opening to be, when it is not an ordinary Dispatch.
+   *
+   * The Library's strategy launchers reach the modal through here rather than by setting the
+   * launch mode themselves: mode and Ensemble draft are this component's state (so switching
+   * mode or closing loses neither), and a caller allowed to write them would be a second
+   * place that decides what Ensemble mode means. An intent is a request; the modal applies it.
+   */
+  launchIntent?: { strategyId: EnsembleStrategyId } | null;
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -233,6 +244,41 @@ export function DispatchLayer({
     // whoever made that change their change, silently, on the next Save.
     if (openOn && edit?.id === openOn && stored && !draftsEqual(edit.seed, stored)) setEdit(null);
   }
+  /**
+   * The mode the OPERATOR last chose, as distinct from one a launch intent imposed.
+   *
+   * The modal deliberately keeps its launch mode across a close - switching mode and closing
+   * must lose neither. That was unambiguous while the toggle was the only way in; a Library
+   * strategy card is a second way, and without this an operator who launched one ensemble
+   * would find every later Dispatch sitting in Ensemble mode, having never asked for it.
+   * So an intent arms Ensemble for its own opening, and hands the mode back when it is spent.
+   */
+  const operatorMode = useRef<"single" | "ensemble">("single");
+  const chooseLaunchMode = useCallback((mode: "single" | "ensemble") => {
+    operatorMode.current = mode;
+    setLaunchMode(mode);
+  }, []);
+
+  // A launch intent is applied the way the edit slot above is - during render, once per
+  // opening, keyed on what was asked for - so the modal never paints one frame of Single
+  // mode before flipping to Ensemble.
+  const [armedStrategy, setArmedStrategy] = useState<EnsembleStrategyId | null>(null);
+  const askedStrategy = open && !editTask ? launchIntent?.strategyId ?? null : null;
+  if (askedStrategy !== armedStrategy) {
+    setArmedStrategy(askedStrategy);
+    if (askedStrategy) {
+      setLaunchMode("ensemble");
+      // Only RESET the config when the strategy actually changes, which is the rule the
+      // in-modal strategy picker keeps: relaunching the same strategy from the Library must
+      // not throw away a config the operator already filled in.
+      if (ensembleDraft.strategyId !== askedStrategy) {
+        setEnsembleDraft(freshEnsembleDraft(askedStrategy));
+      }
+    } else {
+      setLaunchMode(operatorMode.current);
+    }
+  }
+
   const slot = editTask && edit?.id === editTask.id ? edit : null;
   const editDraft = slot ? slot.draft : stored;
   // The effective slot, refreshed every render, for the callbacks below that can fire
@@ -392,7 +438,7 @@ export function DispatchLayer({
       onClose={onClose}
       onSubmitted={onSubmitted}
       launchMode={launchMode}
-      onLaunchModeChange={setLaunchMode}
+      onLaunchModeChange={chooseLaunchMode}
       ensembleDraft={ensembleDraft}
       onEnsembleDraftChange={setEnsembleDraft}
       onEnsembleClear={onEnsembleClear}

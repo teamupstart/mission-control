@@ -54,6 +54,7 @@ function props(sessions: Session[]): SessionViewProps {
     onOpenDiff: noop,
     onOpenFiles: noop,
     onOpenFile: () => false,
+    onOpenFilePath: () => {},
     fileTabRequest: null,
     conversationTabRequest: null,
     workflowsTabRequest: null,

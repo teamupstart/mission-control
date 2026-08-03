@@ -325,6 +325,8 @@ class CodexSdkSession implements SdkSessionHandle {
   private lastUsage: SdkUsage | null = null;
   /** A short backstop when a final answer is not followed by either lifecycle frame. */
   private finalAnswerCompletion: ReturnType<typeof setTimeout> | null = null;
+  /** Unattributed idle frames that may still arrive for final-answer-recovered turns. */
+  private recoveredIdleDebt = 0;
   private modelId: string | null = null;
   /**
    * The sandbox the RUNNING thread resolved to, read off its own start response.
@@ -816,8 +818,18 @@ class CodexSdkSession implements SdkSessionHandle {
         // The backstop for an idle we would otherwise learn only from `turn/completed`.
         // Both fire today, in this order, and `finishTurn` is idempotent - but a card stuck
         // reading "working" for ever is the failure mode worth being redundant about.
-        if (status.type === "idle") this.finishTurn(this.activeTurnId);
-        else if (status.type === "active") {
+        if (status.type === "idle") {
+          // Status frames carry no turn id. A final-answer recovery can release the outbox
+          // before that recovered turn's delayed idle arrives, at which point blindly
+          // applying the idle to `activeTurnId` would finish the NEW turn. Each recovery
+          // therefore leaves one unattributed idle debt: the next idle pays that debt and
+          // cannot retire whichever newer turn happens to be active.
+          if (this.recoveredIdleDebt > 0) {
+            this.recoveredIdleDebt -= 1;
+            return;
+          }
+          this.finishTurn(this.activeTurnId);
+        } else if (status.type === "active") {
           this.out.emit({ kind: "state", state: "working", activity: null });
         }
         return;
@@ -927,6 +939,9 @@ class CodexSdkSession implements SdkSessionHandle {
   private retireThread(threadId: string): void {
     this.retiredThreads.set(threadId, true);
     capped(this.retiredThreads, RETIRED_THREAD_CAP);
+    // Idle debt belongs to the root being retired. Its late frames are filtered above and
+    // must not suppress lifecycle notifications from the replacement thread.
+    this.recoveredIdleDebt = 0;
     for (const [itemId, retained] of this.fileChanges) {
       if (this.isRetired(retained.threadId)) this.fileChanges.delete(itemId);
     }
@@ -1019,14 +1034,15 @@ class CodexSdkSession implements SdkSessionHandle {
   }
 
   /** Close out a turn exactly once, whichever notification told us about it first. */
-  private finishTurn(turnId: string | null): void {
-    if (!turnId || this.activeTurnId !== turnId) return;
+  private finishTurn(turnId: string | null): boolean {
+    if (!turnId || this.activeTurnId !== turnId) return false;
     if (this.finalAnswerCompletion) {
       clearTimeout(this.finalAnswerCompletion);
       this.finalAnswerCompletion = null;
     }
     this.activeTurnId = null;
     this.out.emit({ kind: "turn_done", usage: this.lastUsage });
+    return true;
   }
 
   private scheduleFinalAnswerCompletion(turnId: string): void {
@@ -1035,7 +1051,7 @@ class CodexSdkSession implements SdkSessionHandle {
     const timer = setTimeout(() => {
       if (this.finalAnswerCompletion !== timer) return;
       this.finalAnswerCompletion = null;
-      this.finishTurn(turnId);
+      if (this.finishTurn(turnId)) this.recoveredIdleDebt += 1;
     }, FINAL_ANSWER_COMPLETION_GRACE_MS);
     this.finalAnswerCompletion = timer;
   }

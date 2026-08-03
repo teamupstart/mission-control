@@ -924,12 +924,22 @@ test("a completed final answer ends the turn when lifecycle notifications are lo
   assert.equal(fallbackDone.length, 1);
   assert.equal(fallbackDone[0]?.kind === "turn_done" && fallbackDone[0].usage?.output, 1);
 
-  // The normal frames may be delayed rather than absent. The final-answer backstop and
-  // ordinary lifecycle must still retire one supervisor reservation exactly once.
+  // The outbox may start turn 2 before turn 1's unidentifiable idle arrives. That late
+  // status must pay the recovered turn's idle debt, not retire the new active turn.
+  assert.equal(await handle.send({ text: "next queued turn" }), "started");
   server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
   server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
   await settle();
   assert.equal(events.filter((event) => event.kind === "turn_done").length, 1);
+  assert.equal(
+    await handle.sendIfIdle({ text: "must not start over turn 2" }),
+    null,
+    "turn 1's delayed idle cannot complete turn 2",
+  );
+
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-2" } });
+  await settle();
+  assert.equal(events.filter((event) => event.kind === "turn_done").length, 2);
   await handle.stop();
   await drained;
 });

@@ -971,6 +971,7 @@ export function openDb(): DatabaseSync {
       observed_state     TEXT,           -- OPEN | CLOSED | MERGED
       observed_at        INTEGER,
       head_ref_name      TEXT,           -- the branch the PR is opened FROM
+      title              TEXT,           -- as of the last poll; NULL until one happens
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -1786,6 +1787,20 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "inspector_prs", "observed_state", "TEXT");
   addColumn(d, "inspector_prs", "observed_at", "INTEGER");
   addColumn(d, "inspector_prs", "head_ref_name", "TEXT");
+  // The pull request's title, on the same terms as the four above: written by the poll,
+  // NULL for "not looked at since the column existed". It lands on shipped databases and
+  // the adoption INSERT names it, so like `merged_at` the migration is not optional.
+  //
+  // Nullable with no default because there is no truthful default. A legacy row's title is
+  // whatever GitHub says it is, which only a poll can find out; inventing one - the branch,
+  // the empty string - would be indistinguishable on the wire from a poll having reported
+  // it, and the reader's fallback to `head_ref_name` is what makes null render honestly.
+  // Rows already closed or merged when this ships stay null for ever, since the tick only
+  // polls open ones. That is accepted: no network sweep backfills history.
+  //
+  // No index. The table gains single-digit rows a day and nothing selects on the title;
+  // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
+  addColumn(d, "inspector_prs", "title", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -5146,6 +5161,7 @@ interface InspectorPrRow {
   observed_state: string | null;
   observed_at: number | null;
   head_ref_name: string | null;
+  title: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -5177,6 +5193,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     observedState: (r.observed_state as InspectorPr["observedState"]) ?? null,
     observedAt: r.observed_at,
     headRefName: r.head_ref_name,
+    title: r.title,
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -5197,8 +5214,9 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
           head_sha, review_posture, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
           next_attempt_at, last_attempt_sha, merged_at, merge_block,
-          observed_head_sha, observed_state, observed_at, head_ref_name, adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          observed_head_sha, observed_state, observed_at, head_ref_name, title,
+          adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -5227,6 +5245,7 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.observedState,
       pr.observedAt,
       pr.headRefName,
+      pr.title,
       pr.adoptedAt,
       pr.updatedAt,
     );
@@ -5263,6 +5282,8 @@ export function updateInspectorPr(
     observedState?: InspectorPr["observedState"];
     observedAt?: number | null;
     headRefName?: string | null;
+    /** Re-recorded every tick, so a retitled pull request stops being stale. */
+    title?: string | null;
   },
   now: number,
 ): void {
@@ -5277,6 +5298,7 @@ export function updateInspectorPr(
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
+              title = ?,
               updated_at = ?
         WHERE key = ?`,
     )
@@ -5297,6 +5319,7 @@ export function updateInspectorPr(
       next.observedState,
       next.observedAt,
       next.headRefName,
+      next.title,
       now,
       key,
     );
@@ -5439,41 +5462,90 @@ export function loadInspectorComments(prKey: string): InspectorComment[] {
 }
 
 /**
- * Every ledger row with its finding tallies - the settings panel's list, and what the
- * per-session chip is derived from.
+ * The tally half of every inspection read: ledger row plus its finding counts, in ONE
+ * grouped query rather than a load-then-count-per-row loop. This runs on the daemon's
+ * single synchronous SQLite handle - the same one serving hook ingest and SSE - and the
+ * panels poll it.
  *
- * One grouped query rather than a load-then-count-per-row loop: this runs on the
- * daemon's single synchronous SQLite handle, the same one serving hook ingest and SSE,
- * and the panel polls it.
+ * Shared by the two orderings below so their tallies cannot drift apart. Everything after
+ * the join (the WHERE, the GROUP BY, the ORDER BY) belongs to the caller, which is the
+ * only thing the two differ in.
+ */
+const INSPECTION_TALLY_FROM = `SELECT p.*,
+              COALESCE(SUM(CASE WHEN c.status IN ('open','drafted','posting') THEN 1 ELSE 0 END), 0) AS open_findings,
+              COALESCE(SUM(CASE WHEN c.status = 'open' THEN 1 ELSE 0 END), 0) AS posted_open_findings,
+              COALESCE(SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_findings
+         FROM inspector_prs p
+         LEFT JOIN inspector_comments c ON c.pr_key = p.key`;
+
+type InspectionTallyRow = InspectorPrRow & {
+  open_findings: number;
+  posted_open_findings: number;
+  resolved_findings: number;
+};
+
+function rowToInspection(r: InspectionTallyRow): InspectorInspection {
+  return {
+    ...rowToInspectorPr(r),
+    openFindings: Number(r.open_findings),
+    postedOpenFindings: Number(r.posted_open_findings),
+    resolvedFindings: Number(r.resolved_findings),
+  };
+}
+
+/**
+ * Every ledger row with its finding tallies, most recently REVIEWED first - the settings
+ * panel's list, and what the per-session chip is derived from.
  *
  * `limit` is OPTIONAL, and the default is "all of them", because the two callers want
  * different things. The settings panel is a display and wants the recent slice; the
  * registry builds the per-session chip out of this and must not be truncated - rows are
  * never deleted, so a cap would eventually drop live PRs off the bottom, and an absent
  * chip is documented in three places as meaning "that PR came from somewhere else".
+ *
+ * Review recency is the wrong order for "what shipped in the last week" - see
+ * `loadInspectionsAdoptedSince`.
  */
 export function loadInspectorInspections(limit?: number): InspectorInspection[] {
   const rows = openDb()
     .prepare(
-      `SELECT p.*,
-              COALESCE(SUM(CASE WHEN c.status IN ('open','drafted','posting') THEN 1 ELSE 0 END), 0) AS open_findings,
-              COALESCE(SUM(CASE WHEN c.status = 'open' THEN 1 ELSE 0 END), 0) AS posted_open_findings,
-              COALESCE(SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_findings
-         FROM inspector_prs p
-         LEFT JOIN inspector_comments c ON c.pr_key = p.key
+      `${INSPECTION_TALLY_FROM}
         GROUP BY p.key
         ORDER BY COALESCE(p.last_reviewed_at, p.adopted_at) DESC
         LIMIT ?`,
     )
-    .all(limit ?? -1) as unknown as (InspectorPrRow & {
-    open_findings: number;
-    posted_open_findings: number;
-    resolved_findings: number;
-  })[];
-  return rows.map((r) => ({
-    ...rowToInspectorPr(r),
-    openFindings: Number(r.open_findings),
-    postedOpenFindings: Number(r.posted_open_findings),
-    resolvedFindings: Number(r.resolved_findings),
-  }));
+    .all(limit ?? -1) as unknown as InspectionTallyRow[];
+  return rows.map(rowToInspection);
+}
+
+/**
+ * The same rows windowed and ordered by ADOPTION instead - "every pull request we opened
+ * since T, newest first".
+ *
+ * `adopted_at` is not a stylistic choice of column. It is the provenance rule the Line's
+ * Shipped count is already made of (`prsOpenedSince`): a row exists here because a hook
+ * caught `gh pr create`, so adoption time is the one instant that means "we shipped this".
+ * A surface listing what that count counted has to filter and sort on the same column, or
+ * it can disagree with the number the operator clicked - the exact failure the panel's
+ * `COALESCE(last_reviewed_at, adopted_at)` ordering produces, since a review is not a
+ * ship and a re-review reorders a settled week.
+ *
+ * Uncapped, and that is the point rather than an oversight: a cap is a truncation the
+ * caller cannot see, so a busy week would silently render short against a count that
+ * included everything. The window is the bound, the ledger gains single-digit rows a day,
+ * and the caller chooses how far back to look.
+ *
+ * NOT to be confused with `loadAdoptedInspectorPrsSince`, whose bound is `observed_at` and
+ * whose subject is the retire race a `pull_request` session action has to survive.
+ */
+export function loadInspectionsAdoptedSince(sinceMs: number): InspectorInspection[] {
+  const rows = openDb()
+    .prepare(
+      `${INSPECTION_TALLY_FROM}
+        WHERE p.adopted_at >= ?
+        GROUP BY p.key
+        ORDER BY p.adopted_at DESC`,
+    )
+    .all(sinceMs) as unknown as InspectionTallyRow[];
+  return rows.map(rowToInspection);
 }

@@ -620,6 +620,45 @@ export interface ProvisionedWorktree {
 }
 
 /**
+ * How long a read-only `git` preflight gets to answer.
+ *
+ * `run`'s 4s default was chosen for discovery commands against a terminal multiplexer, and
+ * it was never a git budget. A dispatch asks these questions of a git dir that every linked
+ * worktree on the machine shares, during a burst, while the agents in those trees are
+ * running git of their own - and `teardownWorktree` already pays 15-30s for exactly that
+ * reason. A `rev-parse` costs single-digit milliseconds on an idle machine, so this ceiling
+ * is only ever reached by a machine that is not idle, which is precisely the moment a wrong
+ * answer here is most expensive.
+ */
+const GIT_PREFLIGHT_TIMEOUT_MS = 15_000;
+
+/**
+ * The error for a git preflight that never got an answer.
+ *
+ * `run` reports a child that DIED - our own timeout, the OOM killer, an operator's `pkill` -
+ * as `code: 1` with empty stdout, which is byte-for-byte what a git that ran and said "no"
+ * looks like. A caller reading `code` alone therefore converts "we could not find out" into
+ * a confident negative FACT, and the callers below go on to state that fact in an
+ * operator-facing error that ends the dispatch: "X is not a git repository", "X is not a
+ * commit in Y". Neither is something we know.
+ *
+ * That is not hypothetical. A dispatch died with "is not a git repository" against a
+ * checkout that had served a `git pull` twelve seconds earlier and provisioned the next
+ * dispatch fifteen seconds later; the operator read it as a broken checkout, and the task
+ * that depended on its pull request waited on a merge that could never happen.
+ *
+ * `RunResult.outcomeUnknown` is the flag this difference already travels on. This is the
+ * message that spends it - and it says the tree is untouched, because a read-only check
+ * that died provisioned nothing and is therefore safe to try again.
+ */
+function gitNeverAnswered(question: string, r: RunResult): Error {
+  return new Error(
+    `could not determine ${question}: git did not answer ` +
+      `(${r.stderr.trim() || `exit ${r.code}`}) - nothing was provisioned, so this can be retried`,
+  );
+}
+
+/**
  * Confirm a caller's pinned base is a real commit in this repository, and return it.
  *
  * FULL ids only. A short id or a ref name would resolve here and still be the wrong
@@ -633,7 +672,17 @@ export async function verifyPinnedBase(repoRoot: string, baseSha: string): Promi
   if (!/^[0-9a-f]{40}$/.test(baseSha)) {
     throw new Error(`pinned base "${baseSha}" is not a full 40-character commit id`);
   }
-  const r = await run("git", ["-C", repoRoot, "rev-parse", "--verify", "--quiet", `${baseSha}^{commit}`]);
+  const r = await run(
+    "git",
+    ["-C", repoRoot, "rev-parse", "--verify", "--quiet", `${baseSha}^{commit}`],
+    { timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS },
+  );
+  // `--quiet` makes a genuine miss an exit 1 with empty stderr, which is exactly the shape a
+  // killed child arrives in. Refusing a caller's pinned base is a claim about THEIR commit,
+  // so it has to come from git having actually looked.
+  if (r.outcomeUnknown) {
+    throw gitNeverAnswered(`whether ${baseSha} is a commit in ${repoRoot}`, r);
+  }
   const resolved = r.stdout.trim();
   if (r.code !== 0 || resolved !== baseSha) {
     throw new Error(`pinned base ${baseSha} is not a commit in ${repoRoot}`);
@@ -705,7 +754,14 @@ export async function provisionWorktree(
   /** The exact commit the tree must start at, verified by `verifyPinnedBase` already. */
   baseSha: string | null = null,
 ): Promise<ProvisionedWorktree> {
-  const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"]);
+  const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"], {
+    timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
+  });
+  // Asked BEFORE `code`, because a killed child and a git that answered "no" are the same
+  // `code: 1` with the same empty stdout - see `gitNeverAnswered`.
+  if (check.outcomeUnknown) {
+    throw gitNeverAnswered(`whether ${repoRoot} is a git repository`, check);
+  }
   if (check.code !== 0 || check.stdout.trim() !== "true") {
     throw new Error(`${repoRoot} is not a git repository`);
   }
@@ -885,7 +941,14 @@ export async function teardownWorktree(
     timeoutMs: 30000,
   });
   if (removed.code !== 0) {
-    const repo = await run("git", ["-C", task.repoRoot, "rev-parse", "--is-inside-work-tree"]);
+    // Same budget as the dispatch preflight, and for the same reason: on the 4s default a
+    // loaded machine turned "the tree is already gone, nothing to reclaim" into a spurious
+    // reclaim failure. A non-zero `code` here already covers `outcomeUnknown` (a killed
+    // child never exits 0), and both land on the safe side - re-raising git's real
+    // complaint about the removal rather than swallowing it.
+    const repo = await run("git", ["-C", task.repoRoot, "rev-parse", "--is-inside-work-tree"], {
+      timeoutMs: GIT_PREFLIGHT_TIMEOUT_MS,
+    });
     if (repo.code !== 0 || existsSync(task.worktreePath)) {
       throw new Error(`git worktree remove failed: ${removed.stderr.trim() || `exit ${removed.code}`}`);
     }

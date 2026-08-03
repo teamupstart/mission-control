@@ -154,6 +154,52 @@ export function deliveryResolutionActions(
   ];
 }
 
+/**
+ * Whether this run can take a resubmission, and why not when it cannot.
+ *
+ * `refusal` carries the reason so a disabled control can say it; `null` means the header's own
+ * per-button copy applies, because a live resubmission invites two different things - fresh
+ * evidence or the snapshot already taken - and that wording belongs beside the buttons.
+ */
+export interface ResubmitAvailability {
+  /** A blocked run resumes the round it stalled in; a waiting run opens the next one. */
+  resuming: boolean;
+  refusal: string | null;
+}
+
+/**
+ * Whether the header may offer a resubmission.
+ *
+ * `blocked` belongs here because `manager.resubmit` has always accepted it while the header
+ * offered the control to `waiting_for_session` alone. That left a run blocked on a fault which
+ * has since cleared - `check_cleanup_unresolved` once its pooled worktree came back - showing
+ * nothing but Cancel run, with the one call that revives it a route away and unreachable.
+ *
+ * The refusals mirror `manager.resubmit`'s own, in its order, so the control never promises a
+ * call the server will reject. An Inspector-only repair is excluded rather than disabled: it
+ * owns Restart full workflow, and two competing recoveries side by side is how an operator
+ * picks the wrong one.
+ */
+export function resubmitAvailability(
+  detail: WorkflowRunDetail,
+  liveInspectorRepair: boolean,
+): ResubmitAvailability | null {
+  const { status } = detail.run;
+  if (status !== "waiting_for_session" && status !== "blocked") return null;
+  const resuming = status === "blocked";
+  if (resuming && liveInspectorRepair) return null;
+  if (detail.binding.state !== "active") {
+    return { resuming, refusal: "The bound session is gone, so no further round can be prepared" };
+  }
+  if (detail.externalSource) {
+    return { resuming, refusal: "An externally sourced run cannot take a manual round" };
+  }
+  if (detail.summary.round > detail.summary.maxRepairRounds) {
+    return { resuming, refusal: "This run has used every repair round its binding allows" };
+  }
+  return { resuming, refusal: null };
+}
+
 export function runActionTooltip(
   descriptor: RunActionDescriptor,
   pending: boolean,

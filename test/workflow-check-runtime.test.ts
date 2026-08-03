@@ -945,4 +945,40 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
   await leases.reclaimLeaked(async () => "empty");
   assert.equal(leases.unresolvedLeaseForNode("submission-gate-block", "gate"), false);
   assert.deepEqual(pool.trees.filter((t) => t.state === "leased"), []);
+
+  // And "self-clearing" has to mean the RUN clears, not just the lease. This assertion is the
+  // one this test was missing: the tree went home, the fault was gone, and the run stayed
+  // blocked forever because nothing continued it.
+  engine.resumeClearedCheckCleanup();
+  const resumed = store.getRun("run-gate-block");
+  assert.equal(resumed?.status, "running", "the run stayed blocked after its cleanup resolved");
+  assert.equal(resumed?.currentPhase, "persona_review");
+  // The submission has to come back with it: a running run over a failed submission is
+  // invisible to `listRunnableAttempts`, so the run would look alive and never execute.
+  assert.equal(store.getSubmission("submission-gate-block")?.status, "running");
+  // The retry the block withheld now exists - the SECOND attempt of the same node, carrying
+  // the first one's fingerprint rather than a fresh review of different evidence.
+  const afterResume = store.listAttempts("submission-gate-block").filter((a) => a.nodeId === "gate");
+  assert.deepEqual(afterResume.map((a) => a.attempt), [1, 2]);
+  assert.equal(afterResume[1]?.state, "retry_wait");
+  assert.equal(afterResume[1]?.inputFingerprint, afterResume[0]?.inputFingerprint);
+  assert.equal(
+    store.listEvents("run-gate-block").filter((e) => e.kind === "check_cleanup_resolved").length,
+    1,
+    "the resume must be on the event log, not only in the phase",
+  );
+
+  // The sweep runs on a timer, so it will see this run again the moment before the retry
+  // executes. A second pass must not grant a third attempt or a second resume event.
+  engine.resumeClearedCheckCleanup();
+  assert.deepEqual(
+    store.listAttempts("submission-gate-block").filter((a) => a.nodeId === "gate").map((a) => a.attempt),
+    [1, 2],
+    "a second sweep granted an extra attempt",
+  );
+  assert.equal(
+    store.listEvents("run-gate-block").filter((e) => e.kind === "check_cleanup_resolved").length,
+    1,
+  );
+  store.cancelRun("run-gate-block", "test_cleanup", 99);
 });

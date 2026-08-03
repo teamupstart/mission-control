@@ -4721,6 +4721,10 @@ export class WorkflowManager {
           // session stopped?", and a second poller asking that would be a second answer -
           // with its own window, its own settle threshold, and its own idea of idle.
           void this.sweepSessionActions();
+          // Also here rather than on a timer of its own: this asks whether a blocked run's
+          // pooled worktree came back, and the pool reaper that hands it back has no seam to
+          // announce it through. One observer, one interval, one answer per pass.
+          this.engine.resumeClearedCheckCleanup();
         },
         this.options.resumptionIntervalMs ?? WORKFLOW_RESUMPTION_INTERVAL_MS,
       );

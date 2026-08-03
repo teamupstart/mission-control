@@ -3136,6 +3136,27 @@ for a reason that is not a preference: preparing a PR means typing into the sess
 Preview is defined as performing no keystroke injection at all. A Preview binding that reaches
 the missing-PR gate records why it deferred rather than appearing to do nothing.
 
+### Blocked runs are recoverable, not terminal
+
+A check runs in a **pooled worktree**, and a check that times out is terminated by process
+group. When that group cannot be proven gone, the worktree cannot be handed back, and the run
+blocks rather than reporting a result it cannot account for - something may still be writing
+into the tree the verdict came from. The run reads **Blocked**, phase `check_cleanup_unresolved`.
+
+That block is meant to clear itself, and now does. The pool's reclamation pass keeps asking
+whether the group has gone and hands the tree back when it can prove it; on the next sweep the
+run **resumes on its own** - the retry the block withheld is scheduled against the same
+evidence and the same round, and the timeline records **Check cleanup resolved**. A node that
+had already spent every infrastructure attempt moves to `infrastructure_error` instead, which
+is the phase **Retry provider call** belongs to.
+
+Blocked is also no longer a dead end in the header. **Submit fresh evidence** and **Submit
+unchanged** render for a blocked run, not only a parked one, because the daemon has always
+accepted a resubmission for both. When the daemon would refuse - the bound session is gone,
+the run is externally sourced, or it has used every repair round its binding allows - the
+buttons stay visible and disabled, carrying that exact reason, rather than disappearing and
+leaving **Cancel run** as the only thing to reach.
+
 ### Live repair delivery and Foreman completion
 
 Live workflow delivery is **on by default, and authorised nowhere**. Those are two halves of

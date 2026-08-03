@@ -30,7 +30,7 @@ import {
 import { WorkflowApiError } from "../src/web/workflows/workflowApi.ts";
 import { workflowBindingSelection } from "../src/web/workflows/WorkflowBindingDialog.tsx";
 import type { Session } from "../src/shared/types.ts";
-import { tooltipLabels } from "./helpers/markup.ts";
+import { hasTooltip, tooltipLabels } from "./helpers/markup.ts";
 
 /**
  * Graph identities are real UUIDs on purpose: the leak this file guards against is a node
@@ -525,6 +525,62 @@ test("a waiting run offers both resubmissions, the run actions, and cancel", () 
   assert.match(html, /Diff<\/dt><dd>truncated/);
   assert.match(html, /status truncated/);
   assert.match(html, /Join and gate packet/);
+  assertNoGraphIds(html);
+});
+
+/**
+ * A blocked run used to reach this header with nothing but Cancel run.
+ *
+ * `check_cleanup_unresolved` blocks on a pooled worktree that could not be handed back, and
+ * the lease reclamation pass hands it back later - so by the time an operator is reading, the
+ * fault is routinely gone. The server accepts a resubmission for it; the header offered none,
+ * which made a recoverable run look terminal.
+ */
+test("a run blocked on a cleared check cleanup still offers both resubmissions", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "blocked" },
+    run: { ...base.run, status: "blocked", currentPhase: "check_cleanup_unresolved" },
+  });
+  assert.match(html, /Preview fresh evidence/);
+  assert.match(html, /Preview unchanged/);
+  // The invitation names resuming, not a new round: the stalled round is what continues.
+  assert.ok(tooltipLabels(html).some((label) => label.includes("resume this run where it stalled")));
+  assert.match(html, /Cancel run/);
+  assertNoGraphIds(html);
+});
+
+/**
+ * The refusals mirror the server's, so the control never promises a call that will 409.
+ * An orphaned binding is the common one: every `session_disappeared` run carries it.
+ */
+test("a blocked run whose binding was orphaned disables resubmission and says why", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    binding: { ...base.binding, state: "orphaned", sessionId: null },
+    summary: { ...base.summary, status: "blocked" },
+    run: { ...base.run, status: "blocked", currentPhase: "session_disappeared" },
+  });
+  assert.ok(hasTooltip(html, "The bound session is gone, so no further round can be prepared"));
+  // Present but unusable, rather than absent: the operator learns why, and Cancel run remains.
+  assert.match(html, /Preview fresh evidence/);
+  assert.match(html, /Preview unchanged/);
+  assert.equal((html.match(/<button[^>]*disabled=""[^>]*>Preview/g) ?? []).length, 2);
+  assert.match(html, /Cancel run/);
+  assertNoGraphIds(html);
+});
+
+/** A run past its configured rounds is refused by the server, so the header must not offer it. */
+test("a blocked run out of repair rounds disables resubmission and says why", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "blocked", round: 6, maxRepairRounds: 5 },
+    run: { ...base.run, status: "blocked", currentPhase: "round_limit" },
+  });
+  assert.ok(hasTooltip(html, "This run has used every repair round its binding allows"));
   assertNoGraphIds(html);
 });
 

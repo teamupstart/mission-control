@@ -9380,15 +9380,28 @@ select.ensemble-judge-persona {
   color: var(--dim);
 }
 
+/* The shelf is a grid so the cross-link can share the HEADING's line.
+
+   It used to be the last flex item of `.lib-shelf-top`, pushed out by `margin-left: auto` -
+   which on a full-width window parked it about a thousand pixels right of the heading it
+   belongs to, in the smallest type on the page. Nobody found it. Placing it here is the fix;
+   the pill below is only what makes it legible once it is somewhere the eye already goes.
+
+   `display: contents` on the top row is what allows it: the row's two children become items
+   of THIS grid, so the eyebrow can keep its own line while the link joins the heading on the
+   next one, with no change to the component. Tooltip's `.tt-desc` is the third child and is
+   `position: absolute`, so it is out of flow and claims no track. */
 .lib-shelf {
   margin-top: 26px;
+  display: grid;
+  grid-template-columns: max-content 1fr;
 }
 .lib-shelf-top {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
+  display: contents;
 }
 .lib-shelf-eyebrow {
+  grid-row: 1;
+  grid-column: 1 / -1;
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
@@ -9399,38 +9412,92 @@ select.ensemble-judge-persona {
 /* A button rather than an anchor: every route change in this app goes through the router's
    `navigate`, which is what the dirty-draft gate hangs off. */
 .lib-shelf-live {
-  margin-left: auto;
+  grid-row: 2;
+  grid-column: 2;
+  justify-self: start;
+  align-self: center;
+  margin-left: 14px;
+  display: inline-flex;
+  align-items: center;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--working);
-  background: none;
-  border: 0;
-  padding: 0;
+  background: color-mix(in srgb, var(--working) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--working) 32%, transparent);
+  border-radius: 999px;
+  padding: 3px 10px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+/* The app's status dot, on the one control on this page that reports live state. It is what
+   keeps the pill from reading as plain navigation next to the ＋ New cards. */
+.lib-shelf-live::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, currentColor 22%, transparent);
 }
 .lib-shelf-live:hover {
-  text-decoration: underline;
+  background: color-mix(in srgb, var(--working) 22%, transparent);
+  border-color: color-mix(in srgb, var(--working) 58%, transparent);
 }
 .lib-shelf-live.is-attention {
   color: var(--attention);
+  background: color-mix(in srgb, var(--attention) 14%, transparent);
+  border-color: color-mix(in srgb, var(--attention) 40%, transparent);
+}
+.lib-shelf-live.is-attention:hover {
+  background: color-mix(in srgb, var(--attention) 24%, transparent);
+  border-color: color-mix(in srgb, var(--attention) 62%, transparent);
 }
 .lib-shelf h3 {
+  grid-row: 2;
+  grid-column: 1;
   margin: 3px 0 2px;
   font-size: 16px;
   font-weight: 650;
 }
 .lib-shelf-why {
+  grid-row: 3;
+  grid-column: 1 / -1;
   margin: 0;
   font-size: 12.5px;
   color: var(--muted);
   max-width: 82ch;
 }
 .lib-shelf-row {
+  grid-row: 4;
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 11px;
   margin-top: 12px;
+}
+/* The longest heading and the longest label together need about 570px of page. Below that
+   the pill drops to its own line rather than overhanging the shelf. */
+@media (max-width: 760px) {
+  .lib-shelf {
+    grid-template-columns: 1fr;
+  }
+  .lib-shelf h3 {
+    grid-column: 1 / -1;
+  }
+  .lib-shelf-live {
+    grid-row: 3;
+    grid-column: 1 / -1;
+    margin: 5px 0 3px;
+  }
+  .lib-shelf-why {
+    grid-row: 4;
+  }
+  .lib-shelf-row {
+    grid-row: 5;
+  }
 }
 .lib-shelf-empty {
   margin: 0;

@@ -1,4 +1,6 @@
+import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -17,6 +19,41 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * one place this spec touches an executing surface is the Dispatch modal, and it stops at the
  * form - `dispatch-and-converse.spec.ts` owns launching.
  */
+
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/library-cross-link/", import.meta.url));
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * Inside the regression test rather than in a staged capture spec, for the reason
+ * `line-drawers.spec.ts` gives: the point of the picture is that the assertions around it
+ * passed on the same run, so the image and the measurement cannot drift apart.
+ *
+ * Both widths, because the shelf has two layouts. 1440 is the one an operator sees; 720 is
+ * under the 760px rung where the heading and the longest label stop sharing a line and the
+ * pill drops to its own - a capture at one width would leave half the change unphotographed.
+ *
+ * Behind `MC_E2E_EVIDENCE` like every other capture in this suite: an ordinary
+ * `npm run test:e2e` would rewrite the binaries for no added signal.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  const original = page.viewportSize() ?? { width: 1280, height: 720 };
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and the
+  // pill being photographed is exactly what the pointer was last measuring.
+  await page.mouse.move(0, 0);
+  for (const [suffix, width] of [["wide", 1440], ["narrow", 720]] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    // One frame for the grid to settle after the resize; the shelf re-places its tracks.
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${EVIDENCE}${name}-${suffix}.png` });
+    // eslint-disable-next-line no-console
+    console.log(`CAPTURED docs/evidence/library-cross-link/${name}-${suffix}.png`);
+  }
+  await page.setViewportSize(original);
+  await page.waitForTimeout(150);
+}
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
@@ -87,6 +124,62 @@ test("the Library shelves answer a question each, and name nothing that is runni
   // And the page states its own contract, which is what every later phase has to keep.
   await expect(dashboard.getByRole("main"))
     .toContainText("Nothing here runs - live state stays on the runs and ensembles pages");
+});
+
+test("each shelf's cross-link sits beside its question rather than in the page's corner", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Seeded so the capture below photographs a populated Library rather than five empty
+  // shelves - the assertions themselves do not need any of it.
+  await seedAssets(daemon);
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+
+  const shelf = dashboard.getByRole("region", { name: "What counts as done?" });
+  const heading = shelf.getByRole("heading", { name: "What counts as done?" });
+  // Three shelves point at the runs page, so the link is reached through its own shelf.
+  const link = shelf.getByRole("button", { name: "runs →" });
+  await expect(link).toBeVisible();
+
+  const headingBox = (await heading.boundingBox())!;
+  const linkBox = (await link.boundingBox())!;
+
+  // On the heading's own line: the pill's centre falls inside the heading's band.
+  const centre = linkBox.y + linkBox.height / 2;
+  expect(centre).toBeGreaterThan(headingBox.y);
+  expect(centre).toBeLessThan(headingBox.y + headingBox.height);
+
+  // And immediately after it. This is the regression worth holding: the link used to be the
+  // last flex item of the shelf's top row, and `margin-left: auto` parked it against the
+  // right edge of the window - on a wide one, roughly a thousand pixels from the heading it
+  // belongs to, in the smallest type on the page. Measured as a gap rather than an absolute
+  // x so it reads the same at any viewport.
+  const gap = linkBox.x - (headingBox.x + headingBox.width);
+  expect(gap).toBeGreaterThan(0);
+  expect(gap).toBeLessThan(40);
+
+  // The status dot is what separates a live readout from the ＋ New cards beside it.
+  const dot = await link.evaluate((el) => {
+    const style = getComputedStyle(el, "::before");
+    return { width: parseFloat(style.width), background: style.backgroundColor };
+  });
+  expect(dot.width).toBeGreaterThan(0);
+  expect(dot.background).not.toBe("rgba(0, 0, 0, 0)");
+
+  // The measurements above say where the pill is; this says what it looks like. Taken here,
+  // between the geometry and the navigation, so the picture is of the state just asserted.
+  await shoot(dashboard, "shelves");
+
+  // Still the bridge to the live half of the product, and still per-shelf: the Ensembles
+  // shelf keeps its own destination after the re-layout.
+  await link.click();
+  await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/runs");
+
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await dashboard.getByRole("region", { name: "Not sure of the best approach?" })
+    .getByRole("button", { name: "ensembles →" })
+    .click();
+  await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/ensembles");
 });
 
 test("the topbar segment directly opens Fleet, Library and Runs, while Shift+P opens Sitrep", async ({

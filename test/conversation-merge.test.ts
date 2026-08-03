@@ -168,9 +168,26 @@ test("a review sharing a turn's timestamp follows it", () => {
   assert.deepEqual(order(merged), ["a", "r1"]);
 });
 
+test("a born-settled review sharing its released reply's timestamp precedes it", () => {
+  // Driver-question answers are recorded only after delivery succeeds, with a timestamp
+  // captured immediately before delivery. The agent can write its reply in that same
+  // millisecond, but the answer still belongs above the turn it released.
+  const rows = transcriptRows([msg("ask", 100), msg("reply", 200)]);
+  const merged = mergeConversation(rows, [], [
+    review("r1", 200, { createdAt: 200, resolvedAt: 200 }),
+  ]);
+  assert.deepEqual(order(merged), ["ask", "r1", "reply"]);
+});
+
 test("a review with no resolution stamp sorts LAST, not first", () => {
   const rows = transcriptRows([msg("a", 100), msg("b", 200)]);
   const merged = mergeConversation(rows, [], [review("r1", null)]);
+  assert.deepEqual(order(merged), ["a", "b", "r1"]);
+});
+
+test("a born-settled review with only the missing-time sentinel still sorts last", () => {
+  const rows = transcriptRows([msg("a", 0), msg("b", 200)]);
+  const merged = mergeConversation(rows, [], [review("r1", 0, { createdAt: 0 })]);
   assert.deepEqual(order(merged), ["a", "b", "r1"]);
 });
 

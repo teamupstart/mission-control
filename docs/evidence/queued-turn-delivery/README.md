@@ -1,9 +1,11 @@
 # Queued turn delivery evidence
 
-Eight frames from one green run of `e2e/specs/queued-turn-delivery.spec.ts`, taken between the
-assertions that spec already makes. They are photographs of the run that passed, not of a
+Nine frames from green runs of `e2e/specs/queued-turn-delivery.spec.ts`, taken between the
+assertions that spec already makes. They are photographs of the tests that passed, not of a
 scripted walk staged to look like it: the same test that asserts the row leaves takes the
-pictures, so a frame exists only because the assertions under it held.
+pictures, so a frame exists only because the assertions under it held. The first eight are
+the baseline two-scenario captures on both harnesses. The ninth is the focused repair capture
+for a Codex final answer whose trailing lifecycle notifications are lost.
 
 Two scenarios, two moments each, on both harnesses. The first pair is a queued turn delivered
 on an ordinary idle transition. The second is the same delivery after the driver has already
@@ -85,24 +87,53 @@ driver and the Codex case passes while the Claude case fails on the outbox being
 
 ![The queued message delivered after a mid-turn injection on Codex](codex-mid-turn-delivered.png)
 
-## The run
+## After Codex loses its trailing lifecycle notifications
+
+The fifth scenario reproduces the SDK session in which Codex has written and delivered its
+final answer, but neither `turn/completed` nor the idle thread status reaches Mission Control.
+The operator's next message initially appears as `YOU · QUEUED` behind that turn.
+
+The frame below is captured only after the browser has proved that no pending row remains and
+that the SDK card renders `Mock reply to: deliver this queued turn when the agent goes idle`.
+The former queued message is now an ordinary `YOU` turn with its answer directly beneath it.
+
+![The queued message delivered and answered after Codex loses both trailing lifecycle notifications](codex-final-answer-delivered.png)
+
+## The runs
 
 Verbatim, from the repository root after `npm run build`:
 
 ```
 $ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts specs/queued-turn-delivery.spec.ts --reporter=list
 
-Running 4 tests using 4 workers
+Running 5 tests using 1 worker
 
-  ✓  3 … :63:1 › a queued conversation turn is delivered once the codex agent goes idle (18.2s)
-  ✓  2 … :124:1 › a queued turn still lands after the codex driver takes a mid-turn message (18.7s)
-  ✓  1 … :63:1 › a queued conversation turn is delivered once the claude agent goes idle (19.5s)
-  ✓  4 … :124:1 › a queued turn still lands after the claude driver takes a mid-turn message (20.1s)
+  ✓  1 … :64:1 › a queued conversation turn is delivered once the codex agent goes idle (11.4s)
+  ✓  2 … :125:1 › a queued turn still lands after the codex driver takes a mid-turn message (10.6s)
+  ✓  3 … :64:1 › a queued conversation turn is delivered once the claude agent goes idle (10.7s)
+  ✓  4 … :125:1 › a queued turn still lands after the claude driver takes a mid-turn message (10.7s)
+  ✓  5 … :190:1 › a Codex final answer releases a queued turn when later lifecycle notifications are lost (11.9s)
 
-  4 passed (21.5s)
+  5 passed (1.2m)
 ```
 
-That command also regenerates all eight PNGs. Without `MC_E2E_EVIDENCE` the spec asserts
+That command regenerates all nine PNGs. The new final-answer recovery frame was captured in
+the repair round with the narrower equivalent:
+
+```
+$ MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
+    e2e/specs/queued-turn-delivery.spec.ts -g "final answer releases" \
+    --workers=1 --reporter=list
+
+Running 1 test using 1 worker
+
+  ✓  1 … :190:1 › a Codex final answer releases a queued turn when later lifecycle notifications are lost (10.9s)
+
+  1 passed (11.4s)
+```
+
+That focused run writes `codex-final-answer-delivered.png` only after the pending-row and
+reply assertions pass. Without `MC_E2E_EVIDENCE` the spec asserts
 exactly the same things and writes nothing, so an ordinary `npm run test:e2e` does not rewrite
 the binaries - the same bargain `docs/evidence/workflow-session-action-authoring/` strikes.
 

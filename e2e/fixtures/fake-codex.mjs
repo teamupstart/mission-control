@@ -43,6 +43,7 @@ import { createInterface } from "node:readline";
 const THREAD_ID = process.env.MC_E2E_CODEX_THREAD_ID ?? "01999999-0000-7000-8000-000000000001";
 const MODEL = "gpt-5-codex-e2e-mock";
 const HELD_TURN = "hold the current turn open";
+const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only a final answer";
 const HELD_TURN_MS = 5_000;
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
@@ -177,9 +178,28 @@ function runTurn(turnId, input) {
     status: { type: "active", activeFlags: [] },
   });
 
-  const finish = (prompts) => {
+  const finish = (prompts, finalAnswerOnly = false) => {
     openTurn = null;
     for (const answered of prompts) appendRollout("agent_message", replyTo(answered));
+    if (finalAnswerOnly) {
+      // The production regression: app-server delivered the final response but neither of
+      // its redundant lifecycle notifications reached Mission Control. `final_answer` is
+      // itself a root-turn completion signal, so the driver must release the outbox from
+      // this frame alone.
+      notify("item/completed", {
+        threadId: THREAD_ID,
+        turnId,
+        completedAtMs: Date.now(),
+        item: {
+          type: "agentMessage",
+          id: `message-${turnId}`,
+          text: replyTo(prompts.at(-1)),
+          phase: "final_answer",
+          memoryCitation: null,
+        },
+      });
+      return;
+    }
     // ONE completion, however many prompts the turn absorbed - a steer joins the turn that
     // is running rather than creating another completion to wait for.
     notify("turn/completed", { threadId: THREAD_ID, turn: turnOf(turnId, "completed") });
@@ -195,6 +215,12 @@ function runTurn(turnId, input) {
     const turnState = { prompts: [prompt] };
     openTurn = turnState;
     setTimeout(() => finish(turnState.prompts), HELD_TURN_MS);
+    return;
+  }
+  if (prompt === FINAL_ANSWER_HELD_TURN) {
+    const turnState = { prompts: [prompt] };
+    openTurn = turnState;
+    setTimeout(() => finish(turnState.prompts, true), HELD_TURN_MS);
     return;
   }
   finish([prompt]);

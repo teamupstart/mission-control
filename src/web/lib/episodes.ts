@@ -11,6 +11,13 @@ export type ConversationRow =
   | { kind: "episode"; ts: number; episode: ForemanEpisode }
   | { kind: "review"; ts: number; review: ReviewItem };
 
+function precedesTranscript(row: ConversationRow, transcriptTs: number): boolean {
+  if (row.ts !== transcriptTs) return row.ts < transcriptTs;
+  return (
+    row.ts > 0 && row.kind === "review" && row.review.createdAt === row.review.resolvedAt
+  );
+}
+
 /**
  * Interleave the out-of-band entries into the transcript by time.
  *
@@ -23,9 +30,12 @@ export type ConversationRow =
  * than joined at the source.
  *
  * Stable by construction: the extras are placed relative to turns by timestamp, and ties
- * keep the transcript turn first. A tie is not hypothetical - Foreman answers within
- * seconds of the turn that provoked it, and second-resolution timestamps collide - and
- * putting the extra first there would show a reply above the message it replies to.
+ * normally keep the transcript turn first. A tie is not hypothetical - Foreman answers
+ * within seconds of the turn that provoked it, and second-resolution timestamps collide -
+ * and putting the extra first there would show a reply above the message it replies to.
+ * The exception is a review born settled (`createdAt === resolvedAt`). Those are native SDK
+ * question answers stamped immediately before the driver resumes, so a same-millisecond
+ * assistant turn is the reply they released and belongs below them.
  *
  * An entry with no usable timestamp sorts to the END rather than the beginning. Zero is what
  * a missing time reads as, so the naive ordering would file the one entry we know least
@@ -64,8 +74,13 @@ export function mergeConversation(
   const out: ConversationRow[] = [];
   let i = 0;
   for (const row of rows) {
-    // Strictly less-than, so an entry sharing a turn's timestamp follows it.
-    while (i < dated.length && dated[i]!.ts < row.ts) out.push(dated[i++]!);
+    // Entries sharing a turn's timestamp normally follow it. A driver-question answer is
+    // recorded born settled after delivery succeeds, but its timestamp is deliberately
+    // taken before delivery. If the released assistant turn is written in that same
+    // millisecond, keep the answer above the reply it caused.
+    while (i < dated.length && precedesTranscript(dated[i]!, row.ts)) {
+      out.push(dated[i++]!);
+    }
     out.push(row);
   }
   while (i < dated.length) out.push(dated[i++]!);

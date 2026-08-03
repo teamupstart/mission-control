@@ -139,3 +139,26 @@ this file's contracts; the drawer row layout remains Phase 1's.
   foreman state are App-held already, so no new prop shape had to be back-ported. Escape
   layering (popover before drawer) is owned here because the popover is the only nested
   dismissable either phase introduces.
+- 2026-08-03: built and merged as PR #411. Seven deviations from the route above, each
+  argued in that PR's description:
+  1. The footer readout drops `ready/blocked/disabled`. The drawer's header already counts
+     those three, forty pixels up, in the drawer's vocabulary ("parked", where the status
+     object says "disabled"). The footer keeps what the header cannot say - armed state,
+     capacity, and what the two together mean for the queue.
+  2. A gate state this file did not name: `nothing launches until Foreman is live`, for an
+     armed autopilot behind either half of `cfg.enabled && mode === "live"`.
+  3. Phase 1's static footer sentence gave up its slot to the readout. The Sitrep button
+     did not move - the contract was about the button, and the button is where it was.
+  4. Mockup B's "Then" list was not built: those rows are the drawer the panel sits on.
+  5. `position: fixed` with an inline `--bl-planner-fit`, NOT the `DeadBlockerButton`
+     popover's absolute placement this file proposed - which is clipped by the capped,
+     scrolling `.line-drawer-body` and by `.line-drawer`'s own `overflow: hidden`. The
+     dismissal mechanics (outside click, Escape, focus return) are that component's.
+  6. Escape layering is a React `onKeyDown` on the anchor rather than a `document`
+     listener, because it must run BELOW the fleet's `window` handler to stop it.
+  7. `dependentsIn` was extracted into `src/shared/backlog.ts` (built on `blockersIn`, so
+     "unblocks N" is the exact inverse of what makes a row blocked), as this file allowed.
+
+  Two repo guardrails were answered rather than bypassed: the popover joins
+  `UNREGISTERED_DIALOGS` in `test/overlay-registry.test.ts` with its reasoning, and
+  `.bl-planner-pop` joins the `.is-desktop` no-drag rule.

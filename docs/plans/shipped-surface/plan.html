@@ -172,8 +172,9 @@
 <main>
   <h1>Shipped surface</h1>
   <p class="lede">Approved: clicking Shipped opens a Shipped drawer in The Line, and the
-  drawer's footer links to a new cross-repo Ship log page. PR titles are stored at adoption.
-  The adopted mockups are below; the decision record is at the end.</p>
+  drawer's header "Ship log" action escalates to a new cross-repo Ship log page. PR titles
+  live on the adoption ledger, written by the Inspector's per-tick poll. The adopted mockups
+  are below; the decision record is at the end.</p>
 
   <h2>Problem</h2>
   <p>Clicking Shipped today navigates to the Workflow runs page filtered to
@@ -248,8 +249,9 @@
   <!-- ======================= MOCKUP A ======================= -->
   <h2>Adopted 1 - Shipped drawer (Mockup A)</h2>
   <p>Clicking Shipped opens a drawer under the strip, exactly like Intake, Review, and Decide
-  already do. Rows are the adoption ledger newest-first; chips split the week by merge state;
-  the footer totals it and links to the ship log.</p>
+  already do. Rows are the adoption ledger newest-first; chips split the week by merge state
+  with their counts; the "Ship log" escalation sits in the drawer header's actions slot, the
+  same place the other drawers keep theirs (the frame has no footer).</p>
 
   <div class="ab">
     <div class="line">
@@ -270,6 +272,8 @@
           <span class="chip">Open 14</span>
           <span class="chip">Gone 8</span>
         </div>
+        <span style="font-size:11px; color: var(--working); white-space:nowrap; margin-left:4px">Ship log →</span>
+        <span style="font-size:10px; color: var(--dim)">✕</span>
       </div>
       <div class="dr-row">
         <svg class="ic m" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="8" r="1.9"/><path d="M4 5.5v5M4 5.8c0 2.2 2.6 2.2 6 2.2"/></g></svg>
@@ -296,7 +300,6 @@
         <span class="main"><span><span class="repo">jordanmance/notes</span><span class="num">#12</span></span><span class="br">draft/summarizer</span></span>
         <span class="meta"><span class="st g">gone</span><span class="sess">sess notes-sum</span><span class="when">yesterday</span></span>
       </div>
-      <div class="dr-ft">89 merged · 14 open · 8 gone this week<span class="link">Open ship log →</span></div>
     </div>
   </div>
   <p class="cap">Merge-state icons always ride with a text label (merged / open / gone), never color alone.</p>
@@ -437,9 +440,13 @@
   <h2>Decision record (submitted 2026-08-02)</h2>
   <ul>
     <li><strong>Surface:</strong> Drawer + ship log (A then B). The drawer gives the in-place
-        glance, consistent with the other stages; its footer links to the full page.</li>
-    <li><strong>Data:</strong> store PR titles at adoption. Per-PR cost approximation and the
-        embedded merge matrix were not adopted.</li>
+        glance, consistent with the other stages; its header "Ship log" action escalates to the
+        full page (the frame has no footer - escalation lives in the actions slot, the existing
+        drawers' precedent).</li>
+    <li><strong>Data:</strong> store PR titles on the ledger. Submitted as "store at adoption";
+        the adoption signal carries no title, so the Inspector's per-tick poll writes it - null
+        until the first observation, with branch-name fallback. Per-PR cost approximation and
+        the embedded merge matrix were not adopted.</li>
     <li><strong>Follow-up:</strong> phased implementation plan.</li>
   </ul>
 

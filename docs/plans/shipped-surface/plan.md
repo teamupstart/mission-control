@@ -1,16 +1,22 @@
 # Shipped surface
 
 Approved: clicking Shipped opens a Shipped drawer in The Line, and the drawer's
-footer links to a new cross-repo Ship log page. PR titles are stored at adoption.
-The adopted mockups are rendered in [plan.html](plan.html).
+header "Ship log" action escalates to a new cross-repo Ship log page. PR titles
+live on the adoption ledger, written by the Inspector's per-tick poll. The
+adopted mockups are rendered in [plan.html](plan.html).
 
 ## Decision record (submitted 2026-08-02)
 
 - Surface: **Drawer + ship log (A then B)**. The drawer gives the in-place glance,
-  consistent with Intake, Review, and Decide; its footer links to the full page.
-- Data: **store PR titles at adoption**. Per-PR cost approximation and an embedded
-  merge matrix (repos x days heatmap) were considered and not adopted. The matrix
-  remains a candidate ship-log module for later.
+  consistent with Intake, Review, and Decide; its header "Ship log" action
+  escalates to the full page. (The drawer frame has no footer - escalation lives
+  in the header actions slot, the existing drawers' precedent.)
+- Data: **store PR titles on the ledger**. Submitted as "store at adoption"; the
+  adoption signal carries no title, so the Inspector's per-tick poll writes it -
+  null until the first observation, with branch-name fallback. Per-PR cost
+  approximation and an embedded merge matrix (repos x days heatmap) were
+  considered and not adopted. The matrix remains a candidate ship-log module for
+  later.
 - Follow-up: **phased implementation plan**.
 
 ## Problem
@@ -64,7 +70,8 @@ and Decide already do (`LINE_DRAWER_STAGES` gains `"shipped"`, and the
 `line-targets.ts` entry flips from the runs route to the drawer). Rows are the
 adoption ledger newest-first: merge-state glyph, `owner/repo#N`, title (falling
 back to branch), owning session, relative time. Filter chips split All / Merged /
-Open / Gone. The footer totals the week and links to the ship log.
+Open / Gone with their counts; the header carries the week's count and the
+"Ship log" escalation in the frame's actions slot.
 
 ## Adopted 2 - Ship log page
 

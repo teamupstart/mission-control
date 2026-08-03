@@ -8,6 +8,8 @@ import { DecideDrawer } from "../src/web/components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "../src/web/components/line/IntakeDrawer.tsx";
 import { ShippedDrawer } from "../src/web/components/line/ShippedDrawer.tsx";
 import { BacklogDrawer } from "../src/web/components/line/BacklogDrawer.tsx";
+import { PlannerPopover } from "../src/web/components/line/NextUpPlanner.tsx";
+import { autopilotReadout, plannerFacts } from "../src/web/lib/backlog-copy.ts";
 import {
   LINE_DRAWER_STAGES,
   isLineDrawerStage,
@@ -29,7 +31,13 @@ import {
   workflowRunAttentionParts,
   workflowRunAttentionSplit,
 } from "../src/shared/workflow.ts";
-import type { BacklogPlan, Session, Task, TaskDependency } from "../src/shared/types.ts";
+import type {
+  BacklogPlan,
+  ForemanStatus,
+  Session,
+  Task,
+  TaskDependency,
+} from "../src/shared/types.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
 import { mkEnsembleSummary, mkSession, mkTask } from "./helpers/session-fixture.ts";
 import { mkSchedule } from "./helpers/schedule-fixture.ts";
@@ -832,14 +840,31 @@ const mkPlan = (order: string[], deps: Record<string, string[]> = {}): BacklogPl
   generatedAt: NOW,
 });
 
-const backlogDrawer = (tasks: Task[], plan: BacklogPlan | null = null): string =>
+/** The autopilot half of the drawer's props, defaulted to "armed, and able to launch". */
+interface AutopilotProps {
+  autoBacklog?: boolean | null;
+  autopilot?: ForemanStatus["autopilot"] | null;
+  autopilotLaunches?: boolean;
+}
+
+const backlogDrawer = (
+  tasks: Task[],
+  plan: BacklogPlan | null = null,
+  auto: AutopilotProps = {},
+): string =>
   renderToStaticMarkup(createElement(BacklogDrawer, {
     tasks,
     backlogPlan: plan,
     now: NOW,
+    // `in`, not `??`: an explicit null is the "config has not arrived" state this drawer
+    // has to draw, and `?? false` would quietly turn every test of it into a test of off.
+    autoBacklog: "autoBacklog" in auto ? (auto.autoBacklog ?? null) : false,
+    autopilot: auto.autopilot ?? null,
+    autopilotLaunches: auto.autopilotLaunches ?? true,
     onClose: () => {},
     onEditTask: () => {},
     onOpenSitrep: () => {},
+    onSetAutoBacklog: async () => true,
   }));
 
 /** The titles of the drawer's rows, top to bottom - which is the claim this panel makes. */
@@ -876,7 +901,7 @@ test("the ready band is the plan's order, not the board's, and its head is next 
   const html = backlogDrawer(tasks, mkPlan(["first", "second", "hot"]));
   assert.deepEqual(rowTitles(html), ["Planned first", "Planned second", "Hot but planned last"]);
   // Exactly one next-up mark, on the head. Two would be two answers to a question with one.
-  assert.equal([...html.matchAll(/class="bl-next"/g)].length, 1);
+  assert.equal([...html.matchAll(/class="bl-next bl-next-trigger"/g)].length, 1);
   assert.match(html, /Planned first[\s\S]*bl-next[\s\S]*Planned second/);
   assert.match(html, /3 ready/);
   // One band, so one list. A second, empty one would announce a group with nothing in it.
@@ -973,6 +998,230 @@ test("the drawer keeps the fleet read one click away, in the footer", () => {
   assert.match(html, /line-drawer-body[\s\S]*line-drawer-foot/);
   assert.match(html, /line-drawer-foot[\s\S]*Sitrep/);
   assert.doesNotMatch(html, /line-drawer-head[\s\S]*Sitrep[\s\S]*<\/header>/);
+});
+
+// ---------------------------------------------------------------------------
+// Backlog: the autopilot planner, and the footer's autopilot line
+// ---------------------------------------------------------------------------
+
+/** The planner panel on its own, which is the only way a static render can read it open. */
+const plannerPop = (over: Partial<Parameters<typeof PlannerPopover>[0]> = {}): string =>
+  renderToStaticMarkup(createElement(PlannerPopover, {
+    task: backlogTask({
+      id: "head",
+      title: "Persist review verdicts",
+      intent: "Verdicts vanish on restart; carry them in SQLite.",
+    }),
+    planned: true,
+    reason: null,
+    facts: [],
+    readyCount: 3,
+    busy: false,
+    onLaunch: () => {},
+    onClose: () => {},
+    ...over,
+  }));
+
+test("the next-up mark is a trigger that names its task, and only the head has one", () => {
+  const tasks = [
+    backlogTask({ id: "first", title: "Planned first" }),
+    backlogTask({ id: "second", title: "Planned second" }),
+  ];
+  const html = backlogDrawer(tasks, mkPlan(["first", "second"]));
+  // A button, named for the task rather than for the pill: a reader arriving on it by
+  // keyboard has just walked past six rows and "next up" alone names none of them.
+  assert.match(
+    html,
+    /aria-haspopup="dialog" aria-expanded="false" aria-label="Next up: Planned first - why, and launch it now"/,
+  );
+  assert.equal([...html.matchAll(/aria-haspopup="dialog"/g)].length, 1);
+  // Closed until it is asked for. A drawer that rendered the panel and hid it with CSS
+  // would put a second copy of the whole queue's reasoning in the accessibility tree.
+  assert.doesNotMatch(html, /bl-planner-pop/);
+  assert.doesNotMatch(html, /role="dialog"/);
+});
+
+test("the planner quotes Foreman's own words, and says whose they are", () => {
+  const html = plannerPop({
+    reason: "Nothing else can land until the verdicts survive a restart.",
+    facts: [{ tone: "yes", text: "no blockers - nothing upstream is holding it" }],
+  });
+  assert.match(html, /Nothing else can land until the verdicts survive a restart\./);
+  // Marked as a quotation, and attributed. The other lines on this panel are computed
+  // here; a reader deciding how much to trust the argument has to be able to tell which
+  // half came from a model.
+  assert.match(html, /<blockquote class="bl-planner-reason">[\s\S]*<cite>Foreman&#x27;s plan<\/cite>/);
+  assert.match(html, /aria-label="Why Persist review verdicts is next up"/);
+  // The ordering rule in force is stated beside the count, because "plan order" and
+  // "priority, then age" are two different reasons for the same row being on top.
+  assert.match(html, /plan order · 3 ready/);
+  assert.match(html, /no blockers - nothing upstream is holding it/);
+  // The one action, and not the mockup's second one: "Skip once" has no backing route
+  // and park is the deferral that does.
+  assert.match(html, /Launch now/);
+  assert.doesNotMatch(html, /Skip once/);
+});
+
+test("a missing reason and a missing plan entry are two different sentences", () => {
+  const planned = plannerPop({ planned: true, reason: null });
+  assert.match(planned, /Foreman planned it here and recorded no reason\./);
+  assert.match(planned, /plan order/);
+
+  // The unplanned tail: `readyBacklog` appends anything the plan does not name, so the
+  // fallback ordering is what put this task on top - and the panel says so rather than
+  // implying Foreman chose it.
+  const unplanned = plannerPop({ planned: false, reason: null });
+  assert.match(unplanned, /Foreman&#x27;s plan does not name this one yet/);
+  assert.match(unplanned, /priority, then age · 3 ready/);
+  assert.doesNotMatch(unplanned, /plan order/);
+});
+
+test("the computed facts are checkable against the band, and never flatter the plan", () => {
+  const head = backlogTask({ id: "head", title: "Planned first", priority: "low" });
+  const facts = plannerFacts({
+    task: head,
+    ready: [
+      head,
+      backlogTask({ id: "hot", title: "Outranks it", priority: "blocker" }),
+      backlogTask({ id: "old", title: "Older", createdAt: NOW - 5 * 86_400_000 }),
+    ],
+    unblocks: [backlogTask({ id: "after", title: "Wire verdicts into the gate" })],
+    now: NOW,
+  });
+  const lines = facts.map((f) => f.text);
+  // The plan put a `low` task first over a `blocker`, which is a real thing a plan does
+  // (dependencies beat priority) - and the panel reports it rather than claiming this was
+  // the most important item. `blocker` and the unset default both outrank `low`.
+  assert.deepEqual(lines[0], "low priority - 2 of the 3 ready rank higher");
+  // Not the oldest either, so the age line states the age and claims nothing more.
+  assert.deepEqual(lines[1], "filed 1d ago");
+  assert.deepEqual(lines[2], "no blockers - nothing upstream is holding it");
+  assert.deepEqual(lines[3], "unblocks 1 task: Wire verdicts into the gate");
+  // What finishing it releases is a consequence, not evidence, and is toned apart.
+  assert.deepEqual(facts.map((f) => f.tone), ["yes", "yes", "yes", "soft"]);
+});
+
+test("the facts say when the head of the queue IS the obvious pick", () => {
+  const head = backlogTask({
+    id: "head",
+    title: "Planned first",
+    priority: "blocker",
+    createdAt: NOW - 5 * 86_400_000,
+  });
+  const facts = plannerFacts({
+    task: head,
+    ready: [head, backlogTask({ id: "other", title: "Other", priority: "med" })],
+    unblocks: [],
+    now: NOW,
+  });
+  assert.deepEqual(facts.map((f) => f.text), [
+    "blocker priority - nothing ready outranks it",
+    "filed 5d ago - the oldest of the 2 ready",
+    "no blockers - nothing upstream is holding it",
+  ]);
+  // No "unblocks" line at all when it releases nothing, rather than "unblocks 0 tasks".
+  assert.equal(facts.length, 3);
+});
+
+test("more than one downstream task is counted, and the first one is named", () => {
+  const head = backlogTask({ id: "head", title: "Head" });
+  const facts = plannerFacts({
+    task: head,
+    ready: [head],
+    unblocks: [
+      backlogTask({ id: "a", title: "First dependent" }),
+      backlogTask({ id: "b", title: "Second dependent" }),
+    ],
+    now: NOW,
+  });
+  assert.equal(facts.at(-1)?.text, "unblocks 2 tasks: First dependent +1");
+});
+
+test("with one task ready there is nothing to compare it to, and the copy says less", () => {
+  const only = backlogTask({ id: "only", title: "The only one", priority: "high" });
+  const facts = plannerFacts({ task: only, ready: [only], unblocks: [], now: NOW });
+  // Not "nothing ready outranks it" and not "the oldest of the 1 ready": both are
+  // superlatives over a set of one, and a panel that argued for its only candidate that
+  // way would read as a machine that had lost track of how many things it was choosing
+  // between.
+  assert.deepEqual(facts.map((f) => f.text), [
+    "high priority",
+    "filed 1d ago",
+    "no blockers - nothing upstream is holding it",
+  ]);
+});
+
+test("the footer says whether anything is going to act on this queue", () => {
+  // Off is the shipped default, so this is the sentence most fleets see - and it has to
+  // be a statement rather than a warning: nothing is wrong with a backlog you drive.
+  assert.equal(
+    autopilotReadout({ on: false, status: null, launches: true }),
+    "Autopilot off - nothing starts unless you start it",
+  );
+  const status = { on: true, active: 2, max: 3, ready: 4, blocked: 1, disabled: 1 };
+  assert.equal(
+    autopilotReadout({ on: true, status, launches: true }),
+    "Autopilot on · 2/3 agents · takes the top row on its own",
+  );
+  // The three states that answer "why is nothing launching?" without opening a log.
+  assert.equal(
+    autopilotReadout({ on: true, status: { ...status, active: 3 }, launches: true }),
+    "Autopilot on · 3/3 agents · full, waiting for one to free up",
+  );
+  assert.equal(
+    autopilotReadout({ on: true, status: { ...status, ready: 0 }, launches: true }),
+    "Autopilot on · 2/3 agents · nothing ready to take",
+  );
+  // Armed, and gated: the machine takes nothing unless Foreman is on AND in live mode, so
+  // an armed autopilot behind either half of that gate launches nothing. A plain "on" here
+  // is the one sentence that would send somebody hunting through a log for a machine
+  // behaving exactly as configured.
+  assert.equal(
+    autopilotReadout({ on: true, status, launches: false }),
+    "Autopilot on · 2/3 agents · nothing launches until Foreman is live",
+  );
+  // Before the first status poll the switch's own state is still known, so the line says
+  // that much and no numbers it does not have.
+  assert.equal(autopilotReadout({ on: true, status: null, launches: true }), "Autopilot on");
+});
+
+test("the footer's switch is the config's own, and never repeats the header's counts", () => {
+  const tasks = [
+    backlogTask({ id: "ready", title: "Ready to go" }),
+    backlogTask({ id: "held", title: "Held back", enabled: false }),
+  ];
+  const status = { on: true, active: 2, max: 3, ready: 1, blocked: 0, disabled: 1 };
+  const html = backlogDrawer(tasks, mkPlan(["ready"]), { autoBacklog: true, autopilot: status });
+  assert.match(html, /role="switch" aria-checked="true" aria-label="Backlog autopilot"/);
+  // In the footer, under the rows and beside the Sitrep button - which has not moved.
+  assert.match(html, /line-drawer-foot[\s\S]*Backlog autopilot[\s\S]*Sitrep/);
+  assert.match(html, /Autopilot on · 2\/3 agents · takes the top row on its own/);
+  // The ready/blocked/parked split is the HEADER's, said once, in the drawer's own words.
+  // `status.autopilot` carries the same three numbers and calls the third "disabled";
+  // printing them again forty pixels below in a second dialect is how a panel teaches
+  // people to stop reading it.
+  assert.match(html, /line-drawer-count">1 ready · 1 parked/);
+  assert.doesNotMatch(html, /1 disabled/);
+
+  // Off, and the switch says so where a screen reader can hear it.
+  const off = backlogDrawer(tasks, mkPlan(["ready"]), { autoBacklog: false, autopilot: status });
+  assert.match(off, /role="switch" aria-checked="false"/);
+  assert.match(off, /Autopilot off - nothing starts unless you start it/);
+
+  // Before Foreman's config arrives there is no honest state to draw, so the control is
+  // inert and the line says what it is waiting for rather than claiming "off".
+  const cold = backlogDrawer(tasks, mkPlan(["ready"]), { autoBacklog: null, autopilot: null });
+  assert.match(cold, /aria-label="Backlog autopilot" disabled=""/);
+  assert.match(cold, /Autopilot · reading Foreman&#x27;s settings…/);
+});
+
+test("nothing ready means no trigger to press, and the drawer says why instead", () => {
+  const html = backlogDrawer([backlogTask({ id: "held", title: "Held back", enabled: false })]);
+  assert.doesNotMatch(html, /aria-haspopup="dialog"/);
+  assert.match(html, /line-drawer-att">nothing ready/);
+  // The footer line is still there: whether autopilot is armed is exactly the question a
+  // queue with nothing ready in it raises.
+  assert.match(html, /aria-label="Backlog autopilot"/);
 });
 
 // ---------------------------------------------------------------------------

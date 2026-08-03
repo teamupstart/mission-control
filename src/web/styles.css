@@ -1061,7 +1061,11 @@ body {
    layouts never overlaps the bar - but "the layout keeps it out of the rectangle" is the
    assumption every entry above was added after breaking, and the cost of listing it is
    nothing. A card scrolled under a sticky topbar is one reflow away from proving it. */
-.is-desktop .launch-pop {
+.is-desktop .launch-pop,
+/* The Backlog drawer's autopilot planner. It is anchored under a row of a panel that sits
+   directly beneath the bar, so its own placement clamp is the only thing keeping it out of
+   the rectangle - and its whole point is a Launch button the OS must not eat. */
+.is-desktop .bl-planner-pop {
   -webkit-app-region: no-drag;
 }
 
@@ -15763,6 +15767,277 @@ span.line-run-prov {
    the whole reason this is a border and not a heading. */
 .line-drawer-rows:has(+ .line-drawer-rows) > li:last-child {
   border-bottom: 1px solid color-mix(in oklab, var(--border) 55%, var(--dim));
+}
+
+/* THE AUTOPILOT PLANNER - the `next up` mark, and the panel behind it.
+   ----------------------------------------------------------------------------
+   The mark is the trigger, so it stays the board card's chip (`.bl-next` carries the
+   colour, the radius and the border) and gains only what a control owes a reader that a
+   chip does not: a pointer, a hover state, a focus ring and a caret saying there is more.
+   A second, separate "why?" button would have been the alternative and it is worse twice
+   over - it costs the row's fixed height a control, and it puts the explanation somewhere
+   other than on the claim it explains.
+
+   THE PANEL IS `position: fixed`, AND THAT IS NOT A PREFERENCE. It is rendered inside
+   `.line-drawer-body`, which is capped at three rows and scrolls, inside `.line-drawer`,
+   which clips so its corners stay round. An absolutely-positioned popover in there is cut
+   off at the second row - the same clip the tooltip's body-level portal exists to escape.
+   Fixed placement escapes both, because a fixed box's containing block is the viewport
+   rather than the scroll port, so no ancestor `overflow` clips it. The position is
+   measured off the trigger when it opens (`NextUpPlanner`), which is also why a scroll
+   closes it rather than dragging it along. */
+.line-bl-marks .bl-planner {
+  align-self: center;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+.bl-next-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* `font: inherit` first, then the chip's own size: a bare <button> would otherwise draw
+     the mark in the platform's UI font at 13px beside a 10px pill on the board. */
+  font: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.7;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease,
+    background-color 0.14s ease;
+}
+.bl-next-trigger:hover:not(:disabled),
+.bl-next-trigger[aria-expanded="true"] {
+  color: color-mix(in oklab, var(--pr-merged) 35%, var(--fg));
+  border-color: color-mix(in oklab, var(--pr-merged) 70%, var(--border));
+  background: color-mix(in oklab, var(--pr-merged) 14%, transparent);
+}
+.bl-next-trigger:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+.bl-next-caret {
+  display: inline-block;
+  /* One step under the pill's 10px rather than two: at 8px the glyph stopped reading as a
+     caret and started reading as a full stop after the word. */
+  font-size: 9px;
+  transition: transform 0.14s ease;
+}
+.bl-next-trigger[aria-expanded="true"] .bl-next-caret {
+  transform: rotate(180deg);
+}
+
+.bl-planner-pop {
+  position: fixed;
+  /* Above the page and the drawer, below the modals (50) and the tooltip (100): a Sitrep
+     opened over this must cover it, and this must never cover its own tooltips. */
+  z-index: 40;
+  width: 460px;
+  /* The design cap, tightened by whatever room the placement actually found below the
+     trigger (`--bl-planner-fit`, set inline). The fallback is what the static render in
+     `test/` sees, where there is no viewport to measure. */
+  max-height: min(62vh, 540px, var(--bl-planner-fit, 100vh));
+  /* The BODY scrolls, not the panel - the same split the drawer under it makes. A panel
+     that scrolled whole would carry its own head and its Launch button off the top on the
+     way to the end of a long reason, which is the one thing this surface must not do. */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  /* The row it is anchored to is a nowrap flex line; the panel is prose. */
+  white-space: normal;
+  text-align: left;
+  cursor: default;
+}
+.bl-planner-pop:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+/* The head mirrors the drawer's own header - title, mono count, spacer, ✕ - so the panel
+   reads as one more surface of the same family rather than as a foreign tooltip. */
+.bl-planner-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.bl-planner-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--purple);
+}
+.bl-planner-order {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+.bl-planner-spacer {
+  flex: 1;
+}
+.bl-planner-close {
+  padding: 4px 9px;
+  font-size: 12px;
+}
+.bl-planner-close kbd {
+  margin-left: 5px;
+}
+.bl-planner-body {
+  /* `min-height: 0` because a column flex item will not shrink below its content
+     otherwise, and the scroll would fall back to the panel this rule exists to keep still. */
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 4px;
+}
+.bl-planner-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 3px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.bl-planner-meta {
+  margin: 0 0 9px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
+/* Two lines and no more. The full intent is in the editor the row's title opens, and a
+   panel that grew to eleven lines of it would push its own Launch button off the screen -
+   the exact failure the board card's chip clamp exists to prevent. */
+.bl-planner-intent {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.bl-planner-label {
+  margin: 0 0 7px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-weight: 500;
+}
+/* Foreman's own sentence, quoted and marked as a quotation: it is a model's words on a
+   panel whose other lines are computed facts, and the reader is entitled to know which is
+   which before deciding how much to trust either. */
+.bl-planner-reason {
+  margin: 0 0 10px;
+  padding: 0 0 0 10px;
+  border-left: 2px solid color-mix(in oklab, var(--foreman) 60%, var(--border));
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.bl-planner-reason cite {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-style: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.bl-planner-noreason {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.bl-planner-why {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+}
+.bl-planner-why li {
+  display: flex;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.bl-planner-tick {
+  flex: none;
+  color: var(--idle);
+}
+/* A consequence of taking this task, not a reason for it. Quieter on purpose: a list
+   where every line looks like evidence stops being read as evidence. */
+.bl-planner-why li.is-soft,
+.bl-planner-why li.is-soft .bl-planner-tick {
+  color: var(--dim);
+}
+.bl-planner-cta {
+  display: flex;
+  gap: 8px;
+  padding: 0 14px 13px;
+}
+
+/* ---- the footer's autopilot line ----
+   The switch says the state to a screen reader through `aria-checked`; the sentence beside
+   it says the same state and the capacity to everyone else, which is why this control
+   carries no word of its own. `.task-switch`'s chip was the other candidate and is wrong
+   here: it goes amber when off because a PARKED TASK is a deliberate hold on one item,
+   while an autopilot that has never been armed is the shipped default on every fleet -
+   colouring it would put an alert in the footer of every backlog in existence. */
+.bl-auto-switch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  /* 8px of dot plus 12px of padding plus the border: a 22px target, which is the smallest
+     this control may be. The dot is the whole affordance, and a dot is 8px. */
+  padding: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background-color 0.14s ease;
+}
+.bl-auto-track {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--dim);
+  background: transparent;
+}
+.bl-auto-switch.is-on .bl-auto-track {
+  border-color: var(--foreman);
+  background: var(--foreman);
+  box-shadow: 0 0 7px color-mix(in oklab, var(--foreman) 55%, transparent);
+}
+.bl-auto-switch:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.bl-auto-switch:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+.bl-auto-switch:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 /* Narrow: the free-text state column goes first. It is the one field on the row whose

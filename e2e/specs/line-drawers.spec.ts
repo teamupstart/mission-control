@@ -1367,6 +1367,221 @@ test("the drawer's footer opens the Sitrep, and the stage itself no longer does"
   await expect(stage(dashboard, "Backlog")).toHaveAttribute("aria-expanded", "false");
 });
 
+// ---------------------------------------------------------------------------
+// Backlog: the autopilot planner, and the footer's autopilot line
+// ---------------------------------------------------------------------------
+
+/** The planner's trigger - Phase 1's `next up` pill, now the way into the reasoning. */
+const nextUpTrigger = (page: Page): Locator =>
+  drawer(page, "Backlog").getByRole("button", { name: /^Next up:/ });
+
+const planner = (page: Page): Locator => page.getByRole("dialog", { name: /^Why / });
+
+/**
+ * A queue whose head has a reason, a second ready task to be compared against, and
+ * something waiting on the head.
+ *
+ * All three earn their place. The dependent is what makes "unblocks 1 task" a real
+ * derivation rather than a constant - it is blocked through the dispatch route's own
+ * `dependencies` field, and it sits in the drawer's other band while the planner counts
+ * it. The second ready task is what makes the comparative facts say anything: with one
+ * candidate the panel drops its superlatives, so a single-row queue would assert the copy
+ * for a queue nobody has to choose within.
+ */
+async function seedPlannedQueue(daemon: DaemonHandle, reason: string): Promise<SeededTask> {
+  const head = await seedTask(daemon, "Persist review verdicts", { priority: "high" });
+  const rival = await seedTask(daemon, "Raise the Codex rollout scan cap");
+  const dependent = await seedTask(daemon, "Wire verdicts into the ship gate", {
+    dependencies: [{ type: "task", taskId: head.id }],
+  });
+  await put(daemon, "/api/backlog/plan", {
+    entries: [
+      { taskId: head.id, dependsOn: [], reason },
+      { taskId: rival.id, dependsOn: [], reason: "Independent of the verdict work." },
+      { taskId: dependent.id, dependsOn: [head.id], reason: "Needs the verdicts to exist." },
+    ],
+    note: null,
+  });
+  return head;
+}
+
+const REASON = "Nothing else can land until verdicts survive a restart.";
+
+test("the next-up mark opens the planner, which quotes Foreman's own reason", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedPlannedQueue(daemon, REASON);
+
+  await stage(dashboard, "Backlog").click();
+  const backlog = drawer(dashboard, "Backlog");
+  await expect(backlog.locator(".line-drawer-count")).toHaveText("2 ready · 1 blocked");
+  await expect(queueTitles(dashboard)).resolves.toEqual([
+    "Persist review verdicts",
+    "Raise the Codex rollout scan cap",
+    "Wire verdicts into the ship gate",
+  ]);
+
+  await expect(planner(dashboard)).toHaveCount(0);
+  await nextUpTrigger(dashboard).click();
+  const pop = planner(dashboard);
+  await expect(pop).toBeVisible();
+  await expect(nextUpTrigger(dashboard)).toHaveAttribute("aria-expanded", "true");
+
+  // Foreman's own sentence, verbatim and attributed - the field that has existed on every
+  // plan entry since the autopilot shipped and that nothing rendered until now.
+  //
+  // The generous timeout is `useForeman`'s 4s plan poll, and this is the assertion that
+  // waits for it: the panel stays mounted and re-renders under the poll, so the reason
+  // appears in the open popover rather than being a precondition for opening it. Nothing
+  // earlier can wait for the plan - these two tasks are already in this order without it.
+  await expect(pop).toContainText(REASON, { timeout: 20_000 });
+  await expect(pop.locator("cite")).toHaveText("Foreman's plan");
+  // The rule that put it on top, then the facts a reader can check against the rows behind
+  // the panel. "unblocks 1 task" names the task in the blocked band underneath.
+  await expect(pop).toContainText("plan order · 2 ready");
+  await expect(pop).toContainText("high priority - nothing ready outranks it");
+  await expect(pop).toContainText("the oldest of the 2 ready");
+  await expect(pop).toContainText("no blockers - nothing upstream is holding it");
+  await expect(pop).toContainText("unblocks 1 task: Wire verdicts into the ship gate");
+
+  // NOT CLIPPED, which is the whole reason the panel is `position: fixed`. It is rendered
+  // inside `.line-drawer-body` - three rows tall and scrolling - inside `.line-drawer`,
+  // which clips. An absolutely-positioned panel would end at the drawer's bottom edge; this
+  // one has to hang below it and still be fully on screen.
+  const popBox = (await pop.boundingBox())!;
+  const drawerBox = (await backlog.boundingBox())!;
+  const viewport = dashboard.viewportSize()!;
+  expect(popBox.y + popBox.height).toBeGreaterThan(drawerBox.y + drawerBox.height);
+  expect(popBox.y + popBox.height).toBeLessThanOrEqual(viewport.height);
+  expect(popBox.x).toBeGreaterThanOrEqual(0);
+  expect(popBox.x + popBox.width).toBeLessThanOrEqual(viewport.width);
+  await shoot(dashboard, "backlog-planner");
+
+  // A click outside puts it away and leaves the queue where it was.
+  await backlog.locator(".line-drawer-count").click();
+  await expect(planner(dashboard)).toHaveCount(0);
+  await expect(backlog).toBeVisible();
+
+  // A SHORT window is where a fixed panel runs off the bottom of the screen. The placement
+  // clamps its top and hands the stylesheet the room that is left, so the panel scrolls
+  // inside itself and its Launch button - which sits outside that scroll - stays reachable.
+  // Re-opened after the resize on purpose: a resize moves the anchor, so it closes first.
+  await dashboard.setViewportSize({ width: 1280, height: 520 });
+  await expect(planner(dashboard)).toHaveCount(0);
+  await nextUpTrigger(dashboard).click();
+  const shortBox = (await planner(dashboard).boundingBox())!;
+  expect(shortBox.y + shortBox.height).toBeLessThanOrEqual(520);
+  await expect(planner(dashboard).getByRole("button", { name: "Launch now" })).toBeVisible();
+});
+
+test("the planner explains an unplanned head instead of implying Foreman chose it", async ({
+  dashboard,
+  daemon,
+}) => {
+  // No plan seeded at all: `readyBacklog` appends anything the plan does not name, oldest
+  // first, so the fallback is what put this task on top. The panel has to say that rather
+  // than quoting a reason that does not exist.
+  await seedTask(daemon, "Nobody has planned this");
+
+  await stage(dashboard, "Backlog").click();
+  await nextUpTrigger(dashboard).click();
+  const pop = planner(dashboard);
+  await expect(pop).toContainText("Foreman's plan does not name this one yet");
+  await expect(pop).toContainText("priority, then age · 1 ready");
+  await expect(pop.locator("cite")).toHaveCount(0);
+  // No downstream line when it releases nothing - never "unblocks 0 tasks".
+  await expect(pop).not.toContainText("unblocks");
+});
+
+test("Escape peels the planner first and the drawer second", async ({ dashboard, daemon }) => {
+  await seedTask(daemon, "Something to explain");
+
+  await stage(dashboard, "Backlog").click();
+  await nextUpTrigger(dashboard).click();
+  await expect(planner(dashboard)).toBeVisible();
+
+  // The fleet's own Escape closes the drawer while the keyboard is inside it, and the
+  // keyboard IS inside it - the panel takes focus as it opens. One press must take one
+  // layer, or the queue disappears while dismissing a panel about one row of it.
+  await dashboard.keyboard.press("Escape");
+  await expect(planner(dashboard)).toHaveCount(0);
+  await expect(drawer(dashboard, "Backlog")).toBeVisible();
+  // And the keyboard came back to the mark that opened it, so the second press is in scope.
+  await expect(nextUpTrigger(dashboard)).toBeFocused();
+
+  await dashboard.keyboard.press("Escape");
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+  await expect(stage(dashboard, "Backlog")).toHaveAttribute("aria-expanded", "false");
+});
+
+test("Launch now from the planner dispatches, and the queue behind it stays open", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedTask(daemon, "Launch me from the planner");
+  await seedTask(daemon, "And leave me queued");
+  const before = await sessionIds(daemon);
+
+  await stage(dashboard, "Backlog").click();
+  await nextUpTrigger(dashboard).click();
+  // Clicking through Playwright's actionability check is the other half of the clipping
+  // proof: a panel cut off by the drawer's overflow would not receive this click at all.
+  await planner(dashboard).getByRole("button", { name: "Launch now" }).click();
+
+  // The panel closes on the click; the drawer under it does not.
+  await expect(planner(dashboard)).toHaveCount(0);
+  await expect(drawer(dashboard, "Backlog")).toBeVisible();
+
+  const sessionId = await waitForIdleSession(daemon, before);
+  expect(sessionId).not.toBe("");
+  // The row left the queue over SSE, and the mark moved to whatever is now on top.
+  await expect.poll(() => queueTitles(dashboard)).toEqual(["And leave me queued"]);
+  await expect(nextUpTrigger(dashboard)).toHaveAccessibleName(/And leave me queued/);
+});
+
+test("the drawer's autopilot switch is the Foreman panel's own, not a copy of it", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedTask(daemon, "Something for autopilot to take");
+
+  await stage(dashboard, "Backlog").click();
+  const backlog = drawer(dashboard, "Backlog");
+  const auto = backlog.getByRole("switch", { name: "Backlog autopilot" });
+  const readout = backlog.locator(".line-drawer-foot .line-drawer-foot-note");
+
+  // Off is the shipped default, and the footer states it rather than staying silent.
+  await expect(auto).toHaveAttribute("aria-checked", "false");
+  await expect(readout).toHaveText("Autopilot off - nothing starts unless you start it");
+  await expect(backlog.getByRole("button", { name: /^Sitrep/ })).toBeVisible();
+
+  await auto.click();
+
+  // The DAEMON holds it - this is the round trip, not an optimistic flip. `useForeman`
+  // re-reads the config after the write, so the readout below comes back from the server.
+  await expect
+    .poll(async () => (await api<{ autoBacklog: boolean }>(daemon, "/api/foreman/config")).autoBacklog)
+    .toBe(true);
+  await expect(auto).toHaveAttribute("aria-checked", "true");
+  // Foreman is neither enabled nor live on a fresh daemon, so the honest readout is the
+  // gate, not a promise that something is about to launch.
+  await expect(readout).toHaveText(/^Autopilot on · \d+\/\d+ agents · nothing launches until Foreman is live$/);
+  await shoot(dashboard, "backlog-autopilot-on");
+
+  // The same switch, seen from the other surface that writes it. A drawer holding a
+  // parallel flag would pass every assertion above and fail this one.
+  await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
+  const foreman = dashboard.getByRole("dialog", { name: "Foreman settings" });
+  await expect(foreman.getByLabel("Auto-schedule the backlog")).toBeChecked();
+
+  // And back, from the popover this time: the drawer's own readout has to follow.
+  await foreman.getByLabel("Auto-schedule the backlog").click();
+  await expect(auto).toHaveAttribute("aria-checked", "false");
+  await expect(readout).toHaveText("Autopilot off - nothing starts unless you start it");
+  expect((await api<{ autoBacklog: boolean }>(daemon, "/api/foreman/config")).autoBacklog).toBe(false);
+});
+
 test("every legacy #/workflows deep link redirects, and the Workflows page is gone", async ({
   dashboard,
   daemon,

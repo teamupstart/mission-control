@@ -1,15 +1,28 @@
 import { useMemo, useState } from "react";
-import type { BacklogBlocker } from "@shared/backlog.ts";
-import { backlogIndex, blockersIn, deadBlockersFor, readyBacklog } from "@shared/backlog.ts";
+import type { BacklogBlocker, BacklogIndex } from "@shared/backlog.ts";
+import {
+  backlogIndex,
+  blockersIn,
+  deadBlockersFor,
+  dependentsIn,
+  readyBacklog,
+} from "@shared/backlog.ts";
 import { backlogTasks } from "@shared/session.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
-import type { BacklogPlan, Task, TaskPriority } from "@shared/types.ts";
+import type { BacklogPlan, ForemanStatus, Task, TaskPriority } from "@shared/types.ts";
 import { api } from "../../lib/api.ts";
-import { blockedLabel, blockersNeedYou } from "../../lib/backlog-copy.ts";
+import {
+  autopilotReadout,
+  blockedLabel,
+  blockersNeedYou,
+  plannerFacts,
+  type PlannerFact,
+} from "../../lib/backlog-copy.ts";
 import { relativeTime } from "../../lib/format.ts";
 import { DeadBlockerButton, ScheduleSwitch } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
+import { NextUpPlanner } from "./NextUpPlanner.tsx";
 
 /**
  * BACKLOG - the queue in the order autopilot would take it, and the moves that change it.
@@ -42,6 +55,14 @@ import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
  *     or flip the switch back on. Offering a priority picker on a row that cannot run whatever
  *     you set it to is a control that answers a question nobody asked.
  *
+ *  5. **It explains itself, one layer down.** The `next up` mark is a trigger
+ *     (`NextUpPlanner`): press it and the drawer says WHY that row is the row - Foreman's
+ *     own recorded reason, quoted, over the facts this file computed to draw the list. The
+ *     footer carries the other half of the same question - whether anything is going to
+ *     act on this order at all - as a live readout and the `autoBacklog` switch itself,
+ *     which is the config the Foreman popover's checkbox writes and never a second copy
+ *     of it.
+ *
  * The wider read has not gone anywhere: the footer escalates to the Sitrep in one click.
  */
 
@@ -64,8 +85,7 @@ interface Row {
  * The row still prints the blocker beside the parked pill, so nothing is hidden - resuming it
  * moves it up one band rather than into the ready list, and it says so before you click.
  */
-function partition(tasks: Task[], plan: BacklogPlan | null): Row[] {
-  const index = backlogIndex(tasks, plan);
+function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex): Row[] {
   const ready = readyBacklog(tasks, plan);
   const readyIds = new Set(ready.map((t) => t.id));
   const row = (task: Task, band: Band): Row => ({
@@ -102,9 +122,17 @@ function bandCount(rows: Row[]): string {
   return said.length > 0 ? said.join(" · ") : "nothing queued";
 }
 
+/** What the planner says about the head of the ready band, derived once by the drawer. */
+interface PlannerRead {
+  planned: boolean;
+  reason: string | null;
+  facts: PlannerFact[];
+  readyCount: number;
+}
+
 function BacklogRow({
   row,
-  nextUp,
+  planner,
   now,
   busy,
   onEdit,
@@ -115,8 +143,13 @@ function BacklogRow({
   onComplete,
 }: {
   row: Row;
-  /** True on the one item at the head of the ready band - what autopilot takes next. */
-  nextUp: boolean;
+  /**
+   * Set on the ONE item at the head of the ready band - what autopilot takes next - and
+   * null on every other row. Carrying the read rather than a `nextUp` boolean is what
+   * keeps this component presentational: the mark and the panel behind it are the same
+   * claim, so the row would have had to be handed the plan to derive one of them anyway.
+   */
+  planner: PlannerRead | null;
   now: number;
   busy: boolean;
   onEdit: () => void;
@@ -127,6 +160,7 @@ function BacklogRow({
   onComplete: (deadId: string) => void;
 }): React.JSX.Element {
   const { task, band, blockers, deadBlockers } = row;
+  const nextUp = planner !== null;
   // Amber down the leading edge only where a person is genuinely the missing part - a dead or
   // disabled prerequisite. Two rows this deliberately does NOT tone, against the mockup:
   //
@@ -158,14 +192,20 @@ function BacklogRow({
         </span>
       </span>
       <span className="line-bl-marks">
-        {/* A STATIC pill, deliberately. It is the head of `readyBacklog` and says so, and
-            nothing here explains the choice - the Sitrep and the board say the same word the
-            same way. (The autopilot planner replaces this element with its trigger; nothing
-            else on the row is its business.) */}
-        {nextUp && (
-          <Tooltip label="Foreman's autopilot would pick this up next">
-            <span className="bl-next">next up</span>
-          </Tooltip>
+        {/* The mark, and the way into the reasoning behind it. Phase 1 drew a static pill
+            here and reserved this one element for the planner; everything else on the row
+            is still the row's. The pill keeps the board card's `.bl-next` colour so the
+            same fact reads the same way on every surface that draws it. */}
+        {planner && (
+          <NextUpPlanner
+            task={task}
+            planned={planner.planned}
+            reason={planner.reason}
+            facts={planner.facts}
+            readyCount={planner.readyCount}
+            busy={busy}
+            onLaunch={onLaunch}
+          />
         )}
         {/* Said on a parked row too, not just a blocked one: an item can be both, and a row
             that printed only the pill for the band it landed in would promise that resuming
@@ -249,26 +289,75 @@ export function BacklogDrawer({
   backlogPlan,
   /** Injected so every relative age is a pure function of props, as on the other drawers. */
   now,
+  /**
+   * `ForemanConfig.autoBacklog`, or null until the config poll answers.
+   *
+   * The CONFIG value and not `status.autopilot.on`, though the daemon fills the second
+   * from the first: the config is what `useForeman.update` writes optimistically, so the
+   * switch moves under the finger instead of four seconds later. The status object drives
+   * the sentence beside it, where being one poll behind costs nothing.
+   */
+  autoBacklog,
+  /** The daemon's derived readout, or null before the first status poll lands. */
+  autopilot,
+  /** Whether the machine would actually launch: Foreman on, and in live mode. */
+  autopilotLaunches,
   onClose,
   onEditTask,
   onOpenSitrep,
+  onSetAutoBacklog,
 }: {
   tasks: Task[];
   backlogPlan: BacklogPlan | null;
   now: number;
+  autoBacklog: boolean | null;
+  autopilot: ForemanStatus["autopilot"] | null;
+  autopilotLaunches: boolean;
   onClose: () => void;
   onEditTask: (taskId: string) => void;
   onOpenSitrep: () => void;
+  /** Resolves false when Foreman refuses the patch, which the drawer then reports. */
+  onSetAutoBacklog: (next: boolean) => Promise<boolean>;
 }): React.JSX.Element {
   // Per-task rather than one flag for the panel: two rows are two decisions, and a switch
   // that went inert because somebody launched a different task reads as a broken control.
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [autoBusy, setAutoBusy] = useState(false);
 
-  const rows = useMemo(() => partition(tasks, backlogPlan), [tasks, backlogPlan]);
+  const { rows, index } = useMemo(() => {
+    // One index for the whole pass, and the planner's "unblocks N" reads the same one:
+    // `blockersIn` is the only definition of what blocks what, forwards or backwards.
+    const built = backlogIndex(tasks, backlogPlan);
+    return { rows: partition(tasks, backlogPlan, built), index: built };
+  }, [tasks, backlogPlan]);
   const ready = rows.filter((r) => r.band === "ready");
   const held = rows.filter((r) => r.band !== "ready");
-  const nextUpId = ready[0]?.task.id ?? null;
+
+  /**
+   * The planner's read of the head of the queue, or null when nothing is ready.
+   *
+   * Derived here rather than inside the popover for the reason every leaf in this file is
+   * presentational: the drawer already holds the ordered band and the index, and a panel
+   * that re-derived either could disagree with the rows it is drawn over.
+   */
+  const planner = useMemo((): PlannerRead | null => {
+    const band = rows.filter((r) => r.band === "ready").map((r) => r.task);
+    const head = band[0];
+    if (!head) return null;
+    const entry = index.entries.get(head.id) ?? null;
+    return {
+      planned: entry !== null,
+      reason: entry?.reason ?? null,
+      facts: plannerFacts({
+        task: head,
+        ready: band,
+        unblocks: dependentsIn(head, tasks, index),
+        now,
+      }),
+      readyCount: band.length,
+    };
+  }, [index, now, rows, tasks]);
 
   /** Run one row's mutation, holding that row inert until it lands and reporting a refusal. */
   async function act(
@@ -292,7 +381,7 @@ export function BacklogDrawer({
     const id = row.task.id;
     return {
       row,
-      nextUp: id === nextUpId,
+      planner: id === ready[0]?.task.id ? planner : null,
       now,
       busy: busy.has(id),
       onEdit: () => onEditTask(id),
@@ -330,8 +419,51 @@ export function BacklogDrawer({
       onClose={onClose}
       footer={(
         <>
+          {/* The autopilot line takes the slot Phase 1's static sentence about the Sitrep
+              held. A live readout of the thing that empties this queue is worth more
+              footer than a caption for the button beside it, which says the same thing in
+              its own tooltip - and the footer is one line, so the two could not both
+              have it. The button itself has not moved. */}
+          <Tooltip
+            label={
+              autoBacklog
+                ? "Foreman is taking ready tasks on its own - click to stop it"
+                : "Let Foreman hand ready tasks to idle agents on its own"
+            }
+          >
+            <button
+              type="button"
+              className={`bl-auto-switch${autoBacklog ? " is-on" : ""}`}
+              role="switch"
+              aria-checked={autoBacklog === true}
+              // Named for the setting and not for its state, because the state is what
+              // `aria-checked` is for - and it is the SAME setting as the Foreman
+              // popover's "Auto-schedule the backlog", written through the same config.
+              aria-label="Backlog autopilot"
+              disabled={autoBacklog === null || autoBusy}
+              onClick={() => {
+                setAutoBusy(true);
+                void onSetAutoBacklog(!autoBacklog).then((ok) => {
+                  setAutoBusy(false);
+                  // Onto the same alert line a refused row write lands on, and for the
+                  // same reason. `useForeman` reverts the optimistic value when Foreman
+                  // says no, so without this the switch springs back on its own with
+                  // nothing said - which is indistinguishable from a broken control.
+                  setError(ok ? null : "could not change the autopilot");
+                });
+              }}
+            >
+              <span className="bl-auto-track" aria-hidden />
+            </button>
+          </Tooltip>
           <span className="line-drawer-foot-note">
-            Blockers across the whole fleet, and what every agent is doing, live in the Sitrep.
+            {autoBacklog === null
+              ? "Autopilot · reading Foreman's settings…"
+              : autopilotReadout({
+                  on: autoBacklog,
+                  status: autopilot,
+                  launches: autopilotLaunches,
+                })}
           </span>
           <Tooltip label="Open the Sitrep - the whole fleet, its reviews, and the backlog with its blockers">
             <button type="button" className="btn btn-ghost" onClick={onOpenSitrep}>

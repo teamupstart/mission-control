@@ -4021,6 +4021,11 @@ Three knobs, in the Foreman popover under **Backlog**:
 | **Max agents running at once** | `3` | the ceiling it won't launch past |
 | **Open PRs keep an idle agent off the backlog** | on | an agent whose branch still has an unmerged PR is not handed the next task |
 
+The first of those three is also in the footer of the Line's
+[Backlog drawer](#the-autopilot-planner), beside a live readout of what it is doing. It is the
+same switch on the same config field, not a second copy of it - flip it in either place and
+both surfaces say so.
+
 **Max agents counts every live agent on the machine**, not just the ones Mission launched -
 it's a statement about your machine's load, and a count that ignored the six sessions you
 started by hand wouldn't be one. It bounds *autopilot* only: it never refuses a dispatch
@@ -4120,7 +4125,10 @@ blocked only by Foreman's inferred dependencies stays draggable and launchable
 dependency is authoritative: its card reads **waiting for dependencies** and cannot be
 launched or assigned early. The Foreman popover carries the live readout -
 `2/3 agents · 4 ready · 1 blocked · 1 disabled` - so "why is nothing launching?" is
-answerable without reading a log.
+answerable without reading a log. The Line's [Backlog drawer](#the-autopilot-planner) answers
+the same question in the place the queue is actually read: the capacity half of that readout
+sits in its footer beside the switch, and its **next up** mark opens the reason Foreman
+recorded for planning that item first.
 
 ## Half-written text is kept
 
@@ -4508,9 +4516,11 @@ on a failed call would be lying about the queue it is describing.
 |--------|---------------|--------------|
 | **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
 | **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
-| **Backlog** | One queued task: its title (which reopens the [Dispatch](#dispatch-a-new-agent) form over it), its kind, agent and age, and the marks for its state - **next up**, what it is waiting on, **parked**. The ready band is in [plan order](#backlog-autopilot-foreman-schedules-the-fleet), so the top row is what autopilot takes next; blocked and parked follow | `Launch now` dispatches it into a fresh worktree, the switch parks or resumes it, the picker sets its priority, and a dead prerequisite resolves from the row it is blocking. `Sitrep →` in the footer opens the [Roundup](#roundup) |
+| **Backlog** | One queued task: its title (which reopens the [Dispatch](#dispatch-a-new-agent) form over it), its kind, agent and age, and the marks for its state - **next up**, what it is waiting on, **parked**. The ready band is in [plan order](#backlog-autopilot-foreman-schedules-the-fleet), so the top row is what autopilot takes next; blocked and parked follow. **next up** is a button: it opens the [planner](#the-autopilot-planner), which says why that row is the row | `Launch now` dispatches it into a fresh worktree, the switch parks or resumes it, the picker sets its priority, and a dead prerequisite resolves from the row it is blocking. The footer carries the [autopilot switch and its readout](#the-autopilot-planner), and `Sitrep →` opens the [Roundup](#roundup) |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](#recurring-missions) |
 | **Shipped** | One adopted pull request: its merge state as a **mark and a word** (merged / open / gone), its title - falling back to the branch, then to its own number - over `owner/repo#N`, the session that opened it, and when. Newest adoption first, over the same rolling seven days the count above it is folded from. Chips in the header split the week **All / Merged / Open / Gone** with their counts, and are toggles | The pull request itself on GitHub, and `Ship log →` → [`#/shipped`](#the-ship-log) |
+
+#### The Backlog queue
 
 **The Backlog drawer answers the stage's own promise, which the Sitrep never did.** The stage
 sentence says *what autopilot would take next, and how many are blocked* - a claim about one
@@ -4537,6 +4547,44 @@ parked row keeps its switch and a row blocked by a cancelled or failed prerequis
 every dependent rather than just that row. A task that is both parked *and*
 blocked is filed under **parked**, because that is the half you can clear from here, and its
 row prints both marks so resuming it does not silently fail to reach the ready band.
+
+#### The autopilot planner
+
+The drawer says *what* autopilot would take next by putting the queue in the machine's own
+order and marking its head. **The mark is a button, and pressing it says why.** The panel it
+opens is anchored under the mark and carries four things:
+
+- The task itself - priority, title, kind and agent, and an excerpt of its intent.
+- **Foreman's own recorded reason**, quoted and attributed. Every plan entry has carried a
+  `reason` since the [autopilot](#backlog-autopilot-foreman-schedules-the-fleet) shipped;
+  this is the first surface that shows it. When the plan named the task but recorded no
+  reason, the panel says that. When the plan does not name the task at all - the unplanned
+  tail `readyBacklog` appends oldest-first - it says the fallback ordering put it there,
+  rather than implying a decision nobody made.
+- **The computed facts**, checkable against the rows behind the panel: its priority and how
+  many ready items outrank it, its age and whether it is the oldest, that nothing upstream
+  blocks it, and how many tasks finishing it would unblock. These deliberately do not
+  flatter the plan: dependencies beat priority, so a `low` task legitimately leads a
+  `blocker`, and the panel reports that rather than claiming the top row is the most
+  important one.
+- **`Launch now`**, the same dispatch the row carries. The panel closes on the click; the
+  drawer stays, and the row leaves the ready band when the daemon says so.
+
+There is no *skip once*: the autopilot's cooldowns are in-memory worker state rather than an
+operator concept, and the deferral that *is* one is the [park switch](#hold-a-backlog-item-back)
+on the row behind the panel. <kbd>Esc</kbd> closes the planner first and the drawer second -
+one press per layer - and a click anywhere outside it, or a scroll, puts it away.
+
+**The footer says whether anything is going to act on that order at all.** It carries the
+backlog autopilot's switch and a live readout: `Autopilot on · 2/3 agents · takes the top row
+on its own`, or `full, waiting for one to free up`, or `nothing ready to take`, or - armed
+behind a Foreman that is off or not in Live mode - `nothing launches until Foreman is live`.
+It is **the same switch** as **Auto-schedule the backlog** in the
+[Foreman popover](#backlog-autopilot-foreman-schedules-the-fleet): one config field, one
+route, either surface. The readout deliberately does not repeat the header's
+ready/blocked/parked counts, which are the same three numbers stated forty pixels above it.
+
+#### The Review drawer's rows
 
 **A Review row is named by whoever it is, not by whatever is left.** A workflow run outlives
 the session it reviewed - when a session is removed the run is blocked and its live name goes

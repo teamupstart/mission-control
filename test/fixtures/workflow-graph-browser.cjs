@@ -11,7 +11,7 @@ app.whenReady().then(async () => {
     const window = new BrowserWindow({ show: false, width: 500, height: 500 });
     const html = `<!doctype html><style>${reactFlowCss}\n${appCss}</style>
       <div class="workflow-version-detail">
-        <div class="workflow-canvas is-readonly">
+        <div class="workflow-canvas is-readonly is-compact">
           <div class="react-flow" style="width: 100%; height: 100%; overflow: hidden; position: relative; z-index: 0;">
             <div class="react-flow__node" style="transform: translate(20px, 20px); width: 150px; height: 60px; visibility: visible"></div>
             <div class="react-flow__node" style="transform: translate(80px, 160px); width: 150px; height: 60px; visibility: visible"></div>

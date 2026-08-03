@@ -151,6 +151,7 @@ export function RunPipeline({
           personas={[]}
           labelFor={labelFor}
           readOnly
+          compact
           nodeStatuses={statuses}
         />
       </div>

@@ -10211,8 +10211,11 @@ select.ensemble-judge-persona {
   min-height: 560px;
   color: var(--fg);
 }
-.workflow-canvas.is-readonly { height: 250px; min-height: 250px; border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
-.workflow-canvas.is-readonly > .react-flow { height: 250px !important; }
+/* Read-only is an interaction state, not a size. Only embedded version/run previews opt in
+   to this compact frame; a built-in or archived workflow still owns the builder's full
+   working surface even though its graph cannot be edited. */
+.workflow-canvas.is-compact { height: 250px; min-height: 250px; border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; }
+.workflow-canvas.is-compact > .react-flow { height: 250px !important; }
 .workflow-canvas .react-flow__controls button { background: var(--panel); border-color: var(--border); fill: var(--fg); }
 .workflow-canvas .react-flow__minimap { background: var(--panel); border: 1px solid var(--border); border-radius: 7px; }
 .workflow-canvas .react-flow__edge-text { fill: var(--muted); font-size: 9px; }

@@ -93,6 +93,7 @@ test("version history names immutable source revisions and never offers update-v
   assert.match(detail, />5</);
   assert.match(detail, /inspector_only/);
   assert.match(detail, /offer_prepare_pr/);
+  assert.match(detail, /workflow-canvas is-readonly is-compact/);
   assert.doesNotMatch(detail, /Bind this version/);
   const bindableDetail = renderToStaticMarkup(createElement(WorkflowVersionDetail, {
     version,

@@ -42,6 +42,7 @@ export function WorkflowVersionDetail({
         personas={personas}
         sessionActions={sessionActions}
         readOnly
+        compact
       />
       {/* OUTSIDE the canvas, deliberately. Inspector is not in the persisted graph and gains
           no node here; this is the compact non-interactive note that says the version ends

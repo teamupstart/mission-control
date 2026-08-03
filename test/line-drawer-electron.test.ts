@@ -10,8 +10,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LineStrip } from "../src/web/components/LineStrip.tsx";
 import { ReviewDrawer } from "../src/web/components/line/ReviewDrawer.tsx";
+import { BacklogDrawer } from "../src/web/components/line/BacklogDrawer.tsx";
+import type { BacklogPlan, Task } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 
 /**
@@ -119,6 +122,52 @@ const drawer = (runs: WorkflowRunSummary[]): string =>
     onOpenEnsemble: () => {},
   }));
 
+/**
+ * A backlog past the cap, with both bands and every row's fields far too long for them.
+ *
+ * The Backlog drawer is the one that uses the frame's FOOTER slot, and the footer sits
+ * outside the capped body - a placement whose consequences are all used height: the rows keep
+ * their full three-row budget, the footer is always reachable without scrolling to the bottom
+ * of a list it is not part of, and the drawer as a whole is still a panel you can see the
+ * board underneath. It also carries the two band headings, which are `position: sticky` inside
+ * that same scrolling body.
+ */
+const QUEUE: Task[] = [
+  ...Array.from({ length: 6 }, (_, i) =>
+    mkTask({
+      id: `ready-${i}`,
+      title: `Persist review verdicts across daemon restarts, part ${i} of several`,
+      kind: "ship",
+      agent: "claude",
+      createdAt: 1000 - i,
+      updatedAt: 1000 - i,
+    })),
+  mkTask({
+    id: "parked",
+    title: "Migrate every setting to a per-repository scope, eventually",
+    enabled: false,
+    createdAt: 1,
+    updatedAt: 1,
+  }),
+];
+
+/** Plan order for the queue above, so the ready band is what the machine would take. */
+const QUEUE_PLAN: BacklogPlan = {
+  entries: QUEUE.map((task) => ({ taskId: task.id, dependsOn: [], reason: null })),
+  note: null,
+  generatedAt: 1000,
+};
+
+const backlogDrawer = (tasks: Task[]): string =>
+  renderToStaticMarkup(createElement(BacklogDrawer, {
+    tasks,
+    backlogPlan: QUEUE_PLAN,
+    now: 100_000,
+    onClose: () => {},
+    onEditTask: () => {},
+    onOpenSitrep: () => {},
+  }));
+
 const strip = (): string =>
   renderToStaticMarkup(createElement(LineStrip, {
     summary: null,
@@ -128,6 +177,8 @@ const strip = (): string =>
 
 interface Measured {
   rows: number;
+  footHeight: number | null;
+  footInsideBody: boolean | null;
   drawerHeight: number | null;
   bodyClientHeight: number | null;
   bodyScrollHeight: number | null;
@@ -176,6 +227,7 @@ before(() => {
       ["console-two", consoleShell(drawer(MANY.slice(0, 2)))],
       ["console-wordy", consoleShell(drawer(WORDY))],
       ["console-piled", consoleShell(drawer(PILED))],
+      ["console-backlog", consoleShell(backlogDrawer(QUEUE))],
       ["console-closed", consoleShell("")],
       ["grid-open", gridShell(drawer(MANY))],
       ["grid-closed", gridShell("")],
@@ -271,6 +323,52 @@ test("a group bar is exactly one row high, so the three-row cap still lands on a
   // A folded drawer is SHORTER than the cap, which is the point: six runs that used to be six
   // rows now fit with room to spare instead of scrolling.
   assert.equal(piled.bodyScrollHeight, piled.bodyClientHeight, "a folded drawer must not scroll");
+});
+
+test("the footer sits under the cap, not inside it, and costs the rows nothing", () => {
+  const backlog = measured["console-backlog"]!;
+  const many = measured["console-many"]!;
+  // Seven queued items across two bands, every one of them in the DOM: the cap is on the
+  // panel and never on the list, on this drawer as on the others.
+  assert.equal(backlog.rows, 7, "the whole queue is in the DOM, capped only by the panel");
+
+  // Outside the scrolling body. Inside it, the footer would be reachable only after scrolling
+  // past a list it is not part of - which is the exact failure `.line-drawer-alert` is placed
+  // above the body to avoid, arriving from the other end.
+  assert.equal(backlog.footInsideBody, false, "the footer is inside the scrolling body");
+  assert.ok((backlog.footHeight ?? 0) > 0, "the footer laid out at no height at all");
+
+  // And it took nothing from the rows: the body still gets the same three-row budget the
+  // footerless drawers get, so the queue does not show two and a half rows because a link
+  // lives under it.
+  assert.ok(
+    backlog.bodyClientHeight !== null
+      && backlog.bodyClientHeight >= BODY_CAP.min
+      && backlog.bodyClientHeight <= BODY_CAP.max,
+    `the body used ${backlog.bodyClientHeight}px, outside ${BODY_CAP.min}-${BODY_CAP.max}px`,
+  );
+  assert.ok(
+    (backlog.bodyScrollHeight ?? 0) > (backlog.bodyClientHeight ?? 0),
+    `nothing to scroll: ${backlog.bodyScrollHeight} content in ${backlog.bodyClientHeight} of box`,
+  );
+
+  // Rows are the shared height, headings and marks notwithstanding - the same 58px the cap is
+  // stated in, so a queue's three rows and a run list's three rows are the same three rows.
+  const heights = new Set(backlog.rowHeights);
+  assert.equal(heights.size, 1, `backlog rows laid out at ${[...heights].join(", ")}px`);
+  assert.deepEqual([...heights], [...new Set(many.rowHeights)]);
+  // And the rows really were too wide, so the one-height claim is not passing on short rows.
+  assert.ok(
+    backlog.rowOverflows.some((overflow) => overflow > 0),
+    `the long titles should have clipped, got ${backlog.rowOverflows.join(", ")}`,
+  );
+
+  // The whole panel, footer and both band headings included, is still a drawer you can see the
+  // board underneath - which is the promise the cap exists to keep.
+  assert.ok(
+    (backlog.drawerHeight ?? 0) < (many.drawerHeight ?? 0) + 60,
+    `the footer added ${(backlog.drawerHeight ?? 0) - (many.drawerHeight ?? 0)}px to the panel`,
+  );
 });
 
 test("the board moves down by the drawer, and the shell still ends at the viewport", () => {

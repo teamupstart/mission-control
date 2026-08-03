@@ -4,6 +4,9 @@ import type { AssignResetConfirm, BacklogPlan, Session, Task, TaskPriority } fro
 import { backlogIndex, blockersIn, deadBlockersFor, nextUpTaskId } from "@shared/backlog.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
+// The words and the tone rule for a blocked item, shared with the Line's Backlog drawer so
+// the board and the drawer cannot describe one task two ways.
+import { blockedLabel, blockersNeedYou } from "../../lib/backlog-copy.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
 import {
   ColumnWidthToggle,
@@ -125,31 +128,6 @@ export function BacklogColumn({
       {plan?.note && <p className="bl-plan-note">{plan.note}</p>}
     </section>
   );
-}
-
-/**
- * One line naming what a card is waiting on. Two by name, then a count, because the
- * chip has to stay a chip - and the full list is in the shared tooltip either way.
- *
- * The two "this will never clear on its own" states lead, and they lead in that order
- * because they ask for different things: a dependency that failed needs looking at,
- * while a disabled one needs one click on a toggle somebody already knows they turned
- * off. Both beat "after X", which promises a queue that is not moving.
- */
-function blockedLabel(blockers: BacklogBlocker[]): string {
-  const stopped = blockers.filter((b) => b.state === "stopped");
-  // A dependency that was cancelled or failed will never clear on its own, so it is a
-  // different message from "wait your turn" - it is the one that needs you.
-  if (stopped.length > 0) return `needs you - ${stopped[0]!.title} didn't finish`;
-  const off = blockers.filter((b) => b.state === "disabled");
-  if (off.length > 0) return `${off[0]!.title} is disabled`;
-  if (blockers.length === 1) return `after ${blockers[0]!.title}`;
-  return `after ${blockers[0]!.title} +${blockers.length - 1}`;
-}
-
-/** True while a blocker means "nothing will move this until you act". */
-function needsYou(blockers: BacklogBlocker[]): boolean {
-  return blockers.some((b) => b.state === "stopped" || b.state === "disabled");
 }
 
 function BacklogCard({
@@ -324,7 +302,7 @@ function BacklogCard({
       <ScheduleOriginChip task={task} scheduleNames={scheduleNameById} onOpen={onOpenSchedule} />
       {blocked && (
         <Tooltip label={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}>
-          <span className={`bl-blocked${needsYou(blockers) ? " is-stopped" : ""}`}>
+          <span className={`bl-blocked${blockersNeedYou(blockers) ? " is-stopped" : ""}`}>
             {blockedLabel(blockers)}
           </span>
         </Tooltip>

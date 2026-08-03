@@ -189,10 +189,31 @@ test("a stage opens its drawer in place, and three gestures close it again", asy
   await expect(review).toHaveAttribute("aria-expanded", "false");
   await expect(decide).toHaveAttribute("aria-expanded", "true");
 
-  // ---- and the other two are reachable the same way ----
+  // ---- and the other three are reachable the same way ----
   await stage(dashboard, "Intake").click();
   await expect(drawer(dashboard, "Intake")).toBeVisible();
   await expect(anyDrawer(dashboard)).toHaveCount(1);
+
+  // Backlog is the newest, and the one that used to open the SITREP - a whole-fleet panel
+  // OVER the board rather than a drawer in it. Swapping to it from another open drawer is the
+  // gesture a half-done flip fails loudest on: the old target would have dropped a modal on
+  // top of the strip while the Intake drawer stayed open underneath.
+  const backlogStage = stage(dashboard, "Backlog");
+  await backlogStage.click();
+  await expect(drawer(dashboard, "Backlog")).toBeVisible();
+  await expect(drawer(dashboard, "Intake")).toHaveCount(0);
+  await expect(anyDrawer(dashboard)).toHaveCount(1);
+  await expect(dashboard.getByRole("dialog", { name: "Sitrep" })).toHaveCount(0);
+  await expect(backlogStage).toHaveAttribute("aria-expanded", "true");
+  await expect(backlogStage).toHaveAttribute("aria-controls", "line-drawer");
+  await expect(drawer(dashboard, "Backlog")).toBeFocused();
+
+  await backlogStage.click();
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+  await backlogStage.click();
+  await dashboard.keyboard.press("Escape");
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+  await expect(backlogStage).toBeFocused();
 
   // Shipped is the fourth, and the one that used to NAVIGATE. Swapping to it from another
   // open drawer is the gesture that would have failed loudest on a build where the flip was
@@ -1121,6 +1142,229 @@ test("a ledger read that fails says so, instead of reporting a week in which not
   // The escalation survives: the page one click deeper reads the same ledger through the
   // same route, and it is the obvious next thing to try.
   await expect(shipped().getByRole("button", { name: /^Ship log/ })).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Backlog: the queue, and the moves that change it
+// ---------------------------------------------------------------------------
+
+/** `PUT`, for the one seeded thing that is not created by a `POST`. */
+async function put<T>(daemon: DaemonHandle, path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${daemon.baseURL}${path}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
+  return (await response.json()) as T;
+}
+
+interface SeededTask {
+  id: string;
+  title: string;
+}
+
+async function seedTask(
+  daemon: DaemonHandle,
+  title: string,
+  over: Record<string, unknown> = {},
+): Promise<SeededTask> {
+  const task = await api<{ id: string }>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo,
+    intent: `Whatever "${title}" is for.`,
+    title,
+    backlog: true,
+    // Explicit null opts the task out of the machine's default post-work Workflow. Left
+    // omitted, the configured default arms Live delivery, which this repo is not allowlisted
+    // for - so the dispatch is REFUSED, and a launch spec would be measuring the allowlist
+    // rather than the button. (The drawer reports that refusal and keeps the row, which is
+    // how this was found. `dispatch-and-converse.spec.ts` pins the same field for the same
+    // reason, through the modal's own picker.)
+    workflowId: null,
+    ...over,
+  });
+  return { id: task.id, title };
+}
+
+/** The drawer's row titles, top to bottom - the claim the whole panel is making. */
+const queueTitles = (page: Page): Promise<string[]> =>
+  drawer(page, "Backlog").locator(".line-bl-title").allInnerTexts();
+
+const bandRows = (page: Page, band: "Ready, in the order autopilot would take them" | "Blocked and parked"): Locator =>
+  drawer(page, "Backlog").getByRole("list", { name: band }).locator("li");
+
+test("the ready band is Foreman's plan order, and the head of it is what autopilot takes next", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Priority-then-age is the order the BOARD column uses, so seeding the plan's last item as
+  // the only `blocker` is what makes this a test of plan order rather than of any order at
+  // all: a drawer that re-sorted by priority would put "Hot but planned last" on top and
+  // mark it next up, contradicting the machine that is about to take something else.
+  const first = await seedTask(daemon, "Planned first", { priority: "low" });
+  const second = await seedTask(daemon, "Planned second");
+  const hot = await seedTask(daemon, "Hot but planned last", { priority: "blocker" });
+  await put(daemon, "/api/backlog/plan", {
+    entries: [first, second, hot].map(({ id }) => ({ taskId: id, dependsOn: [], reason: null })),
+    note: null,
+  });
+
+  await stage(dashboard, "Backlog").click();
+  const backlog = drawer(dashboard, "Backlog");
+  await expect(backlog).toBeVisible();
+
+  // The plan arrives on `useForeman`'s 4s poll rather than over SSE, so the order is what is
+  // polled for - and the count is asserted first, since three rows in any order is the state
+  // BEFORE the plan lands.
+  await expect(backlog.locator(".line-drawer-count")).toHaveText("3 ready");
+  await expect
+    .poll(() => queueTitles(dashboard), { timeout: 20_000 })
+    .toEqual(["Planned first", "Planned second", "Hot but planned last"]);
+
+  // Exactly one next-up mark, and it is on the head. Two would be two answers to a question
+  // that has one.
+  await expect(backlog.getByText("next up", { exact: true })).toHaveCount(1);
+  await expect(bandRows(dashboard, "Ready, in the order autopilot would take them").first())
+    .toContainText("next up");
+  // One band, so one list: a second, empty one would announce a group with nothing in it.
+  await expect(backlog.getByRole("list")).toHaveCount(1);
+});
+
+test("blocked and parked rows sit in their own band, saying why, and moving between them", async ({
+  dashboard,
+  daemon,
+}) => {
+  const base = await seedTask(daemon, "Lay the base");
+  await seedTask(daemon, "Build on the base", {
+    dependencies: [{ type: "task", taskId: base.id }],
+  });
+  const held = await seedTask(daemon, "Held back for now");
+  await api(daemon, `/api/tasks/${held.id}/update`, { enabled: false });
+
+  await stage(dashboard, "Backlog").click();
+  const backlog = drawer(dashboard, "Backlog");
+  const ready = bandRows(dashboard, "Ready, in the order autopilot would take them");
+  const stuck = bandRows(dashboard, "Blocked and parked");
+
+  await expect(backlog.locator(".line-drawer-count")).toHaveText("1 ready · 1 blocked · 1 parked");
+  await expect(ready).toHaveCount(1);
+  await expect(ready.first()).toContainText("Lay the base");
+  await expect(stuck).toHaveCount(2);
+  // Named in the board card's own words - "after X", never a bare "blocked" - so the row says
+  // what to go and look at.
+  await expect(stuck.filter({ hasText: "Build on the base" })).toContainText("after Lay the base");
+  await expect(stuck.filter({ hasText: "Held back for now" })).toContainText("parked");
+  // The ready band leads, and both are reachable by name rather than by a visible caption -
+  // a caption inside a body capped at exactly three rows leaves a partial row over the edge.
+  const lists = backlog.getByRole("list");
+  await expect(lists).toHaveCount(2);
+  await expect(lists.first()).toHaveAccessibleName("Ready, in the order autopilot would take them");
+  await expect(lists.last()).toHaveAccessibleName("Blocked and parked");
+  await shoot(dashboard, "backlog-bands");
+
+  // ---- the switch moves a row between bands, and it is the shared control ----
+
+  // Resuming the parked one: it has no blockers, so it belongs in the ready band the moment
+  // the write lands. This is the round trip - a drawer holding its own optimistic copy would
+  // pass a click assertion and fail this one.
+  await stuck.filter({ hasText: "Held back for now" })
+    .getByRole("switch", { name: "Foreman may schedule Held back for now" }).click();
+  await expect(ready).toHaveCount(2);
+  await expect(ready.filter({ hasText: "Held back for now" })).toBeVisible();
+  await expect(backlog.locator(".line-drawer-count")).toHaveText("2 ready · 1 blocked");
+
+  // And back the other way, from the row it moved to.
+  await ready.filter({ hasText: "Held back for now" })
+    .getByRole("switch", { name: "Foreman may schedule Held back for now" }).click();
+  await expect(stuck.filter({ hasText: "Held back for now" })).toContainText("parked");
+  await expect(backlog.locator(".line-drawer-count")).toHaveText("1 ready · 1 blocked · 1 parked");
+  // The daemon actually holds it, rather than the row having re-rendered off local state.
+  const stored = await api<Array<{ id: string; enabled: boolean }>>(daemon, "/api/tasks");
+  expect(stored.find((t) => t.id === held.id)?.enabled).toBe(false);
+
+  // ---- the ordering lever is only on the rows being ordered ----
+
+  // A priority set on a blocked row orders nothing, so the picker is not offered there.
+  await expect(backlog.getByLabel("Priority for Lay the base")).toBeVisible();
+  await expect(backlog.getByLabel("Priority for Build on the base")).toHaveCount(0);
+});
+
+test("the priority picker round-trips through the daemon and re-sorts the queue", async ({
+  dashboard,
+  daemon,
+}) => {
+  // No plan seeded on purpose: with none, `readyBacklog` falls back to priority-then-age,
+  // which is what makes the re-sort visible from the picker alone.
+  await seedTask(daemon, "Was on top");
+  const climber = await seedTask(daemon, "Was underneath");
+
+  await stage(dashboard, "Backlog").click();
+  await expect.poll(() => queueTitles(dashboard)).toEqual(["Was on top", "Was underneath"]);
+
+  await drawer(dashboard, "Backlog").getByLabel("Priority for Was underneath")
+    .selectOption("blocker");
+
+  // The row moves under the cursor, which is the feedback that makes it obvious the field
+  // does something - and it moves because the DAEMON re-sorted, not because the select did.
+  await expect.poll(() => queueTitles(dashboard)).toEqual(["Was underneath", "Was on top"]);
+  await expect(drawer(dashboard, "Backlog").getByText("next up", { exact: true })).toHaveCount(1);
+  await expect(bandRows(dashboard, "Ready, in the order autopilot would take them").first())
+    .toContainText("Was underneath");
+  const stored = await api<Array<{ id: string; priority: string | null }>>(daemon, "/api/tasks");
+  expect(stored.find((t) => t.id === climber.id)?.priority).toBe("blocker");
+});
+
+test("Launch now dispatches the row, and the queue it left stops counting it", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedTask(daemon, "Launch me from the drawer");
+  const before = await sessionIds(daemon);
+
+  await stage(dashboard, "Backlog").click();
+  const backlog = drawer(dashboard, "Backlog");
+  await expect(backlog.locator(".line-drawer-count")).toHaveText("1 ready");
+
+  await backlog.getByRole("button", { name: "Launch now" }).click();
+
+  // The daemon's own word for "the launch turn is over" - the fake agent, like every other
+  // spec here, so this costs no model tokens.
+  const sessionId = await waitForIdleSession(daemon, before);
+  expect(sessionId).not.toBe("");
+
+  // A dispatched task is no longer queued, and the drawer that dispatched it says so rather
+  // than holding a row for work that is now on the board below it.
+  await expect(backlog).toContainText("Nothing is queued");
+  await expect(backlog.locator(".line-drawer-count")).toHaveText("nothing queued");
+  await expect(backlog.locator(".line-bl-title")).toHaveCount(0);
+  await shoot(dashboard, "backlog-drawer-empty");
+});
+
+test("the drawer's footer opens the Sitrep, and the stage itself no longer does", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedTask(daemon, "Something to read about");
+
+  // The regression this exists for: the stage press used to open the Sitrep directly, so a
+  // half-done flip would still "do something real" and pass a looser assertion.
+  await stage(dashboard, "Backlog").click();
+  await expect(drawer(dashboard, "Backlog")).toBeVisible();
+  await expect(dashboard.getByRole("dialog", { name: "Sitrep" })).toHaveCount(0);
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/fleet");
+  await shoot(dashboard, "backlog-drawer");
+
+  // The full-fleet read is one click away, and it is in the FOOTER - under the rows, where
+  // Phase 2's autopilot readout joins it - rather than in the header beside the count.
+  const footer = drawer(dashboard, "Backlog").locator(".line-drawer-foot");
+  await expect(footer.getByRole("button", { name: /^Sitrep/ })).toBeVisible();
+  await footer.getByRole("button", { name: /^Sitrep/ }).click();
+
+  await expect(dashboard.getByRole("dialog", { name: "Sitrep" })).toBeVisible();
+  // The drawer closed on the way, rather than staying open under a panel that covers the
+  // board it was pushing down.
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+  await expect(stage(dashboard, "Backlog")).toHaveAttribute("aria-expanded", "false");
 });
 
 test("every legacy #/workflows deep link redirects, and the Workflows page is gone", async ({

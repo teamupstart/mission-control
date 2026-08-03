@@ -147,7 +147,7 @@ export function LineStrip({
                 openStage === fold.stage ? " is-open" : ""
               }`}
               aria-label={stageLabel(fold)}
-              // Only the three stages that OPEN something are expandable. Announcing
+              // Only the stages that OPEN something are expandable. Announcing
               // `aria-expanded="false"` on Working - which clears the filter - would promise
               // a panel that no press produces.
               {...(lineStageHasDrawer(fold.stage)

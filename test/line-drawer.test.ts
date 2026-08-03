@@ -7,6 +7,7 @@ import { ReviewDrawer } from "../src/web/components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "../src/web/components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "../src/web/components/line/IntakeDrawer.tsx";
 import { ShippedDrawer } from "../src/web/components/line/ShippedDrawer.tsx";
+import { BacklogDrawer } from "../src/web/components/line/BacklogDrawer.tsx";
 import {
   LINE_DRAWER_STAGES,
   isLineDrawerStage,
@@ -28,9 +29,9 @@ import {
   workflowRunAttentionParts,
   workflowRunAttentionSplit,
 } from "../src/shared/workflow.ts";
-import type { Session } from "../src/shared/types.ts";
+import type { BacklogPlan, Session, Task, TaskDependency } from "../src/shared/types.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
-import { mkEnsembleSummary, mkSession } from "./helpers/session-fixture.ts";
+import { mkEnsembleSummary, mkSession, mkTask } from "./helpers/session-fixture.ts";
 import { mkSchedule } from "./helpers/schedule-fixture.ts";
 
 /**
@@ -101,12 +102,34 @@ test("exactly the drawer stages own drawers, and the table and the predicate agr
       assert.ok(listed, `${stage} routes to a drawer but is not a drawer stage`);
     }
   }
-  assert.deepEqual([...LINE_DRAWER_STAGES], ["intake", "review", "decide", "shipped"]);
-  // The other two still GO somewhere. A stage that quietly did nothing would be a button
-  // that highlights on hover and answers nothing.
+  assert.deepEqual([...LINE_DRAWER_STAGES], ["intake", "backlog", "review", "decide", "shipped"]);
+  // The one that is left still GOES somewhere. A stage that quietly did nothing would be a
+  // button that highlights on hover and answers nothing.
   for (const stage of LINE_STAGES.filter((s) => !isLineDrawerStage(s))) {
     assert.notEqual(LINE_STAGE_TARGETS[stage].kind, "drawer");
   }
+});
+
+test("Backlog opens the queue it counts, and the stage no longer opens the Sitrep", () => {
+  // The flip. Backlog pointed at the Sitrep for its whole life, because nothing in the app
+  // rendered the queue itself - and the Sitrep answers a WIDER question than the stage asks:
+  // it is a whole-fleet report that carries a backlog section, under a button whose sentence
+  // promises what autopilot would take next.
+  const backlog = LINE_STAGE_TARGETS.backlog;
+  assert.equal(backlog.kind, "drawer");
+  if (backlog.kind !== "drawer") return;
+  assert.equal(backlog.stage, "backlog");
+  // And it announces itself as expandable, which is the half the strip reads.
+  assert.equal(lineStageHasDrawer("backlog"), true);
+  // NO stage opens the Sitrep any more - asserted over the whole table rather than over
+  // `backlog` alone, so the retired target cannot quietly come back on a different button.
+  // The `sitrep` ARM survives in the union deliberately (a kind of destination the dashboard
+  // really has); what must not survive is a stage pointing at it.
+  assert.doesNotMatch(
+    JSON.stringify(LINE_STAGE_TARGETS),
+    /"sitrep"/,
+    "a stage still opens the Sitrep from the strip",
+  );
 });
 
 test("Shipped opens the ledger it counts, and no stage routes to completed runs any more", () => {
@@ -146,7 +169,7 @@ const strip = (openStage: LineStageId | null): string =>
 
 test("only the stages that open something announce that they can", () => {
   const closed = strip(null);
-  // Four expandable, and they say so while closed too - a control that only grows
+  // Five expandable, and they say so while closed too - a control that only grows
   // `aria-expanded` once it is open reads as static until you press it.
   assert.equal([...closed.matchAll(/aria-expanded="false"/g)].length, LINE_DRAWER_STAGES.length);
   assert.doesNotMatch(closed, /aria-expanded="true"/);
@@ -780,11 +803,13 @@ test("before the ledger lands, the Shipped drawer counts nothing and claims no e
 
 test("the Shipped drawer escalates rather than acting, and is never amber", () => {
   const html = shippedDrawer();
-  // The escalation is in the header's actions slot, where every other drawer keeps its own -
-  // the frame has no footer, and adding one for the fourth drawer would have changed the
-  // other three.
+  // The escalation is in the header's actions slot, beside the chips it is a peer of. The
+  // frame has since grown an optional footer for the Backlog drawer, and this drawer
+  // deliberately does not take it: an escalation that lives with the filter chips reads as
+  // "another way to slice the same week", which is what it is.
   assert.match(html, /Ship log/);
   assert.match(html, /line-drawer-head[\s\S]*Ship log[\s\S]*<\/header>/);
+  assert.doesNotMatch(html, /line-drawer-foot/);
   // Nothing on this surface mutates anything: every row's move belongs to GitHub or to the
   // Ship log, and both are one click away.
   assert.doesNotMatch(html, /btn-remedy/);
@@ -792,6 +817,162 @@ test("the Shipped drawer escalates rather than acting, and is never amber", () =
   // Amber means "a person has to do something", and shipping is not an obligation. The stage
   // has never been amber; neither is its drawer.
   assert.doesNotMatch(html, /line-drawer-att/);
+});
+
+// ---------------------------------------------------------------------------
+// Backlog: the queue, in the order autopilot would take it
+// ---------------------------------------------------------------------------
+
+const NOW = 10_000_000;
+
+/** A plan naming tasks in the order Foreman would take them. Ordering only; no dependencies. */
+const mkPlan = (order: string[], deps: Record<string, string[]> = {}): BacklogPlan => ({
+  entries: order.map((taskId) => ({ taskId, dependsOn: deps[taskId] ?? [], reason: null })),
+  note: null,
+  generatedAt: NOW,
+});
+
+const backlogDrawer = (tasks: Task[], plan: BacklogPlan | null = null): string =>
+  renderToStaticMarkup(createElement(BacklogDrawer, {
+    tasks,
+    backlogPlan: plan,
+    now: NOW,
+    onClose: () => {},
+    onEditTask: () => {},
+    onOpenSitrep: () => {},
+  }));
+
+/** The titles of the drawer's rows, top to bottom - which is the claim this panel makes. */
+const rowTitles = (html: string): string[] =>
+  [...html.matchAll(/class="line-bl-title"[^>]*>([^<]*)</g)].map((m) => m[1]!);
+
+const backlogTask = (over: Partial<Task>): Task =>
+  mkTask({ createdAt: NOW - 86_400_000, updatedAt: NOW - 86_400_000, ...over });
+
+/** A declared prerequisite, as the dispatch route writes one onto a backlog task. */
+const dependsOn = (taskId: string, title: string): TaskDependency => ({
+  type: "task",
+  taskId,
+  title,
+  sessionId: null,
+  episodeId: null,
+  agentSessionId: null,
+  branch: null,
+  prUrl: null,
+  selectedAt: null,
+  satisfiedAt: null,
+});
+
+test("the ready band is the plan's order, not the board's, and its head is next up", () => {
+  // `backlogTasks` sorts priority-then-age, so a board reading these three would put the
+  // BLOCKER first. The plan puts it last, and the plan is what the machine schedules from -
+  // a drawer that answered "what would autopilot take next" in priority order would name the
+  // wrong task under a strip folded from `readyBacklog`.
+  const tasks = [
+    backlogTask({ id: "hot", title: "Hot but planned last", priority: "blocker" }),
+    backlogTask({ id: "first", title: "Planned first", priority: "low" }),
+    backlogTask({ id: "second", title: "Planned second", priority: "med" }),
+  ];
+  const html = backlogDrawer(tasks, mkPlan(["first", "second", "hot"]));
+  assert.deepEqual(rowTitles(html), ["Planned first", "Planned second", "Hot but planned last"]);
+  // Exactly one next-up mark, on the head. Two would be two answers to a question with one.
+  assert.equal([...html.matchAll(/class="bl-next"/g)].length, 1);
+  assert.match(html, /Planned first[\s\S]*bl-next[\s\S]*Planned second/);
+  assert.match(html, /3 ready/);
+  // One band, so one list. A second, empty one would announce a group with nothing in it.
+  assert.equal([...html.matchAll(/class="line-drawer-rows"/g)].length, 1);
+});
+
+test("blocked and parked rows say why, and neither is counted as ready", () => {
+  const tasks = [
+    backlogTask({ id: "base", title: "Lay the base" }),
+    backlogTask({
+      id: "dependent",
+      title: "Build on the base",
+      dependencies: [dependsOn("base", "Lay the base")],
+    }),
+    backlogTask({ id: "held", title: "Held back for now", enabled: false }),
+  ];
+  const html = backlogDrawer(tasks, mkPlan(["base", "dependent", "held"]));
+  // The count is the panel's whole summary and every segment of it is a different band.
+  assert.match(html, /1 ready · 1 blocked · 1 parked/);
+  assert.doesNotMatch(html, /line-drawer-att/);
+  // The blocker is named in the board's own words, from the shared copy - "after X", never a
+  // bare "blocked", so the row says what to go and look at.
+  assert.match(html, /after Lay the base/);
+  assert.match(html, /class="bl-off"[^>]*>parked/);
+  // The bands are two NAMED lists and no visible captions - captions would eat into a body
+  // capped at exactly three rows and leave a partial one showing over the edge. The names are
+  // what a reader who cannot see the marks gets instead, so they are the assertion.
+  assert.match(html, /aria-label="Ready, in the order autopilot would take them"/);
+  assert.match(html, /aria-label="Blocked and parked"/);
+  assert.match(
+    html,
+    /Ready, in the order autopilot would take them[\s\S]*Lay the base[\s\S]*Blocked and parked[\s\S]*Build on the base/,
+    "the ready band must lead, and its rows must be inside it",
+  );
+  // Ready rows carry the ordering lever and the launch; the rows that cannot run carry
+  // neither - a priority you set on a blocked row orders nothing.
+  assert.equal([...html.matchAll(/aria-label="Priority for/g)].length, 1);
+  assert.match(html, /aria-label="Priority for Lay the base"/);
+  assert.equal([...html.matchAll(/Launch now/g)].length, 1);
+});
+
+test("a task that is both parked and blocked lands in one band and still prints both facts", () => {
+  const tasks = [
+    backlogTask({ id: "base", title: "Lay the base", status: "cancelled" }),
+    backlogTask({
+      id: "both",
+      title: "Parked and blocked",
+      enabled: false,
+      dependencies: [dependsOn("base", "Lay the base")],
+    }),
+  ];
+  const html = backlogDrawer(tasks, mkPlan(["both"]));
+  // One row, in the band whose cause the operator can clear from this panel.
+  assert.equal(rowTitles(html).length, 1);
+  assert.match(html, /1 parked/);
+  assert.doesNotMatch(html, /blocked ·|· \d+ blocked/);
+  // And it still says the OTHER thing, so resuming it does not silently fail to move it into
+  // the ready band - the row promised that before the click.
+  assert.match(html, /class="bl-off"[^>]*>parked/);
+  assert.match(html, /needs you - Lay the base didn&#x27;t finish/);
+  // A dead prerequisite is resolvable from the row it is blocking, wherever that row sits.
+  assert.match(html, /aria-label="Blocked by a stopped task/);
+});
+
+test("a queue with nothing ready in it goes amber, in the strip's own words", () => {
+  const tasks = [backlogTask({ id: "held", title: "Held back for now", enabled: false })];
+  const html = backlogDrawer(tasks);
+  assert.match(html, /line-drawer-att">nothing ready/);
+  // Zero segments are dropped rather than printed: `0 ready · 0 blocked · 1 parked` spends
+  // two thirds of the line saying nothing, and the amber half already said the one zero
+  // that matters.
+  assert.match(html, /1 parked/);
+  assert.doesNotMatch(html, /0 ready/);
+  // No ready band at all, rather than an empty list under a heading: `<ul>` with no `<li>` is
+  // an announced group with nothing in it.
+  assert.doesNotMatch(html, /aria-label="Ready, in the order autopilot would take them"/);
+  assert.match(html, /aria-label="Blocked and parked"/);
+});
+
+test("an empty backlog names both things that fill it, and claims nothing about the fleet", () => {
+  const html = backlogDrawer([mkTask({ id: "gone", status: "done" })]);
+  assert.match(html, /nothing queued/);
+  assert.match(html, /Nothing is queued\./);
+  assert.match(html, /Dispatch/);
+  assert.match(html, /Intake/);
+  // Not amber. An empty backlog is a finished backlog, not an obligation.
+  assert.doesNotMatch(html, /line-drawer-att/);
+});
+
+test("the drawer keeps the fleet read one click away, in the footer", () => {
+  const html = backlogDrawer([backlogTask({ id: "t", title: "Queued" })]);
+  // The footer slot, not the header's actions - and after the body, so it cannot scroll away
+  // with the rows. Phase 2's autopilot readout joins it here.
+  assert.match(html, /line-drawer-body[\s\S]*line-drawer-foot/);
+  assert.match(html, /line-drawer-foot[\s\S]*Sitrep/);
+  assert.doesNotMatch(html, /line-drawer-head[\s\S]*Sitrep[\s\S]*<\/header>/);
 });
 
 // ---------------------------------------------------------------------------
@@ -804,8 +985,9 @@ test("every drawer is one named region with one body and three ways out", () => 
     ["decide", decideDrawer([{ id: "a" }])],
     ["intake", intakeDrawer([{ id: "m1" }])],
     ["shipped", shippedDrawer()],
+    ["backlog", backlogDrawer([backlogTask({ id: "t", title: "Queued" })])],
   ];
-  // Every stage that owns a drawer is in the list above. A fifth drawer added without a frame
+  // Every stage that owns a drawer is in the list above. A sixth drawer added without a frame
   // case here would be the one drawer nothing checks for a body, an id, or a way out.
   assert.deepEqual(frames.map(([stage]) => stage).sort(), [...LINE_DRAWER_STAGES].sort());
   for (const [stage, html] of frames) {

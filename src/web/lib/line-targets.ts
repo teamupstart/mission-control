@@ -5,15 +5,17 @@ import { isLineDrawerStage, type LineDrawerStage } from "./line-drawer.ts";
 /**
  * Where a Line stage sends you, in ONE place.
  *
- * The seam this file was cut for has now been used twice: four of the six stages open a
- * DRAWER in place rather than navigating away, and both changes were entirely inside this
- * table plus the bodies the drawers render. The strip component still knows nothing about the
- * router, and still knows nothing about the drawers either - it reports a stage id and this
- * decides.
+ * The seam this file was cut for has now been used three times: five of the six stages open a
+ * DRAWER in place rather than navigating away, and every one of those changes was entirely
+ * inside this table plus the body the drawer renders. The strip component still knows nothing
+ * about the router, and still knows nothing about the drawers either - it reports a stage id
+ * and this decides.
  *
- * The remaining two do not navigate to routes at all (the Sitrep panel, the fleet itself),
- * which is why this stays a small union rather than a `Record<LineStageId, MissionRoute>` -
- * and why the `route` arm survives a table that currently holds none of them.
+ * The union keeps two arms the table currently holds no member of - `route` and `sitrep` -
+ * and that is deliberate rather than dead weight. Both name a KIND of destination the
+ * dashboard really has, and a stage retargeted at either is a one-line edit here instead of a
+ * re-widened type plus a new `case` in App's handler. This is also why it stays a small union
+ * rather than a `Record<LineStageId, MissionRoute>`: not every destination is a route.
  */
 export type LineStageTarget =
   /** Navigate the mission router. */
@@ -32,9 +34,13 @@ export const LINE_STAGE_TARGETS: Record<LineStageId, LineStageTarget> = {
   // while looking at the board. The overlay is still where a mission is edited, and the
   // drawer's rows open it.
   intake: { kind: "drawer", stage: "intake" },
-  // The Sitrep is where the backlog is read today: it lists every backlog item with its
-  // blockers, which the board's Backlog column only shows in one of three layouts.
-  backlog: { kind: "sitrep" },
+  // The Sitrep was this stage's target while nothing in the app rendered the queue itself,
+  // and it answers a wider question than the one being asked: it is a whole-fleet report -
+  // who needs you, who is working, what is idle - that happens to carry a backlog section.
+  // The stage's own sentence promises what autopilot would take next, so the click now lands
+  // on THAT: the queue in plan order, with the triage moves on each row. The fleet read is
+  // still one click away, from the drawer's footer.
+  backlog: { kind: "drawer", stage: "backlog" },
   // Already the page under the strip. The click still does something worth having: it
   // clears the filter, so "5 working" and what is on the board agree again.
   working: { kind: "fleet" },

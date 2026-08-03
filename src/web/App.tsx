@@ -30,6 +30,7 @@ import { LineStrip } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
+import { BacklogDrawer } from "./components/line/BacklogDrawer.tsx";
 import { ShippedDrawer } from "./components/line/ShippedDrawer.tsx";
 import { LINE_STAGE_TARGETS } from "./lib/line-targets.ts";
 import { nextLineDrawer, type LineDrawerStage } from "./lib/line-drawer.ts";
@@ -767,9 +768,14 @@ export function App(): React.JSX.Element {
    * Run a Line stage click.
    *
    * The mapping itself is not here - it is `LINE_STAGE_TARGETS`, one table in one file - so
-   * this only knows how to perform the four kinds of destination the dashboard has. Three of
-   * the six stages now open a drawer between the strip and the board; the other three still
-   * go somewhere, and NEITHER kind is a special case of the other.
+   * this only knows how to perform the four kinds of destination the dashboard has. Five of
+   * the six stages now open a drawer between the strip and the board; Working still goes
+   * somewhere, and NEITHER kind is a special case of the other.
+   *
+   * Two arms - `route` and `sitrep` - have no stage pointing at them right now. They stay
+   * because a retarget is then a one-line edit to the table and nothing here, which is the
+   * whole point of the seam: it has already absorbed three of them without this handler
+   * changing at all.
    *
    * A stage that navigates also closes any open drawer, because the strip is one surface: a
    * press changes what it is showing you, and "swap to a stage that has no drawer" is a
@@ -2255,7 +2261,8 @@ export function App(): React.JSX.Element {
             cards at the same size in every state, which is the one thing this whole surface
             was not allowed to change. Mounted only while open, so the two drawers that fetch
             - Intake's task sources, Shipped's adoption ledger - each make their single read
-            on the click that asks for it and never otherwise. */}
+            on the click that asks for it and never otherwise. The other three, Backlog
+            included, are pure projections of state this page already holds. */}
         {lineDrawer === "review" && (
           <ReviewDrawer
             runs={workflowRuns}
@@ -2284,6 +2291,27 @@ export function App(): React.JSX.Element {
             onClose={closeLineDrawer}
             onOpenMissions={openMissions}
             onOpenTaskSources={() => navigate({ page: "settings", category: "task-sources" })}
+          />
+        )}
+        {lineDrawer === "backlog" && (
+          <BacklogDrawer
+            // Every task, not `visibleBacklog`: the fleet filter narrows the BOARD, and a
+            // queue that answered "what would autopilot take next" out of a filtered list
+            // would contradict the count on the button that opened it. Dependencies also
+            // point at tasks that have already left the backlog.
+            tasks={tasks}
+            backlogPlan={foreman.backlogPlan}
+            now={Date.now()}
+            onClose={closeLineDrawer}
+            onEditTask={openTaskEditor}
+            onOpenSitrep={() => {
+              // Closed, not swapped behind: the Sitrep is a modal panel over the fleet, and
+              // a drawer still pushing the board down under it is a surface the operator
+              // came back to without asking for it. This is also the one gesture that has
+              // to move the keyboard, which `closeLineDrawer` is exactly for.
+              closeLineDrawer();
+              setReportOpen(true);
+            }}
           />
         )}
         {lineDrawer === "shipped" && (

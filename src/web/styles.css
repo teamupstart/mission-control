@@ -15215,6 +15215,33 @@ button.sc-row:focus-visible {
   color: var(--dim);
 }
 
+/* The footer, OUTSIDE the capped body - a line about the list rather than a row in it, so it
+   must not scroll away with the list. Mirrors the header's rule set on purpose: same
+   height budget, same button sizing, same divider weight, so the panel is bracketed by two
+   bars of one family rather than by a header and an afterthought. */
+.line-drawer-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.line-drawer-foot .btn {
+  padding: 4px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+/* Takes the slack, so the escalation sits hard right under the ✕ that closes the panel. */
+.line-drawer-foot-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* One row, at ONE height, whatever it is saying. A row that grew a line when a workflow
    name got long would make the drawer's three-row cap show two and a half - and the
    ellipsis it costs is the same trade the strip's sentence already makes. */
@@ -15336,7 +15363,8 @@ button.sc-row:focus-visible {
    Review overrides it below; Decide and Intake still want exactly this. */
 .line-run-who,
 .line-ens-who,
-.line-intake-who {
+.line-intake-who,
+.line-bl-who {
   flex: none;
   width: 240px;
   min-width: 0;
@@ -15374,7 +15402,8 @@ button.sc-row:focus-visible {
 .line-run-wf,
 .line-ens-strategy,
 .line-intake-kind,
-.line-ship-sub {
+.line-ship-sub,
+.line-bl-meta {
   font-family: var(--mono);
   font-size: 10px;
   color: var(--dim);
@@ -15475,7 +15504,8 @@ span.line-run-prov {
 
 .line-run-ops,
 .line-ens-ops,
-.line-intake-ops {
+.line-intake-ops,
+.line-bl-ops {
   flex: none;
   display: flex;
   gap: 6px;
@@ -15492,7 +15522,8 @@ span.line-run-prov {
 }
 .line-run-ops .btn,
 .line-ens-ops .btn,
-.line-intake-ops .btn {
+.line-intake-ops .btn,
+.line-bl-ops .btn {
   padding: 4px 9px;
   font-size: 12px;
   white-space: nowrap;
@@ -15635,6 +15666,103 @@ span.line-run-prov {
 .line-ship-chip.is-gone.is-active {
   border-color: var(--dim);
   background: color-mix(in srgb, var(--dim) 22%, transparent);
+}
+
+/* THE BACKLOG ROW - one queued task, where it sits, and the moves that change that.
+   ----------------------------------------------------------------------------
+   Back on the shared who / middle / ops grammar (the Shipped row is the one that leaves it),
+   with the middle column carrying MARKS rather than free text: "next up", the blocker, and
+   "parked" are the three facts a reader is scanning this list for, and every one of them is
+   a state rather than a sentence.
+
+   The pills and the priority picker are the board card's OWN classes - `.bl-next`,
+   `.bl-blocked`, `.bl-off`, `.bl-prio` - not copies of them. The same task is drawn on the
+   board column, in the Sitrep and here, and a "next up" that was one green in a card and
+   another in a drawer would be the same fact wearing two marks. Only what the row grammar
+   actually changes is overridden below. */
+.line-bl-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.line-bl-title:hover,
+.line-bl-title:focus-visible {
+  color: var(--select);
+}
+.line-bl-marks {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* One height, so no mark ever wraps this row into two - the same clip the chip rail takes. */
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+/* The card stacks these under a title and pins them to its left edge; a row centres them in a
+   column of their own, and `align-self: flex-start` would hang all three off the row's top. */
+.line-bl-marks .bl-next,
+.line-bl-marks .bl-blocked,
+.line-bl-marks .bl-off {
+  align-self: center;
+  flex: none;
+}
+/* The blocker is the one mark here whose content is unbounded, so it is the one that yields:
+   it may shrink and ellipsize, while `next up` and `parked` are two fixed words that would
+   say nothing at all half-drawn. */
+.line-bl-marks .bl-blocked {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* Reserved whether or not this row carries every control, and right-aligned inside the
+   reservation - the `.line-run-ops` floor, for the same reason. A ready row has three
+   controls and a blocked one may have none, so without a floor the ops column would step in
+   and out down the panel and drag the marks beside it with it. */
+.line-bl-ops {
+  min-width: 190px;
+  align-items: center;
+  justify-content: flex-end;
+}
+/* The recession a parked row wears - the board card's own 0.72, on the ROW rather than on a
+   wrapper so it composites exactly once. The two marks that EXPLAIN the state (`.bl-off`,
+   `.bl-blocked`) are already pre-compensated against `--dim`'s contrast floor for being drawn
+   through this multiply; see the blocked pair in the board card's block for the arithmetic.
+   The switch is the exception and it is the important one: it is the control being asked for,
+   and a control you are told to press must never be the dimmest thing on its row. */
+.line-drawer-rows > li.is-parked {
+  opacity: 0.72;
+}
+.line-drawer-rows > li.is-parked .task-switch {
+  opacity: 1;
+}
+/* The head of the queue, spined in the same purple the app uses for "this is the one" - and
+   deliberately NOT in the amber/red the two spines above it own, because next up is the
+   opposite of a problem. */
+.line-drawer-rows > li.is-next {
+  box-shadow: inset 2px 0 0 var(--purple);
+}
+
+/* The seam between the ready list and the blocked/parked one, and it costs ZERO layout.
+   `.line-drawer-rows > li:last-child` drops its divider - correct at the bottom of a panel,
+   wrong between two adjacent lists, where it leaves the last ready row and the first blocked
+   one running together as if they were one band. `:has()` re-lends that row a divider only
+   while a second list follows it. Mixed toward the text ramp rather than left at `--border`:
+   `--border-soft` (#1b2129) and `--border` (#232a33) are one step apart on a dark panel, so at
+   1px the difference between "next row" and "next BAND" was not visible at all. Global
+   `box-sizing: border-box` and the row's fixed height mean the border comes out of the 58px
+   rather than adding to it, so the body's cap still lands on an exact row boundary - which is
+   the whole reason this is a border and not a heading. */
+.line-drawer-rows:has(+ .line-drawer-rows) > li:last-child {
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 55%, var(--dim));
 }
 
 /* Narrow: the free-text state column goes first. It is the one field on the row whose

@@ -89,6 +89,55 @@ test("the Library shelves answer a question each, and name nothing that is runni
     .toContainText("Nothing here runs - live state stays on the runs and ensembles pages");
 });
 
+test("each shelf's cross-link sits beside its question rather than in the page's corner", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+
+  const shelf = dashboard.getByRole("region", { name: "What counts as done?" });
+  const heading = shelf.getByRole("heading", { name: "What counts as done?" });
+  // Three shelves point at the runs page, so the link is reached through its own shelf.
+  const link = shelf.getByRole("button", { name: "runs →" });
+  await expect(link).toBeVisible();
+
+  const headingBox = (await heading.boundingBox())!;
+  const linkBox = (await link.boundingBox())!;
+
+  // On the heading's own line: the pill's centre falls inside the heading's band.
+  const centre = linkBox.y + linkBox.height / 2;
+  expect(centre).toBeGreaterThan(headingBox.y);
+  expect(centre).toBeLessThan(headingBox.y + headingBox.height);
+
+  // And immediately after it. This is the regression worth holding: the link used to be the
+  // last flex item of the shelf's top row, and `margin-left: auto` parked it against the
+  // right edge of the window - on a wide one, roughly a thousand pixels from the heading it
+  // belongs to, in the smallest type on the page. Measured as a gap rather than an absolute
+  // x so it reads the same at any viewport.
+  const gap = linkBox.x - (headingBox.x + headingBox.width);
+  expect(gap).toBeGreaterThan(0);
+  expect(gap).toBeLessThan(40);
+
+  // The status dot is what separates a live readout from the ＋ New cards beside it.
+  const dot = await link.evaluate((el) => {
+    const style = getComputedStyle(el, "::before");
+    return { width: parseFloat(style.width), background: style.backgroundColor };
+  });
+  expect(dot.width).toBeGreaterThan(0);
+  expect(dot.background).not.toBe("rgba(0, 0, 0, 0)");
+
+  // Still the bridge to the live half of the product, and still per-shelf: the Ensembles
+  // shelf keeps its own destination after the re-layout.
+  await link.click();
+  await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/runs");
+
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await dashboard.getByRole("region", { name: "Not sure of the best approach?" })
+    .getByRole("button", { name: "ensembles →" })
+    .click();
+  await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/ensembles");
+});
+
 test("the topbar segment directly opens Fleet, Library and Runs, while Shift+P opens Sitrep", async ({
   dashboard,
 }) => {

@@ -2348,7 +2348,9 @@ Mission Control keeps its three primary pages in one segmented top bar control:
 **▦ Fleet / ⌗ Library / ▷ Runs**. Fleet shows the sessions doing the work, **Library** holds
 everything you author once and reuse, and **Runs** monitors live and finished workflow runs.
 Nothing on the Library runs - each shelf carries a single cross-link to where its assets are
-executing, and no live state beyond it.
+executing, and no live state beyond it. That link sits beside the shelf's question as a
+counted pill wearing a status dot: blue while work is merely open, amber when the count is
+one you have to answer.
 
 Switching primary pages changes only the dashboard body. The fleet header, live SSE
 connection, and Cards, Console, or Board selection stay mounted, so returning to **Fleet**

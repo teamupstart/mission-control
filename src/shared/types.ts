@@ -893,9 +893,12 @@ export interface ForemanEpisodeSummary {
    * repeated six times was the actual rendering - the ask is not an identity (three
    * strings cover 54% of a real ledger) and `skipped` was covering three different events.
    *
-   * The cost is what makes it defensible: measured against the same 631-episode database
-   * the `pane` argument was measured on, these three add about 40 bytes a row - 4KB on a
-   * 100-row poll, against the 82KB the drawer-only fields cost. `brief`, `recommendation`,
+   * The cost is what makes it defensible, and it is a MEASURED number rather than an
+   * estimated one: serialising a real 841-episode ledger's newest hundred with and without
+   * these three fields is 60,813 against 54,050 bytes, so 6.8KB per poll, or 68 bytes a row.
+   * More than half of that is the JSON keys - `triageReason` and `skipReason` are null on
+   * every row written before they existed - and it is still an order of magnitude under the
+   * 82KB the drawer-only fields cost on the same measurement. `brief`, `recommendation`,
    * `lastAction` and the captured screen all stay off, and the detail read
    * (`GET /api/foreman/episodes/:id`) is where a reader goes for them.
    */

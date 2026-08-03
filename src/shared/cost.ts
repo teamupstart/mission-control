@@ -42,14 +42,23 @@ export function fmtUsd(usd: number | null | undefined): string {
  *
  * Null on every reading that would be a lie rather than a zero: no telemetry at all, an
  * estimate withheld because part of today's usage is unpriced (`estimatedCostToday` is null
- * exactly then), a day that has genuinely spent nothing, and - the one that matters - a day
- * with no adopted pull requests, where the division is by zero and the honest answer is
- * that nothing shipped, not that shipping was free.
+ * exactly then), a day that has genuinely spent nothing, a day with no adopted pull requests
+ * (the division is by zero, and the honest answer is that nothing shipped rather than that
+ * shipping was free), and a figure that is not a number at all.
+ *
+ * That last one is why the guards are `Number.isFinite` and not a negated comparison.
+ * `NaN > 0` is false, so the three call sites this fold replaced all REFUSED a corrupt
+ * estimate; `NaN <= 0` is false too, so writing the same rule inverted ACCEPTS it and
+ * divides. The two spellings look interchangeable and differ on exactly the input that
+ * matters. Downstream, `fmtUsd` renders a non-finite number as `-`, so the surfaces would
+ * not have printed `$NaN` - they would have printed a per-PR ROW, with a dash where the
+ * measurement goes, on a day when the right thing to say is nothing at all.
  */
 export function costPerPrToday(fleet: FleetCost | null | undefined): number | null {
   if (!fleet) return null;
   const estimated = fleet.estimatedCostToday;
-  if (estimated === null || estimated <= 0 || fleet.prsToday <= 0) return null;
+  if (estimated === null || !Number.isFinite(estimated) || estimated <= 0) return null;
+  if (!Number.isFinite(fleet.prsToday) || fleet.prsToday <= 0) return null;
   return estimated / fleet.prsToday;
 }
 

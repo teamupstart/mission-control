@@ -462,6 +462,19 @@ test("the per-PR figure is withheld on every reading that would be a lie", () =>
   // The division by zero. "Nothing shipped today" is not "shipping was free today".
   assert.equal(costPerPrToday(fleet({ prsToday: 0 })), null);
   assert.equal(costPerPrToday(fleet({ estimatedCostToday: 0 })), null);
+  assert.equal(costPerPrToday(fleet({ estimatedCostToday: -1 })), null);
+
+  // Not a number at all, which is the reading a NEGATED guard lets through: `NaN > 0` is
+  // false and refuses, `NaN <= 0` is false and accepts. Both operands, because either one
+  // arriving corrupt produces the same non-finite quotient - and the surfaces would then
+  // draw a per-PR row with a dash in it rather than withholding the figure.
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(costPerPrToday(fleet({ estimatedCostToday: bad })), null, `estimate ${bad}`);
+    assert.equal(costPerPrToday(fleet({ prsToday: bad })), null, `prsToday ${bad}`);
+  }
+  // Every refusal above is a refusal by this fold, so no caller has to spot a non-finite
+  // number for itself - which is the whole reason the division has one home.
+  assert.equal(costPerPrToday(fleet({ estimatedCostToday: Number.NaN, prsToday: 3 })), null);
 });
 
 // ---- the page's own frame ----------------------------------------------------------------

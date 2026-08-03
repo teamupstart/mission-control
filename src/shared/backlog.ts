@@ -307,6 +307,25 @@ export function nextUpTaskId(tasks: Task[], plan: BacklogPlan | null): string | 
 }
 
 /**
+ * The backlog items whose own blockers name `task` - what finishing it would release.
+ *
+ * The mirror image of `blockersIn`, and deliberately built ON it rather than by reading
+ * `entry.dependsOn` and `task.dependencies` a second time: those two edge sets are
+ * merged, de-duplicated and sanity-checked in one place, and a reverse walk that read the
+ * raw fields would count an inferred edge the read-time repair had already discarded. So
+ * "unblocks 2 tasks" is exactly "2 rows lose a blocker chip when this one finishes".
+ *
+ * PARKED dependents count. The question is what the dependency graph is holding, and a
+ * parked item is held by a switch rather than by the graph - it is released by this task
+ * finishing just the same, and the operator can see the switch on its own row.
+ */
+export function dependentsIn(task: Task, tasks: Task[], index: BacklogIndex): Task[] {
+  return backlogTasks(tasks).filter(
+    (t) => t.id !== task.id && blockersIn(t, index).some((b) => b.taskId === task.id),
+  );
+}
+
+/**
  * The cancelled or failed tasks that stop `task` from ever reaching the front of the
  * queue - directly, or through a chain of still-backlogged prerequisites that are each
  * waiting on the next.

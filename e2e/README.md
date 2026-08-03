@@ -332,7 +332,7 @@ fleet when something finally navigates.
 
 ### The Line's drawers
 
-[`docs/evidence/line-drawers/`](../docs/evidence/line-drawers/) carries eight frames and the
+[`docs/evidence/line-drawers/`](../docs/evidence/line-drawers/) carries sixteen frames and the
 run's own stdout, written by `specs/line-drawers.spec.ts` under the same `MC_E2E_EVIDENCE`
 flag. The frames answer what only a picture can: `review-open.png` is a live run's ladder with
 the session card **below it at full size**, `board-pushed-down.png` and `board-returned.png`
@@ -358,7 +358,19 @@ three merge states, each spelled as a **mark and a word**; `shipped-filtered.png
 week with one chip pressed. That a hue is never the only carrier of merge state is checkable
 in the DOM as text, and legible as a row only here.
 
-Regenerate all nine with:
+`backlog-drawer.png`, `backlog-bands.png` and `backlog-drawer-empty.png` are the queue: the
+stage press landing on a drawer rather than on the Sitrep, the three bands with their marks
+and the controls each band does and does not carry, and what an emptied queue says. The two
+that only a picture can settle are `backlog-planner.png` and `backlog-autopilot-on.png`.
+The first is the planner open over the queue - **Foreman's own recorded reason, quoted and
+attributed, above the computed facts** - and it is the frame that shows the panel hanging
+*below the drawer's bottom edge*, which is the whole point of placing it `fixed`: the body it
+is anchored inside is capped at three rows and scrolls, and the drawer clips. The spec
+asserts that geometry in pixels; this is what makes it legible. The second is the footer with
+the autopilot armed, reading `Autopilot on · 0/3 agents · nothing launches until Foreman is
+live` beside the switch that wrote it.
+
+Regenerate all seventeen with:
 
 ```sh
 set -o pipefail   # or the pipe below reports tee's success, not Playwright's
@@ -369,8 +381,9 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee docs/evidence/line-drawers/transcript.txt
 ```
 
-`--workers=1` keeps the eleven tests' output from interleaving, and the `tee` is the only thing
-that produces `transcript.txt` - without it you regenerate eight files out of nine.
+`--workers=1` keeps the twenty-one tests' output from interleaving, and the `tee` is the only
+thing that produces `transcript.txt` - without it you regenerate sixteen files out of
+seventeen.
 
 ### The everything-palette
 

@@ -163,9 +163,16 @@ const backlogDrawer = (tasks: Task[]): string =>
     tasks,
     backlogPlan: QUEUE_PLAN,
     now: 100_000,
+    // Armed, with a readout: the footer's autopilot line is the longest sentence this
+    // drawer's footer can carry, so measuring the footer against it is measuring the
+    // worst case rather than a placeholder.
+    autoBacklog: true,
+    autopilot: { on: true, active: 2, max: 3, ready: 6, blocked: 0, disabled: 1 },
+    autopilotLaunches: true,
     onClose: () => {},
     onEditTask: () => {},
     onOpenSitrep: () => {},
+    onSetAutoBacklog: async () => true,
   }));
 
 const strip = (): string =>

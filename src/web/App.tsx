@@ -2302,6 +2302,15 @@ export function App(): React.JSX.Element {
             tasks={tasks}
             backlogPlan={foreman.backlogPlan}
             now={Date.now()}
+            // The same three values the Foreman popover reads, from the same hook: the
+            // config the switch writes, the derived readout, and the gate that decides
+            // whether an armed autopilot actually launches anything (`worker.ts` takes
+            // `enabled && mode === "live"`). Threaded rather than re-fetched, so the two
+            // surfaces cannot disagree about a switch they both write.
+            autoBacklog={foreman.config?.autoBacklog ?? null}
+            autopilot={foreman.status?.autopilot ?? null}
+            autopilotLaunches={foremanEnabled && foremanMode === "live"}
+            onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
             onClose={closeLineDrawer}
             onEditTask={openTaskEditor}
             onOpenSitrep={() => {

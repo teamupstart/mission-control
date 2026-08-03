@@ -108,11 +108,21 @@ test("only the Overlay primitive renders a backdrop", () => {
  * which is the one thing that makes its share of the gap smaller: nothing inside it can act
  * on the session behind it, so a stray shortcut reaching through hits the same card it
  * would have hit with no popover open at all.
+ *
+ * `line/NextUpPlanner.tsx` is the Backlog drawer's autopilot planner, and it joins for the
+ * dead-blocker resolver's reason with one addition of its own. It is anchored to the
+ * `next up` mark on one queue row, and `<Overlay>` would give it a backdrop over the very
+ * list it is explaining. The addition is Escape: this popover deliberately STOPS the event
+ * so the drawer beneath it survives the first press, and registering would instead make
+ * App stand down entirely - which reaches further than one nested popover should, and
+ * would leave the layering to the registry's topmost-wins rule rather than to the layer
+ * that knows what it is nested in.
  */
 const UNREGISTERED_DIALOGS = [
   "components/AlertBar.tsx",
   "components/ForemanBar.tsx",
   "components/SpendChip.tsx",
+  "components/line/NextUpPlanner.tsx",
   "components/session-bits.tsx",
 ];
 

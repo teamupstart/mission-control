@@ -71,7 +71,7 @@ import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
 import { WorkflowRuns } from "./workflows/WorkflowRuns.tsx";
 import { EnsembleRuns } from "./workflows/EnsembleRuns.tsx";
-import { pageToggleRoute, useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
+import { pageShortcutRoute, useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
 import type { LibrarySurface } from "./workflows/useWorkflowRoute.ts";
 import { LibraryPage } from "./library/LibraryPage.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
@@ -136,27 +136,36 @@ function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null 
   }
 }
 
-/**
- * The topbar's page segment: the app's two homes, in reading order.
- *
- * Settings is not here on purpose. It is a place you visit and leave, reached by the gear and
- * returned from by the same control; Fleet and Library are the two places you WORK, and a
- * three-way segment would have flattened that difference.
- */
+/** The topbar's primary pages, in reading order, with one direct shortcut each. */
 const PAGE_SEGMENTS = [
   {
     id: "fleet",
+    action: "fleet",
     label: "Fleet",
     glyph: "▦",
     hint: "The fleet of running sessions, their tasks and their reviews",
   },
   {
     id: "library",
+    action: "workflows",
     label: "Library",
     glyph: "⌗",
     hint: "The Library - workflows, Personas, actions, ensemble strategies and intake",
   },
-] as const;
+  {
+    id: "runs",
+    action: "runs",
+    label: "Runs",
+    glyph: "▷",
+    hint: "Workflow Runs - live and finished workflow reviews",
+  },
+] as const satisfies readonly {
+  id: "fleet" | "library" | "runs";
+  action: ActionId;
+  label: string;
+  glyph: string;
+  hint: string;
+}[];
 
 export function App(): React.JSX.Element {
   const {
@@ -202,16 +211,6 @@ export function App(): React.JSX.Element {
   // Null status ("unknown", pre-snapshot) and an all-clear both render no dot.
   const gearDot = settingsGearDot(settingsStatus);
   const gearPhrase = gearDotPhrase(gearDot);
-  // Which segment the page-toggle chord would reach from here, or null where it stands down
-  // (Settings, which the gear owns). Asked of the same pure function the key handler uses, so
-  // the keycap the segment draws cannot promise a jump the chord will not make.
-  const toggleTargetPage = pageToggleRoute({
-    active: true,
-    typing: false,
-    renaming: false,
-    overlayOpen: false,
-    page: route.page,
-  })?.page ?? null;
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   // The attention inbox: the ONE topbar surface for "something is waiting on you". It holds no
   // target of its own - what it draws is `attention` below, folded from state App already has -
@@ -1069,8 +1068,6 @@ export function App(): React.JSX.Element {
   // describing what Foreman would do if it were running at all.
   const foremanEnabled = foreman.config?.enabled ?? false;
 
-  const backlogCount = useMemo(() => tasks.filter((t) => t.status === "backlog").length, [tasks]);
-
   // The board's columns as ids, so the arrow keys can cross between them. Read off the same
   // `orderSessions` result the board renders - not a second grouping pass - so navigation
   // can't disagree with what's on screen, cluster reordering included.
@@ -1361,21 +1358,19 @@ export function App(): React.JSX.Element {
         return;
       }
 
-      // The page toggle is navigation TO and FROM the Library, not a session action, so it
-      // is the one chord that fires off the fleet too - the same key that opens the Library
-      // returns to the fleet, mirroring the topbar segment. It sits ABOVE the page guard
-      // below for exactly that reason. The decision (and its typing/rename/overlay
-      // stand-downs) is `pageToggleRoute`, kept pure so it is testable without a DOM.
-      const toggleTarget = pageToggleRoute({
-        active: chord === bindings.workflows,
+      // Fleet, Library and Runs are direct destinations rather than toggles. Their chords
+      // fire off every page and sit above the fleet-only guard for that reason. The shared
+      // pure helper keeps their typing/rename/overlay stand-downs testable without a DOM.
+      const pageTarget = PAGE_SEGMENTS.find(({ action }) => chord === bindings[action])?.id ?? null;
+      const shortcutTarget = pageShortcutRoute({
+        target: pageTarget,
         typing,
         renaming: Boolean(renamingId),
         overlayOpen: overlaysRef.current.anyOpen,
-        page: route.page,
       });
-      if (toggleTarget) {
+      if (shortcutTarget) {
         e.preventDefault();
-        navigate(toggleTarget);
+        navigate(shortcutTarget);
         return;
       }
 
@@ -1757,7 +1752,7 @@ export function App(): React.JSX.Element {
       }
       // No bar registered for the selection. On the board's overview that is structural
       // rather than an absence: only the drill-in draws an action bar, so a tile the
-      // arrows merely landed on has none - which made `s`/`f`/`q`/`k` silent no-ops
+      // arrows merely landed on has none - which made `s`/`⇧F`/`q`/`k` silent no-ops
       // there and broke "every shortcut works in every layout". Drill in and run against
       // the bar that mounts with it, one render later.
       if (layout !== "board" || !selectedId || boardOpen) return;
@@ -1942,32 +1937,27 @@ export function App(): React.JSX.Element {
             <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
             <h1>Mission Control</h1>
           </div>
-          {/* The two homes, as one control: what is HAPPENING, and what you AUTHOR. It
-              replaces the single Workflows toggle button that used to sit among the actions
-              on the right - a destination pair reads as a place you are, which a lone button
-              that renames itself never did. `aria-current` rather than `aria-pressed`: these
-              are navigation, and only one of them is where you are. */}
+          {/* The three primary pages as one control: sessions, reusable authoring, and run
+              history. Each segment has its own direct chord, so its label and keycap keep
+              the same meaning from every page. `aria-current` rather than `aria-pressed`:
+              these are navigation, and only one of them is where you are. */}
           <nav className="page-seg" aria-label="Pages">
-            {PAGE_SEGMENTS.map(({ id, label, glyph, hint }) => {
+            {PAGE_SEGMENTS.map(({ id, action, label, glyph, hint }) => {
               const current = route.page === id;
+              const chord = formatChord(bindings[action]);
               return (
                 <Tooltip
                   key={id}
-                  label={
-                    toggleTargetPage === id ? `${hint} (${formatChord(bindings.workflows)})` : hint
-                  }
+                  label={chord ? `${hint} (${chord})` : hint}
                 >
                   <button
                     className={`page-seg-btn${current ? " is-current" : ""}`}
                     {...(current ? { "aria-current": "page" as const } : {})}
-                    onClick={() => navigate(id === "fleet" ? { page: "fleet" } : { page: "library" })}
+                    onClick={() => navigate({ page: id })}
                   >
                     <span aria-hidden>{glyph}</span>
                     <span className="tb-label">{label}</span>
-                    {/* On the page the chord would take you TO, never on the one you are
-                        on: the binding is a toggle, so a keycap on both would promise that
-                        either of them is one keystroke away. */}
-                    {toggleTargetPage === id && <Keycap action="workflows" />}
+                    <Keycap action={action} />
                   </button>
                 </Tooltip>
               );
@@ -2083,18 +2073,6 @@ export function App(): React.JSX.Element {
               </Tooltip>
             </div>
             <div className="tb-group tb-tools">
-              <Tooltip
-                label={`Sitrep - what every session is doing, and the backlog (${formatChord(bindings.roundup)})`}
-              >
-                <button
-                  className="ghost-btn glyph-btn"
-                  onClick={() => setReportOpen(true)}
-                  aria-label="Sitrep"
-                >
-                  <span aria-hidden>📡</span>
-                  {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
-                </button>
-              </Tooltip>
               <Tooltip
                 label={
                   route.page === "settings"

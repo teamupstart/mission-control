@@ -1,9 +1,4 @@
-import type {
-  PlanDecision,
-  PlanDecisionAnswer,
-  ReviewItem,
-  ReviewKind,
-} from "@shared/types.ts";
+import type { PlanDecision, PlanDecisionAnswer, ReviewItem } from "@shared/types.ts";
 
 // Which control a pending review is answered with, decided in one place.
 //
@@ -13,6 +8,12 @@ import type {
 // deciding whether an agent's question reaches the human as clickable options or as a
 // textarea would be reachable only through a component nothing can render - so it lives
 // here, where it can be asserted directly.
+//
+// What is NOT here: `formatResponse`, `selectedOptions` and `decisionLead`, which moved to
+// `@shared/review-item.ts` when the daemon acquired a second writer of answered reviews.
+// Answering an Agent SDK session's own `AskUserQuestion` records one server-side, and it has
+// to read exactly like the one this form writes - so the formatter is shared rather than
+// spelled twice.
 
 /**
  * The questions to draw as a form, or null to fall through to the kind's default control.
@@ -50,18 +51,6 @@ export function showsBody(review: ReviewItem): boolean {
   return review.kind !== "input" || review.body !== review.title;
 }
 
-/**
- * The opening line of the response the agent receives when the form is submitted.
- *
- * Not cosmetic: the string is handed back as the tool result verbatim and lands in the
- * transcript. Telling a `request_input` caller that "Plan decisions" were submitted would
- * credit it with a plan it never wrote, and a later reader - Foreman included - would go
- * looking for one.
- */
-export function decisionLead(kind: ReviewKind): string {
-  return kind === "input" ? "Answered:" : "Plan decisions submitted:";
-}
-
 // ---- answering a decision form, and replaying it afterwards ----
 
 /**
@@ -74,55 +63,6 @@ export function isAnswered(decision: PlanDecision, answer: PlanDecisionAnswer | 
   if (!answer) return false;
   if (answer.selected.length > 0) return true;
   return Boolean(decision.allowOther && answer.other?.trim());
-}
-
-/**
- * Format the selections into the response string the agent receives verbatim as its tool
- * result. Deterministic and human-legible, one block per question with the chosen labels
- * and any free-text note.
- *
- * Derived from `PlanDecisionAnswer[]` - the same array that is persisted - rather than from
- * the form's own state, so the string the agent reads and the record the conversation
- * replays cannot describe different answers.
- *
- * `lead` names what was answered, because this form serves two askers: a `plan-decisions`
- * review resolving several choices about a plan, and an `input` review where `request_input`
- * asked one question with options - the replacement for Claude's built-in `AskUserQuestion`.
- * Telling the second one "Plan decisions submitted" would hand the agent a plan it never wrote.
- */
-export function formatResponse(
-  decisions: PlanDecision[],
-  answers: PlanDecisionAnswer[],
-  lead: string,
-): string {
-  const byId = new Map(answers.map((a) => [a.decisionId, a]));
-  const blocks = decisions.map((d) => {
-    const answer = byId.get(d.id);
-    const labels = selectedOptions(d, answer).map((o) => o.label);
-    const other = answer?.other?.trim() ?? "";
-    const lines = [`• ${d.question}`];
-    if (labels.length) lines.push(`  → ${labels.join(", ")}`);
-    if (d.allowOther && other) lines.push(`  Other: ${other}`);
-    if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
-    return lines.join("\n");
-  });
-  return `${lead}\n\n${blocks.join("\n\n")}`;
-}
-
-/**
- * The options the human took, in the order the agent listed them.
- *
- * Driven off `decision.options` rather than off `answer.selected`, so the replayed form
- * reads down the page in the order it was asked however the clicks arrived, and an id that
- * no longer names an option (a review answered against a question since rewritten) is
- * dropped instead of rendering as a blank row.
- */
-export function selectedOptions(
-  decision: PlanDecision,
-  answer: PlanDecisionAnswer | undefined,
-): PlanDecision["options"] {
-  if (!answer) return [];
-  return decision.options.filter((o) => answer.selected.includes(o.id));
 }
 
 /**

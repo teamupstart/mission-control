@@ -18,11 +18,13 @@ import { useCallback, useSyncExternalStore } from "react";
 import { subscribeUiConfig, uiConfig, updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 export type ActionId =
+  | "fleet"
   | "roundup"
   | "dispatch"
   | "filter"
   | "settingsSearch"
   | "workflows"
+  | "runs"
   | "expand"
   | "conversation"
   | "findInConversation"
@@ -55,12 +57,37 @@ export interface ActionDef {
 // Order here is the order shown in the settings panel.
 export const ACTIONS: readonly ActionDef[] = [
   {
+    id: "fleet",
+    label: "Open Fleet",
+    description: "Show the fleet of running sessions.",
+    defaultBinding: "f",
+    group: "global",
+  },
+  {
+    // Named "workflows" before the authoring surfaces became the Library, and the id keys
+    // persisted overrides in `app_config.ui.keybindings` - so it stays put while the label
+    // moves on, exactly as "roundup" did when its panel became the Sitrep. Renaming it here
+    // would silently reset every operator's rebinding of this key.
+    id: "workflows",
+    label: "Open Library",
+    description: "Open the Library of workflows, Personas and actions.",
+    defaultBinding: "w",
+    group: "global",
+  },
+  {
+    id: "runs",
+    label: "Open Workflow Runs",
+    description: "Show live and finished workflow runs.",
+    defaultBinding: "r",
+    group: "global",
+  },
+  {
     // Named "roundup" before the panel became the Sitrep. The id keys persisted
     // overrides in localStorage, so it stays put while the label moves on.
     id: "roundup",
     label: "Toggle Sitrep",
     description: "Open or close the sitrep.",
-    defaultBinding: "r",
+    defaultBinding: "shift+p",
     group: "global",
   },
   {
@@ -91,17 +118,6 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Search everything",
     description: "Open the palette over workflows, runs, ensembles, missions and settings.",
     defaultBinding: "cmd+k",
-    group: "global",
-  },
-  {
-    // Named "workflows" before the authoring surfaces became the Library, and the id keys
-    // persisted overrides in `app_config.ui.keybindings` - so it stays put while the label
-    // moves on, exactly as "roundup" did when its panel became the Sitrep. Renaming it here
-    // would silently reset every operator's rebinding of this key.
-    id: "workflows",
-    label: "Toggle Library",
-    description: "Open the Library of workflows, Personas and actions, or return to the fleet.",
-    defaultBinding: "w",
     group: "global",
   },
   {
@@ -147,7 +163,7 @@ export const ACTIONS: readonly ActionDef[] = [
     id: "files",
     label: "Open files",
     description: "Open the file editor for the expanded or console session.",
-    defaultBinding: "f",
+    defaultBinding: "shift+f",
     group: "selection",
   },
   {
@@ -155,7 +171,7 @@ export const ACTIONS: readonly ActionDef[] = [
     // which used to stack above the transcript and push it off the screen. Distinct from
     // the global `workflows` action above - that one opens the fleet-wide Workflows PAGE,
     // this reveals one session's run. `y` because every letter either verb owns is taken;
-    // `w` is the page and the tab chords already spent `g`, `d` and `f`.
+    // `w` is the Library page and the tab chords already spent `g`, `d` and Shift+F.
     id: "sessionWorkflows",
     label: "Open session workflows",
     description: "Show the selected session's workflow ladder.",
@@ -198,14 +214,14 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "selection",
   },
   {
-    // Beside Focus, and bound as its Shift: the pair is the point. `p` goes to a session's
-    // pane, and this is what an embedded session does instead - it MAKES one, by handing
-    // the conversation to a terminal. It does nothing on a session that already has a pane.
+    // Shift+T keeps this beside the terminal launcher semantically now that Shift+P opens
+    // Sitrep. This action makes a terminal-backed continuation for an embedded session; it
+    // does nothing on a session that already has a pane.
     id: "handoff",
     label: "Continue in terminal",
     description:
       "Hand the selected Agent SDK session to a terminal, continuing the same conversation.",
-    defaultBinding: "shift+p",
+    defaultBinding: "shift+t",
     group: "selection",
   },
   {

@@ -101,6 +101,7 @@ function inspectorPr(key: string, url: string, sessionId: string, now: number): 
     observedState: null,
     observedAt: null,
     headRefName: null,
+    title: null,
     adoptedAt: now,
     updatedAt: now,
   };

@@ -40,9 +40,9 @@ import type {
 } from "@shared/types.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
-import { readCheapAction, readDivergence } from "@shared/foreman.ts";
+import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman.ts";
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
-import type { CheapAction, Divergence } from "@shared/foreman.ts";
+import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 
 /**
@@ -283,6 +283,15 @@ export function openDb(): DatabaseSync {
       -- shadow). Also ALTERed in migrate(), for a db that predates them.
       cheap_action   TEXT,           -- answer | escalate | skip | route-up
       divergence     TEXT,           -- deferred | agree | cheap-over-eager | cheap-too-cautious | minor
+      -- Why the tier ladder landed where it did: TriageOutcome.reason, verbatim. The
+      -- cheap tier has always computed this and always dropped it on the next log line.
+      -- Free text rather than a CHECKed vocabulary because one arm interpolates an error
+      -- ('tier1-failed: <err>'). Also ALTERed in migrate().
+      triage_reason  TEXT,
+      -- Why a skipped row was skipped, when the disposition alone does not say. Today only
+      -- 'stale': the reviewer reached a verdict and the session moved on before it could be
+      -- delivered, which is a race rather than a judgment and was 74% of the skip pile.
+      skip_reason    TEXT,           -- stale
       disposition    TEXT NOT NULL,
       last_action    TEXT,
       sent_text      TEXT,           -- what was actually delivered
@@ -962,6 +971,7 @@ export function openDb(): DatabaseSync {
       observed_state     TEXT,           -- OPEN | CLOSED | MERGED
       observed_at        INTEGER,
       head_ref_name      TEXT,           -- the branch the PR is opened FROM
+      title              TEXT,           -- as of the last poll; NULL until one happens
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -1658,6 +1668,20 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "foreman_episodes", "cheap_action", "TEXT");
   addColumn(d, "foreman_episodes", "divergence", "TEXT");
 
+  // `triage_reason` / `skip_reason`: WHY a decision came out the way it did, which the
+  // record has never carried. Same exposure as the pair above - the INSERT names both, so
+  // an existing db without them fails every episode write.
+  //
+  // Null on every row written before this, and that is a gap rather than a claim, which is
+  // the opposite of the shadow pair. A historical `skipped` row genuinely cannot say
+  // whether it was declined or went stale, so `episodeOutcome` reads a null skip reason as
+  // `declined` - the reading the panel has been making all along, now stated rather than
+  // assumed. Backfilling it by matching on `last_action` prose was considered and refused:
+  // that string is a rendering, it has already changed once, and a migration that guesses
+  // at history is indistinguishable afterwards from one that knew.
+  addColumn(d, "foreman_episodes", "triage_reason", "TEXT");
+  addColumn(d, "foreman_episodes", "skip_reason", "TEXT");
+
   // The index `recentEpisodes` needs: the fleet-wide read has no `note_key` predicate, so
   // `idx_foreman_episodes_key` cannot serve it and the query is a full scan plus a sort.
   //
@@ -1763,6 +1787,20 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "inspector_prs", "observed_state", "TEXT");
   addColumn(d, "inspector_prs", "observed_at", "INTEGER");
   addColumn(d, "inspector_prs", "head_ref_name", "TEXT");
+  // The pull request's title, on the same terms as the four above: written by the poll,
+  // NULL for "not looked at since the column existed". It lands on shipped databases and
+  // the adoption INSERT names it, so like `merged_at` the migration is not optional.
+  //
+  // Nullable with no default because there is no truthful default. A legacy row's title is
+  // whatever GitHub says it is, which only a poll can find out; inventing one - the branch,
+  // the empty string - would be indistinguishable on the wire from a poll having reported
+  // it, and the reader's fallback to `head_ref_name` is what makes null render honestly.
+  // Rows already closed or merged when this ships stay null for ever, since the tick only
+  // polls open ones. That is accepted: no network sweep backfills history.
+  //
+  // No index. The table gains single-digit rows a day and nothing selects on the title;
+  // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
+  addColumn(d, "inspector_prs", "title", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -2096,6 +2134,10 @@ export interface EpisodeWrite {
   /** The shadow measurement. Both null unless the posture was `shadow`. */
   cheapAction: CheapAction | null;
   divergence: Divergence | null;
+  /** Why the ladder landed here - `TriageOutcome.reason`. See `ForemanEpisode.triageReason`. */
+  triageReason: string | null;
+  /** Why a skip was not a judgment. Null on an ordinary declined skip. */
+  skipReason: SkipReason | null;
   disposition: NoteDisposition;
   lastAction: string | null;
   sentText: string | null;
@@ -2136,9 +2178,9 @@ export function recordEpisode(e: EpisodeWrite): number {
       `INSERT INTO foreman_episodes
          (note_key, session_id, marker, situation, surface, question, pane, menu, review_id,
           purpose, brief, recommendation, classification, confidence, tier, cheap_action,
-          divergence, disposition,
+          divergence, triage_reason, skip_reason, disposition,
           last_action, sent_text, sent_option, sent_by, created_at, resolved_at, resolved_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key, marker) DO UPDATE SET
          session_id     = excluded.session_id,
          situation      = excluded.situation,
@@ -2163,6 +2205,12 @@ export function recordEpisode(e: EpisodeWrite): number {
          -- literal, and one would end it mid-statement.)
          cheap_action   = excluded.cheap_action,
          divergence     = excluded.divergence,
+         -- Overwritten on the same terms, and for the same reason: both describe the
+         -- verdict this row now stores, not the ask it was captured from. A re-decision
+         -- that no longer went stale must not keep the earlier stale mark, or the ledger
+         -- reports a race that this row is the proof did not happen.
+         triage_reason  = excluded.triage_reason,
+         skip_reason    = excluded.skip_reason,
          disposition    = excluded.disposition,
          last_action    = excluded.last_action,
          sent_text      = excluded.sent_text,
@@ -2189,6 +2237,8 @@ export function recordEpisode(e: EpisodeWrite): number {
       e.tier,
       e.cheapAction,
       e.divergence,
+      episodeText(e.triageReason),
+      e.skipReason,
       e.disposition,
       episodeText(e.lastAction),
       episodeText(e.sentText),
@@ -2248,8 +2298,8 @@ export function resolveEpisode(p: {
 /** The columns both episode reads select, so the two cannot drift apart. */
 const EPISODE_COLUMNS = `id, note_key, session_id, marker, situation, surface, question, pane,
         menu, review_id, purpose, brief, recommendation, classification, confidence, tier,
-        cheap_action, divergence, disposition, last_action, sent_text, sent_option, sent_by,
-        created_at, resolved_at, resolved_by`;
+        cheap_action, divergence, triage_reason, skip_reason, disposition, last_action,
+        sent_text, sent_option, sent_by, created_at, resolved_at, resolved_by`;
 
 /**
  * One stored row back to the wire shape.
@@ -2283,6 +2333,12 @@ function episodeFromRow(r: Record<string, unknown>): ForemanEpisode {
     // cheap tier on exactly the evidence an operator is using to decide whether to trust it.
     cheapAction: readCheapAction(r.cheap_action),
     divergence: readDivergence(r.divergence),
+    // Read as whatever is there, unlike the two above: this is the ladder's own diagnosis
+    // and a build that has not learned a newer reason should still print the reason it was
+    // given. Rounding it to a known value is what the shadow columns must not do, because
+    // there the vocabulary IS the measurement; here the string is the evidence.
+    triageReason: typeof r.triage_reason === "string" ? r.triage_reason : null,
+    skipReason: readSkipReason(r.skip_reason),
     disposition: episodeDisposition(r.disposition),
     lastAction: typeof r.last_action === "string" ? r.last_action : null,
     sentText: typeof r.sent_text === "string" ? r.sent_text : null,
@@ -2333,7 +2389,8 @@ export function recentEpisodes(limit = 100): ForemanEpisodeSummary[] {
   const rows = openDb()
     .prepare(
       `SELECT id, note_key, marker, question, pane, menu, purpose, tier, cheap_action,
-              divergence, disposition, resolved_by, created_at
+              divergence, classification, triage_reason, skip_reason, disposition,
+              resolved_by, created_at
          FROM foreman_episodes ORDER BY created_at DESC, id DESC LIMIT ?`,
     )
     .all(limit) as unknown as Array<Record<string, unknown>>;
@@ -2353,11 +2410,37 @@ export function recentEpisodes(limit = 100): ForemanEpisodeSummary[] {
       tier: typeof r.tier === "number" ? r.tier : null,
       cheapAction: readCheapAction(r.cheap_action),
       divergence: readDivergence(r.divergence),
+      // The three the row's WHY column is built from - short scalars, not the drawer's
+      // free text. See `ForemanEpisodeSummary` for the measurement that says these are
+      // affordable where `brief`, `recommendation` and the pane are not.
+      classification: typeof r.classification === "string" ? r.classification : null,
+      triageReason: typeof r.triage_reason === "string" ? r.triage_reason : null,
+      skipReason: readSkipReason(r.skip_reason),
       disposition: episodeDisposition(r.disposition),
       resolvedBy: r.resolved_by === "foreman" || r.resolved_by === "you" ? r.resolved_by : null,
       createdAt: Number(r.created_at ?? 0),
     }),
   );
+}
+
+/**
+ * One episode in full, by id - the detail read behind a ledger row.
+ *
+ * The counterpart to `recentEpisodes` deliberately keeping the pane off the wire: the
+ * ledger ships a hundred summaries every four seconds, and this ships one whole episode
+ * when a reader asks for one. Same shape as `episodesFor` returns, so the settings ledger,
+ * the session drawer and the transcript are all reading the identical record through
+ * `ForemanEpisodeCard` rather than three near-copies of it.
+ *
+ * By `id` rather than by `(note_key, marker)` because the ledger row already has the id and
+ * a fleet-wide surface has no session to scope the read to - most of the keys in a 30-day
+ * ledger name sessions that no longer exist.
+ */
+export function episodeById(id: number): ForemanEpisode | null {
+  const row = openDb()
+    .prepare(`SELECT ${EPISODE_COLUMNS} FROM foreman_episodes WHERE id = ?`)
+    .get(id) as Record<string, unknown> | undefined;
+  return row ? episodeFromRow(row) : null;
 }
 
 /**
@@ -5078,6 +5161,7 @@ interface InspectorPrRow {
   observed_state: string | null;
   observed_at: number | null;
   head_ref_name: string | null;
+  title: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -5109,6 +5193,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     observedState: (r.observed_state as InspectorPr["observedState"]) ?? null,
     observedAt: r.observed_at,
     headRefName: r.head_ref_name,
+    title: r.title,
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -5129,8 +5214,9 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
           head_sha, review_posture, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
           next_attempt_at, last_attempt_sha, merged_at, merge_block,
-          observed_head_sha, observed_state, observed_at, head_ref_name, adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          observed_head_sha, observed_state, observed_at, head_ref_name, title,
+          adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -5159,6 +5245,7 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.observedState,
       pr.observedAt,
       pr.headRefName,
+      pr.title,
       pr.adoptedAt,
       pr.updatedAt,
     );
@@ -5195,6 +5282,8 @@ export function updateInspectorPr(
     observedState?: InspectorPr["observedState"];
     observedAt?: number | null;
     headRefName?: string | null;
+    /** Re-recorded every tick, so a retitled pull request stops being stale. */
+    title?: string | null;
   },
   now: number,
 ): void {
@@ -5209,6 +5298,7 @@ export function updateInspectorPr(
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
+              title = ?,
               updated_at = ?
         WHERE key = ?`,
     )
@@ -5229,6 +5319,7 @@ export function updateInspectorPr(
       next.observedState,
       next.observedAt,
       next.headRefName,
+      next.title,
       now,
       key,
     );
@@ -5371,41 +5462,90 @@ export function loadInspectorComments(prKey: string): InspectorComment[] {
 }
 
 /**
- * Every ledger row with its finding tallies - the settings panel's list, and what the
- * per-session chip is derived from.
+ * The tally half of every inspection read: ledger row plus its finding counts, in ONE
+ * grouped query rather than a load-then-count-per-row loop. This runs on the daemon's
+ * single synchronous SQLite handle - the same one serving hook ingest and SSE - and the
+ * panels poll it.
  *
- * One grouped query rather than a load-then-count-per-row loop: this runs on the
- * daemon's single synchronous SQLite handle, the same one serving hook ingest and SSE,
- * and the panel polls it.
+ * Shared by the two orderings below so their tallies cannot drift apart. Everything after
+ * the join (the WHERE, the GROUP BY, the ORDER BY) belongs to the caller, which is the
+ * only thing the two differ in.
+ */
+const INSPECTION_TALLY_FROM = `SELECT p.*,
+              COALESCE(SUM(CASE WHEN c.status IN ('open','drafted','posting') THEN 1 ELSE 0 END), 0) AS open_findings,
+              COALESCE(SUM(CASE WHEN c.status = 'open' THEN 1 ELSE 0 END), 0) AS posted_open_findings,
+              COALESCE(SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_findings
+         FROM inspector_prs p
+         LEFT JOIN inspector_comments c ON c.pr_key = p.key`;
+
+type InspectionTallyRow = InspectorPrRow & {
+  open_findings: number;
+  posted_open_findings: number;
+  resolved_findings: number;
+};
+
+function rowToInspection(r: InspectionTallyRow): InspectorInspection {
+  return {
+    ...rowToInspectorPr(r),
+    openFindings: Number(r.open_findings),
+    postedOpenFindings: Number(r.posted_open_findings),
+    resolvedFindings: Number(r.resolved_findings),
+  };
+}
+
+/**
+ * Every ledger row with its finding tallies, most recently REVIEWED first - the settings
+ * panel's list, and what the per-session chip is derived from.
  *
  * `limit` is OPTIONAL, and the default is "all of them", because the two callers want
  * different things. The settings panel is a display and wants the recent slice; the
  * registry builds the per-session chip out of this and must not be truncated - rows are
  * never deleted, so a cap would eventually drop live PRs off the bottom, and an absent
  * chip is documented in three places as meaning "that PR came from somewhere else".
+ *
+ * Review recency is the wrong order for "what shipped in the last week" - see
+ * `loadInspectionsAdoptedSince`.
  */
 export function loadInspectorInspections(limit?: number): InspectorInspection[] {
   const rows = openDb()
     .prepare(
-      `SELECT p.*,
-              COALESCE(SUM(CASE WHEN c.status IN ('open','drafted','posting') THEN 1 ELSE 0 END), 0) AS open_findings,
-              COALESCE(SUM(CASE WHEN c.status = 'open' THEN 1 ELSE 0 END), 0) AS posted_open_findings,
-              COALESCE(SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_findings
-         FROM inspector_prs p
-         LEFT JOIN inspector_comments c ON c.pr_key = p.key
+      `${INSPECTION_TALLY_FROM}
         GROUP BY p.key
         ORDER BY COALESCE(p.last_reviewed_at, p.adopted_at) DESC
         LIMIT ?`,
     )
-    .all(limit ?? -1) as unknown as (InspectorPrRow & {
-    open_findings: number;
-    posted_open_findings: number;
-    resolved_findings: number;
-  })[];
-  return rows.map((r) => ({
-    ...rowToInspectorPr(r),
-    openFindings: Number(r.open_findings),
-    postedOpenFindings: Number(r.posted_open_findings),
-    resolvedFindings: Number(r.resolved_findings),
-  }));
+    .all(limit ?? -1) as unknown as InspectionTallyRow[];
+  return rows.map(rowToInspection);
+}
+
+/**
+ * The same rows windowed and ordered by ADOPTION instead - "every pull request we opened
+ * since T, newest first".
+ *
+ * `adopted_at` is not a stylistic choice of column. It is the provenance rule the Line's
+ * Shipped count is already made of (`prsOpenedSince`): a row exists here because a hook
+ * caught `gh pr create`, so adoption time is the one instant that means "we shipped this".
+ * A surface listing what that count counted has to filter and sort on the same column, or
+ * it can disagree with the number the operator clicked - the exact failure the panel's
+ * `COALESCE(last_reviewed_at, adopted_at)` ordering produces, since a review is not a
+ * ship and a re-review reorders a settled week.
+ *
+ * Uncapped, and that is the point rather than an oversight: a cap is a truncation the
+ * caller cannot see, so a busy week would silently render short against a count that
+ * included everything. The window is the bound, the ledger gains single-digit rows a day,
+ * and the caller chooses how far back to look.
+ *
+ * NOT to be confused with `loadAdoptedInspectorPrsSince`, whose bound is `observed_at` and
+ * whose subject is the retire race a `pull_request` session action has to survive.
+ */
+export function loadInspectionsAdoptedSince(sinceMs: number): InspectorInspection[] {
+  const rows = openDb()
+    .prepare(
+      `${INSPECTION_TALLY_FROM}
+        WHERE p.adopted_at >= ?
+        GROUP BY p.key
+        ORDER BY p.adopted_at DESC`,
+    )
+    .all(sinceMs) as unknown as InspectionTallyRow[];
+  return rows.map(rowToInspection);
 }

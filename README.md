@@ -474,7 +474,7 @@ field is a regenerate-and-read-the-diff, not a hunt.
 
 #### Continue in terminal
 
-`⇧P`, or the button where **Focus** sits on a pane-backed card. It stops the driver and
+`⇧T`, or the button where **Focus** sits on a pane-backed card. It stops the driver and
 reopens **the same conversation** in a terminal home in the same checkout -
 `claude --resume <session id>` or `codex resume <thread id>`, whichever harness the card is.
 Both vendors keep one session store across their programmatic and interactive surfaces,
@@ -797,6 +797,24 @@ Claude's own submit path. If Claude has further questions, the next one takes th
 place and you answer it the same way; if its review tab reports a question still unanswered,
 the form is left up rather than sent half-filled.
 
+**An answered question stays in the conversation.** See the
+[runtime capture](docs/evidence/driver-question-in-conversation/README.md) for the form and
+the entry it leaves. Submitting an `AskUserQuestion` form on
+an Agent SDK session writes the same gold entry a review answer writes - the questions
+replayed with every option they offered, the ones you took marked, and any custom answer you
+typed - placed at the point in time you answered. Permission prompts, plan approvals and
+trust checks write nothing: an auto-mode session answers dozens of those an hour, none of
+them chose between anything, and the next turn says what happened anyway. Foreman's answers
+are recorded as Foreman's and stay out of your conversation, where they are already
+[its own entry](#foreman-auto-responder).
+
+Without it the answer had nowhere to go. It reaches the agent by resolving the callback its
+turn is blocked on, and the only trace in the transcript is a turn that is purely a tool
+result - which every harness parser drops as machine noise. So the log showed the question as
+a grey `AskUserQuestion` chip, then a silence, then the agent acting on a decision the reader
+could not see, while the identical question asked over the review channel left a permanent
+record.
+
 This works for **Codex sessions too**, and that matters most for the ones nothing
 instruments: Codex's hooks [ride on a
 dispatch](#precise-status-for-codex-hooks-that-ride-on-the-dispatch), so for a Codex
@@ -863,7 +881,9 @@ while the Foreman history drawer keeps its relative age. See the
 
 Four voices share the log, told apart by colour rather than by label alone: the agent's turns
 in its own harness accent, your typed replies in blue, Foreman's entries in purple, and - in
-gold - the [answers you gave its review questions](#review-channel-mcp). The gold entries are
+gold - the answers you gave its questions, whether it asked through the
+[review channel](#review-channel-mcp) or through its
+[own question form](#answer-a-sessions-menu-from-the-dashboard). The gold entries are
 not transcript turns; like Foreman's, they happened beside the conversation and are placed by
 when they happened, so an agent that blocked on a question for an hour shows your answer
 after the hour of work, not before it. See the
@@ -1275,7 +1295,9 @@ built-in `AskUserQuestion`. It is disallowed on the spawn, and the agent is poin
 `request_input` instead, so a clarifying question arrives as structured arguments in the
 dashboard rather than as a menu drawn on a terminal nobody is watching. Agent SDK sessions
 keep the built-in tool because its questions already arrive as structured driver requests;
-see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk).
+see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer
+lands in the session's conversation as the same gold entry - the two channels differ in how
+the question reaches you, not in what is written down afterwards.
 
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`
@@ -1853,7 +1875,7 @@ cadence: "audit dependencies every Monday at 8am". It is deliberately not a
 system and dedupes against what it has already seen, where a schedule is internal state
 whose identity is the pair `(schedule, instant)`.
 
-Open **Missions** from the topbar button of the same name, beside Dispatch and Sitrep. The
+Open **Missions** from the topbar button of the same name, beside Dispatch. The
 button carries an attention badge when any enabled schedule needs you (a failed run, an
 invalid repo, an overdue instant, a stuck reservation - all derived on the daemon, never in
 the browser). The catalog is a wide operator overlay, not a settings category, and it owns
@@ -2322,14 +2344,15 @@ buffer over exactly once and reports nothing at all until you are back at the de
 
 ## The Library
 
-Mission Control has two homes, and the top bar's segmented **▦ Fleet / ⌗ Library** control
-names both. The Fleet is what is happening; the **Library** is everything you author once and
-reuse. Nothing on the Library runs - each shelf carries a single cross-link to where its
-assets are executing, and no live state beyond it.
+Mission Control keeps its three primary pages in one segmented top bar control:
+**▦ Fleet / ⌗ Library / ▷ Runs**. Fleet shows the sessions doing the work, **Library** holds
+everything you author once and reuse, and **Runs** monitors live and finished workflow runs.
+Nothing on the Library runs - each shelf carries a single cross-link to where its assets are
+executing, and no live state beyond it.
 
-Switching homes changes only the dashboard body. The fleet header, live SSE connection, and
-Cards, Console, or Board selection stay mounted, so returning to **Fleet** does not reconnect
-or discard the fleet view.
+Switching primary pages changes only the dashboard body. The fleet header, live SSE
+connection, and Cards, Console, or Board selection stay mounted, so returning to **Fleet**
+does not reconnect or discard the fleet view.
 
 `#/library` opens five shelves, each headed by the question it answers rather than by its own
 noun:
@@ -2357,9 +2380,10 @@ the hash without adding a history entry, so the address bar is always a shareabl
 you are looking at and **Back** still means the page you came from. `new` is reserved and
 never an asset id.
 
-Execution is not a Library shelf. Workflow runs and ensembles are top-level pages hung off
-[the Line](#the-line-the-pipeline-strip-above-the-fleet), and the Workflows page that once held all five surfaces as sibling tabs
-is retired:
+Execution is not a Library shelf. Workflow Runs is a top-level page in the segmented control
+and [the Line](#the-line-the-pipeline-strip-above-the-fleet) links directly into it; Ensemble
+runs remain a top-level page reached from the Line. The Workflows page that once held all five
+surfaces as sibling tabs is retired:
 
 | Hash | Surface |
 | --- | --- |
@@ -3112,6 +3136,27 @@ for a reason that is not a preference: preparing a PR means typing into the sess
 Preview is defined as performing no keystroke injection at all. A Preview binding that reaches
 the missing-PR gate records why it deferred rather than appearing to do nothing.
 
+### Blocked runs are recoverable, not terminal
+
+A check runs in a **pooled worktree**, and a check that times out is terminated by process
+group. When that group cannot be proven gone, the worktree cannot be handed back, and the run
+blocks rather than reporting a result it cannot account for - something may still be writing
+into the tree the verdict came from. The run reads **Blocked**, phase `check_cleanup_unresolved`.
+
+That block is meant to clear itself, and now does. The pool's reclamation pass keeps asking
+whether the group has gone and hands the tree back when it can prove it; on the next sweep the
+run **resumes on its own** - the retry the block withheld is scheduled against the same
+evidence and the same round, and the timeline records **Check cleanup resolved**. A node that
+had already spent every infrastructure attempt moves to `infrastructure_error` instead, which
+is the phase **Retry provider call** belongs to.
+
+Blocked is also no longer a dead end in the header. **Submit fresh evidence** and **Submit
+unchanged** render for a blocked run, not only a parked one, because the daemon has always
+accepted a resubmission for both. When the daemon would refuse - the bound session is gone,
+the run is externally sourced, or it has used every repair round its binding allows - the
+buttons stay visible and disabled, carrying that exact reason, rather than disappearing and
+leaving **Cancel run** as the only thing to reach.
+
 ### Live repair delivery and Foreman completion
 
 Live workflow delivery is **on by default, and authorised nowhere**. Those are two halves of
@@ -3490,7 +3535,8 @@ offers **Dismiss** and says which of the two it is - the alternative was a butto
 silently closed the note, which reads as having sent something. Foreman also re-checks the
 session before pinning a decision at all: a review takes up to a few minutes, and if the
 session moved on in that time the decision is filed in the **Foreman · N** history instead of
-waiting for a click on a question that has already closed.
+waiting for a click on a question that has already closed. Those decisions are recorded as
+**stale** rather than as skips - Foreman had an answer, and the clock beat it.
 
 Every decision is also **kept**, which the note alone never was - a note is one upserted row,
 so each write erased the last one and approving erased the words that had just been sent.
@@ -3640,20 +3686,51 @@ shadow mode adds a divergence line per session (`shadow cheap-over-eager (cheap=
 ### What Foreman has been deciding
 
 **Settings → Foreman** carries the fleet-wide **decisions ledger**: every prompt Foreman
-has faced, across every session, newest first - the session it happened on, the ask, what
-came of it, who decided, which tier decided, and how long ago. Each of these was already
-being recorded; until now the only way to read any of it was one session at a time,
-through that session's Foreman drawer, so there was no answer anywhere to *what has this
-thing actually been doing* - which is the question you open its settings to ask before
-giving it more rope. The count strip above the table filters it: **escalated**,
-**drafted**, **answered**, **skipped**. The last 100 decisions are shown, and episodes are
-kept for 30 days.
+has faced, across every session, newest first. Each of these was already being recorded;
+until now the only way to read any of it was one session at a time, through that session's
+Foreman drawer, so there was no answer anywhere to *what has this thing actually been
+doing* - which is the question you open its settings to ask before giving it more rope.
+The count strip above the table filters it: **escalated**, **drafted**, **answered**,
+**left alone**. The last 100 decisions are shown, and episodes are kept for 30 days, so the
+list reaches back only as far as the cap allows.
 
-The ledger is a **summary**, not the stored record: the daemon reduces each ask to the one
-line the table shows and sends only that, so the captured terminal screens - by far the
-largest thing in the table - never ride the 4-second poll. Open a session's Foreman drawer
-for the full question, the screen it was asked on, the reviewer's brief, and what was sent
-back.
+A row leads with **what the decision was for**, not with what was literally asked. The
+verbatim ask is not an identity - `Needs approval: Bash` and `running AskUserQuestion` cover
+most of a busy ledger between them - so Foreman's own one-line reading of the ask carries the
+row and the literal text sits under it as the recognition cue.
+
+Beside the outcome, each row says **why the tier ladder landed there**: `needs judgment`,
+`low confidence`, `human-only, risky`, `no recent turns`, `no menu row named`, `routine
+access`. The cheap tier has always computed this and only ever logged it; escalated *because
+the router was unsure* and escalated *because the ask looked destructive* are two different
+stories, and the ledger could previously tell only the word they share. Hover for the full
+sentence and the string that was recorded.
+
+**Outcome says what actually happened**, which is finer-grained than the four dispositions
+the tiles group by. `skipped` used to cover three unrelated events, and on a real ledger the
+majority of it was neither of the two you would guess:
+
+| Outcome | What it means |
+| --- | --- |
+| **answered** | A reply was delivered - by Foreman, or by you approving a draft. |
+| **drafted** | Foreman wrote a reply and is holding it for your confirmation. |
+| **escalated** | Handed to you, and nobody has answered it yet. |
+| **declined** | Foreman judged the call yours and left it alone. |
+| **stale** | Foreman *reached a verdict* and the session moved on before it could be delivered, so nothing was sent. A race, not a judgment - the verdict it reached is still on the record. |
+| **dismissed** | Foreman escalated it to you, and you closed it without answering. |
+
+The last three all file under the **left alone** tile, which is what they have in common:
+nobody ever answered them.
+
+**Open a row** for the whole decision - the ask verbatim, the child's screen as Foreman read
+it, the reviewer's brief and recommendation, and what was actually sent back, credited to
+whoever made the call. That is the same card the session drawer shows, fetched one decision
+at a time: the ledger itself ships a **summary**, with each ask reduced by the daemon to the
+one line the table shows, so the captured terminal screens - by far the largest thing in the
+table - never ride the 4-second poll.
+
+The rows scroll **inside** the table rather than running down the page, so the count strip
+stays reachable while you read the list it filters.
 
 The panel also states, in words, **whether Foreman is running at all**. A worker holds a
 lease and renews it; when nothing does, Foreman is enabled, set to whatever mode you chose,
@@ -4122,8 +4199,9 @@ Settings is a **page**, not a modal: `#/settings/<category>` in the URL, reached
 gear in the top bar, from **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> in the
 desktop app, or by opening the link directly. <kbd>Esc</kbd> returns you to the fleet, the
 gear takes you back the same way, and browser back/forward walk the categories you visited.
-While the page is up the fleet's shortcuts stand down, exactly as they do on Workflows -
-nothing you type here can drive the session behind it.
+While the page is up the session and panel shortcuts stand down, so nothing you type here can
+drive the fleet behind it. The direct Fleet, Library and Runs shortcuts remain available when
+focus is not in a text field.
 
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of twelve peers could not answer: which of
@@ -4338,7 +4416,7 @@ actually has one, which makes their absence informative rather than grey furnitu
 
 ## The palette (⌘K)
 
-<kbd>⌘</kbd><kbd>K</kbd> is the connective tissue between the two homes: **one input** over
+<kbd>⌘</kbd><kbd>K</kbd> is the connective tissue across the primary pages: **one input** over
 everything the [Library](#the-library) holds, everything the [Line](#the-line-the-pipeline-strip-above-the-fleet) is running, and
 every [setting](#settings). Type a few letters and land on the shelf card, the live run, or
 the control - from wherever you are.
@@ -4448,7 +4526,7 @@ earns two surfaces a card has nowhere to put:
   detail, and <kbd>Esc</kbd> comes back out with the cursor still on the card you left. Once
   you're in, the arrow keys keep moving the open detail through the board - the drill-in
   is always the selected session. Clicking a tile still does both in the one gesture.
-  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>f</kbd>, <kbd>q</kbd> and
+  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>⇧</kbd><kbd>F</kbd>, <kbd>q</kbd> and
   <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
   is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
   without opening its detail.
@@ -4684,23 +4762,25 @@ names the layouts where a shortcut's target exists:
 | <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail. **Cards**: focus-expands or collapses the selected card. **Board**: opens the drill-in. Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
-| <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
+| <kbd>f</kbd> | Open **Fleet** | Anywhere |
+| <kbd>w</kbd> | Open the **Library** | Anywhere |
+| <kbd>r</kbd> | Open **Workflow Runs** | Anywhere |
+| <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
-| <kbd>w</kbd> | Open the **Library**, or press again to return to the fleet | Fleet or Library |
 | <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
-| <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
+| <kbd>⇧</kbd><kbd>F</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>↑</kbd> | Recall the newest editable queued message into the box, with the caret at the end. The box must be empty and have no attachments | Empty message composer |
 | <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. If its conversation is not visible, reveals it first, then opens the terminal chooser | Selected session |
 | <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or reveal the conversation and choose a terminal in which to resume it | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
-| <kbd>⇧</kbd><kbd>P</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
+| <kbd>⇧</kbd><kbd>T</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
@@ -4732,12 +4812,13 @@ while a card in that strip has focus - so they are fixed for the same reason.
 The buttons those shortcuts drive print the key on their own face - Terminal and
 Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Complete and
 Kill on a card; Focus, Diff, Reset, Complete and Kill in the Console footer; the Console's
-Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and Workflows
-in the top bar; the Board card's workflow disclosure; and the settings rail's search box. They
+Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
+Library and Runs segments in the top bar; the Board card's workflow disclosure; and the settings
+rail's search box. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
 
 **Settings → Keyboard → Show keybindings on buttons** turns them off once you've learnt
-them. Small icon-only controls (the ⚙ gear, the 📡 sitrep glyph, the expand chevron) never
+them. Small icon-only controls (the ⚙ gear and the expand chevron) never
 carry one - a keycap would be larger than the icon - and name their key in the tooltip
 instead. The command bar is unaffected either way: it is nothing but keycaps.
 

@@ -48,6 +48,8 @@ function mkEpisode(over: Partial<EpisodeWrite> = {}): EpisodeWrite {
     tier: 2,
     cheapAction: null,
     divergence: null,
+    triageReason: null,
+    skipReason: null,
     disposition: "escalated",
     lastAction: "escalated for your decision",
     sentText: null,

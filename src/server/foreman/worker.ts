@@ -1765,7 +1765,7 @@ async function processSession(
     queueItem,
   });
   if (!decision) return true;
-  const { verdict, tier, shadow } = decision;
+  const { verdict, tier, shadow, reason: triageReason } = decision;
 
   let plan = planFromVerdict(
     verdict,
@@ -1819,6 +1819,18 @@ async function processSession(
             // Dropping it here would silently thin the shadow sample by exactly the
             // decisions that took longest, which are the ones worth measuring.
             shadow,
+            triageReason,
+            // The one field this path exists to write, and the reason it was worth a
+            // column. Everything else here says `skipped`, and `skipped` is the wrong
+            // word for what happened: Foreman REACHED a verdict - it is right there in
+            // the recommendation this same call preserves - and the session moved on
+            // before it could be delivered. On a real 833-episode ledger that was 235 of
+            // 318 skips, all of them rendered under a tile captioned "the asks Foreman
+            // could not read", which describes none of them. The disposition stays
+            // `skipped` because the NOTE's vocabulary is about who still owes an answer
+            // and nobody does; this is what lets the RECORD say something truer than the
+            // note without the two contradicting each other. See `episodeOutcome`.
+            skipReason: "stale",
             plan: {
               note: {
                 ...plan.note,
@@ -1863,7 +1875,7 @@ async function processSession(
   // good. Everything else here could be reconstructed later; that cannot.
   await client.recordEpisode(
     session.id,
-    episodeFromPlan({ pending, ctx, pane, verdict, tier, shadow, plan }),
+    episodeFromPlan({ pending, ctx, pane, verdict, tier, shadow, triageReason, plan }),
   );
 
   log(
@@ -1886,6 +1898,22 @@ type Decision = {
   verdict: Verdict;
   tier: 0 | 1 | 2;
   shadow?: { cheapAction: CheapAction; divergence: Divergence };
+  /**
+   * Why the ladder landed on this verdict - `TriageOutcome.reason`, carried out to the
+   * episode row instead of being logged and dropped.
+   *
+   * Present wherever the cheap tier was consulted at all, which is `shadow` and `on`. Under
+   * `off` the full review is the first and only reader, so there is no ladder decision to
+   * report and this is absent - the same "not measured, not a value" distinction the shadow
+   * pair makes, and for the same reason: a reason invented for a posture that never asked
+   * would be the record answering a question nobody put.
+   *
+   * On a route-up it is the reason the CHEAP tier declined, not a claim about the full
+   * review that followed, and that is exactly what makes it worth keeping: "escalated"
+   * beside `low-confidence` and "escalated" beside `human-only-risky` are two different
+   * stories about the same word, and the ledger has only ever been able to tell the word.
+   */
+  reason?: string;
 } | null;
 
 /**
@@ -1975,6 +2003,12 @@ async function shadowBoth(
     // Still 2: the full review is what acted. See `episodeFromPlan`.
     tier: 2,
     shadow: { cheapAction: cheapActionOf(cheapUnderOn), divergence },
+    // The CHEAP tier's reason, on a row whose verdict came from the full review, and that
+    // is the honest pairing under this posture: the divergence column already says the two
+    // disagreed, and this is the only field that says what the cheap tier thought it was
+    // looking at when it did. `cheapUnderOn` rather than `cheap`, so a delivery-blocked
+    // answer reports `menu-needs-a-row` here exactly as it is scored above.
+    reason: cheapUnderOn.reason,
   };
 }
 
@@ -1991,7 +2025,7 @@ async function cheapTierDecides(
   const cheap = await triageSession(triageDeps(client), pending, session, cfg, captured);
   if (cheap.kind === "dispose" && !menuBlocksAnswer(cheap.verdict, ctx)) {
     log(`${session.name}: tier ${cheap.tier} disposed -> ${cheap.verdict.action} (${cheap.reason})`);
-    return { verdict: cheap.verdict, tier: cheap.tier };
+    return { verdict: cheap.verdict, tier: cheap.tier, reason: cheap.reason };
   }
   // A dispose this tier can't DELIVER is not a decision, it's a route-up. The router names no
   // row (its schema has no field for one), so on a menu every answer it reaches lands here -
@@ -2001,7 +2035,14 @@ async function cheapTierDecides(
   // escalates it there - the fallback stays, it just stops being the first stop.
   const why = cheap.kind === "route-up" ? cheap.reason : "menu-needs-a-row";
   log(`${session.name}: routed up to full review (${why})`);
-  return fullReviewOnly(client, cfg, session, pending, ctx, captured);
+  const r = await fullReviewOnly(client, cfg, session, pending, ctx, captured);
+  // The route-up reason survives the escalation to the full review, and it is the half of
+  // the story the tier column cannot tell. A row reading `tier: review` under the `on`
+  // posture means the cheap tier declined and handed over - `why` is the only record of
+  // WHAT it declined on, and the difference between `low-confidence` (the router was
+  // unsure) and `no-transcript-context` (there was nothing for the safety backstop to
+  // read) is the difference between tuning a threshold and fixing a transcript.
+  return r && { ...r, reason: why };
 }
 
 /**

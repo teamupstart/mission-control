@@ -103,6 +103,7 @@ import type { QueueManager } from "./queue.ts";
 import type {
   InspectorStatus,
   LlmStatus,
+  ReviewActor,
   Session,
   SkillsView,
   WorkItem,
@@ -132,6 +133,7 @@ import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
+import { answeredQuestion } from "./sdk/answered-question.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
@@ -165,7 +167,9 @@ import {
   forgetTaskSourceSeen,
   getSkillsAcks,
   loadHumanResolvedReviews,
+  loadInspectionsAdoptedSince,
   loadInspectorInspections,
+  episodeById,
   recentEpisodes,
 } from "./db.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
@@ -338,16 +342,54 @@ async function answerDriverRequest(
   supervisor: SdkSupervisor | undefined,
   session: Session,
   project: (dialog: Session["paneDialog"]) => DriverAnswer,
+  /**
+   * Where an answered QUESTION is written down, so the conversation can replay it. Both
+   * driver answer routes pass these; see `sdk/answered-question.ts` for why only questions
+   * are recorded and why a review is the shape they are recorded as.
+   */
+  record: { reviews: ReviewManager; by: ReviewActor },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!supervisor) return { ok: false, error: "this build has no session supervisor" };
-  const projected = project(session.paneDialog);
+  // Held rather than re-read below: answering clears the dialog off the session, and the
+  // record must describe the ask the caller was actually shown - the same snapshot the
+  // projection verified against.
+  const asked = session.paneDialog;
+  const projected = project(asked);
   if (!projected.ok) return projected;
+  // Read BEFORE the delivery, because it is when the operator spoke. Taken afterwards it
+  // would be a reading of when the agent was already running again - and the conversation
+  // places an answer by this stamp, so a few milliseconds the wrong side of the agent's
+  // next turn files the decision below the reply it caused.
+  const spokeAt = Date.now();
   try {
     await supervisor.answer(session.id, projected.requestId, projected.answer);
-    return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+  // AFTER the delivery, and never instead of it. The record claims the agent received this
+  // answer, so writing it before the driver had taken it would leave the log asserting a
+  // decision that a throw above then prevented - the same ordering rule Foreman's approval
+  // path follows (`web/lib/foreman.ts`). And a failure to write the record must not turn a
+  // delivered answer into a 409: the operator would answer the question again, against a
+  // request the agent is no longer blocked on.
+  try {
+    const answered = answeredQuestion(asked, projected.answer);
+    if (answered) {
+      record.reviews.record({
+        sessionId: session.id,
+        kind: "input",
+        ...answered,
+        resolvedBy: record.by,
+        at: spokeAt,
+      });
+    }
+  } catch (err) {
+    console.warn(
+      `[mission-control] answered ${session.id}'s question but could not record it for the ` +
+        `conversation (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+  return { ok: true };
 }
 
 function noPermissionModes(session: Session): string | null {
@@ -1936,8 +1978,11 @@ export function buildApp(
     // out - which is what keeps the dashboard's prompt, Foreman's `answer.option` and the
     // MCP tool on one grammar instead of three.
     if (session.runtime === "sdk") {
-      const r = await answerDriverRequest(sdkSessions, session, (dialog) =>
-        driverOptionAnswer(dialog, parsed.data),
+      const r = await answerDriverRequest(
+        sdkSessions,
+        session,
+        (dialog) => driverOptionAnswer(dialog, parsed.data),
+        { reviews, by: parsed.data.by },
       );
       return c.json(r, r.ok ? 200 : 409);
     }
@@ -1969,8 +2014,11 @@ export function buildApp(
           409,
         );
       }
-      const r = await answerDriverRequest(sdkSessions, session, (dialog) =>
-        driverFormAnswer(dialog, answers),
+      const r = await answerDriverRequest(
+        sdkSessions,
+        session,
+        (dialog) => driverFormAnswer(dialog, answers),
+        { reviews, by: parsed.data.by },
       );
       return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
     }
@@ -2629,6 +2677,21 @@ export function buildApp(
   // `Registry.recordEpisode` already states for the per-session list, and it holds just
   // as well for a 4s poll.
   app.get("/api/foreman/episodes", (c) => c.json(recentEpisodes(FOREMAN_EPISODE_LEDGER)));
+  // One episode in full, which is the read the summary above exists to avoid making a
+  // hundred times over. Opening a ledger row fetches exactly the decision being opened, so
+  // the pane, the brief, the recommendation and the delivered text stay off the poll and
+  // are still one click away - the same trade `/api/sessions/:id/foreman-episodes` makes
+  // for a surface that shows one session, made here for a surface that shows the fleet.
+  //
+  // 404 rather than `null` on a miss, unlike the backlog plan below: a row is either in the
+  // 30-day window or it has been pruned out of it, and "this decision no longer exists" is
+  // a different answer from "there is nothing to show", which is what the ledger's own
+  // empty state already says.
+  app.get("/api/foreman/episodes/:id", (c) => {
+    const id = Number(c.req.param("id"));
+    const episode = Number.isInteger(id) ? episodeById(id) : null;
+    return episode ? c.json(episode) : c.json({ error: "no such episode" }, 404);
+  });
 
   // --- backlog autopilot: Foreman's reading of the backlog (localhost only) ---
   //
@@ -2807,10 +2870,42 @@ export function buildApp(
     publishSettingsStatus(registry);
     return c.json(next);
   });
-  // The ledger, newest first. This is what makes dry-run legible: without somewhere to
-  // read what it WOULD have said, a preview mode is indistinguishable from a broken one.
-  // Capped because it is a display; the registry's copy is deliberately not.
-  app.get("/api/inspector/prs", (c) => c.json(loadInspectorInspections(50)));
+  // The ledger. This is what makes dry-run legible: without somewhere to read what it
+  // WOULD have said, a preview mode is indistinguishable from a broken one.
+  //
+  // Two readings of the same rows, because there are two questions. Without a parameter:
+  // the 50 most recently REVIEWED, which is the Inspector settings panel's list - capped
+  // because it is a display, and the registry's own copy is deliberately not.
+  //
+  // With `adoptedSince` (epoch ms): every pull request ADOPTED since then, newest
+  // adoption first, uncapped. That is the ledger as a ship log, and it has to be a
+  // separate reading rather than a bigger limit - review recency is not ship order, so
+  // paging the default further back would still hand a caller a week whose order moves
+  // whenever the Inspector re-reviews something, and a cap would truncate a busy week
+  // against the Line's Shipped count, which is uncapped by construction (`prsOpenedSince`).
+  // One route rather than two over the same table, for the reason `useShipping` records:
+  // a second endpoint over one ledger is a second thing to keep honest.
+  app.get("/api/inspector/prs", (c) => {
+    const raw = c.req.query("adoptedSince");
+    if (raw === undefined) return c.json(loadInspectorInspections(50));
+    // Two guards, each doing work the other cannot.
+    //
+    // The SHAPE is matched as text before anything is coerced, because `Number()` is far too
+    // willing here: it reads `""`, `"  "` and `"\n"` as 0, and 0 means "the entire ledger,
+    // from the epoch" - the most expensive answer this route has, returned confidently for a
+    // typo or for an unset variable a caller interpolated. Digits only, so what counts as a
+    // timestamp has one definition rather than whatever the coercion happens to accept
+    // ("1e3", "0x10", " 5 ", "-1"). The length cap bounds what gets parsed at all.
+    //
+    // The VALUE is then checked for exactness, which the shape cannot speak to: a 17-digit
+    // run of digits is well formed and still lands past 2^53, where it silently stops being
+    // the number the caller wrote.
+    const since = /^\d{1,20}$/.test(raw) ? Number(raw) : Number.NaN;
+    if (!Number.isSafeInteger(since)) {
+      return c.json({ error: "adoptedSince must be an epoch-ms timestamp" }, 400);
+    }
+    return c.json(loadInspectionsAdoptedSince(since));
+  });
   // What the Inspector will actually spawn with, resolved HERE rather than in the panel
   // for the reason `ForemanStatus.models` documents: the env layer is invisible to the
   // browser, so a panel showing `config || default` would confidently print a model a

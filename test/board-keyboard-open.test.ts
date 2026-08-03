@@ -14,7 +14,7 @@ import { ACTIONS, isReservedChord } from "../src/web/lib/keybindings.ts";
  *    out as a binding: it would work in Cards and Console and silently not on the board.
  *  - Only the board's DRILL-IN draws an action bar, so a chord aimed at a tile the arrows
  *    merely landed on has nothing registered to run. It has to drill in first, or `s`,
- *    `f`, `q`, Shift+Tab and `k` are dead keys on one layout of three.
+ *    Shift+F, `q`, Shift+Tab and `k` are dead keys on one layout of three.
  *  - Arrow selection has to take DOM focus with it. Nothing else moves focus, so whatever
  *    was last clicked keeps it - and Enter, which this app deliberately leaves to a
  *    focused control, would fire that instead of opening the board.

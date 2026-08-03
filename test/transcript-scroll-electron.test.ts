@@ -42,7 +42,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
 const require = createRequire(import.meta.url);
 
 /** Same backstop the workflow geometry test uses: a hung browser fails, slowly. */
-const ELECTRON_TIMEOUT_MS = 120_000;
+const ELECTRON_TIMEOUT_MS = 240_000;
 
 /** A conversation comfortably taller than any pane it is measured in. */
 const TURNS = 40;

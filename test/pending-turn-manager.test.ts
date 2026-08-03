@@ -25,6 +25,34 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 const tick = (ms = 8) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Wait for a condition to hold, for the cases whose timing is genuinely load-sensitive.
+ *
+ * `tick(n)` is a fixed sleep, and that is the right tool while it is only yielding to the
+ * microtask queue - most cases here settle in one turn of the loop and a sleep reads more
+ * plainly than a poll. It is the wrong tool when the thing being waited for is a TIMER plus
+ * the async work that timer starts, because then the number has to be bigger than the
+ * machine's worst moment rather than bigger than a tick. One case here waited 30ms for a
+ * 10ms pickup timeout to fire AND its transition to land, which held on an idle machine and
+ * failed under `npm test`, where two test files run concurrently and other suites are
+ * spawning child processes.
+ *
+ * Deliberately does NOT assert on timeout. It returns and lets the caller's own assertion
+ * do the judging, so a genuine failure still reports `'sending' !== 'uncertain'` rather than
+ * a bare "condition did not hold" that says nothing about what the state actually was.
+ *
+ * The ceiling is generous rather than tuned: on a machine that is keeping up this returns as
+ * soon as the condition holds, so a long ceiling costs nothing, while a short one buys
+ * nothing and fails a case that was going to pass.
+ */
+async function settles(check: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await tick(2);
+  }
+}
+
 /** Poll instead of sleeping a fixed span, so a settle window costs its own length and no more. */
 async function until(predicate: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -581,7 +609,10 @@ test("an unconfirmed terminal success becomes uncertain instead of duplicating",
     10,
   );
   f.manager.submit(f.id, "possibly delivered");
-  await tick(30);
+  // The 10ms pickup timeout has to FIRE and its transition has to land. Polled rather than
+  // slept through, so the case is bounded by the transition rather than by a guess at how
+  // busy the machine is.
+  await settles(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "uncertain");
   const turn = f.registry.getSession(f.id)?.pendingTurns[0];
   assert.equal(turn?.state, "uncertain");
   assert.match(turn?.lastError ?? "", /could not confirm/);

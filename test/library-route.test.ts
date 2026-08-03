@@ -4,7 +4,7 @@ import {
   LIBRARY_SHELVES,
   LIBRARY_SURFACES,
   missionRouteHash,
-  pageToggleRoute,
+  pageShortcutRoute,
   parseMissionRoute,
 } from "../src/web/workflows/useWorkflowRoute.ts";
 import { LIBRARY_SHELF_COPY } from "../src/web/library/library-model.ts";
@@ -94,21 +94,18 @@ test("the execution routes are top-level, and the Library parse does not claim t
   });
 });
 
-test("the page toggle swings between the two homes, and stands down everywhere else", () => {
-  const guards = { active: true, typing: false, renaming: false, overlayOpen: false };
-  assert.deepEqual(pageToggleRoute({ ...guards, page: "fleet" }), { page: "library" });
-  assert.deepEqual(pageToggleRoute({ ...guards, page: "library" }), { page: "fleet" });
-  // Settings is reached and left by the gear; Runs and Ensembles are watched, not authored,
-  // and are reached from the Line. None of the three is a home the chord swings to, so it
-  // does nothing rather than guessing.
-  assert.equal(pageToggleRoute({ ...guards, page: "settings" }), null);
-  assert.equal(pageToggleRoute({ ...guards, page: "runs" }), null);
-  assert.equal(pageToggleRoute({ ...guards, page: "ensembles" }), null);
-  // The four stand-downs, which are what let `w` type, rename and dismiss.
-  assert.equal(pageToggleRoute({ ...guards, active: false, page: "fleet" }), null);
-  assert.equal(pageToggleRoute({ ...guards, typing: true, page: "fleet" }), null);
-  assert.equal(pageToggleRoute({ ...guards, renaming: true, page: "fleet" }), null);
-  assert.equal(pageToggleRoute({ ...guards, overlayOpen: true, page: "fleet" }), null);
+test("the three page shortcuts are direct destinations with shared stand-downs", () => {
+  const clear = { typing: false, renaming: false, overlayOpen: false };
+  assert.deepEqual(pageShortcutRoute({ ...clear, target: "fleet" }), { page: "fleet" });
+  assert.deepEqual(pageShortcutRoute({ ...clear, target: "library" }), { page: "library" });
+  assert.deepEqual(pageShortcutRoute({ ...clear, target: "runs" }), { page: "runs" });
+
+  // No target means no page chord matched. The other three stand-downs let the same bare
+  // letters type, rename and dismiss an overlay instead of navigating behind it.
+  assert.equal(pageShortcutRoute({ ...clear, target: null }), null);
+  assert.equal(pageShortcutRoute({ ...clear, target: "fleet", typing: true }), null);
+  assert.equal(pageShortcutRoute({ ...clear, target: "library", renaming: true }), null);
+  assert.equal(pageShortcutRoute({ ...clear, target: "runs", overlayOpen: true }), null);
 });
 
 test("every shelf has copy, and every routable shelf is a shelf", () => {

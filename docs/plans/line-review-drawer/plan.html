@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The Line's Review drawer: identity, cause, and remedy</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1b1f24;
+        --muted: #5a6472;
+        --dim: #6e7781;
+        --border: #d8dee4;
+        --border-soft: #eaeef2;
+        --panel: #f6f8fa;
+        --panel-2: #eef1f4;
+        --accent: #0969da;
+        --danger: #cf222e;
+        --good: #1a7f37;
+        --warn: #9a6700;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d1117;
+          --fg: #e6edf3;
+          --muted: #9198a1;
+          --dim: #7d8590;
+          --border: #30363d;
+          --border-soft: #21262d;
+          --panel: #161b22;
+          --panel-2: #1c2128;
+          --accent: #4493f8;
+          --danger: #f85149;
+          --good: #3fb950;
+          --warn: #d29922;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 16px;
+        line-height: 1.62;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 900px; margin: 0 auto; padding: 48px 24px 120px; }
+      h1 {
+        font-size: 30px;
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+        margin: 0 0 6px;
+      }
+      .lede { color: var(--muted); font-size: 15px; margin: 0 0 34px; }
+      h2 {
+        font-size: 21px;
+        letter-spacing: -0.01em;
+        margin: 44px 0 12px;
+        padding-bottom: 7px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      h3 { font-size: 16.5px; margin: 28px 0 8px; }
+      p { margin: 0 0 14px; }
+      ul, ol { margin: 0 0 14px; padding-left: 24px; }
+      li { margin: 5px 0; }
+      code {
+        font-family: var(--mono);
+        font-size: 0.87em;
+        background: var(--panel-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        margin: 0 0 16px;
+      }
+      pre code {
+        background: none;
+        border: 0;
+        padding: 0;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .scroll { overflow-x: auto; margin: 0 0 18px; }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+        min-width: 560px;
+      }
+      th, td {
+        text-align: left;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th { background: var(--panel); font-weight: 620; }
+      td code { font-size: 0.85em; white-space: nowrap; }
+      blockquote {
+        margin: 0 0 16px;
+        padding: 2px 0 2px 16px;
+        border-left: 3px solid var(--border);
+        color: var(--muted);
+      }
+      .callout {
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 9px 9px 0;
+        background: var(--panel);
+        padding: 13px 16px;
+        margin: 0 0 18px;
+        font-size: 14.5px;
+      }
+      .callout.bad { border-left-color: var(--danger); }
+      .callout.good { border-left-color: var(--good); }
+      .callout.warn { border-left-color: var(--warn); }
+      .callout p:last-child { margin-bottom: 0; }
+      .phase-tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 9px;
+        color: var(--muted);
+        vertical-align: 3px;
+        margin-left: 9px;
+      }
+      figure { margin: 0 0 22px; }
+      figcaption {
+        font-size: 13px;
+        color: var(--dim);
+        margin-top: 8px;
+        text-align: center;
+      }
+      svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+      .svg-box { fill: var(--panel); stroke: var(--border); }
+      .svg-box-new { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+      .svg-t { fill: var(--fg); font-family: var(--sans); font-size: 13px; }
+      .svg-t-sm { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+      .svg-t-new { fill: var(--accent); font-family: var(--mono); font-size: 10.5px; font-weight: 600; }
+      .svg-hd { fill: var(--dim); font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; }
+      .svg-line { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+      .svg-line-new { stroke: var(--accent); stroke-width: 2; fill: none; }
+      .svg-head-new { fill: var(--accent); }
+      .footer {
+        margin-top: 56px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border-soft);
+        font-size: 13px;
+        color: var(--dim);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>The Line's Review drawer: identity, cause, and remedy</h1>
+      <p class="lede">
+        Source of truth: <code>docs/plans/line-review-drawer/plan.md</code> &middot; mockups:
+        <code>docs/mockups/line-review-drawer/index.html</code>
+      </p>
+
+      <h2>The problem</h2>
+      <p>
+        The Review drawer lists every live workflow run. On the fleet it was built for, it now
+        shows 32 rows that are almost entirely useless:
+      </p>
+      <ul>
+        <li>The bold identity on each row is a raw GUID.</li>
+        <li>The state column reads <code>Blocked</code> with no cause.</li>
+        <li>The only control is <code>Open run</code>, which leaves the drawer.</li>
+      </ul>
+      <p>Two complaints, <strong>one root cause</strong>. Against the live database:</p>
+      <pre><code>sqlite&gt; SELECT status, current_phase, count(*) FROM workflow_runs GROUP BY 1, 2;
+blocked|session_disappeared|31
+completed|complete|17
+waiting_for_session|reattached_resubmit_required|1</code></pre>
+      <p>
+        Every blocked run is blocked because its session was removed. When a session goes,
+        <code>WorkflowManager</code> calls
+        <code>store.orphanBinding(bindingId, "session_disappeared")</code>, which nulls
+        <code>workflow_bindings.session_id</code>, cancels the in-flight reviewer attempts, and
+        sets the run to <code>blocked</code>. The drawer resolves a row's name with:
+      </p>
+      <pre><code>sessionName={(run.sessionId &amp;&amp; named.get(run.sessionId)) || run.noteKey}</code></pre>
+      <div class="callout bad">
+        <p>
+          <code>named</code> is built only from <strong>live</strong> sessions, so a run whose
+          session is gone falls all the way through to <code>noteKey</code> - the GUID. You see
+          GUIDs <em>because</em> the runs are blocked.
+        </p>
+      </div>
+
+      <h3>Both missing facts already exist</h3>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr><th>Fact</th><th>Where it already is</th><th>What is missing</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Human title</td>
+              <td><code>workflow_bindings.session_name</code>, captured at bind time and immune to the session dying</td>
+              <td><code>WORKFLOW_RUN_SUMMARY_SELECT</code> already <code>JOIN</code>s that table but selects only <code>note_key</code> and <code>session_id</code></td>
+            </tr>
+            <tr>
+              <td>Block reason</td>
+              <td><code>WorkflowRunSummary.phase</code>, on the SSE payload for every run</td>
+              <td><code>runTriageSentence</code> prints <code>runStatusLabel(status)</code> and drops <code>phase</code></td>
+            </tr>
+            <tr>
+              <td>Remedy</td>
+              <td><code>POST /api/workflow-runs/:id/{cancel,restart-full,resubmit,retry}</code></td>
+              <td>The drawer renders no action at all</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>No new table, no new query, no new fetch.</p>
+
+      <h2>Decisions taken</h2>
+      <p>Submitted through the dashboard's plan review, and settled:</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Which remedies does the drawer offer inline?</td>
+              <td><strong>All argument-free remedies</strong> - <code>Dismiss</code>,
+                <code>Restart</code>, <code>Retry</code>, <code>Resubmit</code>: every route
+                that needs nothing but a run id.</td>
+            </tr>
+            <tr>
+              <td>When do blocked runs fold into a group bar?</td>
+              <td><strong>3 or more sharing a phase.</strong> A pair still reads as two
+                ordinary rows.</td>
+            </tr>
+            <tr>
+              <td>After this plan?</td>
+              <td><strong>Create a phased implementation plan</strong> with dependency-linked
+                tasks.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>What ships</h2>
+      <p>Two phases, matching the two approved mockups.</p>
+
+      <h3>Phase A - name it, say why, offer the one move <span class="phase-tag">A</span></h3>
+      <ol>
+        <li><strong>Durable identity.</strong> Add <code>b.session_name</code> to
+          <code>WORKFLOW_RUN_SUMMARY_SELECT</code> and an optional append-only
+          <code>sessionName?: string</code> to <code>WorkflowRunSummary</code>. The drawer
+          resolves in three steps: live session name &rarr; <code>run.sessionName</code> &rarr;
+          <code>run.noteKey</code>. The GUID is now the third fallback rather than the second,
+          and when it does render it is mono and dim - an identifier, not a title.</li>
+        <li><strong>The cause, in the state column.</strong> A
+          <code>BLOCKED_PHASE_CLAUSES: Record&lt;string, string&gt;</code> map in
+          <code>run-model.ts</code>, the sibling of the <code>GATE_WAIT_SENTENCES</code> and
+          <code>ACTION_WAIT</code> maps already there. <code>phase</code> is a free
+          <code>string</code> and <code>orphanBinding</code> writes arbitrary reasons into it,
+          so the lookup falls back to <code>phase.replaceAll("_", " ")</code> - the same
+          fallback <code>alerts.ts:369</code> already uses. <code>Blocked</code> becomes
+          <code>Blocked &middot; session gone</code>.</li>
+        <li><strong>The remedy.</strong> A <code>runRemedy(run)</code> descriptor maps a phase
+          to the one action that phase actually takes, and the row renders it beside
+          <code>Open run</code>.</li>
+        <li><strong>Blocked stops borrowing amber.</strong> A blocked run gets a red leading
+          edge; amber keeps its existing meaning of "it is your turn". The reviewer chip on an
+          orphaned run reads <code>Reviewers stopped</code> in grey rather than
+          <code>Reviewers</code> in amber, because <code>orphanBinding</code> cancelled those
+          attempts - they are not waiting, they are dead.</li>
+        <li><strong>Wider title column.</strong> <code>.line-run-who</code> goes 240px &rarr;
+          340px, taken from the chip rail. 240px was sized when the bold line was a GUID that
+          would ellipsize anyway; real binding titles ("Improve Foreman Context and Table
+          Scrolling") do not fit.</li>
+      </ol>
+
+      <h3>Phase B - group by reason, act on the batch <span class="phase-tag">B</span></h3>
+      <ol start="6">
+        <li><strong>Fold.</strong> A pure <code>groupReviewRuns()</code> in
+          <code>src/web/lib/line-review-groups.ts</code> folds blocked runs sharing a
+          <code>phase</code> into one group. Runs that are not blocked stay individual rows,
+          and a group of fewer than <strong>three</strong> renders as plain rows rather than a
+          bar - a pair is not a pile, and collapsing one costs the reader the per-row chips
+          while saving nothing.</li>
+        <li><strong>One control for the batch.</strong> The group bar carries the reason once,
+          the count once, the first few titles, and a single <code>Dismiss all</code>.</li>
+        <li><strong>The strip stops lying.</strong> <code>foldReview</code> splits its amber
+          half: <code>32 waiting on you</code> becomes
+          <code>1 needs you &middot; 31 stalled</code>. <code>foldReview</code>'s own doc
+          comment already requires the strip and the drawer to read the same predicate -
+          <em>"a strip that says '1 waiting on you' over a drawer that marks none is the
+          surface arguing with itself"</em> - so the split lands in both or neither.</li>
+      </ol>
+
+      <h2>The phase &rarr; clause &rarr; remedy table</h2>
+      <p>The clause is what renders in the 190px state column. The remedy is the button.</p>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr><th><code>phase</code></th><th>Clause</th><th>Remedy</th><th>Route</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>session_disappeared</code></td><td>session gone</td><td>Dismiss</td><td><code>POST /workflow-runs/:id/cancel</code></td></tr>
+            <tr><td><code>round_limit</code></td><td>out of rounds</td><td>Restart</td><td><code>POST /workflow-runs/:id/restart-full</code></td></tr>
+            <tr><td><code>inspector_round_limit</code></td><td>out of Inspector rounds</td><td>Restart</td><td><code>POST /workflow-runs/:id/restart-full</code></td></tr>
+            <tr><td><code>infrastructure_error</code></td><td>provider call failed</td><td>Retry</td><td><code>POST /workflow-runs/:id/retry</code></td></tr>
+            <tr><td><code>inspector_findings</code></td><td>Inspector findings</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><code>inspector_disabled</code></td><td>Inspector off</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><code>inspector_pr_closed</code></td><td>PR closed</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><code>inspector_head_mismatch</code></td><td>head moved</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><code>delivery_uncertain</code></td><td>delivery unconfirmed</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><code>delivery_refused</code></td><td>delivery refused</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><code>delivery_blocked</code></td><td>delivery blocked</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><code>stale_capture</code></td><td>evidence went stale</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><code>capture_error</code></td><td>capture failed</td><td>-</td><td><code>Open run</code></td></tr>
+            <tr><td><em>(unmapped)</em></td><td><code>phase.replaceAll("_", " ")</code></td><td>-</td><td><code>Open run</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Plus one non-blocked case the fleet is currently sitting on:
+        <code>status = waiting_for_session</code>, <code>phase = reattached_resubmit_required</code>
+        &rarr; clause <em>reattached, needs resubmit</em>, remedy <strong>Resubmit</strong>
+        (<code>POST /workflow-runs/:id/resubmit</code>).
+      </p>
+      <div class="callout warn">
+        <p>
+          A remedy is only offered where the route needs <strong>no further input</strong>.
+          <code>Reattach</code> is deliberately absent:
+          <code>POST /api/workflow-bindings/:id/reattach</code> requires a
+          <code>sessionId</code>, which means a session picker, which is a dialog the drawer has
+          no room for. Reattach stays on the run page and in
+          <code>WorkflowBindingDialog</code>, one click away through <code>Open run</code>.
+        </p>
+        <p>
+          <code>Dismiss</code>, <code>Dismiss all</code> and <code>Restart</code> are
+          destructive and confirm before firing, with the count echoed - the pattern
+          <code>DELETE /api/ensembles/:id</code> already sets by demanding a
+          <code>confirmId</code> echo.
+        </p>
+      </div>
+
+      <h2>The rule this breaks, on purpose</h2>
+      <p><code>ReviewDrawer.tsx:15-25</code> states a deliberate constraint:</p>
+      <blockquote>
+        A projection of <code>WorkflowRunSummary</code> ... No fetch, no run detail, and no
+        action: everything that CHANGES a run - resolving a delivery, rechecking Inspector,
+        disabling a reviewer, resetting a round - stays on the run page, one click away through
+        "Open run".
+      </blockquote>
+      <p>
+        Phase A breaks the "no action" half. The rule was written when every row was a live run
+        making progress, where the honest answer to "what do I do about this" is "read it on
+        the run page". It does not survive 31 rows that will never move again: a triage surface
+        that can only describe a dead run is not triage.
+      </p>
+      <p>
+        The other two halves of the rule <strong>hold</strong>. There is still no fetch and no
+        run detail - every new fact comes off the <code>WorkflowRunSummary</code> the browser
+        already has over SSE, and every remedy is a single POST by run id with no payload. The
+        revised rule, which the component doc comment will state:
+      </p>
+      <blockquote>
+        No fetch and no run detail. Actions only where the summary alone proves the run is
+        stopped and the route needs no argument beyond the run id.
+      </blockquote>
+      <p>
+        That is what keeps <code>Reattach</code> (needs a session id),
+        <code>Resolve delivery</code> (needs a delivery id and a choice) and
+        <code>Disable a reviewer</code> (needs a node id) out.
+      </p>
+
+      <h2>Data flow</h2>
+      <p>The read path is unchanged in shape - one more column on a join that already exists:</p>
+      <pre><code>workflow_bindings.session_name
+  -&gt; WORKFLOW_RUN_SUMMARY_SELECT (existing JOIN)
+    -&gt; runSummaryFromRow -&gt; WorkflowRunSummary.sessionName
+      -&gt; SSE workflow_run_upsert -&gt; useEventStream -&gt; ReviewDrawer</code></pre>
+      <p>
+        The write path is new. The Review drawer previously had no arrow back to the daemon; it
+        now POSTs to run routes that already exist and that the run page already calls.
+      </p>
+
+      <figure>
+        <svg viewBox="0 0 860 300" role="img" aria-label="Before and after: the Review drawer gains a direct write path to the daemon">
+          <text class="svg-hd" x="14" y="20">BEFORE</text>
+          <rect class="svg-box" x="14" y="36" width="150" height="52" rx="9" />
+          <text class="svg-t" x="89" y="67" text-anchor="middle">Review drawer</text>
+          <path class="svg-line" d="M166 62 H246" marker-end="url(#a)" />
+          <text class="svg-t-sm" x="206" y="54" text-anchor="middle">Open run</text>
+          <rect class="svg-box" x="248" y="36" width="150" height="52" rx="9" />
+          <text class="svg-t" x="323" y="67" text-anchor="middle">Run page</text>
+          <path class="svg-line" d="M400 62 H676" marker-end="url(#a)" />
+          <text class="svg-t-sm" x="538" y="54" text-anchor="middle">POST cancel / restart / retry</text>
+          <rect class="svg-box" x="678" y="36" width="150" height="52" rx="9" />
+          <text class="svg-t" x="753" y="67" text-anchor="middle">Daemon</text>
+
+          <line x1="14" y1="120" x2="846" y2="120" stroke="currentColor" stroke-opacity="0.12" />
+
+          <text class="svg-hd" x="14" y="154">AFTER</text>
+          <rect class="svg-box-new" x="14" y="170" width="150" height="52" rx="9" />
+          <text class="svg-t" x="89" y="201" text-anchor="middle">Review drawer</text>
+          <path class="svg-line" d="M166 196 H246" marker-end="url(#a)" />
+          <text class="svg-t-sm" x="206" y="188" text-anchor="middle">Open run</text>
+          <rect class="svg-box" x="248" y="170" width="150" height="52" rx="9" />
+          <text class="svg-t" x="323" y="201" text-anchor="middle">Run page</text>
+          <path class="svg-line" d="M400 196 H676" marker-end="url(#a)" />
+          <text class="svg-t-sm" x="538" y="188" text-anchor="middle">POST cancel / restart / retry</text>
+          <rect class="svg-box" x="678" y="170" width="150" height="52" rx="9" />
+          <text class="svg-t" x="753" y="201" text-anchor="middle">Daemon</text>
+
+          <path class="svg-line-new" d="M89 222 V268 H753 V226" marker-end="url(#b)" />
+          <text class="svg-t-new" x="410" y="286" text-anchor="middle">NEW: cancel / restart / retry / resubmit - run id only, no picker</text>
+
+          <defs>
+            <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0 0 L8 4 L0 8 z" fill="currentColor" fill-opacity="0.5" />
+            </marker>
+            <marker id="b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+              <path class="svg-head-new" d="M0 0 L8 4 L0 8 z" />
+            </marker>
+          </defs>
+        </svg>
+        <figcaption>
+          The drawer keeps its link to the run page and gains a direct, argument-free write path
+          to routes the run page already uses.
+        </figcaption>
+      </figure>
+
+      <h2>Files</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>File</th><th>Change</th></tr></thead>
+          <tbody>
+            <tr><td><code>src/shared/workflow.ts</code></td><td><code>sessionName?: string</code> on <code>WorkflowRunSummary</code>, optional and append-only</td></tr>
+            <tr><td><code>src/server/workflows/store.ts</code></td><td><code>b.session_name</code> in the select; <code>sessionName</code> in <code>runSummaryFromRow</code>, spread so an empty name costs no bytes</td></tr>
+            <tr><td><code>src/web/workflows/run-model.ts</code></td><td><code>BLOCKED_PHASE_CLAUSES</code>, <code>blockedPhaseClause()</code>, <code>runRemedy()</code>; <code>runTriageSentence</code> appends the clause</td></tr>
+            <tr><td><code>src/web/lib/line-review-groups.ts</code></td><td><strong>new</strong> - the pure fold, plus its ordering rule</td></tr>
+            <tr><td><code>src/web/components/line/ReviewDrawer.tsx</code></td><td>three-step name, tones, remedy button, group bar, revised doc comment</td></tr>
+            <tr><td><code>src/web/App.tsx</code></td><td>wires the remedy handlers and the confirm</td></tr>
+            <tr><td><code>src/web/styles.css</code></td><td>group bar, blocked tone, <code>.line-run-who</code> 240 &rarr; 340px</td></tr>
+            <tr><td><code>src/server/line-summary.ts</code></td><td><code>foldReview</code> splits <code>waiting</code> into <code>needs you</code> / <code>stalled</code></td></tr>
+            <tr><td><code>README.md</code></td><td>the Line section: the drawer's new actions and the split count</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Deliberately not in scope</h3>
+      <ul>
+        <li><strong>No agent accent dot.</strong> It would mean a second denormalized column
+          (<code>b.session_agent</code>) on a summary that is folded and pushed over SSE for
+          every run in the fleet on every change. <code>externalSource</code>'s own doc comment
+          refuses exactly this trade - <em>"bytes per run per event bought for nothing"</em> -
+          and the dot fixes neither complaint.</li>
+        <li><strong>No <code>Reattach</code> in the drawer.</strong> See above; it needs a
+          session picker.</li>
+        <li><strong>No change to <code>DecideDrawer</code> or <code>IntakeDrawer</code>.</strong>
+          The group fold is written against workflow runs; generalizing it before a second
+          drawer wants it would be inventing a requirement.</li>
+      </ul>
+
+      <h2>Tests</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Layer</th><th>What it proves</th></tr></thead>
+          <tbody>
+            <tr><td><code>test/line-review-groups.test.ts</code> <strong>new</strong></td><td>the fold: grouping by phase, the small-group threshold, ordering, non-blocked runs left alone</td></tr>
+            <tr><td><code>test/line-drawer.test.ts</code></td><td><code>blockedPhaseClause</code> incl. the unmapped fallback; <code>runTriageSentence</code> for blocked; <code>runRemedy</code> per phase; <code>ReviewDrawer</code> markup renders the durable name, not the GUID, and the GUID when there is genuinely nothing else</td></tr>
+            <tr><td><code>test/line-summary-fold.test.ts</code></td><td><code>foldReview</code>'s split sentence and tone</td></tr>
+            <tr><td><code>test/workflow-store*.test.ts</code></td><td><code>runSummaryFromRow</code> carries <code>sessionName</code> off the binding, and omits it when empty</td></tr>
+            <tr><td><code>e2e/specs/line-drawers.spec.ts</code></td><td>the whole story in a browser: a run whose session was removed shows its title and <code>Blocked &middot; session gone</code>, <code>Dismiss</code> confirms and removes the row, and a batch folds into one bar</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        The e2e spec is the one that matters and is required by the project's UI rule. It
+        selects by role and accessible name - no <code>data-testid</code> - and runs against the
+        built dashboard and the built daemon with the fake agents in
+        <code>e2e/fixtures/fake-agents.ts</code>, so no model tokens are spent.
+      </p>
+      <p>Two constraints the spec has to respect, both found while reading the existing suite:</p>
+      <ul>
+        <li><strong>A blocked run cannot be seeded by writing SQLite.</strong> Run summaries are
+          served from an in-memory map on the <code>Registry</code>, not re-read per request, so
+          a direct <code>UPDATE workflow_runs</code> never reaches the browser. The spec has to
+          make the daemon do it: dispatch a session, bind, submit, then
+          <code>POST /api/sessions/:id/kill</code> and let <code>session_remove</code> reach
+          <code>orphanBinding</code>.</li>
+        <li><strong><code>EXIT_LINGER_MS</code> is a hardcoded 8s</strong>
+          (<code>registry.ts:259</code>) between a session exiting and
+          <code>session_remove</code> firing, and it is not env-tunable. The spec polls
+          <code>/api/workflow-runs/:id</code> for
+          <code>{ status: "blocked", phase: "session_disappeared" }</code> with an explicit
+          timeout rather than the 10s <code>expect</code> default, and stays inside the config's
+          60s per-spec budget.</li>
+        <li><strong>A second phase for the group fold is cheap</strong>: bind with
+          <code>maxRepairRounds: 1</code> and let the <code>E2E_FAIL_VERDICT</code> persona fail
+          twice, which blocks at <code>round_limit</code>.</li>
+      </ul>
+
+      <h2>Risks</h2>
+      <ul>
+        <li><strong><code>phase</code> is not a closed union.</strong> Any map over it needs the
+          string fallback, and the tests pin an unmapped phase so a future reason code degrades
+          to readable text instead of <code>undefined</code>.</li>
+        <li><strong><code>workflowRunWaitsOnOperator</code> is shared.</strong> It drives the
+          strip fold, the drawer's amber, and the command palette. Splitting the drawer's
+          presentation must not change the predicate itself, or the palette's "waiting on you"
+          list silently changes meaning.</li>
+        <li><strong>A destructive control in a strip drawer.</strong> <code>Dismiss all</code>
+          can cancel 30 runs from a surface the keyboard reaches with one keystroke, which is
+          why it confirms with the count echoed.</li>
+      </ul>
+
+      <p class="footer">
+        Rendered from <code>docs/plans/line-review-drawer/plan.md</code>. Open
+        <code>docs/mockups/line-review-drawer/index.html</code> for the visual comparison.
+      </p>
+    </div>
+  </body>
+</html>

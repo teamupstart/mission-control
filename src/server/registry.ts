@@ -4632,6 +4632,12 @@ export class Registry extends EventEmitter {
       // against the full review. Undefined and null are the same claim - not measured.
       cheapAction: e.cheapAction ?? null,
       divergence: e.divergence ?? null,
+      // Why the ladder landed here, and why a skip was not a judgment. Absent on the
+      // postures and paths that have no answer, where undefined and null again mean the
+      // same thing - the ledger renders the reason it was given or nothing at all, and
+      // never a reason nobody reported.
+      triageReason: e.triageReason ?? null,
+      skipReason: e.skipReason ?? null,
       disposition: e.disposition,
       lastAction: e.lastAction ?? null,
       sentText: e.sentText ?? null,

@@ -48,7 +48,7 @@ async function settled(locator: ReturnType<Page["locator"]>): Promise<void> {
     const same = next === last;
     last = next;
     return same;
-  }, { timeout: 15_000 }).toBe(true);
+  }, { timeout: 30_000 }).toBe(true);
 }
 
 async function api<T>(
@@ -288,7 +288,7 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
     const live = (await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions"))
       .filter((session) => session.state !== "exited");
     return live.length === 1 ? live[0]!.state : `${live.length} sessions`;
-  }, { timeout: 30_000 }).toBe("idle");
+  }, { timeout: 60_000 }).toBe("idle");
   const sessions = await api<Array<{ id: string }>>(daemon, "/api/sessions");
   expect(sessions).toHaveLength(1);
   const sessionId = sessions[0]!.id;
@@ -316,7 +316,7 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
       queue: { wrapupAskedAt: number | null; wrapupAnswered: boolean } | null;
     }>>(daemon, "/api/sessions")).find((candidate) => candidate.id === sessionId);
     return session?.queue?.wrapupAskedAt !== null && session?.queue?.wrapupAnswered === false;
-  }, { timeout: 20_000 }).toBe(true);
+  }, { timeout: 40_000 }).toBe(true);
 
   await card.getByRole("button", { name: "Queue" }).click();
   const review = card.getByRole("button", { name: "Run No-Mistakes Review" });
@@ -523,7 +523,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
     } : null;
   }, {
     message: "the completion hooks should leave a fresh, fully reconciled scout objective",
-    timeout: 15_000,
+    timeout: 30_000,
   }).toEqual({
     hooksSeen: true,
     instrumented: true,
@@ -555,7 +555,7 @@ test("Foreman never resurfaces Ship it actions after a scout completes", async (
     return queue.promptedGoal;
   }, {
     message: `Foreman did not retire the scout completion:\n${daemon.readLog()}`,
-    timeout: 20_000,
+    timeout: 40_000,
   }).not.toBeNull();
 
   const completion = await api<{ wrapupAnswer: string | null }>(

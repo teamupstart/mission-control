@@ -90,3 +90,64 @@ test("the scan can actually see a token nobody defined", () => {
   assert.ok(found.some((ref) => ref.hasFallback), "fallback references should be recognised");
   assert.ok(found.some((ref) => !ref.hasFallback), "bare references should be recognised");
 });
+
+// ---- comments actually close ----------------------------------------------------------
+//
+// The same class of defect as the missing token above, reached a different way: a `/* */`
+// comment whose closing delimiter lands mid-prose leaves the remainder of that sentence
+// sitting in the stylesheet as CSS. The browser reads it as the start of a selector, keeps
+// consuming until the next `{...}` block, and DISCARDS that block as part of the malformed
+// rule. The declarations vanish, the rest of the file is unaffected, and nothing anywhere
+// reports it.
+//
+// It has already happened once here: an edit to the ledger scroller's comment left two
+// trailing lines outside the delimiters, which ate `.sc-scroll { max-height: 50vh }` whole -
+// so the fix for a table running 3,500px down the page shipped as a table running 3,500px
+// down the page, with the rule present in the source and present in the bundle. It was found
+// by a browser measuring the element, which is a long way to travel for a stray `*/`.
+
+test("no stray comment delimiter is silently eating the rule after it", () => {
+  const stray: string[] = [];
+  // Walk the file as the parser does: inside a comment until `*/`, outside it until `/*`.
+  // A `*/` reached while outside one is the defect - there is no construct in CSS where a
+  // bare closing delimiter is meaningful.
+  let i = 0;
+  let inComment = false;
+  while (i < css.length) {
+    if (inComment) {
+      const end = css.indexOf("*/", i);
+      if (end === -1) {
+        stray.push(`styles.css:${lineOf(i)} opens a comment that is never closed`);
+        break;
+      }
+      i = end + 2;
+      inComment = false;
+      continue;
+    }
+    const open = css.indexOf("/*", i);
+    const close = css.indexOf("*/", i);
+    if (close !== -1 && (open === -1 || close < open)) {
+      stray.push(`styles.css:${lineOf(close)} closes a comment that was never opened`);
+      i = close + 2;
+      continue;
+    }
+    if (open === -1) break;
+    i = open + 2;
+    inComment = true;
+  }
+
+  assert.deepEqual(
+    stray,
+    [],
+    `a comment delimiter is unbalanced, so the rule after it is being discarded:\n  ${stray.join("\n  ")}`,
+  );
+});
+
+test("the comment scan can actually see an unbalanced delimiter", () => {
+  // The check above passes trivially on a file it never really parsed, so prove the walk
+  // still distinguishes prose inside a comment from a delimiter loose in the stylesheet.
+  assert.ok(css.includes("/*"), "the stylesheet should carry comments to walk");
+  // A `*/` inside a string or a url() would be a false positive; assert the file has none,
+  // so the simple walk above stays the right shape for it.
+  assert.doesNotMatch(css, /["'][^"'\n]*\*\/[^"'\n]*["']/, "a quoted */ would fool this walk");
+});

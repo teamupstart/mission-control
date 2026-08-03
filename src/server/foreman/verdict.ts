@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ForemanConfig, RecordEpisode, SetNote, SubmitOptions } from "@shared/protocol.ts";
 import { foremanAllowlisted, noteAwaitsYou } from "@shared/foreman.ts";
-import type { CheapAction, Divergence } from "@shared/foreman.ts";
+import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
 import { driverFormAnswer } from "../sdk/answer.ts";
@@ -380,9 +380,24 @@ export function episodeFromPlan(p: {
    * read without tailing the worker.
    */
   shadow?: { cheapAction: CheapAction; divergence: Divergence } | null;
+  /**
+   * Why the tier ladder landed on this verdict - `TriageOutcome.reason`. Absent under the
+   * `off` posture, which never consults the ladder. See `Decision.reason`.
+   */
+  triageReason?: string | null;
+  /**
+   * Why a skip was not a judgment, when the caller knows it was not.
+   *
+   * Passed IN rather than derived from the plan, because the one path that sets it is the
+   * one place that knows: `planFromVerdict` produced an ordinary verdict and the worker's
+   * freshness guard then discarded it undelivered. Nothing reachable from the plan can tell
+   * that apart from a skip the reviewer actually chose - which is precisely why the two
+   * have read identically in the ledger since it shipped.
+   */
+  skipReason?: SkipReason | null;
   plan: VerdictPlan;
 }): RecordEpisode {
-  const { pending, ctx, pane, verdict, tier, shadow, plan } = p;
+  const { pending, ctx, pane, verdict, tier, shadow, triageReason, skipReason, plan } = p;
   const send = plan.send;
   return {
     marker: pending.marker,
@@ -419,6 +434,12 @@ export function episodeFromPlan(p: {
     tier,
     cheapAction: shadow?.cheapAction ?? null,
     divergence: shadow?.divergence ?? null,
+    triageReason: triageReason ?? null,
+    // Only ever set on a row the plan also disposed as `skipped`, and left null otherwise
+    // rather than trusted from the caller: a reason attached to an answered or escalated
+    // row would be read by `episodeOutcome` as neither, and the one guarantee the outcome
+    // derivation needs is that this field is meaningless unless the disposition is a skip.
+    skipReason: plan.note.disposition === "skipped" ? (skipReason ?? null) : null,
     disposition: plan.note.disposition ?? "skipped",
     lastAction: plan.note.lastAction ?? null,
     // What actually reached the child. A menu send types NOTHING - the row's label is

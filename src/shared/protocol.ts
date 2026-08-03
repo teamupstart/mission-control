@@ -2,7 +2,7 @@ import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
-import { CHEAP_ACTIONS, DIVERGENCE_KINDS } from "./foreman.ts";
+import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
@@ -255,9 +255,22 @@ export type SendText = z.infer<typeof SendTextSchema>;
  * position on a screen that may have repainted since the caller looked - which is how a
  * confident, well-formed request confirms the wrong row.
  */
+/**
+ * Who is answering, on the two routes that settle a session's pending ask.
+ *
+ * The same field, the same default and the same reason as `ResolveReviewSchema.by`: a
+ * driver QUESTION answered here is written down as a resolved review so the conversation
+ * can replay it (`sdk/answered-question.ts`), and the conversation may only put an answer
+ * in the operator's voice if the operator gave it. Foreman reaches these routes over HTTP
+ * exactly as the dashboard does, so it declares itself rather than being inferred - and the
+ * default is the human, because every other caller IS one.
+ */
+const AnswerActorSchema = z.enum(["human", "foreman"]).optional().default("human");
+
 export const SelectOptionSchema = z.object({
   number: z.number().int().min(1).max(99),
   label: z.string().min(1),
+  by: AnswerActorSchema,
 });
 export type SelectOption = z.infer<typeof SelectOptionSchema>;
 
@@ -312,6 +325,7 @@ export const SubmitOptionsSchema = z
       .min(1)
       .max(8)
       .optional(),
+    by: AnswerActorSchema,
   })
   .refine((o) => Boolean(o.options) !== Boolean(o.answers), {
     message: "send either pane form rows or driver form answers, not both and not neither",
@@ -824,6 +838,13 @@ export const RecordEpisodeSchema = z.object({
   // field and an explicit null mean the same thing here - nothing was measured.
   cheapAction: z.enum(CHEAP_ACTIONS).nullable().optional(),
   divergence: z.enum(DIVERGENCE_KINDS).nullable().optional(),
+  // Why the ladder landed where it did. Free text, NOT an enum, and the difference is
+  // load-bearing on the wire specifically: one arm of the vocabulary interpolates an error
+  // (`tier1-failed: <err>`), and a worker newer than the daemon it posts to must not have
+  // its diagnosis rejected by an enum this build has not learned yet. Clamped by
+  // `MAX_EPISODE_TEXT` at the store, like every other free field here.
+  triageReason: z.string().nullable().optional(),
+  skipReason: z.enum(SKIP_REASONS).nullable().optional(),
   disposition: z.enum(["answered", "pending", "escalated", "skipped"]),
   lastAction: z.string().nullable().optional(),
   sentText: z.string().nullable().optional(),

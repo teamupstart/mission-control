@@ -86,32 +86,22 @@ export type MissionRoute =
   | { page: "settings"; category: SettingsCategoryId };
 
 /**
- * The route the page toggle (default `w`) navigates to, or `null` when it must stand down.
- * Pure, so the keydown handler's one navigation chord is testable without a DOM: App feeds it
- * the live guard state and this decides.
+ * The route a direct page shortcut navigates to, or `null` when it must stand down.
  *
- * It toggles Fleet <-> Library, the two homes the topbar segment names. It used to toggle
- * Fleet <-> Workflows, and it moved with the authoring surfaces rather than being re-pointed
- * at a page that is now only watched: the chord's job is "the other home", and the Workflows
- * page is no longer one.
- *
- * It is the one fleet shortcut that fires OFF the fleet too - that is what lets the same key
- * RETURN - and it does nothing on any other page. It stands down while a text field has focus,
- * a session is being renamed, or an overlay owns the screen, so `w` types, renames, or
- * dismisses in those moments rather than navigating.
+ * Fleet, Library and Runs each own a chord. None doubles as a toggle, so the key means the
+ * same destination from every page. The common guards stay pure and shared with App's global
+ * keydown handler: a letter types, renames, or leaves an overlay in control instead of
+ * navigating behind it.
  */
-export function pageToggleRoute(state: {
-  /** The pressed chord already equals the resolved page-toggle binding. */
-  active: boolean;
+export function pageShortcutRoute(state: {
+  /** The page whose resolved shortcut matched, or null when no page chord matched. */
+  target: "fleet" | "library" | "runs" | null;
   typing: boolean;
   renaming: boolean;
   overlayOpen: boolean;
-  page: MissionRoute["page"];
 }): MissionRoute | null {
-  if (!state.active || state.typing || state.renaming || state.overlayOpen) return null;
-  if (state.page === "fleet") return { page: "library" };
-  if (state.page === "library") return { page: "fleet" };
-  return null;
+  if (!state.target || state.typing || state.renaming || state.overlayOpen) return null;
+  return { page: state.target };
 }
 
 /**

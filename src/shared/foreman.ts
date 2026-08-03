@@ -3,7 +3,7 @@
 // src/shared rather than being mirrored by hand on each side.
 
 import { repoAllowlisted } from "./allowlist.ts";
-import type { NoteDisposition } from "./types.ts";
+import type { EpisodeAuthor, NoteDisposition } from "./types.ts";
 
 export { cwdAllowlisted } from "./allowlist.ts";
 
@@ -105,4 +105,77 @@ export function readCheapAction(v: unknown): CheapAction | null {
 /** The same, for the divergence. See `readCheapAction`. */
 export function readDivergence(v: unknown): Divergence | null {
   return DIVERGENCE_KINDS.includes(v as Divergence) ? (v as Divergence) : null;
+}
+
+/**
+ * Why a `skipped` episode was skipped, when the disposition alone does not say.
+ *
+ * Only `stale` is written today, and it exists because that path is not a judgment at
+ * all: the reviewer REACHED a verdict, and by the time it answered the session had moved
+ * on, so the verdict was discarded undelivered (`worker.ts`, the `pendingStillLive`
+ * guard). On a real 833-episode ledger that was 235 of 318 skips - 74% of a pile the
+ * panel described as "the asks Foreman could not read, and left alone", which describes
+ * none of them. It is a closed vocabulary rather than a boolean so the next non-judgment
+ * skip has somewhere to go, and null keeps its meaning: an ordinary declined skip.
+ */
+export const SKIP_REASONS = ["stale"] as const;
+export type SkipReason = (typeof SKIP_REASONS)[number];
+
+/** Read a persisted skip reason back, or null. See `readCheapAction` for why unknown is null. */
+export function readSkipReason(v: unknown): SkipReason | null {
+  return SKIP_REASONS.includes(v as SkipReason) ? (v as SkipReason) : null;
+}
+
+/**
+ * What actually happened to a decision - the answer to "why does this row say that?".
+ *
+ * `NoteDisposition` is the NOTE's vocabulary, and it is right for a note: a note is a
+ * live thing pinned to a session, and all it has to say is whether somebody still owes an
+ * answer. An episode is a record, and on the record `skipped` was covering three
+ * genuinely different events that a reader cannot tell apart:
+ *
+ * - `declined` - Foreman judged the call yours and left it. The only one the old label
+ *   described.
+ * - `stale` - Foreman reached a verdict and the session moved on before it could be
+ *   delivered. A race, not a judgment, and the majority of the pile in practice.
+ * - `dismissed` - Foreman escalated, and YOU closed it without answering. `resolveEpisode`
+ *   stamps `resolvedBy: "you"` on it, so the record already knew; nothing read it.
+ *
+ * Derived rather than stored, except for the one bit that genuinely is not recoverable
+ * (`skipReason`): a second persisted column that restated `disposition` and `resolvedBy`
+ * would be a third source of truth for the same question, and the two already disagree
+ * often enough - a row reading `skipped` whose `lastAction` says "escalated for your
+ * decision" is 8 of the 12 skips in a typical ledger window.
+ */
+export const EPISODE_OUTCOMES = [
+  "answered",
+  "drafted",
+  "escalated",
+  "declined",
+  "stale",
+  "dismissed",
+] as const;
+export type EpisodeOutcome = (typeof EPISODE_OUTCOMES)[number];
+
+export function episodeOutcome(e: {
+  disposition: NoteDisposition;
+  resolvedBy: EpisodeAuthor | null;
+  skipReason: SkipReason | null;
+}): EpisodeOutcome {
+  switch (e.disposition) {
+    case "answered":
+      return "answered";
+    case "pending":
+      return "drafted";
+    case "escalated":
+      return "escalated";
+    case "skipped":
+      // Order matters: a stale row can also carry `resolvedBy: "foreman"`, and a human
+      // dismissal never carries a skip reason, so neither test can subsume the other.
+      // `stale` is checked first because it is the one the row was BORN with - a
+      // dismissal is something a human does to an escalation afterwards, and a stale
+      // episode was never escalated, so the two cannot both be true.
+      if (e.skipReason === "stale") return "stale";
+      return e.resolvedBy === "you" ? "dismissed" : "declined";
+  }
 }

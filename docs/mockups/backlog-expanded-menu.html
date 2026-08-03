@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backlog · expanded-menu explorations</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0a0c0f; --bg-2: #0e1116;
+    --panel: #14181e; --panel-2: #171c23;
+    --border: #232a33; --border-soft: #1b2129;
+    --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+    --working: #4a9eff; --idle: #35c08a; --attention: #f6a733;
+    --danger: #f85149; --purple: #a371f7;
+    --prio-low: var(--dim); --prio-med: var(--working);
+    --prio-high: var(--attention); --prio-blocker: var(--danger);
+    --radius: 13px;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.28);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg-2); color: var(--fg);
+    font-family: var(--sans); font-size: 14px; line-height: 1.5;
+    padding: 48px 24px 96px;
+  }
+  .page { max-width: 1060px; margin: 0 auto; }
+
+  /* ---------- gallery chrome (quiet) ---------- */
+  .page > header { margin-bottom: 44px; }
+  .kicker {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 10px;
+  }
+  .page h1 { font-size: 21px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .page header p { color: var(--muted); max-width: 62ch; margin: 0; }
+
+  .mock { margin-bottom: 64px; }
+  .mock-cap { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  .mock-letter {
+    font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--bg);
+    background: var(--muted); border-radius: 5px; padding: 2px 7px;
+    letter-spacing: 0.05em; flex: none; transform: translateY(-1px);
+  }
+  .mock-name { font-size: 15px; font-weight: 600; }
+  .mock-thesis { color: var(--muted); margin: 0 0 4px; max-width: 78ch; }
+  .mock-trade { color: var(--dim); font-size: 12.5px; margin: 0 0 16px; max-width: 78ch; }
+  .mock-trade b { color: var(--dim); font-weight: 600; }
+
+  /* ---------- faithful app viewport ---------- */
+  .viewport {
+    background: var(--bg); border: 1px solid var(--border-soft);
+    border-radius: var(--radius); padding: 18px 22px 26px; overflow: hidden;
+  }
+
+  /* The Line — reproduced from styles.css .line / .line-stage */
+  .line { display: flex; align-items: center; padding-inline: 4px; margin-bottom: 14px; }
+  .line-stage {
+    flex: 1 1 0; min-width: 0; text-align: left; padding: 11px 13px;
+    color: var(--fg); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 12px; position: relative;
+  }
+  .ls-head { display: flex; align-items: center; gap: 7px; }
+  .ls-glyph { font-size: 13px; color: var(--muted); }
+  .ls-name {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--muted); white-space: nowrap;
+  }
+  .ls-count {
+    margin-left: auto; font-family: var(--mono); font-size: 17px;
+    font-weight: 600; font-variant-numeric: tabular-nums; color: var(--dim);
+  }
+  .ls-sub {
+    display: block; min-height: 1.4em; margin-top: 2px; font-family: var(--mono);
+    font-size: 10px; line-height: 1.4; color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .line-stage.tone-working .ls-count { color: var(--working); }
+  .line-stage.is-open {
+    border-color: var(--working);
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--working) 30%, transparent);
+  }
+  .line-stage.is-open::after {
+    content: ""; position: absolute; left: 24px; bottom: -7px;
+    border-left: 6px solid transparent; border-right: 6px solid transparent;
+    border-top: 6px solid var(--working);
+  }
+  .line-wire { flex: none; width: 26px; height: 2px; background: var(--border); }
+
+  /* shared pills + priority marks */
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+  }
+  .pill.next { color: var(--purple); border-color: color-mix(in oklab, var(--purple) 45%, var(--border)); }
+  .pill.blocked { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 45%, var(--border)); }
+  .pill.parked { color: var(--dim); }
+  .pill.dead { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 45%, var(--border)); }
+  .pill.long { text-transform: none; letter-spacing: 0.02em; font-size: 10px; }
+  .prio { display: inline-block; width: 7px; height: 7px; border-radius: 2px; flex: none; }
+  .prio.low { background: var(--prio-low); } .prio.med { background: var(--prio-med); }
+  .prio.high { background: var(--prio-high); } .prio.blocker { background: var(--prio-blocker); }
+
+  .meta { font-family: var(--mono); font-size: 10px; color: var(--dim); white-space: nowrap; }
+  .btn {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+    padding: 5px 10px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--muted); white-space: nowrap;
+  }
+  .btn.primary { color: var(--bg); background: var(--working); border-color: var(--working); font-weight: 600; }
+  .btn.quiet { background: transparent; }
+
+  /* drawer chrome — reproduced from .line-drawer */
+  .drawer {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+  }
+  .drawer-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .drawer-glyph { font-size: 12px; color: var(--muted); }
+  .drawer-title {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .drawer-count { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .drawer-spacer { flex: 1; }
+  .drawer-close { font-size: 12px; color: var(--dim); padding: 0 2px; }
+  .drawer-foot {
+    display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+    border-top: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: 10px; color: var(--dim);
+  }
+  .drawer-foot a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--dim); }
+
+  /* =============== A · queue drawer =============== */
+  .qa-band {
+    padding: 7px 14px 5px; font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim);
+    background: var(--bg-2);
+  }
+  .qa-rows { list-style: none; margin: 0; padding: 0; }
+  .qa-rows li {
+    display: flex; align-items: center; gap: 12px; height: 52px;
+    padding: 0 14px; border-bottom: 1px solid var(--border-soft); position: relative;
+  }
+  .qa-rows li:last-child { border-bottom: 0; }
+  .qa-rows li.is-next { box-shadow: inset 2px 0 0 var(--purple); }
+  .qa-rows li.is-blocked { box-shadow: inset 2px 0 0 var(--attention); }
+  .qa-rows li.is-parked { opacity: 0.55; }
+  .qa-who { display: flex; align-items: center; gap: 9px; width: 340px; min-width: 0; }
+  .qa-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qa-rows .meta { margin-left: auto; }
+  .qa-acts { display: flex; gap: 6px; margin-left: 14px; }
+
+  /* =============== B · autopilot planner =============== */
+  .ap-pop {
+    width: 460px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
+    margin-left: 340px;
+  }
+  .ap-head {
+    display: flex; align-items: baseline; gap: 8px; padding: 10px 16px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .ap-head .drawer-title { color: var(--purple); }
+  .ap-feature { padding: 14px 16px 4px; }
+  .ap-feature-top { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+  .ap-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .ap-intent { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+  .ap-why { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 5px; }
+  .ap-why li { display: flex; gap: 9px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .ap-why .tick { color: var(--idle); flex: none; }
+  .ap-why .soft { color: var(--dim); }
+  .ap-cta { display: flex; gap: 8px; padding: 0 16px 14px; }
+  .ap-then { border-top: 1px solid var(--border-soft); padding: 10px 16px 12px; }
+  .ap-then-label {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 7px;
+  }
+  .ap-then-row { display: flex; align-items: center; gap: 9px; padding: 4px 0; }
+  .ap-then-row .n { font-family: var(--mono); font-size: 10px; color: var(--dim); width: 12px; }
+  .ap-then-row .t { font-size: 12.5px; color: var(--muted); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ap-foot {
+    display: flex; align-items: center; gap: 9px; padding: 10px 16px;
+    border-top: 1px solid var(--border-soft); background: var(--bg-2);
+  }
+  .ap-foot .meta { color: var(--muted); }
+  .switch {
+    width: 28px; height: 16px; border-radius: 999px; background: var(--idle);
+    position: relative; flex: none;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 2px; right: 2px; width: 12px; height: 12px;
+    border-radius: 50%; background: var(--bg);
+  }
+
+  /* =============== C · triage strip =============== */
+  .tg-add {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft); background: var(--bg-2);
+  }
+  .tg-add-input {
+    flex: 1; display: flex; align-items: center; gap: 9px;
+    font-size: 13px; color: var(--dim);
+  }
+  .tg-add-input .plus { color: var(--muted); font-size: 14px; }
+  .tg-add-input .caret-blink { color: var(--fg); }
+  kbd {
+    font-family: var(--mono); font-size: 9px; color: var(--dim);
+    border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px;
+    padding: 1px 5px; background: var(--panel);
+  }
+  .tg-rows { list-style: none; margin: 0; padding: 0; }
+  .tg-rows li {
+    display: flex; align-items: center; gap: 11px; height: 40px; padding: 0 10px 0 8px;
+    border-bottom: 1px solid var(--border-soft); font-size: 12.5px;
+  }
+  .tg-rows li.is-focus { background: color-mix(in oklab, var(--working) 7%, transparent); box-shadow: inset 2px 0 0 var(--working); }
+  .tg-rows li.is-parked { opacity: 0.5; }
+  .tg-grip { color: var(--dim); font-size: 11px; letter-spacing: -2px; cursor: grab; }
+  .tg-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tg-seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .tg-seg span {
+    font-family: var(--mono); font-size: 9px; padding: 3px 7px; color: var(--dim);
+    border-right: 1px solid var(--border-soft);
+  }
+  .tg-seg span:last-child { border-right: 0; }
+  .tg-seg .on.low { color: var(--bg); background: var(--prio-low); }
+  .tg-seg .on.med { color: var(--bg); background: var(--prio-med); }
+  .tg-seg .on.high { color: var(--bg); background: var(--prio-high); }
+  .tg-seg .on.blocker { color: var(--bg); background: var(--prio-blocker); }
+  .tg-park { font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; color: var(--dim); }
+  .tg-park .switch { transform: scale(0.85); background: var(--border); }
+  .tg-park .switch::after { background: var(--dim); right: auto; left: 2px; }
+  .tg-park.on .switch::after { background: var(--idle); left: auto; right: 2px; }
+  .tg-park-flag { display: inline-flex; align-items: center; gap: 6px; }
+
+  /* =============== D · health radar =============== */
+  .rad-body { display: flex; }
+  .rad-chart { flex: 1.35; padding: 16px 18px 12px; border-right: 1px solid var(--border-soft); min-width: 0; }
+  .rad-lanes { position: relative; }
+  .rad-stale {
+    position: absolute; top: 0; bottom: 18px; right: 0; width: 26%;
+    background: color-mix(in oklab, var(--attention) 6%, transparent);
+    border-left: 1px dashed color-mix(in oklab, var(--attention) 40%, var(--border));
+  }
+  .rad-stale-tag {
+    position: absolute; bottom: 2px; right: 6px; font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--attention);
+  }
+  .rad-lane { display: flex; align-items: center; height: 34px; position: relative; }
+  .rad-lane + .rad-lane { border-top: 1px solid var(--border-soft); }
+  .rad-lane-label {
+    width: 62px; flex: none; font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim);
+  }
+  .rad-track { position: relative; flex: 1; height: 100%; }
+  .rad-dot {
+    position: absolute; top: 50%; width: 9px; height: 9px; border-radius: 50%;
+    transform: translate(-50%, -50%);
+  }
+  .rad-dot.low { background: var(--prio-low); } .rad-dot.med { background: var(--prio-med); }
+  .rad-dot.high { background: var(--prio-high); } .rad-dot.blockerp { background: var(--prio-blocker); }
+  .rad-dot.hollow { background: transparent; border: 1.5px solid var(--attention); }
+  .rad-dot.is-next { box-shadow: 0 0 0 3px color-mix(in oklab, var(--purple) 45%, transparent); }
+  .rad-axis {
+    display: flex; justify-content: space-between; margin-top: 6px; padding-left: 62px;
+    font-family: var(--mono); font-size: 9px; color: var(--dim);
+  }
+  .rad-tip {
+    position: absolute; left: 44%; top: -26px; z-index: 2; transform: translateX(-42%);
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: var(--shadow); padding: 5px 10px;
+    font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap;
+  }
+  .rad-tip b { color: var(--fg); font-weight: 600; }
+  .rad-legend {
+    display: flex; gap: 16px; margin-top: 10px; padding-left: 62px;
+    font-family: var(--mono); font-size: 9px; color: var(--dim); align-items: center;
+  }
+  .rad-legend .rad-dot { position: static; transform: none; display: inline-block; vertical-align: middle; margin-right: 5px; width: 8px; height: 8px; }
+  .rad-chains { flex: 1; padding: 16px 18px; min-width: 0; }
+  .rad-chains-label {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 12px;
+  }
+  .rad-chain { margin-bottom: 16px; }
+  .rad-node {
+    display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+    border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px;
+    font-size: 11.5px; background: var(--panel-2); white-space: nowrap;
+  }
+  .rad-node .meta { font-size: 9px; }
+  .rad-node.dead { border-color: color-mix(in oklab, var(--danger) 45%, var(--border)); color: var(--muted); }
+  .rad-link {
+    display: flex; align-items: center; gap: 7px; padding: 3px 0 3px 14px;
+    font-family: var(--mono); font-size: 9px; color: var(--dim);
+  }
+  .rad-link.warn { color: var(--attention); }
+  .rad-link.dead { color: var(--danger); }
+  .rad-fix { margin-top: 2px; padding-left: 14px; }
+
+  /* =============== E · launchpad =============== */
+  .lp-body { display: flex; }
+  .lp-main { flex: 1.5; padding: 16px 18px; border-right: 1px solid var(--border-soft); min-width: 0; }
+  .lp-top { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+  .lp-title { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 6px; }
+  .lp-intent { color: var(--muted); font-size: 12.5px; margin: 0 0 14px; max-width: 56ch; }
+  .lp-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .lp-select {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 7px; padding: 5px 9px; background: var(--panel-2);
+  }
+  .lp-select .k { color: var(--dim); letter-spacing: 0.08em; text-transform: uppercase; font-size: 9px; }
+  .lp-select .v { color: var(--fg); }
+  .lp-select .c { color: var(--dim); font-size: 8px; }
+  .lp-branch { font-family: var(--mono); font-size: 10px; color: var(--dim); }
+  .lp-cta { display: flex; gap: 8px; align-items: center; }
+  .lp-rail { flex: 1; min-width: 0; }
+  .lp-rail-head {
+    padding: 10px 14px 8px; font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .lp-rail ol { list-style: none; margin: 0; padding: 0; }
+  .lp-rail li {
+    display: flex; align-items: center; gap: 9px; padding: 8px 14px;
+    border-bottom: 1px solid var(--border-soft); font-size: 12px;
+  }
+  .lp-rail li:last-child { border-bottom: 0; }
+  .lp-rail .n { font-family: var(--mono); font-size: 10px; color: var(--dim); width: 12px; flex: none; }
+  .lp-rail .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  .lp-rail li.is-dim { opacity: 0.55; }
+
+  .endnote { color: var(--dim); font-size: 12.5px; max-width: 78ch; }
+  .endnote code { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  @media (max-width: 860px) {
+    .rad-body, .lp-body { flex-direction: column; }
+    .rad-chart, .lp-main { border-right: 0; border-bottom: 1px solid var(--border-soft); }
+    .ap-pop { margin-left: 0; width: 100%; }
+    .qa-who { width: auto; flex: 1; }
+    .qa-rows li .meta { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="kicker">Mission Control · The Line</div>
+  <h1>Backlog: five directions for the expanded menu</h1>
+  <p>Today the BACKLOG stage opens the Sitrep. Each mockup below explores a purpose-built
+  surface in its place, drawn only on state the browser already holds: the task list, the
+  Foreman's plan order, and the blocker graph.</p>
+</header>
+
+<!-- ================= A ================= -->
+<section class="mock" id="mock-a">
+  <div class="mock-cap"><span class="mock-letter">A</span><span class="mock-name">The queue drawer</span></div>
+  <p class="mock-thesis">Backlog joins intake, review, and decide as a fourth drawer. Plan order, one row
+  per task, actions where your eyes already are: launch, move to top, park.</p>
+  <p class="mock-trade"><b>Trade-off:</b> the most consistent answer and the least opinionated one. It reads
+  the queue but doesn't explain it; the Sitrep link stays for the full story.</p>
+
+  <div class="viewport">
+    <div class="line">
+      <button class="line-stage"><span class="ls-head"><span class="ls-glyph">⧉</span><span class="ls-name">Intake</span><span class="ls-count">2</span></span><span class="ls-sub">2 swept, next m…</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage is-open"><span class="ls-head"><span class="ls-glyph">☰</span><span class="ls-name">Backlog</span><span class="ls-count">6</span></span><span class="ls-sub">next up: Persist review verdicts</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage tone-working"><span class="ls-head"><span class="ls-glyph">▶</span><span class="ls-name">Working</span><span class="ls-count">3</span></span><span class="ls-sub">1 working · 2 idle</span></button>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-head">
+        <span class="drawer-glyph">☰</span><span class="drawer-title">Backlog</span>
+        <span class="drawer-count">4 ready · 1 blocked · 1 parked</span>
+        <span class="drawer-spacer"></span><span class="drawer-close">✕</span>
+      </div>
+      <div class="qa-band">Ready · plan order</div>
+      <ul class="qa-rows">
+        <li class="is-next">
+          <span class="qa-who"><span class="prio high"></span><span class="qa-title">Persist review verdicts across daemon restarts</span></span>
+          <span class="pill next">next up</span>
+          <span class="meta">feature · claude · 2d</span>
+          <span class="qa-acts"><button class="btn primary">Launch now</button><button class="btn quiet">Park</button></span>
+        </li>
+        <li>
+          <span class="qa-who"><span class="prio med"></span><span class="qa-title">Raise Codex rollout scan cap</span></span>
+          <span class="meta">fix · codex · 1d</span>
+          <span class="qa-acts"><button class="btn quiet">Top</button><button class="btn quiet">Park</button></span>
+        </li>
+        <li>
+          <span class="qa-who"><span class="prio med"></span><span class="qa-title">Backlog drawer for The Line</span></span>
+          <span class="meta">feature · claude · 5h</span>
+          <span class="qa-acts"><button class="btn quiet">Top</button><button class="btn quiet">Park</button></span>
+        </li>
+        <li>
+          <span class="qa-who"><span class="prio low"></span><span class="qa-title">Nightly stale-worktree sweep</span></span>
+          <span class="meta">chore · claude · 6d</span>
+          <span class="qa-acts"><button class="btn quiet">Top</button><button class="btn quiet">Park</button></span>
+        </li>
+      </ul>
+      <div class="qa-band">Blocked · parked</div>
+      <ul class="qa-rows">
+        <li class="is-blocked">
+          <span class="qa-who"><span class="prio high"></span><span class="qa-title">Wire verdicts into the ship gate</span></span>
+          <span class="pill blocked long">waiting on Persist review verdicts</span>
+          <span class="meta">feature · claude · 2d</span>
+        </li>
+        <li class="is-parked">
+          <span class="qa-who"><span class="prio med"></span><span class="qa-title">Migrate settings to per-repo scope</span></span>
+          <span class="pill parked">parked</span>
+          <span class="meta">chore · claude · 12d</span>
+          <span class="qa-acts"><button class="btn quiet">Resume</button></span>
+        </li>
+      </ul>
+      <div class="drawer-foot">blockers and history live in the <a href="#">Sitrep →</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= B ================= -->
+<section class="mock" id="mock-b">
+  <div class="mock-cap"><span class="mock-letter">B</span><span class="mock-name">The autopilot planner</span></div>
+  <p class="mock-thesis">Answers the stage's own promise: what would autopilot take next, and why. One
+  featured task, its reasoning spelled out, one button. The rest of the queue is a footnote.</p>
+  <p class="mock-trade"><b>Trade-off:</b> superb at n=1 and builds trust in autopilot's ordering, but working
+  the whole queue still means going somewhere else.</p>
+
+  <div class="viewport">
+    <div class="line">
+      <button class="line-stage"><span class="ls-head"><span class="ls-glyph">⧉</span><span class="ls-name">Intake</span><span class="ls-count">2</span></span><span class="ls-sub">2 swept, next m…</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage is-open"><span class="ls-head"><span class="ls-glyph">☰</span><span class="ls-name">Backlog</span><span class="ls-count">6</span></span><span class="ls-sub">next up: Persist review verdicts</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage tone-working"><span class="ls-head"><span class="ls-glyph">▶</span><span class="ls-name">Working</span><span class="ls-count">3</span></span><span class="ls-sub">1 working · 2 idle</span></button>
+    </div>
+
+    <div class="ap-pop">
+      <div class="ap-head"><span class="drawer-title">Next up</span><span class="drawer-count">plan order · 4 ready</span><span class="drawer-spacer"></span><span class="drawer-close">✕</span></div>
+      <div class="ap-feature">
+        <div class="ap-feature-top"><span class="prio high"></span><span class="ap-title">Persist review verdicts across daemon restarts</span></div>
+        <p class="ap-intent">Verdicts vanish on restart; carry them in SQLite so a reviewed task never re-enters the gate.</p>
+        <ul class="ap-why">
+          <li><span class="tick">✓</span> highest priority of the 4 ready</li>
+          <li><span class="tick">✓</span> no blockers · nothing upstream waiting</li>
+          <li><span class="tick">✓</span> oldest in its band · filed 2d ago</li>
+          <li><span class="soft">·</span><span class="soft">unblocks 1 task: Wire verdicts into the ship gate</span></li>
+        </ul>
+      </div>
+      <div class="ap-cta"><button class="btn primary">Launch now</button><button class="btn">Skip once</button></div>
+      <div class="ap-then">
+        <div class="ap-then-label">Then</div>
+        <div class="ap-then-row"><span class="n">2</span><span class="prio med"></span><span class="t">Raise Codex rollout scan cap</span><span class="meta">1d</span></div>
+        <div class="ap-then-row"><span class="n">3</span><span class="prio med"></span><span class="t">Backlog drawer for The Line</span><span class="meta">5h</span></div>
+      </div>
+      <div class="ap-foot"><span class="switch"></span><span class="meta">Autopilot on · takes one when a session frees up</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= C ================= -->
+<section class="mock" id="mock-c">
+  <div class="mock-cap"><span class="mock-letter">C</span><span class="mock-name">The triage strip</span></div>
+  <p class="mock-thesis">Capture and order, keyboard-first. File a task without leaving the bar, set priority
+  and park inline, drag the plan order yourself. Dense rows, no prose.</p>
+  <p class="mock-trade"><b>Trade-off:</b> the fastest way to work the queue and the weakest way to read it -
+  blockers get one flag, not a story.</p>
+
+  <div class="viewport">
+    <div class="line">
+      <button class="line-stage"><span class="ls-head"><span class="ls-glyph">⧉</span><span class="ls-name">Intake</span><span class="ls-count">2</span></span><span class="ls-sub">2 swept, next m…</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage is-open"><span class="ls-head"><span class="ls-glyph">☰</span><span class="ls-name">Backlog</span><span class="ls-count">6</span></span><span class="ls-sub">next up: Persist review verdicts</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage tone-working"><span class="ls-head"><span class="ls-glyph">▶</span><span class="ls-name">Working</span><span class="ls-count">3</span></span><span class="ls-sub">1 working · 2 idle</span></button>
+    </div>
+
+    <div class="drawer">
+      <div class="tg-add">
+        <span class="tg-add-input"><span class="plus">＋</span>File a task…<span class="caret-blink">▏</span></span>
+        <kbd>⏎ file</kbd><kbd>⇥ details</kbd>
+      </div>
+      <ul class="tg-rows">
+        <li class="is-focus">
+          <span class="tg-grip">⠿</span><span class="tg-title">Persist review verdicts across daemon restarts</span>
+          <span class="tg-seg"><span>L</span><span>M</span><span class="on high">H</span><span>B</span></span>
+          <span class="tg-park tg-park-flag on"><span class="switch"></span></span>
+          <span class="meta">2d</span>
+        </li>
+        <li>
+          <span class="tg-grip">⠿</span><span class="tg-title">Raise Codex rollout scan cap</span>
+          <span class="tg-seg"><span>L</span><span class="on med">M</span><span>H</span><span>B</span></span>
+          <span class="tg-park tg-park-flag on"><span class="switch"></span></span>
+          <span class="meta">1d</span>
+        </li>
+        <li>
+          <span class="tg-grip">⠿</span><span class="tg-title">Backlog drawer for The Line</span>
+          <span class="tg-seg"><span>L</span><span class="on med">M</span><span>H</span><span>B</span></span>
+          <span class="tg-park tg-park-flag on"><span class="switch"></span></span>
+          <span class="meta">5h</span>
+        </li>
+        <li>
+          <span class="tg-grip">⠿</span><span class="tg-title">Nightly stale-worktree sweep</span>
+          <span class="tg-seg"><span class="on low">L</span><span>M</span><span>H</span><span>B</span></span>
+          <span class="tg-park tg-park-flag on"><span class="switch"></span></span>
+          <span class="meta">6d</span>
+        </li>
+        <li>
+          <span class="tg-grip">⠿</span><span class="tg-title">Wire verdicts into the ship gate</span>
+          <span class="pill blocked">blocked</span>
+          <span class="tg-seg"><span>L</span><span>M</span><span class="on high">H</span><span>B</span></span>
+          <span class="tg-park tg-park-flag on"><span class="switch"></span></span>
+          <span class="meta">2d</span>
+        </li>
+        <li class="is-parked">
+          <span class="tg-grip">⠿</span><span class="tg-title">Migrate settings to per-repo scope</span>
+          <span class="tg-seg"><span>L</span><span class="on med">M</span><span>H</span><span>B</span></span>
+          <span class="tg-park tg-park-flag"><span class="switch"></span></span>
+          <span class="meta">12d</span>
+        </li>
+      </ul>
+      <div class="drawer-foot"><kbd>↑↓</kbd> move · <kbd>⌘↑</kbd> top · <kbd>p</kbd> priority · <kbd>space</kbd> park · <kbd>⏎</kbd> launch first</div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= D ================= -->
+<section class="mock" id="mock-d">
+  <div class="mock-cap"><span class="mock-letter">D</span><span class="mock-name">The health radar</span></div>
+  <p class="mock-thesis">Not a list - the shape of the queue. Age runs left to right, every task is a dot in
+  its priority lane, and the amber zone is where work goes to rot. Blocked chains are drawn as chains,
+  including the dead one autopilot will never unstick on its own.</p>
+  <p class="mock-trade"><b>Trade-off:</b> earns its keep at thirty tasks, overkill at three. It reads the
+  backlog's health, not its content - a dot needs a hover to become words.</p>
+
+  <div class="viewport">
+    <div class="line">
+      <button class="line-stage"><span class="ls-head"><span class="ls-glyph">⧉</span><span class="ls-name">Intake</span><span class="ls-count">2</span></span><span class="ls-sub">2 swept, next m…</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage is-open"><span class="ls-head"><span class="ls-glyph">☰</span><span class="ls-name">Backlog</span><span class="ls-count">6</span></span><span class="ls-sub">next up: Persist review verdicts</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage tone-working"><span class="ls-head"><span class="ls-glyph">▶</span><span class="ls-name">Working</span><span class="ls-count">3</span></span><span class="ls-sub">1 working · 2 idle</span></button>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-head">
+        <span class="drawer-glyph">☰</span><span class="drawer-title">Backlog</span>
+        <span class="drawer-count">6 tasks · 1 stale · 1 dead blocker</span>
+        <span class="drawer-spacer"></span><span class="drawer-close">✕</span>
+      </div>
+      <div class="rad-body">
+        <div class="rad-chart">
+          <div class="rad-lanes">
+            <div class="rad-stale"><span class="rad-stale-tag">stale</span></div>
+            <div class="rad-lane">
+              <span class="rad-lane-label">High</span>
+              <span class="rad-track">
+                <span class="rad-dot high is-next" style="left: 16%"></span>
+                <span class="rad-dot hollow" style="left: 19%"></span>
+              </span>
+            </div>
+            <div class="rad-lane">
+              <span class="rad-lane-label">Med</span>
+              <span class="rad-track">
+                <span class="rad-dot med" style="left: 4%"></span>
+                <span class="rad-dot med" style="left: 9%"></span>
+                <span class="rad-dot med" style="left: 88%; opacity: 0.5;"></span>
+              </span>
+            </div>
+            <div class="rad-lane">
+              <span class="rad-lane-label">Low</span>
+              <span class="rad-track">
+                <span class="rad-tip"><b>Nightly stale-worktree sweep</b> · low · 6d · ready</span>
+                <span class="rad-dot low" style="left: 44%"></span>
+              </span>
+            </div>
+          </div>
+          <div class="rad-axis"><span>now</span><span>3d</span><span>7d</span><span>14d+</span></div>
+          <div class="rad-legend">
+            <span><span class="rad-dot med"></span>ready</span>
+            <span><span class="rad-dot hollow"></span>blocked</span>
+            <span><span class="rad-dot med is-next"></span>next up</span>
+            <span style="opacity: 0.5;"><span class="rad-dot med"></span>parked</span>
+          </div>
+        </div>
+        <div class="rad-chains">
+          <div class="rad-chains-label">Blocked chains</div>
+          <div class="rad-chain">
+            <span class="rad-node"><span class="prio high"></span>Persist review verdicts <span class="meta">next up</span></span>
+            <div class="rad-link warn">└─ blocks</div>
+            <span class="rad-fix"><span class="rad-node"><span class="prio high"></span>Wire verdicts into the ship gate</span></span>
+          </div>
+          <div class="rad-chain">
+            <span class="rad-node dead"><span class="prio med"></span>Registry rewrite <span class="meta">cancelled</span></span>
+            <div class="rad-link dead">└─ dead blocker · still gating</div>
+            <span class="rad-fix"><span class="rad-node"><span class="prio med"></span>Refactor eviction paths</span>
+            <button class="btn quiet" style="margin-left: 8px;">Clear blocker</button></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= E ================= -->
+<section class="mock" id="mock-e">
+  <div class="mock-cap"><span class="mock-letter">E</span><span class="mock-name">The launchpad</span></div>
+  <p class="mock-thesis">Half planner, half queue. The next task gets a cockpit - agent, model, effort,
+  branch - and the rest wait in a slim rail. For the operator who edits the dispatch before it flies.</p>
+  <p class="mock-trade"><b>Trade-off:</b> the heaviest surface here; it earns the space only if you routinely
+  override autopilot's defaults before launch.</p>
+
+  <div class="viewport">
+    <div class="line">
+      <button class="line-stage"><span class="ls-head"><span class="ls-glyph">⧉</span><span class="ls-name">Intake</span><span class="ls-count">2</span></span><span class="ls-sub">2 swept, next m…</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage is-open"><span class="ls-head"><span class="ls-glyph">☰</span><span class="ls-name">Backlog</span><span class="ls-count">6</span></span><span class="ls-sub">next up: Persist review verdicts</span></button>
+      <span class="line-wire"></span>
+      <button class="line-stage tone-working"><span class="ls-head"><span class="ls-glyph">▶</span><span class="ls-name">Working</span><span class="ls-count">3</span></span><span class="ls-sub">1 working · 2 idle</span></button>
+    </div>
+
+    <div class="drawer">
+      <div class="lp-body">
+        <div class="lp-main">
+          <div class="lp-top"><span class="prio high"></span><span class="pill">feature</span><span class="pill next">next up</span></div>
+          <div class="lp-title">Persist review verdicts across daemon restarts</div>
+          <p class="lp-intent">Verdicts vanish on restart; carry them in SQLite so a reviewed task never
+          re-enters the gate. Unblocks the ship-gate wiring behind it.</p>
+          <div class="lp-controls">
+            <span class="lp-select"><span class="k">agent</span><span class="v">claude</span><span class="c">▾</span></span>
+            <span class="lp-select"><span class="k">model</span><span class="v">sonnet</span><span class="c">▾</span></span>
+            <span class="lp-select"><span class="k">effort</span><span class="v">high</span><span class="c">▾</span></span>
+            <span class="lp-select"><span class="k">branch</span><span class="v lp-branch">fix/review-verdicts</span></span>
+          </div>
+          <div class="lp-cta"><button class="btn primary">Launch now</button><button class="btn">Edit task</button><span class="meta">2 sessions idle</span></div>
+        </div>
+        <div class="lp-rail">
+          <div class="lp-rail-head">Up next</div>
+          <ol>
+            <li><span class="n">2</span><span class="prio med"></span><span class="t">Raise Codex rollout scan cap</span><span class="meta">1d</span></li>
+            <li><span class="n">3</span><span class="prio med"></span><span class="t">Backlog drawer for The Line</span><span class="meta">5h</span></li>
+            <li><span class="n">4</span><span class="prio low"></span><span class="t">Nightly stale-worktree sweep</span><span class="meta">6d</span></li>
+            <li class="is-dim"><span class="n">·</span><span class="prio high"></span><span class="t">Wire verdicts into the ship gate</span><span class="pill blocked">blocked</span></li>
+            <li class="is-dim"><span class="n">·</span><span class="prio med"></span><span class="t">Migrate settings to per-repo scope</span><span class="pill parked">parked</span></li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<p class="endnote">All five draw only on state the browser already holds: <code>tasks[]</code>,
+<code>foreman.backlogPlan</code>, and the pure derivations in <code>src/shared/backlog.ts</code>
+(<code>readyBacklog</code>, <code>blockersIn</code>, <code>nextUpTaskId</code>, <code>deadBlockersFor</code>).
+A, C, D, and E fit the existing <code>LineDrawer</code> frame; B is an anchored popover in the
+<code>.launch-pop</code> family. None need a new endpoint.</p>
+
+</div>
+</body>
+</html>

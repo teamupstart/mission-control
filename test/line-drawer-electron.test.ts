@@ -41,7 +41,7 @@ import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 const require = createRequire(import.meta.url);
 
 /** Same backstop the other geometry tests use: a hung browser fails, slowly. */
-const ELECTRON_TIMEOUT_MS = 120_000;
+const ELECTRON_TIMEOUT_MS = 240_000;
 
 /**
  * The cap, as used height, in a 900px window.

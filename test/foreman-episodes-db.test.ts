@@ -112,6 +112,8 @@ function write(over: Partial<Parameters<typeof db.recordEpisode>[0]> = {}): void
     tier: 2,
     cheapAction: null,
     divergence: null,
+    triageReason: null,
+    skipReason: null,
     disposition: "answered",
     lastAction: null,
     sentText: null,
@@ -133,6 +135,10 @@ test("the shadow columns and the fleet-wide index land on a pre-feature database
   ).map((c) => c.name);
   assert.ok(cols.includes("cheap_action"), "cheap_action never reached an upgraded database");
   assert.ok(cols.includes("divergence"), "divergence never reached an upgraded database");
+  // Same exposure, same failure mode: the INSERT names both, so a database carrying the
+  // table without them fails every episode write rather than merely losing the new column.
+  assert.ok(cols.includes("triage_reason"), "triage_reason never reached an upgraded database");
+  assert.ok(cols.includes("skip_reason"), "skip_reason never reached an upgraded database");
 
   // The index has to exist too - it is what stops the fleet-wide read being a full scan
   // plus a sort on the one table that grows without bound between prunes.
@@ -156,7 +162,14 @@ test("an episode written before the shadow columns reads back as not measured", 
   // Still says what it always said.
   assert.equal(legacy.disposition, "answered");
   assert.equal(legacy.tier, 2);
+  // And the two why-columns are absent rather than guessed. A backfill that read the
+  // reason out of `last_action` prose was considered and refused: that string is a
+  // rendering, it has already changed once, and afterwards a migration that guessed is
+  // indistinguishable from one that knew.
+  assert.equal(legacy.triageReason, null);
+  assert.equal(legacy.skipReason, null);
 });
+
 
 // ---- the cross-session read ----------------------------------------------------------
 
@@ -287,4 +300,98 @@ test("a divergence written by a newer build reads as not measured, not as a near
   const row = db.recentEpisodes(100).find((r) => r.marker === "s-1");
   assert.equal(row?.divergence, null);
   assert.equal(row?.cheapAction, null);
+});
+
+// ---- why a decision came out the way it did ------------------------------------------
+//
+// These live at the END of the file on purpose. They WRITE, and the ordering assertions
+// above assert on the newest rows in a shared database - a fixture inserted above them
+// silently becomes the newest row and breaks a test that has nothing to do with it.
+
+// The stale mark is the one thing about a skip that cannot be recovered later: the plan
+// disposed it exactly as an ordinary declined skip, and only the worker's freshness guard
+// knew the difference. If it does not survive the write, the split is decoration.
+test("a stale skip round-trips, and an ordinary one stays unmarked", () => {
+  write({ noteKey: "stale-key", marker: "s1", disposition: "skipped", skipReason: "stale" });
+  write({ noteKey: "stale-key", marker: "s2", disposition: "skipped", skipReason: null });
+
+  const rows = db.episodesFor("stale-key");
+  assert.equal(rows.find((r) => r.marker === "s1")?.skipReason, "stale");
+  assert.equal(rows.find((r) => r.marker === "s2")?.skipReason, null);
+
+  // And on the fleet-wide read, which is the surface that renders it.
+  const ledger = db.recentEpisodes(100);
+  assert.equal(ledger.find((r) => r.marker === "s1")?.skipReason, "stale");
+});
+
+// A re-decision that did NOT go stale must not inherit the earlier stale mark, or the
+// ledger reports a race that this very row is the proof did not happen. The upsert
+// overwrites rather than coalescing, on the same terms as the shadow pair.
+test("re-recording a stale episode clears the mark rather than keeping it", () => {
+  write({ noteKey: "restale", marker: "r1", disposition: "skipped", skipReason: "stale" });
+  write({ noteKey: "restale", marker: "r1", disposition: "answered", skipReason: null });
+
+  const [row] = db.episodesFor("restale");
+  assert.ok(row);
+  assert.equal(row.disposition, "answered");
+  assert.equal(row.skipReason, null, "the stale mark outlived the decision that replaced it");
+});
+
+// The ladder's diagnosis is free text on purpose - one arm interpolates an error - so it
+// must survive whole rather than being narrowed to a vocabulary this build happens to know.
+test("a triage reason survives the write verbatim, including an interpolated failure", () => {
+  write({ noteKey: "why", marker: "w1", triageReason: "low-confidence" });
+  write({ noteKey: "why", marker: "w2", triageReason: "tier1-failed: Error: spawn ENOENT" });
+
+  const rows = db.episodesFor("why");
+  assert.equal(rows.find((r) => r.marker === "w1")?.triageReason, "low-confidence");
+  assert.equal(
+    rows.find((r) => r.marker === "w2")?.triageReason,
+    "tier1-failed: Error: spawn ENOENT",
+  );
+});
+
+// The reason the summary grew three fields: the ledger renders them, and a field the
+// ledger renders that the ledger's own read does not ship is a cell that is always blank.
+test("the fleet-wide summary carries the three fields the row's why is built from", () => {
+  write({
+    noteKey: "sum",
+    marker: "u1",
+    classification: "design-fork",
+    triageReason: "needs-judgment",
+    disposition: "skipped",
+    skipReason: "stale",
+  });
+  const row = db.recentEpisodes(100).find((r) => r.marker === "u1");
+  assert.ok(row);
+  assert.equal(row.classification, "design-fork");
+  assert.equal(row.triageReason, "needs-judgment");
+  assert.equal(row.skipReason, "stale");
+});
+
+// The detail read behind an opened ledger row. It is the FULL shape - the ledger's own
+// poll deliberately ships none of this, so if these fields are missing here they are
+// reachable nowhere on a fleet-wide surface.
+test("episodeById returns the whole decision, including what the ledger poll drops", () => {
+  write({
+    noteKey: "detail",
+    marker: "d1",
+    pane: "❯ 1. Yes\n  2. No",
+    brief: "Both are defensible.",
+    recommendation: "Take option 1.",
+  });
+  const [written] = db.episodesFor("detail");
+  assert.ok(written);
+
+  const full = db.episodeById(written.id);
+  assert.ok(full, "the detail read found nothing for an id that was just written");
+  assert.equal(full.pane, "❯ 1. Yes\n  2. No");
+  assert.equal(full.brief, "Both are defensible.");
+  assert.equal(full.recommendation, "Take option 1.");
+});
+
+// Pruned or unknown reads as absent, not as a throw: the ledger is a snapshot that can
+// outlive a row by a poll, and the row it opens has to be able to say so.
+test("episodeById on an unknown id is null rather than a throw", () => {
+  assert.equal(db.episodeById(9_999_999), null);
 });

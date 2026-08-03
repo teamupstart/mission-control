@@ -361,6 +361,8 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
   /** For naming a DRAFT action node; a published one carries its own snapshot. */
   sessionActions?: SessionAction[];
   readOnly?: boolean;
+  /** Use the bounded preview size for embedded graphs rather than a builder's work surface. */
+  compact?: boolean;
   onChange?: (graph: WorkflowDraftGraph) => void;
   onSelection?: (selection: WorkflowSelection) => void;
   onDropNode?: (spec: NewWorkflowNode, position: { x: number; y: number }) => void;
@@ -379,6 +381,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
   personas,
   sessionActions = EMPTY_SESSION_ACTIONS,
   readOnly = false,
+  compact = false,
   onChange,
   onSelection,
   onDropNode,
@@ -547,7 +550,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
   return (
     <div
       ref={canvas}
-      className={`workflow-canvas${readOnly ? " is-readonly" : ""}`}
+      className={`workflow-canvas${readOnly ? " is-readonly" : ""}${compact ? " is-compact" : ""}`}
       aria-label={readOnly ? "Published workflow graph" : "Workflow graph editor"}
       onFocusCapture={(event) => {
         const target = event.target instanceof Element

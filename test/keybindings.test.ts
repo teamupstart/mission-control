@@ -55,7 +55,7 @@ const {
 } = await import("../src/web/lib/keybindings.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { KeyboardPanel } = await import("../src/web/components/KeyboardPanel.tsx");
-const { pageToggleRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
+const { pageShortcutRoute } = await import("../src/web/workflows/useWorkflowRoute.ts");
 type ActionId = (typeof ACTIONS)[number]["id"];
 
 /** The resolved map the runtime handler and the settings editor both read. */
@@ -189,11 +189,11 @@ test("bare Tab is reserved while modified Tab chords remain bindable", () => {
   assert.equal(isReservedChord("ctrl+Tab"), false);
 });
 
-test("file actions own f and Shift+O and every default round-trips from a keypress", () => {
+test("file actions own Shift+F and Shift+O and every default round-trips from a keypress", () => {
   const rename = ACTIONS.find((a) => a.id === "rename");
   const files = ACTIONS.find((a) => a.id === "files");
   const filePicker = ACTIONS.find((a) => a.id === "filePicker");
-  assert.equal(files?.defaultBinding, "f");
+  assert.equal(files?.defaultBinding, "shift+f");
   assert.equal(filePicker?.defaultBinding, "shift+o");
   assert.equal(rename?.defaultBinding, "shift+r");
   // Every default binding must be something chordFromEvent can actually produce,
@@ -207,6 +207,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("e")),
     chordFromEvent(key("g")),
     chordFromEvent(key("d")),
+    chordFromEvent(key("F", { shift: true })),
     chordFromEvent(key("O", { shift: true })),
     chordFromEvent(key("s")),
     chordFromEvent(key("t")),
@@ -214,6 +215,7 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
     chordFromEvent(key("f")),
     chordFromEvent(key("p")),
     chordFromEvent(key("P", { shift: true })),
+    chordFromEvent(key("T", { shift: true })),
     chordFromEvent(key("q")),
     chordFromEvent(key("y")),
     chordFromEvent(key("Tab", { shift: true })),
@@ -226,66 +228,46 @@ test("file actions own f and Shift+O and every default round-trips from a keypre
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
 });
 
-test("workflows is a global action defaulting to w that toggles the page", () => {
-  // A registry entry (not a hard-coded key in App) is what also puts it in the settings
-  // editor. It is "global", not "selection": it navigates between the Fleet and Workflows
-  // pages and needs no selected card - the one chord that fires off the fleet too.
-  const workflows = ACTIONS.find((a) => a.id === "workflows");
-  assert.ok(workflows, "workflows missing from the customizable registry");
-  assert.equal(workflows.defaultBinding, "w");
-  assert.equal(workflows.group, "global");
+test("Fleet, Library and Runs are separate global actions with direct bindings", () => {
+  const fleet = ACTIONS.find((a) => a.id === "fleet");
+  const library = ACTIONS.find((a) => a.id === "workflows");
+  const runs = ACTIONS.find((a) => a.id === "runs");
+  const sitrep = ACTIONS.find((a) => a.id === "roundup");
+  assert.deepEqual(
+    [fleet?.defaultBinding, library?.defaultBinding, runs?.defaultBinding],
+    ["f", "w", "r"],
+  );
+  assert.deepEqual([fleet?.group, library?.group, runs?.group], ["global", "global", "global"]);
+  assert.equal(chordFromEvent(key("f")), "f");
   assert.equal(chordFromEvent(key("w")), "w");
-  assert.equal(formatChord(workflows.defaultBinding), "w");
+  assert.equal(chordFromEvent(key("r")), "r");
+  assert.equal(sitrep?.defaultBinding, "shift+p");
+  assert.equal(formatChord(sitrep?.defaultBinding ?? ""), "⇧P");
 });
 
-// ---- the page toggle decision the App keydown handler runs ----
+// ---- the direct page decision the App keydown handler runs ----
 //
 // The handler itself is a global keydown listener reaching refs through renders, which has
-// no jsdom here to drive. So its one navigation chord is a PURE function, `pageToggleRoute`,
-// that App feeds the live guard state - and these exercise that function the way a real `w`
-// keydown would: the chord a `w` keypress actually produces resolves to the toggle's binding,
-// so `active` is that comparison, and the route it returns is what App hands `navigate`.
-//
-// The ACTION ID is still `workflows` while the page it reaches is the Library: the id keys
-// persisted overrides, so renaming it would reset every operator's rebinding of this key.
-
-const workflowsBinding = ACTIONS.find((a) => a.id === "workflows")!.defaultBinding;
-/** What App computes for a keydown: does the produced chord equal the resolved binding? */
-const pressed = (k: string, mods?: Partial<Record<"ctrl" | "shift", true>>): boolean =>
-  chordFromEvent(key(k, mods)) === workflowsBinding;
-
-test("w toggles Fleet to Library and back, and does nothing on any other page", () => {
+// no jsdom here to drive. `pageShortcutRoute` is the pure guard App feeds after matching one
+// of the three page bindings, so the destination never depends on the page it was pressed on.
+test("each page shortcut returns its named destination instead of toggling another", () => {
   const clear = { typing: false, renaming: false, overlayOpen: false } as const;
-  // A real `w` keypress is what makes the chord `active`.
-  assert.equal(pressed("w"), true);
-  assert.deepEqual(
-    pageToggleRoute({ active: pressed("w"), ...clear, page: "fleet" }),
-    { page: "library" },
-  );
-  assert.deepEqual(
-    pageToggleRoute({ active: pressed("w"), ...clear, page: "library" }),
-    { page: "fleet" },
-  );
-  // Settings owns its own keys: the toggle stands down rather than yanking to the Library.
-  assert.equal(pageToggleRoute({ active: pressed("w"), ...clear, page: "settings" }), null);
+  assert.deepEqual(pageShortcutRoute({ target: "fleet", ...clear }), { page: "fleet" });
+  assert.deepEqual(pageShortcutRoute({ target: "library", ...clear }), { page: "library" });
+  assert.deepEqual(pageShortcutRoute({ target: "runs", ...clear }), { page: "runs" });
 });
 
-test("the page toggle stands down while typing, renaming, or an overlay is open", () => {
-  const base = { active: true, typing: false, renaming: false, overlayOpen: false, page: "fleet" } as const;
-  // With every guard clear it fires; flipping any one alone suppresses it, so `w` types into
-  // a field, renames a card, or dismisses an overlay instead of navigating.
-  assert.deepEqual(pageToggleRoute(base), { page: "library" });
-  assert.equal(pageToggleRoute({ ...base, typing: true }), null);
-  assert.equal(pageToggleRoute({ ...base, renaming: true }), null);
-  assert.equal(pageToggleRoute({ ...base, overlayOpen: true }), null);
+test("the page shortcuts stand down while typing, renaming, or an overlay is open", () => {
+  const base = { target: "library" as const, typing: false, renaming: false, overlayOpen: false };
+  assert.deepEqual(pageShortcutRoute(base), { page: "library" });
+  assert.equal(pageShortcutRoute({ ...base, typing: true }), null);
+  assert.equal(pageShortcutRoute({ ...base, renaming: true }), null);
+  assert.equal(pageShortcutRoute({ ...base, overlayOpen: true }), null);
 });
 
-test("only the resolved page-toggle chord toggles, nothing near it", () => {
-  // A different key is not `active`, so it never navigates - the toggle owns `w` alone.
-  assert.equal(pressed("q"), false);
-  assert.equal(pressed("w", { ctrl: true }), false);
+test("a non-page chord supplies no target and never navigates", () => {
   assert.equal(
-    pageToggleRoute({ active: pressed("q"), typing: false, renaming: false, overlayOpen: false, page: "fleet" }),
+    pageShortcutRoute({ target: null, typing: false, renaming: false, overlayOpen: false }),
     null,
   );
 });
@@ -490,14 +472,13 @@ test("rebinding reset onto another action's chord is reported as a conflict", ()
   assert.deepEqual(conflicts.get("kill"), ["reset"]);
 });
 
-test("handoff is a first-class selection action, bound beside focus", () => {
+test("handoff is a first-class selection action, bound as the terminal launcher's Shift", () => {
   // A registry entry rather than a hard-coded key, which is also what puts it in the
-  // settings editor and on the button's own face. Bound as Focus's Shift because the pair
-  // is the point: `p` goes to a session's pane, and this is what a session with no pane
-  // does instead - it MAKES one, by handing the conversation to a terminal.
+  // settings editor and on the button's own face. Shift+T pairs it with Open terminal now
+  // that Shift+P belongs to Sitrep.
   const handoff = ACTIONS.find((a) => a.id === "handoff");
   assert.ok(handoff, "handoff missing from the customizable registry");
-  assert.equal(handoff.defaultBinding, "shift+p");
+  assert.equal(handoff.defaultBinding, "shift+t");
   assert.equal(handoff.group, "selection");
   const focus = ACTIONS.indexOf(ACTIONS.find((a) => a.id === "focus")!);
   assert.equal(ACTIONS.indexOf(handoff), focus + 1, "it reads next to focus in the panel");

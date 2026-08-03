@@ -8,7 +8,7 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
-import { insertReview, updateReviewStatus } from "./db.ts";
+import { inTransaction, insertReview, updateReviewStatus } from "./db.ts";
 import { unref } from "./util/timers.ts";
 
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
@@ -71,6 +71,103 @@ export class ReviewManager {
       resolvedAt: null,
     };
     insertReview(review);
+    this.registry.upsertReview(review);
+    return review;
+  }
+
+  /**
+   * Write a question that was ALREADY answered elsewhere - born settled, never pending.
+   *
+   * The second writer of this table, and the reason it is a separate method rather than a
+   * `create` followed by a `resolve`. A session on the SDK runtime keeps Claude's native
+   * `AskUserQuestion` and is answered by resolving the callback it is blocked on
+   * (`/submit-options`), so by the time there is anything to record the decision is made
+   * and the agent has moved on. Routing that through the pending path would publish a
+   * `review_upsert` with `status: "pending"` for an instant - long enough for the dashboard
+   * to bump its badge, pop the review modal over whatever the operator was reading, and
+   * offer them a form for a question that is already gone.
+   *
+   * So this is the whole of it: one durable write, one upsert to publish it. No waiters are
+   * woken because nothing is waiting - a driver request has no MCP long poll behind it - and
+   * `refreshPendingCount` is a no-op on a row that was never pending.
+   *
+   * "Born settled" has to hold of the DATABASE and not only of the event, which is what
+   * `inTransaction` is for. Two writers land this row - `insertReview` lays down every
+   * column it shares with a `create`, `updateReviewStatus` stamps the settle columns - and
+   * a failure between them commits the first without the second.
+   *
+   * Be precise about what that leaves, because it is NOT a pending review: `insertReview`
+   * writes the status off the item, and the item is already `answered`, so the half-written
+   * row reads `answered` with a null `resolved_by` and null `selections`. Nothing restores
+   * it as a question (`loadPendingReviews` filters on `pending`) and nothing shows it as an
+   * answer (`loadHumanResolvedReviews` requires `resolved_by = 'human'`), so it is inert -
+   * today. It is still worth not writing. It is indistinguishable from a row that predates
+   * the actor column, it accumulates where nothing will ever collect it, and its harmlessness
+   * is a property of two queries in another module rather than of this write: the first
+   * reader that asks for `status = 'answered'` without also asking who answered surfaces a
+   * review with no author and no selections. The transaction makes the pair all-or-nothing,
+   * so the failure mode is "no record of an answer" - which the conversation shows as the
+   * silence this feature replaced - and never a row that half exists.
+   *
+   * Two writers inside a transaction rather than one wide INSERT, deliberately. The settle
+   * columns then have exactly one place they are written from, so a column added to
+   * `updateReviewStatus` reaches this path for free; a terminal-state INSERT here would be a
+   * second column list to keep in step, and the one that silently drifts is the one no
+   * pending-review path exercises.
+   *
+   * The upsert RETAINS as well as publishes, and that is not incidental. The dashboard
+   * re-seeds its live review map wholesale from the reconnect snapshot
+   * (`useEventStream`), so a record that was only emitted would vanish from an open
+   * conversation the first time the SSE stream dropped - and the fetched half beside it was
+   * taken at mount, before this row existed, so nothing would put it back until the panel
+   * remounted. Publishing without keeping is the cheaper-looking version of this that does
+   * not work.
+   *
+   * `resolvedBy` is required, not defaulted. It is the field the conversation reads to
+   * decide whose voice an answer speaks in (`isHumanResolvedReview`), and Foreman answers
+   * driver questions through the very same route the dashboard does.
+   */
+  record(o: {
+    sessionId: string;
+    kind: ReviewKind;
+    title: string;
+    body: string;
+    decisions: PlanDecision[];
+    selections: PlanDecisionAnswer[];
+    response: string;
+    resolvedBy: ReviewActor;
+    /**
+     * When the human spoke - NOT when this ran.
+     *
+     * The conversation places an answer by `resolvedAt`, and the caller only reaches this
+     * after the answer has been handed to the driver, which is after the agent has been
+     * unblocked and may already have written its next turn. Stamping here would file a
+     * decision below the reply it caused. The route takes the reading before it delivers.
+     */
+    at: number;
+  }): ReviewItem {
+    const now = o.at;
+    const review: ReviewItem = {
+      id: randomUUID(),
+      sessionId: o.sessionId,
+      kind: o.kind,
+      title: o.title,
+      body: o.body,
+      status: "answered",
+      response: o.response,
+      decisions: o.decisions,
+      selections: o.selections,
+      resolvedBy: o.resolvedBy,
+      createdAt: now,
+      resolvedAt: now,
+    };
+    inTransaction(() => {
+      insertReview(review);
+      updateReviewStatus(review.id, "answered", o.response, now, o.selections, o.resolvedBy);
+    });
+    // Published only after the commit, so nothing can put a review on screen that a rollback
+    // then took off disk. The throw from a failed transaction reaches the caller, which
+    // logs it and still reports the delivery that did happen.
     this.registry.upsertReview(review);
     return review;
   }

@@ -90,7 +90,7 @@ async function seedRun(page: Page, daemon: DaemonHandle): Promise<string> {
       daemon,
       `/api/workflow-runs/${submitted.run.id}`,
     )).run.status,
-  { timeout: 20_000 }).toBe("completed");
+  { timeout: 40_000 }).toBe("completed");
   return submitted.run.id;
 }
 

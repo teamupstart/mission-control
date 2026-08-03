@@ -122,6 +122,17 @@ export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/s
 export const fetchForemanEpisodes = () =>
   fetchJson<ForemanEpisodeSummary[]>("/api/foreman/episodes");
 /**
+ * One decision in full, fetched when a reader opens a ledger row.
+ *
+ * The other half of the trade above. The poll ships a hundred summaries and no screen
+ * captures; this ships one whole episode, on a click, and only for the row being read - so
+ * the fleet ledger can show the ask, the brief, the recommendation and what was actually
+ * delivered without any of it riding the 4s tick. `null` on a miss, which is a pruned or
+ * unknown id and reads as "this decision is gone" in the row that asked for it.
+ */
+export const fetchForemanEpisode = (id: number) =>
+  fetchJson<ForemanEpisode>(`/api/foreman/episodes/${id}`);
+/**
  * Foreman's reading of the backlog - what waits on what, and in what order.
  *
  * Polled beside the config rather than streamed: it changes only when the backlog

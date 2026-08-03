@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
-import { formatResponse, isAnswered } from "../lib/reviews.ts";
+import { formatResponse } from "@shared/review-item.ts";
+import { isAnswered } from "../lib/reviews.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** Per-decision answer state: chosen option ids plus any free-text "Other". */

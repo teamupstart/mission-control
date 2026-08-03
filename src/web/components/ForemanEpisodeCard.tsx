@@ -1,5 +1,6 @@
 import { Markdown } from "./Markdown.tsx";
 import type { ForemanEpisode, NoteDisposition } from "@shared/types.ts";
+import { episodeOutcome } from "@shared/foreman.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { relativeTime } from "../lib/format.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
@@ -23,10 +24,19 @@ import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
  * the author right, so it reads `resolvedBy` rather than the disposition alone -
  * and `resolvedBy` rather than `sentBy`, because a dismissal is a decision you made
  * that sent nothing, so it has no author to read.
+ *
+ * The skip branch now reads the SHARED outcome rather than deciding for itself, so this
+ * card and the ledger row that opens it cannot come to describe one decision two ways -
+ * which they briefly did: a row reading `stale` opened a card headed "left for you", which
+ * is the claim `stale` exists to deny. `episodeOutcome` is the one place the split lives.
  */
 function episodeLabel(e: ForemanEpisode): string {
   if (e.disposition === "answered" && e.resolvedBy === "you") return "you answered";
-  if (e.disposition === "skipped" && e.resolvedBy === "you") return "you dismissed";
+  if (e.disposition === "skipped") {
+    const outcome = episodeOutcome(e);
+    if (outcome === "dismissed") return "you dismissed";
+    if (outcome === "stale") return "not delivered - the session moved on";
+  }
   return DISPOSITION_LABEL[e.disposition];
 }
 
@@ -171,15 +181,22 @@ function EpisodeResolution({ episode }: { episode: ForemanEpisode }): React.JSX.
   // Branches on the disposition as well as the author, for the same reason
   // `episodeLabel` does: "You approved" over a header reading "you dismissed" is the
   // block contradicting the two lines above it about what the human actually did.
+  // Reads the shared outcome for the skip cases, for the reason `episodeLabel` does: a
+  // stale episode was not left for anyone. Foreman had an answer, the session moved on, and
+  // the answer was dropped - so this says that, rather than describing a handover that
+  // never happened over a header that has just said it did not.
+  const outcome = episodeOutcome(episode);
   const who =
     resolvedBy === "you"
       ? disposition === "skipped"
         ? "You dismissed this"
         : "You approved"
       : resolvedBy === "foreman"
-        ? disposition === "skipped"
-          ? "Foreman left this for you"
-          : "Foreman answered"
+        ? outcome === "stale"
+          ? "Nothing was sent - the session moved on before this could be delivered"
+          : disposition === "skipped"
+            ? "Foreman left this for you"
+            : "Foreman answered"
         : (lastAction ?? "Recorded");
   // An episode still waiting on a human has no `resolvedBy`, so `who` above already IS
   // `lastAction`. Tracking that keeps the trailing line from printing it a second time -

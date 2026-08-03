@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>The Line - Review drawer options</title>
+    <link rel="stylesheet" href="../theme.css" />
+    <link rel="stylesheet" href="drawer.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="page-head">
+        <h1>The Line - fixing the Review drawer</h1>
+        <p class="sub">
+          The strip is <b>the Line</b> (<code>LineStrip.tsx</code>,
+          <code>aria-label="The Line"</code>); the panel that expands under a stage is that
+          stage's <b>drawer</b>. Rows come from <code>ReviewDrawer.tsx</code>.
+        </p>
+        <p class="sub">
+          The two complaints are <b>one bug wearing two hats</b>. The row's bold title is
+          <code>(run.sessionId &amp;&amp; named.get(run.sessionId)) || run.noteKey</code>
+          (<code>ReviewDrawer.tsx:154</code>) - it resolves a name only from
+          <em>live</em> sessions and falls back to the raw conversation GUID otherwise. And in
+          the live database every one of the 31 blocked runs sits at
+          <code>phase = "session_disappeared"</code>. The session died, so the name went with
+          it and the run stopped forever. You are seeing GUIDs <em>because</em> the runs are
+          blocked.
+        </p>
+        <div class="note bad">
+          <div>
+            <b>Neither missing fact needs new plumbing.</b> The durable title is already in
+            <span class="k">workflow_bindings.session_name</span> ("Fix Busy State for Diff
+            Link"), and <span class="k">WORKFLOW_RUN_SUMMARY_SELECT</span> already joins that
+            table - it just selects <span class="k">note_key</span> and not
+            <span class="k">session_name</span>. The reason is already on the wire as
+            <span class="k">WorkflowRunSummary.phase</span>; the drawer prints
+            <span class="k">runStatusLabel(status)</span> and drops it.
+          </div>
+        </div>
+      </header>
+
+      <!-- ============================ TODAY ============================ -->
+      <section class="opt">
+        <div class="opt-head">
+          <h2>Today</h2><span class="opt-tag is-now">the bug</span>
+        </div>
+        <p class="prose">
+          Real rows from the running daemon. Four columns: who, the chip ladder, a state word,
+          and one control. The identity is a GUID, the state is the word "Blocked" with no
+          cause, and the only control leaves the drawer.
+        </p>
+
+        <section class="line-drawer">
+          <header class="line-drawer-head">
+            <h2 class="line-drawer-title"><span class="line-drawer-glyph">⌁</span>Review</h2>
+            <p class="line-drawer-count">32 runs live<span class="line-drawer-att">32 waiting on you</span></p>
+            <span class="line-drawer-spacer"></span>
+            <button class="btn btn-ghost">Bind a workflow…</button>
+            <button class="btn btn-ghost">All runs →</button>
+            <button class="btn btn-ghost">✕<kbd>esc</kbd></button>
+          </header>
+          <div class="line-drawer-body">
+            <ul class="line-drawer-rows">
+              <li class="is-waiting">
+                <span class="line-run-who">
+                  <strong>5c1c5401-4ac3-48c4-abe1-430aa…</strong>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 4/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-failed">1 reviewer failed</span>
+                </span>
+                <span class="line-run-state">Blocked</span>
+                <span class="line-run-ops"><button class="btn btn-ghost">Open run</button></span>
+              </li>
+              <li class="is-waiting">
+                <span class="line-run-who">
+                  <strong>019fc30e-a2c6-74a2-9921-418e4…</strong>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 2/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-waiting">Reviewers</span>
+                </span>
+                <span class="line-run-state">Blocked</span>
+                <span class="line-run-ops"><button class="btn btn-ghost">Open run</button></span>
+              </li>
+              <li class="is-waiting">
+                <span class="line-run-who">
+                  <strong>019fc279-0295-7721-94e2-cf3a5…</strong>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 2/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-waiting">Reviewers</span>
+                </span>
+                <span class="line-run-state">Blocked</span>
+                <span class="line-run-ops"><button class="btn btn-ghost">Open run</button></span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <div class="note bad">
+          <div>
+            Three rows visible, 32 in the scroll, and every one of them says exactly the same
+            three things. "32 waiting on you" is literally true - <span class="k">blocked</span>
+            is one arm of <span class="k">workflowRunWaitsOnOperator</span> - but nothing here
+            is waiting on a decision you can make.
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ OPTION A ============================ -->
+      <section class="opt">
+        <div class="opt-head">
+          <h2>Option A - name it, say why, offer the one move</h2>
+          <span class="opt-tag is-cheap">smallest change</span>
+        </div>
+        <p class="prose">
+          Same four columns, same 58px row, same chip vocabulary. Only the content changes.
+          <b>Who</b> becomes the durable binding title.
+          <b>State</b> becomes <code>Blocked · &lt;reason&gt;</code> from a
+          <code>phase → sentence</code> map, the sibling of the
+          <code>GATE_WAIT_SENTENCES</code> and <code>ACTION_WAIT</code> maps that already
+          exist in <code>run-model.ts</code>. <b>Ops</b> leads with the remedy that
+          <em>this</em> phase actually takes - each one is an existing route.
+        </p>
+
+        <section class="line-drawer is-proposed">
+          <header class="line-drawer-head">
+            <h2 class="line-drawer-title"><span class="line-drawer-glyph">⌁</span>Review</h2>
+            <p class="line-drawer-count">32 runs live<span class="line-drawer-att">31 blocked · 1 needs you</span></p>
+            <span class="line-drawer-spacer"></span>
+            <button class="btn btn-ghost">Bind a workflow…</button>
+            <button class="btn btn-ghost">All runs →</button>
+            <button class="btn btn-ghost">✕<kbd>esc</kbd></button>
+          </header>
+          <div class="line-drawer-body is-tall">
+            <ul class="line-drawer-rows">
+              <li class="is-waiting">
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Improve Foreman Context and Table Scrolling</strong></span>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 5/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-passed">Reviewers passed</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-waiting">Resubmit</span>
+                </span>
+                <span class="line-run-state is-waiting">Reattached · needs resubmit</span>
+                <span class="line-run-ops">
+                  <button class="btn btn-remedy">Resubmit</button>
+                  <button class="btn btn-ghost">Open run</button>
+                </span>
+              </li>
+              <li class="is-blocked">
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Fix Busy State for Diff Link</strong></span>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 4/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-stopped">Reviewers stopped</span>
+                </span>
+                <span class="line-run-state is-blocked">Blocked · session gone</span>
+                <span class="line-run-ops">
+                  <button class="btn btn-remedy">Dismiss</button>
+                  <button class="btn btn-ghost">Open run</button>
+                </span>
+              </li>
+              <li class="is-blocked">
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Add E Keybinding for Card Expansion</strong></span>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 2/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-stopped">Reviewers stopped</span>
+                </span>
+                <span class="line-run-state is-blocked">Blocked · session gone</span>
+                <span class="line-run-ops">
+                  <button class="btn btn-remedy">Dismiss</button>
+                  <button class="btn btn-ghost">Open run</button>
+                </span>
+              </li>
+              <li class="is-blocked">
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Remove No-Mistakes Skill References</strong></span>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 6/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-stopped">Reviewers stopped</span>
+                </span>
+                <span class="line-run-state is-blocked">Blocked · out of rounds</span>
+                <span class="line-run-ops">
+                  <button class="btn btn-remedy">Restart…</button>
+                  <button class="btn btn-ghost">Open run</button>
+                </span>
+              </li>
+              <li>
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Durable task completion</strong></span>
+                  <span class="line-run-wf">
+                    <span style="color:#a371f7">⧉ Best of N</span> · No-Mistakes Review v8 · round 1
+                  </span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-running">2 reviewing</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-waiting">Inspector</span>
+                </span>
+                <span class="line-run-state">Running · Skeptic, Architect</span>
+                <span class="line-run-ops"><button class="btn btn-ghost">Open run</button></span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <div class="note good">
+          <div>
+            <b>Three separate reads, each now honest.</b> Red edge = stopped and will not move
+            on its own; amber = genuinely your turn. The chip that used to say
+            <span class="k">Reviewers</span> in amber says <span class="k">Reviewers
+            stopped</span> in grey, because those reviewers were cancelled by
+            <span class="k">orphanBinding</span> - they are not waiting, they are dead. The
+            ensemble handoff prints the strategy name rather than the bare phrase "from an
+            ensemble" - <span class="k">externalSource.sourceId</span> joins against the
+            ensemble summaries already in the browser.
+          </div>
+        </div>
+        <div class="note">
+          <div>
+            <b>Cost.</b> One column in <span class="k">WORKFLOW_RUN_SUMMARY_SELECT</span>, one
+            optional append-only field on <span class="k">WorkflowRunSummary</span>, one
+            <span class="k">Record&lt;phase, sentence&gt;</span> with a
+            <span class="k">replaceAll("_"," ")</span> fallback (phase is a free string, not a
+            union), and a remedy descriptor per phase next to the existing
+            <span class="k">run-actions.ts</span>. It does break the drawer's stated
+            "no action" rule - see the note under Option C.
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ OPTION B ============================ -->
+      <section class="opt">
+        <div class="opt-head">
+          <h2>Option B - group by reason, act on the batch</h2>
+          <span class="opt-tag">best at 31</span>
+        </div>
+        <p class="prose">
+          Option A still leaves you scrolling 31 rows that say the same sentence. When runs
+          share a phase, fold them into one bar: the reason once, the count once, one control
+          for all of them. The individual rows are still there behind the caret. This is the
+          only option that scales with the number of blocked runs rather than against it.
+        </p>
+
+        <section class="line-drawer is-proposed">
+          <header class="line-drawer-head">
+            <h2 class="line-drawer-title"><span class="line-drawer-glyph">⌁</span>Review</h2>
+            <p class="line-drawer-count">32 runs live<span class="line-drawer-att">1 needs you · 31 stalled</span></p>
+            <span class="line-drawer-spacer"></span>
+            <button class="btn btn-ghost">Bind a workflow…</button>
+            <button class="btn btn-ghost">All runs →</button>
+            <button class="btn btn-ghost">✕<kbd>esc</kbd></button>
+          </header>
+          <div class="line-drawer-body is-tall">
+            <ul class="line-drawer-rows">
+              <li class="is-waiting">
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Improve Foreman Context and Table Scrolling</strong></span>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 5/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-passed">Reviewers passed</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-waiting">Resubmit</span>
+                </span>
+                <span class="line-run-state is-waiting">Reattached · needs resubmit</span>
+                <span class="line-run-ops">
+                  <button class="btn btn-remedy">Resubmit</button>
+                  <button class="btn btn-ghost">Open run</button>
+                </span>
+              </li>
+            </ul>
+
+            <div class="line-group">
+              <span class="line-group-caret">▸</span>
+              <span class="line-group-who">
+                <strong>30 runs · session gone</strong>
+                <span class="line-run-wf">No-Mistakes Review v8 · oldest 6d ago</span>
+              </span>
+              <span class="line-group-mid">
+                Their sessions were removed, so the reviewers were cancelled mid-flight. None
+                of these can move again on their own. Reattaching one to a live session is on
+                its run page; from here you can clear the pile.
+                <span class="names">Fix Busy State for Diff Link · Add E Keybinding for Card Expansion · Review a UI Component · +27</span>
+              </span>
+              <span class="line-group-ops">
+                <button class="btn btn-remedy">Dismiss all</button>
+              </span>
+            </div>
+
+            <div class="line-group" style="background:color-mix(in srgb,var(--danger) 4%,var(--panel))">
+              <span class="line-group-caret">▾</span>
+              <span class="line-group-who">
+                <strong>2 runs · out of rounds</strong>
+                <span class="line-run-wf">No-Mistakes Review v8 · expanded</span>
+              </span>
+              <span class="line-group-mid">
+                Spent their repair budget without passing. Restarting clears the round counter.
+              </span>
+              <span class="line-group-ops">
+                <button class="btn btn-remedy">Restart…</button>
+                <button class="btn btn-danger-ghost">Dismiss</button>
+              </span>
+            </div>
+            <ul class="line-drawer-rows is-nested">
+              <li class="is-blocked">
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Remove No-Mistakes Skill References</strong></span>
+                  <span class="line-run-wf">round 6/5 · last moved 4d ago</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-failed">2 reviewers failed</span>
+                </span>
+                <span class="line-run-state is-blocked">Blocked · out of rounds</span>
+                <span class="line-run-ops">
+                  <button class="btn btn-remedy">Restart…</button>
+                  <button class="btn btn-ghost">Open run</button>
+                </span>
+              </li>
+              <li class="is-blocked">
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Fix skipped stage status colors</strong></span>
+                  <span class="line-run-wf">round 5/5 · last moved 5d ago</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-failed">1 reviewer failed</span>
+                </span>
+                <span class="line-run-state is-blocked">Blocked · out of rounds</span>
+                <span class="line-run-ops">
+                  <button class="btn btn-remedy">Restart…</button>
+                  <button class="btn btn-ghost">Open run</button>
+                </span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <div class="note good">
+          <div>
+            <b>The count in the strip changes meaning too.</b> "32 waiting on you" becomes
+            "1 needs you · 31 stalled", which is the difference between a fleet that owes you
+            31 decisions and a fleet with one decision and a pile of dead runs. Grouping is a
+            pure client-side fold over <span class="k">phase</span> - the same shape as
+            <span class="k">line-summary.ts</span>'s existing folds.
+          </div>
+        </div>
+        <div class="note">
+          <div>
+            <b>Watch out for.</b> "Dismiss all" cancels 30 runs from a strip drawer - it needs
+            a confirm step with the count echoed, the way
+            <span class="k">DELETE /api/ensembles/:id</span> already demands a
+            <span class="k">confirmId</span>. And a group of 1 should render as a plain row,
+            not a bar with a caret.
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ OPTION C ============================ -->
+      <section class="opt">
+        <div class="opt-head">
+          <h2>Option C - the row opens where it stands</h2>
+          <span class="opt-tag">keeps the "no action" rule</span>
+        </div>
+        <p class="prose">
+          <code>ReviewDrawer.tsx:19-21</code> states a deliberate rule: <em>"No fetch, no run
+          detail, and no action - everything that CHANGES a run stays on the run page."</em>
+          A and B both break it. This option keeps the collapsed row at exactly 58px and
+          scannable, and lets one row expand in place to explain itself. The remedy still
+          lives here, but it is behind an intentional second click rather than sitting on
+          every row.
+        </p>
+
+        <section class="line-drawer is-proposed">
+          <header class="line-drawer-head">
+            <h2 class="line-drawer-title"><span class="line-drawer-glyph">⌁</span>Review</h2>
+            <p class="line-drawer-count">32 runs live<span class="line-drawer-att">1 needs you · 31 stalled</span></p>
+            <span class="line-drawer-spacer"></span>
+            <button class="btn btn-ghost">Bind a workflow…</button>
+            <button class="btn btn-ghost">All runs →</button>
+            <button class="btn btn-ghost">✕<kbd>esc</kbd></button>
+          </header>
+          <div class="line-drawer-body is-tall">
+            <div class="line-run-row-x">
+              <div class="row-top">
+                <span class="caret">▾</span>
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Fix Busy State for Diff Link</strong></span>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 4/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-stopped">Reviewers stopped</span>
+                </span>
+                <span class="line-run-state is-blocked">Blocked · session gone</span>
+                <span class="line-run-ops"><button class="btn btn-ghost">Open run</button></span>
+              </div>
+              <div class="row-detail">
+                <dl class="row-why">
+                  <dt>What happened</dt>
+                  <dd>
+                    The session <b>Fix Busy State for Diff Link</b> (claude,
+                    <code>~/workspace/ai-harness</code>) was removed while round 4 was out with
+                    the reviewers. Its binding was orphaned and the two queued reviewer
+                    attempts were cancelled.
+                  </dd>
+                  <dt>Where it stopped</dt>
+                  <dd class="muted">
+                    Evidence captured · Skeptic and Architect cancelled mid-flight · Inspector
+                    never reached. Last movement 3d ago.
+                  </dd>
+                </dl>
+                <div class="row-remedy">
+                  <button class="btn btn-remedy">Dismiss this run</button>
+                  <p class="hint">
+                    Cancels it for good. Its evidence and verdicts stay in history.
+                  </p>
+                  <button class="btn btn-ghost" style="text-align:left">Open run - reattach to a live session…</button>
+                  <p class="hint">
+                    Reattaching needs you to pick a session, so it stays on the run page rather
+                    than in a drawer with no room for a picker.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <ul class="line-drawer-rows">
+              <li class="is-blocked">
+                <span class="caret">▸</span>
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Add E Keybinding for Card Expansion</strong></span>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 2/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-stopped">Reviewers stopped</span>
+                </span>
+                <span class="line-run-state is-blocked">Blocked · session gone</span>
+                <span class="line-run-ops"><button class="btn btn-ghost">Open run</button></span>
+              </li>
+              <li class="is-blocked">
+                <span class="caret">▸</span>
+                <span class="line-run-who">
+                  <span class="who-line"><strong>Investigate Workflow Binding and Run Loading Performance</strong></span>
+                  <span class="line-run-wf">No-Mistakes Review v8 · round 2/5</span>
+                </span>
+                <span class="line-run-chips">
+                  <span class="workflow-chip workflow-passed">Evidence</span>
+                  <span class="line-run-chip-sep">→</span>
+                  <span class="workflow-chip workflow-stopped">Reviewers stopped</span>
+                </span>
+                <span class="line-run-state is-blocked">Blocked · session gone</span>
+                <span class="line-run-ops"><button class="btn btn-ghost">Open run</button></span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <div class="note">
+          <div>
+            <b>The trade.</b> The expanded body is the only place in the drawer that would want
+            data the summary does not carry (which reviewers were cancelled, how long ago) -
+            that is a <span class="k">GET /api/workflow-runs/:id</span> per opened row, which
+            is the "no fetch" half of the rule. Fetching for <em>one</em> deliberately opened
+            row is a much smaller concession than fetching for all 32, and the drawer's
+            three-row cap means only one is ever open in view.
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ RECOMMENDATION ============================ -->
+      <section class="opt">
+        <div class="opt-head"><h2>How they stack</h2></div>
+        <p class="prose">
+          They are layers, not rivals. <b>A is the floor</b> and should land regardless - a row
+          that shows a GUID and the bare word "Blocked" is wrong at any count, and the fix is
+          one SQL column plus one lookup map. <b>B is what makes 31 blocked runs survivable</b>
+          and is a pure client-side fold on top of A. <b>C is the escape hatch</b> for the
+          reasons whose remedy needs context before you can choose it - it is worth building
+          only after A proves which phases people actually hit.
+        </p>
+        <p class="prose">
+          One question A forces and the others do not: the drawer's "no action" rule was
+          written on purpose. A puts <code>Dismiss</code> on the row and breaks it. The
+          alternative is to keep the drawer read-only and let the reason text alone do the
+          work - honest, but it still leaves 31 rows you can only look at.
+        </p>
+
+        <div class="note bad">
+          <div>
+            <b>Two things these mockups deliberately do not propose.</b>
+            <br />
+            <b>No <span class="k">Reattach…</span> button.</b> An earlier draft of these frames
+            made it the primary action on a session-gone row.
+            <span class="k">POST /api/workflow-bindings/:id/reattach</span> needs a
+            <span class="k">sessionId</span>, which means a session picker, which is a dialog a
+            58px row has no room for. The settled rule is that the drawer only offers actions
+            whose route needs nothing but a run id, so the inline remedy is
+            <span class="k">Dismiss</span> and reattaching stays one click away on the run page.
+            <br />
+            <b>No agent accent dot.</b> An earlier draft put a per-harness coloured dot in front
+            of each title. It reads well and it is refused: it needs a second denormalized column
+            (<span class="k">b.session_agent</span>) on a summary that is folded and pushed over
+            SSE for every run in the fleet on every change, which is the trade
+            <span class="k">externalSource</span>'s own doc comment already turns down - "bytes
+            per run per event bought for nothing" - and it fixes neither complaint.
+          </div>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

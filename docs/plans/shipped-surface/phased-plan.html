@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shipped surface - phased implementation plan</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --ink: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
+    --rule: #e1e0d9; --accent: #6f56c0;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+      --rule: #2c2c2a; --accent: #9a7bef;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 15px/1.6 var(--sans); }
+  main { max-width: 880px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size: 25px; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 18px; margin: 42px 0 8px; }
+  p, li { color: var(--ink-2); }
+  p strong, li strong { color: var(--ink); }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: .88em; background: color-mix(in srgb, var(--ink) 7%, transparent); padding: 1px 5px; border-radius: 4px; }
+  ol, ul { margin: 8px 0; padding-left: 24px; }
+  li { margin: 6px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--ink-3); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .scroll-x { overflow-x: auto; }
+  pre.graph { font-family: var(--mono); font-size: 12.5px; line-height: 1.7; color: var(--ink-2); background: color-mix(in srgb, var(--ink) 5%, transparent); border-radius: 10px; padding: 14px 18px; overflow-x: auto; }
+  .cap { font-size: 12.5px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Shipped surface - phased implementation plan</h1>
+  <p>Implementation index for <a href="plan.html">the approved Shipped-surface plan</a>
+  (source of truth: <code>plan.md</code>). Each phase links its detailed implementation file.</p>
+
+  <h2>Source plan and incorporated decisions</h2>
+  <ul>
+    <li><strong>Surface:</strong> Drawer + ship log (A then B). Clicking Shipped opens a Shipped
+        drawer in The Line; the drawer escalates to a new cross-repo Ship log page.</li>
+    <li><strong>Data:</strong> store PR titles on the adoption ledger. Per-PR cost approximation
+        and the embedded merge matrix were not adopted.</li>
+    <li><strong>Follow-up:</strong> this phased plan.</li>
+  </ul>
+
+  <h2>Investigated findings</h2>
+  <p>Discrepancies between the source plan and the repository, resolved as explicit decisions:</p>
+  <ol>
+    <li><strong>No title exists at adoption time.</strong> The adoption signal carries only the PR
+        URL and session context, and the hook-ingest path is guarded against anything slow or
+        fallible. The Inspector's per-tick poll already fetches <code>PrSnapshot.title</code>.
+        <strong>Decision:</strong> the observer patch writes the title at zero extra network cost;
+        it is null until the first poll, and every renderer falls back to the branch name.</li>
+    <li><strong>The drawer frame has no footer.</strong> All three existing drawers escalate via the
+        header <code>actions</code> slot. <strong>Decision:</strong> "Ship log →" lives there.</li>
+    <li><strong>The existing PR read is wrong for this surface</strong> (50 rows by review recency).
+        <strong>Decision:</strong> Phase 1 adds an <code>adoptedSince</code> parameter on the same
+        route - an adoption-ordered, uncapped window - rather than a second route over the same rows.</li>
+    <li><strong>The click target flips once, not twice.</strong> The flip invalidates a pinned test
+        and a committed e2e evidence transcript. <strong>Decision:</strong> Phase 2 ships the page
+        without touching the stage click; Phase 3 performs the single flip.</li>
+    <li><strong>e2e seeding for adoption exists, indirectly:</strong> the production adoption signal
+        is <code>POST /hooks/:event</code> with <code>prCreated</code>/<code>prUrl</code>, which
+        specs can drive; title-specific rendering is asserted with route fulfillment.</li>
+  </ol>
+
+  <h2>Phases</h2>
+  <div class="scroll-x">
+  <table>
+    <tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr>
+    <tr><td>1</td><td>Ledger titles and the adoption-window read</td>
+        <td><a href="phase-1-ledger-titles-and-window-read.md">phase-1-ledger-titles-and-window-read.md</a></td><td>none</td></tr>
+    <tr><td>2</td><td>Ship log page</td>
+        <td><a href="phase-2-ship-log-page.md">phase-2-ship-log-page.md</a></td><td>Phase 1</td></tr>
+    <tr><td>3</td><td>Shipped drawer and the click flip</td>
+        <td><a href="phase-3-shipped-drawer.md">phase-3-shipped-drawer.md</a></td><td>Phase 2</td></tr>
+  </table>
+  </div>
+
+  <h2>Dependency graph and concurrency</h2>
+  <pre class="graph">Phase 1 (server + shared foundation)
+   |
+Phase 2 (Ship log page; stage click unchanged)
+   |
+Phase 3 (Shipped drawer; the one click flip; escalates to Phase 2's page)</pre>
+  <p>The graph is a chain; there are no concurrent phases. Phase 3's dependency on Phase 1 is
+  transitive through Phase 2. Merge order: 1, then 2, then 3. Every phase leaves the repository
+  valid and testable: after 1, the ledger carries titles nothing yet renders; after 2, the Ship log
+  exists at <code>#/shipped</code> while the Shipped click still routes to completed runs; after 3,
+  the approved behavior is complete.</p>
+
+  <h2>Cross-phase contracts</h2>
+  <p>Fixed by Phase 1, consumed by 2 and 3:</p>
+  <ul>
+    <li><code>InspectorPr.title: string | null</code>; null means "not yet polled since the column
+        existed"; renderers fall back to <code>headRefName</code>.</li>
+    <li><code>GET /api/inspector/prs?adoptedSince=&lt;epoch ms&gt;</code> returns
+        <code>InspectorInspection[]</code> filtered <code>adopted_at &gt;= since</code>, ordered
+        <code>adopted_at DESC</code>, uncapped; parameterless behavior unchanged.</li>
+  </ul>
+  <p>Fixed by Phase 2, consumed by 3:</p>
+  <ul>
+    <li><code>MissionRoute</code> member <code>{ page: "shipped" }</code>, hash <code>#/shipped</code>.</li>
+    <li>The page's h2 heading "Ship log".</li>
+    <li>The PR-standing helpers' shared location (merged / open / gone mapping), lifted out of the
+        settings panel.</li>
+  </ul>
+  <p>Phase 3 consumes both sets and changes neither.</p>
+
+  <h2>Final verification strategy</h2>
+  <p>Per phase: <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+  plus <code>npm run build &amp;&amp; npm run smoke</code> where build or runtime surfaces change,
+  and <code>npm run test:e2e</code> with specs for every UI-visible change (phases 2 and 3).
+  Phase 3 additionally regenerates the Line evidence transcripts. After Phase 3 merges: Shipped
+  click opens the drawer, the drawer escalates to <code>#/shipped</code>, titles render with branch
+  fallback, and no surface still routes Shipped to workflow runs.</p>
+
+  <h2>Audit record</h2>
+  <p class="cap">2026-08-02: initial decomposition after repository investigation; findings 1-5
+  recorded as decisions; phase files written in dependency order with cross-phase audits after each.
+  Source of truth: <code>docs/plans/shipped-surface/phased-plan.md</code>.</p>
+</main>
+</body>
+</html>

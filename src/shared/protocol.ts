@@ -255,9 +255,22 @@ export type SendText = z.infer<typeof SendTextSchema>;
  * position on a screen that may have repainted since the caller looked - which is how a
  * confident, well-formed request confirms the wrong row.
  */
+/**
+ * Who is answering, on the two routes that settle a session's pending ask.
+ *
+ * The same field, the same default and the same reason as `ResolveReviewSchema.by`: a
+ * driver QUESTION answered here is written down as a resolved review so the conversation
+ * can replay it (`sdk/answered-question.ts`), and the conversation may only put an answer
+ * in the operator's voice if the operator gave it. Foreman reaches these routes over HTTP
+ * exactly as the dashboard does, so it declares itself rather than being inferred - and the
+ * default is the human, because every other caller IS one.
+ */
+const AnswerActorSchema = z.enum(["human", "foreman"]).optional().default("human");
+
 export const SelectOptionSchema = z.object({
   number: z.number().int().min(1).max(99),
   label: z.string().min(1),
+  by: AnswerActorSchema,
 });
 export type SelectOption = z.infer<typeof SelectOptionSchema>;
 
@@ -312,6 +325,7 @@ export const SubmitOptionsSchema = z
       .min(1)
       .max(8)
       .optional(),
+    by: AnswerActorSchema,
   })
   .refine((o) => Boolean(o.options) !== Boolean(o.answers), {
     message: "send either pane form rows or driver form answers, not both and not neither",

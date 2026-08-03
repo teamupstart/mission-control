@@ -76,6 +76,78 @@ export class ReviewManager {
   }
 
   /**
+   * Write a question that was ALREADY answered elsewhere - born settled, never pending.
+   *
+   * The second writer of this table, and the reason it is a separate method rather than a
+   * `create` followed by a `resolve`. A session on the SDK runtime keeps Claude's native
+   * `AskUserQuestion` and is answered by resolving the callback it is blocked on
+   * (`/submit-options`), so by the time there is anything to record the decision is made
+   * and the agent has moved on. Routing that through the pending path would publish a
+   * `review_upsert` with `status: "pending"` for an instant - long enough for the dashboard
+   * to bump its badge, pop the review modal over whatever the operator was reading, and
+   * offer them a form for a question that is already gone.
+   *
+   * So this is the whole of it: one INSERT of a terminal row, one upsert to publish it. No
+   * waiters are woken because nothing is waiting - a driver request has no MCP long poll
+   * behind it - and `refreshPendingCount` is a no-op on a row that was never pending.
+   *
+   * The upsert RETAINS as well as publishes, and that is not incidental. The dashboard
+   * re-seeds its live review map wholesale from the reconnect snapshot
+   * (`useEventStream`), so a record that was only emitted would vanish from an open
+   * conversation the first time the SSE stream dropped - and the fetched half beside it was
+   * taken at mount, before this row existed, so nothing would put it back until the panel
+   * remounted. Publishing without keeping is the cheaper-looking version of this that does
+   * not work.
+   *
+   * `resolvedBy` is required, not defaulted. It is the field the conversation reads to
+   * decide whose voice an answer speaks in (`isHumanResolvedReview`), and Foreman answers
+   * driver questions through the very same route the dashboard does.
+   */
+  record(o: {
+    sessionId: string;
+    kind: ReviewKind;
+    title: string;
+    body: string;
+    decisions: PlanDecision[];
+    selections: PlanDecisionAnswer[];
+    response: string;
+    resolvedBy: ReviewActor;
+    /**
+     * When the human spoke - NOT when this ran.
+     *
+     * The conversation places an answer by `resolvedAt`, and the caller only reaches this
+     * after the answer has been handed to the driver, which is after the agent has been
+     * unblocked and may already have written its next turn. Stamping here would file a
+     * decision below the reply it caused. The route takes the reading before it delivers.
+     */
+    at: number;
+  }): ReviewItem {
+    const now = o.at;
+    const review: ReviewItem = {
+      id: randomUUID(),
+      sessionId: o.sessionId,
+      kind: o.kind,
+      title: o.title,
+      body: o.body,
+      status: "answered",
+      response: o.response,
+      decisions: o.decisions,
+      selections: o.selections,
+      resolvedBy: o.resolvedBy,
+      createdAt: now,
+      resolvedAt: now,
+    };
+    insertReview(review);
+    // `insertReview` writes the row a `create` writes, which is the pending shape - the
+    // status, the answer and the actor are the resolve half's columns. Stamped straight
+    // afterwards rather than by widening the INSERT, so the table keeps ONE writer per
+    // half and a future column added to a settle cannot be forgotten here.
+    updateReviewStatus(review.id, "answered", o.response, now, o.selections, o.resolvedBy);
+    this.registry.upsertReview(review);
+    return review;
+  }
+
+  /**
    * Resolve immediately if already decided; otherwise wait up to `timeoutMs`.
    * On timeout returns the still-pending item so the caller can long-poll again.
    * Returns null if the id is unknown.

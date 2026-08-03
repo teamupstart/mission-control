@@ -166,6 +166,7 @@ import {
   getSkillsAcks,
   loadHumanResolvedReviews,
   loadInspectorInspections,
+  episodeById,
   recentEpisodes,
 } from "./db.ts";
 import { recordSpendReport } from "./spend-ledger.ts";
@@ -2626,6 +2627,21 @@ export function buildApp(
   // `Registry.recordEpisode` already states for the per-session list, and it holds just
   // as well for a 4s poll.
   app.get("/api/foreman/episodes", (c) => c.json(recentEpisodes(FOREMAN_EPISODE_LEDGER)));
+  // One episode in full, which is the read the summary above exists to avoid making a
+  // hundred times over. Opening a ledger row fetches exactly the decision being opened, so
+  // the pane, the brief, the recommendation and the delivered text stay off the poll and
+  // are still one click away - the same trade `/api/sessions/:id/foreman-episodes` makes
+  // for a surface that shows one session, made here for a surface that shows the fleet.
+  //
+  // 404 rather than `null` on a miss, unlike the backlog plan below: a row is either in the
+  // 30-day window or it has been pruned out of it, and "this decision no longer exists" is
+  // a different answer from "there is nothing to show", which is what the ledger's own
+  // empty state already says.
+  app.get("/api/foreman/episodes/:id", (c) => {
+    const id = Number(c.req.param("id"));
+    const episode = Number.isInteger(id) ? episodeById(id) : null;
+    return episode ? c.json(episode) : c.json({ error: "no such episode" }, 404);
+  });
 
   // --- backlog autopilot: Foreman's reading of the backlog (localhost only) ---
   //

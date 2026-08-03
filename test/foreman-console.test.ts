@@ -43,6 +43,9 @@ function episode(over: Partial<ForemanEpisodeSummary> = {}): ForemanEpisodeSumma
     tier: 2,
     cheapAction: null,
     divergence: null,
+    classification: null,
+    triageReason: null,
+    skipReason: null,
     disposition: "answered",
     resolvedBy: "foreman",
     createdAt: 1000,
@@ -287,7 +290,7 @@ test("a session handle is short and keeps the identifying part of each key form"
 test("the ledger draws a row per episode, with the ask and who decided", () => {
   const out = html({
     episodes: [
-      episode({ marker: "a", disposition: "escalated", resolvedBy: "you" }),
+      episode({ marker: "a", disposition: "escalated", resolvedBy: null }),
       episode({ marker: "b", disposition: "answered", resolvedBy: "foreman" }),
     ],
   });
@@ -296,7 +299,126 @@ test("the ledger draws a row per episode, with the ask and who decided", () => {
   assert.match(out, /Claude needs your permission to run the tests/);
   // Who decided and which tier, in one cell - two tracks for two closed vocabularies
   // cost the ask 130px of the 716 this table gets at a 1500px window.
-  assert.match(out, /<span class="sc-decided">you · review<\/span>/);
+  assert.match(out, /<span class="sc-decided-who">foreman · review<\/span>/);
+});
+
+// The single most-repeated failure this ledger had: the ask is not an identity. On a real
+// 833-episode database `Needs approval: Bash` covered 318 rows and `running
+// AskUserQuestion` another 126, so half the table read as one string repeated. `purpose` is
+// the field that separates them, and it was already on the wire and spent on a tooltip.
+test("a row leads with what the decision was FOR, keeping the verbatim ask beneath it", () => {
+  const out = html({
+    episodes: [
+      episode({ marker: "a", ask: "running AskUserQuestion", purpose: "Choosing a database." }),
+      episode({ marker: "b", ask: "running AskUserQuestion", purpose: "Whether to force-push." }),
+    ],
+  });
+  assert.match(out, /<span class="sc-ask-purpose">Choosing a database\.<\/span>/);
+  assert.match(out, /<span class="sc-ask-purpose">Whether to force-push\.<\/span>/);
+  // The literal ask survives as the recognition cue, and is no longer what carries the row.
+  assert.match(out, /<span class="sc-ask-raw">running AskUserQuestion<\/span>/);
+});
+
+// A row with no purpose has nothing better to lead with, so the ask takes the line rather
+// than the cell rendering blank above a dim second line nobody asked for.
+test("a row with no purpose falls back to the ask and prints no second line", () => {
+  const out = html({ episodes: [episode({ ask: "Needs approval: Bash", purpose: null })] });
+  assert.match(out, /<span class="sc-ask-purpose">Needs approval: Bash<\/span>/);
+  assert.doesNotMatch(out, /sc-ask-raw/);
+});
+
+// The heart of the change. `skipped` was one word covering three unrelated events, and on a
+// real ledger the majority of it was neither of the two a reader would guess.
+test("the three ways into the skipped pile read as three different outcomes", () => {
+  const declined = html({
+    episodes: [episode({ disposition: "skipped", resolvedBy: "foreman", skipReason: null })],
+  });
+  assert.match(declined, /class="sc-verdict sc-verdict-declined"[^>]*>declined</);
+
+  const stale = html({
+    episodes: [episode({ disposition: "skipped", resolvedBy: "foreman", skipReason: "stale" })],
+  });
+  assert.match(stale, /class="sc-verdict sc-verdict-stale"[^>]*>stale</);
+  // The word alone is an accusation; the sentence is the point. A reader seeing `stale`
+  // has to be able to learn it was a race and not a failure without leaving the row.
+  assert.match(stale, /the session moved on before it could be delivered/);
+
+  // Foreman escalated it and the HUMAN closed it unanswered. This was 8 of the 12 skips in
+  // a typical ledger window, every one of them reading "skipped" as though Foreman had
+  // declined to act on something the operator had in fact already dealt with.
+  const dismissed = html({
+    episodes: [episode({ disposition: "skipped", resolvedBy: "you", skipReason: null })],
+  });
+  assert.match(dismissed, /class="sc-verdict sc-verdict-dismissed"[^>]*>dismissed</);
+});
+
+// Six outcome words, four buckets, and the tiles still account for every row - which is
+// the guarantee `episodeBucket` exists to make and the one this split could have broken.
+test("splitting the outcomes leaves the strip's tallies covering every row", () => {
+  const rows = [
+    episode({ marker: "a", disposition: "skipped", resolvedBy: "foreman", skipReason: "stale" }),
+    episode({ marker: "b", disposition: "skipped", resolvedBy: "you" }),
+    episode({ marker: "c", disposition: "skipped", resolvedBy: "foreman" }),
+  ];
+  const tallies = episodeTallies(rows);
+  assert.equal(tallies.skipped, 3, "all three outcomes still file under one bucket");
+  assert.equal(
+    FOREMAN_STRIP_BUCKETS.reduce((n, b) => n + tallies[b], 0),
+    rows.length,
+  );
+});
+
+// The reason the ladder landed where it did, which the cheap tier has always computed and
+// always dropped on the next log line. "escalated because the router was unsure" and
+// "escalated because the ask looked destructive" are two different stories, and the ledger
+// could previously tell only the word they share.
+test("a row says WHY the ladder landed where it did", () => {
+  const out = html({
+    episodes: [episode({ disposition: "escalated", resolvedBy: null, triageReason: "low-confidence" })],
+  });
+  // SHORT in the cell, so a run of eight identical reasons down the column is visible as a
+  // pattern - which is the column's real use, and impossible when each cell is a different
+  // clipped sentence. The first cut put the sentences here and rendered "the router was
+  // not c...".
+  assert.match(out, /class="sc-decided-why"[^>]*>low confidence</);
+  // The sentence moves to the hover, and it ends with the string that was actually
+  // recorded - so no label in the map can hide what the ladder really said.
+  assert.match(out, /below the confidence floor[\s\S]*recorded as &quot;low-confidence&quot;/);
+});
+
+// An open vocabulary: one arm interpolates an error, and a worker newer than this build
+// will mint reasons it has no sentence for. Printing the raw string beats printing nothing,
+// and `tier1-failed` is the single most useful thing this cell can ever say.
+test("an unmapped triage reason prints raw rather than vanishing", () => {
+  const out = html({
+    episodes: [episode({ triageReason: "tier1-failed: spawn ENOENT" })],
+  });
+  assert.match(out, /tier1-failed: spawn ENOENT/);
+});
+
+// Nothing to say beats padding the column with a restatement of the outcome beside it.
+test("a row with neither a reason nor a classification prints no why line", () => {
+  const out = html({ episodes: [episode({ triageReason: null, classification: null })] });
+  assert.doesNotMatch(out, /sc-decided-why/);
+});
+
+// The rows scroll inside the table. At the 100-row cap this list is ~3,500px tall, and it
+// was rendered whole into the page's scroller beside a control column a quarter its height.
+test("the ledger rows sit in their own scroller, below a header that does not move", () => {
+  const out = html({ episodes: [episode()] });
+  assert.match(out, /class="sc-scroll"/);
+  // The column names are a SIBLING above the scroller, so they never scroll away - and
+  // neither does the count strip, which is the filter for the list underneath it.
+  assert.match(out, /sc-row-head[\s\S]*sc-scroll/);
+  assert.match(out, /sc-strip[\s\S]*sc-scroll/);
+});
+
+// Every field that answers "why did it decide that" was already stored and already
+// rendered by `ForemanEpisodeCard` - and reachable only through the drawer of the session
+// it happened on, which for most of a 30-day ledger no longer exists.
+test("a ledger row is a button that opens the decision", () => {
+  const out = html({ episodes: [episode()] });
+  assert.match(out, /<button type="button" class="sc-row sc-row-open" aria-expanded="false"/);
 });
 
 // The panel is drawn from the shared console pieces, same as Inspector and Shipping.

@@ -8,7 +8,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
-import type { CheapAction, Divergence } from "./foreman.ts";
+import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
@@ -812,6 +812,24 @@ export interface ForemanEpisode {
   cheapAction: CheapAction | null;
   divergence: Divergence | null;
   disposition: NoteDisposition;
+  /**
+   * Why the tier ladder landed where it did - `TriageOutcome.reason`, verbatim.
+   *
+   * The cheap tier has always computed this and always thrown it away: `needs-judgment`,
+   * `low-confidence`, `human-only-risky`, `access-without-answer`, `no-transcript-context`,
+   * `no-window-boundary`, `menu-needs-a-row`, `tier1-unparseable` and the rest went to
+   * `log()` and nowhere else. It is the most direct answer the system has to "why was this
+   * escalated rather than answered", and until it was a column that answer existed only in
+   * a worker's stdout, for the length of one scrollback.
+   *
+   * Free TEXT rather than an enum because one arm interpolates (`tier1-failed: <err>`), and
+   * because a row written by a newer build with a reason this one has no word for should
+   * still print the reason it was given. Null on every row written before the column, and
+   * on the paths that never consult the ladder.
+   */
+  triageReason: string | null;
+  /** Why a `skipped` row was skipped, when the disposition alone does not say. */
+  skipReason: SkipReason | null;
   lastAction: string | null;
   /** What was actually delivered - null when nothing was sent. */
   sentText: string | null;
@@ -865,6 +883,25 @@ export interface ForemanEpisodeSummary {
   cheapAction: CheapAction | null;
   divergence: Divergence | null;
   disposition: NoteDisposition;
+  /**
+   * The three fields the row's own WHY is built from, and the one place this shape's
+   * "prefer the per-session read" rule is deliberately spent.
+   *
+   * They are here because the ledger renders them, which is the test the rest of this
+   * interface is held to. Before them every row printed one word from a four-word
+   * vocabulary and a hover, and a screen of `running AskUserQuestion / escalated / cheap`
+   * repeated six times was the actual rendering - the ask is not an identity (three
+   * strings cover 54% of a real ledger) and `skipped` was covering three different events.
+   *
+   * The cost is what makes it defensible: measured against the same 631-episode database
+   * the `pane` argument was measured on, these three add about 40 bytes a row - 4KB on a
+   * 100-row poll, against the 82KB the drawer-only fields cost. `brief`, `recommendation`,
+   * `lastAction` and the captured screen all stay off, and the detail read
+   * (`GET /api/foreman/episodes/:id`) is where a reader goes for them.
+   */
+  classification: string | null;
+  triageReason: string | null;
+  skipReason: SkipReason | null;
   /** Who DECIDED it - not who sent the text. See `ForemanEpisode.resolvedBy`. */
   resolvedBy: EpisodeAuthor | null;
   createdAt: number;

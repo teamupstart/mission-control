@@ -13240,6 +13240,63 @@ select.sc-input {
   border-top: 1px solid var(--border-soft);
   font-size: 12px;
 }
+
+/* The ledger's rows scroll, and its header and column names do not.
+   At the 100-row cap the Foreman table is roughly 3,500px tall. Rendered whole into the
+   settings page's own scroller it sat beside a control column a quarter of its height, so
+   the panel ran on for two and a half screens of table with nothing to its left - and the
+   count strip, which IS the filter, scrolled out of reach on the first flick. The one
+   control for making the list shorter was reachable only from where you could not read it.
+
+   The scroller is an INNER element rather than `.sc-table` itself, which cannot take
+   `overflow-y` without giving up the `overflow: hidden` its rounded corners are clipped by.
+   `overscroll-behavior` stops a flick that reaches the end from continuing into the page,
+   which is the failure that makes a nested scroller feel broken.
+
+   `50vh` rather than a row count: the budget is what is left of the window, and the point
+   is that the panel below the fold is reachable, so the ledger must not be able to claim
+   the whole viewport however many rows land in it.
+
+   The column names stay pinned for free rather than by `position: sticky`: they are a
+   SIBLING above the scroller, not the first thing inside it, so they simply never move. */
+.sc-scroll {
+  max-height: 50vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A row that OPENS is a button, so it is reachable by keyboard and announces its state -
+   everything here is undoing what a button brings with it, so it can sit in the same grid
+   its non-interactive siblings do. */
+button.sc-row {
+  width: 100%;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+button.sc-row:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: -2px;
+}
+.sc-row.is-open {
+  background: var(--panel-2);
+}
+
+/* The opened decision. Indented from the left edge and marked with a rule, so a card this
+   tall reads as belonging to the row above it rather than as a new section - in a scroller
+   the row that opened it is often the only thing anchoring it. */
+.sc-detail {
+  padding: 4px 13px 12px 26px;
+  border-top: 1px solid var(--border-soft);
+  border-left: 2px solid var(--border);
+  background: var(--panel-2);
+}
 .sc-table-inspector .sc-row {
   grid-template-columns: minmax(0, 1fr) 148px 74px 104px;
 }
@@ -13253,13 +13310,30 @@ select.sc-input {
    straight out of the one cell that says what the decision was ABOUT. The first cut spent
    458px on five such columns and left the ask 66px - about ten characters - which reads as
    a table of "Claude n...". */
+/* Still ONE flexible track, and every fixed one re-measured against its longest real value
+   now that two cells carry two lines each.
+
+   The ask keeps the flexible track because it is still the only cell whose useful length is
+   unbounded: it leads with Foreman's own purpose, a sentence, and that sentence is the only
+   thing separating two rows that share an ask (`Needs approval: Bash` covers 318 rows of a
+   real 833-row ledger). Everything else is a word from a closed vocabulary or a timestamp.
+
+   `decided by` grew 84 -> 104 for its second line, and that IS its longest real value: the
+   reason labels are deliberately short enough to scan (`no menu row named` and `human-only,
+   risky` are the longest at about 90px), which is what let this stay a fixed track instead
+   of taking a share of the ask. The first cut spent a whole `1fr` here on full sentences and
+   clipped them anyway - see `TRIAGE_REASON`.
+
+   `session` shrank 84 -> 74 and `outcome` 84 -> 82, both measured rather than rounded: the
+   handle is eight mono characters and the longest outcome is `dismissed`. That is 12px back
+   to the ask, which is where every pixel this table does not need goes. */
 .sc-table-foreman .sc-row {
-  grid-template-columns: 84px minmax(0, 1fr) 84px 104px 62px;
+  grid-template-columns: 74px minmax(0, 1fr) 82px 104px 62px;
 }
 /* The shadow column exists only while the cheap tier is MEASURING - see `showShadow`.
    Under `on` no measurement is ever taken, so this would be a permanently empty 130px. */
 .sc-table-foreman.has-shadow .sc-row {
-  grid-template-columns: 84px minmax(0, 1fr) 84px 104px 112px 62px;
+  grid-template-columns: 74px minmax(0, 1fr) 82px 104px 112px 62px;
 }
 /* Phone width: the row folds onto two lines rather than being cut in half.
    The fixed tracks above come to 326px plus gaps and padding, so below roughly 450px of
@@ -13413,20 +13487,33 @@ select.sc-input {
 }
 
 /* ---- the Foreman ledger's own cells ----
-   Four dispositions, and the two that await you (`noteAwaitsYou`) are the two that carry
-   a colour with weight: an escalation is Foreman handing the decision over, a draft is one
-   it wants confirmed. Answered reads as settled, skipped as inert. */
+   Six outcomes now, not four dispositions - see `episodeOutcome`. The two that await you
+   (`noteAwaitsYou`) are the two that carry a colour with weight: an escalation is Foreman
+   handing the decision over, a draft is one it wants confirmed. Answered reads as settled.
+
+   The three that came out of `skipped` are graded by WHOSE call it was, which is the whole
+   point of splitting them. `declined` is Foreman deciding correctly not to decide, so it
+   stays inert. `dismissed` is the human's own call and reads the same way - nothing went
+   wrong. `stale` is the odd one and is the only one lifted off the floor: a verdict was
+   reached and thrown away because the review took longer than the session's patience, and
+   that is a thing worth noticing a run of. It is not `--danger`, because nothing is broken
+   and a red column would train the eye to ignore it. */
 .sc-verdict-escalated {
   color: var(--attention);
 }
-.sc-verdict-pending {
+.sc-verdict-drafted {
   color: var(--working);
 }
 .sc-verdict-answered {
   color: var(--idle);
 }
-.sc-verdict-skipped {
+.sc-verdict-declined,
+.sc-verdict-dismissed {
   color: var(--dim);
+}
+.sc-verdict-stale {
+  color: var(--muted);
+  font-style: italic;
 }
 /* The session handle. Mono because it is an identifier being scanned for repeats down a
    column, not read as a word - the shape of `ttys004:41233` is the whole of its use. */
@@ -13438,18 +13525,48 @@ select.sc-input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The ask, in two lines: what the decision was FOR over what was literally asked.
+   Grid rather than block so both children are forced to `minmax(0, ...)` and each can
+   ellipsize on its own - two nowrap spans in a flow box would size to the longer one and
+   push the whole cell past its track. */
 .sc-ask {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
   color: var(--fg);
+}
+.sc-ask-purpose,
+.sc-ask-raw {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The verbatim ask is the recognition cue, not the content - `Needs approval: Bash` on
+   318 rows of a real ledger. Dim and mono: mono because it is a literal, and because the
+   repeats are what a reader is scanning for. */
+.sc-ask-raw {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
 .sc-decided {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
   color: var(--dim);
   font-size: 11px;
-  white-space: nowrap;
+}
+.sc-decided-who,
+.sc-decided-why {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Why the ladder landed here. Dimmer than the author above it, because it is the
+   subordinate clause of that sentence and not a second fact. */
+.sc-decided-why {
+  font-size: 10px;
+  color: color-mix(in oklab, var(--dim) 78%, transparent);
 }
 .sc-shadow {
   min-width: 0;
@@ -17906,9 +18023,17 @@ span.line-run-prov {
   border-radius: 8px;
   background: var(--bg-2);
 }
+/* Green means SOMETHING WAS DELIVERED, and only that.
+   It used to be unconditional, so "You dismissed this" and "Nothing was sent - the session
+   moved on" both rendered in the same settled green as "Foreman answered" - a confirmation
+   tone over a line whose whole content is that no reply exists. The disposition is already
+   on the card's root for the border colour, so scoping it costs one selector. */
 .fe-res-who {
   font-size: 12px;
   font-weight: 600;
+  color: var(--muted);
+}
+.fe-answered .fe-res-who {
   color: var(--idle);
 }
 .fe-res-option {

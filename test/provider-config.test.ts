@@ -40,6 +40,8 @@ test("Foreman ships enabled with both wrap-up triggers, and still authorises not
   assert.equal(fresh.mode, "dry-run", "enabled must not imply may-act");
   assert.deepEqual(fresh.repoAllowlist, [], "enabled must not imply an authorised repository");
   assert.equal(fresh.wrapup, "ask", "a wrap-up moment must still ask rather than type");
+  assert.equal(fresh.trackReviewFeedback, true);
+  assert.equal(fresh.trackCiFailures, true);
 });
 
 test("an operator who explicitly turned Foreman off keeps it off across the flip", () => {
@@ -74,9 +76,38 @@ test("Foreman persists the two completion safeguards independently", () => {
   assert.equal(bothOff.skipReviewArtifactWrapup, false);
 });
 
-test("Foreman upgrades a removed automatic-review enum to workflow mode", () => {
+test("Foreman persists review-comment and CI follow-through independently", () => {
+  const ciOff = setForemanConfig({ trackCiFailures: false });
+  assert.equal(ciOff.trackReviewFeedback, true);
+  assert.equal(ciOff.trackCiFailures, false);
+
+  const bothOff = setForemanConfig({ trackReviewFeedback: false });
+  assert.equal(bothOff.trackReviewFeedback, false);
+  assert.equal(bothOff.trackCiFailures, false);
+});
+
+test("Foreman preserves the old combined PR follow-through answer when adding CI", () => {
+  setAppConfig("foreman", { trackReviewFeedback: false });
+  const optedOut = getForemanConfig();
+  assert.equal(optedOut.trackReviewFeedback, false);
+  assert.equal(optedOut.trackCiFailures, false);
+
+  setAppConfig("foreman", { trackReviewFeedback: true });
+  assert.equal(getForemanConfig().trackCiFailures, true);
+
+  // Once the split setting exists, it is an independent operator answer and must win.
+  setAppConfig("foreman", { trackReviewFeedback: false, trackCiFailures: true });
+  const split = getForemanConfig();
+  assert.equal(split.trackReviewFeedback, false);
+  assert.equal(split.trackCiFailures, true);
+});
+
+test("Foreman upgrades removed automatic-review modes to Ask", () => {
   setAppConfig("foreman", { wrapup: "retired-review-option" });
-  assert.equal(getForemanConfig().wrapup, "workflow");
+  assert.equal(getForemanConfig().wrapup, "ask");
+
+  setAppConfig("foreman", { wrapup: "workflow" });
+  assert.equal(getForemanConfig().wrapup, "ask");
 });
 
 test("Foreman persists Codex independently from the app-wide background provider", () => {

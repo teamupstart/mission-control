@@ -437,6 +437,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     wrapupTriggers: ["drain"],
     wrapup: "ask",
     trackReviewFeedback: true,
+    trackCiFailures: true,
     autoBacklog: false,
     backlogRespectOpenPrs: true,
     backlogDefaultModel: { claude: null, codex: null, pi: null },

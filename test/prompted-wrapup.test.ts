@@ -384,21 +384,16 @@ test("an ADVISORY gap never blocks the ship - same rule the queue follows", () =
   assert.equal(p.kind, "ask-wrapup");
 });
 
-test("`ask` and workflow mode show the card; direct PR mode carries its payload", () => {
+test("Ask shows the card; direct PR mode carries its payload", () => {
   assert.equal(planPromptedWrapup(GOAL, mkVerdict(), CFG, true).kind, "ask-wrapup");
-
-  const workflow = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: "workflow" }, true);
-  assert.equal(workflow.kind, "ask-wrapup");
 
   const pr = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: "pr" }, true);
   assert.equal(pr.kind === "auto-wrapup" && pr.payload, WRAPUP_PR);
 });
 
 test("dry-run degrades to the ask and NEVER types - the instruction pushes", () => {
-  for (const w of ["workflow", "pr"] as const) {
-    const p = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: w }, false);
-    assert.equal(p.kind, "ask-wrapup", w);
-  }
+  const p = planPromptedWrapup(GOAL, mkVerdict(), { ...CFG, wrapup: "pr" }, false);
+  assert.equal(p.kind, "ask-wrapup");
 });
 
 // ---- the selector ----

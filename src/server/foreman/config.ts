@@ -47,20 +47,37 @@ interface ForemanLease {
   expiresAt: number;
 }
 
-/**
- * Normalize the removed automatic-review enum before validating stored settings.
- *
- * The API schema remains strict for new writes. This read-only upgrade applies only to an
- * existing app_config blob whose wrap-up value is no longer part of the public enum, and
- * preserves its automatic workflow behavior without retaining the retired spelling.
- */
+/** Normalize retired and split settings before validating a stored config. */
 function migrateStoredForemanConfig(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const config = value as Record<string, unknown>;
-  if (typeof config.wrapup !== "string" || WRAPUP_MODES.some((mode) => mode === config.wrapup)) {
-    return value;
+
+  let next = config;
+  const migrate = (patch: Record<string, unknown>): void => {
+    if (next === config) next = { ...config };
+    Object.assign(next, patch);
+  };
+
+  // Before the controls were split, this one value governed both review comments and CI.
+  // Preserve an operator's saved answer on upgrade. A genuinely fresh config has neither
+  // key and still receives the schema's default-on values for both controls.
+  if (
+    !Object.prototype.hasOwnProperty.call(config, "trackCiFailures")
+    && typeof config.trackReviewFeedback === "boolean"
+  ) {
+    migrate({ trackCiFailures: config.trackReviewFeedback });
   }
-  return { ...config, wrapup: "workflow" };
+
+  // The API schema remains strict for new writes. Only a stored, retired wrap-up value is
+  // normalized to Ask, which still lets an explicitly bound Workflow claim completion first.
+  if (
+    typeof config.wrapup === "string"
+    && !WRAPUP_MODES.some((mode) => mode === config.wrapup)
+  ) {
+    migrate({ wrapup: "ask" });
+  }
+
+  return next;
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */

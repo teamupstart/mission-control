@@ -3893,7 +3893,7 @@ never reached a wrap-up moment at all. For [the repair loop](#the-repair-loop-en
 meant the completion signal simply did not exist for those sessions, and the loop read as broken
 rather than unarmed. What the second trigger costs is bounded by everything below it - **Then**
 still defaults to **Ask**, so a wrap-up moment renders a card rather than typing anything, and
-the automated actions are refused outright unless Foreman is live *and* the repository is
+direct PR is refused outright unless Foreman is live *and* the repository is
 allowlisted.
 
 The prompted trigger doesn't fire on idleness alone, because idle isn't finished. It runs
@@ -3912,29 +3912,28 @@ The action is the same whichever trigger fired:
 | Then | What it does |
 |---|---|
 | **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
-| **Run No-Mistakes Review automatically** | after Foreman verifies the original work, submits an existing **Foreman Complete** binding; if there is no active binding, it binds and immediately submits the current built-in **No-Mistakes Review** workflow |
-| **Straight to PR** | explicitly skip the review workflow; use git and `gh` directly to commit, push, and open a PR, then merge the default branch in, resolve conflicts, and follow CI until every check passes |
+| **Straight to PR** | when no Workflow is bound, use git and `gh` directly to commit, push, and open a PR, then merge the default branch in, resolve conflicts, and follow CI until every check passes |
+
+An active **Foreman Complete** binding takes precedence over either choice: Foreman submits
+that exact Workflow at the verified boundary. A **Manual** binding remains manual and raises
+the **Ship it?** card instead of letting Straight to PR create a competing pull request on the
+same branch. Foreman never creates a fallback Workflow for an unbound session; choose one in
+the task's **After work** field or bind it directly to the session.
 
 Automatic wrap-up is only for shippable changes. A linked task whose **Kind** is **scout**
-retires its completion without submitting an existing Workflow, creating the built-in
-No-Mistakes fallback, typing the Straight-to-PR instruction, or raising a Ship it? card. The
+retires its completion without submitting an existing Workflow, typing the Straight-to-PR
+instruction, or raising a Ship it? card. The
 same rule applies when the resolved objective explicitly asks for review-only output such as
 mockups, wireframes, prototypes, plans, reports or design explorations, and when the completed
 diff contains only conventional mockup or plan artifacts. A mixed change that also contains an
 implementation remains eligible. This is a Foreman automation boundary; it does not prevent a
 human from committing or opening a pull request manually.
 
-The two automated actions can ultimately *push*, so they only fire in **live** mode on an
-**allowlisted** repo - until then Foreman asks, and the popover says so rather than letting
-a selected radio quietly do nothing. An existing Workflow binding is never replaced: a
-**Foreman Complete** binding owns the completion, while a **Manual** binding stays manual
-and Foreman raises the **Ship it?** card. The No-Mistakes Review fallback is created only
-for an unbound conversation. Binding flows directly into submission at the same verified
-completion boundary; it does not leave a newly bound workflow waiting idle. Binding and
-completion claiming are durable and idempotent, so retries converge on one binding, one
-submission and one run instead of launching the review twice.
-The review starts either way; its repair delivery is **Live** only when Workflows Live
-separately authorizes that repository, and otherwise stays in **Preview** for approval.
+Straight to PR can ultimately *push*, so it only fires in **live** mode on an
+**allowlisted** repo. Until then Foreman asks, and the popover says so rather than letting
+the selected radio quietly do nothing. Workflow completion claiming is durable and
+idempotent, so retries converge on one submission and one run instead of launching the
+review twice.
 
 The manual **Run No-Mistakes Review** button on the **Ship it?** card follows the same
 workflow path. It reuses the active built-in binding when one exists, creates a manual
@@ -3958,23 +3957,31 @@ letting you queue work that can't run.
 
 ### Keeping a PR on track
 
-Wrapping up turns work into an **open pull request** - and then the session parks. The
-[Inspector](#inspector-automated-pr-review) reviews that PR and posts comments, or CI goes
-red, and nobody is driving the session to fix any of it, so the PR sits with unresolved
-feedback until you notice. **Keep sessions on track** (in the Foreman popover, under **Pull
-requests**, **on by default**) closes that gap: it nudges the parked session back onto its
-own PR to **resolve the Inspector's review comments and get a failing CI green**, and nudges
-again when a later Inspector round or a newly actionable feedback kind changes what needs
-attention.
+Once work has an **open pull request**, its session can park while the
+[Inspector](#inspector-automated-pr-review) posts comments or CI goes red. The Foreman
+popover's **Pull requests** section has two independent, default-on controls:
 
-It applies to parked sessions on harnesses Foreman can reliably drive - currently Claude,
+- **Keep sessions on track with review comments** nudges the parked session to resolve
+  Inspector comments already posted on its PR.
+- **Keep sessions on track with CI** nudges the parked session to fix failing checks. It
+  never creates a PR; an existing open PR is a required input, and every fix stays on that
+  PR's branch.
+
+Each control can be disabled without disabling the other. A later Inspector round or a new
+CI failure episode re-arms only the corresponding follow-through.
+
+When upgrading from the earlier combined **Keep sessions on track** control, its saved answer
+initializes both controls. An existing opt-out therefore stays fully opted out; only a fresh
+configuration defaults both controls on.
+
+Both apply to parked sessions on harnesses Foreman can reliably drive - currently Claude,
 and Codex sessions launched with Mission Control's scoped hooks - whether the PR came from
 **Straight to PR**, a review workflow, or one you shipped by hand.
 
-The nudge is typed into the session's pane, so it carries the usual gates and one more:
+Each nudge is typed into the session's pane, so it carries the usual gates and one more:
 
-- it only **types** in **live** mode on an **allowlisted** repo, exactly like the automated
-  wrap-up actions - dry-run leaves the parked PR for you;
+- it only **types** in **live** mode on an **allowlisted** repo, exactly like direct
+  wrap-up - dry-run leaves the parked PR for you;
 - it fires only at a **settled-idle** session, so it never interrupts one already working the
   fixes, and it does not nag a PR that's being handled: review comments re-arm **once per
   Inspector round**, and a failing CI re-arms **once per failure episode** - after the checks

@@ -1,0 +1,12 @@
+$ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts e2e/specs/dispatch-and-converse.spec.ts -g "Foreman removes automatic review and separates CI follow-through" --workers=1 --reporter=list
+
+Running 1 test using 1 worker
+
+OBSERVED Foreman Then exposes Ask and Straight to PR, with no automatic review option
+OBSERVED review-comment and CI follow-through are separate checked controls
+OBSERVED the CI control says it does not create a PR and requires one to exist
+CAPTURED docs/evidence/foreman-pr-follow-through/foreman-settings.png
+CAPTURED docs/evidence/foreman-pr-follow-through/foreman-settings.html
+  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:477:1 › Foreman removes automatic review and separates CI follow-through from review comments (3.6s)
+
+  1 passed (5.8s)

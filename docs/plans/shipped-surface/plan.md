@@ -55,7 +55,7 @@ flowchart LR
   LS -->|SSE line_summary| STRIP[The Line: Shipped]
   STRIP -.->|click, today| RUNS["Workflow runs (status=completed)\nwrong surface"]
   STRIP -->|click, approved| DRAWER[Shipped drawer]
-  DRAWER -->|footer link| PAGE[Ship log page]
+  DRAWER -->|header action| PAGE[Ship log page]
   DB -->|"GET /api/inspector/prs\nfull rows"| DRAWER
   DB -->|"GET /api/inspector/prs\nfull rows"| PAGE
 ```
@@ -100,9 +100,12 @@ where the week's work landed at a glance.
   the `gh pr create` URL), so the Inspector's per-tick poll writes it -
   `PrSnapshot.title` is already fetched - and rows fall back to `head_ref_name`
   until the first poll.
-- Both surfaces read `GET /api/inspector/prs`; raise or parameterize the
-  `loadInspectorInspections(50)` limit if a week exceeds it.
+- Both surfaces read `GET /api/inspector/prs` through the `adoptedSince` window
+  contract Phase 1 fixes: `adopted_at >= since`, ordered `adopted_at DESC`,
+  uncapped. Never the parameterless default - its 50-row, review-recency
+  ordering can truncate and reorder a week, letting the surfaces disagree with
+  the strip's 7-day Shipped count.
 - UI changes require Playwright specs in `e2e/` (drawer open, chips filter,
-  footer link navigates, page renders rows), plus README updates.
+  the header escalation navigates, page renders rows), plus README updates.
 
 Rendered page with the adopted mockups: [plan.html](plan.html).

@@ -49,7 +49,8 @@ app.whenReady().then(async () => {
           // column would make the case pass or fail on the viewport rather than on the rule.
           rowOverflows: rows.map((row) => Math.max(0, ...[
             ...row.querySelectorAll(
-              '.line-run-who strong, .line-run-wf, .line-run-chips, .line-run-state',
+              '.line-run-who strong, .line-run-wf, .line-run-chips, .line-run-state,'
+              + ' .line-group-who strong, .line-group-mid',
             ),
           ].map((el) => el.scrollWidth - el.clientWidth))),
           firstRowTop: first ? Math.round(first.top) : null,

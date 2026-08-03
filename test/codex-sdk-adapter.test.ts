@@ -868,6 +868,72 @@ test("turn lifecycle drives state, and usage rides turn_done exactly once", asyn
   await drained;
 });
 
+test("a completed final answer ends the turn when lifecycle notifications are lost", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  server.notify("item/completed", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    completedAtMs: 0,
+    item: {
+      type: "agentMessage",
+      id: "message-commentary",
+      text: "The tests are still running.",
+      phase: "commentary",
+      memoryCitation: null,
+    },
+  });
+  await settle();
+  assert.equal(
+    events.filter((event) => event.kind === "turn_done").length,
+    0,
+    "commentary is activity inside the turn, not its completion",
+  );
+
+  server.notify("item/completed", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    completedAtMs: 1,
+    item: {
+      type: "agentMessage",
+      id: "message-final",
+      text: "Implemented.",
+      phase: "final_answer",
+      memoryCitation: null,
+    },
+  });
+  await settle();
+  assert.equal(
+    events.filter((event) => event.kind === "turn_done").length,
+    0,
+    "the fallback leaves room for trailing lifecycle and usage frames",
+  );
+  server.notify("thread/tokenUsage/updated", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    tokenUsage: {
+      total: { totalTokens: 3, inputTokens: 2, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 },
+      last: { totalTokens: 3, inputTokens: 2, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 },
+      modelContextWindow: 258400,
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const fallbackDone = events.filter((event) => event.kind === "turn_done");
+  assert.equal(fallbackDone.length, 1);
+  assert.equal(fallbackDone[0]?.kind === "turn_done" && fallbackDone[0].usage?.output, 1);
+
+  // The normal frames may be delayed rather than absent. The final-answer backstop and
+  // ordinary lifecycle must still retire one supervisor reservation exactly once.
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  await settle();
+  assert.equal(events.filter((event) => event.kind === "turn_done").length, 1);
+  await handle.stop();
+  await drained;
+});
+
 test("a pull request is reported only with both halves of the provenance rule", async () => {
   const server = new FakeServer(defaultReplies());
   const { handle, events, drained } = await launch(server);

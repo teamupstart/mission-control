@@ -6,6 +6,7 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const HELD_TURN = "hold the current turn open";
+const FINAL_ANSWER_HELD_TURN = "hold the current turn open and finish with only a final answer";
 const QUEUED_TURN = "deliver this queued turn when the agent goes idle";
 const MID_TURN_INJECTION = "a repair round that arrived while the agent was working";
 
@@ -185,3 +186,41 @@ test(`a queued turn still lands after the ${agent} driver takes a mid-turn messa
   await shoot(dashboard, `${agent}-mid-turn-delivered`);
 });
 }
+
+test("a Codex final answer releases a queued turn when later lifecycle notifications are lost", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, "codex");
+
+  const card = dashboard.locator("article.card").first();
+  await card.getByRole("button", { name: "Expand conversation" }).click();
+  const composer = card.getByPlaceholder(/^Reply to this session/);
+  await expect(composer).toBeEnabled();
+
+  await composer.fill(FINAL_ANSWER_HELD_TURN);
+  await composer.press("Enter");
+  await expect(
+    card.locator(".turn-user:not(.pending-turn)").getByText(FINAL_ANSWER_HELD_TURN, {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  await composer.fill(QUEUED_TURN);
+  await composer.press("Enter");
+  await expect(card.getByRole("status").filter({ hasText: /^queued$/ })).toBeVisible();
+
+  // The fake emits the completed `final_answer` item and deliberately omits both
+  // `turn/completed` and the idle thread status. The user-visible proof is that the outbox
+  // still drains and the next turn receives an answer.
+  await expect(
+    card.getByText(`Mock reply to: ${FINAL_ANSWER_HELD_TURN}`, { exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(card.locator(".pending-turn")).toHaveCount(0, { timeout: 15_000 });
+  await expect(
+    card.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+  // Reviewer-visible proof from this exact regression: the former pending row is an
+  // ordinary submitted turn and its SDK response is on the card.
+  await shoot(dashboard, "codex-final-answer-delivered");
+});

@@ -92,6 +92,7 @@ import { defaultCodexSdkDeps, type CodexSdkDeps } from "./sdk-deps.ts";
 const ACCEPT_LABEL = "Yes";
 const ACCEPT_ALWAYS_LABEL = "Yes, and don't ask again";
 const DECLINE_LABEL = "No";
+const FINAL_ANSWER_COMPLETION_GRACE_MS = 250;
 
 /**
  * What a `permissionMode` MEANS to the app-server, and the exact inverse of what
@@ -322,6 +323,8 @@ class CodexSdkSession implements SdkSessionHandle {
   private activeTurnId: string | null = null;
   /** The most recent per-turn token usage, reported with `turn_done`. */
   private lastUsage: SdkUsage | null = null;
+  /** A short backstop when a final answer is not followed by either lifecycle frame. */
+  private finalAnswerCompletion: ReturnType<typeof setTimeout> | null = null;
   private modelId: string | null = null;
   /**
    * The sandbox the RUNNING thread resolved to, read off its own start response.
@@ -831,7 +834,23 @@ class CodexSdkSession implements SdkSessionHandle {
         }
         const activity = itemActivity(item);
         if (activity) this.out.emit({ kind: "state", state: "working", activity });
-        if (method === "item/completed") this.notePullRequest(item, threadId);
+        if (method === "item/completed") {
+          this.notePullRequest(item, threadId);
+          // `final_answer` is Codex's own declaration that the root turn is over. Normally
+          // `turn/completed` and an idle thread-status notification follow it, but treating
+          // either of those as the only completion signal leaves a durable turn wedged when
+          // app-server drops both: the transcript has a final response while the card stays
+          // working, and every human message remains queued. Give the ordinary lifecycle
+          // and trailing usage frame a brief head start, then finish through the same
+          // idempotent gate if they never arrive.
+          if (
+            this.isCurrentThread(params) &&
+            item.type === "agentMessage" &&
+            item.phase === "final_answer"
+          ) {
+            this.scheduleFinalAnswerCompletion((params as ItemCompletedNotification).turnId);
+          }
+        }
         return;
       }
       case "thread/tokenUsage/updated": {
@@ -1002,8 +1021,23 @@ class CodexSdkSession implements SdkSessionHandle {
   /** Close out a turn exactly once, whichever notification told us about it first. */
   private finishTurn(turnId: string | null): void {
     if (!turnId || this.activeTurnId !== turnId) return;
+    if (this.finalAnswerCompletion) {
+      clearTimeout(this.finalAnswerCompletion);
+      this.finalAnswerCompletion = null;
+    }
     this.activeTurnId = null;
     this.out.emit({ kind: "turn_done", usage: this.lastUsage });
+  }
+
+  private scheduleFinalAnswerCompletion(turnId: string): void {
+    if (this.activeTurnId !== turnId) return;
+    if (this.finalAnswerCompletion) clearTimeout(this.finalAnswerCompletion);
+    const timer = setTimeout(() => {
+      if (this.finalAnswerCompletion !== timer) return;
+      this.finalAnswerCompletion = null;
+      this.finishTurn(turnId);
+    }, FINAL_ANSWER_COMPLETION_GRACE_MS);
+    this.finalAnswerCompletion = timer;
   }
 
   /**

@@ -165,6 +165,24 @@ It is behind that flag rather than captured on every run because the card carrie
 timestamp and a fresh worktree uuid, so an unconditional capture would rewrite a binary on
 every run for no added signal.
 
+### The agent's own question
+
+[`docs/evidence/driver-question-in-conversation/`](../docs/evidence/driver-question-in-conversation/)
+carries the two frames `specs/driver-question-in-conversation.spec.ts` takes between its own
+assertions: the `AskUserQuestion` form an Agent SDK session raises, and the gold entry the
+answer leaves in that session's conversation.
+
+That spec is the reason `fake-claude.mjs` sends a `can_use_tool` control request UP the wire
+on one sentinel prompt. Every other `control_request` on that pipe is the SDK asking the CLI
+something; this is the CLI asking its human, and without it no browser spec can reach the
+driver-request surface at all - `/select-option` and `/submit-options` refuse unless a real
+request is pending, because the id they echo is held by the driver.
+
+```sh
+MC_E2E_EVIDENCE=1 npx playwright test --config e2e/playwright.config.ts \
+  e2e/specs/driver-question-in-conversation.spec.ts --reporter=list
+```
+
 ### Queued turn delivery
 
 [`docs/evidence/queued-turn-delivery/`](../docs/evidence/queued-turn-delivery/) carries the

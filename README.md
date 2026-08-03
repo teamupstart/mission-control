@@ -2350,7 +2350,9 @@ everything you author once and reuse, and **Runs** monitors live and finished wo
 Nothing on the Library runs - each shelf carries a single cross-link to where its assets are
 executing, and no live state beyond it. That link sits beside the shelf's question as a
 counted pill wearing a status dot: blue while work is merely open, amber when the count is
-one you have to answer.
+one you have to answer. See the
+[runtime capture](docs/evidence/library-cross-link/README.md) for both the wide and the
+narrow layout.
 
 Switching primary pages changes only the dashboard body. The fleet header, live SSE
 connection, and Cards, Console, or Board selection stay mounted, so returning to **Fleet**

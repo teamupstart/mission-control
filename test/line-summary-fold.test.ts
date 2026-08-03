@@ -369,19 +369,80 @@ test("only the waits a person can end turn review amber", () => {
     "review",
   );
   assert.equal(machineWait.tone, "working");
-  assert.doesNotMatch(machineWait.sentence, /waiting on you/);
+  // Retargeted at the words that replaced "waiting on you": asserting the absence of a phrase
+  // the fold can no longer produce would pass trivially and prove nothing.
+  assert.doesNotMatch(machineWait.sentence, /needs? you|stalled/);
 
   const humanWait = fold(
     { workflowRuns: [mkRun({ status: "waiting_for_action", actionWait: "needs_operator" })] },
     "review",
   );
   assert.equal(humanWait.tone, "attention");
-  assert.match(humanWait.sentence, /1 waiting on you/);
+  assert.match(humanWait.sentence, /1 needs you/);
+  // And nothing is stalled: this run is alive and one answer moves it.
+  assert.doesNotMatch(humanWait.sentence, /stalled/);
 });
 
 test("a blocked run needs a person even with no action wait", () => {
   const stage = fold({ workflowRuns: [mkRun({ status: "blocked", actionWait: null })] }, "review");
   assert.equal(stage.tone, "attention");
+  // Stalled, not "waiting on you". Nothing a person can say restarts this run, and the whole
+  // point of the split is that a fleet of thirty-one of these owes you nothing to decide.
+  assert.match(stage.sentence, /1 stalled/);
+  assert.doesNotMatch(stage.sentence, /needs you/);
+});
+
+test("the split counts a run once, even when it is both blocked and asking you something", () => {
+  // `workflowRunWaitsOnOperator` is a UNION, and a run can satisfy both arms: `orphanBinding`
+  // blocks a run whose session action was already parked on `needs_operator`. Two independent
+  // filters would report that one run twice and have the strip claim more attention than the
+  // fleet owes. Blocked wins, and it is the truer word - the attempts behind that question
+  // were cancelled, so answering it moves nothing.
+  const both = fold(
+    { workflowRuns: [mkRun({ status: "blocked", actionWait: "needs_operator" })] },
+    "review",
+  );
+  assert.match(both.sentence, /1 stalled/);
+  assert.doesNotMatch(both.sentence, /needs you/);
+  assert.equal(both.tone, "attention");
+
+  // The two halves sum to the old single total, on a fleet holding one of each plus the
+  // overlap: two runs wait on a person by the shared predicate, and the strip says two.
+  const fleet = fold({
+    workflowRuns: [
+      mkRun({ id: "r1", status: "blocked", actionWait: "needs_operator" }),
+      mkRun({ id: "r2", status: "waiting_for_action", actionWait: "needs_operator" }),
+      mkRun({ id: "r3", status: "running", actionWait: null }),
+    ],
+  }, "review");
+  assert.match(fleet.sentence, /1 needs you · 1 stalled/);
+});
+
+test("the split's parts go through the separator the accessible name rewrites", () => {
+  // `LineStrip.stageLabel` turns exactly " · " into ", " to build the aria-label, so a part
+  // concatenated by hand would ship a middle dot into an accessible name. Both halves and the
+  // workflow clause have to be joined by `sentence()`.
+  const stage = fold({
+    workflowRuns: [
+      mkRun({ id: "r1", status: "blocked" }),
+      mkRun({ id: "r2", status: "waiting_for_action", actionWait: "needs_operator" }),
+    ],
+  }, "review");
+  assert.equal(stage.sentence, "No-Mistakes Review v8 ×2 · 1 needs you · 1 stalled");
+});
+
+test("more than one of either half is counted in the fleet's own plural", () => {
+  const stage = fold({
+    workflowRuns: [
+      mkRun({ id: "r1", status: "waiting_for_action", actionWait: "needs_operator" }),
+      mkRun({ id: "r2", status: "waiting_for_action", actionWait: "needs_operator" }),
+      mkRun({ id: "r3", status: "blocked" }),
+      mkRun({ id: "r4", status: "blocked" }),
+    ],
+  }, "review");
+  // "need you" rather than "needs you", which is the Working stage's own plural - one fleet
+  // vocabulary for the same claim rather than two.
+  assert.match(stage.sentence, /2 need you · 2 stalled/);
 });
 
 // ---- decide ----

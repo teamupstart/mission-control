@@ -4344,7 +4344,7 @@ it. A stage turns **amber when it is waiting on you**, and the wire feeding it l
 | ⇊ **Intake** | Enabled [task sources](#task-sources-pulling-work-into-the-backlog) plus enabled [Recurring Missions](#recurring-missions) | When the most recent source last swept, and when the next mission is due | A source failed its last sweep, or a mission's health is `attention` |
 | ☰ **Backlog** | Tasks with status `backlog` | What [autopilot](#backlog-autopilot-foreman-schedules-the-fleet) would take next, and how many are blocked | Nothing in the backlog is ready - every item is [parked](#hold-a-backlog-item-back) or waiting on a prerequisite, so capacity will never clear it |
 | ▶ **Working** | Sessions that have not exited | The split: needs you / working / idle | Any session needs you - the same [`reportBucket`](#session-status-colors) the Roundup counts with |
-| ⌁ **Review** | [Workflow runs](#watching-a-run) that are not `completed`, `cancelled` or `failed` | The workflow doing most of them, and how many are waiting on you | A run is `blocked`, or its session action is parked on one of the three wait reasons only a person can clear |
+| ⌁ **Review** | [Workflow runs](#watching-a-run) that are not `completed`, `cancelled` or `failed` | The workflow doing most of them, then the split: **`N needs you · N stalled`** | A run is `blocked`, or its session action is parked on one of the three wait reasons only a person can clear |
 | ⧉ **Decide** | [Ensemble runs](#multi-agent-ensembles) that have not finished | Which strategy, how many artifacts are ready, or who it is waiting on | The daemon flagged the run (`awaiting_decision`, a failure, or a member sitting on your answer) |
 | ⚑ **Shipped** | Pull requests your agents adopted **this week** | The **per-PR cost** from today's [cost telemetry](#cost-telemetry) | Never. Shipping is not an obligation |
 
@@ -4352,6 +4352,17 @@ Two windows on the Shipped stage, and it says which is which: the count is the *
 because a Monday morning would otherwise read as zero on a fleet that shipped four things on
 Friday, while the per-PR figure is **today's** - the only window `FleetCost` offers, and
 dividing a day's spend by a week's pull requests would mean nothing.
+
+**Review says its amber half as two numbers**, because one was a lie of aggregation. A fleet
+of 32 live runs where one wanted an answer and 31 were dead read as `32 waiting on you`, which
+is a figure nobody can act on - so it became the reason to ignore the strip rather than the
+reason to open it. It now reads `1 needs you · 31 stalled`: **needs you** is a run a person's
+answer still moves, **stalled** is a run that is `blocked` and will not resume from here. The
+two are mutually exclusive and add up to exactly the old single figure - a run that is both
+blocked *and* parked on your answer counts as **stalled**, because the attempts behind that
+question were cancelled when it blocked, so answering it moves nothing. The Review drawer's
+header prints the same two numbers from the same fold, and the stage stays amber while either
+is non-zero.
 
 **The strip never computes anything.** Every count, sentence and tone is folded on the daemon
 and pushed as one `line_summary` SSE event, change-gated exactly like the cost figures - so an
@@ -4407,7 +4418,7 @@ page, one click deeper.
 
 | Drawer | Each row says | Escalates to |
 |--------|---------------|--------------|
-| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…` - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
+| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
 | **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](#recurring-missions) |
 
@@ -4417,10 +4428,31 @@ with it - so the row falls back in three steps: the live session's name, then th
 binding captured when it was bound, then the conversation key. Only the third is an id, and it
 is drawn as one rather than as a title.
 
-**Everything Review can do is destructive-safe.** `Dismiss` and `Restart…` confirm first, in
-the same dialog and the same words the run page uses, and `Restart…` still demands the exact
-phrase the daemon does. A refused request is reported on the drawer itself and the row stays -
-a triage surface that dropped a row on a failed call would be lying about the fleet.
+**Runs that stopped for the same reason fold into one bar.** Thirty-one rows that all read
+`Blocked · session gone` are not thirty-one facts, and scrolling them is the reader's whole
+budget for the surface. At **three or more** sharing a `phase`, Review draws a single bar
+saying the reason once, counting them once, naming the first three and counting the rest
+(`Run 1 · Run 2 · Run 3 · +27`), with one **Dismiss all**. **Two is still two rows** - a pair
+is not a pile, and folding it would save one line while costing you both rows' chips, round
+counters and remedies. Only `blocked` runs fold: a live run and a run parked on *your* answer
+are the rows you came for, and neither is ever put behind a caret. The bar's **caret expands
+it in place**, so every member is still reachable - the drawer's cap is on the panel, never on
+the list.
+
+**Everything Review can do is destructive-safe.** `Dismiss`, `Restart…` and `Dismiss all`
+confirm first, in the same dialog and the same words the run page uses; `Restart…` still
+demands the exact phrase the daemon does, and `Dismiss all` **echoes the count** it is about
+to end. A refused request is reported on the drawer itself and the row stays - a triage
+surface that dropped a row on a failed call would be lying about the fleet. `Dismiss all`
+fires one cancel per run through that same per-run route rather than a batch one, so a partial
+failure is reported as one - `2 of 30 runs could not be dismissed` - the cancelled runs leave,
+the refused ones stay, and the bar recounts from what is actually still there.
+
+Only `Dismiss` batches. `Restart…` demands a typed phrase each time and batching it would
+launder thirty deliberate acts into one; `Retry` fires provider calls, and a batch button is a
+way to fire thirty of them by accident. A bar over runs with no argument-free remedy at all -
+five runs holding Inspector findings, say - still earns its place by saying the reason once,
+and carries no control.
 
 Two chips the Review drawer deliberately cannot draw: **how many** reviewers a run has, and a
 stage the run has not reached. A run summary carries no graph, so "reviewers 2 of 4" would be

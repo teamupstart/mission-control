@@ -9,11 +9,11 @@ import { relativeTime } from "../lib/format.ts";
 import { PR_STANDING_LABELS, prLabel, prStanding, type PrStanding } from "../lib/pr-standing.ts";
 import {
   SHIP_LOG_RANGES,
-  SHIP_LOG_WINDOW_DAYS,
   dayHeading,
   groupByDay,
   repoTallies,
   rowsInRange,
+  shipLogFetchSince,
   shipLogSummary,
   sparklinePoints,
   weeklyTrend,
@@ -254,7 +254,10 @@ export function ShipLogPage({
   // it ticks, and a window recomputed per tick would refetch the ledger every second.
   useEffect(() => {
     let alive = true;
-    const since = Date.now() - SHIP_LOG_WINDOW_DAYS * 86_400_000;
+    // Through the same calendar walk the folds use. A fixed-ms window would drift against
+    // the local-midnight boundaries reading it, and across a fall-back transition it can
+    // land inside the oldest bucket - see `shipLogFetchSince`.
+    const since = shipLogFetchSince(Date.now());
     void fetchInspectorPrs(since)
       .then((rows) => {
         if (alive) setLedger(rows ?? "failed");

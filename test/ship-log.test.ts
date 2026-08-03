@@ -18,13 +18,16 @@ import {
 import {
   DAY_MS,
   SHIP_LOG_RANGES,
+  SHIP_LOG_TREND_WEEKS,
   SHIP_LOG_WINDOW_DAYS,
+  addLocalDays,
   dayHeading,
   groupByDay,
   rangeStart,
   repoTallies,
   rowsInPriorRange,
   rowsInRange,
+  shipLogFetchSince,
   shipLogSummary,
   sparklinePoints,
   startOfLocalDay,
@@ -321,6 +324,47 @@ test("the prior range is the range immediately before it, and does not overlap",
 // range at `now` would drop it from the page while the Line's uncapped count still held it.
 test("a row adopted slightly in the future is still in the range", () => {
   assert.equal(rowsInRange([row({ adoptedAt: NOON + 60_000 })], NOON, 7).length, 1);
+});
+
+// The fetch boundary and the fold boundaries are two clocks that have to agree, and the
+// fetch was the one place still measuring in fixed milliseconds. It only crosses across a
+// fall-back transition and only near midnight, which is precisely why it needs a test: the
+// symptom is one sparkline point quietly short, on two days a year, with nothing on screen
+// to suggest a row was never asked for.
+test("the read starts before every boundary the folds measure from, DST included", () => {
+  inZone("America/New_York", () => {
+    const cases = [
+      // 23:30 on a day whose trailing twelve weeks contain the fall-back transition. This
+      // is the crossing case: the ms window lands INSIDE the oldest trend bucket.
+      new Date(2026, 10, 20, 23, 30, 0, 0).getTime(),
+      new Date(2026, 10, 20, 0, 30, 0, 0).getTime(),
+      new Date(2026, 2, 20, 23, 30, 0, 0).getTime(),
+      new Date(2026, 6, 15, 12, 0, 0, 0).getTime(),
+    ];
+    for (const now of cases) {
+      const since = shipLogFetchSince(now);
+      // The oldest instant anything on the page reads: the first of the twelve buckets.
+      const oldestBucket = addLocalDays(addLocalDays(now, 1), -7 * SHIP_LOG_TREND_WEEKS);
+      assert.ok(
+        since <= oldestBucket,
+        `a row in the oldest trend bucket would never be fetched at ${new Date(now).toString()}`,
+      );
+      // And the widest range's comparison, which reaches back sixty days.
+      const widest = Math.max(...SHIP_LOG_RANGES.map((r) => r.days));
+      const oldestPrior = addLocalDays(rangeStart(now, widest), -widest);
+      assert.ok(since <= oldestPrior, "the 30-day delta's denominator must be inside the read");
+    }
+
+    // The case is a REAL one: the spelling this replaced does not clear the same bar, so
+    // the assertion above is not passing for free.
+    const near = new Date(2026, 10, 20, 23, 30, 0, 0).getTime();
+    const byMilliseconds = near - SHIP_LOG_WINDOW_DAYS * DAY_MS;
+    const oldestBucket = addLocalDays(addLocalDays(near, 1), -7 * SHIP_LOG_TREND_WEEKS);
+    assert.ok(
+      byMilliseconds > oldestBucket,
+      "the fixed-ms window must actually miss here, or this test proves nothing",
+    );
+  });
 });
 
 test("every offered range fits inside the window the page actually reads", () => {

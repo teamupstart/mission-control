@@ -122,6 +122,25 @@ export function rangeStart(now: number, days: number): number {
 }
 
 /**
+ * The instant the page's one read starts from.
+ *
+ * A calendar walk, like every other boundary here, and that is the point: the folds all
+ * measure from local midnights, so a fetch measured in fixed milliseconds is a window whose
+ * edge drifts against the edges of the things reading it. Across a fall-back transition the
+ * two can cross - open the page after 23:00 on a day whose trailing twelve weeks contain
+ * one, and the ms boundary lands LATER than the oldest bucket's start, so rows in that
+ * bucket's first hour are never fetched and the oldest point on the sparkline quietly
+ * undercounts.
+ *
+ * A full calendar day older than anything any fold reads (the oldest is the trend's first
+ * bucket, which begins 83 days back), so the read covers the page with a day to spare
+ * rather than meeting it exactly at an edge that two different clocks have to agree on.
+ */
+export function shipLogFetchSince(now: number): number {
+  return addLocalDays(now, -SHIP_LOG_WINDOW_DAYS);
+}
+
+/**
  * The rows adopted within `days` calendar days ending today, newest first.
  *
  * Open at the top end, deliberately. Bounding it at `now` would mean the page's callers had

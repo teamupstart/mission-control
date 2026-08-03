@@ -15835,7 +15835,12 @@ span.line-run-prov {
   /* Above the page and the drawer, below the modals (50) and the tooltip (100): a Sitrep
      opened over this must cover it, and this must never cover its own tooltips. */
   z-index: 40;
-  width: 460px;
+  /* The design width, and never wider than the window it is drawn in. `placePlanner`
+     computes its left-edge clamp against exactly this number - a panel that stayed 460px
+     in a 400px window would have its clamped left edge at 8px and its Launch button off
+     the right of the screen, which is a control you cannot reach rather than one you have
+     to scroll to. The two are pinned together in `test/line-drawer.test.ts`. */
+  width: min(460px, calc(100vw - 16px));
   /* The design cap, tightened by whatever room the placement actually found below the
      trigger (`--bl-planner-fit`, set inline). The fallback is what the static render in
      `test/` sees, where there is no viewport to measure. */

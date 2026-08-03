@@ -41,32 +41,55 @@ import { Tooltip } from "../Tooltip.tsx";
  *     they were reading to dismiss a panel about one row of it.
  */
 
-/** Mockup B's panel width, and the width the placement clamps against. */
-const POP_WIDTH = 460;
+/** Mockup B's panel width, and the widest it is ever drawn. */
+export const POP_WIDTH = 460;
 /** Breathing room from the viewport edges, matching the tooltip's own margin. */
-const EDGE_MARGIN = 8;
+export const EDGE_MARGIN = 8;
 /** Never place the panel's top nearer the bottom edge than this - it would open off-screen. */
 const BOTTOM_KEEP = 140;
 
-interface Placement {
+export interface Placement {
   top: number;
   left: number;
+  /**
+   * The width the clamp was computed against - `POP_WIDTH`, or the viewport minus its two
+   * margins on a window too narrow for it. NOT applied inline: the stylesheet says the
+   * same thing (`width: min(460px, calc(100vw - 16px))`) so the panel is the right size
+   * with or without this pass. It is returned because a clamp computed against a width
+   * the panel does not have is exactly the bug this field exists to make checkable.
+   */
+  width: number;
   /** How much room is left below `top`, so the panel can never run off the screen. */
   fit: number;
 }
 
-/** Where the panel goes for a trigger at `rect`: under it, clamped into the viewport. */
-function placeUnder(rect: DOMRect): Placement {
+/**
+ * Where the panel goes for a trigger at `trigger`, in a viewport of `view`: under it,
+ * clamped inside both edges.
+ *
+ * Pure, and handed the viewport rather than reading `window`, so every clamp in it is
+ * checkable at a size nobody can drag a real window to during a test.
+ */
+export function placePlanner(
+  trigger: { left: number; bottom: number },
+  view: { width: number; height: number },
+): Placement {
+  // What the panel actually occupies HERE. Clamping a 460px panel's left edge inside a
+  // 400px window puts its left edge at 8px and its right edge 68px off the screen, with
+  // the Launch button somewhere past it - the panel has to narrow before the clamp can
+  // mean anything. `test/line-drawer.test.ts` pins this against the stylesheet's own
+  // `min(460px, calc(100vw - 16px))`, because the two agreeing is the whole guarantee.
+  const width = Math.min(POP_WIDTH, Math.max(0, view.width - EDGE_MARGIN * 2));
   const left = Math.min(
-    Math.max(rect.left, EDGE_MARGIN),
-    Math.max(EDGE_MARGIN, window.innerWidth - POP_WIDTH - EDGE_MARGIN),
+    Math.max(trigger.left, EDGE_MARGIN),
+    Math.max(EDGE_MARGIN, view.width - width - EDGE_MARGIN),
   );
-  const top = Math.min(rect.bottom + 6, Math.max(EDGE_MARGIN, window.innerHeight - BOTTOM_KEEP));
-  // Passed to the stylesheet rather than applied as a height, so the DESIGN cap stays in
-  // CSS (`min(62vh, 540px, ...)`) and this only ever tightens it. A window short enough
-  // for a long reason to reach the bottom edge gets a panel that scrolls, never one whose
-  // Launch button is below the fold.
-  return { top, left, fit: Math.max(120, window.innerHeight - top - EDGE_MARGIN) };
+  const top = Math.min(trigger.bottom + 6, Math.max(EDGE_MARGIN, view.height - BOTTOM_KEEP));
+  // `fit` is passed to the stylesheet rather than applied as a height, so the DESIGN cap
+  // stays in CSS (`min(62vh, 540px, ...)`) and this only ever tightens it. A window short
+  // enough for a long reason to reach the bottom edge gets a panel that scrolls, never one
+  // whose Launch button is below the fold.
+  return { top, left, width, fit: Math.max(120, view.height - top - EDGE_MARGIN) };
 }
 
 /**
@@ -290,7 +313,12 @@ export function NextUpPlanner({
               return;
             }
             const rect = trigger.current?.getBoundingClientRect();
-            if (rect) setPlace(placeUnder(rect));
+            if (rect) {
+              setPlace(placePlanner(rect, {
+                width: window.innerWidth,
+                height: window.innerHeight,
+              }));
+            }
           }}
         >
           {/* The two words in their own element, so the mark is still exactly the string

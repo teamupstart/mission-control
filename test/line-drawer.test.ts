@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LineStrip } from "../src/web/components/LineStrip.tsx";
@@ -8,7 +9,12 @@ import { DecideDrawer } from "../src/web/components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "../src/web/components/line/IntakeDrawer.tsx";
 import { ShippedDrawer } from "../src/web/components/line/ShippedDrawer.tsx";
 import { BacklogDrawer } from "../src/web/components/line/BacklogDrawer.tsx";
-import { PlannerPopover } from "../src/web/components/line/NextUpPlanner.tsx";
+import {
+  EDGE_MARGIN,
+  PlannerPopover,
+  POP_WIDTH,
+  placePlanner,
+} from "../src/web/components/line/NextUpPlanner.tsx";
 import { autopilotReadout, plannerFacts } from "../src/web/lib/backlog-copy.ts";
 import {
   LINE_DRAWER_STAGES,
@@ -1213,6 +1219,62 @@ test("the footer's switch is the config's own, and never repeats the header's co
   const cold = backlogDrawer(tasks, mkPlan(["ready"]), { autoBacklog: null, autopilot: null });
   assert.match(cold, /aria-label="Backlog autopilot" disabled=""/);
   assert.match(cold, /Autopilot · reading Foreman&#x27;s settings…/);
+});
+
+test("the panel is placed inside the window, however narrow or short the window is", () => {
+  // A trigger on the first row of the drawer, in a full-size window: under it, at its own
+  // left edge, with room to spare below.
+  const roomy = placePlanner({ left: 300, bottom: 254 }, { width: 1280, height: 720 });
+  assert.deepEqual(roomy, { top: 260, left: 300, width: POP_WIDTH, fit: 452 });
+
+  // A trigger far to the right: the panel slides left so its right edge stays on screen,
+  // rather than opening 300px off the side of the window.
+  const rightward = placePlanner({ left: 1100, bottom: 254 }, { width: 1280, height: 720 });
+  assert.equal(rightward.left, 1280 - POP_WIDTH - EDGE_MARGIN);
+  assert.ok(rightward.left + rightward.width <= 1280 - EDGE_MARGIN);
+
+  // THE ONE THIS EXISTS FOR: a window narrower than the panel. Clamping a 460px panel's
+  // LEFT edge into a 400px window puts its right edge 68px off the screen with the Launch
+  // button somewhere past it, so the panel has to narrow first - and the clamp has to be
+  // computed against the narrowed width, or it is clamping a box that does not exist.
+  const narrow = placePlanner({ left: 300, bottom: 254 }, { width: 400, height: 720 });
+  assert.equal(narrow.width, 400 - EDGE_MARGIN * 2);
+  assert.equal(narrow.left, EDGE_MARGIN);
+  assert.ok(narrow.left + narrow.width <= 400 - EDGE_MARGIN);
+
+  // A short window, with the trigger low in it: the top is held off the bottom edge and
+  // the leftover room is handed to the stylesheet, so the panel scrolls inside itself
+  // instead of running off the screen.
+  const short = placePlanner({ left: 300, bottom: 400 }, { width: 1280, height: 420 });
+  assert.equal(short.top, 420 - 140);
+  assert.equal(short.fit, 420 - short.top - EDGE_MARGIN);
+
+  // Every viewport this app can be dragged to, and one nobody would: the panel is inside
+  // both edges in all of them.
+  for (const width of [320, 400, 476, 600, 900, 1280, 2560]) {
+    for (const height of [320, 520, 720, 1400]) {
+      const p = placePlanner({ left: width - 40, bottom: height / 2 }, { width, height });
+      assert.ok(p.left >= EDGE_MARGIN, `left ${p.left} at ${width}x${height}`);
+      assert.ok(p.left + p.width <= width - EDGE_MARGIN, `right edge at ${width}x${height}`);
+      assert.ok(p.top >= EDGE_MARGIN && p.top < height, `top ${p.top} at ${width}x${height}`);
+    }
+  }
+});
+
+test("the placement's idea of the panel's width is the stylesheet's", () => {
+  // The clamp above is only as true as this pairing: the panel is sized by CSS and placed
+  // by TS, and the two reading the same number is the entire guarantee that its right edge
+  // lands where the placement thinks it does. Asserted by reading the rule, because
+  // nothing else in this repo would notice one of them being tuned alone.
+  const css = readFileSync(new URL("../src/web/styles.css", import.meta.url), "utf8");
+  // Anchored to the start of a line, so this reads the panel's OWN rule and not the
+  // `.is-desktop .bl-planner-pop` no-drag entry that also ends in this class.
+  const rule = /^\.bl-planner-pop\s*\{([^}]*)\}/m.exec(css)?.[1] ?? "";
+  assert.match(
+    rule,
+    new RegExp(`width:\\s*min\\(${POP_WIDTH}px,\\s*calc\\(100vw - ${EDGE_MARGIN * 2}px\\)\\)`),
+    "the panel's CSS width and `placePlanner`'s clamp have drifted apart",
+  );
 });
 
 test("nothing ready means no trigger to press, and the drawer says why instead", () => {

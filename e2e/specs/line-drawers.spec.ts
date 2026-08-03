@@ -1473,6 +1473,19 @@ test("the next-up mark opens the planner, which quotes Foreman's own reason", as
   const shortBox = (await planner(dashboard).boundingBox())!;
   expect(shortBox.y + shortBox.height).toBeLessThanOrEqual(520);
   await expect(planner(dashboard).getByRole("button", { name: "Launch now" })).toBeVisible();
+
+  // And a NARROW one, where the trigger sits further right than the panel can start: the
+  // placement slides it left instead of opening it off the side of the window. The unit
+  // test drives the sub-460px case this browser cannot reach - the drawer row's own fixed
+  // columns collapse the mark out of view long before the window gets that small - so what
+  // is checked here is the clamp actually engaging on a size a person can drag to.
+  await dashboard.setViewportSize({ width: 640, height: 720 });
+  await expect(planner(dashboard)).toHaveCount(0);
+  await nextUpTrigger(dashboard).click();
+  const narrowBox = (await planner(dashboard).boundingBox())!;
+  expect(narrowBox.x).toBeGreaterThanOrEqual(0);
+  expect(narrowBox.x + narrowBox.width).toBeLessThanOrEqual(640);
+  await expect(planner(dashboard).getByRole("button", { name: "Launch now" })).toBeVisible();
 });
 
 test("the planner explains an unplanned head instead of implying Foreman chose it", async ({

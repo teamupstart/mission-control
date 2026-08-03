@@ -408,11 +408,17 @@ export function adoptPr(
     mergedAt: null,
     mergeBlock: null,
     // Nothing has been polled yet, and adoption is not an observation. The first tick fills
-    // all four; until then every reader treats them as "unknown" rather than "unchanged".
+    // all five; until then every reader treats them as "unknown" rather than "unchanged".
+    //
+    // `title` in particular is not knowable here even though a title certainly exists: the
+    // signal that reaches this function is a hook that matched `gh pr create` and the URL it
+    // printed, and finding out what the author called it is a network round trip - which is
+    // exactly what the adoption path is kept free of. The tick already fetches it.
     observedHeadSha: null,
     observedState: null,
     observedAt: null,
     headRefName: null,
+    title: null,
     adoptedAt: now,
     updatedAt: now,
   });
@@ -534,6 +540,12 @@ async function processPr(
       observedState: s.state,
       observedAt: now,
       headRefName: s.headRefName || null,
+      // Re-recorded on every tick rather than written once, because a pull request gets
+      // renamed - most often from the placeholder its author opened it with. The empty
+      // string `normalizePr` yields for a missing title collapses to null so the ledger
+      // has one reading of "we do not know what this is called", and the renderers'
+      // branch fallback covers it either way.
+      title: s.title || null,
     },
     now,
   );

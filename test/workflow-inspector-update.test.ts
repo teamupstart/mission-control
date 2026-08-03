@@ -51,6 +51,7 @@ const adopted: InspectorPr = {
   observedState: null,
   observedAt: null,
   headRefName: null,
+  title: null,
   adoptedAt: 1,
   updatedAt: 1,
 };

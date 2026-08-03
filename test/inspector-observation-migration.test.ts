@@ -141,6 +141,7 @@ test("adoption still works on an upgraded database, which the INSERT's column li
     observedState: null,
     observedAt: null,
     headRefName: null,
+    title: null,
     adoptedAt: 900,
     updatedAt: 900,
   });

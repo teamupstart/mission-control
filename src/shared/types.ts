@@ -1939,6 +1939,21 @@ export interface InspectorPr {
    * happens to include the same commit. Null until the first poll after adoption.
    */
   headRefName: string | null;
+  /**
+   * The pull request's title, as GitHub reported it on the last poll.
+   *
+   * Written by the POLL, never by adoption. The adoption signal is a hook catching
+   * `gh pr create` and carries nothing but the URL, and that ingest path is deliberately
+   * free of anything slow or fallible - so the title arrives with the first observation
+   * instead, from a snapshot the tick already pays for.
+   *
+   * Null means "not polled since this column existed", the same reading the `observed_*`
+   * fields carry, and it is a state a row can stay in for ever: the tick retires closed
+   * and merged rows, so one adopted by an older build and landed before its first poll
+   * has no later chance to be titled. Every renderer therefore falls back to
+   * `headRefName` rather than treating null as an empty title.
+   */
+  title: string | null;
   adoptedAt: number;
   updatedAt: number;
 }

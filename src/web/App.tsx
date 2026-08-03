@@ -30,6 +30,7 @@ import { LineStrip } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "./components/line/IntakeDrawer.tsx";
+import { ShippedDrawer } from "./components/line/ShippedDrawer.tsx";
 import { LINE_STAGE_TARGETS } from "./lib/line-targets.ts";
 import { nextLineDrawer, type LineDrawerStage } from "./lib/line-drawer.ts";
 import type { LineStageId } from "@shared/line.ts";
@@ -2252,8 +2253,9 @@ export function App(): React.JSX.Element {
         {/* The drawer, between the strip and the layouts and a sibling of both. It pushes
             the board down and hands the space back on close; the cards below are the same
             cards at the same size in every state, which is the one thing this whole surface
-            was not allowed to change. Mounted only while open, so the Intake drawer's single
-            task-sources read happens on the click that asks for it and never otherwise. */}
+            was not allowed to change. Mounted only while open, so the two drawers that fetch
+            - Intake's task sources, Shipped's adoption ledger - each make their single read
+            on the click that asks for it and never otherwise. */}
         {lineDrawer === "review" && (
           <ReviewDrawer
             runs={workflowRuns}
@@ -2282,6 +2284,16 @@ export function App(): React.JSX.Element {
             onClose={closeLineDrawer}
             onOpenMissions={openMissions}
             onOpenTaskSources={() => navigate({ page: "settings", category: "task-sources" })}
+          />
+        )}
+        {lineDrawer === "shipped" && (
+          <ShippedDrawer
+            now={Date.now()}
+            onClose={closeLineDrawer}
+            // No `closeLineDrawer()` beside it: leaving the fleet already drops the drawer
+            // through the route effect above, and calling both would move the keyboard back
+            // onto a stage button on a page we are navigating off.
+            onOpenShipLog={() => navigate({ page: "shipped" })}
           />
         )}
 

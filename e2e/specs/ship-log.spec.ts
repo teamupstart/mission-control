@@ -394,7 +394,7 @@ test("a ledger read that fails says so, instead of reporting a week in which not
   await expect(dashboard.getByText("Shipped this week")).toHaveCount(0);
 });
 
-test("⌘K reaches the Ship log, which is the only way in until the Shipped stage flips", async ({
+test("⌘K reaches the Ship log, and so does the Line's Shipped drawer", async ({
   dashboard,
   daemon,
 }) => {
@@ -414,13 +414,21 @@ test("⌘K reaches the Ship log, which is the only way in until the Shipped stag
   await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/shipped");
   await expect(page2(dashboard)).toBeVisible();
 
-  // The other half of this phase's contract, asserted from the outside: the Shipped stage's
-  // click is NOT changed here. It still lands on the completed run list, and the drawer that
-  // replaces it - with its own escalation to this page - is the next phase's single flip.
+  // The other way in, asserted from this page's side: the Shipped stage no longer navigates
+  // to the completed workflow runs at all - it opens a drawer over the fleet, and that
+  // drawer's header is what escalates here. (The drawer's own rows, chips and load states are
+  // `line-drawers.spec.ts`' subject; what is pinned here is that the retired route is gone
+  // and that this page is where the click eventually leads.)
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard
     .getByRole("navigation", { name: "The Line" })
     .getByRole("button", { name: /^Shipped,/ })
     .click();
-  await expect(dashboard).toHaveURL(/#\/runs\?status=completed$/);
+  await expect(dashboard).not.toHaveURL(/#\/runs/);
+  await dashboard
+    .getByRole("region", { name: "Shipped drawer" })
+    .getByRole("button", { name: /^Ship log/ })
+    .click();
+  await expect.poll(async () => dashboard.evaluate(() => location.hash)).toBe("#/shipped");
+  await expect(page2(dashboard)).toBeVisible();
 });

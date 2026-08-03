@@ -302,18 +302,27 @@ OBSERVED a filed backlog task reached the strip over SSE, no reload: Backlog 0 -
 CAPTURED docs/evidence/line-strip/line-live.png
 OBSERVED parking that task turned Backlog amber (tone-attention), and it is the only amber stage
 CAPTURED docs/evidence/line-strip/line-attention.png
-OBSERVED clicking the Shipped stage navigated to #/runs?status=completed
+OBSERVED clicking the Shipped stage opened the Shipped drawer in place, without leaving #/fleet
+OBSERVED the drawer's "Ship log →" escalation navigated to #/shipped
 OBSERVED the strip is fleet-only: it did not follow the navigation off the fleet page
-  ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:79:1 › the Line renders every stage, tracks the fleet live, and its stages navigate (1.7s)
+  ✓  1 [chromium] › e2e/specs/line-strip.spec.ts:85:1 › the Line renders every stage, tracks the fleet live, and its stages reach their targets (1.4s)
 OBSERVED the strip renders once, outside <header class="topbar">, so --topbar-h and .card.expanded are untouched
-  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:151:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (1.1s)
+  ✓  2 [chromium] › e2e/specs/line-strip.spec.ts:168:1 › the strip sits outside the topbar, so it cannot shorten an expanded card (992ms)
 
-  2 passed (3.3s)
+  2 passed (2.9s)
 ```
+
+The click at the end of that walk is the one line in this transcript that used to read
+`navigated to #/runs?status=completed`. Shipped is a drawer now: it pointed at the completed
+workflow runs while nothing in the app rendered the adoption ledger its count is folded from,
+which was wrong in both directions - a session ships without ever starting a run, and a
+finished run ships nothing. What the transcript still evidences through it is the same claim
+it always did: a stage press reaches its target, and the strip does not follow you off the
+fleet when something finally navigates.
 
 ### The Line's drawers
 
-[`docs/evidence/line-drawers/`](../docs/evidence/line-drawers/) carries five frames and the
+[`docs/evidence/line-drawers/`](../docs/evidence/line-drawers/) carries eight frames and the
 run's own stdout, written by `specs/line-drawers.spec.ts` under the same `MC_E2E_EVIDENCE`
 flag. The frames answer what only a picture can: `review-open.png` is a live run's ladder with
 the session card **below it at full size**, `board-pushed-down.png` and `board-returned.png`
@@ -321,13 +330,25 @@ are the same board with the drawer open and closed (the spec asserts the card's 
 identical in both; the pictures are what make that legible), and `intake-capped.png` is five
 missions in a panel showing three.
 
-`review-blocked.png` is the fifth, and it is the one the Review row was rebuilt for: a run
-whose session was removed, named by the title its binding captured rather than by a
-conversation GUID, reading `Blocked · session gone` under a red leading edge, with `Dismiss`
-beside `Open run`. The live run under it carries no remedy and prints its cause at the **same
-indent** - the spec asserts that alignment in pixels, and the picture is what makes it legible.
+`review-blocked.png` is the one the Review row was rebuilt for: a run whose session was
+removed, named by the title its binding captured rather than by a conversation GUID, reading
+`Blocked · session gone` under a red leading edge, with `Dismiss` beside `Open run`. The live
+run under it carries no remedy and prints its cause at the **same indent** - the spec asserts
+that alignment in pixels, and the picture is what makes it legible.
+`review-grouped.png`, `review-pair-not-a-pile.png` and `review-group-expanded.png` are the
+fold: two runs stopped for one reason stay two rows, three become one bar, and the caret
+produces all three back.
 
-Regenerate all six with:
+`shipped-adopted.png` and `shipped-open.png` are the fourth drawer, which used to be a
+navigation. The first is the real path - a dispatched session, the `gh pr create` hook, and
+the row that lands in the adoption ledger - with **the strip's Shipped count and the drawer's
+header showing the same number**, which they do because both are the same rolling seven days
+over the same column. The second is a cross-repo week with a title, a branch fallback, and all
+three merge states, each spelled as a **mark and a word**; `shipped-filtered.png` is the same
+week with one chip pressed. That a hue is never the only carrier of merge state is checkable
+in the DOM as text, and legible as a row only here.
+
+Regenerate all nine with:
 
 ```sh
 set -o pipefail   # or the pipe below reports tee's success, not Playwright's
@@ -338,8 +359,8 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee docs/evidence/line-drawers/transcript.txt
 ```
 
-`--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
-that produces `transcript.txt` - without it you regenerate five files out of six.
+`--workers=1` keeps the eleven tests' output from interleaving, and the `tee` is the only thing
+that produces `transcript.txt` - without it you regenerate eight files out of nine.
 
 ### The everything-palette
 

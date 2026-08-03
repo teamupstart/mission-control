@@ -5,14 +5,15 @@ import { isLineDrawerStage, type LineDrawerStage } from "./line-drawer.ts";
 /**
  * Where a Line stage sends you, in ONE place.
  *
- * The seam this file was cut for has now been used: three of the six stages open a DRAWER in
- * place rather than navigating away, and that change is entirely inside this table plus the
- * bodies the drawers render. The strip component still knows nothing about the router, and
- * still knows nothing about the drawers either - it reports a stage id and this decides.
+ * The seam this file was cut for has now been used twice: four of the six stages open a
+ * DRAWER in place rather than navigating away, and both changes were entirely inside this
+ * table plus the bodies the drawers render. The strip component still knows nothing about the
+ * router, and still knows nothing about the drawers either - it reports a stage id and this
+ * decides.
  *
- * The remaining three navigate, and two of those are not routes at all (the Sitrep panel, the
- * fleet itself), which is why this stays a small union rather than a
- * `Record<LineStageId, MissionRoute>`.
+ * The remaining two do not navigate to routes at all (the Sitrep panel, the fleet itself),
+ * which is why this stays a small union rather than a `Record<LineStageId, MissionRoute>` -
+ * and why the `route` arm survives a table that currently holds none of them.
  */
 export type LineStageTarget =
   /** Navigate the mission router. */
@@ -39,14 +40,13 @@ export const LINE_STAGE_TARGETS: Record<LineStageId, LineStageTarget> = {
   working: { kind: "fleet" },
   review: { kind: "drawer", stage: "review" },
   decide: { kind: "drawer", stage: "decide" },
-  // No PR list surface exists anywhere in the app - `prsToday` is a `COUNT` over the
-  // Inspector's adoption ledger and nothing renders the rows. Completed runs are the
-  // nearest true thing: it is the list of work that finished, which is what the count
-  // beside it is about. The phase file left this to judgement; recorded in the README.
-  shipped: {
-    kind: "route",
-    route: { page: "runs", filters: { status: "completed" } },
-  },
+  // The completed workflow runs were this stage's target while nothing in the app rendered
+  // the adoption ledger, and they were wrong in both directions: a session ships code
+  // without ever starting a run, and a finished run guarantees no code shipped. The count
+  // on the strip is a `COUNT` over `inspector_prs.adopted_at`, so the click now lands on
+  // THOSE rows - the drawer for the week's glance, escalating to `#/shipped` for the
+  // cross-repo account.
+  shipped: { kind: "drawer", stage: "shipped" },
 };
 
 /**

@@ -1,8 +1,8 @@
 
 Running 5 tests using 1 worker
 
-  ✓  1 [chromium] › e2e/specs/ship-log.spec.ts:188:1 › a pull request adopted through the hook appears on the Ship log, named by what is known (2.6s)
-  ✓  2 [chromium] › e2e/specs/ship-log.spec.ts:237:1 › the page reads the adoption window, not the panel's review-ordered default (977ms)
+  ✓  1 [chromium] › e2e/specs/ship-log.spec.ts:188:1 › a pull request adopted through the hook appears on the Ship log, named by what is known (2.5s)
+  ✓  2 [chromium] › e2e/specs/ship-log.spec.ts:237:1 › the page reads the adoption window, not the panel's review-ordered default (987ms)
 OBSERVED the week's pull requests group by day, repo-tagged, with merge state as a word
 CAPTURED docs/evidence/ship-log/ship-log.png
 OBSERVED a rail press filters the feed to one repository and leaves the KPI row whole
@@ -10,6 +10,6 @@ CAPTURED docs/evidence/ship-log/ship-log-filtered.png
 OBSERVED the range chips refold the same rows, and neither filter reaches the address bar
   ✓  3 [chromium] › e2e/specs/ship-log.spec.ts:264:1 › the rail's mix bars filter the feed, and the KPI row keeps its context (1.2s)
   ✓  4 [chromium] › e2e/specs/ship-log.spec.ts:369:1 › a ledger read that fails says so, instead of reporting a week in which nothing shipped (1.1s)
-  ✓  5 [chromium] › e2e/specs/ship-log.spec.ts:397:1 › ⌘K reaches the Ship log, which is the only way in until the Shipped stage flips (1.1s)
+  ✓  5 [chromium] › e2e/specs/ship-log.spec.ts:397:1 › ⌘K reaches the Ship log, and so does the Line's Shipped drawer (1.1s)
 
-  5 passed (7.5s)
+  5 passed (7.4s)

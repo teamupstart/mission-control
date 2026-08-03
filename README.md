@@ -2464,9 +2464,9 @@ however much of today has already gone. That is the only way they are allowed to
 page reads the ledger through the adoption window, so neither truncation nor a re-review can
 put them out of step about which pull requests exist.
 
-Reach it with `⌘K` (search for "shipped", "merged" or "pull request") or by opening the hash.
-The Line's ⚑ Shipped stage does not lead here yet - see the row for it in
-[the Line's stage targets](#the-line-the-pipeline-strip-above-the-fleet).
+Reach it with `⌘K` (search for "shipped", "merged" or "pull request"), by opening the hash, or
+from the Line: clicking ⚑ **Shipped** opens the [Shipped drawer](#the-stage-drawers) over the
+fleet, and its **Ship log →** header action lands here.
 
 ## Workflows and Personas
 
@@ -4435,7 +4435,7 @@ reads it:
 | ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
 | ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble |
-| ⚑ Shipped | `#/runs` filtered to completed - **not** the [Ship log](#the-ship-log), yet. The rows this count is made of now have a page of their own at `#/shipped`, and pointing the stage at it is a single change that retires several pinned assertions, so it is being made on its own rather than folded in here |
+| ⚑ Shipped | **Drawer** - the week's adopted pull requests, newest first, escalating to the [Ship log](#the-ship-log) |
 
 Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
 clipped to one row so the strip's height never moves. The flowing dots on the wires respect
@@ -4462,18 +4462,27 @@ rather than assert.
 - **Leaving the fleet closes it.** Every route out - "Open run", "All ensembles →", the topbar -
   drops the drawer, so returning to the fleet does not resurrect a panel you had finished with.
 
-Each drawer is a **triage projection**, built from the SSE summaries the fleet already holds.
-**None of them fetches and none of them reads run detail.** Review alone can also *act*, and
-only where the summary by itself proves the run has stopped and the route needs no argument
-beyond the run id - which is what keeps `Reattach` (needs a session), resolving a delivery
-(needs a delivery and a choice) and disabling a reviewer (needs a stage member) on the full
-page, one click deeper.
+Each drawer is a **triage projection**, and **none of them reads run detail** - a drawer that
+fetched one detail per row would fire N bounded HTTP reads on a single strip click. Review and
+Decide are drawn entirely from the SSE summaries the fleet already holds and fetch nothing at
+all. **Intake and Shipped each make exactly one read**, on the click that opens them and never
+otherwise, because their inputs never cross the wire: task-source health and the Inspector's
+adoption ledger are the two stages the daemon folds from data the browser has no copy of. Both
+therefore hold **three** states rather than two - loading, failed, and the answer - since
+`fetchJson` resolves null on every failure, and a drawer that read that as "nothing here" would
+report an unreachable daemon as a healthy empty intake or a quiet week.
+
+Review alone can also *act*, and only where the summary by itself proves the run has stopped
+and the route needs no argument beyond the run id - which is what keeps `Reattach` (needs a
+session), resolving a delivery (needs a delivery and a choice) and disabling a reviewer (needs
+a stage member) on the full page, one click deeper.
 
 | Drawer | Each row says | Escalates to |
 |--------|---------------|--------------|
 | **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
 | **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](#recurring-missions) |
+| **Shipped** | One adopted pull request: its merge state as a **mark and a word** (merged / open / gone), its title - falling back to the branch, then to its own number - over `owner/repo#N`, the session that opened it, and when. Newest adoption first, over the same rolling seven days the count above it is folded from. Chips in the header split the week **All / Merged / Open / Gone** with their counts, and are toggles | The pull request itself on GitHub, and `Ship log →` → [`#/shipped`](#the-ship-log) |
 
 **A Review row is named by whoever it is, not by whatever is left.** A workflow run outlives
 the session it reviewed - when a session is removed the run is blocked and its live name goes
@@ -4562,10 +4571,12 @@ already exists** - every "Do" row lands on the same modal a button somewhere els
 every "Jump to" row on a route the app publishes.
 
 The `page` kind has exactly one member, and that is a statement about the app rather than an
-unfinished list: the [Ship log](#the-ship-log) is the only full page with no chrome pointing
-at it, so <kbd>⌘</kbd><kbd>K</kbd> and its hash are the whole of how it is reached. Fleet, the
-Library and Runs are one press of the segmented control away, and a palette row beside a
-visible door would only be a second door.
+unfinished list: the [Ship log](#the-ship-log) is the only full page with no door in the
+permanent chrome. The one door it does have is two clicks inside the fleet - the Line's ⚑
+Shipped stage opens its [drawer](#the-stage-drawers), whose header escalates here - so
+<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app.
+Fleet, the Library and Runs are one press of the segmented control away, and a palette row
+beside a visible door would only be a second door.
 
 Archived assets are not indexed, because the shelf a hit would land on does not list them.
 Task sources appear under Settings rather than as their own kind, which is where the Library's

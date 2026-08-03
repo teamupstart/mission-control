@@ -6,6 +6,7 @@ import { LineStrip } from "../src/web/components/LineStrip.tsx";
 import { ReviewDrawer } from "../src/web/components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "../src/web/components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "../src/web/components/line/IntakeDrawer.tsx";
+import { ShippedDrawer } from "../src/web/components/line/ShippedDrawer.tsx";
 import {
   LINE_DRAWER_STAGES,
   isLineDrawerStage,
@@ -100,21 +101,36 @@ test("exactly the drawer stages own drawers, and the table and the predicate agr
       assert.ok(listed, `${stage} routes to a drawer but is not a drawer stage`);
     }
   }
-  assert.deepEqual([...LINE_DRAWER_STAGES], ["intake", "review", "decide"]);
-  // The other three still GO somewhere. A stage that quietly did nothing would be a button
+  assert.deepEqual([...LINE_DRAWER_STAGES], ["intake", "review", "decide", "shipped"]);
+  // The other two still GO somewhere. A stage that quietly did nothing would be a button
   // that highlights on hover and answers nothing.
   for (const stage of LINE_STAGES.filter((s) => !isLineDrawerStage(s))) {
     assert.notEqual(LINE_STAGE_TARGETS[stage].kind, "drawer");
   }
 });
 
-test("the re-homed routes are what the navigating stages point at", () => {
-  // Shipped is the one stage that still carries a route, and it must be the NEW spelling:
-  // a stale `#/workflows/runs` here would be a redirect on every click, forever.
+test("Shipped opens the ledger it counts, and no stage routes to completed runs any more", () => {
+  // The flip. Shipped pointed at `#/runs?status=completed` for one release, because nothing
+  // in the app rendered the adoption ledger - and that target was wrong in both directions:
+  // a session ships without ever starting a run, and a completed run ships nothing.
   const shipped = LINE_STAGE_TARGETS.shipped;
-  assert.equal(shipped.kind, "route");
-  if (shipped.kind !== "route") return;
-  assert.deepEqual(shipped.route, { page: "runs", filters: { status: "completed" } });
+  assert.equal(shipped.kind, "drawer");
+  if (shipped.kind !== "drawer") return;
+  assert.equal(shipped.stage, "shipped");
+  // And it announces itself as expandable, which is the half the strip reads.
+  assert.equal(lineStageHasDrawer("shipped"), true);
+
+  // The OLD spelling is gone from the whole TABLE, not just from Shipped - so the retired
+  // target cannot quietly come back on a different button, which is the failure a `deepEqual`
+  // on `shipped` alone allows. Over the serialized table rather than by walking the `route`
+  // arm: that arm now has no members at all (the two remaining navigators are the Sitrep
+  // panel and the fleet, neither of which is a route), so a loop over it would be vacuously
+  // true and would keep passing after somebody put the runs filter back.
+  assert.doesNotMatch(
+    JSON.stringify(LINE_STAGE_TARGETS),
+    /"status":\s*"completed"/,
+    "a stage still routes to the completed workflow runs",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -130,7 +146,7 @@ const strip = (openStage: LineStageId | null): string =>
 
 test("only the stages that open something announce that they can", () => {
   const closed = strip(null);
-  // Three expandable, and they say so while closed too - a control that only grows
+  // Four expandable, and they say so while closed too - a control that only grows
   // `aria-expanded` once it is open reads as static until you press it.
   assert.equal([...closed.matchAll(/aria-expanded="false"/g)].length, LINE_DRAWER_STAGES.length);
   assert.doesNotMatch(closed, /aria-expanded="true"/);
@@ -733,6 +749,52 @@ test("a mission renders while the sources read is still out", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Shipped: the adoption ledger's own rows
+// ---------------------------------------------------------------------------
+
+const shippedDrawer = (): string =>
+  renderToStaticMarkup(createElement(ShippedDrawer, {
+    now: 1_000_000,
+    onClose: () => {},
+    onOpenShipLog: () => {},
+  }));
+
+// Under `renderToStaticMarkup` no effect runs, so every case here sees the drawer's PRE-FETCH
+// frame - a real frame a person sees for a tick, and the one the three load states are
+// easiest to get wrong in. The LOADED states need a ledger the browser fetched, so they are
+// `e2e/specs/line-drawers.spec.ts`' subject: rows, chips, the filter, and the failed read.
+test("before the ledger lands, the Shipped drawer counts nothing and claims no empty week", () => {
+  const html = shippedDrawer();
+  // Not "0 this week". A zero an operator cannot tell from a real zero is the one answer a
+  // panel about what shipped must never give while it does not know - and this drawer sits
+  // under a strip printing a number it would then contradict.
+  assert.match(html, /reading the ledger…/);
+  assert.doesNotMatch(html, /0 this week/);
+  // Nor the absence, which is a claim nothing has come back to support yet.
+  assert.doesNotMatch(html, /No pull request was adopted/);
+  assert.match(html, /Reading the adoption ledger…/);
+  // Chips are COUNTS. Four of them derived from nothing would be four zeroes asserting a
+  // quiet week in the one place the header just refused to.
+  assert.doesNotMatch(html, /line-ship-chip/);
+});
+
+test("the Shipped drawer escalates rather than acting, and is never amber", () => {
+  const html = shippedDrawer();
+  // The escalation is in the header's actions slot, where every other drawer keeps its own -
+  // the frame has no footer, and adding one for the fourth drawer would have changed the
+  // other three.
+  assert.match(html, /Ship log/);
+  assert.match(html, /line-drawer-head[\s\S]*Ship log[\s\S]*<\/header>/);
+  // Nothing on this surface mutates anything: every row's move belongs to GitHub or to the
+  // Ship log, and both are one click away.
+  assert.doesNotMatch(html, /btn-remedy/);
+  assert.doesNotMatch(html, /<input|<textarea/);
+  // Amber means "a person has to do something", and shipping is not an obligation. The stage
+  // has never been amber; neither is its drawer.
+  assert.doesNotMatch(html, /line-drawer-att/);
+});
+
+// ---------------------------------------------------------------------------
 // The frame every drawer wears
 // ---------------------------------------------------------------------------
 
@@ -741,7 +803,11 @@ test("every drawer is one named region with one body and three ways out", () => 
     ["review", reviewDrawer([run()])],
     ["decide", decideDrawer([{ id: "a" }])],
     ["intake", intakeDrawer([{ id: "m1" }])],
+    ["shipped", shippedDrawer()],
   ];
+  // Every stage that owns a drawer is in the list above. A fifth drawer added without a frame
+  // case here would be the one drawer nothing checks for a body, an id, or a way out.
+  assert.deepEqual(frames.map(([stage]) => stage).sort(), [...LINE_DRAWER_STAGES].sort());
   for (const [stage, html] of frames) {
     const title = stage[0]!.toUpperCase() + stage.slice(1);
     assert.match(html, new RegExp(`aria-label="${title} drawer"`), `${stage} names its region`);

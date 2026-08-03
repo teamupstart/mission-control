@@ -103,6 +103,7 @@ import type { QueueManager } from "./queue.ts";
 import type {
   InspectorStatus,
   LlmStatus,
+  ReviewActor,
   Session,
   SkillsView,
   WorkItem,
@@ -132,6 +133,7 @@ import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
+import { answeredQuestion } from "./sdk/answered-question.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
@@ -339,16 +341,54 @@ async function answerDriverRequest(
   supervisor: SdkSupervisor | undefined,
   session: Session,
   project: (dialog: Session["paneDialog"]) => DriverAnswer,
+  /**
+   * Where an answered QUESTION is written down, so the conversation can replay it. Both
+   * driver answer routes pass these; see `sdk/answered-question.ts` for why only questions
+   * are recorded and why a review is the shape they are recorded as.
+   */
+  record: { reviews: ReviewManager; by: ReviewActor },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!supervisor) return { ok: false, error: "this build has no session supervisor" };
-  const projected = project(session.paneDialog);
+  // Held rather than re-read below: answering clears the dialog off the session, and the
+  // record must describe the ask the caller was actually shown - the same snapshot the
+  // projection verified against.
+  const asked = session.paneDialog;
+  const projected = project(asked);
   if (!projected.ok) return projected;
+  // Read BEFORE the delivery, because it is when the operator spoke. Taken afterwards it
+  // would be a reading of when the agent was already running again - and the conversation
+  // places an answer by this stamp, so a few milliseconds the wrong side of the agent's
+  // next turn files the decision below the reply it caused.
+  const spokeAt = Date.now();
   try {
     await supervisor.answer(session.id, projected.requestId, projected.answer);
-    return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+  // AFTER the delivery, and never instead of it. The record claims the agent received this
+  // answer, so writing it before the driver had taken it would leave the log asserting a
+  // decision that a throw above then prevented - the same ordering rule Foreman's approval
+  // path follows (`web/lib/foreman.ts`). And a failure to write the record must not turn a
+  // delivered answer into a 409: the operator would answer the question again, against a
+  // request the agent is no longer blocked on.
+  try {
+    const answered = answeredQuestion(asked, projected.answer);
+    if (answered) {
+      record.reviews.record({
+        sessionId: session.id,
+        kind: "input",
+        ...answered,
+        resolvedBy: record.by,
+        at: spokeAt,
+      });
+    }
+  } catch (err) {
+    console.warn(
+      `[mission-control] answered ${session.id}'s question but could not record it for the ` +
+        `conversation (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+  return { ok: true };
 }
 
 function noPermissionModes(session: Session): string | null {
@@ -1937,8 +1977,11 @@ export function buildApp(
     // out - which is what keeps the dashboard's prompt, Foreman's `answer.option` and the
     // MCP tool on one grammar instead of three.
     if (session.runtime === "sdk") {
-      const r = await answerDriverRequest(sdkSessions, session, (dialog) =>
-        driverOptionAnswer(dialog, parsed.data),
+      const r = await answerDriverRequest(
+        sdkSessions,
+        session,
+        (dialog) => driverOptionAnswer(dialog, parsed.data),
+        { reviews, by: parsed.data.by },
       );
       return c.json(r, r.ok ? 200 : 409);
     }
@@ -1970,8 +2013,11 @@ export function buildApp(
           409,
         );
       }
-      const r = await answerDriverRequest(sdkSessions, session, (dialog) =>
-        driverFormAnswer(dialog, answers),
+      const r = await answerDriverRequest(
+        sdkSessions,
+        session,
+        (dialog) => driverFormAnswer(dialog, answers),
+        { reviews, by: parsed.data.by },
       );
       return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
     }

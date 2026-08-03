@@ -49,6 +49,18 @@ const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = 5_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
 const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
+/**
+ * The prompt that makes this CLI ask its human something, the way the real one does.
+ *
+ * The only frame here that travels UP the control protocol. Every other `control_request`
+ * on this wire is the SDK asking the CLI something and this file answering; `can_use_tool`
+ * is the CLI asking the SDK, which is how `AskUserQuestion` reaches
+ * `ClaudeSdkSession.canUseTool` and becomes a card the dashboard can answer. Without it no
+ * browser spec can reach the driver-request surface at all - the routes that answer one
+ * (`/select-option`, `/submit-options`) refuse unless a real request is pending, because
+ * the request id they echo is held by the driver.
+ */
+const ASK_TURN = "ask me which linter to use";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
@@ -245,6 +257,78 @@ function replyTo(prompt) {
 let openTurn = null;
 
 /**
+ * The `AskUserQuestion` this CLI raises on `ASK_TURN`, and the turn it is blocking.
+ *
+ * Two questions, one single-select and one multi-select, because that combination is what
+ * `driverDialog` reads as a FORM - the shape answered whole through `/submit-options`,
+ * which is the surface an operator actually meets. A single question would take the
+ * row-at-a-time `/select-option` path instead and leave the form untested.
+ */
+const ASK_INPUT = {
+  questions: [
+    {
+      question: "Which linter?",
+      header: "Linter",
+      options: [
+        { label: "biome", description: "lint + format in one binary" },
+        { label: "eslint", description: "widest plugin ecosystem" },
+      ],
+    },
+    {
+      question: "Which checks should run?",
+      header: "Checks",
+      multiSelect: true,
+      options: [
+        { label: "types", description: "tsc --noEmit" },
+        { label: "tests", description: "the node:test suite" },
+      ],
+    },
+  ],
+};
+
+/** Control requests this CLI has sent UP and is waiting on, by request id. */
+const asked = new Map();
+
+function ask(prompt) {
+  const requestId = `ask-${++turn}`;
+  asked.set(requestId, prompt);
+  appendTurn("assistant", [
+    { type: "tool_use", id: requestId, name: "AskUserQuestion", input: ASK_INPUT },
+  ]);
+  emit({
+    type: "control_request",
+    request_id: requestId,
+    request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: ASK_INPUT },
+  });
+}
+
+/**
+ * The answer coming back down, written into the transcript the way the real CLI writes it.
+ *
+ * A user record carrying nothing but a `tool_result`, which is exactly the shape every
+ * harness parser drops as machine noise (`claude/transcript.ts`) - so the conversation gets
+ * NO account of the answer from this file. That is deliberate: the spec beside it asserts
+ * the account comes from the review the daemon records instead, and a fake that narrated
+ * the answer in assistant prose would let that spec pass with the feature removed.
+ */
+function answerAsked(requestId, response) {
+  const prompt = asked.get(requestId);
+  if (prompt === undefined) return;
+  asked.delete(requestId);
+  const picked = response?.updatedInput?.answers ?? {};
+  appendTurn("user", [
+    {
+      type: "tool_result",
+      tool_use_id: requestId,
+      content: `Your questions have been answered: ${Object.entries(picked)
+        .map(([question, answer]) => `"${question}"="${answer}"`)
+        .join(", ")}.`,
+    },
+  ]);
+  answer([prompt]);
+}
+
+/**
  * Answer a turn and close it.
  *
  * One `result` however many prompts the turn took in, because that is the vendor's shape:
@@ -281,6 +365,23 @@ rl.on("line", (line) => {
     return;
   }
 
+  // The reply to a `can_use_tool` this CLI sent up. Previously dropped on the floor, which
+  // was harmless only while nothing here ever asked anything.
+  if (frame.type === "control_response") {
+    const { request_id: requestId, subtype, response } = frame.response ?? {};
+    if (!asked.has(requestId)) return;
+    // A denial is how the SDK abandons an ask nobody answered. The turn still has to end,
+    // or the session hangs "working" for the rest of the spec.
+    if (subtype !== "success" || response?.behavior !== "allow") {
+      const prompt = asked.get(requestId);
+      asked.delete(requestId);
+      answer([prompt]);
+      return;
+    }
+    answerAsked(requestId, response);
+    return;
+  }
+
   if (frame.type === "user") {
     const raw = frame.message?.content;
     // Content is a bare string on the seeded first turn and an array of blocks when the
@@ -302,6 +403,13 @@ rl.on("line", (line) => {
     // completion per message and never notice the reservation it was owed for ever.
     if (openTurn) {
       openTurn.prompts.push(prompt);
+      return;
+    }
+
+    // Blocks the turn on a human, which is the whole point: no `result` is emitted until the
+    // answer comes back down, so the card stays "waiting on you" for the spec to act on.
+    if (prompt === ASK_TURN) {
+      ask(prompt);
       return;
     }
 

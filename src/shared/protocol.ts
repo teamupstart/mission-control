@@ -2987,14 +2987,19 @@ export const WorkflowCheckOutcomeSchema = z.object({
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
 });
 
+/**
+ * Foreman's proof that a completion episode is verified, offered to whatever workflow is
+ * already bound to the conversation.
+ *
+ * The claim carries no workflow identity at all. A claim can only ever start a run on a
+ * binding an operator or a dispatch already made, so it can never be the thing that puts a
+ * second PR-producing path on a branch.
+ */
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),
   marker: z.string().regex(/^[a-f0-9]{64}$/),
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
-  // Closed to the built-in fallback the Foreman option names. The daemon resolves its
-  // immutable version; the worker never gets to choose an arbitrary workflow id.
-  fallbackWorkflow: z.literal("builtin-review").nullable().optional().default(null),
   expectedIntent: z.object({
     objective: z.string().trim().min(1).max(INTENT_MAX),
     objectiveVersion: z.number().int().min(1),

@@ -1716,14 +1716,6 @@ export interface WorkflowCompletionClaim {
   marker: string;
   summary: string;
   evidenceFingerprint: string;
-  /**
-   * The one server-owned fallback the Foreman wrap-up setting may request.
-   *
-   * This is a closed capability rather than a workflow id supplied by the worker: the
-   * daemon resolves the current built-in No-Mistakes Review version, and only when this
-   * completion reaches a conversation with no active binding. Existing bindings always win.
-   */
-  fallbackWorkflow: "builtin-review" | null;
   expectedIntent: SessionIntentGuard | null;
 }
 

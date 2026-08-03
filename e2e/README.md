@@ -52,6 +52,16 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### Foreman PR follow-through
+
+[`docs/evidence/foreman-pr-follow-through/`](../docs/evidence/foreman-pr-follow-through/)
+contains PNG and reviewer-renderable HTML captures of the asserted built-dashboard Foreman
+settings, plus the focused browser and behavior transcripts. The visual shows that automatic
+No-Mistakes review is absent, Straight to PR is bounded by Workflow ownership, and CI
+follow-through is a separate control whose visible copy requires an existing PR.
+
+The directory README records the exact regeneration commands.
+
 ### Accepted SDK stop
 
 The focused Complete case keeps its fake SDK subprocess alive for four seconds after stop is

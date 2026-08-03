@@ -51,15 +51,15 @@ export function inFlightItem(items: WorkItem[]): WorkItem | null {
  * What Foreman does when a queue drains.
  *
  * `ask` is the original behaviour and the default: mark the drain and let the human
- * pick from the Wrapup card. The other two type the instruction themselves, and are
- * the whole reason this text lives in `@shared` rather than in the card - the worker
+ * pick from the Wrapup card. Direct PR types the instruction itself, and is
+ * the reason this text lives in `@shared` rather than in the card - the worker
  * and the card MUST send the same bytes. A copy that drifts is a copy that ships a
  * different thing depending on who pressed the button.
  */
-export type WrapupMode = "ask" | "workflow" | "pr";
+export type WrapupMode = "ask" | "pr";
 
 /** The enum's values, for the config schema. Spelled once so zod can't drift from the type. */
-export const WRAPUP_MODES = ["ask", "workflow", "pr"] as const satisfies readonly WrapupMode[];
+export const WRAPUP_MODES = ["ask", "pr"] as const satisfies readonly WrapupMode[];
 
 /**
  * WHEN a wrap-up fires, as opposed to WHAT it sends (`WrapupMode`).
@@ -201,11 +201,10 @@ export function newWrapupAsk(
  * Null is not "do nothing" - it's "fall back to the human", so the caller must still
  * mark the drain. See `decideQueueTick` step 5.
  *
- * The built-in workflow is claimed through the workflow API before this projection is
- * consulted, so it has no prompt payload. Only direct PR mode types into the session.
+ * A bound workflow is claimed through the workflow API before this projection is
+ * consulted, so only an unbound direct-PR completion reaches the payload.
  */
 export function autoWrapupPayload(mode: WrapupMode): string | null {
-  if (mode === "workflow") return null;
   if (mode === "pr") return WRAPUP_PR;
   return null;
 }

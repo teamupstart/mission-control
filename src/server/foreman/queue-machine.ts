@@ -84,12 +84,6 @@ export type QueueAction =
   | { kind: "escalate"; item: WorkItem; reason: string }
   /** Every item is terminal and the drain ask hasn't fired yet. */
   | { kind: "ask-wrapup"; queue: SessionQueue }
-  /** Same drain, claimed by the built-in review workflow instead of a pane prompt. */
-  | {
-      kind: "workflow-wrapup";
-      queue: SessionQueue;
-      intentGuard: SessionIntentGuard;
-    }
   /** The work finished, but its task contract is not eligible for automatic shipping. */
   | {
       kind: "skip-wrapup";
@@ -375,7 +369,6 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // selected forever deciding `none`.
     if (!wrapupTriggerOn(cfg.wrapupTriggers, "drain")) return { kind: "none" };
 
-    const workflowWrapup = cfg.wrapup === "workflow";
     const payload = autoWrapupPayload(cfg.wrapup);
     const intentGuard = resolvedSessionIntent(intent);
     const block = automaticWrapupBlock({
@@ -395,10 +388,10 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
       : null;
 
     // A non-shipping contract changes WHAT happens after completion, not WHEN Foreman may
-    // declare the episode complete. Keep it behind the same settled-idle evidence as an
-    // automatic Workflow or PR. This branch still sits before every `ask-wrapup` return, so
-    // an eligible retirement cannot claim an existing Workflow or briefly expose a Ship it?
-    // card while the agent is finishing its report.
+    // declare the episode complete. Keep it behind the same settled-idle evidence as a
+    // bound Workflow claim or a direct PR. This branch still sits before every
+    // `ask-wrapup` return, so an eligible retirement cannot claim an existing Workflow
+    // or briefly expose a Ship it? card while the agent is finishing its report.
     if (blockedAction) {
       return settledIdle(session, now, cfg.settleMs) ? blockedAction : { kind: "none" };
     }
@@ -408,10 +401,10 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // can ultimately PUSH, so a dry-run that typed it would be a dry-run that shipped.
     // Dry-run degrades to the ask rather than to a `propose` because the Wrapup card is
     // already the human decision surface.
-    if ((!payload && !workflowWrapup) || !mayActLive) {
+    if (!payload || !mayActLive) {
       return { kind: "ask-wrapup", queue };
     }
-    if (!workflowWrapup && !hasPane(session)) {
+    if (!hasPane(session)) {
       return { kind: "ask-wrapup", queue };
     }
 
@@ -441,7 +434,6 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
 
     if (!intentGuard) return { kind: "none" };
 
-    if (workflowWrapup) return { kind: "workflow-wrapup", queue, intentGuard };
     return { kind: "auto-wrapup", queue, payload: payload!, intentGuard };
   }
 

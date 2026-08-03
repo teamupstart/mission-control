@@ -6819,6 +6819,13 @@ select:not([multiple]) option:focus-visible {
   flex-direction: column;
   gap: 10px;
   padding: 14px;
+  /* Anchored under the topbar, so the room below it is what is left of the window. A
+     short window, or a topbar that has grown a second row, otherwise runs the tail of a
+     tall card off the bottom edge where it is not merely ugly but unreachable: there is
+     no scroll container, so a control down there cannot be clicked at all. Bound it to
+     the space that exists and scroll, the same way `.mode-pop` already does. */
+  max-height: calc(100dvh - var(--topbar-h, 88px) - 24px);
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;

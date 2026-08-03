@@ -25,6 +25,7 @@ const BASE: ForemanConfig = {
   wrapupTriggers: ["drain"],
   wrapup: "ask",
   trackReviewFeedback: true,
+  trackCiFailures: true,
   autoBacklog: false,
   backlogRespectOpenPrs: true,
   backlogDefaultModel: { claude: null, codex: null, pi: null },
@@ -227,11 +228,11 @@ test("turning the open-PR guard off says what that now allows", () => {
   assert.doesNotMatch(renderPopover(mkState({ autoBacklog: true })), /can be handed the next task/);
 });
 
-test("the wrap-up trigger group is a multi-select, and the action stays a radio group", () => {
+test("the wrap-up trigger group is a multi-select, and Then has no automatic review mode", () => {
   // The whole point of the split: any number of moments, exactly one action. A regression
   // to radios for the triggers would silently make the two mutually exclusive, and a
-  // regression to checkboxes for the action would let someone pick both the review
-  // workflow and `pr`, with two shipping paths racing on one branch.
+  // regression to checkboxes for the action would let someone pick both Ask and direct
+  // PR, with two shipping paths racing on one branch.
   const html = renderPopover(mkState({ wrapupTriggers: ["drain", "prompted"] }));
   // Scoped to the trigger fieldset: counting checkboxes across the whole popover also
   // catches Enable Foreman and Auto-approve, which would make this pass for the wrong
@@ -243,9 +244,9 @@ test("the wrap-up trigger group is a multi-select, and the action stays a radio 
     "both triggers tick independently",
   );
   assert.doesNotMatch(group, /type="radio"/, "triggers are never mutually exclusive");
-  assert.equal((html.match(/name="foreman-wrapup"/g) ?? []).length, 3, "one radio group of 3");
-  assert.match(html, /bind and submit No-Mistakes Review when none exists/);
-  assert.match(html, /Straight to PR - skip review/);
+  assert.equal((html.match(/name="foreman-wrapup"/g) ?? []).length, 2, "one radio group of 2");
+  assert.doesNotMatch(html, /Run No-Mistakes Review automatically/);
+  assert.match(html, /Straight to PR - when no Workflow is bound/);
 });
 
 test("with no trigger armed the action group is disabled and says so", () => {
@@ -257,22 +258,45 @@ test("with no trigger armed the action group is disabled and says so", () => {
   assert.match(html, /<fieldset class="foreman-wrapup-action" disabled=""/);
 });
 
-test("the review follow-through toggle renders, checked by default", () => {
+test("review comments and CI render as independent default-on follow-through settings", () => {
   const html = renderPopover(mkState());
   assert.match(html, /<legend>Pull requests<\/legend>/);
-  assert.match(html, /Keep sessions on track/);
-  const at = html.indexOf("Keep sessions on track");
-  assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/);
+  for (const label of [
+    "Keep sessions on track with review comments",
+    "Keep sessions on track with CI",
+  ]) {
+    const at = html.indexOf(label);
+    assert.notEqual(at, -1, label);
+    assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/, label);
+  }
+  assert.match(html, /Does not create a PR\. Once one exists, sends failing CI back to its session/);
 });
 
-test("a daemon too old to know the follow-through key still renders it as on", () => {
+test("the two PR follow-through permissions persist independently", () => {
+  const commentsOnly = renderPopover(mkState({
+    trackReviewFeedback: true,
+    trackCiFailures: false,
+  }));
+  const commentsAt = commentsOnly.indexOf("Keep sessions on track with review comments");
+  const ciAt = commentsOnly.indexOf("Keep sessions on track with CI");
+  assert.match(commentsOnly.slice(0, commentsAt).split("<input").pop() ?? "", /checked/);
+  assert.doesNotMatch(commentsOnly.slice(0, ciAt).split("<input").pop() ?? "", /checked/);
+});
+
+test("a daemon too old to know the follow-through keys still renders them as on", () => {
   // Same failure the backlog guard guards against: a web build ahead of the daemon gets no
   // key, and an unticked box would swear the feature is off while the server runs it on.
   const state = mkState();
   delete (state.config as Partial<ForemanConfig>).trackReviewFeedback;
+  delete (state.config as Partial<ForemanConfig>).trackCiFailures;
   const html = renderPopover(state);
-  const at = html.indexOf("Keep sessions on track");
-  assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/);
+  for (const label of [
+    "Keep sessions on track with review comments",
+    "Keep sessions on track with CI",
+  ]) {
+    const at = html.indexOf(label);
+    assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/, label);
+  }
 });
 
 test("the follow-through hint warns when it cannot type outside Live mode", () => {

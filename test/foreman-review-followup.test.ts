@@ -124,7 +124,7 @@ function decide(over: Partial<ReviewFollowupInput> = {}) {
     mayActLive: true,
     workflowOwnsSession: false,
     mark: null,
-    cfg: { enabled: true, settleMs: SETTLE },
+    cfg: { trackReviewComments: true, trackCiFailures: true, settleMs: SETTLE },
     now: NOW,
     ...over,
   });
@@ -159,9 +159,41 @@ test("findings and a red CI together are reported together", () => {
 test("the trigger off is the first and cheapest skip", () => {
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 3 }) }),
-    cfg: { enabled: false, settleMs: SETTLE },
+    cfg: { trackReviewComments: false, trackCiFailures: false, settleMs: SETTLE },
   });
-  assert.deepEqual(d, { kind: "skip", why: "review follow-through is off" });
+  assert.deepEqual(d, { kind: "skip", why: "PR follow-through is off" });
+});
+
+test("review comments and CI can be followed independently", () => {
+  const both = mkSession({ inspector: inspector({ open: 2 }), prChecks: "failing" });
+
+  const ciOnly = decide({
+    session: both,
+    cfg: { trackReviewComments: false, trackCiFailures: true, settleMs: SETTLE },
+  });
+  assert.equal(ciOnly.kind, "nudge");
+  if (ciOnly.kind === "nudge") {
+    assert.equal(ciOnly.reason, "CI failing");
+    assert.doesNotMatch(ciOnly.payload, /review comment/);
+  }
+
+  const commentsOnly = decide({
+    session: both,
+    cfg: { trackReviewComments: true, trackCiFailures: false, settleMs: SETTLE },
+  });
+  assert.equal(commentsOnly.kind, "nudge");
+  if (commentsOnly.kind === "nudge") {
+    assert.match(commentsOnly.reason, /2 review comment/);
+    assert.doesNotMatch(commentsOnly.payload, /failing CI/);
+  }
+});
+
+test("CI follow-through waits for an existing PR and never creates one", () => {
+  const d = decide({
+    session: mkSession({ prState: null, prUrl: null, prChecks: "failing" }),
+    cfg: { trackReviewComments: false, trackCiFailures: true, settleMs: SETTLE },
+  });
+  assert.deepEqual(d, { kind: "skip", why: "no open pull request" });
 });
 
 test("no open PR is nothing to follow through on", () => {
@@ -172,7 +204,7 @@ test("no open PR is nothing to follow through on", () => {
 
 test("a clean open PR - no findings, CI not red - is left alone", () => {
   const d = decide({ session: mkSession({ inspector: inspector({ open: 0 }), prChecks: "passing" }) });
-  assert.deepEqual(d, { kind: "skip", why: "no open review comments or failing CI" });
+  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments or failing CI" });
 });
 
 test("dry-run Inspector findings are previews, not comments on the PR, so they do not fire", () => {
@@ -181,14 +213,14 @@ test("dry-run Inspector findings are previews, not comments on the PR, so they d
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 4, postedOpen: 0, mode: "dry-run" }) }),
   });
-  assert.deepEqual(d, { kind: "skip", why: "no open review comments or failing CI" });
+  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments or failing CI" });
 });
 
 test("unposted findings do not fire even when the current Inspector mode is live", () => {
   const d = decide({
     session: mkSession({ inspector: inspector({ open: 4, postedOpen: 0, mode: "live" }) }),
   });
-  assert.deepEqual(d, { kind: "skip", why: "no open review comments or failing CI" });
+  assert.deepEqual(d, { kind: "skip", why: "no enabled review comments or failing CI" });
 });
 
 test("a session that needs a human is not free to be handed its PR", () => {

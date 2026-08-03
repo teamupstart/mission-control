@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,83 @@ import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.
  */
 
 const TASK = "write a haiku about flexbox";
+const FOREMAN_EVIDENCE = fileURLToPath(
+  new URL("../../docs/evidence/foreman-pr-follow-through/", import.meta.url),
+);
+
+async function captureForemanEvidence(
+  popover: ReturnType<Page["getByRole"]>,
+): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+
+  console.log("OBSERVED Foreman Then exposes Ask and Straight to PR, with no automatic review option");
+  console.log("OBSERVED review-comment and CI follow-through are separate checked controls");
+  console.log("OBSERVED the CI control says it does not create a PR and requires one to exist");
+  await popover.screenshot({ path: join(FOREMAN_EVIDENCE, "foreman-settings.png") });
+  console.log("CAPTURED docs/evidence/foreman-pr-follow-through/foreman-settings.png");
+
+  // The workflow evidence packet can name a binary PNG but cannot display its pixels. Serialize
+  // the exact asserted browser DOM beside it and link the dashboard's real stylesheet, giving the
+  // reviewer a text-carried artifact it can render directly. Reflect live input properties onto
+  // attributes because `outerHTML` alone does not preserve a checkbox's current checked state.
+  const dialogHtml = await popover.evaluate((element) => {
+    const clone = element.cloneNode(true) as HTMLElement;
+    const sourceInputs = [...element.querySelectorAll("input")];
+    const clonedInputs = [...clone.querySelectorAll("input")];
+    sourceInputs.forEach((source, index) => {
+      const cloned = clonedInputs[index];
+      if (!cloned) return;
+      cloned.toggleAttribute("checked", source.checked);
+      cloned.toggleAttribute("disabled", source.disabled);
+    });
+    return clone.outerHTML;
+  });
+  const renderedHtml = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Evidence: Foreman PR follow-through settings</title>
+    <!-- Generated from the built dashboard by dispatch-and-converse.spec.ts. -->
+    <link rel="stylesheet" href="../../../src/web/styles.css" />
+    <style>
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: start center;
+        background: var(--bg);
+      }
+      .foreman-evidence {
+        width: min(100%, 360px);
+        padding: 20px;
+      }
+      .foreman-evidence-head {
+        margin: 0 0 10px;
+        font: 600 10.5px/1.4 var(--mono);
+        color: var(--muted);
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+      .foreman-evidence .foreman-pop {
+        position: relative;
+        inset: auto;
+        width: 288px;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="foreman-evidence">
+      <p class="foreman-evidence-head">Built dashboard · asserted browser state</p>
+      ${dialogHtml}
+    </main>
+  </body>
+</html>
+`;
+  writeFileSync(join(FOREMAN_EVIDENCE, "foreman-settings.html"), renderedHtml);
+  console.log("CAPTURED docs/evidence/foreman-pr-follow-through/foreman-settings.html");
+}
 
 /**
  * Wait for a locator to stop moving before acting on it.
@@ -424,6 +501,109 @@ test("Foreman completion safeguards default on and persist independently", async
   await dashboard.reload();
   await expect(scout).toBeChecked();
   await expect(artifacts).not.toBeChecked();
+});
+
+test("Foreman removes automatic review and separates CI follow-through from review comments", async ({
+  dashboard,
+  daemon,
+}) => {
+  await api(daemon, "/api/foreman/config", {
+    enabled: true,
+    wrapup: "ask",
+    trackReviewFeedback: true,
+    trackCiFailures: true,
+  }, "PUT");
+  await dashboard.goto(daemon.baseURL);
+
+  await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
+  const popover = dashboard.getByRole("dialog", { name: "Foreman settings" });
+  await expect(popover).toBeVisible();
+  await expect(popover.getByText("Run No-Mistakes Review automatically")).toHaveCount(0);
+  await expect(popover.getByRole("radio", { name: /Ask me/ })).toBeVisible();
+  await expect(popover.getByRole("radio", { name: /Straight to PR/ })).toBeVisible();
+
+  const comments = popover.getByRole("checkbox", {
+    name: "Keep sessions on track with review comments",
+  });
+  const ci = popover.getByRole("checkbox", { name: "Keep sessions on track with CI" });
+  await expect(comments).toBeChecked();
+  await expect(ci).toBeChecked();
+  await expect(popover).toContainText(
+    "Does not create a PR. Once one exists, sends failing CI back to its session.",
+  );
+
+  await captureForemanEvidence(popover);
+
+  await ci.uncheck();
+  await expect.poll(async () => {
+    const config = await api<{
+      trackReviewFeedback: boolean;
+      trackCiFailures: boolean;
+    }>(daemon, "/api/foreman/config");
+    return {
+      comments: config.trackReviewFeedback,
+      ci: config.trackCiFailures,
+    };
+  }).toEqual({ comments: true, ci: false });
+
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
+  const reopened = dashboard.getByRole("dialog", { name: "Foreman settings" });
+  await expect(reopened.getByRole("checkbox", {
+    name: "Keep sessions on track with review comments",
+  })).toBeChecked();
+  await expect(reopened.getByRole("checkbox", {
+    name: "Keep sessions on track with CI",
+  })).not.toBeChecked();
+});
+
+/**
+ * The Foreman card is taller than a short window, and the tail of it must stay reachable.
+ *
+ * This is a regression test with a real failure behind it. The card is anchored under the
+ * topbar and had no height bound, so on a short window - or simply a topbar that had grown
+ * a second row - it ran off the bottom edge with no scroll container. The controls down
+ * there were not merely clipped, they were unclickable: `uncheck()` on the CI row spent its
+ * whole budget reporting `element is outside of the viewport`. It reproduced on CI while
+ * passing locally, because how far down the card starts depends on the topbar's height.
+ *
+ * 560px is chosen to be shorter than the card's own content, which is what forces the
+ * overflow deterministically instead of depending on the topbar. The assertion is the one
+ * that matters to a person: the card ends inside the window, and the last control in it
+ * still takes a click.
+ */
+test.describe(() => {
+  test.use({ viewport: { width: 1280, height: 560 } });
+
+  test("a Foreman card taller than the window scrolls instead of running off it", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await api(daemon, "/api/foreman/config", { enabled: true, trackCiFailures: true }, "PUT");
+    await dashboard.goto(daemon.baseURL);
+    await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
+
+    const popover = dashboard.getByRole("dialog", { name: "Foreman settings" });
+    await expect(popover).toBeVisible();
+
+    const box = await popover.evaluate((el) => ({
+      overflows: el.scrollHeight > el.clientHeight,
+      bottom: Math.round(el.getBoundingClientRect().bottom),
+      viewport: window.innerHeight,
+    }));
+    // The defect, stated as a person meets it: the card ended below the window.
+    expect(box.bottom).toBeLessThanOrEqual(box.viewport);
+    // And the card really is taller than the room it has, so the above is not vacuous.
+    expect(box.overflows).toBe(true);
+
+    // And the control that was unreachable takes a click and persists.
+    const ci = popover.getByRole("checkbox", { name: "Keep sessions on track with CI" });
+    await ci.uncheck();
+    await expect.poll(async () => {
+      const config = await api<{ trackCiFailures: boolean }>(daemon, "/api/foreman/config");
+      return config.trackCiFailures;
+    }).toBe(false);
+  });
 });
 
 test("Foreman never resurfaces Ship it actions after a scout completes", async ({

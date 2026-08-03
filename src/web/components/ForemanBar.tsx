@@ -26,11 +26,9 @@ const MODE_HINT: Record<"dry-run" | "semi-auto" | "live", string> = {
   live: "Foreman sends on your behalf, in the repos you have trusted.",
 };
 
-const WRAPUP_HINT: Record<"ask" | "workflow" | "pr", string> = {
+const WRAPUP_HINT: Record<"ask" | "pr", string> = {
   ask: "Show the Ship it? card and let you choose what happens next",
-  workflow:
-    "After Foreman verifies the original work, submit its Foreman Complete workflow or bind and submit No-Mistakes Review when none exists",
-  pr: "Skip the gate: commit, push, open a PR, then wait for green CI",
+  pr: "When no Workflow is bound, commit, push, open a PR, then wait for green CI",
 };
 
 /**
@@ -489,7 +487,7 @@ export function ForemanPopover({
 
         <fieldset className="foreman-wrapup-action" disabled={triggers.length === 0}>
           <legend>Then</legend>
-          {(["ask", "workflow", "pr"] as const).map((w) => (
+          {(["ask", "pr"] as const).map((w) => (
             <Tooltip label={WRAPUP_HINT[w]} key={w}>
               <label className="alert-row">
                 <input
@@ -499,8 +497,9 @@ export function ForemanPopover({
                   onChange={() => void update({ wrapup: w })}
                 />
                 {w === "ask" && "Ask me - show the Ship it? card"}
-                {w === "workflow" && "Run No-Mistakes Review automatically"}
-                {w === "pr" && "Straight to PR - skip review; commit, push, open a PR, then green CI"}
+                {w === "pr" && (
+                  "Straight to PR - when no Workflow is bound, commit, push, open a PR, then green CI"
+                )}
               </label>
             </Tooltip>
           ))}
@@ -519,14 +518,13 @@ export function ForemanPopover({
       </fieldset>
 
       {/*
-        What happens to the PR after it is open. The wrap-up above turns work INTO a pull
-        request; this keeps the session on it afterwards - back onto the Inspector's review
-        comments and a red CI until the PR is clean. Like the automated wrap-up actions it
-        only TYPES in live mode on an allowlisted repo, so the hint says so out loud.
+        What happens after a PR exists. Review comments and CI are separate permissions: an
+        operator may automate either one without granting the other. Neither setting creates
+        the PR. Like direct wrap-up, both only TYPE in live mode on an allowlisted repo.
       */}
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Pull requests</legend>
-        <Tooltip label="Nudge a parked session back onto its open PR to resolve Inspector comments and fix failing CI">
+        <Tooltip label="Nudge a parked session back onto its open PR to resolve Inspector comments">
           <label className="alert-row">
             {/*
               `!== false`, not the value itself: a web build newer than the daemon it is
@@ -539,15 +537,30 @@ export function ForemanPopover({
               checked={config.trackReviewFeedback !== false}
               onChange={(e) => void update({ trackReviewFeedback: e.target.checked })}
             />
-            Keep sessions on track - resolve review comments &amp; failing CI
+            Keep sessions on track with review comments
           </label>
         </Tooltip>
-        {enabled && config.trackReviewFeedback !== false && mode !== "live" && (
-          <p className="alert-hint dim">
-            Only types in Live mode on an allowlisted repo - until then a parked PR is left
-            for you.
-          </p>
-        )}
+        <Tooltip label="Once a pull request exists, nudge its parked session to fix failing CI on the same branch">
+          <label className="alert-row">
+            <input
+              type="checkbox"
+              checked={config.trackCiFailures !== false}
+              onChange={(e) => void update({ trackCiFailures: e.target.checked })}
+            />
+            Keep sessions on track with CI
+          </label>
+        </Tooltip>
+        <p className="alert-hint dim">
+          Does not create a PR. Once one exists, sends failing CI back to its session.
+        </p>
+        {enabled &&
+          (config.trackReviewFeedback !== false || config.trackCiFailures !== false) &&
+          mode !== "live" && (
+            <p className="alert-hint dim">
+              Only types in Live mode on an allowlisted repo - until then a parked PR is left
+              for you.
+            </p>
+          )}
       </fieldset>
 
       {/*

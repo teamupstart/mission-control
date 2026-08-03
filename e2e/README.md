@@ -34,6 +34,16 @@ Successful-path artifacts are committed for the dispatch-and-converse suite beca
 Playwright run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all
 configured `on-failure`, so success is exactly the case with no record.
 
+### Foreman PR follow-through
+
+[`docs/evidence/foreman-pr-follow-through/`](../docs/evidence/foreman-pr-follow-through/)
+contains PNG and reviewer-renderable HTML captures of the asserted built-dashboard Foreman
+settings, plus the focused browser and behavior transcripts. The visual shows that automatic
+No-Mistakes review is absent, Straight to PR is bounded by Workflow ownership, and CI
+follow-through is a separate control whose visible copy requires an existing PR.
+
+The directory README records the exact regeneration commands.
+
 ### Accepted workflow submission
 
 The focused bind-and-submit case holds evidence compaction open for five seconds, observes the

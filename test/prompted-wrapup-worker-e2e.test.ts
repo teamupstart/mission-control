@@ -440,7 +440,7 @@ test("a daemon blip on the queue read never double-fires a wrap-up, and never st
   );
 });
 
-test("a verified prompt binds the review workflow exactly once without typing a command", async () => {
+test("a verified prompt submits its existing workflow instead of Straight to PR", async () => {
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
   const session = mkSession(repo);
@@ -452,7 +452,7 @@ test("a verified prompt binds the review workflow exactly once without typing a 
   const stub = await startStub((req, url, raw) => {
     const p = url.pathname;
     if (p === "/api/foreman/config") {
-      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "workflow" }) };
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
     }
     if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
     if (p === "/api/sessions") {
@@ -512,11 +512,11 @@ test("a verified prompt binds the review workflow exactly once without typing a 
   const retires = stub.calls.filter((c) => c.path.endsWith("/wrapup/prompted"));
   const claims = stub.calls.filter((c) => c.path.endsWith("/workflow-completion"));
   assert.equal(claims.length, 1, `expected exactly one workflow claim\n${out}`);
-  assert.equal(injects.length, 0, `typed the skill after the workflow claimed completion\n${out}`);
+  assert.equal(injects.length, 0, `Straight to PR ran beside the claimed Workflow\n${out}`);
   assert.equal(retires.length, 0, `retired outside the daemon's claim transaction\n${out}`);
   assert.equal(
     (claims[0]?.body as { fallbackWorkflow?: string } | undefined)?.fallbackWorkflow,
-    "builtin-review",
+    null,
     out,
   );
 
@@ -534,7 +534,7 @@ test("a verified prompt binds the review workflow exactly once without typing a 
   assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
 });
 
-test("a failed Manual-binding card write leaves the prompted completion retryable", async () => {
+test("a Manual binding blocks Straight to PR and a failed card write stays retryable", async () => {
   const repo = tmp("pw-repo-");
   const fake = mkFakeClaude({ fail: false });
   const session = mkSession(repo);
@@ -546,7 +546,7 @@ test("a failed Manual-binding card write leaves the prompted completion retryabl
   const stub = await startStub((req, url, raw) => {
     const p = url.pathname;
     if (p === "/api/foreman/config") {
-      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "workflow" }) };
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
     }
     if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
     if (p === "/api/sessions") {
@@ -626,6 +626,11 @@ test("a failed Manual-binding card write leaves the prompted completion retryabl
   );
   assert.equal(queue.promptedGoal, INTENT_KEY, `the successful retry did not retire the episode\n${out}`);
   assert.ok(queue.wrapupAskedAt, `the successful retry did not raise the Ship it? card\n${out}`);
+  assert.equal(
+    stub.calls.filter((call) => call.path.endsWith("/inject")).length,
+    0,
+    `Straight to PR ran beside a bound Workflow\n${out}`,
+  );
   assert.equal(claudeCalls(fake.log).length, 2, `the failed handoff did not retry exactly once\n${out}`);
 });
 

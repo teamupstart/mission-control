@@ -336,12 +336,6 @@ export async function applyQueueAction(
       await actions.markWrapupAsked(session.id);
       return { kind: "done", what: "the queue drained - asked about wrapping up" };
 
-    case "workflow-wrapup":
-      // The worker resolves this through the workflow completion-claim API before
-      // reaching the generic apply path. Keeping the action explicit prevents an
-      // internal workflow marker from ever being typed into a live session.
-      return { kind: "noop" };
-
     case "skip-wrapup":
       // Retire the automatic drain without raising a Ship it? card. Answer FIRST, so a
       // crash between these two harmless writes can only leave an unasked, already-answered

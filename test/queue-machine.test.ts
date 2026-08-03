@@ -576,7 +576,7 @@ test("5. an empty queue asks nothing", () => {
 });
 
 // Step 5's `wrapup` branch. The safety checks are the interesting part because
-// direct shipping writes externally and workflow mode starts a review run.
+// direct shipping writes externally, while a bound Workflow is claimed before this action runs.
 
 const DRAINED = () => [mkItem({ state: "verified" })];
 
@@ -588,7 +588,7 @@ test("5. an UNTICKED drain trigger fires nothing at all, whatever the action say
   // "Trigger on: Queue drain" unchecked means the human ships their own batches. The
   // action radio is still set to something - it always is - so this must not read as
   // "no action configured" and fall through to it.
-  for (const w of ["ask", "workflow", "pr"] as const) {
+  for (const w of ["ask", "pr"] as const) {
     const a = tick({ items: DRAINED(), cfg: { wrapup: w, wrapupTriggers: [] } });
     assert.equal(a.kind, "none", w);
   }
@@ -616,59 +616,49 @@ test("5. an unticked drain trigger does not CONSUME the ask - re-ticking it stil
 
 
 test("5. automatic wrap-up waits while the latest intent is unresolved", () => {
-  for (const wrapup of ["workflow", "pr"] as const) {
-    assert.equal(
-      tick({
-        items: DRAINED(),
-        cfg: { wrapup },
-        intent: { promptRevision: 2, resolvedPromptRevision: 1, relationship: null },
-      }).kind,
-      "none",
-    );
-    assert.equal(
-      tick({ items: DRAINED(), cfg: { wrapup }, intent: { relationship: "unclear" } }).kind,
-      "none",
-    );
-  }
-});
-
-test("5. workflow mode returns a workflow claim action, never a pane payload", () => {
-  const action = tick({ items: DRAINED(), cfg: { wrapup: "workflow" } });
-  assert.equal(action.kind, "workflow-wrapup");
-});
-
-test("5. a scout drain retires without a Workflow claim or Straight-to-PR action", () => {
-  for (const wrapup of ["workflow", "pr"] as const) {
-    const action = tick({
-      session: { task: mkTaskSummary({ kind: "scout" }) },
+  assert.equal(
+    tick({
       items: DRAINED(),
-      cfg: { wrapup },
-    });
-    assert.equal(action.kind, "skip-wrapup", wrapup);
-    assert.match(action.kind === "skip-wrapup" ? action.reason : "", /scout/);
-  }
+      cfg: { wrapup: "pr" },
+      intent: { promptRevision: 2, resolvedPromptRevision: 1, relationship: null },
+    }).kind,
+    "none",
+  );
+  assert.equal(
+    tick({ items: DRAINED(), cfg: { wrapup: "pr" }, intent: { relationship: "unclear" } }).kind,
+    "none",
+  );
+});
+
+test("5. a scout drain retires without a Straight-to-PR action", () => {
+  const action = tick({
+    session: { task: mkTaskSummary({ kind: "scout" }) },
+    items: DRAINED(),
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(action.kind, "skip-wrapup");
+  assert.match(action.kind === "skip-wrapup" ? action.reason : "", /scout/);
 });
 
 test("5. disabled completion safeguards restore the configured queue action", () => {
   const scout = tick({
     session: { task: mkTaskSummary({ kind: "scout" }) },
     items: DRAINED(),
-    cfg: { wrapup: "workflow", skipScoutWrapup: false },
+    cfg: { wrapup: "pr", skipScoutWrapup: false },
   });
-  assert.equal(scout.kind, "workflow-wrapup");
+  assert.equal(scout.kind, "auto-wrapup");
 
   const mockups = tick({
     items: DRAINED(),
     intent: { objective: "Output: mockups" },
-    cfg: { wrapup: "workflow", skipReviewArtifactWrapup: false },
+    cfg: { wrapup: "pr", skipReviewArtifactWrapup: false },
   });
-  assert.equal(mockups.kind, "workflow-wrapup");
+  assert.equal(mockups.kind, "auto-wrapup");
 });
 
 test("5. blocked drains still wait for the session to settle before retiring", () => {
   for (const { wrapup, mayActLive } of [
     { wrapup: "ask", mayActLive: true },
-    { wrapup: "workflow", mayActLive: false },
     { wrapup: "pr", mayActLive: true },
   ] as const) {
     const action = tick({
@@ -721,9 +711,9 @@ test("5. an implementation that cites mockups keeps the configured automatic act
     const action = tick({
       items: DRAINED(),
       intent: { objective },
-      cfg: { wrapup: "workflow" },
+      cfg: { wrapup: "pr" },
     });
-    assert.equal(action.kind, "workflow-wrapup", objective);
+    assert.equal(action.kind, "auto-wrapup", objective);
   }
 });
 
@@ -746,9 +736,10 @@ test("5. wrapup=pr types the PR instruction instead", () => {
 test("5. dry-run NEVER types the wrap-up, however it is configured", () => {
   // The instruction pushes, so a dry-run that typed it would be a dry-run that
   // shipped. It degrades to the ask - the card IS the proposal for this action.
-  for (const w of ["workflow", "pr"] as const) {
-    assert.equal(tick({ items: DRAINED(), cfg: { wrapup: w }, mayActLive: false }).kind, "ask-wrapup");
-  }
+  assert.equal(
+    tick({ items: DRAINED(), cfg: { wrapup: "pr" }, mayActLive: false }).kind,
+    "ask-wrapup",
+  );
 });
 
 test("5. an agent still working WAITS - it must not fall back to the ask", () => {
@@ -756,14 +747,14 @@ test("5. an agent still working WAITS - it must not fall back to the ask", () =>
   // once-only guard. Asking here would retire the auto path permanently over a moment
   // of drain-time noise, and the feature would silently never fire for the busy
   // sessions it exists for. `none` costs one poll.
-  const a = tick({ items: DRAINED(), cfg: { wrapup: "workflow" }, session: { state: "working" } });
+  const a = tick({ items: DRAINED(), cfg: { wrapup: "pr" }, session: { state: "working" } });
   assert.equal(a.kind, "none");
 });
 
 test("5. an un-settled but idle agent waits too - settleMs is not yet satisfied", () => {
   const a = tick({
     items: DRAINED(),
-    cfg: { wrapup: "workflow" },
+    cfg: { wrapup: "pr" },
     session: { lastActivity: NOW - 1 },
   });
   assert.equal(a.kind, "none");
@@ -775,7 +766,7 @@ test("5. a stale overlay asks rather than typing on 30-minute-old evidence", () 
   // ask. The two false-y halves of settledIdle genuinely want opposite answers.
   const a = tick({
     items: DRAINED(),
-    cfg: { wrapup: "workflow" },
+    cfg: { wrapup: "pr" },
     session: { instrumented: false },
   });
   assert.equal(a.kind, "ask-wrapup");
@@ -793,7 +784,7 @@ test("5. nowhere to type: ask", () => {
 test("5. the auto wrap-up fires exactly once, exactly like the ask", () => {
   const a = tick({
     items: DRAINED(),
-    cfg: { wrapup: "workflow" },
+    cfg: { wrapup: "pr" },
     queue: { wrapupAskedAt: NOW - 5 },
   });
   assert.equal(a.kind, "none");

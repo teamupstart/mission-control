@@ -73,7 +73,6 @@ import {
   drainCompletionClaim,
   promptedCompletionClaim,
   tryWorkflowCompletionClaim,
-  withBuiltinReviewFallback,
 } from "./workflow-claim.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
 
@@ -821,7 +820,11 @@ async function runReviewFollowup(
       mayActLive: foremanMayActLive(cfg, session.cwd, session.repoRoot),
       workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
       mark,
-      cfg: { enabled: cfg.trackReviewFeedback, settleMs: SETTLE_MS },
+      cfg: {
+        trackReviewComments: cfg.trackReviewFeedback,
+        trackCiFailures: cfg.trackCiFailures,
+        settleMs: SETTLE_MS,
+      },
       now,
     });
     if (decision.kind === "skip") continue;
@@ -856,7 +859,11 @@ async function runReviewFollowup(
       mayActLive: foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot),
       workflowOwnsSession: activeWorkflowOwnsSession(freshWorkflowRuns),
       mark: freshMark,
-      cfg: { enabled: freshCfg.trackReviewFeedback, settleMs: SETTLE_MS },
+      cfg: {
+        trackReviewComments: freshCfg.trackReviewFeedback,
+        trackCiFailures: freshCfg.trackCiFailures,
+        settleMs: SETTLE_MS,
+      },
       now: Date.now(),
     });
     if (freshDecision.kind === "skip" || !isLeader) continue;
@@ -1028,13 +1035,8 @@ async function processTarget(
     return true;
   }
 
-  if (
-    action.kind === "ask-wrapup"
-    || action.kind === "auto-wrapup"
-    || action.kind === "workflow-wrapup"
-  ) {
-    const useBuiltinReviewFallback = action.kind === "workflow-wrapup";
-    const completionIntent = action.kind === "auto-wrapup" || action.kind === "workflow-wrapup"
+  if (action.kind === "ask-wrapup" || action.kind === "auto-wrapup") {
+    const completionIntent = action.kind === "auto-wrapup"
       ? action.intentGuard
       : resolvedSessionIntent(intent);
     if (completionIntent) {
@@ -1070,14 +1072,11 @@ async function processTarget(
       const claim = await tryWorkflowCompletionClaim(
         client,
         fresh.id,
-        withBuiltinReviewFallback(
-          drainCompletionClaim(
-            action.queue,
-            diff?.ok ? diff.headSha : null,
-            transcriptAnchor,
-            completionIntent,
-          ),
-          useBuiltinReviewFallback,
+        drainCompletionClaim(
+          action.queue,
+          diff?.ok ? diff.headSha : null,
+          transcriptAnchor,
+          completionIntent,
         ),
       );
       if (claim.kind === "failed") {
@@ -1088,17 +1087,10 @@ async function processTarget(
         log(`${fresh.name}: workflow claimed queue completion for run ${claim.result.runId}`);
         return true;
       }
-      if (useBuiltinReviewFallback) {
-        if (claim.result.reason === "no_binding") {
-          // A current daemon creates the built-in binding before it can answer this way.
-          // Treat an older or inconsistent daemon as unavailable rather than falling back
-          // to the legacy skill invocation and launching a second shipping system.
-          log(`${fresh.name}: built-in review fallback was not bound; held for retry`);
-          return false;
-        }
-        // A Manual binding is an existing operator choice and must neither be replaced nor
-        // auto-submitted. Degrade to the same Ship it? card dry-run uses; do not also type
-        // the review workflow beside a binding the operator deliberately left Manual.
+      if (claim.result.reason === "manual_trigger") {
+        // A Manual binding is an existing operator choice. It may own PR creation itself,
+        // so direct shipping must not race it on the same branch. Degrade to the Ship it?
+        // card and let the operator choose which path owns the completion.
         const outcome = await applyQueueAction(
           queueActions(client, cfg),
           fresh,
@@ -1113,11 +1105,9 @@ async function processTarget(
   }
 
   if (
-    (action.kind === "auto-wrapup" || action.kind === "workflow-wrapup") &&
+    action.kind === "auto-wrapup" &&
     !sessionIntentMatches(await client.goal(fresh.id).catch(() => null), action.intentGuard)
   ) return false;
-
-  if (action.kind === "workflow-wrapup") return false;
 
   const outcome = await applyQueueAction(
     queueActions(client, cfg),
@@ -1341,22 +1331,17 @@ async function processPromptedWrapup(
     result.verdict.complete
     && !result.verdict.gaps.some((gap) => gap.severity === "blocking")
   ) {
-    const useBuiltinReviewFallback = cfg.wrapup === "workflow"
-      && foremanMayActLive(cfg, session.cwd, session.repoRoot);
     const transcriptAnchor = await client.transcriptSize(session.id).catch(() => null);
     const claim = await tryWorkflowCompletionClaim(
       client,
       session.id,
-      withBuiltinReviewFallback(
-        promptedCompletionClaim({
-          noteKey: noteKeyOf(session),
-          intent: intentGuard,
-          headSha: diff.headSha,
-          transcriptAnchor,
-          summary: result.verdict.summary,
-        }),
-        useBuiltinReviewFallback,
-      ),
+      promptedCompletionClaim({
+        noteKey: noteKeyOf(session),
+        intent: intentGuard,
+        headSha: diff.headSha,
+        transcriptAnchor,
+        summary: result.verdict.summary,
+      }),
     );
     if (claim.kind === "failed") {
       log(`${session.name}: workflow completion claim failed closed (${claim.error})`);
@@ -1366,14 +1351,10 @@ async function processPromptedWrapup(
       log(`${session.name}: workflow claimed prompted completion for run ${claim.result.runId}`);
       return true;
     }
-    if (useBuiltinReviewFallback && claim.result.reason === "no_binding") {
-      log(`${session.name}: built-in review fallback was not bound; held for retry`);
-      return false;
-    }
-    if (useBuiltinReviewFallback && claim.result.reason === "manual_trigger") {
+    if (claim.result.reason === "manual_trigger") {
       // Preserve the active Manual binding and surface the boundary to the human. Passing
       // `false` below selects `ask-wrapup`, which retires this verified episode without
-      // starting the review workflow alongside that binding.
+      // starting direct PR shipping alongside that binding.
       const plan = planPromptedWrapup(
         candidate.episodeKey,
         result.verdict,

@@ -1011,45 +1011,52 @@ export const ForemanConfigSchema = z.object({
    * What happens when a wrap-up fires, whichever trigger fired it.
    *
    * `ask` is the shipped behaviour and the default: Foreman marks the moment and the
-   * human picks from the Wrapup card. `workflow` claims the verified completion for
-   * an existing binding or, when there is none, binds the built-in No-Mistakes Review
-   * workflow. `pr` lets Foreman type the direct shipping instruction unattended.
+   * human picks from the Wrapup card. `pr` lets Foreman type the direct shipping
+   * instruction unattended, but only when no Workflow binding owns the completion.
    *
    * Automating this is strictly more dangerous than the per-item send it resembles,
-   * because either automated path can ultimately PUSH. So the auto path carries every
+   * because direct PR can ultimately PUSH. So the auto path carries every
    * gate the manual one does and one more - it is refused outright unless `mode` is live
-   * AND the repo is on the allowlist (`mayActLive`), exactly like a queue send. Setting
-   * this to `workflow` while in dry-run does not auto-bind; it degrades to `ask`.
-   * Dry-run means dry-run.
+   * AND the repo is on the allowlist (`mayActLive`), exactly like a queue send. Dry-run
+   * degrades direct PR to `ask`. Dry-run means dry-run.
    */
   wrapup: z.enum(WRAPUP_MODES).default("ask"),
   /**
    * Whether Foreman keeps a session on track once its work has become an OPEN pull
-   * request - nudging it back to address the Inspector's review comments and to get a
-   * failing CI green, until the PR is clean.
+   * request by nudging it back to address the Inspector's review comments.
    *
    * On by default, because the gap it closes is the common failure the feature was asked
    * for: a session finishes through the review workflow or straight-to-PR, opens the PR, and
-   * parks. The Inspector then reviews and posts comments, or CI goes red - and nobody is
-   * driving the session to fix them, so the PR sits with unresolved feedback until a
-   * human notices. This turns each new Inspector round or newly actionable feedback kind
-   * on a parked PR into a fresh instruction typed back at the session that opened it.
+   * parks. The Inspector then reviews and posts comments, and nobody is driving the session
+   * to fix them, so the PR sits with unresolved feedback until a human notices. This turns
+   * each new Inspector round on a parked PR into a fresh instruction typed back at the
+   * session that opened it.
    *
    * Like every automated action here it only ever TYPES in live mode on an allowlisted
    * repo (`mayActLive`): the nudge is a live act, and dry-run means dry-run. It also
    * fires only at a settled-idle session - never interrupting one already working the
-   * fixes - and at most once per Inspector-round/feedback-kind signature, so it
-   * re-engages a stalled PR without nagging one that is being handled. Independent of
-   * `wrapupTriggers`: those decide how work BECOMES a PR, this decides what happens to
-   * the PR afterwards.
+   * fixes - and at most once per Inspector round, so it re-engages a stalled PR without
+   * nagging one that is being handled. Independent of `wrapupTriggers`: those decide how
+   * work BECOMES a PR, this decides what happens to the PR afterwards.
    */
   trackReviewFeedback: z.boolean().default(true),
+  /**
+   * Whether Foreman sends a failing CI episode back to the settled session that owns the
+   * OPEN pull request. This setting never creates a pull request: the open PR is a required
+   * input, and the instruction explicitly keeps every fix on that same branch and PR.
+   *
+   * Independent from `trackReviewFeedback` so an operator can automate CI repair without
+   * also automating review-comment handling. It carries the same Live-mode, allowlist,
+   * settled-idle, queue-ownership and Workflow-ownership gates, and fires at most once per
+   * failing episode until CI recovers and fails again.
+   */
+  trackCiFailures: z.boolean().default(true),
   /**
    * Whether Foreman schedules the BACKLOG on its own - reading every item, working out
    * what depends on what, and then handing one at a time to an idle agent or to a fresh
    * worktree (see docs/plans/backlog-autopilot/plan.md).
    *
-   * Off by default, and - like `wrapup`'s automated actions - it only ever ACTS in live
+   * Off by default, and - like direct PR wrap-up - it only ever ACTS in live
    * mode on an allowlisted repo. Launching an agent starts unattended work, and
    * assigning to an existing one types a whole task into a pane a human may be sitting
    * in front of; both are strictly more consequential than answering a prompt. In

@@ -28,8 +28,10 @@ import { settledIdle } from "@shared/session.ts";
 
 /** The knobs this trigger reads. A projection of ForemanConfig, like QueueConfig. */
 export interface ReviewFollowupConfig {
-  /** `ForemanConfig.trackReviewFeedback`. Nothing happens unless this is on. */
-  enabled: boolean;
+  /** Relay posted Inspector comments from `ForemanConfig.trackReviewFeedback`. */
+  trackReviewComments: boolean;
+  /** Relay failing CI episodes from `ForemanConfig.trackCiFailures`. */
+  trackCiFailures: boolean;
   /** How long a session must sit idle before its work counts as settled. */
   settleMs: number;
 }
@@ -116,9 +118,9 @@ export function activeWorkflowOwnsSession(
   return runs.some((run) => !["completed", "cancelled", "failed"].includes(run.status));
 }
 
-function feedbackState(s: Session): Feedback {
-  const findings = !!s.inspector && s.inspector.postedOpen > 0;
-  return { findings, ciFailing: s.prChecks === "failing" };
+function feedbackState(s: Session, cfg: ReviewFollowupConfig): Feedback {
+  const findings = cfg.trackReviewComments && !!s.inspector && s.inspector.postedOpen > 0;
+  return { findings, ciFailing: cfg.trackCiFailures && s.prChecks === "failing" };
 }
 
 /**
@@ -134,7 +136,9 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
 
   // 1. The trigger is off. First because it is the cheapest and because an off trigger
   //    must reach no branch that decides to type.
-  if (!cfg.enabled) return skip("review follow-through is off");
+  if (!cfg.trackReviewComments && !cfg.trackCiFailures) {
+    return skip("PR follow-through is off");
+  }
 
   // 2. Only a harness Foreman can actually drive, and only a live one. No `workQueue`
   //    capability means no hooks and no reliable state to read; an exited session has
@@ -171,8 +175,8 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
 
   // 7. Is there anything to act on? Open posted findings, or a red CI. Nothing here is
   //    the overwhelmingly common state of an open PR and it is not a fault - say nothing.
-  const fb = feedbackState(s);
-  if (!fb.findings && !fb.ciFailing) return skip("no open review comments or failing CI");
+  const fb = feedbackState(s, cfg);
+  if (!fb.findings && !fb.ciFailing) return skip("no enabled review comments or failing CI");
 
   // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
   //    this from interrupting an agent already working the fixes: once it acts on a nudge

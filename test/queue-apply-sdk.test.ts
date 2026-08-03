@@ -56,6 +56,7 @@ const LIVE_CFG: ForemanConfig = {
   wrapupTriggers: ["drain"],
   wrapup: "ask",
   trackReviewFeedback: true,
+  trackCiFailures: true,
   triage: "off",
   maxFixAttempts: 3,
   maxFixRounds: 10,

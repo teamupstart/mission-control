@@ -58,7 +58,11 @@ export function driverOptionAnswer(
   }
   const miss = optionRowMiss(dialog, target);
   if (miss) return { ok: false, error: describeOptionRowMiss(miss, dialog, target) };
-  return { ok: true, requestId, answer: { kind: "option", ...target } };
+  // Built field by field rather than spread from `target`. The route hands this the whole
+  // parsed body, which carries more than the row - `by` names who is answering, for the
+  // record the conversation replays - and a spread would forward every one of those extras
+  // to the driver as part of the agent's answer.
+  return { ok: true, requestId, answer: { kind: "option", number: target.number, label: target.label } };
 }
 
 /**

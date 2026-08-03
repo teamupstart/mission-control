@@ -797,6 +797,24 @@ Claude's own submit path. If Claude has further questions, the next one takes th
 place and you answer it the same way; if its review tab reports a question still unanswered,
 the form is left up rather than sent half-filled.
 
+**An answered question stays in the conversation.** See the
+[runtime capture](docs/evidence/driver-question-in-conversation/README.md) for the form and
+the entry it leaves. Submitting an `AskUserQuestion` form on
+an Agent SDK session writes the same gold entry a review answer writes - the questions
+replayed with every option they offered, the ones you took marked, and any custom answer you
+typed - placed at the point in time you answered. Permission prompts, plan approvals and
+trust checks write nothing: an auto-mode session answers dozens of those an hour, none of
+them chose between anything, and the next turn says what happened anyway. Foreman's answers
+are recorded as Foreman's and stay out of your conversation, where they are already
+[its own entry](#foreman-auto-responder).
+
+Without it the answer had nowhere to go. It reaches the agent by resolving the callback its
+turn is blocked on, and the only trace in the transcript is a turn that is purely a tool
+result - which every harness parser drops as machine noise. So the log showed the question as
+a grey `AskUserQuestion` chip, then a silence, then the agent acting on a decision the reader
+could not see, while the identical question asked over the review channel left a permanent
+record.
+
 This works for **Codex sessions too**, and that matters most for the ones nothing
 instruments: Codex's hooks [ride on a
 dispatch](#precise-status-for-codex-hooks-that-ride-on-the-dispatch), so for a Codex
@@ -863,7 +881,9 @@ while the Foreman history drawer keeps its relative age. See the
 
 Four voices share the log, told apart by colour rather than by label alone: the agent's turns
 in its own harness accent, your typed replies in blue, Foreman's entries in purple, and - in
-gold - the [answers you gave its review questions](#review-channel-mcp). The gold entries are
+gold - the answers you gave its questions, whether it asked through the
+[review channel](#review-channel-mcp) or through its
+[own question form](#answer-a-sessions-menu-from-the-dashboard). The gold entries are
 not transcript turns; like Foreman's, they happened beside the conversation and are placed by
 when they happened, so an agent that blocked on a question for an hour shows your answer
 after the hour of work, not before it. See the
@@ -1275,7 +1295,9 @@ built-in `AskUserQuestion`. It is disallowed on the spawn, and the agent is poin
 `request_input` instead, so a clarifying question arrives as structured arguments in the
 dashboard rather than as a menu drawn on a terminal nobody is watching. Agent SDK sessions
 keep the built-in tool because its questions already arrive as structured driver requests;
-see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk).
+see [Session runtimes](#session-runtimes-terminal-or-the-agent-sdk). Either way the answer
+lands in the session's conversation as the same gold entry - the two channels differ in how
+the question reaches you, not in what is written down afterwards.
 
 For the terminal runtime, four flags go on together or not at all
 (`src/server/ask-channel.ts`): `--mcp-config`

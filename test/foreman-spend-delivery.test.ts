@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -121,6 +121,37 @@ after(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
+/**
+ * Release anything the fake daemon is holding, whatever the test did or failed to do.
+ *
+ * `delayedRunId` and `delayedResponse` are module state that several cases park a request
+ * on and then release by hand. That is fine on the happy path and a trap on any other: a
+ * case that throws between the two leaves the flag set, so the NEXT test's report is parked
+ * as well - it fails claiming a run it never queued - and leaves a spawned reporter blocked
+ * on a response nobody will ever write, which is a child process that never exits and a file
+ * that never finishes.
+ *
+ * Neither of those is a real defect in the code under test, and both were reported as one.
+ * Resetting here costs nothing on a passing case - every one of them has already cleared
+ * both - and confines a failure to the test that had it.
+ */
+afterEach(async () => {
+  delayedRunId = null;
+  delayedResponse?.writeHead(204).end();
+  delayedResponse = null;
+  // And the spools a spawned reporter left on disk, for the same reason. Every case here
+  // opens on a drained queue - several say so in an assertion - but a case that throws
+  // part-way leaves its child's per-worker file behind, and the next `loadSpendOutbox`
+  // ADOPTS it. The report then surfaces as a run the following test never queued, which
+  // reports the wrong test as broken. This process's own spool is left alone: it is the
+  // thing under test, and the drained-queue assertions are what police it.
+  // Then wait for any child the case left running. Released first, deliberately: a reporter
+  // parked on the response above cannot exit until it gets one, so awaiting before releasing
+  // would trade a poisoned next test for a hung file.
+  await Promise.allSettled([...liveChildren]);
+  for (const path of spoolFiles()) if (path !== SPOOL) rmSync(path, { force: true });
+});
+
 function report(role: string, runId: string) {
   return {
     role,
@@ -160,6 +191,28 @@ function spoolRunIds(path: string): string[] {
   return (Array.isArray(stored) ? stored : stored.entries).map((item) => item.runId);
 }
 
+/**
+ * The budget for a wait whose condition depends on a SPAWNED reporter reaching the server.
+ *
+ * Two seconds is right for the in-process waits below - a flush is a tick away - and wrong
+ * for this one by an order of magnitude. The condition here needs a `node --import tsx`
+ * child to boot, compile TypeScript and complete an HTTP POST, which is around a second on
+ * an idle machine and several under `npm test`, where two test files run concurrently and
+ * every other one is spawning something too.
+ *
+ * It flaked for exactly that reason, and the flake was expensive out of proportion to
+ * itself: the case that timed out here left `delayedRunId` set and a child parked on a
+ * response that was never written, so the two tests after it inherited a report they never
+ * queued and the FILE then hung until the runner's own timeout - forty-five minutes of a
+ * local `npm test` producing nothing. `afterEach` below closes the second half of that; this
+ * closes the first.
+ *
+ * Generous rather than tuned, because the cost is asymmetric: a long ceiling costs nothing
+ * on a machine that is keeping up (the poll returns as soon as the condition holds), while a
+ * short one buys nothing and fails a test that was going to pass.
+ */
+const SPAWN_WAIT_MS = 30_000;
+
 async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
@@ -167,6 +220,25 @@ async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail("condition did not become true before timeout");
+}
+
+/**
+ * Every spawned child still running, so a case cannot leak one into the next.
+ *
+ * A reporter writes its spool BEFORE it attempts delivery - durability first - and removes
+ * it on a 204. So a child still in flight is a spool file on disk, and the next case's
+ * `spoolFiles()` reads it as a report that case never queued. Deleting the file instead of
+ * waiting loses the race: the child writes it again a moment later.
+ */
+const liveChildren = new Set<Promise<void>>();
+
+/** Register a spawn so `afterEach` can wait for it however the case ends. */
+function tracked(work: Promise<void>): Promise<void> {
+  liveChildren.add(work);
+  // Attached rather than chained onto the returned promise, so a caller that awaits this
+  // still sees the rejection and a caller that abandons it does not raise an unhandled one.
+  void work.catch(() => {}).finally(() => liveChildren.delete(work));
+  return work;
 }
 
 function spawnReporter(role: string, runId: string): Promise<void> {
@@ -185,13 +257,15 @@ function spawnReporter(role: string, runId: string): Promise<void> {
   let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => (stderr += String(chunk)));
-  return new Promise((resolve, reject) => {
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(`reporter exited ${code ?? signal}: ${stderr}`));
-    });
-  });
+  return tracked(
+    new Promise((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", (code, signal) => {
+        if (code === 0) resolve();
+        else reject(new Error(`reporter exited ${code ?? signal}: ${stderr}`));
+      });
+    }),
+  );
 }
 
 function spawnAdopter(): Promise<void> {
@@ -210,13 +284,15 @@ function spawnAdopter(): Promise<void> {
   let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => (stderr += String(chunk)));
-  return new Promise((resolve, reject) => {
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(`adopter exited ${code ?? signal}: ${stderr}`));
-    });
-  });
+  return tracked(
+    new Promise((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", (code, signal) => {
+        if (code === 0) resolve();
+        else reject(new Error(`adopter exited ${code ?? signal}: ${stderr}`));
+      });
+    }),
+  );
 }
 
 test("a report reaches the daemon and leaves nothing queued or spooled", async () => {
@@ -781,7 +857,7 @@ test("each live worker writes only its own spool", async () => {
   assert.equal(pendingSpendReports(), 0, "this case starts from a drained queue");
   delayedRunId = "run-shared-ack";
   const acknowledgedWorker = spawnReporter("foreman:review", delayedRunId);
-  await eventually(() => delayedResponse !== null);
+  await eventually(() => delayedResponse !== null, SPAWN_WAIT_MS);
 
   mode = "500";
   await spawnReporter("foreman:verify", "run-shared-pending");

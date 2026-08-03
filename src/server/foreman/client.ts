@@ -1300,7 +1300,13 @@ export class ForemanClient implements ForemanActions {
    * `applyVerdict` turns that throw into "not answered" rather than a false byline.
    */
   async selectOption(id: string, option: { number: number; label: string }): Promise<unknown> {
-    const res = await send("POST", `/api/sessions/${enc(id)}/select-option`, option);
+    // `by` for the same reason `resolveReview` carries it, documented below: answering a
+    // driver QUESTION now leaves a record in the session's conversation, and the record
+    // must not say the operator chose this.
+    const res = await send("POST", `/api/sessions/${enc(id)}/select-option`, {
+      ...option,
+      by: "foreman",
+    });
     if (!res.ok) throw new Error(`selectOption ${id} -> ${res.status}`);
     return res.json();
   }
@@ -1317,7 +1323,10 @@ export class ForemanClient implements ForemanActions {
     id: string,
     answers: NonNullable<SubmitOptions["answers"]>,
   ): Promise<unknown> {
-    const res = await send("POST", `/api/sessions/${enc(id)}/submit-options`, { answers });
+    const res = await send("POST", `/api/sessions/${enc(id)}/submit-options`, {
+      answers,
+      by: "foreman",
+    });
     if (!res.ok) throw new Error(`submitForm ${id} -> ${res.status}`);
     return res.json();
   }

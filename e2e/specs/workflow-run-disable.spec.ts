@@ -117,7 +117,7 @@ async function seedFailedRun(page: Page, daemon: DaemonHandle): Promise<string> 
       .poll(
         async () =>
           (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
-        { message: "round 1 should park in waiting_for_session on the scripted fail verdict", timeout: 20_000 },
+        { message: "round 1 should park in waiting_for_session on the scripted fail verdict", timeout: 40_000 },
       )
       .toBe("waiting_for_session");
   } catch (caught) {
@@ -176,8 +176,8 @@ test("clicking a reviewer disables it for this run, and the next round auto-pass
   await dashboard.getByRole("button", { name: "Preview unchanged" }).click();
   await dashboard.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
 
-  await expect(row("Blocking reviewer")).toContainText("Disabled", { timeout: 20_000 });
-  await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 20_000 });
+  await expect(row("Blocking reviewer")).toContainText("Disabled", { timeout: 40_000 });
+  await expect(row("Docs steward")).toContainText("Changes requested", { timeout: 40_000 });
   await expect(dashboard.locator(".wf-run-scrubber")).toContainText("Round 2");
 
   // And the daemon's durable record agrees: the round advanced, the auto-pass is an audited

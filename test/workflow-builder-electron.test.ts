@@ -20,7 +20,7 @@ const require = createRequire(import.meta.url);
  * ETIMEDOUT, which reads as the layout defect this test exists to catch rather than as a busy
  * machine. Keep it far above the honest cost - a real hang still fails, just later.
  */
-const ELECTRON_TIMEOUT_MS = 120_000;
+const ELECTRON_TIMEOUT_MS = 240_000;
 
 before(() => {
   assertElectronGuiLaunchAllowed();

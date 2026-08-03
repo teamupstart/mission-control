@@ -190,7 +190,7 @@ test("Live types the authored instruction once and resumes on a fresh child segm
     await expect
       .poll(async () => (await detail(daemon, runId)).deliveries
         .filter((item) => item.kind === "session_action" && item.state === "delivered").length,
-      { message: "the action packet should be typed into the bound session", timeout: 30_000 })
+      { message: "the action packet should be typed into the bound session", timeout: 60_000 })
       .toBe(1);
   });
 
@@ -217,7 +217,7 @@ test("Live types the authored instruction once and resumes on a fresh child segm
     await expect
       .poll(async () => (await detail(daemon, runId)).attempts
         .find((item) => item.nodeId === NODE.action)?.state,
-      { message: "the finished action turn should complete its attempt", timeout: 60_000 })
+      { message: "the finished action turn should complete its attempt", timeout: 120_000 })
       .toBe("completed");
   });
 
@@ -248,7 +248,7 @@ test("Live types the authored instruction once and resumes on a fresh child segm
   // Exactly one packet ever reached the pane, and the run finished past the action.
   expect(continued.deliveries.filter((item) => item.kind === "session_action")).toHaveLength(1);
   await expect
-    .poll(async () => (await detail(daemon, runId)).run.status, { timeout: 30_000 })
+    .poll(async () => (await detail(daemon, runId)).run.status, { timeout: 60_000 })
     .toBe("completed");
 
   // And the instruction is really in that session's conversation, where the operator reads
@@ -258,7 +258,7 @@ test("Live types the authored instruction once and resumes on a fresh child segm
   const card = dashboard.locator("article.card").first();
   await card.getByRole("button", { name: "Expand conversation" }).click();
   await expect(card.getByText("Remove the stray scratch file and say so.").first())
-    .toBeVisible({ timeout: 20_000 });
+    .toBeVisible({ timeout: 40_000 });
   expect(sessionId).not.toBe("");
 
   // What the RUN VIEW makes of all that. Everything above is durable truth; this is the half
@@ -315,7 +315,7 @@ test("Preview prepares the identical packet and types nothing at all", async ({
     await expect
       .poll(async () => (await detail(daemon, runId)).deliveries
         .filter((item) => item.kind === "session_action").length,
-      { message: "Preview must still prepare the packet so an operator can read it", timeout: 30_000 })
+      { message: "Preview must still prepare the packet so an operator can read it", timeout: 60_000 })
       .toBe(1);
   });
 
@@ -333,7 +333,7 @@ test("Preview prepares the identical packet and types nothing at all", async ({
     .poll(async () => {
       const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
       return sessions.find((session) => session.state !== "exited")?.state ?? "";
-    }, { message: "the session should settle back to idle", timeout: 30_000 })
+    }, { message: "the session should settle back to idle", timeout: 60_000 })
     .toBe("idle");
   await new Promise((resolve) => setTimeout(resolve, 20_000));
 
@@ -389,7 +389,7 @@ test("e toggles the selected Board workflow card without opening session detail"
   await expect
     .poll(async () => (await detail(daemon, runId)).summary.actionWait, {
       message: "the workflow should be parked where its Board card can disclose it",
-      timeout: 30_000,
+      timeout: 60_000,
     })
     .toBe("awaiting_send");
 

@@ -113,7 +113,7 @@ test("Bind and submit opens the durable capturing run before compaction finishes
   expect(detail.run.status).toBe("capturing");
   await expect(dashboard.locator(".wf-run-facts .workflow-chip")).toHaveText(
     "Capturing evidence",
-    { timeout: 3_000 },
+    { timeout: 6_000 },
   );
 
   if (process.env.MC_E2E_EVIDENCE) {

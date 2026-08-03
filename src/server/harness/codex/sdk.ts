@@ -414,11 +414,13 @@ class CodexSdkSession implements SdkSessionHandle {
     const started = await this.client.request<TurnStartResponse>("turn/start", params);
     // Recorded from the RESPONSE as well as from `turn/started`, so a second `send` racing
     // the notification cannot see an idle thread and start a turn that never runs.
-    this.lastUsage = null;
-    // An idle status may finish this turn only after its own active status pairs with it.
-    // A delayed idle from the previous turn can arrive between this response and that
-    // notification, and has no turn id by which it could otherwise be rejected.
-    this.statusActiveTurnId = null;
+    // Notifications can also overtake the response. Preserve state if `turn/started` and
+    // its active status already paired this exact turn; only a response that replaces a
+    // different active turn may clear the old pairing and usage.
+    if (this.activeTurnId !== started.turn.id) {
+      this.lastUsage = null;
+      this.statusActiveTurnId = null;
+    }
     this.activeTurnId = started.turn.id;
     this.out.emit({ kind: "state", state: "working", activity: null });
   }

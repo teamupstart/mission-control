@@ -281,6 +281,36 @@ test("a second turn steers while one is running, and starts when the thread is i
   await drained;
 });
 
+test("an active status that overtakes the turn response still pairs with its idle", async () => {
+  let server: FakeServer;
+  server = new FakeServer(
+    defaultReplies({
+      "turn/start": () => {
+        // The notification pump is independent from request correlation, so both of these
+        // may be consumed before `startTurn` resumes from the response below.
+        server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+        server.notify("thread/status/changed", {
+          threadId: THREAD.id,
+          status: { type: "active", activeFlags: [] },
+        });
+        return { turn: { id: "turn-1", status: "inProgress" } };
+      },
+    }),
+  );
+  const { handle, events, drained } = await launch(server);
+  await settle();
+
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  await settle();
+  assert.equal(
+    events.filter((event) => event.kind === "turn_done").length,
+    1,
+    "the response must not erase the same turn's already-observed active status",
+  );
+  await handle.stop();
+  await drained;
+});
+
 test("a steer against a turn that moved rejects rather than reporting delivery", async () => {
   const server = new FakeServer({
     ...defaultReplies(),

@@ -474,7 +474,7 @@ field is a regenerate-and-read-the-diff, not a hunt.
 
 #### Continue in terminal
 
-`⇧P`, or the button where **Focus** sits on a pane-backed card. It stops the driver and
+`⇧T`, or the button where **Focus** sits on a pane-backed card. It stops the driver and
 reopens **the same conversation** in a terminal home in the same checkout -
 `claude --resume <session id>` or `codex resume <thread id>`, whichever harness the card is.
 Both vendors keep one session store across their programmatic and interactive surfaces,
@@ -1853,7 +1853,7 @@ cadence: "audit dependencies every Monday at 8am". It is deliberately not a
 system and dedupes against what it has already seen, where a schedule is internal state
 whose identity is the pair `(schedule, instant)`.
 
-Open **Missions** from the topbar button of the same name, beside Dispatch and Sitrep. The
+Open **Missions** from the topbar button of the same name, beside Dispatch. The
 button carries an attention badge when any enabled schedule needs you (a failed run, an
 invalid repo, an overdue instant, a stuck reservation - all derived on the daemon, never in
 the browser). The catalog is a wide operator overlay, not a settings category, and it owns
@@ -2322,14 +2322,15 @@ buffer over exactly once and reports nothing at all until you are back at the de
 
 ## The Library
 
-Mission Control has two homes, and the top bar's segmented **▦ Fleet / ⌗ Library** control
-names both. The Fleet is what is happening; the **Library** is everything you author once and
-reuse. Nothing on the Library runs - each shelf carries a single cross-link to where its
-assets are executing, and no live state beyond it.
+Mission Control keeps its three primary pages in one segmented top bar control:
+**▦ Fleet / ⌗ Library / ▷ Runs**. Fleet shows the sessions doing the work, **Library** holds
+everything you author once and reuse, and **Runs** monitors live and finished workflow runs.
+Nothing on the Library runs - each shelf carries a single cross-link to where its assets are
+executing, and no live state beyond it.
 
-Switching homes changes only the dashboard body. The fleet header, live SSE connection, and
-Cards, Console, or Board selection stay mounted, so returning to **Fleet** does not reconnect
-or discard the fleet view.
+Switching primary pages changes only the dashboard body. The fleet header, live SSE
+connection, and Cards, Console, or Board selection stay mounted, so returning to **Fleet**
+does not reconnect or discard the fleet view.
 
 `#/library` opens five shelves, each headed by the question it answers rather than by its own
 noun:
@@ -2357,9 +2358,10 @@ the hash without adding a history entry, so the address bar is always a shareabl
 you are looking at and **Back** still means the page you came from. `new` is reserved and
 never an asset id.
 
-Execution is not a Library shelf. Workflow runs and ensembles are top-level pages hung off
-[the Line](#the-line-the-pipeline-strip-above-the-fleet), and the Workflows page that once held all five surfaces as sibling tabs
-is retired:
+Execution is not a Library shelf. Workflow Runs is a top-level page in the segmented control
+and [the Line](#the-line-the-pipeline-strip-above-the-fleet) links directly into it; Ensemble
+runs remain a top-level page reached from the Line. The Workflows page that once held all five
+surfaces as sibling tabs is retired:
 
 | Hash | Surface |
 | --- | --- |
@@ -4154,8 +4156,9 @@ Settings is a **page**, not a modal: `#/settings/<category>` in the URL, reached
 gear in the top bar, from **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> in the
 desktop app, or by opening the link directly. <kbd>Esc</kbd> returns you to the fleet, the
 gear takes you back the same way, and browser back/forward walk the categories you visited.
-While the page is up the fleet's shortcuts stand down, exactly as they do on Workflows -
-nothing you type here can drive the session behind it.
+While the page is up the session and panel shortcuts stand down, so nothing you type here can
+drive the fleet behind it. The direct Fleet, Library and Runs shortcuts remain available when
+focus is not in a text field.
 
 The rail is grouped by **blast radius**, and each group carries a badge saying how far its
 settings reach. That is the question a flat list of twelve peers could not answer: which of
@@ -4370,7 +4373,7 @@ actually has one, which makes their absence informative rather than grey furnitu
 
 ## The palette (⌘K)
 
-<kbd>⌘</kbd><kbd>K</kbd> is the connective tissue between the two homes: **one input** over
+<kbd>⌘</kbd><kbd>K</kbd> is the connective tissue across the primary pages: **one input** over
 everything the [Library](#the-library) holds, everything the [Line](#the-line-the-pipeline-strip-above-the-fleet) is running, and
 every [setting](#settings). Type a few letters and land on the shelf card, the live run, or
 the control - from wherever you are.
@@ -4480,7 +4483,7 @@ earns two surfaces a card has nowhere to put:
   detail, and <kbd>Esc</kbd> comes back out with the cursor still on the card you left. Once
   you're in, the arrow keys keep moving the open detail through the board - the drill-in
   is always the selected session. Clicking a tile still does both in the one gesture.
-  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>f</kbd>, <kbd>q</kbd> and
+  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>⇧</kbd><kbd>F</kbd>, <kbd>q</kbd> and
   <kbd>k</kbd> pressed on the overview drill in and then do what they say. The one exception
   is <kbd>⇧</kbd><kbd>Tab</kbd>, which cycles the selected tile's permission mode in place
   without opening its detail.
@@ -4715,23 +4718,25 @@ names the layouts where a shortcut's target exists:
 | <kbd>Tab</kbd> | **Console & board drill-in:** step into the open detail and one tab right each press - Conversation → Work queue → Workflows → Diff → Files - clamping at the last rather than tabbing away. The reader takes a soft ring and <kbd>↑</kbd>/<kbd>↓</kbd> scroll whichever tab shows; <kbd>⇧</kbd><kbd>Tab</kbd> walks back, and from the conversation (or <kbd>Esc</kbd>) hands the keyboard to the rail | Open detail (Console or Board) |
 | <kbd>Enter</kbd> | Open the selected session's detail. **Cards**: focus-expands or collapses the selected card. **Board**: opens the drill-in. Console already shows the selected session. On a focused link or button Enter activates that instead, as it always does | Anywhere |
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), hand a Console reader back to its rail, or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
-| <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
+| <kbd>f</kbd> | Open **Fleet** | Anywhere |
+| <kbd>w</kbd> | Open the **Library** | Anywhere |
+| <kbd>r</kbd> | Open **Workflow Runs** | Anywhere |
+| <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
-| <kbd>w</kbd> | Open the **Library**, or press again to return to the fleet | Fleet or Library |
 | <kbd>e</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in**: reveals the Conversation tab. **Board** overview: opens the drill-in, which starts there. **Cards**: expands the card, where the transcript already lives. Only ever reveals - <kbd>Enter</kbd> owns the Cards toggle | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first. Cards draws no tab strip and never showed the ladder, so the chord is unclaimed there; <kbd>w</kbd> opens the Library instead | Selected session (Console or Board) |
 | <kbd>d</kbd> | Open the selected session's diff (in the Console/Board Diff tab, or the Cards modal) | Selected session |
-| <kbd>f</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
+| <kbd>⇧</kbd><kbd>F</kbd> | Open Files for the expanded card or the selected Console/Board detail | Selected expanded/detail session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Search checkout files; use the arrows and Enter to open one in Files | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>↑</kbd> | Recall the newest editable queued message into the box, with the caret at the end. The box must be empty and have no attachments | Empty message composer |
 | <kbd>t</kbd> | Open the **Terminal** launcher for the selected session's worktree. If its conversation is not visible, reveals it first, then opens the terminal chooser | Selected session |
 | <kbd>a</kbd> | Open the selected session's **Codex / Claude** launcher: focus its existing terminal pane, or reveal the conversation and choose a terminal in which to resume it | Selected session |
 | <kbd>p</kbd> | Focus the selected session's pane | Selected session |
-| <kbd>⇧</kbd><kbd>P</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
+| <kbd>⇧</kbd><kbd>T</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
@@ -4763,12 +4768,13 @@ while a card in that strip has focus - so they are fixed for the same reason.
 The buttons those shortcuts drive print the key on their own face - Terminal and
 Codex / Claude in the conversation toolbar; Send, Focus, Files, Queue, Reset, Complete and
 Kill on a card; Focus, Diff, Reset, Complete and Kill in the Console footer; the Console's
-Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and Workflows
-in the top bar; the Board card's workflow disclosure; and the settings rail's search box. They
+Conversation, Work queue, Diff and Files tabs; a card's `diff` pill; Dispatch and the Fleet,
+Library and Runs segments in the top bar; the Board card's workflow disclosure; and the settings
+rail's search box. They
 show the *resolved* chord, so a rebind moves what they say and an unset action shows no keycap.
 
 **Settings → Keyboard → Show keybindings on buttons** turns them off once you've learnt
-them. Small icon-only controls (the ⚙ gear, the 📡 sitrep glyph, the expand chevron) never
+them. Small icon-only controls (the ⚙ gear and the expand chevron) never
 carry one - a keycap would be larger than the icon - and name their key in the tooltip
 instead. The command bar is unaffected either way: it is nothing but keycaps.
 

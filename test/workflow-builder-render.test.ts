@@ -208,10 +208,11 @@ test("generated create and duplicate names honor normalized durable uniqueness",
 
 test("the top-bar segment reaches the Library, and the builder is one level under it", () => {
   const source = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
-  // The segment navigates to the two homes and nothing deeper: the builder is reached from
+  // The segment navigates to primary pages and nothing deeper: the builder is reached from
   // a Workflows shelf card, which is what makes the shelf the place you learn what a
   // workflow is before you open one.
-  assert.match(source, /id === "fleet" \? \{ page: "fleet" \} : \{ page: "library" \}/);
+  assert.match(source, /id: "runs",[\s\S]*?action: "runs"/);
+  assert.match(source, /onClick=\{\(\) => navigate\(\{ page: id \}\)\}/);
   assert.match(source, /<WorkflowLibrary[\s\S]*?initialWorkflowId=\{libraryAssetId\}/);
   assert.match(source, /onOpenAsset=\{\(shelf, assetId\) => navigate\(\{ page: "library", shelf, assetId \}\)\}/);
 });

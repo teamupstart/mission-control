@@ -89,51 +89,51 @@ test("the Library shelves answer a question each, and name nothing that is runni
     .toContainText("Nothing here runs - live state stays on the runs and ensembles pages");
 });
 
-test("the topbar segment moves between the two homes, and the chord does the same", async ({
+test("the topbar segment directly opens Fleet, Library and Runs, while Shift+P opens Sitrep", async ({
   dashboard,
 }) => {
   const pages = dashboard.getByRole("navigation", { name: "Pages" });
-  await expect(pages.getByRole("button", { name: /Fleet/ })).toHaveAttribute("aria-current", "page");
+  const fleet = pages.getByRole("button", { name: /Fleet/ });
+  const library = pages.getByRole("button", { name: /Library/ });
+  const runs = pages.getByRole("button", { name: /Runs/ });
+  await expect(pages.getByRole("button")).toHaveCount(3);
+  await expect(fleet).toHaveAttribute("aria-current", "page");
+  await expect(fleet.locator("kbd")).toHaveText("f");
+  await expect(library.locator("kbd")).toHaveText("w");
+  await expect(runs.locator("kbd")).toHaveText("r");
+  // Sitrep left the title bar to make room for the third page segment.
+  await expect(dashboard.locator("header.topbar").getByRole("button", { name: "Sitrep" }))
+    .toHaveCount(0);
 
-  await pages.getByRole("button", { name: /Library/ }).click();
+  await library.click();
   await expect(dashboard.getByRole("heading", { name: "Library" })).toBeVisible();
-  await expect(pages.getByRole("button", { name: /Library/ })).toHaveAttribute("aria-current", "page");
+  await expect(library).toHaveAttribute("aria-current", "page");
   // `aria-current` moves rather than being carried by both: only one of them is where you are.
-  await expect(pages.getByRole("button", { name: /Fleet/ })).not.toHaveAttribute("aria-current", "page");
+  await expect(fleet).not.toHaveAttribute("aria-current", "page");
   expect(await dashboard.evaluate(() => location.hash)).toBe("#/library");
 
-  await pages.getByRole("button", { name: /Fleet/ }).click();
-  // The same barrier the keyboard half below explains, and it is needed here for the same
-  // reason: the press that follows is synthetic and can land inside the render that trails
-  // this navigation, where the handler React armed for the Library answers it and does
-  // nothing. Waiting on the hash alone waits for something the click already made true, so
-  // the first `w` was silently swallowed and `aria-current` never reached the Library.
-  await expect(pages.getByRole("button", { name: /Fleet/ }))
-    .toHaveAttribute("aria-current", "page");
-  expect(await dashboard.evaluate(() => location.hash)).toBe("#/fleet");
-
-  // The same swing on the keyboard. It is the one chord that fires OFF the fleet too, which
-  // is what lets the single key return.
-  //
-  // Each press waits for the SEGMENT to move, not for the hash. `navigate` sets
-  // `location.hash` synchronously, so the hash is the new page one line after the keypress -
-  // while the key handler is still the one React armed for the page you just left, because
-  // it re-subscribes on the render that trails the `hashchange`. Polling the hash therefore
-  // waits for something that is already true and lets a second synthetic press land inside
-  // that window, where it is answered by the stale handler and does nothing. `aria-current`
-  // only moves on that render, so waiting for it is both the honest user-visible assertion
-  // and the correct barrier. (A person cannot type inside one frame; Playwright can.)
+  // Library is direct, not a toggle: pressing its chord while already there leaves it there.
   await dashboard.keyboard.press("w");
-  await expect(pages.getByRole("button", { name: /Library/ }))
-    .toHaveAttribute("aria-current", "page");
+  await expect(library).toHaveAttribute("aria-current", "page");
   expect(await dashboard.evaluate(() => location.hash)).toBe("#/library");
 
-  await dashboard.keyboard.press("w");
-  await expect(pages.getByRole("button", { name: /Fleet/ }))
-    .toHaveAttribute("aria-current", "page");
+  await dashboard.keyboard.press("f");
+  await expect(fleet).toHaveAttribute("aria-current", "page");
   expect(await dashboard.evaluate(() => location.hash)).toBe("#/fleet");
 
-  // And it stands down while a text field has focus, so `w` types instead of navigating.
+  await dashboard.keyboard.press("r");
+  await expect(runs).toHaveAttribute("aria-current", "page");
+  await expect(dashboard.getByRole("heading", { name: "Workflow runs", level: 2 })).toBeVisible();
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/runs");
+
+  // `r` no longer opens Sitrep. Its new Shift+P binding remains fleet-scoped like the panel.
+  await dashboard.keyboard.press("f");
+  await expect(fleet).toHaveAttribute("aria-current", "page");
+  await dashboard.keyboard.press("Shift+P");
+  await expect(dashboard.getByRole("heading", { name: "Sitrep" })).toBeVisible();
+  await dashboard.keyboard.press("Escape");
+
+  // Page chords stand down while a text field has focus, so `w` types instead of navigating.
   // Focused through the app's own `/` chord rather than by clicking: the topbar's container
   // ladder collapses the filter to its glyph on narrower windows, and this spec should not
   // depend on which rung the test viewport happens to land on.

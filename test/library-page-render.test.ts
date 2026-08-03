@@ -136,7 +136,7 @@ test("every shelf is headed by the question it answers, with the noun as its eye
 });
 
 test("the page says out loud that nothing on it runs", () => {
-  // The one sentence that keeps the two homes apart in an operator's head. If a later phase
+  // The one sentence that keeps authoring and execution apart in an operator's head. If a later phase
   // puts live state on a shelf, this is the claim it breaks.
   assert.match(page(), /Nothing here runs - live state stays on the runs and ensembles pages/);
 });

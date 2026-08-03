@@ -295,7 +295,7 @@ test("a control that keeps only a glyph still says what it is", () => {
     "missions-btn is drawn as a bare glyph on narrow windows and has no aria-label",
   );
   // The page segment takes the other route: its `.tb-label` IS its accessible name, and the
-  // rung hides it visually rather than removing it, so "Fleet" and "Library" survive the
+  // rung hides it visually rather than removing it, so Fleet, Library and Runs survive the
   // collapse. That is checked by the `display: none` sweep below, which is what makes this
   // the safe option rather than the lazy one - an `aria-label` here would be a second name
   // beside the visible word, and the two would drift.

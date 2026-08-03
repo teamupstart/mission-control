@@ -29,6 +29,7 @@ import {
   WorkflowCheckOutcomeSchema,
 } from "@shared/protocol.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
+import type { WorkflowConfirmDescriptor } from "./run-actions.ts";
 import { WorkflowApiError } from "./workflowApi.ts";
 
 /**
@@ -639,6 +640,52 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
 
 export function runStatusLabel(status: WorkflowRunStatus): string {
   return RUN_STATUS_LABELS[status];
+}
+
+/**
+ * Why a stopped run stopped, as a short clause to hang off its status word.
+ *
+ * The sibling of `GATE_WAIT_SENTENCES` below, and deliberately a different grain: those are
+ * whole sentences for a run's own page, these are three or four words for a triage column
+ * that is 240px of 10px mono. "Blocked" alone is the complaint this map answers - it is true
+ * of thirty rows at once and actionable on none of them.
+ *
+ * `phase` is a free `string` and NOT a union: `orphanBinding` and every `setRunState` caller
+ * write their own reason code into it, and new ones appear without this map hearing about
+ * it. So the lookup FALLS BACK to `phase.replaceAll("_", " ")`, which is the same fallback
+ * `alerts.ts` already prints reasons with - two surfaces reading one field must not disagree
+ * about what an unmapped code looks like, and an unmapped code has to degrade to readable
+ * text rather than to `undefined`.
+ */
+const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
+  session_disappeared: "session gone",
+  round_limit: "out of rounds",
+  // Written by the gate as an EVENT kind today rather than as a phase (the phase it sets is
+  // `round_limit`), so this entry is insurance rather than a live case. It costs one line and
+  // it means a later code change cannot silently produce "inspector round limit" prose.
+  inspector_round_limit: "out of Inspector rounds",
+  infrastructure_error: "provider call failed",
+  inspector_findings: "Inspector findings",
+  inspector_disabled: "Inspector off",
+  inspector_pr_closed: "PR closed",
+  inspector_head_mismatch: "head moved",
+  inspector_gate_context_invalid: "gate context lost",
+  delivery_uncertain: "delivery unconfirmed",
+  delivery_refused: "delivery refused",
+  delivery_blocked: "delivery blocked",
+  stale_capture: "evidence went stale",
+  capture_error: "capture failed",
+  // Not a block at all: the binding was reattached to a live session and the run is parked
+  // until somebody opens the next round. The clause says what HAPPENED; the remedy button
+  // beside it says what to do about it, which is why this is not "reattached, needs
+  // resubmit" - the second half would be the button repeating itself into a column that
+  // cannot hold it.
+  reattached_resubmit_required: "reattached",
+};
+
+/** The short cause for `phase`, or the phase code made readable when it is unmapped. */
+export function blockedPhaseClause(phase: string): string {
+  return BLOCKED_PHASE_CLAUSES[phase] ?? phase.replaceAll("_", " ");
 }
 
 const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
@@ -1281,6 +1328,12 @@ function reviewerTriageStatus(summary: WorkflowRunSummary): PipelineStatus {
     };
   }
   if (summary.status === "completed") return { tone: "passed", label: "Reviewers passed" };
+  // A blocked run with nobody running and nobody failed did not leave its reviewers waiting -
+  // it left them CANCELLED. `orphanBinding` marks every queued and retrying attempt
+  // `cancelled` on its way past, which is precisely why `activePersonaNames` is empty here,
+  // and an amber "Reviewers" chip on that row promises a queue that will never move. Derived
+  // from what the summary already proves rather than from a new field.
+  if (summary.status === "blocked") return { tone: "stopped", label: "Reviewers stopped" };
   return { tone: "waiting", label: "Reviewers" };
 }
 
@@ -1321,13 +1374,20 @@ export function runTriageSteps(summary: WorkflowRunSummary): RunTriageStep[] {
  * What this run is doing, in one clipped line under the chips.
  *
  * The run's own status word leads, because it is the one fact that is true of the whole run
- * rather than of one stage. What follows is only ever something the chips could not say: WHO
- * is reviewing (the chip has the count, not the names, and on a narrow row the tooltip is
- * unreachable by keyboard), and deliveries whose landing is unknown - the one state where
- * doing nothing is the wrong answer and no chip above owns it.
+ * rather than of one stage. What follows is only ever something the chips could not say: WHY
+ * a stopped run stopped, WHO is reviewing (the chip has the count, not the names, and on a
+ * narrow row the tooltip is unreachable by keyboard), and deliveries whose landing is
+ * unknown - the one state where doing nothing is the wrong answer and no chip above owns it.
+ *
+ * The cause is appended for exactly the two states a run can be PARKED in, and for no
+ * others. A run that is still moving has no cause to state - its phase is the stage it is
+ * in, which the chips already draw - and printing one on every row would turn a reason into
+ * furniture. `Blocked` alone was the original complaint; `Blocked · session gone` is the
+ * answer to it.
  */
 export function runTriageSentence(summary: WorkflowRunSummary): string {
   const parts = [runStatusLabel(summary.status)];
+  if (runIsParked(summary)) parts.push(blockedPhaseClause(summary.phase));
   const running = summary.activePersonaNames;
   if (running.length > 0) parts.push(`${running.join(", ")} running`);
   const uncertain = summary.uncertainDeliveryCount ?? 0;
@@ -1347,4 +1407,191 @@ export function runTriageSentence(summary: WorkflowRunSummary): string {
  */
 export function runTriageRound(summary: WorkflowRunSummary): string {
   return summary.round <= 1 ? "round 1" : `round ${summary.round}/${summary.maxRepairRounds}`;
+}
+
+/**
+ * Whether this run is PARKED: the daemon has stopped working on it and will not resume on
+ * its own.
+ *
+ * Two states qualify and no more. `blocked` is the obvious one. The second is a run whose
+ * binding was reattached to a fresh session: `reattach` leaves it `waiting_for_session` at
+ * `reattached_resubmit_required` and deliberately does not open the next round itself,
+ * because a reattached conversation is a different pane and re-sending into it without being
+ * asked is the one thing the delivery model refuses to do.
+ *
+ * Every other `waiting_*` status is a run waiting on something that genuinely arrives -
+ * a reviewer, Inspector's next sweep, a pushed head - and calling those parked would put a
+ * cause and a control on rows that need neither.
+ */
+function runIsParked(summary: Pick<WorkflowRunSummary, "status" | "phase">): boolean {
+  return summary.status === "blocked"
+    || (summary.status === "waiting_for_session"
+      && summary.phase === "reattached_resubmit_required");
+}
+
+/** How a triage row identifies one run, and whether what it found is a title or an id. */
+export interface RunRowIdentity {
+  name: string;
+  /**
+   * True when `name` is the conversation key - a GUID. The row draws it as a dim mono
+   * identifier rather than a bold title, because rendering an id in the slot where a title
+   * goes is what made thirty rows unreadable in the first place.
+   */
+  isIdentifier: boolean;
+}
+
+/**
+ * Who a run is, in three steps: the LIVE session's display name, then the binding's captured
+ * title, then the conversation key.
+ *
+ * The middle step is the one that was missing, and the GUID is its consequence rather than a
+ * design choice: a run outlives the session it reviewed, so resolving a name only from live
+ * sessions means every run whose session was removed - which is every blocked run in the
+ * fleet - falls straight past a perfectly good durable title to an id.
+ *
+ * The live name still leads, because a renamed session should read under its current name.
+ */
+export function runRowIdentity(
+  run: Pick<WorkflowRunSummary, "sessionId" | "sessionName" | "noteKey">,
+  liveSessionName: string | null | undefined,
+): RunRowIdentity {
+  const live = run.sessionId ? liveSessionName ?? "" : "";
+  if (live) return { name: live, isIdentifier: false };
+  const captured = run.sessionName ?? "";
+  if (captured) return { name: captured, isIdentifier: false };
+  return { name: run.noteKey, isIdentifier: true };
+}
+
+/**
+ * The single argument-free action a parked run's state actually takes, or `null`.
+ *
+ * A descriptor rather than a click handler so the decision is testable without rendering,
+ * and so the Line's Review drawer and any later batch surface cannot disagree about which
+ * runs may be dismissed.
+ *
+ * Two rules decide what is here, and both are narrow on purpose:
+ *
+ *  1. **The route must need nothing but a run id.** That is what keeps `Reattach` out (it
+ *     needs a session id, which means a picker), `Resolve delivery` out (a delivery id and a
+ *     choice) and `Disable a reviewer` out (a node id). A triage row has no room for a form,
+ *     and a control that opens one is the run page wearing a disguise.
+ *  2. **The SUMMARY must prove the daemon will accept it.** A button that always answers 409
+ *     is worse than no button, so each guard below mirrors the manager's own refusals rather
+ *     than the run page's - the run page reads run DETAIL, which a fleet-wide summary does
+ *     not carry.
+ */
+export interface RunRemedy {
+  /**
+   * Stable, and doubles as the `RunActionId` the action store keys pending state and request
+   * ids by - so it is ONE ID PER INTENT, never one per surface.
+   */
+  kind: "dismiss" | "retry" | "resubmit" | "restart-full";
+  label: string;
+  tooltip: string;
+  /** The POST path, run id already interpolated. */
+  path: string;
+  /** Everything the route needs beyond `requestId`. Empty for three of the four. */
+  body: Record<string, string>;
+  /** `null` fires immediately; anything destructive confirms first. */
+  confirm: WorkflowConfirmDescriptor | null;
+}
+
+const RESTART_FULL_PHRASE = "RESTART FULL WORKFLOW";
+
+export function runRemedy(
+  run: WorkflowRunSummary,
+  /**
+   * What to call this run in a confirmation. Defaults to the summary-only name so the
+   * signature stays callable with a summary alone; a surface that resolved a live session
+   * name should pass it, or the dialog and the row it opened from would disagree.
+   */
+  name: string = run.sessionName || run.noteKey,
+): RunRemedy | null {
+  const runPath = (action: string): string =>
+    `/api/workflow-runs/${encodeURIComponent(run.id)}/${action}`;
+
+  // Reattached and parked. `manager.resubmit` accepts an attached, waiting run with budget
+  // left that nobody else claimed; `sessionId` is the summary's proof the binding is still
+  // attached, since orphaning is what nulls it.
+  if (run.status === "waiting_for_session" && run.phase === "reattached_resubmit_required") {
+    if (!run.sessionId || run.externalSource || run.round > run.maxRepairRounds) return null;
+    return {
+      kind: "resubmit",
+      label: "Resubmit",
+      tooltip: "Open the next repair round in the session this binding was reattached to",
+      path: runPath("resubmit"),
+      body: {},
+      confirm: null,
+    };
+  }
+
+  // The one state `restart-full` genuinely accepts. Its other arm - an Inspector-only repair
+  // still in flight - is `latest.mode`, which lives on run detail; this arm is a status, so
+  // the summary can prove it on its own. Both of the manager's numeric refusals are checked
+  // here too, which is why a run out of rounds is NOT offered a restart: `restartFull`
+  // refuses when `round > maxRepairRounds`, and that inequality is the definition of the
+  // `round_limit` block, so the button could never once have succeeded there.
+  if (run.status === "waiting_for_new_head" && run.round <= run.maxRepairRounds) {
+    return {
+      kind: "restart-full",
+      // The ellipsis is the promise that a dialog follows. The daemon demands the phrase
+      // itself (`manager.restartFull`), so this is not a confirmation the drawer chose.
+      label: "Restart…",
+      tooltip: "Abandon this Inspector-only repair and rerun every Persona from fresh evidence",
+      path: runPath("restart-full"),
+      body: { confirmation: RESTART_FULL_PHRASE },
+      confirm: {
+        title: "Restart the full workflow",
+        body: "This abandons the Inspector-only repair and reruns every Persona against"
+          + " freshly captured evidence. The audited repair submissions stay in history.",
+        confirmLabel: "Restart full workflow",
+        confirmHint: "Abandons the Inspector-only repair and reruns every Persona",
+        danger: true,
+        requirePhrase: RESTART_FULL_PHRASE,
+      },
+    };
+  }
+
+  if (run.status !== "blocked") return null;
+
+  // `manager.retry` is available for exactly this phase, and the optional `nodeAttemptId` is
+  // omitted: it comes off run detail's attempts, and leaving it out makes the daemon pick the
+  // newest errored attempt itself - which is the one the run page's own default picks too.
+  if (run.phase === "infrastructure_error") {
+    return {
+      kind: "retry",
+      label: "Retry",
+      tooltip: "Run the failed provider call again from where it stopped",
+      path: runPath("retry"),
+      body: {},
+      confirm: null,
+    };
+  }
+
+  // The two blocks nothing argument-free revives. `session_disappeared` needs a Reattach,
+  // which needs a session picker; `round_limit` needs a bigger repair budget, which is a
+  // binding edit. Both are a click away through "Open run" - so what the drawer offers is
+  // the other honest move: stop counting a run that is never going to move again.
+  if (run.phase === "session_disappeared" || run.phase === "round_limit") {
+    return {
+      kind: "dismiss",
+      label: "Dismiss",
+      tooltip: "Stop this run - it will not resume",
+      path: runPath("cancel"),
+      body: {},
+      confirm: {
+        title: "Cancel this run",
+        body: `Stop ${run.workflowName} v${run.workflowVersion} on ${name}?`
+          + " It will not resume, and its evidence and verdicts stay in history.",
+        confirmLabel: "Cancel run",
+        confirmHint: "Stops the run for good",
+        danger: true,
+      },
+    };
+  }
+
+  // Everything else - Inspector findings, a closed pull request, an unresolved delivery -
+  // is blocked on a DECISION, and the material for that decision is the run page's. The row
+  // still says why; it just does not pretend one button settles it.
+  return null;
 }

@@ -39,6 +39,14 @@ export function LineDrawer({
   attention = "",
   /** Header controls, right-aligned before the ✕. Each body supplies its own. */
   actions = null,
+  /**
+   * One line between the header and the rows, for a drawer that can now FAIL at something.
+   *
+   * Outside the capped body on purpose: the body scrolls, and an error rendered inside it
+   * would be scrolled off by the very list the failed action was taken from. Optional, so
+   * the two drawers that only ever read pass nothing and render nothing.
+   */
+  notice = null,
   onClose,
   children,
 }: {
@@ -46,6 +54,7 @@ export function LineDrawer({
   count: string;
   attention?: string;
   actions?: ReactNode;
+  notice?: ReactNode;
   onClose: () => void;
   children: ReactNode;
 }): React.JSX.Element {
@@ -98,6 +107,7 @@ export function LineDrawer({
           </button>
         </Tooltip>
       </header>
+      {notice}
       {/* The cap and the scrollbar are this element's, in the stylesheet. Bodies render rows
           and never a height. */}
       <div className="line-drawer-body">{children}</div>

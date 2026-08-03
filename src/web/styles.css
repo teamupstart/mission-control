@@ -114,6 +114,14 @@
 .workflow-blocked,
 .workflow-failed { color: var(--danger); }
 .workflow-passed { color: var(--idle); }
+/* A stage that never ran because the run died reads as ABSENT, not as failed: the attempts
+   were cancelled where they stood, and blaming the reviewers for a session that disappeared
+   underneath them is a different (and untrue) claim. */
+.workflow-stopped {
+  color: var(--exited);
+  border-color: var(--border-soft);
+  background: color-mix(in srgb, var(--exited) 7%, var(--panel));
+}
 
 /* Statuses with a reason are hoverable and keyboard-focusable without reading as actions. */
 .wf-status-explained {
@@ -2912,6 +2920,17 @@ body {
   color: var(--exited);
   border-color: color-mix(in oklab, #e5534b 55%, var(--border)) !important;
   background: color-mix(in oklab, #e5534b 12%, var(--panel-2)) !important;
+}
+/* The one move a stopped triage row offers, marked as the thing to do without being filled:
+   a solid button on every stalled row would out-shout the coloured edge that says which rows
+   are stalled in the first place. */
+.btn-remedy {
+  background: color-mix(in srgb, var(--attention) 12%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--attention) 45%, var(--border));
+  color: var(--attention);
+}
+.btn-remedy:hover:not(:disabled) {
+  border-color: var(--attention) !important;
 }
 .btn-danger {
   color: #fff;
@@ -14721,6 +14740,17 @@ button.sc-row:focus-visible {
   padding: 0;
   list-style: none;
 }
+/* A failed remedy, said between the header and the rows rather than inside them. Outside the
+   capped body because the body scrolls: an alert in there is scrolled away by the same list
+   the action was taken from. */
+.line-drawer-alert {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger);
+  font-size: 12px;
+}
 .line-drawer-empty {
   margin: 0;
   padding: 16px;
@@ -14748,11 +14778,19 @@ button.sc-row:focus-visible {
 .line-drawer-rows > li.is-waiting {
   box-shadow: inset 2px 0 0 var(--attention);
 }
+/* Red for a run that is STOPPED and will not move on its own, amber for one that is your
+   turn. They used to share amber, because the predicate that counts "waiting on you" is true
+   of both - and on a fleet where thirty-one runs are blocked, a colour that means either
+   thing means neither. */
+.line-drawer-rows > li.is-blocked {
+  box-shadow: inset 2px 0 0 var(--danger);
+}
 
 /* Wide enough for the line that identifies the row - "No-Mistakes Review v4 · round 2/3" is
    33 mono characters, and at 190px it ellipsized on EVERY row rather than on a long one. The
    width came out of the chip rail, which was mostly empty space between the last chip and
-   the state column. Fixed rather than flexible so the four columns line up down the panel. */
+   the state column. Fixed rather than flexible so the four columns line up down the panel.
+   Review overrides it below; Decide and Intake still want exactly this. */
 .line-run-who,
 .line-ens-who,
 .line-intake-who {
@@ -14763,10 +14801,29 @@ button.sc-row:focus-visible {
   flex-direction: column;
   gap: 2px;
 }
+/* The Review row alone goes wider, and only now that its bold line is a real title. 240px was
+   sized when it held a conversation GUID, which ellipsizes at any width; the binding titles
+   that replaced it ("Improve Foreman Context and Table Scrolling") are 46 characters of
+   proportional text and deserve the room. Taken from the chip rail, which is the same slack
+   the 240px came out of. */
+.line-run-who {
+  width: 340px;
+}
 .line-run-who strong,
 .line-ens-who strong,
 .line-intake-who strong {
   font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The third fallback, when there is no live session name and the binding captured none. Mono
+   and dim so it reads as the identifier it is - a bold GUID in the title slot is what the
+   three-step resolution above exists to stop looking normal. */
+.line-run-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -14835,6 +14892,23 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 190px held "Blocked". It does not hold "Blocked · out of Inspector rounds" (32 mono
+   characters, ~199px) or "Waiting for the session · reattached" (35, ~218px), and this column
+   is now the most load-bearing text on a stopped row - a cause that ellipsizes into "Blocked ·
+   out of Ins…" is the complaint this work exists to fix, wearing a longer coat. Sized to the
+   longest CAUSE and not to the longest sentence: the optional tails this line can also carry
+   (who is reviewing, how many deliveries are unconfirmed) have always ellipsized and should,
+   because they are the part a reader scans past. Also taken from the chip rail. */
+.line-run-state {
+  width: 240px;
+}
+/* The cause carries the row's tone, because it is the sentence a reader is scanning for. */
+.line-run-state.is-blocked {
+  color: color-mix(in srgb, var(--danger) 82%, var(--fg));
+}
+.line-run-state.is-waiting {
+  color: var(--attention);
+}
 .line-intake-state {
   flex: 1;
   width: auto;
@@ -14861,6 +14935,16 @@ span.line-run-prov {
   flex: none;
   display: flex;
   gap: 6px;
+}
+/* Reserved whether or not this row has a remedy, and right-aligned inside the reservation.
+   Review is the one drawer whose rows carry a DIFFERENT number of controls - only a stopped
+   run gets a remedy - and without a floor the two-button rows widen this column and shove the
+   state text 80px left of the state text on the row above it. The column that says why a run
+   stopped has to be a column; a ragged left edge down thirty rows is the reader scanning for
+   the sentence instead of reading it. */
+.line-run-ops {
+  min-width: 170px;
+  justify-content: flex-end;
 }
 .line-run-ops .btn,
 .line-ens-ops .btn,

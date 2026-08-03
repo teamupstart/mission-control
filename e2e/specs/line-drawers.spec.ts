@@ -305,36 +305,46 @@ test("a task-source read that fails says so, instead of reporting an empty intak
   await expect(row.getByRole("button", { name: "Settings" })).toBeVisible();
 });
 
-test("the Review drawer reads a live run and escalates to it at #/runs/:id", async ({
-  dashboard,
-  daemon,
-}) => {
-  // A real run, held in `waiting_for_session` by a Persona with a known opinion - the same
-  // deterministic seeding `workflow-run-disable.spec.ts` uses, and the reason the fake
-  // answers `E2E_FAIL_VERDICT` at all.
+interface SeededRun {
+  runId: string;
+  sessionId: string;
+  /** The title the BINDING captured, which is what a Review row must print. */
+  sessionName: string;
+  /** The conversation GUID, which is what a Review row must not print in its place. */
+  noteKey: string;
+}
+
+/**
+ * One real run, held in `waiting_for_session` by a Persona with a known opinion.
+ *
+ * The same deterministic seeding `workflow-run-disable.spec.ts` uses, and the reason the fake
+ * answers `E2E_FAIL_VERDICT` at all. The binding's own two identity fields come back with it,
+ * because reading them from the daemon is what stops the row assertions from being a
+ * restatement of the fixture.
+ */
+async function seedReviewRun(
+  dashboard: Page,
+  daemon: DaemonHandle,
+  intent: string,
+  name: string,
+): Promise<SeededRun> {
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await dashboard.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill("hold a session for the Review drawer");
+  await dialog.getByPlaceholder("What should this agent do?").fill(intent);
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  let sessionId = "";
-  await expect.poll(async () => {
-    const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
-    const live = sessions.find((session) => session.state !== "exited");
-    sessionId = live?.id ?? "";
-    return live?.state ?? "";
-  }).toBe("idle");
+  const sessionId = await waitForIdleSession(daemon);
 
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
-    name: "Strict reviewer",
+    name: `Strict reviewer ${name}`,
     guidanceMarkdown: "# Strict reviewer\n\nE2E_FAIL_VERDICT",
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "Drawer review",
+    name,
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },
@@ -353,20 +363,38 @@ test("the Review drawer reads a live run and escalates to it at #/runs/:id", asy
     `/api/workflows/${workflow.workflow.id}/publish`,
     { expectedDraftRevision: 1 },
   );
-  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
-    workflowVersionId: published.version.id,
-    sessionId,
-    deliveryMode: "preview",
-  });
+  const binding = await api<{ id: string; sessionName: string; noteKey: string }>(
+    daemon,
+    "/api/workflow-bindings",
+    { workflowVersionId: published.version.id, sessionId, deliveryMode: "preview" },
+  );
   const submitted = await api<{ run: { id: string } }>(
     daemon,
     `/api/workflow-bindings/${binding.id}/submit`,
-    { requestId: "e2e-line-drawer" },
+    { requestId: `e2e-line-drawer-${name}` },
   );
   const runId = submitted.run.id;
   await expect.poll(async () =>
     (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
   { timeout: 60_000 }).toBe("waiting_for_session");
+  return {
+    runId,
+    sessionId,
+    sessionName: binding.sessionName,
+    noteKey: binding.noteKey,
+  };
+}
+
+test("the Review drawer reads a live run and escalates to it at #/runs/:id", async ({
+  dashboard,
+  daemon,
+}) => {
+  const { runId } = await seedReviewRun(
+    dashboard,
+    daemon,
+    "hold a session for the Review drawer",
+    "Drawer review",
+  );
 
   await stage(dashboard, "Review").click();
   const review = drawer(dashboard, "Review");
@@ -395,6 +423,139 @@ test("the Review drawer reads a live run and escalates to it at #/runs/:id", asy
   await stage(dashboard, "Review").click();
   await dashboard.getByRole("button", { name: /^All runs/ }).click();
   await expect(dashboard).toHaveURL(/#\/runs$/);
+});
+
+test("a run whose session was removed says who it is, why it stopped, and dismisses from the row", async ({
+  dashboard,
+  daemon,
+}) => {
+  const seeded = await seedReviewRun(
+    dashboard,
+    daemon,
+    "hold a session that is about to be killed",
+    "Orphan review",
+  );
+  // The fixture has to be able to fail, or the assertions below are decoration: a title that
+  // was never captured, or a note key that happened to equal it, would let a drawer printing
+  // GUIDs pass this spec.
+  expect(seeded.sessionName.length).toBeGreaterThan(0);
+  expect(seeded.sessionName).not.toBe(seeded.noteKey);
+
+  // The state under test cannot be seeded by writing SQLite: run summaries are served from an
+  // in-memory map on the Registry rather than re-read per request, so a direct UPDATE never
+  // reaches the browser. The daemon has to do it - kill the session and let `session_remove`
+  // reach `orphanBinding`, which is the exact path all 31 blocked runs on the real fleet took.
+  await api(daemon, `/api/sessions/${seeded.sessionId}/kill`, {});
+  // `EXIT_LINGER_MS` is a hardcoded 8s between the session exiting and `session_remove`
+  // firing, and it is not env-tunable - so this poll gets its own explicit budget rather than
+  // the 20s `expect` default.
+  await expect.poll(async () => {
+    const detail = await api<{ run: { status: string; currentPhase: string } }>(
+      daemon,
+      `/api/workflow-runs/${seeded.runId}`,
+    );
+    return `${detail.run.status}:${detail.run.currentPhase}`;
+  }, { timeout: 60_000 }).toBe("blocked:session_disappeared");
+
+  // A SECOND run, still live, so the drawer holds one row with a remedy and one without. That
+  // mix is the whole shape of the real fleet, and it is the only way to see whether the state
+  // column is still a column once some rows carry an extra control.
+  const live = await seedReviewRun(
+    dashboard,
+    daemon,
+    "hold a session that keeps running",
+    "Live review",
+  );
+
+  await stage(dashboard, "Review").click();
+  const review = drawer(dashboard, "Review");
+  await expect(review).toBeVisible();
+  await expect(review.locator(".line-run-row")).toHaveCount(2);
+  const row = review.locator(".line-run-row").filter({ hasText: seeded.sessionName });
+  const liveRow = review.locator(".line-run-row").filter({ hasText: live.sessionName });
+
+  // WHO. The binding's captured title, which outlived the session - and not the conversation
+  // GUID that used to be the second and only fallback.
+  await expect(row.locator("strong")).toHaveText(seeded.sessionName);
+  await expect(row).not.toContainText(seeded.noteKey);
+
+  // A run that is still working is offered nothing, and the two rows still line up. Only a
+  // laid-out browser can see this: the remedy makes the trailing column wider, and without a
+  // floor under it the row above and the row below print their cause at different indents.
+  await expect(liveRow.getByRole("button", { name: "Dismiss" })).toHaveCount(0);
+  const causeX = async (target: Locator): Promise<number> =>
+    (await target.locator(".line-run-state").boundingBox())!.x;
+  expect(await causeX(row)).toBe(await causeX(liveRow));
+
+  // WHY. The cause, beside the status word that used to be the whole sentence.
+  await expect(row.locator(".line-run-state")).toHaveText("Blocked · session gone");
+  // Stopped, not "your turn": the two used to share one amber edge.
+  await expect(row).toHaveClass(/is-blocked/);
+  await expect(row).not.toHaveClass(/is-waiting/);
+  // And the reviewer chip is untouched by the tone change, because this reviewer did not stop
+  // - it returned a failing verdict before the session died, and it keeps the blame it
+  // earned. ("Reviewers stopped" is the chip for attempts `orphanBinding` cancelled while
+  // they were still queued, which is a pure derivation over a summary and is pinned in
+  // `test/line-drawer.test.ts` rather than raced for here.)
+  await expect(row).toContainText("1 reviewer failed");
+  await shoot(dashboard, "review-blocked");
+
+  // WHAT TO DO. The remedy is reachable by role and name, and it confirms before it fires -
+  // this control can end a run from a panel one keystroke off the strip.
+  const dismiss = row.getByRole("button", { name: "Dismiss" });
+  await expect(dismiss).toBeVisible();
+  await dismiss.click();
+  const confirm = dashboard.getByRole("dialog", { name: "Cancel this run" });
+  await expect(confirm).toBeVisible();
+  // It names what is being stopped in the words the row used, not by id.
+  await expect(confirm).toContainText(seeded.sessionName);
+  await expect(confirm).toContainText("Orphan review v1");
+
+  // Escape backs out of the confirm and leaves the drawer - and the run - exactly as they
+  // were. The modal registers with the overlay stack, which is the only reason one Escape
+  // peels one layer here.
+  await dashboard.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await expect(review).toBeVisible();
+  await expect(row).toBeVisible();
+
+  // A drawer that can act has to be able to say it failed, and that is not assertable by
+  // hoping: break the route first, so the alert has something real to report. The row must
+  // survive - a triage surface that drops a row on a refused request has lied about the fleet.
+  await dashboard.route(`**/api/workflow-runs/${seeded.runId}/cancel`, (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: '{"error":"The run changed before it could be cancelled"}',
+    }));
+  await dismiss.click();
+  await dashboard.getByRole("button", { name: "Cancel run" }).click();
+  const alert = review.getByRole("alert");
+  await expect(alert).toContainText("The run changed before it could be cancelled");
+  await expect(row).toBeVisible();
+  // Outside the capped, scrolling body - an error the list can scroll away from is an error
+  // nobody reads.
+  await expect(alert).not.toHaveClass(/line-drawer-body/);
+  await expect(review.locator(".line-drawer-body")).not.toContainText(
+    "The run changed before it could be cancelled",
+  );
+
+  await dashboard.unroute(`**/api/workflow-runs/${seeded.runId}/cancel`);
+  await dismiss.click();
+  await dashboard.getByRole("button", { name: "Cancel run" }).click();
+
+  // The round trip the drawer never used to make: a POST to a run route, the daemon's own
+  // publish, and the row leaving over SSE with no refetch and no reload. The live run stays -
+  // the remedy acted on the run it was on and on nothing else.
+  await expect(row).toHaveCount(0);
+  await expect(liveRow).toBeVisible();
+  await expect(review.locator(".line-drawer-count")).toContainText("1 run live");
+  await expect.poll(async () =>
+    (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${seeded.runId}`)).run.status,
+  ).toBe("cancelled");
+  expect(
+    (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${live.runId}`)).run.status,
+  ).toBe("waiting_for_session");
 });
 
 test("every legacy #/workflows deep link redirects, and the Workflows page is gone", async ({

@@ -14,6 +14,9 @@ import {
 } from "../src/web/lib/line-drawer.ts";
 import { LINE_STAGE_TARGETS, lineStageHasDrawer } from "../src/web/lib/line-targets.ts";
 import {
+  blockedPhaseClause,
+  runRemedy,
+  runRowIdentity,
   runTriageRound,
   runTriageSentence,
   runTriageSteps,
@@ -212,33 +215,203 @@ test("the round line prints a budget only once one has been spent", () => {
   assert.equal(runTriageRound(run({ round: 1, maxRepairRounds: 5 })), "round 1");
 });
 
-test("the Review drawer lists live runs, marks the ones stopped on a person, and orders by both", () => {
+test("the Review drawer lists live runs, tones stopped apart from your turn, and orders by both", () => {
   const html = reviewDrawer([
     run({ id: "quiet", noteKey: "quiet-note", status: "running", updatedAt: 900 }),
     run({ id: "stuck", noteKey: "stuck-note", status: "blocked", updatedAt: 100 }),
+    run({
+      id: "yours",
+      noteKey: "yours-note",
+      status: "waiting_for_action",
+      actionWait: "needs_operator",
+      activePersonaNames: [],
+      updatedAt: 50,
+    }),
     run({ id: "done", noteKey: "done-note", status: "completed", updatedAt: 999 }),
   ]);
   // Terminal runs are not "in flight" and the header counts what it lists.
-  assert.match(html, /2 runs live/);
+  assert.match(html, /3 runs live/);
   assert.doesNotMatch(html, /done-note/);
-  // Amber first even though it is the oldest: the drawer answers "is any of this mine".
+  // Your turn first even though it is the oldest of the three, then the stopped one, then the
+  // one that is nobody's problem yet. The drawer answers "is any of this mine" before it
+  // answers "is any of this dead".
+  assert.ok(
+    html.indexOf("yours-note") < html.indexOf("stuck-note"),
+    "a run waiting on a decision sorts above one that has already stopped",
+  );
   assert.ok(
     html.indexOf("stuck-note") < html.indexOf("quiet-note"),
-    "a run waiting on a person sorts above a newer one that is not",
+    "a stopped run sorts above a newer one that is running fine",
   );
-  assert.match(html, /line-run-row is-waiting[\s\S]*?stuck-note/);
-  assert.match(html, /1 waiting on you/);
+  // Two edges, two meanings. Amber used to carry both, which on a fleet of blocked runs is a
+  // colour that means nothing.
+  assert.match(html, /line-run-row is-waiting[\s\S]*?yours-note/);
+  assert.match(html, /line-run-row is-blocked[\s\S]*?stuck-note/);
+  // The header's count still reads the shared predicate, which is true of both tiers - the
+  // presentation split above must not have changed what "waiting on you" counts.
+  assert.match(html, /2 waiting on you/);
 });
 
-test("a run's row names the live session, and falls back to the durable conversation key", () => {
-  const named = reviewDrawer(
-    [run({ sessionId: "s1", noteKey: "note-key" })],
-    [mkSession({ id: "s1", name: "pane-fix" })],
+test("a run's row is named in three steps, and the GUID is the last of them", () => {
+  const durable = { sessionName: "Fix Busy State for Diff Link" };
+  // 1. The live session, so a renamed session reads under its current name.
+  assert.match(
+    reviewDrawer(
+      [run({ sessionId: "s1", noteKey: "note-key", ...durable })],
+      [mkSession({ id: "s1", name: "pane-fix" })],
+    ),
+    /<strong>pane-fix<\/strong>/,
   );
-  assert.match(named, /<strong>pane-fix<\/strong>/);
-  // A run outlives the session it reviewed. `noteKey` is the identity the run page itself
-  // falls back to, so this is not a degraded case - it is the durable one.
-  assert.match(reviewDrawer([run({ sessionId: null, noteKey: "note-key" })]), /note-key/);
+  // 2. The binding's captured title, which is the step that was missing. A run outlives the
+  // session it reviewed, so this is the ONLY human name a blocked run has left - and falling
+  // past it to the conversation key is why the drawer used to show thirty GUIDs.
+  const orphaned = reviewDrawer([run({
+    sessionId: null,
+    noteKey: "claude:9f1c-4d2a",
+    status: "blocked",
+    phase: "session_disappeared",
+    activePersonaNames: [],
+    ...durable,
+  })]);
+  assert.match(orphaned, /<strong>Fix Busy State for Diff Link<\/strong>/);
+  assert.doesNotMatch(orphaned, /9f1c-4d2a/);
+  // 3. The conversation key, only when there is genuinely nothing else - and drawn as the
+  // identifier it is rather than bold in the slot a title goes in.
+  const nameless = reviewDrawer([run({ sessionId: null, noteKey: "claude:9f1c-4d2a" })]);
+  assert.match(nameless, /<span class="line-run-id">claude:9f1c-4d2a<\/span>/);
+  assert.doesNotMatch(nameless, /<strong>claude:9f1c-4d2a<\/strong>/);
+
+  // And the same three steps, decided without rendering anything.
+  const id = { sessionId: "s1", sessionName: "captured", noteKey: "note" };
+  assert.deepEqual(runRowIdentity(id, "live"), { name: "live", isIdentifier: false });
+  assert.deepEqual(runRowIdentity(id, null), { name: "captured", isIdentifier: false });
+  assert.deepEqual(
+    runRowIdentity({ ...id, sessionName: undefined }, null),
+    { name: "note", isIdentifier: true },
+  );
+  // A live name is only reachable through a session id. A run whose binding was orphaned has
+  // none, so a stale entry under some other key must not name it.
+  assert.deepEqual(
+    runRowIdentity({ ...id, sessionId: null }, "live"),
+    { name: "captured", isIdentifier: false },
+  );
+});
+
+test("a stopped run's sentence states its cause, and an unmapped cause is still readable", () => {
+  assert.equal(blockedPhaseClause("session_disappeared"), "session gone");
+  assert.equal(blockedPhaseClause("round_limit"), "out of rounds");
+  assert.equal(blockedPhaseClause("infrastructure_error"), "provider call failed");
+  // `phase` is a free string, not a union - `orphanBinding` and every `setRunState` caller
+  // write their own code into it. An unmapped one has to degrade to readable text, using the
+  // same fallback `alerts.ts` prints reasons with, or two surfaces disagree about one field.
+  assert.equal(blockedPhaseClause("some_future_reason"), "some future reason");
+
+  const stopped = run({ status: "blocked", phase: "session_disappeared", activePersonaNames: [] });
+  assert.equal(runTriageSentence(stopped), "Blocked · session gone");
+  // The one parked state that is not a block: reattach leaves the run waiting deliberately,
+  // because re-sending into a fresh pane unasked is what the delivery model refuses to do.
+  assert.equal(
+    runTriageSentence(run({
+      status: "waiting_for_session",
+      phase: "reattached_resubmit_required",
+      activePersonaNames: [],
+    })),
+    "Waiting for the session · reattached",
+  );
+  // Every other status is byte-for-byte what it was: a run that is still moving has no cause
+  // to state, and a reason printed on every row is furniture rather than information.
+  assert.equal(
+    runTriageSentence(run({ status: "waiting_for_pr", activePersonaNames: [] })),
+    "Waiting for a pull request",
+  );
+});
+
+test("an orphaned run's reviewers read as stopped, not as a queue that is about to move", () => {
+  // `orphanBinding` cancels every queued and retrying attempt on its way past, which is
+  // exactly why `activePersonaNames` is empty here. Amber "Reviewers" on that row promised a
+  // queue that will never move; grey says what happened.
+  const chip = runTriageSteps(run({
+    status: "blocked",
+    phase: "session_disappeared",
+    activePersonaNames: [],
+  }))[1]!.status;
+  assert.deepEqual([chip.tone, chip.label], ["stopped", "Reviewers stopped"]);
+  // A reviewer that genuinely returned a failing verdict still gets the blame it earned.
+  assert.equal(
+    runTriageSteps(run({ status: "blocked", failedPersonaCount: 1, activePersonaNames: [] }))[1]!
+      .status.label,
+    "1 reviewer failed",
+  );
+  // And a live run's waiting chip is untouched.
+  assert.equal(
+    runTriageSteps(run({ status: "running", activePersonaNames: [] }))[1]!.status.label,
+    "Reviewers",
+  );
+});
+
+test("a remedy is offered only where the summary proves the daemon would accept it", () => {
+  const blocked = (phase: string, over = {}) =>
+    runRemedy(run({ status: "blocked", phase, activePersonaNames: [], ...over }));
+
+  // The two blocks nothing argument-free revives: reattaching needs a session picker and a
+  // bigger repair budget is a binding edit, so what the row offers is the other honest move.
+  assert.equal(blocked("session_disappeared")?.kind, "dismiss");
+  assert.equal(blocked("round_limit")?.kind, "dismiss");
+  assert.match(blocked("session_disappeared")!.path, /\/cancel$/);
+  // Destructive, so it confirms - and it confirms in the run page's own words rather than in
+  // a second wording for the same act.
+  assert.equal(blocked("session_disappeared")!.confirm?.title, "Cancel this run");
+  assert.equal(blocked("session_disappeared")!.confirm?.danger, true);
+  assert.match(
+    runRemedy(run({ status: "blocked", phase: "round_limit" }), "Durable task completion")!
+      .confirm!.body,
+    /Durable task completion/,
+  );
+
+  // Retry is available for exactly the phase `manager.retry` accepts, and it sends no
+  // `nodeAttemptId` - that comes off run detail, and omitting it makes the daemon pick the
+  // newest errored attempt, which is the run page's own default.
+  const retry = blocked("infrastructure_error");
+  assert.equal(retry?.kind, "retry");
+  assert.deepEqual(retry?.body, {});
+  assert.equal(retry?.confirm, null);
+
+  // Blocked on a DECISION is not blocked on a button. The row still says why.
+  for (const phase of ["inspector_findings", "delivery_uncertain", "inspector_pr_closed"]) {
+    assert.equal(blocked(phase), null, `${phase} has no argument-free remedy`);
+  }
+
+  // Reattached and parked: resubmit, and only while the summary proves the binding is still
+  // attached, the budget is unspent, and nobody else owns the round.
+  const reattached = (over = {}) => runRemedy(run({
+    status: "waiting_for_session",
+    phase: "reattached_resubmit_required",
+    sessionId: "s1",
+    round: 2,
+    maxRepairRounds: 5,
+    ...over,
+  }));
+  assert.equal(reattached()?.kind, "resubmit");
+  assert.equal(reattached({ sessionId: null }), null);
+  assert.equal(reattached({ round: 6 }), null);
+  assert.equal(
+    reattached({ externalSource: { kind: "ensemble", sourceId: "e1", createdAt: 1 } }),
+    null,
+  );
+
+  // Restart is offered for the one state `manager.restartFull` genuinely accepts from a
+  // summary. It is deliberately NOT offered on a round-limit block: `restartFull` refuses
+  // when `round > maxRepairRounds`, and that inequality IS the definition of that block, so
+  // the button could never once have succeeded there.
+  const restart = runRemedy(run({ status: "waiting_for_new_head", round: 2, maxRepairRounds: 5 }));
+  assert.equal(restart?.kind, "restart-full");
+  assert.equal(restart?.confirm?.requirePhrase, "RESTART FULL WORKFLOW");
+  assert.deepEqual(restart?.body, { confirmation: "RESTART FULL WORKFLOW" });
+  assert.match(restart!.label, /…$/, "the ellipsis is the promise that a dialog follows");
+  assert.equal(runRemedy(run({ status: "waiting_for_new_head", round: 6, maxRepairRounds: 5 })), null);
+
+  // A run that is simply working owes nobody anything.
+  assert.equal(runRemedy(run({ status: "running" })), null);
 });
 
 test("an ensemble handoff wears its provenance, and an operator's own run does not", () => {
@@ -255,15 +428,50 @@ test("an ensemble handoff wears its provenance, and an operator's own run does n
   assert.doesNotMatch(reviewDrawer([run()]), /line-run-prov/);
 });
 
-test("the Review drawer offers escalation and never a mutation", () => {
-  const html = reviewDrawer([run()]);
+test("the Review drawer acts only where the summary proves a run is stopped", () => {
+  // THE REVISED RULE, and this is the test that codifies it. It replaces "never a mutation",
+  // which was written when every row was a live run making progress and the honest answer to
+  // "what do I do about this" was "read it on the run page". That does not survive thirty
+  // rows whose sessions were removed: a triage surface that can only describe a dead run is
+  // not triage. What is asserted now is the BOUNDARY, because the boundary is the point.
+  const escalation = reviewDrawer([run()]);
   for (const control of ["Bind a workflow…", "All runs", "Open run", "Close the Review drawer"]) {
-    assert.ok(html.includes(control), `the drawer should offer ${control}`);
+    assert.ok(escalation.includes(control), `the drawer should offer ${control}`);
   }
-  // Everything that CHANGES a run stays on the run page. A drawer that grew one of these
-  // would be a second, smaller run controller with none of the confirmations.
-  for (const mutation of ["Recheck", "Reset", "Cancel run", "Retry", "Disable"]) {
-    assert.ok(!html.includes(mutation), `the drawer must not offer ${mutation}`);
+  // A run that is working is offered nothing, so no row grew a control by default.
+  for (const mutation of ["Dismiss", "Retry", "Resubmit", "Restart"]) {
+    assert.ok(!escalation.includes(mutation), `a live run must not be offered ${mutation}`);
+  }
+
+  const stopped = reviewDrawer([
+    run({
+      id: "gone",
+      sessionId: null,
+      sessionName: "Fix Busy State for Diff Link",
+      status: "blocked",
+      phase: "session_disappeared",
+      activePersonaNames: [],
+    }),
+    run({
+      id: "provider",
+      sessionName: "Add E Keybinding",
+      status: "blocked",
+      phase: "infrastructure_error",
+      activePersonaNames: [],
+    }),
+  ]);
+  assert.match(stopped, /class="btn btn-remedy"[^>]*>Dismiss</);
+  assert.match(stopped, /class="btn btn-remedy"[^>]*>Retry</);
+  // The remedy leads and "Open run" follows it: reading the whole run is the slower answer
+  // once a faster correct one is on the row.
+  assert.ok(stopped.indexOf(">Dismiss<") < stopped.indexOf(">Open run<"));
+
+  // The picker-shaped actions stay out, and they stay out for the reason they always did -
+  // each needs an argument the summary does not carry and a form the row has no room for.
+  // An assertion that the drawer still REFUSES these is what stops the next change eroding
+  // the rule into "the run page, but smaller".
+  for (const excluded of ["Reattach", "Resolve", "Disable", "Recheck", "Mark delivered"]) {
+    assert.ok(!stopped.includes(excluded), `the drawer must not offer ${excluded}`);
   }
 });
 

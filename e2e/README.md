@@ -280,7 +280,7 @@ OBSERVED the strip renders once, outside <header class="topbar">, so --topbar-h 
 
 ### The Line's drawers
 
-[`docs/evidence/line-drawers/`](../docs/evidence/line-drawers/) carries four frames and the
+[`docs/evidence/line-drawers/`](../docs/evidence/line-drawers/) carries five frames and the
 run's own stdout, written by `specs/line-drawers.spec.ts` under the same `MC_E2E_EVIDENCE`
 flag. The frames answer what only a picture can: `review-open.png` is a live run's ladder with
 the session card **below it at full size**, `board-pushed-down.png` and `board-returned.png`
@@ -288,7 +288,13 @@ are the same board with the drawer open and closed (the spec asserts the card's 
 identical in both; the pictures are what make that legible), and `intake-capped.png` is five
 missions in a panel showing three.
 
-Regenerate all five with:
+`review-blocked.png` is the fifth, and it is the one the Review row was rebuilt for: a run
+whose session was removed, named by the title its binding captured rather than by a
+conversation GUID, reading `Blocked · session gone` under a red leading edge, with `Dismiss`
+beside `Open run`. The live run under it carries no remedy and prints its cause at the **same
+indent** - the spec asserts that alignment in pixels, and the picture is what makes it legible.
+
+Regenerate all six with:
 
 ```sh
 set -o pipefail   # or the pipe below reports tee's success, not Playwright's
@@ -299,8 +305,8 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee docs/evidence/line-drawers/transcript.txt
 ```
 
-`--workers=1` keeps the five tests' output from interleaving, and the `tee` is the only thing
-that produces `transcript.txt` - without it you regenerate four files out of five.
+`--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
+that produces `transcript.txt` - without it you regenerate five files out of six.
 
 ### The everything-palette
 

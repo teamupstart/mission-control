@@ -123,7 +123,7 @@ type RunCursor = { updatedAt: number; id: string };
 // contributes only its identity and segment; attempts for the bounded result set are loaded
 // in one follow-up query instead of three reads per run.
 const WORKFLOW_RUN_SUMMARY_SELECT = `
-  SELECT r.*, b.note_key, b.session_id,
+  SELECT r.*, b.note_key, b.session_id, b.session_name,
          d.id AS workflow_id, d.name AS workflow_name, v.version AS workflow_version,
          COALESCE((
            SELECT MAX(s.round) FROM workflow_submissions s WHERE s.run_id = r.id
@@ -2660,6 +2660,14 @@ export class WorkflowStore {
         workflowVersion: Number(row.workflow_version ?? shipped?.version ?? 0),
         sessionId: typeof row.session_id === "string" ? row.session_id : null,
         noteKey: String(row.note_key),
+        // Spread rather than set, for the same reason `externalSource` below is: the binding
+        // coalesces an unnamed session to `''` on write, and an empty string on every
+        // summary of every run on every change is bytes bought for nothing. The value is the
+        // binding's own captured title, which OUTLIVES the session - a run whose session was
+        // removed has no other human name left.
+        ...(typeof row.session_name === "string" && row.session_name
+          ? { sessionName: row.session_name }
+          : {}),
         status: run.status,
         phase: run.currentPhase,
         // `MAX(s.round)` and never a count of submissions: a repair round may now hold

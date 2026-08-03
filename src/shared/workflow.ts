@@ -2113,6 +2113,21 @@ export interface WorkflowRunSummary {
   workflowVersion: number;
   sessionId: string | null;
   noteKey: string;
+  /**
+   * The human title the binding captured when it was created - "Fix Busy State for Diff Link".
+   *
+   * OPTIONAL and append-only, like every other optional field here: a summary written by an
+   * older daemon must still parse in a newer browser, and it is omitted rather than emitted
+   * as `""` so a binding with no captured title costs nothing on a payload that ships for
+   * every run in the fleet on every change.
+   *
+   * It matters because a RUN OUTLIVES THE SESSION IT REVIEWED. When the session goes,
+   * `orphanBinding` nulls `sessionId` and blocks the run, so a surface that names a row from
+   * the live session list has nothing left to name it with and falls through to `noteKey` -
+   * a raw conversation GUID. This field is the only human name that survives, and it is
+   * already durable on `workflow_bindings.session_name`; the summary just carries it now.
+   */
+  sessionName?: string;
   status: WorkflowRunStatus;
   phase: string;
   round: number;

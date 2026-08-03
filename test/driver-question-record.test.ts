@@ -442,6 +442,47 @@ test("a question re-presented after a first answer records BOTH rounds", async (
   ]);
 });
 
+test("a half-written record leaves no row at all, not one that half exists", async () => {
+  // Two writers land this row - `insertReview` for the columns it shares with a `create`,
+  // `updateReviewStatus` for the settle columns - and a failure between them used to commit
+  // the first without the second.
+  //
+  // What that left is worth stating exactly, because it is NOT a pending review:
+  // `insertReview` writes the status off the item and the item is already `answered`, so the
+  // orphan reads `answered` with a null `resolved_by` and null `selections`. Neither reader
+  // surfaces it - `loadPendingReviews` filters on `pending`, `loadHumanResolvedReviews`
+  // requires `resolved_by = 'human'` - so it is inert today, which is exactly why the
+  // assertion below is on the TABLE rather than on either of them. Its harmlessness is a
+  // property of two queries in another module, not of this write, and the first reader that
+  // asks for `status = 'answered'` without asking who answered inherits it.
+  //
+  // The second write is failed for real rather than mocked: `updateReviewStatus` serializes
+  // `selections`, and a BigInt is a value `JSON.stringify` refuses. That throws from exactly
+  // where a disk error would, and `decisions` still serializes, so the INSERT lands first -
+  // which is the ordering the hazard needs.
+  const { reviews, id } = seed(FORM);
+  assert.throws(() =>
+    reviews.record({
+      sessionId: id,
+      kind: "input",
+      title: "t",
+      body: "b",
+      decisions: [{ id: "q1", question: "Which linter?", options: [{ id: "q1o1", label: "biome" }] }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      selections: [{ decisionId: "q1", selected: [], other: 1n as any }],
+      response: "r",
+      resolvedBy: "human",
+      at: 1_700_000_000_000,
+    }),
+  );
+
+  const rows = openDb()
+    .prepare(`SELECT status, resolved_by FROM reviews WHERE session_id = ?`)
+    .all(id) as unknown as Array<{ status: string; resolved_by: string | null }>;
+  assert.deepEqual(rows, [], "the insert was rolled back with the update that failed");
+  assert.deepEqual(loadHumanResolvedReviews(id), [], "and no answer reached the conversation");
+});
+
 test("a refused answer records nothing, because nothing was answered", async () => {
   const { app, id } = seed(FORM);
   const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/submit-options`, {

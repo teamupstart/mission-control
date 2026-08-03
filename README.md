@@ -3490,7 +3490,8 @@ offers **Dismiss** and says which of the two it is - the alternative was a butto
 silently closed the note, which reads as having sent something. Foreman also re-checks the
 session before pinning a decision at all: a review takes up to a few minutes, and if the
 session moved on in that time the decision is filed in the **Foreman · N** history instead of
-waiting for a click on a question that has already closed.
+waiting for a click on a question that has already closed. Those decisions are recorded as
+**stale** rather than as skips - Foreman had an answer, and the clock beat it.
 
 Every decision is also **kept**, which the note alone never was - a note is one upserted row,
 so each write erased the last one and approving erased the words that had just been sent.
@@ -3640,20 +3641,51 @@ shadow mode adds a divergence line per session (`shadow cheap-over-eager (cheap=
 ### What Foreman has been deciding
 
 **Settings → Foreman** carries the fleet-wide **decisions ledger**: every prompt Foreman
-has faced, across every session, newest first - the session it happened on, the ask, what
-came of it, who decided, which tier decided, and how long ago. Each of these was already
-being recorded; until now the only way to read any of it was one session at a time,
-through that session's Foreman drawer, so there was no answer anywhere to *what has this
-thing actually been doing* - which is the question you open its settings to ask before
-giving it more rope. The count strip above the table filters it: **escalated**,
-**drafted**, **answered**, **skipped**. The last 100 decisions are shown, and episodes are
-kept for 30 days.
+has faced, across every session, newest first. Each of these was already being recorded;
+until now the only way to read any of it was one session at a time, through that session's
+Foreman drawer, so there was no answer anywhere to *what has this thing actually been
+doing* - which is the question you open its settings to ask before giving it more rope.
+The count strip above the table filters it: **escalated**, **drafted**, **answered**,
+**left alone**. The last 100 decisions are shown, and episodes are kept for 30 days, so the
+list reaches back only as far as the cap allows.
 
-The ledger is a **summary**, not the stored record: the daemon reduces each ask to the one
-line the table shows and sends only that, so the captured terminal screens - by far the
-largest thing in the table - never ride the 4-second poll. Open a session's Foreman drawer
-for the full question, the screen it was asked on, the reviewer's brief, and what was sent
-back.
+A row leads with **what the decision was for**, not with what was literally asked. The
+verbatim ask is not an identity - `Needs approval: Bash` and `running AskUserQuestion` cover
+most of a busy ledger between them - so Foreman's own one-line reading of the ask carries the
+row and the literal text sits under it as the recognition cue.
+
+Beside the outcome, each row says **why the tier ladder landed there**: `needs judgment`,
+`low confidence`, `human-only, risky`, `no recent turns`, `no menu row named`, `routine
+access`. The cheap tier has always computed this and only ever logged it; escalated *because
+the router was unsure* and escalated *because the ask looked destructive* are two different
+stories, and the ledger could previously tell only the word they share. Hover for the full
+sentence and the string that was recorded.
+
+**Outcome says what actually happened**, which is finer-grained than the four dispositions
+the tiles group by. `skipped` used to cover three unrelated events, and on a real ledger the
+majority of it was neither of the two you would guess:
+
+| Outcome | What it means |
+| --- | --- |
+| **answered** | A reply was delivered - by Foreman, or by you approving a draft. |
+| **drafted** | Foreman wrote a reply and is holding it for your confirmation. |
+| **escalated** | Handed to you, and nobody has answered it yet. |
+| **declined** | Foreman judged the call yours and left it alone. |
+| **stale** | Foreman *reached a verdict* and the session moved on before it could be delivered, so nothing was sent. A race, not a judgment - the verdict it reached is still on the record. |
+| **dismissed** | Foreman escalated it to you, and you closed it without answering. |
+
+The last three all file under the **left alone** tile, which is what they have in common:
+nobody ever answered them.
+
+**Open a row** for the whole decision - the ask verbatim, the child's screen as Foreman read
+it, the reviewer's brief and recommendation, and what was actually sent back, credited to
+whoever made the call. That is the same card the session drawer shows, fetched one decision
+at a time: the ledger itself ships a **summary**, with each ask reduced by the daemon to the
+one line the table shows, so the captured terminal screens - by far the largest thing in the
+table - never ride the 4-second poll.
+
+The rows scroll **inside** the table rather than running down the page, so the count strip
+stays reachable while you read the list it filters.
 
 The panel also states, in words, **whether Foreman is running at all**. A worker holds a
 lease and renews it; when nothing does, Foreman is enabled, set to whatever mode you chose,

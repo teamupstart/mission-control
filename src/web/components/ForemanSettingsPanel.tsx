@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ForemanState } from "../useForeman.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
+import { fetchForemanEpisode } from "../lib/api.ts";
 import { ModelField, ModelSuggestions } from "./ModelField.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
@@ -9,9 +11,10 @@ import type { ForemanConfigPatch } from "@shared/protocol.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
-import type { ForemanEpisodeSummary, NoteDisposition } from "@shared/types.ts";
+import type { ForemanEpisode, ForemanEpisodeSummary, NoteDisposition } from "@shared/types.ts";
 import type { ModelChoiceSpec } from "@shared/model-choice.ts";
-import { FOREMAN_EPISODE_LEDGER } from "@shared/foreman.ts";
+import { FOREMAN_EPISODE_LEDGER, episodeOutcome } from "@shared/foreman.ts";
+import type { EpisodeOutcome } from "@shared/foreman.ts";
 import { ago } from "./InspectorSettingsPanel.tsx";
 import {
   ConsoleCard,
@@ -86,6 +89,166 @@ export function episodeBucket(row: ForemanEpisodeSummary): EpisodeBucket {
 }
 
 /**
+ * What the row's Outcome cell SAYS, which is no longer the bucket it is filed under.
+ *
+ * The bucket above stays a bare disposition on purpose - four piles, and the question they
+ * answer is "does anyone still owe an answer here", which is the right axis for a filter
+ * and for a tally. The word printed in the cell is a different question: "what actually
+ * happened", and `skipped` was answering it for three unrelated events at once. See
+ * `episodeOutcome` for the split and the numbers behind it.
+ *
+ * Keeping them separate is what lets the tiles keep accounting for every row while the
+ * cells stop lying: `declined`, `stale` and `dismissed` all still file under `skipped`, so
+ * the strip's guarantee holds and clicking it still selects all three.
+ */
+const OUTCOME_LABEL: Record<EpisodeOutcome, string> = {
+  answered: "answered",
+  drafted: "drafted",
+  escalated: "escalated",
+  declined: "declined",
+  stale: "stale",
+  dismissed: "dismissed",
+};
+
+/**
+ * What each outcome MEANS, as the sentence a reader gets on hover.
+ *
+ * `stale` and `dismissed` carry the longest ones because they are the two the ledger has
+ * never been able to say at all, and both read as an accusation without their explanation:
+ * `stale` looks like Foreman failing when it is Foreman being beaten by the clock, and
+ * `dismissed` looks like Foreman declining when it is the human who did.
+ */
+const OUTCOME_HINT: Record<EpisodeOutcome, string> = {
+  answered: "A reply was delivered to the session.",
+  drafted: "Foreman wrote a reply and is holding it for your confirmation.",
+  escalated: "Foreman handed the decision to you, and nobody has answered it yet.",
+  declined: "Foreman judged this one yours to make, and left it alone.",
+  stale:
+    "Foreman reached a verdict and the session moved on before it could be delivered, so nothing was sent. A race, not a judgment - the decision it had reached is still on the record below.",
+  dismissed: "Foreman escalated this to you, and you closed it without answering.",
+};
+
+/**
+ * The ladder's own diagnosis, in words - `TriageOutcome.reason` as a reader can use it.
+ *
+ * TWO strings per reason, and the split is what makes the column fit. The cell gets a
+ * label short enough to survive its track and short enough to SCAN, which is the column's
+ * real use: a run of eight `low confidence` rows down a ledger is a threshold to tune, and
+ * that pattern is invisible if every cell is a different clipped sentence. The sentence
+ * itself moves to the hover, where it has no width to fit inside.
+ *
+ * The first cut put the sentences in the cell and rendered "the router said this n...",
+ * "the router was not c...", "a review, which Fore..." - a column added to say why,
+ * saying why up to about twenty characters.
+ *
+ * A partial map over an open vocabulary, and both halves of that are deliberate. Partial
+ * because one arm interpolates (`tier1-failed: <err>`) and no map can cover it; open
+ * because the fallback prints the raw reason rather than swallowing it, so a newer worker's
+ * diagnosis reaches the screen unlabelled instead of not at all.
+ */
+const TRIAGE_REASON: Record<string, { label: string; hint: string }> = {
+  "non-input-review": {
+    label: "a review",
+    hint: "The session posted a plan or diff review, and Foreman may not approve a review.",
+  },
+  "terminal-no-pane": {
+    label: "no screen",
+    hint: "The session was blocked with no terminal screen to read the ask from.",
+  },
+  "no-question": {
+    label: "nothing to answer",
+    hint: "The session needed you but posted no answerable question.",
+  },
+  "input-review-question-too-long": {
+    label: "ask too long",
+    hint: "The ask was longer than the router reads, so it went to the full review whole rather than being routed on a clipped copy.",
+  },
+  "needs-judgment": {
+    label: "needs judgment",
+    hint: "The router bucketed this as needing judgment, which it never supplies itself.",
+  },
+  "low-confidence": {
+    label: "low confidence",
+    hint: "The router was below the confidence floor, so it deferred rather than guess.",
+  },
+  "human-only-skip": {
+    label: "human-only",
+    hint: "Human-only, and with nothing worth surfacing - so it was left alone quietly.",
+  },
+  "human-only-escalate": {
+    label: "human-only",
+    hint: "The router bucketed this as yours to decide.",
+  },
+  "human-only-risky": {
+    label: "human-only, risky",
+    hint: "Human-only, and the ask matched the destructive denylist - so it was surfaced rather than left quiet.",
+  },
+  "access-risky-escalated": {
+    label: "risky access",
+    hint: "The router thought it routine and the destructive denylist disagreed, so it was handed to you with the drafted reply kept as a recommendation.",
+  },
+  "access-without-answer": {
+    label: "no reply drafted",
+    hint: "Bucketed as routine access, but the router produced no reply to send - so it did not guess.",
+  },
+  "no-transcript-context": {
+    label: "no recent turns",
+    hint: "There was no prose in the recent turns for the destructive-ask backstop to have read, so an auto-answer could not be trusted.",
+  },
+  "no-transcript-file": {
+    label: "no transcript",
+    hint: "The session had no resolvable transcript file at all, which is a different diagnosis from a window that came back empty.",
+  },
+  "no-window-boundary": {
+    label: "turns unplaceable",
+    hint: "The recent turns could not be placed in the session, so a clean scan over them was not evidence about this ask.",
+  },
+  "menu-needs-a-row": {
+    label: "no menu row named",
+    hint: "The answer named no row of the menu on screen, and the cheap tier cannot select one - so it went to the full review, which can.",
+  },
+  "routine-access": {
+    label: "routine access",
+    hint: "Bucketed as a routine access request with a reply to send.",
+  },
+  "tier1-unparseable": {
+    label: "router unreadable",
+    hint: "The router's answer failed validation, which is an honest diagnosis of a broken router rather than a considered deferral.",
+  },
+};
+
+/**
+ * The one line under the author that says WHY this row came out the way it did.
+ *
+ * Ordered by how specific the answer is, and it falls through rather than picking a
+ * favourite: the ladder's reason is the real diagnosis and wins wherever it exists, the
+ * classification is the reviewer's own bucketing and is the next best thing, and a row
+ * with neither says nothing rather than padding the column with a restatement of the
+ * outcome beside it.
+ *
+ * The hint always ends with the RECORDED string, so no label here can hide what was
+ * actually stored - which matters most for the reasons this map has no sentence for.
+ */
+export function episodeWhy(row: ForemanEpisodeSummary): { text: string; hint: string } | null {
+  if (row.triageReason) {
+    const known = TRIAGE_REASON[row.triageReason];
+    // An unmapped reason prints RAW - `tier1-failed: <err>` is the case this exists for,
+    // and it is the single most useful thing this column can ever say.
+    return {
+      text: known?.label ?? row.triageReason,
+      hint: known ? `${known.hint} (recorded as "${row.triageReason}")` : row.triageReason,
+    };
+  }
+  if (row.classification) {
+    return {
+      text: row.classification,
+      hint: `Foreman classified this ask as "${row.classification}". The tier ladder recorded no reason for this row.`,
+    };
+  }
+  return null;
+}
+
+/**
  * The strip's tallies, in strip order. Folded over `episodeBucket`, never over
  * `ForemanStatus.counts` - see the STRIP comment for why those two are different
  * populations and must not be swapped for one another.
@@ -134,9 +297,12 @@ const STRIP: readonly { id: EpisodeBucket; label: string; tone: ConsoleStat["ton
     },
     {
       id: "skipped",
-      label: "skipped",
+      // "left alone" rather than "skipped", because this pile has three ways into it and
+      // only one of them is a skip. What they share is the only thing the tile claims:
+      // nobody ever answered these. The row says which of the three each one was.
+      label: "left alone",
       tone: "plain",
-      hint: "Show only the asks Foreman could not read, and left alone",
+      hint: "Show only the decisions nobody answered - Foreman declined it, the session moved on before a verdict could be delivered, or you dismissed it",
     },
   ];
 
@@ -158,7 +324,7 @@ const EMPTY_FILTER: Record<EpisodeBucket, string> = {
   escalated: "Foreman has not escalated anything.",
   pending: "Nothing is waiting on your confirmation.",
   answered: "Foreman has not answered anything itself yet.",
-  skipped: "Foreman has understood every ask so far.",
+  skipped: "Every decision here was answered by somebody.",
 };
 
 /** How a divergence reads in the ledger, and how loud it is. */
@@ -252,6 +418,10 @@ export function ForemanSettingsPanel({
   const skipReviewArtifactWrapup = config?.skipReviewArtifactWrapup !== false;
   const now = Date.now();
   const [filter, setFilter] = useState<string | null>(null);
+  // Which decision is open, by episode id, and only ever one. An accordion rather than
+  // independent toggles because the detail card is tall - it carries the captured screen -
+  // and two of them open in a scroller pushes the row you opened first off the top.
+  const [opened, setOpened] = useState<number | null>(null);
   const tallies = episodeTallies(episodes);
   const active = STRIP.find((s) => s.id === filter) ?? null;
   const rows = active === null ? episodes : episodes.filter((r) => episodeBucket(r) === active.id);
@@ -563,74 +733,197 @@ export function ForemanSettingsPanel({
               {showShadow && <span>Cheap tier</span>}
               <span className="sc-when">When</span>
             </div>
-            {rows.length === 0 ? (
-              <p className="settings-hint sc-empty">
-                {episodes.length === 0
-                  ? "Nothing yet. Every prompt Foreman decides on appears here, across every session."
-                  : EMPTY_FILTER[active!.id]}
-              </p>
-            ) : (
-              rows.map((row) => (
-                <div className="sc-row" key={`${row.noteKey}:${row.marker}`}>
-                  <SessionRef
-                    handle={sessionHandle(row.noteKey)}
-                    tooltip={`Session key ${row.noteKey}`}
+            {/* The rows scroll INSIDE the table, and the header and strip above them do
+                not. At the 100-row cap this list is about 3,500px tall - it was rendered
+                whole into the page's own scroller, beside a control column a quarter of
+                its height, so the panel ran on for two and a half screens of nothing but
+                table. Worse than the length was what the length did to the controls: the
+                count strip is the filter, and it scrolled out of reach on the first flick,
+                so the one affordance for cutting the list down was only available from a
+                position where you could not see the list. */}
+            <div className="sc-scroll">
+              {rows.length === 0 ? (
+                <p className="settings-hint sc-empty">
+                  {episodes.length === 0
+                    ? "Nothing yet. Every prompt Foreman decides on appears here, across every session."
+                    : EMPTY_FILTER[active!.id]}
+                </p>
+              ) : (
+                rows.map((row) => (
+                  <EpisodeLedgerRow
+                    key={`${row.noteKey}:${row.marker}`}
+                    row={row}
+                    now={now}
+                    showShadow={showShadow}
+                    open={opened === row.id}
+                    onToggle={() => setOpened(opened === row.id ? null : row.id)}
                   />
-                  {/* Reduced by the daemon, not here: the inputs are the captured
-                      screen and the menu rows, which is exactly what must not ride a
-                      4s poll. See `ForemanEpisodeSummary`. */}
-                  <Tooltip label={row.purpose ?? row.ask}>
-                    <span className="sc-ask">{row.ask}</span>
-                  </Tooltip>
-                  <span className={`sc-verdict sc-verdict-${row.disposition}`}>
-                    {row.disposition === "pending" ? "drafted" : row.disposition}
-                  </span>
-                  {/* Who DECIDED it and which tier produced the verdict, in one cell.
-                      Two tracks for two short closed vocabularies cost the ask 130px of
-                      the 716 this table gets at 1500px, and the ask is the only cell whose
-                      useful length is unbounded.
-
-                      "Who" is `resolvedBy`, never `sentBy`: a dismissal resolves an episode
-                      without delivering a word, and reading authorship off the send made one
-                      read back as an approval. Blank while nobody has decided yet. */}
-                  <span className="sc-decided">
-                    {[row.resolvedBy, tierLabel(row.tier)].filter(Boolean).join(" · ")}
-                  </span>
-                  {showShadow && (
-                    <span className="sc-shadow">
-                      {/* Blank, not "agreed", when nothing was measured: rows written
-                          before the shadow columns existed, and rows decided under a
-                          posture that takes no measurement, have no answer here. Printing
-                          agreement for them would manufacture evidence for the one
-                          question this column exists to answer. */}
-                      {row.divergence === null ? (
-                        ""
-                      ) : (
-                        <Tooltip label={DIVERGENCE_HINT[row.divergence] ?? ""}>
-                          <span className={`sc-div sc-div-${row.divergence}`}>
-                            {DIVERGENCE_LABEL[row.divergence] ?? row.divergence}
-                            {row.cheapAction && !divergenceNamesItsAction(row.divergence)
-                              ? ` (${row.cheapAction})`
-                              : ""}
-                          </span>
-                        </Tooltip>
-                      )}
-                    </span>
-                  )}
-                  <span className="sc-when">{ago(row.createdAt, now)}</span>
-                </div>
-              ))
-            )}
+                ))
+              )}
+            </div>
           </div>
           <p className="settings-hint sc-foot">
             The last {FOREMAN_EPISODE_LEDGER} decisions across every session, newest first.
-            Episodes are kept for 30 days. Open a session's Foreman drawer for the full
-            question, the screen it was asked on, and what was sent back.
+            Episodes are kept for 30 days, so this list reaches back only as far as the cap
+            allows. Open a row for the ask, the screen it was read on, Foreman&apos;s
+            reasoning, and what was sent back.
           </p>
         </div>
       </div>
 
       {error && <p className="settings-error">{error}</p>}
     </section>
+  );
+}
+
+/**
+ * One ledger row, and the decision it opens onto.
+ *
+ * A button, not a div, and the whole reason this is now its own component. The panel used
+ * to print five cells and stop: the ask (which is not an identity - `Needs approval: Bash`
+ * covers 318 rows of a real 833-row ledger, `running AskUserQuestion` another 126), one
+ * word of disposition, who and which tier, and a relative time. Every field that answers
+ * "why did it decide that" - the purpose, the brief, the recommendation, the classification,
+ * the confidence, the screen it read, the words it sent - was already stored, already
+ * rendered by `ForemanEpisodeCard`, and reachable only by finding the session it happened
+ * on and opening that session's drawer. Most of a 30-day ledger names sessions that no
+ * longer exist, so for most rows it was reachable nowhere at all.
+ */
+function EpisodeLedgerRow({
+  row,
+  now,
+  showShadow,
+  open,
+  onToggle,
+}: {
+  row: ForemanEpisodeSummary;
+  now: number;
+  showShadow: boolean;
+  open: boolean;
+  onToggle: () => void;
+}): React.JSX.Element {
+  const outcome = episodeOutcome(row);
+  const why = episodeWhy(row);
+  return (
+    <>
+      <button
+        type="button"
+        className={`sc-row sc-row-open${open ? " is-open" : ""}`}
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <SessionRef handle={sessionHandle(row.noteKey)} tooltip={`Session key ${row.noteKey}`} />
+        {/* Purpose FIRST, ask second, and that ordering is the fix.
+            `purpose` is Foreman's own reading of what the decision was for, and it is the
+            only field that reliably differs between two rows - it was already fetched,
+            already on the wire, and spent on a tooltip, which is to say spent on nothing a
+            reader scanning the table can see. The verbatim ask stays underneath because it
+            is the thing a reader RECOGNISES a moment by; it just cannot carry the row on
+            its own. Reduced by the daemon, not here: the inputs are the captured screen and
+            the menu rows, which is what must not ride a 4s poll. */}
+        <span className="sc-ask">
+          <span className="sc-ask-purpose">{row.purpose ?? row.ask}</span>
+          {row.purpose && <span className="sc-ask-raw">{row.ask}</span>}
+        </span>
+        <Tooltip label={OUTCOME_HINT[outcome]}>
+          <span className={`sc-verdict sc-verdict-${outcome}`}>{OUTCOME_LABEL[outcome]}</span>
+        </Tooltip>
+        {/* Why it came out that way, under who decided it. The two belong in one cell
+            because they are one sentence - "foreman · cheap, because the router was not
+            confident enough" - and splitting them would cost the ask another fixed track.
+
+            "Who" is `resolvedBy`, never `sentBy`: a dismissal resolves an episode without
+            delivering a word, and reading authorship off the send made one read back as an
+            approval. Blank while nobody has decided yet. */}
+        <span className="sc-decided">
+          <span className="sc-decided-who">
+            {[row.resolvedBy, tierLabel(row.tier)].filter(Boolean).join(" · ")}
+          </span>
+          {why && (
+            // The RECORDED reason on hover, under the readable one. The label map is
+            // partial over an open vocabulary, so this is what keeps it from being able to
+            // hide what was actually stored - and it is a `Tooltip` rather than a native
+            // `title` for the reason the whole app is: `title` never fires on focus, so a
+            // keyboard reader would be the one person who could not reach it.
+            <Tooltip label={why.hint}>
+              <span className="sc-decided-why">{why.text}</span>
+            </Tooltip>
+          )}
+        </span>
+        {showShadow && (
+          <span className="sc-shadow">
+            {/* Blank, not "agreed", when nothing was measured: rows written before the
+                shadow columns existed, and rows decided under a posture that takes no
+                measurement, have no answer here. Printing agreement for them would
+                manufacture evidence for the one question this column exists to answer. */}
+            {row.divergence === null ? (
+              ""
+            ) : (
+              <Tooltip label={DIVERGENCE_HINT[row.divergence] ?? ""}>
+                <span className={`sc-div sc-div-${row.divergence}`}>
+                  {DIVERGENCE_LABEL[row.divergence] ?? row.divergence}
+                  {row.cheapAction && !divergenceNamesItsAction(row.divergence)
+                    ? ` (${row.cheapAction})`
+                    : ""}
+                </span>
+              </Tooltip>
+            )}
+          </span>
+        )}
+        <span className="sc-when">{ago(row.createdAt, now)}</span>
+      </button>
+      {open && <EpisodeLedgerDetail id={row.id} />}
+    </>
+  );
+}
+
+/**
+ * The opened decision, fetched on demand.
+ *
+ * Fetched here rather than folded into the ledger poll, and that is the trade
+ * `ForemanEpisodeSummary` was built to make: the pane alone was 50.6% of the response on a
+ * real database and the drawer-only fields came to 82KB every four seconds. One row's worth
+ * of that, once, when someone actually asks to read it, costs nothing at all.
+ *
+ * It renders `ForemanEpisodeCard` rather than a settings-shaped copy of it, so the ledger,
+ * the session drawer and the transcript cannot come to disagree about what a decision was -
+ * which they would, because the interesting fields here are exactly the ones with judgment
+ * in them.
+ */
+function EpisodeLedgerDetail({ id }: { id: number }): React.JSX.Element {
+  const [episode, setEpisode] = useState<ForemanEpisode | null>(null);
+  const [missing, setMissing] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    // Cleared on every id change, so a slower fetch for a row you have since closed and
+    // reopened elsewhere cannot paint the previous decision under the new one.
+    setEpisode(null);
+    setMissing(false);
+    void fetchForemanEpisode(id).then((e) => {
+      if (!alive) return;
+      if (e) setEpisode(e);
+      else setMissing(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+
+  return (
+    <div className="sc-detail">
+      {episode ? (
+        <ForemanEpisodeCard episode={episode} detail />
+      ) : missing ? (
+        // A real state, not a defensive branch: episodes are pruned at 30 days and the
+        // ledger is a snapshot that can outlive one by a poll. Saying so beats a spinner
+        // that never resolves.
+        <p className="settings-hint">
+          This decision is no longer stored - episodes are kept for 30 days.
+        </p>
+      ) : (
+        <p className="settings-hint">Reading the decision...</p>
+      )}
+    </div>
   );
 }

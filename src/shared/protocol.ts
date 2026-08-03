@@ -2,7 +2,7 @@ import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
-import { CHEAP_ACTIONS, DIVERGENCE_KINDS } from "./foreman.ts";
+import { CHEAP_ACTIONS, DIVERGENCE_KINDS, SKIP_REASONS } from "./foreman.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
@@ -824,6 +824,13 @@ export const RecordEpisodeSchema = z.object({
   // field and an explicit null mean the same thing here - nothing was measured.
   cheapAction: z.enum(CHEAP_ACTIONS).nullable().optional(),
   divergence: z.enum(DIVERGENCE_KINDS).nullable().optional(),
+  // Why the ladder landed where it did. Free text, NOT an enum, and the difference is
+  // load-bearing on the wire specifically: one arm of the vocabulary interpolates an error
+  // (`tier1-failed: <err>`), and a worker newer than the daemon it posts to must not have
+  // its diagnosis rejected by an enum this build has not learned yet. Clamped by
+  // `MAX_EPISODE_TEXT` at the store, like every other free field here.
+  triageReason: z.string().nullable().optional(),
+  skipReason: z.enum(SKIP_REASONS).nullable().optional(),
   disposition: z.enum(["answered", "pending", "escalated", "skipped"]),
   lastAction: z.string().nullable().optional(),
   sentText: z.string().nullable().optional(),

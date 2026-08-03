@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
@@ -88,52 +88,69 @@ export function WorkflowBindingDialog({
   const [bindings, setBindings] = useState<WorkflowBinding[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const overridesTouchedRef = useRef({
+    triggerMode: false,
+    deliveryMode: false,
+    maxRepairRounds: false,
+  });
+  const resetTouchedOverrides = (): void => {
+    overridesTouchedRef.current = {
+      triggerMode: false,
+      deliveryMode: false,
+      maxRepairRounds: false,
+    };
+  };
   useEffect(() => {
     void workflowRequest<WorkflowBinding[]>("/api/workflow-bindings").then(setBindings).catch(() => {});
     void workflowRequest<WorkflowConfig>("/api/workflows/config").then(setWorkflowConfig).catch(() => {});
   }, []);
-  useEffect(() => {
-    if (!versionId) return;
-    if (versionId === target.workflowVersionId && target.bindingDefaults) {
-      setDefaults(target.bindingDefaults);
-      setMaxRepairRounds(target.bindingDefaults.maxRepairRounds);
-      setTriggerMode(target.bindingDefaults.triggerMode);
-      setDeliveryMode(target.bindingDefaults.deliveryMode);
-      setVersionNumber(target.workflowVersion ?? null);
-      return;
-    }
-    const workflow = publishable.find((item) => item.currentVersionId === versionId);
-    if (!workflow) return;
-    let current = true;
-    void workflowRequest<WorkflowDetail>(`/api/workflows/${workflow.id}`).then((detail) => {
-      if (!current) return;
-      const version = detail.versions.find((item) => item.id === versionId);
-      if (!version) return;
-      setDefaults(version.bindingDefaults);
-      setMaxRepairRounds(version.bindingDefaults.maxRepairRounds);
-      setTriggerMode(version.bindingDefaults.triggerMode);
-      setDeliveryMode(version.bindingDefaults.deliveryMode);
-      setVersionNumber(version.version);
-    }).catch(() => {});
-    return () => { current = false; };
-  }, [
-    publishable,
-    target.bindingDefaults,
-    target.workflowVersion,
-    target.workflowVersionId,
-    versionId,
-  ]);
   const session = live.find((item) => item.id === sessionId) ?? null;
   const { existing, conflict } = useMemo(
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
+  const selectedWorkflowId = publishable.find((item) => item.currentVersionId === versionId)?.id ?? null;
+  useEffect(() => {
+    if (!versionId) return;
+    // A binding stores its own overrides. Once it is known, its values have precedence over
+    // the immutable version defaults and the existing-binding effect below owns hydration.
+    if (existing) return;
+    if (versionId === target.workflowVersionId && target.bindingDefaults) {
+      setDefaults(target.bindingDefaults);
+      if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(target.bindingDefaults.maxRepairRounds);
+      if (!overridesTouchedRef.current.triggerMode) setTriggerMode(target.bindingDefaults.triggerMode);
+      if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(target.bindingDefaults.deliveryMode);
+      setVersionNumber(target.workflowVersion ?? null);
+      return;
+    }
+    if (!selectedWorkflowId) return;
+    let current = true;
+    void workflowRequest<WorkflowDetail>(`/api/workflows/${selectedWorkflowId}`).then((detail) => {
+      if (!current) return;
+      const version = detail.versions.find((item) => item.id === versionId);
+      if (!version) return;
+      setDefaults(version.bindingDefaults);
+      if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(version.bindingDefaults.maxRepairRounds);
+      if (!overridesTouchedRef.current.triggerMode) setTriggerMode(version.bindingDefaults.triggerMode);
+      if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(version.bindingDefaults.deliveryMode);
+      setVersionNumber(version.version);
+    }).catch(() => {});
+    return () => { current = false; };
+  }, [
+    existing?.id,
+    selectedWorkflowId,
+    sessionId,
+    target.bindingDefaults,
+    target.workflowVersion,
+    target.workflowVersionId,
+    versionId,
+  ]);
   useEffect(() => {
     if (!existing) return;
-    setTriggerMode(existing.triggerMode);
-    setDeliveryMode(existing.deliveryMode);
-    setMaxRepairRounds(existing.maxRepairRounds);
-  }, [existing?.id]);
+    if (!overridesTouchedRef.current.triggerMode) setTriggerMode(existing.triggerMode);
+    if (!overridesTouchedRef.current.deliveryMode) setDeliveryMode(existing.deliveryMode);
+    if (!overridesTouchedRef.current.maxRepairRounds) setMaxRepairRounds(existing.maxRepairRounds);
+  }, [existing?.id, sessionId]);
   const liveAllowed = Boolean(
     session
     && workflowConfig?.liveEnabled
@@ -249,7 +266,14 @@ export function WorkflowBindingDialog({
       <label>
         Session
         <Tooltip label="Which live session this workflow will review">
-          <select value={sessionId} disabled={busy || Boolean(target.sessionId)} onChange={(event) => setSessionId(event.target.value)}>
+          <select
+            value={sessionId}
+            disabled={busy || Boolean(target.sessionId)}
+            onChange={(event) => {
+              resetTouchedOverrides();
+              setSessionId(event.target.value);
+            }}
+          >
             <option value="">Choose a live session</option>
             {live.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.agent}</option>)}
           </select>
@@ -258,7 +282,14 @@ export function WorkflowBindingDialog({
       <label>
         Published workflow
         <Tooltip label="Which published, immutable workflow version to bind">
-          <select value={versionId} disabled={busy || Boolean(target.workflowVersionId)} onChange={(event) => setVersionId(event.target.value)}>
+          <select
+            value={versionId}
+            disabled={busy || Boolean(target.workflowVersionId)}
+            onChange={(event) => {
+              resetTouchedOverrides();
+              setVersionId(event.target.value);
+            }}
+          >
             <option value="">Choose a published version</option>
           {target.workflowVersionId &&
             !publishable.some((workflow) => workflow.currentVersionId === target.workflowVersionId) && (
@@ -281,7 +312,10 @@ export function WorkflowBindingDialog({
             <select
               value={triggerMode}
               disabled={busy}
-              onChange={(event) => setTriggerMode(event.target.value as WorkflowBindingDefaults["triggerMode"])}
+              onChange={(event) => {
+                overridesTouchedRef.current.triggerMode = true;
+                setTriggerMode(event.target.value as WorkflowBindingDefaults["triggerMode"]);
+              }}
             >
               <option value="manual">Manual</option>
               <option value="foreman_complete" disabled={!foremanAllowed}>Foreman complete</option>
@@ -294,7 +328,10 @@ export function WorkflowBindingDialog({
             <select
               value={deliveryMode}
               disabled={busy}
-              onChange={(event) => setDeliveryMode(event.target.value as WorkflowBindingDefaults["deliveryMode"])}
+              onChange={(event) => {
+                overridesTouchedRef.current.deliveryMode = true;
+                setDeliveryMode(event.target.value as WorkflowBindingDefaults["deliveryMode"]);
+              }}
             >
               <option value="preview">Preview</option>
               <option value="live" disabled={!liveAllowed}>Live</option>
@@ -309,7 +346,10 @@ export function WorkflowBindingDialog({
             max={20}
             value={maxRepairRounds}
             disabled={busy}
-            onChange={(event) => setMaxRepairRounds(Number(event.target.value))}
+            onChange={(event) => {
+              overridesTouchedRef.current.maxRepairRounds = true;
+              setMaxRepairRounds(Number(event.target.value));
+            }}
           />
         </label>
       </div>

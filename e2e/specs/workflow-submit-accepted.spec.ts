@@ -17,6 +17,36 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
   return await response.json() as T;
 }
 
+async function createPublishedWorkflow(
+  daemon: DaemonHandle,
+  name: string,
+): Promise<{ workflowId: string; versionId: string }> {
+  const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name,
+    draft: {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "end", kind: "end", outcome: "Complete", position: { x: 220, y: 0 } },
+      ],
+      edges: [
+        {
+          id: "complete",
+          source: "session",
+          sourcePort: "submitted",
+          target: "end",
+          targetPort: "terminal",
+        },
+      ],
+    },
+  });
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${created.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+  return { workflowId: created.workflow.id, versionId: published.version.id };
+}
+
 async function dispatchSlowContextSession(
   page: Page,
   daemon: DaemonHandle,
@@ -47,29 +77,7 @@ test("Bind and submit opens the durable capturing run before compaction finishes
   daemon,
 }) => {
   const sessionId = await dispatchSlowContextSession(dashboard, daemon);
-  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "E2E accepted submission",
-    draft: {
-      nodes: [
-        { id: "session", kind: "session", position: { x: 0, y: 0 } },
-        { id: "end", kind: "end", outcome: "Complete", position: { x: 220, y: 0 } },
-      ],
-      edges: [
-        {
-          id: "complete",
-          source: "session",
-          sourcePort: "submitted",
-          target: "end",
-          targetPort: "terminal",
-        },
-      ],
-    },
-  });
-  const published = await api<{ version: { id: string } }>(
-    daemon,
-    `/api/workflows/${workflow.workflow.id}/publish`,
-    { expectedDraftRevision: 1 },
-  );
+  const published = await createPublishedWorkflow(daemon, "E2E accepted submission");
 
   // Reload after API seeding so the browser's SSE snapshot includes the published version.
   await dashboard.goto(`${daemon.baseURL}/#/runs`);
@@ -78,7 +86,7 @@ test("Bind and submit opens the durable capturing run before compaction finishes
   const dialog = dashboard.getByRole("dialog", { name: "Bind workflow" });
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("Session").selectOption(sessionId);
-  await dialog.getByLabel("Published workflow").selectOption(published.version.id);
+  await dialog.getByLabel("Published workflow").selectOption(published.versionId);
 
   const submitResponse = dashboard.waitForResponse((response) =>
     response.request().method() === "POST"
@@ -118,4 +126,62 @@ test("Bind and submit opens the durable capturing run before compaction finishes
     // eslint-disable-next-line no-console
     console.log("CAPTURED e2e/evidence/workflow-submit-accepted.png");
   }
+});
+
+test("binding overrides survive unrelated live workflow updates", async ({ dashboard, daemon }) => {
+  const sessionId = await dispatchSlowContextSession(dashboard, daemon);
+  const selected = await createPublishedWorkflow(daemon, "E2E selected binding");
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs`);
+  await dashboard.reload();
+  let releaseVersionDetail!: () => void;
+  const versionDetailGate = new Promise<void>((resolve) => { releaseVersionDetail = resolve; });
+  let heldVersionDetail = false;
+  await dashboard.route(`**/api/workflows/${selected.workflowId}`, async (route) => {
+    if (route.request().method() === "GET" && !heldVersionDetail) {
+      heldVersionDetail = true;
+      await versionDetailGate;
+    }
+    await route.continue();
+  });
+  await dashboard.getByRole("button", { name: "Bind to a session…" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Bind workflow" });
+  await dialog.getByLabel("Session").selectOption(sessionId);
+  await dialog.getByLabel("Published workflow").selectOption(selected.versionId);
+
+  const repairRounds = dialog.getByLabel("Maximum repair rounds");
+  await repairRounds.fill("8");
+  await expect(repairRounds).toHaveValue("8");
+
+  // A person can edit while immutable-version defaults are still loading. Their edit wins
+  // when that older request eventually completes.
+  const versionDetailResponse = dashboard.waitForResponse((response) =>
+    response.request().method() === "GET"
+    && new URL(response.url()).pathname === `/api/workflows/${selected.workflowId}`);
+  releaseVersionDetail();
+  await versionDetailResponse;
+  await expect(repairRounds).toHaveValue("8");
+
+  // Publishing another workflow arrives through SSE and rerenders the open dialog. That live
+  // collection change must not reapply the selected version's defaults over this binding-only
+  // override.
+  const unrelated = await createPublishedWorkflow(daemon, "E2E unrelated workflow");
+  await expect(dialog.getByLabel("Published workflow").locator(`option[value="${unrelated.versionId}"]`))
+    .toHaveCount(1);
+  await expect(repairRounds).toHaveValue("8");
+  if (process.env.MC_E2E_EVIDENCE) {
+    await dashboard.screenshot({
+      path: fileURLToPath(new URL("../evidence/workflow-binding-repair-rounds.png", import.meta.url)),
+      fullPage: true,
+    });
+  }
+
+  await dialog.getByRole("button", { name: "Bind only" }).click();
+  await expect(dialog).toBeHidden();
+  const bindings = await api<Array<{ workflowVersionId: string; maxRepairRounds: number }>>(
+    daemon,
+    "/api/workflow-bindings",
+  );
+  expect(bindings.find((binding) => binding.workflowVersionId === selected.versionId)?.maxRepairRounds)
+    .toBe(8);
 });

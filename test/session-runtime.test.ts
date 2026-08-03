@@ -654,6 +654,44 @@ test("an accepted stop marks a card unavailable when a blocking stop already own
   assert.equal(r.getSession(SDK_ID)?.state, "exited");
 });
 
+test("an accepted stop restores a live card when the blocking drain it joined fails", async () => {
+  const r = new Registry();
+  const sup = new SdkSupervisor(r);
+  const driver = fakeHandle();
+  let markStopStarted!: () => void;
+  let rejectStop!: (reason: Error) => void;
+  const stopStarted = new Promise<void>((resolve) => {
+    markStopStarted = resolve;
+  });
+  const stopBlocked = new Promise<void>((_resolve, reject) => {
+    rejectStop = reject;
+  });
+  driver.handle.stop = async () => {
+    markStopStarted();
+    await stopBlocked;
+  };
+  sup.adopt({
+    registration: registration(),
+    handle: driver.handle,
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
+  });
+  driver.emit({ kind: "state", state: "idle", activity: null });
+  await settle();
+
+  const blockingStop = sup.stop(SDK_ID);
+  await stopStarted;
+  assert.equal(sup.requestStop(SDK_ID), true);
+  assert.equal(r.getSession(SDK_ID)?.state, "stopping");
+
+  rejectStop(new Error("blocking owner failed"));
+  await assert.rejects(blockingStop, /blocking owner failed/);
+  await settle();
+  assert.equal(r.getSession(SDK_ID)?.state, "idle");
+  assert.equal(await sup.send(SDK_ID, { text: "reachable after failure" }), "started");
+  driver.end();
+  await settle();
+});
+
 test("an accepted stop failure restores a driver that is still live", async () => {
   const r = new Registry();
   const sup = new SdkSupervisor(r);
@@ -671,6 +709,7 @@ test("an accepted stop failure restores a driver that is still live", async () =
 
   assert.equal(sup.requestStop(SDK_ID), true);
   assert.equal(r.getSession(SDK_ID)?.state, "stopping");
+  assert.equal(sup.requestStop(SDK_ID), true, "a repeated Complete joins the same failed drain");
   await settle();
   assert.equal(r.getSession(SDK_ID)?.state, "idle");
   assert.equal(await sup.send(SDK_ID, { text: "still reachable" }), "started");

@@ -16,9 +16,16 @@ import { Tooltip } from "../components/Tooltip.tsx";
  * Status tones are the vocabulary `workflow-chip` already carries across the fleet layouts
  * (`.workflow-running` / `-waiting` / `-passed` / `-failed`), so a chip drawn here and a chip
  * drawn on a session card cannot drift into two colour languages.
+ *
+ * `stopped` is the fifth and the newest, and it is a genuinely different claim rather than a
+ * shade of the other four: a stage that was CANCELLED where it stood. `orphanBinding` marks
+ * a lost session's queued reviewer attempts `cancelled`, and until this tone existed the
+ * chip for them read amber `Reviewers` - which says "these are about to run" about attempts
+ * that are dead. Grey, because absence is what actually happened; failed would blame the
+ * reviewers for a session that disappeared underneath them.
  */
 
-export const PIPELINE_STATUS_TONES = ["running", "waiting", "passed", "failed"] as const;
+export const PIPELINE_STATUS_TONES = ["running", "waiting", "passed", "failed", "stopped"] as const;
 export type PipelineStatusTone = (typeof PIPELINE_STATUS_TONES)[number];
 
 export interface PipelineStatus {

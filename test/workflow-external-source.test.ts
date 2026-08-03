@@ -793,6 +793,14 @@ test("run detail carries display provenance and never the opaque idempotency key
     "round",
     "segment",
     "sessionId",
+    // The binding's captured session title, and the second field on this list to be paid for
+    // deliberately. It rides the summary because a RUN OUTLIVES THE SESSION IT REVIEWED: once
+    // the session is removed, `sessionId` is null and the only human name left is this one -
+    // without it the Line's Review drawer has nothing to print but the `noteKey` GUID, which
+    // is exactly what a fleet of blocked runs looked like. Conditionally spread like
+    // `externalSource`, so a binding that captured no name carries no key at all
+    // (`workflow-store-summary.test.ts` pins that half).
+    "sessionName",
     "status",
     "uncertainDeliveryCount",
     "updatedAt",

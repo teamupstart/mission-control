@@ -4399,20 +4399,36 @@ rather than assert.
   drops the drawer, so returning to the fleet does not resurrect a panel you had finished with.
 
 Each drawer is a **triage projection**, built from the SSE summaries the fleet already holds.
-None of them fetches, and none of them mutates: every action that changes a run or records a
-decision stays on the full page, one click deeper.
+**None of them fetches and none of them reads run detail.** Review alone can also *act*, and
+only where the summary by itself proves the run has stopped and the route needs no argument
+beyond the run id - which is what keeps `Reattach` (needs a session), resolving a delivery
+(needs a delivery and a choice) and disabling a reviewer (needs a stage member) on the full
+page, one click deeper.
 
 | Drawer | Each row says | Escalates to |
 |--------|---------------|--------------|
-| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing. A run stopped on *you* is marked amber - the same rule the strip counts with. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
+| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…` - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
 | **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](#recurring-missions) |
+
+**A Review row is named by whoever it is, not by whatever is left.** A workflow run outlives
+the session it reviewed - when a session is removed the run is blocked and its live name goes
+with it - so the row falls back in three steps: the live session's name, then the title the
+binding captured when it was bound, then the conversation key. Only the third is an id, and it
+is drawn as one rather than as a title.
+
+**Everything Review can do is destructive-safe.** `Dismiss` and `Restart…` confirm first, in
+the same dialog and the same words the run page uses, and `Restart…` still demands the exact
+phrase the daemon does. A refused request is reported on the drawer itself and the row stays -
+a triage surface that dropped a row on a failed call would be lying about the fleet.
 
 Two chips the Review drawer deliberately cannot draw: **how many** reviewers a run has, and a
 stage the run has not reached. A run summary carries no graph, so "reviewers 2 of 4" would be
 a denominator invented in the browser - the row says who is reviewing right now and points at
 the run for the rest. Chips for a session action or an Inspector gate appear only when the run
-actually has one, which makes their absence informative rather than grey furniture.
+actually has one, which makes their absence informative rather than grey furniture. A run
+whose session disappeared shows **Reviewers stopped** in grey rather than an amber
+**Reviewers**: those attempts were cancelled where they stood, so they are not waiting.
 
 ## The palette (⌘K)
 

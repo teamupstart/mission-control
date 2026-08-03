@@ -288,13 +288,62 @@ Phase 2 may rely on, and must not change:
 - `WorkflowRunSummary.sessionName` - optional, append-only, omitted when empty.
 - `blockedPhaseClause(phase: string): string` - including the `replaceAll("_", " ")` fallback.
   Phase 2 labels its group bars with this.
-- `runRemedy(run): RunRemedy | null` and the `RunRemedy` shape. Phase 2's `Dismiss all` is this
-  phase's cancel remedy applied to a set, and must not introduce a second cancel path.
-- The three-step name resolution, which Phase 2 reuses when it lists a group's member titles.
+- `runRemedy(run, name?): RunRemedy | null` and the `RunRemedy` shape. Phase 2's `Dismiss all`
+  is this phase's cancel remedy applied to a set, and must not introduce a second cancel path.
+- `runRowIdentity(run, liveSessionName): { name, isIdentifier }` - the three-step name
+  resolution, which Phase 2 reuses when it lists a group's member titles.
 - The revised drawer rule in the component doc comment and README, which Phase 2 extends to
   cover a batch action rather than restating.
 
 Phase 2 will change `foldReview` in `src/server/line-summary.ts`. This phase must not.
+
+## Implementation record - what the repository changed
+
+Written after the phase shipped. The plan above is the proposal; this is what the code said
+back, and every item was checked against the daemon rather than argued.
+
+1. **`Restart` moved off `round_limit` and onto `waiting_for_new_head`.** The source plan maps
+   a round-limit block to `POST /workflow-runs/:id/restart-full`. `manager.restartFull` refuses
+   when `latest.round > run.maxRepairRounds` (`manager.ts:1758`) - and that inequality IS the
+   definition of the `round_limit` block, so the button could never once have succeeded there.
+   It also requires an active Inspector gate and `status === "waiting_for_new_head" ||
+   latest.mode === "inspector_only"`. Only the first of those two arms is on a summary, so
+   `waiting_for_new_head` is the one state where a summary proves the daemon will accept a
+   restart, and that is where the remedy lives. All four decided remedies still ship.
+2. **`round_limit` takes `Dismiss` instead.** Nothing argument-free revives an out-of-rounds
+   run - `resubmit` refuses it on the same inequality, and raising the budget is a binding
+   edit - so the honest remedy is the one `session_disappeared` already gets: stop counting a
+   run that will never move again. Both alternatives stay one click away through `Open run`.
+3. **`inspector_round_limit` is not a phase.** `transitionInspectorGate` writes it as an EVENT
+   kind and sets the phase to `round_limit` (`manager.ts:2727-2733`). The clause map keeps the
+   entry as insurance and says so; nothing depends on it.
+4. **The clause for `reattached_resubmit_required` is `reattached`, not `reattached, needs
+   resubmit`.** The full phrase makes a 51-character sentence in a column that holds ~40. The
+   clause's job is why it stopped and the button beside it says what to do - and that button
+   already reads `Resubmit`, so the dropped half was the row repeating itself.
+5. **Two columns widened, not one, and a third got a floor.** `.line-run-state` went 190px →
+   240px because the causes it now carries do not fit 190 (`Blocked · out of Inspector rounds`
+   is ~199px), and `.line-run-ops` got `min-width: 170px` with a right-aligned reservation:
+   only a stopped row carries a remedy, so without a floor the two-button rows widened the
+   trailing column and shoved their cause 71px left of the cause on the row above. The e2e
+   spec asserts the two rows' `.line-run-state` share an x, and that assertion was checked
+   against the unfixed stylesheet before it was trusted.
+6. **A fifth chip tone, `stopped`.** `PIPELINE_STATUS_TONES` had four and none of them said
+   "cancelled where it stood". Its only consumer is `pipeline-bits.tsx` itself, so the
+   vocabulary extension is local.
+7. **`LineDrawer` grew a `notice` slot.** A drawer that can act has to be able to say it
+   failed, and `.line-drawer-body` is capped and scrolls - an alert inside it is scrolled away
+   by the list the failed action was taken from. The slot sits between the header and the body
+   and the two read-only drawers pass nothing.
+8. **Blocked runs sort below runs genuinely waiting on a person.** `triageOrder` was a single
+   `workflowRunWaitsOnOperator` bit, which is true of both. The predicate itself is untouched -
+   the strip's count, this drawer's count and the command palette all still read it - this is
+   presentation only, and it matches the mockup's own row order.
+9. **`App.tsx` needed nothing**, exactly as this phase predicted. The remedy plumbing is
+   `runAction` + `workflowRequest` + `WorkflowConfirmModal`, all held inside the drawer.
+10. **A third test was rewritten** beyond the two this phase named: `test/line-drawer.test.ts`'s
+    ordering-and-marking case encoded the old single amber tone. It now asserts both tones and
+    the three-tier order.
 
 ## Cross-phase audit record
 

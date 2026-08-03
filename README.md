@@ -2391,6 +2391,7 @@ surfaces as sibling tabs is retired:
 | `#/runs/:id` | That run's reader - verdicts, deliveries, timeline, exports |
 | `#/ensembles` | Every ensemble run |
 | `#/ensembles/:id` | That run's full dossier and its one-shot decision |
+| `#/shipped` | The **Ship log**: every pull request the fleet opened, across every repository |
 
 Every `#/workflows/*` spelling redirects permanently, and the address bar is rewritten to the
 new one so a kept bookmark stops being a legacy link: `#/workflows` → `#/library`,
@@ -2414,6 +2415,58 @@ as every unknown hash always has.
 
 An editor with unsaved changes still holds a navigation away from it and asks first, whichever
 home you are leaving for.
+
+### The Ship log
+
+`#/shipped` is the cross-repo record of what the fleet landed: the Inspector's adoption
+ledger, read as a page rather than counted. Every row is one pull request Mission Control can
+prove one of its agents opened, tagged with the repository it belongs to - which is what makes
+this the surface that answers "what shipped, across everything we touched".
+
+The page has three parts.
+
+- A **KPI row**: how many shipped in the range and how that compares with the range before it
+  (with a twelve-week trend line), how many of them merged and at what rate, the same
+  fleet-wide per-pull-request cost figure the [spend chip](#cost-telemetry) carries, and how
+  many repositories the range touched.
+- A **repository rail**: one row per repository with its count and a merged / open / gone mix
+  bar. The rail doubles as the filter - press a repository to narrow the feed to it, press it
+  again to come back. The KPI row deliberately does *not* narrow with it, because the context
+  the selection was made from is what makes the selection readable.
+- The **feed**: the range's pull requests grouped by the local day they were adopted, newest
+  first. Each row carries its merge state as a mark *and* a word, the repository, the title,
+  the number and branch, the session that opened it, and how long ago.
+
+Three details are worth knowing.
+
+**Titles arrive late, and rows are named by what is known.** The adoption signal is a hook
+catching `gh pr create` and carries only a URL, so the title is written by the Inspector's
+first poll afterwards. A row falls back to its branch name until then, and to its number when
+even the branch has not been observed. A row adopted before this build and already closed may
+keep its branch name for ever - the poll retires merged and closed rows and never looks again.
+
+**Merged means merged by anyone.** YOLO mode records the merges it performs itself; a merge a
+person pressed is visible only through what the poll last observed. The page counts both, so
+"merged" here answers "did this land" rather than "did the fleet land it unattended". The
+[Shipping settings panel](#settings) keeps the finer five-way reading (merged, soaking, held
+at a gate, not looked at, closed), which is a different question about the same rows.
+
+**Range and repository are not in the hash.** Both are what you are currently looking at
+rather than where you are, so `#/shipped` is the whole address and a reload comes back to the
+default seven days across every repository. The page reads the ledger once over a window wide
+enough for every range it offers, so switching between Today, 7 days and 30 days is instant
+and cannot fail halfway through a comparison. It is fetched only while the page is open.
+
+A range here is **whole local days ending today**, because the feed's day headings are its
+ordering and half a day under a heading naming all of it would be a lie about both. The
+Line's Shipped count is a rolling seven days to the minute, so the two figures differ by
+however much of today has already gone. That is the only way they are allowed to differ: the
+page reads the ledger through the adoption window, so neither truncation nor a re-review can
+put them out of step about which pull requests exist.
+
+Reach it with `⌘K` (search for "shipped", "merged" or "pull request") or by opening the hash.
+The Line's ⚑ Shipped stage does not lead here yet - see the row for it in
+[the Line's stage targets](#the-line-the-pipeline-strip-above-the-fleet).
 
 ## Workflows and Personas
 
@@ -4382,7 +4435,7 @@ reads it:
 | ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
 | ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble |
-| ⚑ Shipped | `#/runs` filtered to completed. There is no pull-request list surface in the app; the list of work that finished is the nearest true thing |
+| ⚑ Shipped | `#/runs` filtered to completed - **not** the [Ship log](#the-ship-log), yet. The rows this count is made of now have a page of their own at `#/shipped`, and pointing the stage at it is a single change that retires several pinned assertions, so it is being made on its own rather than folded in here |
 
 Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
 clipped to one row so the strip's height never moves. The flowing dots on the wires respect
@@ -4480,7 +4533,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 
 | Group | Kinds | The second line says |
 | --- | --- | --- |
-| **Jump to** | `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
+| **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
 | **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, or open a blank draft on a Library shelf |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
@@ -4507,6 +4560,12 @@ SSE collections the dashboard already holds, so typing a letter is not a network
 palette can never be more stale than the page beside it. And it **only ever opens a door that
 already exists** - every "Do" row lands on the same modal a button somewhere else opens, and
 every "Jump to" row on a route the app publishes.
+
+The `page` kind has exactly one member, and that is a statement about the app rather than an
+unfinished list: the [Ship log](#the-ship-log) is the only full page with no chrome pointing
+at it, so <kbd>⌘</kbd><kbd>K</kbd> and its hash are the whole of how it is reached. Fleet, the
+Library and Runs are one press of the segmented control away, and a palette row beside a
+visible door would only be a second door.
 
 Archived assets are not indexed, because the shelf a hit would land on does not list them.
 Task sources appear under Settings rather than as their own kind, which is where the Library's

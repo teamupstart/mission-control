@@ -25,6 +25,7 @@ import { settingsGearDot } from "./lib/settings-dots.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
 import { SpendChip } from "./components/SpendChip.tsx";
+import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
 import { ReviewDrawer } from "./components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "./components/line/DecideDrawer.tsx";
@@ -2202,6 +2203,14 @@ export function App(): React.JSX.Element {
               />
             </ExecutionPage>
           )}
+          shipped={
+            // The Ship log owns its own `ExecutionPage` frame, unlike the two above: the
+            // header's trailing slot holds its range chips, which are the page's own state,
+            // and lifting that state up here would park a page's filter in App for the
+            // lifetime of the session. Still only CONSTRUCTED here, so the ledger fetch
+            // inside it happens the first time `#/shipped` is the route and never before.
+            <ShipLogPage fleetCost={fleetCost} now={Date.now()} />
+          }
           settings={(
             <SettingsPage
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}

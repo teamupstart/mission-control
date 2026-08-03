@@ -92,6 +92,7 @@ import { defaultCodexSdkDeps, type CodexSdkDeps } from "./sdk-deps.ts";
 const ACCEPT_LABEL = "Yes";
 const ACCEPT_ALWAYS_LABEL = "Yes, and don't ask again";
 const DECLINE_LABEL = "No";
+const FINAL_ANSWER_COMPLETION_GRACE_MS = 250;
 
 /**
  * What a `permissionMode` MEANS to the app-server, and the exact inverse of what
@@ -320,8 +321,12 @@ class CodexSdkSession implements SdkSessionHandle {
    * as a precondition and FAILS if it has moved.
    */
   private activeTurnId: string | null = null;
+  /** The turn paired with the latest `thread/status: active` notification. */
+  private statusActiveTurnId: string | null = null;
   /** The most recent per-turn token usage, reported with `turn_done`. */
   private lastUsage: SdkUsage | null = null;
+  /** A short backstop when a final answer is not followed by either lifecycle frame. */
+  private finalAnswerCompletion: ReturnType<typeof setTimeout> | null = null;
   private modelId: string | null = null;
   /**
    * The sandbox the RUNNING thread resolved to, read off its own start response.
@@ -409,7 +414,13 @@ class CodexSdkSession implements SdkSessionHandle {
     const started = await this.client.request<TurnStartResponse>("turn/start", params);
     // Recorded from the RESPONSE as well as from `turn/started`, so a second `send` racing
     // the notification cannot see an idle thread and start a turn that never runs.
-    this.lastUsage = null;
+    // Notifications can also overtake the response. Preserve state if `turn/started` and
+    // its active status already paired this exact turn; only a response that replaces a
+    // different active turn may clear the old pairing and usage.
+    if (this.activeTurnId !== started.turn.id) {
+      this.lastUsage = null;
+      this.statusActiveTurnId = null;
+    }
     this.activeTurnId = started.turn.id;
     this.out.emit({ kind: "state", state: "working", activity: null });
   }
@@ -648,6 +659,7 @@ class CodexSdkSession implements SdkSessionHandle {
     }
     this.threadId = thread.thread.id;
     this.activeTurnId = activeTurn?.id ?? null;
+    this.statusActiveTurnId = thread.thread.status.type === "active" ? this.activeTurnId : null;
     this.lastUsage = null;
     this.modelId = thread.model || null;
     this.appliedSandbox = sandboxModeOf(thread.sandbox);
@@ -798,7 +810,10 @@ class CodexSdkSession implements SdkSessionHandle {
       case "turn/started": {
         if (!this.isCurrentThread(params)) return;
         const turnId = (params as TurnStartedNotification).turn.id;
-        if (this.activeTurnId !== turnId) this.lastUsage = null;
+        if (this.activeTurnId !== turnId) {
+          this.lastUsage = null;
+          this.statusActiveTurnId = null;
+        }
         this.activeTurnId = turnId;
         this.out.emit({ kind: "state", state: "working", activity: null });
         return;
@@ -810,11 +825,17 @@ class CodexSdkSession implements SdkSessionHandle {
       case "thread/status/changed": {
         if (!this.isCurrentThread(params)) return;
         const status = (params as ThreadStatusChangedNotification).status;
-        // The backstop for an idle we would otherwise learn only from `turn/completed`.
-        // Both fire today, in this order, and `finishTurn` is idempotent - but a card stuck
-        // reading "working" for ever is the failure mode worth being redundant about.
-        if (status.type === "idle") this.finishTurn(this.activeTurnId);
-        else if (status.type === "active") {
+        // Status notifications carry no turn id, so an idle can finish only the turn paired
+        // with the preceding active status. A final-answer fallback clears that pairing;
+        // if its delayed idle arrives after the next `turn/start` response but before the
+        // next active status, it has no turn to finish. The next turn's own active -> idle
+        // pair still remains a valid backstop when `turn/completed` is missing.
+        if (status.type === "idle") {
+          const pairedTurnId = this.statusActiveTurnId;
+          this.statusActiveTurnId = null;
+          this.finishTurn(pairedTurnId);
+        } else if (status.type === "active") {
+          this.statusActiveTurnId = this.activeTurnId;
           this.out.emit({ kind: "state", state: "working", activity: null });
         }
         return;
@@ -831,7 +852,23 @@ class CodexSdkSession implements SdkSessionHandle {
         }
         const activity = itemActivity(item);
         if (activity) this.out.emit({ kind: "state", state: "working", activity });
-        if (method === "item/completed") this.notePullRequest(item, threadId);
+        if (method === "item/completed") {
+          this.notePullRequest(item, threadId);
+          // `final_answer` is Codex's own declaration that the root turn is over. Normally
+          // `turn/completed` and an idle thread-status notification follow it, but treating
+          // either of those as the only completion signal leaves a durable turn wedged when
+          // app-server drops both: the transcript has a final response while the card stays
+          // working, and every human message remains queued. Give the ordinary lifecycle
+          // and trailing usage frame a brief head start, then finish through the same
+          // idempotent gate if they never arrive.
+          if (
+            this.isCurrentThread(params) &&
+            item.type === "agentMessage" &&
+            item.phase === "final_answer"
+          ) {
+            this.scheduleFinalAnswerCompletion((params as ItemCompletedNotification).turnId);
+          }
+        }
         return;
       }
       case "thread/tokenUsage/updated": {
@@ -1000,10 +1037,27 @@ class CodexSdkSession implements SdkSessionHandle {
   }
 
   /** Close out a turn exactly once, whichever notification told us about it first. */
-  private finishTurn(turnId: string | null): void {
-    if (!turnId || this.activeTurnId !== turnId) return;
+  private finishTurn(turnId: string | null): boolean {
+    if (!turnId || this.activeTurnId !== turnId) return false;
+    if (this.finalAnswerCompletion) {
+      clearTimeout(this.finalAnswerCompletion);
+      this.finalAnswerCompletion = null;
+    }
+    if (this.statusActiveTurnId === turnId) this.statusActiveTurnId = null;
     this.activeTurnId = null;
     this.out.emit({ kind: "turn_done", usage: this.lastUsage });
+    return true;
+  }
+
+  private scheduleFinalAnswerCompletion(turnId: string): void {
+    if (this.activeTurnId !== turnId) return;
+    if (this.finalAnswerCompletion) clearTimeout(this.finalAnswerCompletion);
+    const timer = setTimeout(() => {
+      if (this.finalAnswerCompletion !== timer) return;
+      this.finalAnswerCompletion = null;
+      this.finishTurn(turnId);
+    }, FINAL_ANSWER_COMPLETION_GRACE_MS);
+    this.finalAnswerCompletion = timer;
   }
 
   /**

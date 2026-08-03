@@ -240,6 +240,7 @@ export interface StateDisplay {
  */
 export function stateDisplay(session: Session): StateDisplay {
   if (session.state === "exited") return { label: "exited", tone: "exited" };
+  if (session.state === "stopping") return { label: "stopping", tone: "working" };
   // A pending review always needs you, regardless of the agent's own state.
   if (session.pendingReviews > 0) {
     return { label: session.pendingReviews > 1 ? `${session.pendingReviews} to review` : "to review", tone: "attention" };
@@ -261,6 +262,7 @@ export function stateDisplay(session: Session): StateDisplay {
     idle: { label: "idle", tone: "idle" },
     awaiting_input: { label: "needs input", tone: "attention" },
     awaiting_review: { label: "needs review", tone: "attention" },
+    stopping: { label: "stopping", tone: "working" },
     exited: { label: "exited", tone: "exited" },
   };
   return map[session.state];
@@ -312,5 +314,5 @@ export function pickableModes(agent: AgentType): readonly PermissionMode[] {
  * drift between them.
  */
 export function canRenameSession(s: PaneHandles & Pick<Session, "state">): boolean {
-  return s.state !== "exited" && canWriteTo(s);
+  return s.state !== "exited" && s.state !== "stopping" && canWriteTo(s);
 }

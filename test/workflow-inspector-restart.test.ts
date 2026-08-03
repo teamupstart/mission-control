@@ -130,6 +130,7 @@ test("findings deliver, full resubmit reruns, and only the newly approved clean 
     observedState: null,
     observedAt: null,
     headRefName: null,
+    title: null,
     adoptedAt: 1,
     updatedAt: 1,
   };

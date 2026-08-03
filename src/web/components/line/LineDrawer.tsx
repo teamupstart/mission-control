@@ -5,7 +5,7 @@ import { LINE_DRAWER_DOM_ID } from "../LineStrip.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
- * The drawer frame: everything true of all three drawers, and nothing about any of them.
+ * The drawer frame: everything true of all four drawers, and nothing about any of them.
  *
  * It sits BETWEEN the strip and the layouts, as a sibling of both, and that placement is the
  * whole feature. An overlay would have covered the board; a panel inside a layout would have
@@ -29,6 +29,7 @@ const DRAWER_GLYPHS: Record<LineDrawerStage, string> = {
   intake: "⇊",
   review: "⌁",
   decide: "⧉",
+  shipped: "⚑",
 };
 
 export function LineDrawer({
@@ -39,6 +40,14 @@ export function LineDrawer({
   attention = "",
   /** Header controls, right-aligned before the ✕. Each body supplies its own. */
   actions = null,
+  /**
+   * One line between the header and the rows, for a drawer that can now FAIL at something.
+   *
+   * Outside the capped body on purpose: the body scrolls, and an error rendered inside it
+   * would be scrolled off by the very list the failed action was taken from. Optional, so
+   * the three drawers that only ever read pass nothing and render nothing.
+   */
+  notice = null,
   onClose,
   children,
 }: {
@@ -46,6 +55,7 @@ export function LineDrawer({
   count: string;
   attention?: string;
   actions?: ReactNode;
+  notice?: ReactNode;
   onClose: () => void;
   children: ReactNode;
 }): React.JSX.Element {
@@ -98,6 +108,7 @@ export function LineDrawer({
           </button>
         </Tooltip>
       </header>
+      {notice}
       {/* The cap and the scrollbar are this element's, in the stylesheet. Bodies render rows
           and never a height. */}
       <div className="line-drawer-body">{children}</div>

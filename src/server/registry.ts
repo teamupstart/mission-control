@@ -648,6 +648,49 @@ export class Registry extends EventEmitter {
     return this.sessions.get(id);
   }
 
+  /**
+   * Surface an accepted SDK stop while its driver drains.
+   *
+   * This is deliberately NOT eviction. The card remains registered, no durable subscriber
+   * runs, and only the driver's later `exited` event may enter `beginEviction`. The previous
+   * presentation fields are returned so the supervisor can put the card back if requesting
+   * the stop itself fails while the handle is still live.
+   */
+  markSessionStopping(id: string): Pick<Session, "state" | "stateConfirmed" | "activity" | "lastActivity"> | null {
+    const session = this.sessions.get(id);
+    if (!session || session.state === "exited") return null;
+    const previous = {
+      state: session.state,
+      stateConfirmed: session.stateConfirmed,
+      activity: session.activity,
+      lastActivity: session.lastActivity,
+    };
+    if (session.state === "stopping") return previous;
+    const now = Date.now();
+    const stopping: Session = {
+      ...session,
+      state: "stopping",
+      stateConfirmed: true,
+      activity: null,
+      lastActivity: now,
+    };
+    this.sessions.set(id, stopping);
+    this.emitSession(stopping);
+    return previous;
+  }
+
+  /** Undo only the transient presentation written by `markSessionStopping`. */
+  restoreSessionAfterStopFailure(
+    id: string,
+    previous: Pick<Session, "state" | "stateConfirmed" | "activity" | "lastActivity">,
+  ): void {
+    const session = this.sessions.get(id);
+    if (!session || session.state !== "stopping") return;
+    const restored: Session = { ...session, ...previous };
+    this.sessions.set(id, restored);
+    this.emitSession(restored);
+  }
+
   /** Resolve a durable conversation key back to its current live session. */
   sessionForNoteKey(noteKey: string): Session | undefined {
     let owner: Session | undefined;
@@ -1488,6 +1531,10 @@ export class Registry extends EventEmitter {
     activity: string | null,
     now: number,
   ): void {
+    // A final result/state frame may race an operator stop. It can update the durable turn
+    // mirror in the supervisor, but it must not make this card actionable again after the
+    // supervisor has closed delivery and acknowledged that fact to the browser.
+    if (s.state === "stopping") return;
     const next: Session = {
       ...s,
       state,

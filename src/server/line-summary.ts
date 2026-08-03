@@ -8,8 +8,12 @@ import { LINE_STAGES } from "@shared/line.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { readyBacklog } from "@shared/backlog.ts";
 import { ensembleIsTerminal } from "@shared/ensemble.ts";
-import { workflowRunIsOpen, workflowRunWaitsOnOperator } from "@shared/workflow.ts";
-import { fmtUsd } from "@shared/cost.ts";
+import {
+  workflowRunAttentionParts,
+  workflowRunAttentionSplit,
+  workflowRunIsOpen,
+} from "@shared/workflow.ts";
+import { costPerPrToday, fmtUsd } from "@shared/cost.ts";
 
 /**
  * The Line's fold: fleet state in, six stages out.
@@ -238,6 +242,17 @@ function foldWorking(input: LineFoldInput): LineStageSummary {
  * waiting on itself, and the Review DRAWER marks the same rows amber one grain further in.
  * A strip that says "1 waiting on you" over a drawer that marks none is the surface arguing
  * with itself, so both read the one shared predicate.
+ *
+ * That amber half is now SAID as two numbers - "1 needs you · 31 stalled" - because one was
+ * a lie of aggregation on the fleet it was built for: 32 runs, one of which wanted an answer
+ * and 31 of which were dead, reported as "32 waiting on you". A person cannot act on 32
+ * anything, so the number went from being the reason to open the drawer to being the reason
+ * not to. The predicate is unchanged and so is the total; `workflowRunAttentionSplit` owns
+ * the division and `workflowRunAttentionParts` owns the words, in `@shared/workflow.ts`,
+ * because the drawer's header prints the same two numbers and the two must never drift.
+ *
+ * Amber for either, and there is no third tone to give the stalled half: `LineTone` has no
+ * red, and inventing one for the strip would be a colour six stages have to learn.
  */
 function foldReview(input: LineFoldInput): LineStageSummary {
   const live = input.workflowRuns.filter((r) => workflowRunIsOpen(r.status));
@@ -246,7 +261,7 @@ function foldReview(input: LineFoldInput): LineStageSummary {
     return { stage: "review", count: 0, sentence: "no runs live", tone: "neutral" };
   }
 
-  const waiting = live.filter(workflowRunWaitsOnOperator).length;
+  const attention = workflowRunAttentionParts(workflowRunAttentionSplit(live));
 
   // Which workflow is doing the most of this - the run ladder's identity, condensed. Ties
   // break on the name so the sentence is stable rather than reordering with map iteration.
@@ -264,11 +279,15 @@ function foldReview(input: LineFoldInput): LineStageSummary {
   return {
     stage: "review",
     count,
+    // Spread through `sentence()` rather than pre-joined: it is the helper that owns the
+    // " · " separator, and `LineStrip.stageLabel` rewrites exactly that separator into the
+    // commas an accessible name reads with. A part concatenated by hand would ship a middle
+    // dot into an `aria-label`.
     sentence: sentence(
       `${top.name} v${top.version}${top.runs > 1 ? ` ×${top.runs}` : ""}`,
-      waiting > 0 ? `${waiting} waiting on you` : null,
+      ...attention,
     ),
-    tone: waiting > 0 ? "attention" : "working",
+    tone: attention.length > 0 ? "attention" : "working",
   };
 }
 
@@ -332,11 +351,11 @@ function foldShipped(input: LineFoldInput): LineStageSummary {
   }
 
   const prsToday = input.cost?.prsToday ?? 0;
-  const estimated = input.cost?.estimatedCostToday ?? null;
-  // The FleetStrip's own derivation, on the same gate: an estimate over zero pull requests
-  // is a division by zero, and a null estimate means some usage in the window is unpriced,
-  // so a per-PR figure built from it would be a subtotal wearing a total's clothes.
-  const perPr = estimated != null && estimated > 0 && prsToday > 0 ? estimated / prsToday : null;
+  // The one derivation, shared with the spend popover and the Ship log's KPI. It was
+  // written out here as well until those three existed; a division whose interesting half
+  // is when it REFUSES (unpriced usage in the window, no adoptions to divide by) is exactly
+  // the kind that drifts silently once there is more than one copy of it.
+  const perPr = costPerPrToday(input.cost ?? null);
 
   return {
     stage: "shipped",

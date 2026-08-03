@@ -2348,7 +2348,11 @@ Mission Control keeps its three primary pages in one segmented top bar control:
 **▦ Fleet / ⌗ Library / ▷ Runs**. Fleet shows the sessions doing the work, **Library** holds
 everything you author once and reuse, and **Runs** monitors live and finished workflow runs.
 Nothing on the Library runs - each shelf carries a single cross-link to where its assets are
-executing, and no live state beyond it.
+executing, and no live state beyond it. That link sits beside the shelf's question as a
+counted pill wearing a status dot: blue while work is merely open, amber when the count is
+one you have to answer. See the
+[runtime capture](docs/evidence/library-cross-link/README.md) for both the wide and the
+narrow layout.
 
 Switching primary pages changes only the dashboard body. The fleet header, live SSE
 connection, and Cards, Console, or Board selection stay mounted, so returning to **Fleet**
@@ -2391,6 +2395,7 @@ surfaces as sibling tabs is retired:
 | `#/runs/:id` | That run's reader - verdicts, deliveries, timeline, exports |
 | `#/ensembles` | Every ensemble run |
 | `#/ensembles/:id` | That run's full dossier and its one-shot decision |
+| `#/shipped` | The **Ship log**: every pull request the fleet opened, across every repository |
 
 Every `#/workflows/*` spelling redirects permanently, and the address bar is rewritten to the
 new one so a kept bookmark stops being a legacy link: `#/workflows` → `#/library`,
@@ -2414,6 +2419,58 @@ as every unknown hash always has.
 
 An editor with unsaved changes still holds a navigation away from it and asks first, whichever
 home you are leaving for.
+
+### The Ship log
+
+`#/shipped` is the cross-repo record of what the fleet landed: the Inspector's adoption
+ledger, read as a page rather than counted. Every row is one pull request Mission Control can
+prove one of its agents opened, tagged with the repository it belongs to - which is what makes
+this the surface that answers "what shipped, across everything we touched".
+
+The page has three parts.
+
+- A **KPI row**: how many shipped in the range and how that compares with the range before it
+  (with a twelve-week trend line), how many of them merged and at what rate, the same
+  fleet-wide per-pull-request cost figure the [spend chip](#cost-telemetry) carries, and how
+  many repositories the range touched.
+- A **repository rail**: one row per repository with its count and a merged / open / gone mix
+  bar. The rail doubles as the filter - press a repository to narrow the feed to it, press it
+  again to come back. The KPI row deliberately does *not* narrow with it, because the context
+  the selection was made from is what makes the selection readable.
+- The **feed**: the range's pull requests grouped by the local day they were adopted, newest
+  first. Each row carries its merge state as a mark *and* a word, the repository, the title,
+  the number and branch, the session that opened it, and how long ago.
+
+Three details are worth knowing.
+
+**Titles arrive late, and rows are named by what is known.** The adoption signal is a hook
+catching `gh pr create` and carries only a URL, so the title is written by the Inspector's
+first poll afterwards. A row falls back to its branch name until then, and to its number when
+even the branch has not been observed. A row adopted before this build and already closed may
+keep its branch name for ever - the poll retires merged and closed rows and never looks again.
+
+**Merged means merged by anyone.** YOLO mode records the merges it performs itself; a merge a
+person pressed is visible only through what the poll last observed. The page counts both, so
+"merged" here answers "did this land" rather than "did the fleet land it unattended". The
+[Shipping settings panel](#settings) keeps the finer five-way reading (merged, soaking, held
+at a gate, not looked at, closed), which is a different question about the same rows.
+
+**Range and repository are not in the hash.** Both are what you are currently looking at
+rather than where you are, so `#/shipped` is the whole address and a reload comes back to the
+default seven days across every repository. The page reads the ledger once over a window wide
+enough for every range it offers, so switching between Today, 7 days and 30 days is instant
+and cannot fail halfway through a comparison. It is fetched only while the page is open.
+
+A range here is **whole local days ending today**, because the feed's day headings are its
+ordering and half a day under a heading naming all of it would be a lie about both. The
+Line's Shipped count is a rolling seven days to the minute, so the two figures differ by
+however much of today has already gone. That is the only way they are allowed to differ: the
+page reads the ledger through the adoption window, so neither truncation nor a re-review can
+put them out of step about which pull requests exist.
+
+Reach it with `⌘K` (search for "shipped", "merged" or "pull request"), by opening the hash, or
+from the Line: clicking ⚑ **Shipped** opens the [Shipped drawer](#the-stage-drawers) over the
+fleet, and its **Ship log →** header action lands here.
 
 ## Workflows and Personas
 
@@ -3135,6 +3192,27 @@ Automatic **pull request** preparation is the same idea one stage later, and it 
 for a reason that is not a preference: preparing a PR means typing into the session, and
 Preview is defined as performing no keystroke injection at all. A Preview binding that reaches
 the missing-PR gate records why it deferred rather than appearing to do nothing.
+
+### Blocked runs are recoverable, not terminal
+
+A check runs in a **pooled worktree**, and a check that times out is terminated by process
+group. When that group cannot be proven gone, the worktree cannot be handed back, and the run
+blocks rather than reporting a result it cannot account for - something may still be writing
+into the tree the verdict came from. The run reads **Blocked**, phase `check_cleanup_unresolved`.
+
+That block is meant to clear itself, and now does. The pool's reclamation pass keeps asking
+whether the group has gone and hands the tree back when it can prove it; on the next sweep the
+run **resumes on its own** - the retry the block withheld is scheduled against the same
+evidence and the same round, and the timeline records **Check cleanup resolved**. A node that
+had already spent every infrastructure attempt moves to `infrastructure_error` instead, which
+is the phase **Retry provider call** belongs to.
+
+Blocked is also no longer a dead end in the header. **Submit fresh evidence** and **Submit
+unchanged** render for a blocked run, not only a parked one, because the daemon has always
+accepted a resubmission for both. When the daemon would refuse - the bound session is gone,
+the run is externally sourced, or it has used every repair round its binding allows - the
+buttons stay visible and disabled, carrying that exact reason, rather than disappearing and
+leaving **Cancel run** as the only thing to reach.
 
 ### Live repair delivery and Foreman completion
 
@@ -4330,7 +4408,7 @@ it. A stage turns **amber when it is waiting on you**, and the wire feeding it l
 | ⇊ **Intake** | Enabled [task sources](#task-sources-pulling-work-into-the-backlog) plus enabled [Recurring Missions](#recurring-missions) | When the most recent source last swept, and when the next mission is due | A source failed its last sweep, or a mission's health is `attention` |
 | ☰ **Backlog** | Tasks with status `backlog` | What [autopilot](#backlog-autopilot-foreman-schedules-the-fleet) would take next, and how many are blocked | Nothing in the backlog is ready - every item is [parked](#hold-a-backlog-item-back) or waiting on a prerequisite, so capacity will never clear it |
 | ▶ **Working** | Sessions that have not exited | The split: needs you / working / idle | Any session needs you - the same [`reportBucket`](#session-status-colors) the Roundup counts with |
-| ⌁ **Review** | [Workflow runs](#watching-a-run) that are not `completed`, `cancelled` or `failed` | The workflow doing most of them, and how many are waiting on you | A run is `blocked`, or its session action is parked on one of the three wait reasons only a person can clear |
+| ⌁ **Review** | [Workflow runs](#watching-a-run) that are not `completed`, `cancelled` or `failed` | The workflow doing most of them, then the split: **`N needs you · N stalled`** | A run is `blocked`, or its session action is parked on one of the three wait reasons only a person can clear |
 | ⧉ **Decide** | [Ensemble runs](#multi-agent-ensembles) that have not finished | Which strategy, how many artifacts are ready, or who it is waiting on | The daemon flagged the run (`awaiting_decision`, a failure, or a member sitting on your answer) |
 | ⚑ **Shipped** | Pull requests your agents adopted **this week** | The **per-PR cost** from today's [cost telemetry](#cost-telemetry) | Never. Shipping is not an obligation |
 
@@ -4338,6 +4416,17 @@ Two windows on the Shipped stage, and it says which is which: the count is the *
 because a Monday morning would otherwise read as zero on a fleet that shipped four things on
 Friday, while the per-PR figure is **today's** - the only window `FleetCost` offers, and
 dividing a day's spend by a week's pull requests would mean nothing.
+
+**Review says its amber half as two numbers**, because one was a lie of aggregation. A fleet
+of 32 live runs where one wanted an answer and 31 were dead read as `32 waiting on you`, which
+is a figure nobody can act on - so it became the reason to ignore the strip rather than the
+reason to open it. It now reads `1 needs you · 31 stalled`: **needs you** is a run a person's
+answer still moves, **stalled** is a run that is `blocked` and will not resume from here. The
+two are mutually exclusive and add up to exactly the old single figure - a run that is both
+blocked *and* parked on your answer counts as **stalled**, because the attempts behind that
+question were cancelled when it blocked, so answering it moves nothing. The Review drawer's
+header prints the same two numbers from the same fold, and the stage stays amber while either
+is non-zero.
 
 **The strip never computes anything.** Every count, sentence and tone is folded on the daemon
 and pushed as one `line_summary` SSE event, change-gated exactly like the cost figures - so an
@@ -4357,7 +4446,7 @@ reads it:
 | ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
 | ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble |
-| ⚑ Shipped | `#/runs` filtered to completed. There is no pull-request list surface in the app; the list of work that finished is the nearest true thing |
+| ⚑ Shipped | **Drawer** - the week's adopted pull requests, newest first, escalating to the [Ship log](#the-ship-log) |
 
 Hovering a stage gives you what it is for, plus its sentence in full - the visible line is
 clipped to one row so the strip's height never moves. The flowing dots on the wires respect
@@ -4384,21 +4473,67 @@ rather than assert.
 - **Leaving the fleet closes it.** Every route out - "Open run", "All ensembles →", the topbar -
   drops the drawer, so returning to the fleet does not resurrect a panel you had finished with.
 
-Each drawer is a **triage projection**, built from the SSE summaries the fleet already holds.
-None of them fetches, and none of them mutates: every action that changes a run or records a
-decision stays on the full page, one click deeper.
+Each drawer is a **triage projection**, and **none of them reads run detail** - a drawer that
+fetched one detail per row would fire N bounded HTTP reads on a single strip click. Review and
+Decide are drawn entirely from the SSE summaries the fleet already holds and fetch nothing at
+all. **Intake and Shipped each make exactly one read**, on the click that opens them and never
+otherwise, because their inputs never cross the wire: task-source health and the Inspector's
+adoption ledger are the two stages the daemon folds from data the browser has no copy of. Both
+therefore hold **three** states rather than two - loading, failed, and the answer - since
+`fetchJson` resolves null on every failure, and a drawer that read that as "nothing here" would
+report an unreachable daemon as a healthy empty intake or a quiet week.
+
+Review alone can also *act*, and only where the summary by itself proves the run has stopped
+and the route needs no argument beyond the run id - which is what keeps `Reattach` (needs a
+session), resolving a delivery (needs a delivery and a choice) and disabling a reviewer (needs
+a stage member) on the full page, one click deeper.
 
 | Drawer | Each row says | Escalates to |
 |--------|---------------|--------------|
-| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing. A run stopped on *you* is marked amber - the same rule the strip counts with. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
+| **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
 | **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](#recurring-missions) |
+| **Shipped** | One adopted pull request: its merge state as a **mark and a word** (merged / open / gone), its title - falling back to the branch, then to its own number - over `owner/repo#N`, the session that opened it, and when. Newest adoption first, over the same rolling seven days the count above it is folded from. Chips in the header split the week **All / Merged / Open / Gone** with their counts, and are toggles | The pull request itself on GitHub, and `Ship log →` → [`#/shipped`](#the-ship-log) |
+
+**A Review row is named by whoever it is, not by whatever is left.** A workflow run outlives
+the session it reviewed - when a session is removed the run is blocked and its live name goes
+with it - so the row falls back in three steps: the live session's name, then the title the
+binding captured when it was bound, then the conversation key. Only the third is an id, and it
+is drawn as one rather than as a title.
+
+**Runs that stopped for the same reason fold into one bar.** Thirty-one rows that all read
+`Blocked · session gone` are not thirty-one facts, and scrolling them is the reader's whole
+budget for the surface. At **three or more** sharing a `phase`, Review draws a single bar
+saying the reason once, counting them once, naming the first three and counting the rest
+(`Run 1 · Run 2 · Run 3 · +27`), with one **Dismiss all**. **Two is still two rows** - a pair
+is not a pile, and folding it would save one line while costing you both rows' chips, round
+counters and remedies. Only `blocked` runs fold: a live run and a run parked on *your* answer
+are the rows you came for, and neither is ever put behind a caret. The bar's **caret expands
+it in place**, so every member is still reachable - the drawer's cap is on the panel, never on
+the list.
+
+**Everything Review can do is destructive-safe.** `Dismiss`, `Restart…` and `Dismiss all`
+confirm first, in the same dialog and the same words the run page uses; `Restart…` still
+demands the exact phrase the daemon does, and `Dismiss all` **echoes the count** it is about
+to end. A refused request is reported on the drawer itself and the row stays - a triage
+surface that dropped a row on a failed call would be lying about the fleet. `Dismiss all`
+fires one cancel per run through that same per-run route rather than a batch one, so a partial
+failure is reported as one - `2 of 30 runs could not be dismissed` - the cancelled runs leave,
+the refused ones stay, and the bar recounts from what is actually still there.
+
+Only `Dismiss` batches. `Restart…` demands a typed phrase each time and batching it would
+launder thirty deliberate acts into one; `Retry` fires provider calls, and a batch button is a
+way to fire thirty of them by accident. A bar over runs with no argument-free remedy at all -
+five runs holding Inspector findings, say - still earns its place by saying the reason once,
+and carries no control.
 
 Two chips the Review drawer deliberately cannot draw: **how many** reviewers a run has, and a
 stage the run has not reached. A run summary carries no graph, so "reviewers 2 of 4" would be
 a denominator invented in the browser - the row says who is reviewing right now and points at
 the run for the rest. Chips for a session action or an Inspector gate appear only when the run
-actually has one, which makes their absence informative rather than grey furniture.
+actually has one, which makes their absence informative rather than grey furniture. A run
+whose session disappeared shows **Reviewers stopped** in grey rather than an amber
+**Reviewers**: those attempts were cancelled where they stood, so they are not waiting.
 
 ## The palette (⌘K)
 
@@ -4418,7 +4553,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 
 | Group | Kinds | The second line says |
 | --- | --- | --- |
-| **Jump to** | `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
+| **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
 | **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, or open a blank draft on a Library shelf |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
@@ -4445,6 +4580,14 @@ SSE collections the dashboard already holds, so typing a letter is not a network
 palette can never be more stale than the page beside it. And it **only ever opens a door that
 already exists** - every "Do" row lands on the same modal a button somewhere else opens, and
 every "Jump to" row on a route the app publishes.
+
+The `page` kind has exactly one member, and that is a statement about the app rather than an
+unfinished list: the [Ship log](#the-ship-log) is the only full page with no door in the
+permanent chrome. The one door it does have is two clicks inside the fleet - the Line's ⚑
+Shipped stage opens its [drawer](#the-stage-drawers), whose header escalates here - so
+<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app.
+Fleet, the Library and Runs are one press of the segmented control away, and a palette row
+beside a visible door would only be a second door.
 
 Archived assets are not indexed, because the shelf a hit would land on does not list them.
 Task sources appear under Settings rather than as their own kind, which is where the Library's
@@ -4534,10 +4677,11 @@ earns two surfaces a card has nowhere to put:
   **needs you** with the run's header repeated there, rather than dragging its working siblings
   out of the column that describes what they are. Dragging a backlog card onto a clustered tile
   works exactly as it does anywhere else - the frame is a drawing, not a drop target.
-- **Killing a session closes its detail**, without waiting for the session to disappear -
-  the board goes straight back to its columns, the console empties its pane, and Cards
-  leaves focus mode with the card still selected. A killed session lingers for a few
-  seconds before it's evicted, and there's nothing left to read in it.
+- **Killing a session closes its detail** once shutdown is accepted, without waiting for an
+  Agent SDK subprocess and event stream to finish draining. The board goes straight back to
+  its columns, the console empties its pane, and Cards leaves focus mode with the card still
+  selected. The card reads **stopping** during that drain, then **exited** until its ordinary
+  eviction; durable task, workflow, and review cleanup still begins only on `session_remove`.
 - **Double-click a column head to widen that column.** A board column is sized for a
   glance, and sometimes a glance is not enough: titles wrap to three lines, goals clamp at
   two, and a blocked chip ellipses after four words. Double-clicking the head - or pressing
@@ -4769,8 +4913,8 @@ names the layouts where a shortcut's target exists:
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
-| <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then close the session; press <kbd>Enter</kbd> to confirm. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
-| <kbd>k</kbd> | Kill the selected session (press <kbd>Enter</kbd> to confirm) | Selected session |
+| <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then request session shutdown; press <kbd>Enter</kbd> to confirm. The detail closes once shutdown is accepted while an Agent SDK session drains in the background. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
+| <kbd>k</kbd> | Request shutdown of the selected session and close its detail once accepted (press <kbd>Enter</kbd> to confirm) | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move between Session, the stages, their reviewers and End. <kbd>Home</kbd> / <kbd>End</kbd> jump to either terminus | [Workflows](#workflows-and-personas) → Pipeline |
 | <kbd>⌥</kbd><kbd>←</kbd> <kbd>⌥</kbd><kbd>→</kbd> | Move the focused stage earlier or later in the chain | [Workflows](#workflows-and-personas) → Pipeline |

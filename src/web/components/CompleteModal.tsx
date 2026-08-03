@@ -31,7 +31,7 @@ export function CompleteModal({
   session: Session;
   /** Every task, to count what this completion would release. */
   tasks: Task[];
-  /** Fired once the task is closed and the session killed, so App can drop the detail. */
+  /** Fired once the task is closed and session shutdown is accepted, so App drops detail. */
   onCompleted?: () => void;
   onClose: () => void;
 }): React.JSX.Element {
@@ -86,7 +86,7 @@ export function CompleteModal({
       setError(completed.error ?? "could not complete the task");
       return;
     }
-    // The task is recorded before the agent is stopped, and the order matters: a kill
+    // The task is recorded before the agent stop is requested, and the order matters: a stop
     // that fails must not leave the outcome unwritten, because the row would then settle
     // as `failed` through the session-went-away path and lose what was just typed.
     const killed = await api.kill(session.id);

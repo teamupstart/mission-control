@@ -281,6 +281,36 @@ test("a second turn steers while one is running, and starts when the thread is i
   await drained;
 });
 
+test("an active status that overtakes the turn response still pairs with its idle", async () => {
+  let server: FakeServer;
+  server = new FakeServer(
+    defaultReplies({
+      "turn/start": () => {
+        // The notification pump is independent from request correlation, so both of these
+        // may be consumed before `startTurn` resumes from the response below.
+        server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+        server.notify("thread/status/changed", {
+          threadId: THREAD.id,
+          status: { type: "active", activeFlags: [] },
+        });
+        return { turn: { id: "turn-1", status: "inProgress" } };
+      },
+    }),
+  );
+  const { handle, events, drained } = await launch(server);
+  await settle();
+
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  await settle();
+  assert.equal(
+    events.filter((event) => event.kind === "turn_done").length,
+    1,
+    "the response must not erase the same turn's already-observed active status",
+  );
+  await handle.stop();
+  await drained;
+});
+
 test("a steer against a turn that moved rejects rather than reporting delivery", async () => {
   const server = new FakeServer({
     ...defaultReplies(),
@@ -864,6 +894,88 @@ test("turn lifecycle drives state, and usage rides turn_done exactly once", asyn
     // Tokens, never money: `codexPricing` owns that conversion for the ledger.
     costUsd: null,
   });
+  await handle.stop();
+  await drained;
+});
+
+test("a completed final answer ends the turn when lifecycle notifications are lost", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  server.notify("item/completed", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    completedAtMs: 0,
+    item: {
+      type: "agentMessage",
+      id: "message-commentary",
+      text: "The tests are still running.",
+      phase: "commentary",
+      memoryCitation: null,
+    },
+  });
+  await settle();
+  assert.equal(
+    events.filter((event) => event.kind === "turn_done").length,
+    0,
+    "commentary is activity inside the turn, not its completion",
+  );
+
+  server.notify("item/completed", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    completedAtMs: 1,
+    item: {
+      type: "agentMessage",
+      id: "message-final",
+      text: "Implemented.",
+      phase: "final_answer",
+      memoryCitation: null,
+    },
+  });
+  await settle();
+  assert.equal(
+    events.filter((event) => event.kind === "turn_done").length,
+    0,
+    "the fallback leaves room for trailing lifecycle and usage frames",
+  );
+  server.notify("thread/tokenUsage/updated", {
+    threadId: THREAD.id,
+    turnId: "turn-1",
+    tokenUsage: {
+      total: { totalTokens: 3, inputTokens: 2, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 },
+      last: { totalTokens: 3, inputTokens: 2, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 },
+      modelContextWindow: 258400,
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const fallbackDone = events.filter((event) => event.kind === "turn_done");
+  assert.equal(fallbackDone.length, 1);
+  assert.equal(fallbackDone[0]?.kind === "turn_done" && fallbackDone[0].usage?.output, 1);
+
+  // The outbox may start turn 2 before turn 1's unidentifiable idle arrives. Because turn
+  // 2 has not emitted its own active status yet, the stale idle has no paired turn to end.
+  assert.equal(await handle.send({ text: "next queued turn" }), "started");
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  await settle();
+  assert.equal(events.filter((event) => event.kind === "turn_done").length, 1);
+  assert.equal(
+    await handle.sendIfIdle({ text: "must not start over turn 2" }),
+    null,
+    "turn 1's delayed idle cannot complete turn 2",
+  );
+
+  // The stale frame did not consume turn 2's future completion. Its own active -> idle
+  // status pair remains sufficient even when its ID-bearing completion is also absent.
+  server.notify("thread/status/changed", {
+    threadId: THREAD.id,
+    status: { type: "active", activeFlags: [] },
+  });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  await settle();
+  assert.equal(events.filter((event) => event.kind === "turn_done").length, 2);
   await handle.stop();
   await drained;
 });

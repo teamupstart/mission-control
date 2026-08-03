@@ -13,7 +13,7 @@ import { fileURLToPath, URL } from "node:url";
 // every write below would 401.
 process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-http-"));
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -1599,4 +1599,118 @@ test("/api/sessions/:id/pane serves the child's screen, and 404s an unknown sess
   const res = await app.request("/api/sessions/sess-1/pane", { headers: LOOPBACK });
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { text: null });
+});
+
+// ---- the adoption ledger, read two ways -------------------------------------------------
+
+// `GET /api/inspector/prs` answers two different questions off one table, and the parameter
+// is the whole difference. Without it: the Inspector settings panel's list, capped, ordered
+// by review recency. With `adoptedSince`: the ship log's rows - every pull request adopted
+// since an instant, newest adoption first, uncapped, matching the column the Line's Shipped
+// count is made of.
+//
+// Both readings are pinned here rather than only the new one, because the risk in adding a
+// parameter to a live route is the default path moving underneath the two settings panels
+// that already poll it.
+
+/** Adopt a PR at `adoptedAt`, the way the hook path does: nothing observed, no title. */
+function adoptAt(number: number, adoptedAt: number, title: string | null = null): void {
+  adoptInspectorPr({
+    key: `owner/repo#${number}`,
+    url: `https://github.com/owner/repo/pull/${number}`,
+    owner: "owner",
+    repo: "repo",
+    number,
+    repoRoot: "/repo",
+    cwd: "/repo",
+    sessionId: "sess-1",
+    source: "hook",
+    state: "open",
+    headSha: null,
+    reviewPosture: null,
+    round: 0,
+    lastReviewedAt: null,
+    lastError: null,
+    failCount: 0,
+    lastFailKind: null,
+    nextAttemptAt: null,
+    lastAttemptSha: null,
+    mergedAt: null,
+    mergeBlock: null,
+    observedHeadSha: null,
+    observedState: null,
+    observedAt: null,
+    headRefName: null,
+    title,
+    adoptedAt,
+    updatedAt: adoptedAt,
+  });
+}
+
+test("/api/inspector/prs windows the ledger by adoption when asked, and not otherwise", async () => {
+  openDb().exec("DELETE FROM inspector_prs");
+  const day = 24 * 60 * 60 * 1000;
+  const now = 1_800_000_000_000;
+  adoptAt(11, now - 2 * day);
+  adoptAt(12, now - 1 * day, "Give the adoption ledger PR titles");
+  adoptAt(13, now - 30 * day);
+  // The oldest adoption is the most recently REVIEWED one, which is what separates the two
+  // orderings. Without this the test would pass on either.
+  updateInspectorPr("owner/repo#13", { lastReviewedAt: now, round: 1 }, now);
+
+  const windowed = await app.request(`/api/inspector/prs?adoptedSince=${now - 7 * day}`, {
+    headers: LOOPBACK,
+  });
+  assert.equal(windowed.status, 200);
+  const rows = (await windowed.json()) as Array<{ number: number; title: string | null }>;
+  assert.deepEqual(
+    rows.map((r) => r.number),
+    [12, 11],
+    "adopted inside the window, newest adoption first - the review does not hoist #13",
+  );
+  assert.equal(rows[0]?.title, "Give the adoption ledger PR titles");
+  assert.equal(rows[1]?.title, null, "a PR no poll has reached yet is untitled on the wire");
+
+  // Absent, the route is what it always was: review-recency order, so the row a review just
+  // touched leads even though it was adopted a month ago.
+  const plain = await app.request("/api/inspector/prs", { headers: LOOPBACK });
+  assert.equal(plain.status, 200);
+  const all = (await plain.json()) as Array<{ number: number }>;
+  assert.deepEqual(all.map((r) => r.number), [13, 12, 11]);
+});
+
+test("/api/inspector/prs refuses an adoptedSince it cannot read, rather than guessing", async () => {
+  // `Number("")` is 0, and so is `Number("  ")` and `Number("\n")`. 0 here means "the entire
+  // ledger since the epoch" - the most expensive answer the route has, handed back for a
+  // typo or an unset variable someone interpolated. Every one of these has to be a 400, not
+  // a full-table scan and not a silent fall-through to the capped default, either of which
+  // would look like it worked.
+  for (const bad of [
+    "",
+    "  ",
+    "\n",
+    "abc",
+    "-1",
+    "1.5",
+    "NaN",
+    "Infinity",
+    "9e99",
+    "1_000",
+    " 5 ",
+    "0x10",
+    "1e3",
+    // Well-formed digits, and still past 2^53 - where the number stops being the one the
+    // caller wrote. The shape check cannot catch this; the exactness check is what does.
+    "99999999999999999",
+    "999999999999999999999999",
+  ]) {
+    const res = await app.request(`/api/inspector/prs?adoptedSince=${encodeURIComponent(bad)}`, {
+      headers: LOOPBACK,
+    });
+    assert.equal(res.status, 400, `adoptedSince=${JSON.stringify(bad)} should be refused`);
+  }
+  // And 0 sent deliberately is a legitimate bound - "everything ever adopted".
+  const epoch = await app.request("/api/inspector/prs?adoptedSince=0", { headers: LOOPBACK });
+  assert.equal(epoch.status, 200);
+  assert.equal(((await epoch.json()) as unknown[]).length, 3);
 });

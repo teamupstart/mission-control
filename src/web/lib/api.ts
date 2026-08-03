@@ -157,7 +157,24 @@ export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
  */
 export const fetchCostConfig = () => fetchJson<CostTelemetryStatus>("/api/cost/config");
 export const fetchInspectorConfig = () => fetchJson<InspectorConfig>("/api/inspector/config");
-export const fetchInspectorPrs = () => fetchJson<InspectorInspection[]>("/api/inspector/prs");
+/**
+ * The adoption ledger, in one of its two readings.
+ *
+ * Bare: the 50 most recently REVIEWED, which is the Inspector settings panel's list.
+ *
+ * With `adoptedSince` (epoch ms): every pull request adopted since then, newest adoption
+ * first and uncapped - the ship-log reading. The Ship log must pass it and must never fall
+ * back to the bare form on a wide range, because review recency is not ship order: the
+ * default's cap would truncate a busy week and its ordering would reshuffle the same week
+ * whenever the Inspector re-reviewed something, leaving a page that disagrees with the
+ * Line's Shipped count about a number they both take from this one table.
+ */
+export const fetchInspectorPrs = (adoptedSince?: number) =>
+  fetchJson<InspectorInspection[]>(
+    adoptedSince === undefined
+      ? "/api/inspector/prs"
+      : `/api/inspector/prs?adoptedSince=${Math.floor(adoptedSince)}`,
+  );
 export const fetchInspectorStatus = () => fetchJson<InspectorStatus>("/api/inspector/status");
 /** Which provider the app's offline work uses, and each background job's model override. */
 export const fetchLlmConfig = () => fetchJson<LlmConfig>("/api/llm/config");

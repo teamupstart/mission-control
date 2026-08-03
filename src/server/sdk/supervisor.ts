@@ -64,6 +64,7 @@ export class SdkSupervisor {
   private unfinishedTurns = new Map<string, number>();
   private acceptingTurns = new Set<string>();
   private stopping = new Set<string>();
+  private stopPromises = new Map<string, Promise<void>>();
   /** Sessions with a terminal handoff in flight. See `beginHandoff`. */
   private handingOff = new Set<string>();
   /**
@@ -431,6 +432,34 @@ export class SdkSupervisor {
   }
 
   /**
+   * Accept an operator stop without making the HTTP request wait for driver exit.
+   *
+   * `stop()` remains the draining primitive used by terminal handoff and daemon shutdown.
+   * This method changes only who waits: it marks the card unavailable synchronously, starts
+   * that same stop path, and lets the existing pump own `exited` and eviction. If asking the
+   * handle to stop rejects before the handle disappears, put the card back rather than leave
+   * a live driver permanently presented as stopping.
+   */
+  requestStop(id: string): boolean {
+    const handle = this.handles.get(id);
+    if (!handle) return false;
+    const previous = this.registry.markSessionStopping(id);
+    if (!previous) return false;
+    const stopping = this.stop(id);
+    // A repeated Complete sees the presentation written by the first one. That first caller
+    // already owns failure restoration; attaching another handler with `stopping` as its
+    // previous state would undo the correct restoration when the shared drain rejects.
+    if (previous.state === "stopping") return true;
+    void stopping.catch((err) => {
+      console.error(`[sdk] accepted stop for ${id} failed:`, err);
+      if (this.handles.get(id) !== handle) return;
+      this.stopping.delete(id);
+      this.registry.restoreSessionAfterStopFailure(id, previous);
+    });
+    return true;
+  }
+
+  /**
    * Stop a session's driver.
    *
    * Deliberately NOT queued behind pending sends: stopping is what a caller asks for when
@@ -443,12 +472,30 @@ export class SdkSupervisor {
    * has to know the harness has finished writing that conversation's file before it hands
    * the id to another process.
    */
-  async stop(id: string): Promise<void> {
+  stop(id: string): Promise<void> {
+    const existing = this.stopPromises.get(id);
+    if (existing) return existing;
     const handle = this.handles.get(id);
-    if (!handle) return;
+    if (!handle) return Promise.resolve();
     this.stopping.add(id);
-    await handle.stop();
-    await this.pumps.get(id)?.catch(() => {});
+    const stopping = (async () => {
+      await handle.stop();
+      await this.pumps.get(id)?.catch(() => {});
+    })();
+    this.stopPromises.set(id, stopping);
+    void stopping.then(
+      () => {
+        if (this.stopPromises.get(id) === stopping) this.stopPromises.delete(id);
+      },
+      () => {
+        if (this.stopPromises.get(id) !== stopping) return;
+        this.stopPromises.delete(id);
+        // A rejected stop left this same handle live. Make it reachable again; an
+        // interactive join restores the card presentation in its own catch handler.
+        if (this.handles.get(id) === handle) this.stopping.delete(id);
+      },
+    );
+    return stopping;
   }
 
   /**

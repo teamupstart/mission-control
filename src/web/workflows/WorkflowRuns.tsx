@@ -73,6 +73,7 @@ import {
   copyFeedbackAction,
   deliveryResolutionActions,
   inspectorGateActions,
+  resubmitAvailability,
   runActionTooltip,
   type RunActionId,
 } from "./run-actions.ts";
@@ -560,6 +561,7 @@ export function WorkflowRunView({
   });
   const [feedbackCopied, setFeedbackCopied] = useState(false);
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
+  const resubmit = resubmitAvailability(detail, liveInspectorRepair);
   const gateActions = inspectorGateActions(detail);
   const preparePrAction = gateActions.find((action) => action.kind === "prepare-pr");
   const recheckAction = gateActions.find((action) => action.kind === "recheck-inspector");
@@ -625,16 +627,25 @@ export function WorkflowRunView({
         </div>
 
         <div className="wf-run-actions">
-          {detail.run.status === "waiting_for_session" && (
+          {resubmit && (
             <>
-              <Tooltip label="Re-read the session's current diff and run the review again">
-                <button className="btn" onClick={() => void onResubmit(false)}>
+              <Tooltip label={resubmit.refusal
+                ?? (resubmit.resuming
+                  ? "Re-read the session's current diff and resume this run where it stalled"
+                  : "Re-read the session's current diff and run the review again")}>
+                <button
+                  className="btn"
+                  disabled={resubmit.refusal !== null}
+                  onClick={() => void onResubmit(false)}
+                >
                   {preview ? "Preview fresh evidence" : "Submit fresh evidence"}
                 </button>
               </Tooltip>
-              <Tooltip label="Run the review again against the evidence snapshot already taken">
+              <Tooltip label={resubmit.refusal
+                ?? "Run the review again against the evidence snapshot already taken"}>
                 <button
                   className="btn btn-ghost"
+                  disabled={resubmit.refusal !== null}
                   onClick={() => onConfirm({
                     title: preview ? "Preview unchanged evidence" : "Submit unchanged evidence",
                     body: "This runs every reviewer again against the snapshot already taken, so"

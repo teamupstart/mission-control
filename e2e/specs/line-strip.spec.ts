@@ -20,6 +20,12 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * stage change, park it and watch the stage go amber. A spec that only loaded the page and
  * read six numbers would pass on a build whose SSE handler was deleted.
  *
+ * The click at the end is Shipped's, and it is a drawer now rather than a navigation - that
+ * stage pointed at `#/runs?status=completed` for one release, because nothing in the app
+ * rendered the adoption ledger its count is made of. What is still checked through it is the
+ * same thing: a press reaches its target, and the strip does not follow you off the fleet
+ * when something finally does navigate.
+ *
  * No model tokens: nothing here dispatches an agent. Every state is reached through the
  * task routes, which is also what makes it deterministic - the Backlog stage is the one
  * stage whose whole input is data a test can write directly.
@@ -76,7 +82,7 @@ function observed(what: string): void {
   console.log(`OBSERVED ${what}`);
 }
 
-test("the Line renders every stage, tracks the fleet live, and its stages navigate", async ({
+test("the Line renders every stage, tracks the fleet live, and its stages reach their targets", async ({
   dashboard,
   daemon,
 }) => {
@@ -135,13 +141,24 @@ test("the Line renders every stage, tracks the fleet live, and its stages naviga
 
   // ---- a stage click does something real ----
 
-  // Shipped is the strip's navigating half. Review, Decide and Intake open drawers in place
-  // instead - their semantics are `line-drawers.spec.ts`' subject, and what is checked here
-  // is only that a stage press REACHES its target at all, on the one stage that still leaves
-  // the page.
+  // Four of the six stages now open a drawer in place; Shipped was the last to, and it used
+  // to navigate to the completed workflow runs - a target that was wrong in both directions,
+  // since a session ships without ever starting a run and a finished run ships nothing. What
+  // is checked here is only that a stage press REACHES its target at all. The drawers' own
+  // semantics are `line-drawers.spec.ts`' subject.
   await line.getByRole("button", { name: /^Shipped,/ }).click();
-  await expect(dashboard).toHaveURL(/#\/runs\?status=completed$/);
-  observed("clicking the Shipped stage navigated to #/runs?status=completed");
+  const shipped = dashboard.getByRole("region", { name: "Shipped drawer" });
+  await expect(shipped).toBeVisible();
+  // And it did NOT leave the fleet. The retired route is the thing this line exists to catch:
+  // a stale target would still "do something real" and pass a looser assertion.
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/fleet");
+  observed("clicking the Shipped stage opened the Shipped drawer in place, without leaving #/fleet");
+
+  // The drawer's own escalation is what leaves the page now, and it lands on the ledger's
+  // full cross-repo reader rather than on a run list.
+  await shipped.getByRole("button", { name: /^Ship log/ }).click();
+  await expect(dashboard).toHaveURL(/#\/shipped$/);
+  observed("the drawer's \"Ship log →\" escalation navigated to #/shipped");
 
   // The strip is the FLEET's chrome, not the app's: it must not follow you off the page.
   await expect(line).toBeHidden();

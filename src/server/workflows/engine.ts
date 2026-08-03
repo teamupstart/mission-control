@@ -57,10 +57,31 @@ const RETRY_BASE_MS = 1_000;
  * Distinct from `infrastructure_error` on purpose: that phase says "we tried three times and
  * gave up", and this one says "we did not try, because trying would have taken a second pooled
  * worktree while something may still be writing into the first". The operator's next move
- * differs too - this one clears itself once reclamation proves the group gone, and the run is
- * resubmitted rather than debugged.
+ * differs too - this one clears itself once reclamation proves the group gone, and the run
+ * resumes rather than being debugged. See `resumeClearedCheckCleanup`.
  */
 export const CHECK_CLEANUP_UNRESOLVED_PHASE = "check_cleanup_unresolved";
+
+/** What `blockedByUnresolvedLease` stores in `gate_state_json`, read back for the resume. */
+interface CheckCleanupBlock {
+  nodeId: string;
+  attempts: number;
+  error: string;
+}
+
+/**
+ * Narrow a run's stored gate state to the block detail, or `null` when it is anything else.
+ *
+ * `gateState` is free-form JSON that several phases write, and a resume driven off a shape
+ * that merely looked right would reschedule against a node id from some other phase's state.
+ */
+function checkCleanupBlock(state: WorkflowJson | null): CheckCleanupBlock | null {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return null;
+  const { nodeId, attempts, error } = state;
+  if (typeof nodeId !== "string" || nodeId === "") return null;
+  if (typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 1) return null;
+  return { nodeId, attempts, error: typeof error === "string" ? error : "" };
+}
 
 export interface WorkflowEngineOptions {
   /**
@@ -1136,9 +1157,10 @@ export class WorkflowEngine {
    * into the first tree. Two writers, two trees, and a verdict from whichever finished last.
    *
    * Blocking is visible and self-clearing rather than terminal: the reclamation pass keeps
-   * asking whether that group has gone, hands the tree back when it can prove it, and the run
-   * is resubmitted. Answering "no lease" is the whole of the cost in every build with no
-   * execution runtime and for every persona node in every build.
+   * asking whether that group has gone, hands the tree back when it can prove it, and
+   * `resumeClearedCheckCleanup` then schedules the retry this withheld. Answering "no lease"
+   * is the whole of the cost in every build with no execution runtime and for every persona
+   * node in every build.
    */
   private blockedByUnresolvedLease(
     attempt: WorkflowNodeAttempt,
@@ -1157,6 +1179,85 @@ export class WorkflowEngine {
     this.store.appendEvent(runId, "check_cleanup_unresolved", detail, now);
     this.onRunChanged(runId);
     return true;
+  }
+
+  /**
+   * Resume every run whose check cleanup has since resolved.
+   *
+   * This is the second half of the block above, and it was missing: `blockedByUnresolvedLease`
+   * withholds the retry while the first attempt's process group may still be writing into the
+   * first worktree, and the reclamation pass hands that tree back once it can prove the group
+   * gone. Nothing then continued the run, so a run whose fault had ALREADY cleared sat blocked
+   * until an operator found the resubmit route by hand - a self-clearing block that never did.
+   *
+   * Polled rather than driven from the lease manager, which is deliberately isolated from the
+   * store, the engine and the manager. Giving it a seam to reach back through would undo that
+   * separation to save a question that costs one indexed row lookup, asked only about runs
+   * already blocked in this one phase.
+   */
+  resumeClearedCheckCleanup(): void {
+    for (const run of this.store.listRuns()) {
+      if (run.status !== "blocked" || run.currentPhase !== CHECK_CLEANUP_UNRESOLVED_PHASE) continue;
+      try {
+        this.resumeCheckCleanup(run);
+      } catch (error) {
+        workflowLog("error", {
+          event: "check_cleanup_resume_failed",
+          run: run.id,
+          error: error instanceof Error ? error.name : "unknown",
+        });
+      }
+    }
+  }
+
+  private resumeCheckCleanup(run: WorkflowRun): void {
+    const gate = checkCleanupBlock(run.gateState);
+    if (!gate) return;
+    const submission = this.store.latestSubmission(run.id);
+    if (!submission || submission.status !== "failed") return;
+    // The whole gate. Until the tree is accounted for, the block is still telling the truth.
+    if (this.unresolvedCheckLease(submission.id, gate.nodeId)) return;
+    const failed = this.store.latestAttemptForNode(submission.id, gate.nodeId);
+    if (!failed || failed.state !== "error") return;
+    const now = this.now();
+    if (failed.attempt >= MAX_INFRA_ATTEMPTS) {
+      // The cleanup cleared, but this node had already spent every infrastructure attempt.
+      // Hand it to the phase that OWNS exhaustion rather than granting a fourth attempt here:
+      // that phase is also the one an operator can retry by hand from the run header.
+      const detail = { nodeId: gate.nodeId, attempts: failed.attempt, error: gate.error };
+      this.store.setRunState(run.id, "blocked", "infrastructure_error", detail, now);
+      this.store.appendEvent(run.id, "persona_infrastructure_exhausted", detail, now);
+      this.onRunChanged(run.id);
+      return;
+    }
+    // Revive BEFORE restoring the run: the submission is `failed`, `setSubmissionState` refuses
+    // that transition outright, and a running run over a failed submission is invisible to
+    // `listRunnableAttempts` - the run would look alive and never execute another attempt.
+    // A null here means another pass or an operator got there first, which is the whole guard.
+    if (!this.store.reviveFailedSubmission(submission.id, run.id, CHECK_CLEANUP_UNRESOLVED_PHASE, now)) {
+      return;
+    }
+    const retryAt = now + this.retryBaseMs * 4 ** (failed.attempt - 1);
+    this.store.insertAttempt({
+      id: randomUUID(),
+      submissionId: submission.id,
+      nodeId: gate.nodeId,
+      attempt: failed.attempt + 1,
+      state: "retry_wait",
+      persona: failed.persona,
+      inputFingerprint: failed.inputFingerprint,
+      retryAt,
+      error: `Retry scheduled after the check cleanup resolved: ${gate.error}`,
+      now,
+    });
+    this.store.setRunState(run.id, "running", "persona_review", null, now);
+    this.store.appendEvent(run.id, "check_cleanup_resolved", {
+      nodeId: gate.nodeId,
+      attempt: failed.attempt + 1,
+      retryAt,
+    }, now);
+    this.onRunChanged(run.id);
+    this.wake();
   }
 
   private blockSubmission(submission: WorkflowSubmission, phase: string, error: string): void {

@@ -114,6 +114,14 @@
 .workflow-blocked,
 .workflow-failed { color: var(--danger); }
 .workflow-passed { color: var(--idle); }
+/* A stage that never ran because the run died reads as ABSENT, not as failed: the attempts
+   were cancelled where they stood, and blaming the reviewers for a session that disappeared
+   underneath them is a different (and untrue) claim. */
+.workflow-stopped {
+  color: var(--exited);
+  border-color: var(--border-soft);
+  background: color-mix(in srgb, var(--exited) 7%, var(--panel));
+}
 
 /* Statuses with a reason are hoverable and keyboard-focusable without reading as actions. */
 .wf-status-explained {
@@ -2912,6 +2920,17 @@ body {
   color: var(--exited);
   border-color: color-mix(in oklab, #e5534b 55%, var(--border)) !important;
   background: color-mix(in oklab, #e5534b 12%, var(--panel-2)) !important;
+}
+/* The one move a stopped triage row offers, marked as the thing to do without being filled:
+   a solid button on every stalled row would out-shout the coloured edge that says which rows
+   are stalled in the first place. */
+.btn-remedy {
+  background: color-mix(in srgb, var(--attention) 12%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--attention) 45%, var(--border));
+  color: var(--attention);
+}
+.btn-remedy:hover:not(:disabled) {
+  border-color: var(--attention) !important;
 }
 .btn-danger {
   color: #fff;
@@ -9361,15 +9380,28 @@ select.ensemble-judge-persona {
   color: var(--dim);
 }
 
+/* The shelf is a grid so the cross-link can share the HEADING's line.
+
+   It used to be the last flex item of `.lib-shelf-top`, pushed out by `margin-left: auto` -
+   which on a full-width window parked it about a thousand pixels right of the heading it
+   belongs to, in the smallest type on the page. Nobody found it. Placing it here is the fix;
+   the pill below is only what makes it legible once it is somewhere the eye already goes.
+
+   `display: contents` on the top row is what allows it: the row's two children become items
+   of THIS grid, so the eyebrow can keep its own line while the link joins the heading on the
+   next one, with no change to the component. Tooltip's `.tt-desc` is the third child and is
+   `position: absolute`, so it is out of flow and claims no track. */
 .lib-shelf {
   margin-top: 26px;
+  display: grid;
+  grid-template-columns: max-content 1fr;
 }
 .lib-shelf-top {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
+  display: contents;
 }
 .lib-shelf-eyebrow {
+  grid-row: 1;
+  grid-column: 1 / -1;
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
@@ -9380,38 +9412,92 @@ select.ensemble-judge-persona {
 /* A button rather than an anchor: every route change in this app goes through the router's
    `navigate`, which is what the dirty-draft gate hangs off. */
 .lib-shelf-live {
-  margin-left: auto;
+  grid-row: 2;
+  grid-column: 2;
+  justify-self: start;
+  align-self: center;
+  margin-left: 14px;
+  display: inline-flex;
+  align-items: center;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--working);
-  background: none;
-  border: 0;
-  padding: 0;
+  background: color-mix(in srgb, var(--working) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--working) 32%, transparent);
+  border-radius: 999px;
+  padding: 3px 10px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+/* The app's status dot, on the one control on this page that reports live state. It is what
+   keeps the pill from reading as plain navigation next to the ＋ New cards. */
+.lib-shelf-live::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, currentColor 22%, transparent);
 }
 .lib-shelf-live:hover {
-  text-decoration: underline;
+  background: color-mix(in srgb, var(--working) 22%, transparent);
+  border-color: color-mix(in srgb, var(--working) 58%, transparent);
 }
 .lib-shelf-live.is-attention {
   color: var(--attention);
+  background: color-mix(in srgb, var(--attention) 14%, transparent);
+  border-color: color-mix(in srgb, var(--attention) 40%, transparent);
+}
+.lib-shelf-live.is-attention:hover {
+  background: color-mix(in srgb, var(--attention) 24%, transparent);
+  border-color: color-mix(in srgb, var(--attention) 62%, transparent);
 }
 .lib-shelf h3 {
+  grid-row: 2;
+  grid-column: 1;
   margin: 3px 0 2px;
   font-size: 16px;
   font-weight: 650;
 }
 .lib-shelf-why {
+  grid-row: 3;
+  grid-column: 1 / -1;
   margin: 0;
   font-size: 12.5px;
   color: var(--muted);
   max-width: 82ch;
 }
 .lib-shelf-row {
+  grid-row: 4;
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 11px;
   margin-top: 12px;
+}
+/* The longest heading and the longest label together need about 570px of page. Below that
+   the pill drops to its own line rather than overhanging the shelf. */
+@media (max-width: 760px) {
+  .lib-shelf {
+    grid-template-columns: 1fr;
+  }
+  .lib-shelf h3 {
+    grid-column: 1 / -1;
+  }
+  .lib-shelf-live {
+    grid-row: 3;
+    grid-column: 1 / -1;
+    margin: 5px 0 3px;
+  }
+  .lib-shelf-why {
+    grid-row: 4;
+  }
+  .lib-shelf-row {
+    grid-row: 5;
+  }
 }
 .lib-shelf-empty {
   margin: 0;
@@ -9649,6 +9735,389 @@ select.ensemble-judge-persona {
 .workflow-empty-mark {
   font-size: 28px;
   color: var(--working);
+}
+
+/* ---- the Ship log: the adoption ledger as a cross-repo page ----
+
+   Its own `shiplog-` prefix in the routed pages' neighborhood, beside the frame it borrows
+   (`.workflow-page`, from `ExecutionPage`). Not `sc-`: that family belongs to the settings
+   console, and this page is not a settings panel - it only shares two of its leaves
+   (`.sc-pr`, `.sc-ref`), which is exactly the amount of the console it wanted.
+
+   Colour is the PR vocabulary the app already has - `--pr-merged` and `--pr-open` - not new
+   tokens and not the strip's tones. Both marks are joined by a WORD everywhere they appear,
+   because merged/open/gone differ here by hue and a hue is not a reading everyone has. */
+.shiplog-ranges {
+  display: flex;
+  gap: 6px;
+}
+.shiplog-chip {
+  padding: 4px 11px;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+.shiplog-chip:hover {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+.shiplog-chip.is-active {
+  color: var(--fg);
+  border-color: var(--pr-merged);
+  background: color-mix(in oklab, var(--pr-merged) 12%, transparent);
+}
+
+/* `auto-fit` with a floor, like `.sc-strip`: four tiles on a wide window, two on a narrow
+   one, and never four squeezed past the width their figures need. */
+.shiplog-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.shiplog-kpi {
+  position: relative;
+  min-height: 86px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.shiplog-kpi-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.shiplog-kpi-figure {
+  margin-top: 2px;
+  font-size: 24px;
+  font-weight: 640;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.shiplog-kpi-unit {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--dim);
+}
+.shiplog-kpi-note {
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+/* A rise in things shipped is good news and a fall is not bad news - a quiet week is a
+   quiet week. So the rise is toned and the fall is not: green here would put its opposite
+   in the reader's head, and this page has no opinion to offer about that. */
+.shiplog-kpi-note.is-up {
+  color: var(--idle);
+}
+.shiplog-spark {
+  position: absolute;
+  right: 12px;
+  bottom: 9px;
+  overflow: visible;
+}
+.shiplog-spark-history {
+  stroke: var(--dim);
+}
+.shiplog-spark-tail {
+  stroke: var(--pr-merged);
+}
+.shiplog-spark circle {
+  fill: var(--pr-merged);
+  /* Ringed in the tile's own background, so the head of the line stays a distinct mark
+     where it lands on top of the history behind it. */
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+
+.shiplog-body {
+  display: grid;
+  grid-template-columns: minmax(0, 236px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+/* Under a narrow window the rail stops being a rail: two columns at this width leave the
+   feed's titles as three words and an ellipsis, and the rail is a filter you reach for
+   occasionally rather than the thing you came to read. */
+@media (max-width: 900px) {
+  .shiplog-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.shiplog-rail {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.shiplog-rail-head {
+  margin: 0 0 4px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.shiplog-legend {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 8px;
+  font-size: 9.5px;
+  color: var(--dim);
+}
+.shiplog-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  border-radius: 2px;
+}
+.shiplog-legend i.is-merged,
+.shiplog-mix i.is-merged {
+  background: var(--pr-merged);
+}
+.shiplog-legend i.is-open,
+.shiplog-mix i.is-open {
+  background: var(--pr-open);
+}
+.shiplog-legend i.is-gone,
+.shiplog-mix i.is-gone {
+  background: var(--dim);
+}
+.shiplog-rail-empty,
+.shiplog-feed-empty {
+  margin: 0;
+  padding: 10px 2px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.shiplog-feed-empty {
+  padding: 18px 14px;
+}
+/* Widened past the rail's own padding so the hover and selected fills reach its edges: a
+   tint that stops short of the border reads as a misaligned box rather than as a row. */
+.shiplog-repo {
+  display: block;
+  width: calc(100% + 24px);
+  margin: 0 -12px;
+  padding: 7px 12px;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+.shiplog-repo:hover {
+  background: color-mix(in oklab, var(--fg) 5%, transparent);
+}
+.shiplog-repo:hover .shiplog-repo-name {
+  color: var(--fg);
+}
+.shiplog-repo:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: -2px;
+}
+/* The rail IS the filter, so the selected row has to be findable at a glance. One shade
+   brighter on the name was the mockup's whole selected state and it does not survive
+   contact with six real repositories - it is a nuance, not a state. The fill and the edge
+   mark say it at the distance the rail is actually read from, and the name still brightens
+   underneath them. */
+.shiplog-repo.is-active {
+  background: color-mix(in oklab, var(--pr-merged) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--pr-merged);
+}
+.shiplog-repo-top {
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.shiplog-repo-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+.shiplog-repo.is-active .shiplog-repo-name {
+  color: var(--fg);
+}
+.shiplog-repo-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+/* The mix bar. `flex` per segment carries the proportion, so the bar and the three numbers
+   in the row's accessible name are the same tally rendered twice - never two counts. */
+.shiplog-mix {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin-top: 5px;
+}
+.shiplog-mix i {
+  border-radius: 3px;
+  /* A one-of-sixty segment still has to be visible, or a repo with a single closed pull
+     request reads as a repo where everything merged. */
+  min-width: 3px;
+}
+.shiplog-repo:not(.is-active) .shiplog-mix {
+  opacity: 0.72;
+}
+.shiplog-clear {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 5px 0;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  color: var(--working);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+
+.shiplog-feed {
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.shiplog-day {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 14px 6px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.shiplog-day-right {
+  margin-left: auto;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--dim);
+}
+.shiplog-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.shiplog-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.shiplog-feed > div:last-child .shiplog-row:last-child {
+  border-bottom: 0;
+}
+/* The merge-state mark, and NOT a `shiplog-` class: `StandingIcon` is drawn on this page's
+   feed and on the Line's Shipped drawer, and a rule named for one of the two surfaces is how
+   the other quietly loses its colours. The word beside it carries the same three tones from
+   `.shiplog-standing` / `.line-ship-word`, which is deliberate duplication of a HUE and not
+   of a reading - each surface sizes its own type. */
+.pr-ic {
+  flex: none;
+}
+.pr-ic.is-merged {
+  color: var(--pr-merged);
+}
+.pr-ic.is-open {
+  color: var(--pr-open);
+}
+.pr-ic.is-gone {
+  color: var(--dim);
+}
+.shiplog-standing {
+  flex: none;
+  min-width: 52px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.shiplog-standing.is-merged {
+  color: var(--pr-merged);
+}
+.shiplog-standing.is-open {
+  color: var(--pr-open);
+}
+.shiplog-standing.is-gone {
+  color: var(--dim);
+}
+.shiplog-repo-tag {
+  flex: none;
+  max-width: 160px;
+  overflow: hidden;
+  padding: 1px 6px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.shiplog-title-col {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+/* No rule for the title link: it is `.sc-pr`, which already truncates and already reads as
+   a link out, and this column is a flex context so that truncation applies unchanged. */
+.shiplog-sub {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.shiplog-row-meta {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.shiplog-when {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.shiplog-empty-sub {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--dim);
 }
 .persona-library,
 .wf-action-library {
@@ -14721,6 +15190,17 @@ button.sc-row:focus-visible {
   padding: 0;
   list-style: none;
 }
+/* A failed remedy, said between the header and the rows rather than inside them. Outside the
+   capped body because the body scrolls: an alert in there is scrolled away by the same list
+   the action was taken from. */
+.line-drawer-alert {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger);
+  font-size: 12px;
+}
 .line-drawer-empty {
   margin: 0;
   padding: 16px;
@@ -14748,11 +15228,105 @@ button.sc-row:focus-visible {
 .line-drawer-rows > li.is-waiting {
   box-shadow: inset 2px 0 0 var(--attention);
 }
+/* Red for a run that is STOPPED and will not move on its own, amber for one that is your
+   turn. They used to share amber, because the predicate that counts "waiting on you" is true
+   of both - and on a fleet where thirty-one runs are blocked, a colour that means either
+   thing means neither. */
+.line-drawer-rows > li.is-blocked {
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+/* A member of an expanded group. Tinted so the pile reads as one block rather than as rows
+   that happen to be adjacent - the tint is the group's own danger wash, at a fraction that
+   leaves the toned chips on the row still reading against one field.
+
+   46px is not a decorative indent: it is the row's own 14px padding plus the bar's 20px caret
+   plus the 12px gap after it, so a member's title starts EXACTLY under the bar's title. A
+   nested row a few pixels off would put two title columns down one panel, which is why the
+   e2e spec measures the two in a laid-out browser rather than trusting this sum. */
+.line-drawer-rows > li.is-member {
+  padding-left: 46px;
+  background: color-mix(in srgb, var(--danger) 3%, transparent);
+}
+
+/* THE GROUP BAR - several runs that stopped for one reason, said once.
+   A sibling of the row and, critically, the SAME HEIGHT: the body's cap is
+   `calc(var(--line-drawer-row-h) * 3)`, so a bar of any other height would stop the cap
+   landing on a row boundary and leave half a row peeking over the edge. It inherits the row
+   height and the divider from `.line-drawer-rows > li` above and only re-lays its columns. */
+.line-group {
+  background: color-mix(in srgb, var(--danger) 5%, transparent);
+}
+/* The disclosure. Icon-only and therefore free to carry a spelled-out accessible name -
+   "3 runs blocked, session gone" - without contradicting a visible label. */
+.line-group-caret {
+  flex: none;
+  width: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.line-group-caret:hover {
+  color: var(--fg);
+  background: var(--border-soft);
+}
+.line-group-caret:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+/* 340px minus the caret and its gap, so the bar's remaining columns land where the rows'
+   land. A pile whose chip rail started 32px right of its own members would read as a
+   different table. */
+.line-group-who {
+  flex: none;
+  width: 308px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.line-group-who strong {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The member titles, in the slot a row's chips occupy - and running on through the state
+   column, because the state is what the bar's bold line already said. One line, clipped, on
+   the row's own terms. */
+.line-group-mid {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The same floor as `.line-run-ops`, so the bar's one control lands on the same right edge as
+   the rows' controls above and below it. */
+.line-group-ops {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  min-width: 170px;
+  justify-content: flex-end;
+}
+.line-group-ops .btn {
+  padding: 4px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
 
 /* Wide enough for the line that identifies the row - "No-Mistakes Review v4 · round 2/3" is
    33 mono characters, and at 190px it ellipsized on EVERY row rather than on a long one. The
    width came out of the chip rail, which was mostly empty space between the last chip and
-   the state column. Fixed rather than flexible so the four columns line up down the panel. */
+   the state column. Fixed rather than flexible so the four columns line up down the panel.
+   Review overrides it below; Decide and Intake still want exactly this. */
 .line-run-who,
 .line-ens-who,
 .line-intake-who {
@@ -14763,6 +15337,14 @@ button.sc-row:focus-visible {
   flex-direction: column;
   gap: 2px;
 }
+/* The Review row alone goes wider, and only now that its bold line is a real title. 240px was
+   sized when it held a conversation GUID, which ellipsizes at any width; the binding titles
+   that replaced it ("Improve Foreman Context and Table Scrolling") are 46 characters of
+   proportional text and deserve the room. Taken from the chip rail, which is the same slack
+   the 240px came out of. */
+.line-run-who {
+  width: 340px;
+}
 .line-run-who strong,
 .line-ens-who strong,
 .line-intake-who strong {
@@ -14771,9 +15353,21 @@ button.sc-row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The third fallback, when there is no live session name and the binding captured none. Mono
+   and dim so it reads as the identifier it is - a bold GUID in the title slot is what the
+   three-step resolution above exists to stop looking normal. */
+.line-run-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .line-run-wf,
 .line-ens-strategy,
-.line-intake-kind {
+.line-intake-kind,
+.line-ship-sub {
   font-family: var(--mono);
   font-size: 10px;
   color: var(--dim);
@@ -14835,6 +15429,23 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 190px held "Blocked". It does not hold "Blocked · out of Inspector rounds" (32 mono
+   characters, ~199px) or "Waiting for the session · reattached" (35, ~218px), and this column
+   is now the most load-bearing text on a stopped row - a cause that ellipsizes into "Blocked ·
+   out of Ins…" is the complaint this work exists to fix, wearing a longer coat. Sized to the
+   longest CAUSE and not to the longest sentence: the optional tails this line can also carry
+   (who is reviewing, how many deliveries are unconfirmed) have always ellipsized and should,
+   because they are the part a reader scans past. Also taken from the chip rail. */
+.line-run-state {
+  width: 240px;
+}
+/* The cause carries the row's tone, because it is the sentence a reader is scanning for. */
+.line-run-state.is-blocked {
+  color: color-mix(in srgb, var(--danger) 82%, var(--fg));
+}
+.line-run-state.is-waiting {
+  color: var(--attention);
+}
 .line-intake-state {
   flex: 1;
   width: auto;
@@ -14862,6 +15473,16 @@ span.line-run-prov {
   display: flex;
   gap: 6px;
 }
+/* Reserved whether or not this row has a remedy, and right-aligned inside the reservation.
+   Review is the one drawer whose rows carry a DIFFERENT number of controls - only a stopped
+   run gets a remedy - and without a floor the two-button rows widen this column and shove the
+   state text 80px left of the state text on the row above it. The column that says why a run
+   stopped has to be a column; a ragged left edge down thirty rows is the reader scanning for
+   the sentence instead of reading it. */
+.line-run-ops {
+  min-width: 170px;
+  justify-content: flex-end;
+}
 .line-run-ops .btn,
 .line-ens-ops .btn,
 .line-intake-ops .btn {
@@ -14870,12 +15491,164 @@ span.line-run-prov {
   white-space: nowrap;
 }
 
+/* THE SHIPPED ROW - one adopted pull request, and where it stands.
+   ----------------------------------------------------------------------------
+   The one drawer row whose columns are not the who / middle / state / ops grammar the other
+   three share, and the reason is what the row is FOR. On a Review or a Decide row the state
+   is a trailing gloss on a title; here the state IS the fact being scanned for - "did this
+   land" over a week of rows - so it leads, and the title it qualifies takes the flexible
+   column behind it. Forcing this into the shared four would have put the answer in the last
+   190px of the row, which is the column the narrow-viewport rule below hides.
+
+   It shares what genuinely IS shared: the row's height and divider from
+   `.line-drawer-rows > li`, and its mono subline from the grouped `.line-run-wf` rule above. */
+.line-ship-mark {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Sized to `merged`, the longest of the three, so the title column starts at one indent
+     down the panel rather than stepping in and out with the word beside it. */
+  width: 84px;
+}
+.line-ship-word {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* The same three tones the Ship log's feed spends, from the same two variables. Duplicated as
+   a HUE and not as a reading - each surface sizes its own type, and `PR_STANDING_LABELS` is
+   the one place the words come from. */
+.line-ship-mark.is-merged .line-ship-word {
+  color: var(--pr-merged);
+}
+.line-ship-mark.is-open .line-ship-word {
+  color: var(--pr-open);
+}
+.line-ship-mark.is-gone .line-ship-word {
+  color: var(--dim);
+}
+/* Flexible rather than the shared 240px/340px, because exactly one column on this row grows:
+   with the mark, the session and the time all fixed, the titles still line up down the panel
+   by construction, and a fixed width here would ellipsize a pull request title on a 1600px
+   window to leave empty space beside it. */
+.line-ship-who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* The title, in the slot a `<strong>` holds on the other rows - and it is a LINK, because the
+   row's one destination is the pull request itself. Sized and weighted like those bold lines
+   so four drawers do not print their titles four ways. */
+.line-ship-who .sc-pr {
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.line-ship-meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  /* A floor rather than a fixed width: `2h ago` and `yesterday` are different lengths and the
+     session handle is optional, so without one the time column ripples down the panel. */
+  min-width: 168px;
+}
+.line-ship-when {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* THE FILTER CHIPS, in the header's actions slot beside the escalation.
+   The mockup drew them under the count; the frame's header is where every drawer's controls
+   already live, and a strip of its own between the header and the rows would have cost the
+   three-row body a row's worth of height for four numbers. */
+.line-ship-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.line-ship-chip {
+  padding: 3px 9px;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  /* The words come from `PR_STANDING_LABELS`, which is lower case because a ROW spells them
+     in small caps. Cased here rather than there so "All" and "Merged" read as one set of
+     chips, and so the accessible name stays the label the rows and the tests share. */
+  text-transform: capitalize;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+.line-ship-chip:hover {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+.line-ship-chip:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+.line-ship-chip-n {
+  color: var(--dim);
+}
+/* The pressed chip wears the tone of the pile it selects, so the chip and the rows under it
+   read as one selection rather than as a control and a list that happen to agree. Every one
+   of the four has a tone, including `gone`: a pressed state that falls back to the neutral
+   fill on one chip of four is the chip a reader cannot tell is pressed. */
+.line-ship-chip.is-active {
+  color: var(--fg);
+  border-color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+}
+.line-ship-chip.is-active .line-ship-chip-n {
+  color: var(--fg);
+}
+.line-ship-chip.is-merged.is-active {
+  border-color: var(--pr-merged);
+  background: color-mix(in srgb, var(--pr-merged) 18%, transparent);
+}
+.line-ship-chip.is-open.is-active {
+  border-color: var(--pr-open);
+  background: color-mix(in srgb, var(--pr-open) 18%, transparent);
+}
+.line-ship-chip.is-gone.is-active {
+  border-color: var(--dim);
+  background: color-mix(in srgb, var(--dim) 22%, transparent);
+}
+
 /* Narrow: the free-text state column goes first. It is the one field on the row whose
-   content is also reachable from the chips beside it and the page one click deeper. */
+   content is also reachable from the chips beside it and the page one click deeper.
+
+   The Shipped row gives up its SESSION instead, and deliberately not its state: merged /
+   open / gone is the one thing that row exists to say, the chips above filter on exactly it,
+   and dropping the word would leave the mark's hue carrying the state alone - which is the
+   rule this whole surface is built against. The session handle is the row's least load-
+   bearing field (a synthetic id most of whose sessions no longer exist) and it is still on
+   the Ship log one click deeper, which is the test the other two columns pass. */
 @media (max-width: 1180px) {
   .line-run-state,
   .line-ens-state {
     display: none;
+  }
+  .line-ship-meta .sc-ref {
+    display: none;
+  }
+  .line-ship-meta {
+    min-width: 72px;
   }
 }
 

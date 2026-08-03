@@ -99,7 +99,7 @@ export function detectStall(
   now: number,
   th: StallThresholds = DEFAULT_STALL_THRESHOLDS,
 ): Stall | null {
-  if (s.state === "exited") return null;
+  if (s.state === "exited" || s.state === "stopping") return null;
 
   // 1. Foreman escalated a decision to you and it is still sitting there. The most
   //    certain of the three: something explicitly asked for a human and got no reply.

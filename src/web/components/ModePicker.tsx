@@ -49,7 +49,8 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
   // pane-backed session is driven through its TUI, a driver-run one through
   // `handle.setPermissionMode`. The Shift+Tab keycap is the pane-only half and keeps its
   // own gate (`canCycleMode`), which still asks `canWriteTo`.
-  const canPick = session.state !== "exited" && canMessage(session);
+  const canPick =
+    session.state !== "exited" && session.state !== "stopping" && canMessage(session);
 
   const place = useCallback(() => {
     const el = chipRef.current;

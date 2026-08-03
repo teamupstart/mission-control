@@ -1,4 +1,4 @@
-import type { AgentType, RateLimitWindow, SessionCost } from "./types.ts";
+import type { AgentType, FleetCost, RateLimitWindow, SessionCost } from "./types.ts";
 
 // One place that decides when a number stops being a fact and starts being a signal.
 //
@@ -30,6 +30,36 @@ export function fmtUsd(usd: number | null | undefined): string {
   if (usd > 0 && usd < 0.01) return "<$0.01";
   if (usd >= 1000) return "$" + Math.round(usd).toLocaleString("en-US");
   return "$" + usd.toFixed(2);
+}
+
+/**
+ * What one shipped pull request cost the fleet today, or null when that cannot be said.
+ *
+ * Fleet-wide and same-day by construction: it is today's estimate over today's adoptions,
+ * so it is an average of a day rather than a figure attributable to any one row. Two
+ * surfaces print it - the spend popover and the Ship log's KPI - and they must not disagree
+ * about the division or about when to refuse it.
+ *
+ * Null on every reading that would be a lie rather than a zero: no telemetry at all, an
+ * estimate withheld because part of today's usage is unpriced (`estimatedCostToday` is null
+ * exactly then), a day that has genuinely spent nothing, a day with no adopted pull requests
+ * (the division is by zero, and the honest answer is that nothing shipped rather than that
+ * shipping was free), and a figure that is not a number at all.
+ *
+ * That last one is why the guards are `Number.isFinite` and not a negated comparison.
+ * `NaN > 0` is false, so the three call sites this fold replaced all REFUSED a corrupt
+ * estimate; `NaN <= 0` is false too, so writing the same rule inverted ACCEPTS it and
+ * divides. The two spellings look interchangeable and differ on exactly the input that
+ * matters. Downstream, `fmtUsd` renders a non-finite number as `-`, so the surfaces would
+ * not have printed `$NaN` - they would have printed a per-PR ROW, with a dash where the
+ * measurement goes, on a day when the right thing to say is nothing at all.
+ */
+export function costPerPrToday(fleet: FleetCost | null | undefined): number | null {
+  if (!fleet) return null;
+  const estimated = fleet.estimatedCostToday;
+  if (estimated === null || !Number.isFinite(estimated) || estimated <= 0) return null;
+  if (!Number.isFinite(fleet.prsToday) || fleet.prsToday <= 0) return null;
+  return estimated / fleet.prsToday;
 }
 
 /** Where a session's API-equivalent estimate sits, for the chip's colour and rail glyph. */

@@ -83,6 +83,31 @@ const WORDY = [run({
   actionWait: "needs_operator",
 })];
 
+/**
+ * A pile that folds, and ordinary rows beside it.
+ *
+ * Four blocked runs sharing a reason become ONE group bar, which is the geometry claim this
+ * file is the only layer that can check: the drawer's cap is
+ * `calc(var(--line-drawer-row-h) * 3)`, so a bar that laid out at any other height would stop
+ * the cap landing on a row boundary. The names are deliberately far too long for the bar's
+ * middle column, so "it clips rather than growing" is a claim with something behind it.
+ */
+const PILED = [
+  ...Array.from({ length: 4 }, (_, i) =>
+    run({
+      id: `gone-${i}`,
+      noteKey: `gone-${i}`,
+      sessionName: `Improve Foreman Context And Table Scrolling, Attempt ${i} Of Several`,
+      sessionId: null,
+      status: "blocked",
+      phase: "session_disappeared",
+      activePersonaNames: [],
+      updatedAt: 2000 - i,
+    })),
+  ...Array.from({ length: 2 }, (_, i) =>
+    run({ id: `live-${i}`, noteKey: `live-${i}`, status: "running", updatedAt: 100 - i })),
+];
+
 const drawer = (runs: WorkflowRunSummary[]): string =>
   renderToStaticMarkup(createElement(ReviewDrawer, {
     runs,
@@ -150,6 +175,7 @@ before(() => {
       ["console-many", consoleShell(drawer(MANY))],
       ["console-two", consoleShell(drawer(MANY.slice(0, 2)))],
       ["console-wordy", consoleShell(drawer(WORDY))],
+      ["console-piled", consoleShell(drawer(PILED))],
       ["console-closed", consoleShell("")],
       ["grid-open", gridShell(drawer(MANY))],
       ["grid-closed", gridShell("")],
@@ -217,6 +243,34 @@ test("every row is one height, and a row too wide for its columns clips", () => 
     wordy.rowOverflows.every((overflow) => overflow > 0),
     `the wordy row should have clipped something, got ${wordy.rowOverflows.join(", ")}`,
   );
+});
+
+test("a group bar is exactly one row high, so the three-row cap still lands on a boundary", () => {
+  // The load-bearing fact behind the whole fold. `.line-drawer-body` is capped at
+  // `calc(var(--line-drawer-row-h) * 3)`, which is a number you can state only while every
+  // child of `.line-drawer-rows` is that one height - a bar carrying the mockup's two-line
+  // explanatory paragraph would leave half a row peeking over the edge of the cap. No
+  // assertion on markup can see this; it is used height in a laid-out engine.
+  const piled = measured["console-piled"]!;
+  // Four blocked runs became one bar, and the two live runs stayed rows. That is 3 children,
+  // and the bar sorts first because a stopped run outranks one that is merely running.
+  assert.equal(piled.rows, 3, "the four blocked runs did not fold into one bar");
+  const heights = new Set(piled.rowHeights);
+  assert.equal(
+    heights.size,
+    1,
+    `the bar and the rows laid out at ${[...heights].join(", ")}px`,
+  );
+  assert.deepEqual([...heights], [...new Set(measured["console-many"]!.rowHeights)]);
+  // And the bar really was too wide for its columns, so the height above is not passing on a
+  // bar with nothing in it: three long titles and a `+1` clip rather than wrapping to line two.
+  assert.ok(
+    piled.rowOverflows[0]! > 0,
+    `the bar should have clipped its member titles, got ${piled.rowOverflows[0]}px`,
+  );
+  // A folded drawer is SHORTER than the cap, which is the point: six runs that used to be six
+  // rows now fit with room to spare instead of scrolling.
+  assert.equal(piled.bodyScrollHeight, piled.bodyClientHeight, "a folded drawer must not scroll");
 });
 
 test("the board moves down by the drawer, and the shell still ends at the viewport", () => {

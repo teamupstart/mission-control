@@ -77,6 +77,7 @@ test("successful reset uses resetSession to clear session workflow rows and pres
     observedState: null,
     observedAt: null,
     headRefName: null,
+    title: null,
     adoptedAt: 1,
     updatedAt: 2,
   });

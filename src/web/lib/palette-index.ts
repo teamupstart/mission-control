@@ -61,6 +61,7 @@ export const PALETTE_GROUP_LABELS: Record<PaletteGroup, string> = {
  * public vocabulary.
  */
 export const PALETTE_KINDS = [
+  "page",
   "workflow",
   "run",
   "ensemble",
@@ -89,6 +90,10 @@ export interface PaletteKindInfo {
  * missions (see `library-model.ts`). A palette row is a picture of where you are going.
  */
 export const PALETTE_KIND_INFO: Record<PaletteKind, PaletteKindInfo> = {
+  // A whole page rather than one object on one, which is why it wears the segmented top
+  // bar's own first glyph rather than any one destination's. Each row overrides it with the
+  // mark its page wears elsewhere, exactly as a settings panel row wears its rail icon.
+  page: { id: "page", label: "page", glyph: "▦", group: "jump" },
   workflow: { id: "workflow", label: "workflow", glyph: "⌁", group: "jump" },
   run: { id: "run", label: "run", glyph: "⌁", group: "jump" },
   ensemble: { id: "ensemble", label: "ensemble", glyph: "⧉", group: "jump" },
@@ -190,6 +195,37 @@ export interface PaletteProvider {
 }
 
 const byName = (a: string, b: string): number => a.localeCompare(b, "en-US");
+
+/**
+ * Pages that are destinations in their own right.
+ *
+ * One member, and that is a statement about the app rather than an unfinished list: Fleet,
+ * the Library and Runs are one press of the segmented top bar away, Ensembles and the
+ * settings categories are each linked from a surface an operator is already looking at, and
+ * a palette row for any of them would be a second doorway beside a visible first one. The
+ * Ship log has NO chrome pointing at it - the Line's Shipped stage still opens the completed
+ * run list - so `⌘K` and the hash are the whole of how it is reached, and a page nothing can
+ * reach is a page that does not exist.
+ *
+ * Static rather than derived from `stores`, because a page is a fact about this build.
+ */
+const pageProvider: PaletteProvider = {
+  id: "pages",
+  rows: () => [
+    {
+      id: "page:shipped",
+      kind: "page",
+      title: "Ship log",
+      detail: "Every pull request the fleet opened, across every repository.",
+      // The words an operator would reach for, none of which is in the title: they would
+      // hunt for what the page is ABOUT (pull requests, merges, repos) far sooner than for
+      // what it is called, and "shipped" is the Line stage this page belongs to.
+      keywords: ["shipped", "ship", "pull request", "prs", "merged", "repos", "ledger"],
+      glyph: "⚑",
+      target: { kind: "route", route: { page: "shipped" } },
+    },
+  ],
+};
 
 /**
  * Library workflows.
@@ -538,6 +574,7 @@ const settingsProvider: PaletteProvider = {
  * adds a provider HERE. It must never fork a second index.
  */
 export const PALETTE_PROVIDERS: readonly PaletteProvider[] = [
+  pageProvider,
   workflowProvider,
   runProvider,
   ensembleProvider,
@@ -564,6 +601,8 @@ function routeDestination(route: MissionRoute): string {
       return "Workflow runs";
     case "ensembles":
       return "Ensembles";
+    case "shipped":
+      return "the Ship log";
     case "settings":
       return `${settingsCategory(route.category).label} settings`;
     case "fleet":

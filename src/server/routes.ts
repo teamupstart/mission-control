@@ -137,7 +137,7 @@ import { answeredQuestion } from "./sdk/answered-question.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
-import { stopSession } from "./sdk/control.ts";
+import { requestSessionStop } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
@@ -167,6 +167,7 @@ import {
   forgetTaskSourceSeen,
   getSkillsAcks,
   loadHumanResolvedReviews,
+  loadInspectionsAdoptedSince,
   loadInspectorInspections,
   episodeById,
   recentEpisodes,
@@ -2199,7 +2200,10 @@ export function buildApp(
   app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const r = await stopSession(session, sdkSessions);
+    // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
+    // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
+    // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
+    const r = await requestSessionStop(session, sdkSessions);
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -2866,10 +2870,42 @@ export function buildApp(
     publishSettingsStatus(registry);
     return c.json(next);
   });
-  // The ledger, newest first. This is what makes dry-run legible: without somewhere to
-  // read what it WOULD have said, a preview mode is indistinguishable from a broken one.
-  // Capped because it is a display; the registry's copy is deliberately not.
-  app.get("/api/inspector/prs", (c) => c.json(loadInspectorInspections(50)));
+  // The ledger. This is what makes dry-run legible: without somewhere to read what it
+  // WOULD have said, a preview mode is indistinguishable from a broken one.
+  //
+  // Two readings of the same rows, because there are two questions. Without a parameter:
+  // the 50 most recently REVIEWED, which is the Inspector settings panel's list - capped
+  // because it is a display, and the registry's own copy is deliberately not.
+  //
+  // With `adoptedSince` (epoch ms): every pull request ADOPTED since then, newest
+  // adoption first, uncapped. That is the ledger as a ship log, and it has to be a
+  // separate reading rather than a bigger limit - review recency is not ship order, so
+  // paging the default further back would still hand a caller a week whose order moves
+  // whenever the Inspector re-reviews something, and a cap would truncate a busy week
+  // against the Line's Shipped count, which is uncapped by construction (`prsOpenedSince`).
+  // One route rather than two over the same table, for the reason `useShipping` records:
+  // a second endpoint over one ledger is a second thing to keep honest.
+  app.get("/api/inspector/prs", (c) => {
+    const raw = c.req.query("adoptedSince");
+    if (raw === undefined) return c.json(loadInspectorInspections(50));
+    // Two guards, each doing work the other cannot.
+    //
+    // The SHAPE is matched as text before anything is coerced, because `Number()` is far too
+    // willing here: it reads `""`, `"  "` and `"\n"` as 0, and 0 means "the entire ledger,
+    // from the epoch" - the most expensive answer this route has, returned confidently for a
+    // typo or for an unset variable a caller interpolated. Digits only, so what counts as a
+    // timestamp has one definition rather than whatever the coercion happens to accept
+    // ("1e3", "0x10", " 5 ", "-1"). The length cap bounds what gets parsed at all.
+    //
+    // The VALUE is then checked for exactness, which the shape cannot speak to: a 17-digit
+    // run of digits is well formed and still lands past 2^53, where it silently stops being
+    // the number the caller wrote.
+    const since = /^\d{1,20}$/.test(raw) ? Number(raw) : Number.NaN;
+    if (!Number.isSafeInteger(since)) {
+      return c.json({ error: "adoptedSince must be an epoch-ms timestamp" }, 400);
+    }
+    return c.json(loadInspectionsAdoptedSince(since));
+  });
   // What the Inspector will actually spawn with, resolved HERE rather than in the panel
   // for the reason `ForemanStatus.models` documents: the env layer is invisible to the
   // browser, so a panel showing `config || default` would confidently print a model a

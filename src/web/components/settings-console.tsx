@@ -271,26 +271,36 @@ export function ConsoleLinkStrip({
 /**
  * A pull request's identity in the ledger, and the link out to it.
  *
- * `owner/repo#number` and nothing else: an `InspectorPr` carries no title (the row is
- * keyed on the pull request, not on a snapshot of its prose), and inventing one here from
- * a branch name would be the panel answering a question from data it does not have -
- * which is the exact failure both of this feature's shipped bugs were.
+ * `owner/repo#number` by default, which is the only name every row is guaranteed to have.
+ *
+ * `label` overrides that text where the surface has a better one to show, and the ledger
+ * now has one: `InspectorPr.title` is written by the Inspector's poll, so a row can be
+ * named the way GitHub names it. That is a widening of what this leaf may be TOLD, not of
+ * what it may work out - it still invents nothing. Deciding what a row is called, including
+ * the fall back to the branch when the poll has not run, belongs to `prLabel` in
+ * `lib/pr-standing.ts`, where every surface reads the same answer.
+ *
+ * (This comment used to say an `InspectorPr` carries no title. It did not, and now it does;
+ * the rule that outlived the field is the one above - a leaf renders what it is handed.)
  */
 export function PrLink({
   repo,
   number,
   url,
   tooltip,
+  label,
 }: {
   repo: string;
   number: number;
   url: string;
   tooltip: string;
+  /** What to show instead of `owner/repo#number`. Never derived here - see `prLabel`. */
+  label?: string;
 }): React.JSX.Element {
   return (
     <Tooltip label={tooltip}>
       <a className="sc-pr" href={url} target="_blank" rel="noreferrer">
-        {repo}#{number}
+        {label ?? `${repo}#${number}`}
       </a>
     </Tooltip>
   );
@@ -315,4 +325,39 @@ export function SessionRef({ handle, tooltip }: { handle: string; tooltip: strin
       <span className="sc-ref">{handle}</span>
     </Tooltip>
   );
+}
+
+/**
+ * A short, stable handle for the session a ledger row happened on.
+ *
+ * Neither form is readable at full length, and a fleet-wide historical ledger names
+ * sessions that mostly no longer exist, so there is nothing to resolve most rows against
+ * anyway. Each form is truncated where it actually carries its identity, which beats
+ * printing 36 characters of UUID in a table cell.
+ *
+ * Three shapes reach here, from two id spaces. The Foreman ledger stores a `noteKey`: an
+ * `agentSessionId` (a bare UUID) or `proc:<tty>:<pid>:<start>`. The adoption ledger stores
+ * a REGISTRY session id, which is `proc:…` for a discovered terminal and `sdk:<uuid>` for
+ * one the supervisor drives.
+ *
+ * The `sdk:` prefix is stripped before truncating rather than counted into the eight
+ * characters, and that is the whole reason it has a branch: a bare slice spends three of
+ * them on a prefix every dispatched session shares, leaving `sdk:9f2a` - four hex digits
+ * to tell apart the sessions that open most of the pull requests on this ledger.
+ *
+ * Beside `SessionRef` rather than in the panel it was written for, since the Ship log
+ * names sessions the same way: the abbreviation and the leaf that renders it are one
+ * decision, and two copies of it would print one session under two names on two screens.
+ */
+export function sessionHandle(noteKey: string): string {
+  if (noteKey.startsWith("proc:")) {
+    const [, tty, pid] = noteKey.split(":");
+    const dev = tty?.split("/").pop() ?? "";
+    if (dev && pid) return `${dev}:${pid}`;
+  }
+  if (noteKey.startsWith("sdk:")) {
+    const uuid = noteKey.slice("sdk:".length);
+    if (uuid) return uuid.slice(0, 8);
+  }
+  return noteKey.slice(0, 8) || "unknown";
 }

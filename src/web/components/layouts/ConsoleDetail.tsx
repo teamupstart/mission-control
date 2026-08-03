@@ -228,7 +228,7 @@ export function ConsoleDetail({
   }, [tab]);
 
   const st = stateDisplay(session);
-  const live = session.state !== "exited";
+  const live = session.state !== "exited" && session.state !== "stopping";
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);

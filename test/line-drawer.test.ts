@@ -6,6 +6,7 @@ import { LineStrip } from "../src/web/components/LineStrip.tsx";
 import { ReviewDrawer } from "../src/web/components/line/ReviewDrawer.tsx";
 import { DecideDrawer } from "../src/web/components/line/DecideDrawer.tsx";
 import { IntakeDrawer } from "../src/web/components/line/IntakeDrawer.tsx";
+import { ShippedDrawer } from "../src/web/components/line/ShippedDrawer.tsx";
 import {
   LINE_DRAWER_STAGES,
   isLineDrawerStage,
@@ -14,12 +15,19 @@ import {
 } from "../src/web/lib/line-drawer.ts";
 import { LINE_STAGE_TARGETS, lineStageHasDrawer } from "../src/web/lib/line-targets.ts";
 import {
+  blockedPhaseClause,
+  runRemedy,
+  runRowIdentity,
   runTriageRound,
   runTriageSentence,
   runTriageSteps,
 } from "../src/web/workflows/run-model.ts";
 import { LINE_STAGES, type LineStageId, type LineSummary } from "../src/shared/line.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
+import {
+  workflowRunAttentionParts,
+  workflowRunAttentionSplit,
+} from "../src/shared/workflow.ts";
 import type { Session } from "../src/shared/types.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
 import { mkEnsembleSummary, mkSession } from "./helpers/session-fixture.ts";
@@ -93,21 +101,36 @@ test("exactly the drawer stages own drawers, and the table and the predicate agr
       assert.ok(listed, `${stage} routes to a drawer but is not a drawer stage`);
     }
   }
-  assert.deepEqual([...LINE_DRAWER_STAGES], ["intake", "review", "decide"]);
-  // The other three still GO somewhere. A stage that quietly did nothing would be a button
+  assert.deepEqual([...LINE_DRAWER_STAGES], ["intake", "review", "decide", "shipped"]);
+  // The other two still GO somewhere. A stage that quietly did nothing would be a button
   // that highlights on hover and answers nothing.
   for (const stage of LINE_STAGES.filter((s) => !isLineDrawerStage(s))) {
     assert.notEqual(LINE_STAGE_TARGETS[stage].kind, "drawer");
   }
 });
 
-test("the re-homed routes are what the navigating stages point at", () => {
-  // Shipped is the one stage that still carries a route, and it must be the NEW spelling:
-  // a stale `#/workflows/runs` here would be a redirect on every click, forever.
+test("Shipped opens the ledger it counts, and no stage routes to completed runs any more", () => {
+  // The flip. Shipped pointed at `#/runs?status=completed` for one release, because nothing
+  // in the app rendered the adoption ledger - and that target was wrong in both directions:
+  // a session ships without ever starting a run, and a completed run ships nothing.
   const shipped = LINE_STAGE_TARGETS.shipped;
-  assert.equal(shipped.kind, "route");
-  if (shipped.kind !== "route") return;
-  assert.deepEqual(shipped.route, { page: "runs", filters: { status: "completed" } });
+  assert.equal(shipped.kind, "drawer");
+  if (shipped.kind !== "drawer") return;
+  assert.equal(shipped.stage, "shipped");
+  // And it announces itself as expandable, which is the half the strip reads.
+  assert.equal(lineStageHasDrawer("shipped"), true);
+
+  // The OLD spelling is gone from the whole TABLE, not just from Shipped - so the retired
+  // target cannot quietly come back on a different button, which is the failure a `deepEqual`
+  // on `shipped` alone allows. Over the serialized table rather than by walking the `route`
+  // arm: that arm now has no members at all (the two remaining navigators are the Sitrep
+  // panel and the fleet, neither of which is a route), so a loop over it would be vacuously
+  // true and would keep passing after somebody put the runs filter back.
+  assert.doesNotMatch(
+    JSON.stringify(LINE_STAGE_TARGETS),
+    /"status":\s*"completed"/,
+    "a stage still routes to the completed workflow runs",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -123,7 +146,7 @@ const strip = (openStage: LineStageId | null): string =>
 
 test("only the stages that open something announce that they can", () => {
   const closed = strip(null);
-  // Three expandable, and they say so while closed too - a control that only grows
+  // Four expandable, and they say so while closed too - a control that only grows
   // `aria-expanded` once it is open reads as static until you press it.
   assert.equal([...closed.matchAll(/aria-expanded="false"/g)].length, LINE_DRAWER_STAGES.length);
   assert.doesNotMatch(closed, /aria-expanded="true"/);
@@ -212,33 +235,232 @@ test("the round line prints a budget only once one has been spent", () => {
   assert.equal(runTriageRound(run({ round: 1, maxRepairRounds: 5 })), "round 1");
 });
 
-test("the Review drawer lists live runs, marks the ones stopped on a person, and orders by both", () => {
+test("the Review drawer lists live runs, tones stopped apart from your turn, and orders by both", () => {
   const html = reviewDrawer([
     run({ id: "quiet", noteKey: "quiet-note", status: "running", updatedAt: 900 }),
     run({ id: "stuck", noteKey: "stuck-note", status: "blocked", updatedAt: 100 }),
+    run({
+      id: "yours",
+      noteKey: "yours-note",
+      status: "waiting_for_action",
+      actionWait: "needs_operator",
+      activePersonaNames: [],
+      updatedAt: 50,
+    }),
     run({ id: "done", noteKey: "done-note", status: "completed", updatedAt: 999 }),
   ]);
   // Terminal runs are not "in flight" and the header counts what it lists.
-  assert.match(html, /2 runs live/);
+  assert.match(html, /3 runs live/);
   assert.doesNotMatch(html, /done-note/);
-  // Amber first even though it is the oldest: the drawer answers "is any of this mine".
+  // Your turn first even though it is the oldest of the three, then the stopped one, then the
+  // one that is nobody's problem yet. The drawer answers "is any of this mine" before it
+  // answers "is any of this dead".
+  assert.ok(
+    html.indexOf("yours-note") < html.indexOf("stuck-note"),
+    "a run waiting on a decision sorts above one that has already stopped",
+  );
   assert.ok(
     html.indexOf("stuck-note") < html.indexOf("quiet-note"),
-    "a run waiting on a person sorts above a newer one that is not",
+    "a stopped run sorts above a newer one that is running fine",
   );
-  assert.match(html, /line-run-row is-waiting[\s\S]*?stuck-note/);
-  assert.match(html, /1 waiting on you/);
+  // Two edges, two meanings. Amber used to carry both, which on a fleet of blocked runs is a
+  // colour that means nothing.
+  assert.match(html, /line-run-row is-waiting[\s\S]*?yours-note/);
+  assert.match(html, /line-run-row is-blocked[\s\S]*?stuck-note/);
+  // And the header says the same two meanings as two numbers. The shared predicate still
+  // counts both tiers - one plus one is the two it always was - but "2 waiting on you" over
+  // one dead run and one live question was the aggregation that made the figure worthless.
+  assert.match(html, /1 needs you · 1 stalled/);
+  assert.doesNotMatch(html, /waiting on you/);
 });
 
-test("a run's row names the live session, and falls back to the durable conversation key", () => {
-  const named = reviewDrawer(
-    [run({ sessionId: "s1", noteKey: "note-key" })],
-    [mkSession({ id: "s1", name: "pane-fix" })],
+test("the header's split is the strip's split, to the word", () => {
+  // `foldReview`'s doc comment legislates it: a strip that says one thing over a drawer that
+  // says another is the surface arguing with itself. Both read
+  // `workflowRunAttentionParts`, so this pins the drawer's half of that contract - the fold's
+  // half is `line-summary-fold.test.ts`.
+  const runs = [
+    run({ id: "a", status: "blocked", phase: "session_disappeared", activePersonaNames: [] }),
+    run({ id: "b", status: "blocked", phase: "round_limit", activePersonaNames: [] }),
+    run({
+      id: "c",
+      status: "waiting_for_action",
+      actionWait: "needs_operator",
+      activePersonaNames: [],
+    }),
+  ];
+  assert.equal(
+    workflowRunAttentionParts(workflowRunAttentionSplit(runs)).join(" · "),
+    "1 needs you · 2 stalled",
   );
-  assert.match(named, /<strong>pane-fix<\/strong>/);
-  // A run outlives the session it reviewed. `noteKey` is the identity the run page itself
-  // falls back to, so this is not a degraded case - it is the durable one.
-  assert.match(reviewDrawer([run({ sessionId: null, noteKey: "note-key" })]), /note-key/);
+  assert.match(reviewDrawer(runs), /1 needs you · 2 stalled/);
+
+  // A fleet with nothing stopped says neither half rather than "0 stalled".
+  const quiet = reviewDrawer([run({ id: "q", status: "running" })]);
+  assert.doesNotMatch(quiet, /stalled|needs you/);
+  assert.doesNotMatch(quiet, /line-drawer-att/);
+});
+
+test("a run's row is named in three steps, and the GUID is the last of them", () => {
+  const durable = { sessionName: "Fix Busy State for Diff Link" };
+  // 1. The live session, so a renamed session reads under its current name.
+  assert.match(
+    reviewDrawer(
+      [run({ sessionId: "s1", noteKey: "note-key", ...durable })],
+      [mkSession({ id: "s1", name: "pane-fix" })],
+    ),
+    /<strong>pane-fix<\/strong>/,
+  );
+  // 2. The binding's captured title, which is the step that was missing. A run outlives the
+  // session it reviewed, so this is the ONLY human name a blocked run has left - and falling
+  // past it to the conversation key is why the drawer used to show thirty GUIDs.
+  const orphaned = reviewDrawer([run({
+    sessionId: null,
+    noteKey: "claude:9f1c-4d2a",
+    status: "blocked",
+    phase: "session_disappeared",
+    activePersonaNames: [],
+    ...durable,
+  })]);
+  assert.match(orphaned, /<strong>Fix Busy State for Diff Link<\/strong>/);
+  assert.doesNotMatch(orphaned, /9f1c-4d2a/);
+  // 3. The conversation key, only when there is genuinely nothing else - and drawn as the
+  // identifier it is rather than bold in the slot a title goes in.
+  const nameless = reviewDrawer([run({ sessionId: null, noteKey: "claude:9f1c-4d2a" })]);
+  assert.match(nameless, /<span class="line-run-id">claude:9f1c-4d2a<\/span>/);
+  assert.doesNotMatch(nameless, /<strong>claude:9f1c-4d2a<\/strong>/);
+
+  // And the same three steps, decided without rendering anything.
+  const id = { sessionId: "s1", sessionName: "captured", noteKey: "note" };
+  assert.deepEqual(runRowIdentity(id, "live"), { name: "live", isIdentifier: false });
+  assert.deepEqual(runRowIdentity(id, null), { name: "captured", isIdentifier: false });
+  assert.deepEqual(
+    runRowIdentity({ ...id, sessionName: undefined }, null),
+    { name: "note", isIdentifier: true },
+  );
+  // A live name is only reachable through a session id. A run whose binding was orphaned has
+  // none, so a stale entry under some other key must not name it.
+  assert.deepEqual(
+    runRowIdentity({ ...id, sessionId: null }, "live"),
+    { name: "captured", isIdentifier: false },
+  );
+});
+
+test("a stopped run's sentence states its cause, and an unmapped cause is still readable", () => {
+  assert.equal(blockedPhaseClause("session_disappeared"), "session gone");
+  assert.equal(blockedPhaseClause("round_limit"), "out of rounds");
+  assert.equal(blockedPhaseClause("infrastructure_error"), "provider call failed");
+  // `phase` is a free string, not a union - `orphanBinding` and every `setRunState` caller
+  // write their own code into it. An unmapped one has to degrade to readable text, using the
+  // same fallback `alerts.ts` prints reasons with, or two surfaces disagree about one field.
+  assert.equal(blockedPhaseClause("some_future_reason"), "some future reason");
+
+  const stopped = run({ status: "blocked", phase: "session_disappeared", activePersonaNames: [] });
+  assert.equal(runTriageSentence(stopped), "Blocked · session gone");
+  // The one parked state that is not a block: reattach leaves the run waiting deliberately,
+  // because re-sending into a fresh pane unasked is what the delivery model refuses to do.
+  assert.equal(
+    runTriageSentence(run({
+      status: "waiting_for_session",
+      phase: "reattached_resubmit_required",
+      activePersonaNames: [],
+    })),
+    "Waiting for the session · reattached",
+  );
+  // Every other status is byte-for-byte what it was: a run that is still moving has no cause
+  // to state, and a reason printed on every row is furniture rather than information.
+  assert.equal(
+    runTriageSentence(run({ status: "waiting_for_pr", activePersonaNames: [] })),
+    "Waiting for a pull request",
+  );
+});
+
+test("an orphaned run's reviewers read as stopped, not as a queue that is about to move", () => {
+  // `orphanBinding` cancels every queued and retrying attempt on its way past, which is
+  // exactly why `activePersonaNames` is empty here. Amber "Reviewers" on that row promised a
+  // queue that will never move; grey says what happened.
+  const chip = runTriageSteps(run({
+    status: "blocked",
+    phase: "session_disappeared",
+    activePersonaNames: [],
+  }))[1]!.status;
+  assert.deepEqual([chip.tone, chip.label], ["stopped", "Reviewers stopped"]);
+  // A reviewer that genuinely returned a failing verdict still gets the blame it earned.
+  assert.equal(
+    runTriageSteps(run({ status: "blocked", failedPersonaCount: 1, activePersonaNames: [] }))[1]!
+      .status.label,
+    "1 reviewer failed",
+  );
+  // And a live run's waiting chip is untouched.
+  assert.equal(
+    runTriageSteps(run({ status: "running", activePersonaNames: [] }))[1]!.status.label,
+    "Reviewers",
+  );
+});
+
+test("a remedy is offered only where the summary proves the daemon would accept it", () => {
+  const blocked = (phase: string, over = {}) =>
+    runRemedy(run({ status: "blocked", phase, activePersonaNames: [], ...over }));
+
+  // The two blocks nothing argument-free revives: reattaching needs a session picker and a
+  // bigger repair budget is a binding edit, so what the row offers is the other honest move.
+  assert.equal(blocked("session_disappeared")?.kind, "dismiss");
+  assert.equal(blocked("round_limit")?.kind, "dismiss");
+  assert.match(blocked("session_disappeared")!.path, /\/cancel$/);
+  // Destructive, so it confirms - and it confirms in the run page's own words rather than in
+  // a second wording for the same act.
+  assert.equal(blocked("session_disappeared")!.confirm?.title, "Cancel this run");
+  assert.equal(blocked("session_disappeared")!.confirm?.danger, true);
+  assert.match(
+    runRemedy(run({ status: "blocked", phase: "round_limit" }), "Durable task completion")!
+      .confirm!.body,
+    /Durable task completion/,
+  );
+
+  // Retry is available for exactly the phase `manager.retry` accepts, and it sends no
+  // `nodeAttemptId` - that comes off run detail, and omitting it makes the daemon pick the
+  // newest errored attempt, which is the run page's own default.
+  const retry = blocked("infrastructure_error");
+  assert.equal(retry?.kind, "retry");
+  assert.deepEqual(retry?.body, {});
+  assert.equal(retry?.confirm, null);
+
+  // Blocked on a DECISION is not blocked on a button. The row still says why.
+  for (const phase of ["inspector_findings", "delivery_uncertain", "inspector_pr_closed"]) {
+    assert.equal(blocked(phase), null, `${phase} has no argument-free remedy`);
+  }
+
+  // Reattached and parked: resubmit, and only while the summary proves the binding is still
+  // attached, the budget is unspent, and nobody else owns the round.
+  const reattached = (over = {}) => runRemedy(run({
+    status: "waiting_for_session",
+    phase: "reattached_resubmit_required",
+    sessionId: "s1",
+    round: 2,
+    maxRepairRounds: 5,
+    ...over,
+  }));
+  assert.equal(reattached()?.kind, "resubmit");
+  assert.equal(reattached({ sessionId: null }), null);
+  assert.equal(reattached({ round: 6 }), null);
+  assert.equal(
+    reattached({ externalSource: { kind: "ensemble", sourceId: "e1", createdAt: 1 } }),
+    null,
+  );
+
+  // Restart is offered for the one state `manager.restartFull` genuinely accepts from a
+  // summary. It is deliberately NOT offered on a round-limit block: `restartFull` refuses
+  // when `round > maxRepairRounds`, and that inequality IS the definition of that block, so
+  // the button could never once have succeeded there.
+  const restart = runRemedy(run({ status: "waiting_for_new_head", round: 2, maxRepairRounds: 5 }));
+  assert.equal(restart?.kind, "restart-full");
+  assert.equal(restart?.confirm?.requirePhrase, "RESTART FULL WORKFLOW");
+  assert.deepEqual(restart?.body, { confirmation: "RESTART FULL WORKFLOW" });
+  assert.match(restart!.label, /…$/, "the ellipsis is the promise that a dialog follows");
+  assert.equal(runRemedy(run({ status: "waiting_for_new_head", round: 6, maxRepairRounds: 5 })), null);
+
+  // A run that is simply working owes nobody anything.
+  assert.equal(runRemedy(run({ status: "running" })), null);
 });
 
 test("an ensemble handoff wears its provenance, and an operator's own run does not", () => {
@@ -255,16 +477,152 @@ test("an ensemble handoff wears its provenance, and an operator's own run does n
   assert.doesNotMatch(reviewDrawer([run()]), /line-run-prov/);
 });
 
-test("the Review drawer offers escalation and never a mutation", () => {
-  const html = reviewDrawer([run()]);
+test("the Review drawer acts only where the summary proves a run is stopped", () => {
+  // THE REVISED RULE, and this is the test that codifies it. It replaces "never a mutation",
+  // which was written when every row was a live run making progress and the honest answer to
+  // "what do I do about this" was "read it on the run page". That does not survive thirty
+  // rows whose sessions were removed: a triage surface that can only describe a dead run is
+  // not triage. What is asserted now is the BOUNDARY, because the boundary is the point.
+  const escalation = reviewDrawer([run()]);
   for (const control of ["Bind a workflow…", "All runs", "Open run", "Close the Review drawer"]) {
-    assert.ok(html.includes(control), `the drawer should offer ${control}`);
+    assert.ok(escalation.includes(control), `the drawer should offer ${control}`);
   }
-  // Everything that CHANGES a run stays on the run page. A drawer that grew one of these
-  // would be a second, smaller run controller with none of the confirmations.
-  for (const mutation of ["Recheck", "Reset", "Cancel run", "Retry", "Disable"]) {
-    assert.ok(!html.includes(mutation), `the drawer must not offer ${mutation}`);
+  // A run that is working is offered nothing, so no row grew a control by default.
+  for (const mutation of ["Dismiss", "Retry", "Resubmit", "Restart"]) {
+    assert.ok(!escalation.includes(mutation), `a live run must not be offered ${mutation}`);
   }
+
+  const stopped = reviewDrawer([
+    run({
+      id: "gone",
+      sessionId: null,
+      sessionName: "Fix Busy State for Diff Link",
+      status: "blocked",
+      phase: "session_disappeared",
+      activePersonaNames: [],
+    }),
+    run({
+      id: "provider",
+      sessionName: "Add E Keybinding",
+      status: "blocked",
+      phase: "infrastructure_error",
+      activePersonaNames: [],
+    }),
+  ]);
+  assert.match(stopped, /class="btn btn-remedy"[^>]*>Dismiss</);
+  assert.match(stopped, /class="btn btn-remedy"[^>]*>Retry</);
+  // The remedy leads and "Open run" follows it: reading the whole run is the slower answer
+  // once a faster correct one is on the row.
+  assert.ok(stopped.indexOf(">Dismiss<") < stopped.indexOf(">Open run<"));
+
+  // The picker-shaped actions stay out, and they stay out for the reason they always did -
+  // each needs an argument the summary does not carry and a form the row has no room for.
+  // An assertion that the drawer still REFUSES these is what stops the next change eroding
+  // the rule into "the run page, but smaller".
+  for (const excluded of ["Reattach", "Resolve", "Disable", "Recheck", "Mark delivered"]) {
+    assert.ok(!stopped.includes(excluded), `the drawer must not offer ${excluded}`);
+  }
+});
+
+test("three runs stopped for one reason draw one bar; two draw two rows", () => {
+  const gone = (id: string, name: string) => run({
+    id,
+    noteKey: `${id}-note`,
+    sessionId: null,
+    sessionName: name,
+    status: "blocked",
+    phase: "session_disappeared",
+    activePersonaNames: [],
+  });
+
+  // Two is two rows, with their chips, their round counters and a `Dismiss` each. A bar here
+  // would save one line and cost the reader all six of those facts.
+  const pair = reviewDrawer([gone("a", "Fix Busy State"), gone("b", "Add E Keybinding")]);
+  assert.doesNotMatch(pair, /line-group/);
+  assert.equal([...pair.matchAll(/class="line-run-row/g)].length, 2);
+
+  const pile = reviewDrawer([
+    gone("a", "Fix Busy State"),
+    gone("b", "Add E Keybinding"),
+    gone("c", "Review a UI Component"),
+  ]);
+  // One bar. The reason once, the count once, and - collapsed - not one of the three rows.
+  assert.equal([...pile.matchAll(/<li class="line-group /g)].length, 1);
+  assert.doesNotMatch(pile, /class="line-run-row/);
+  assert.match(pile, /<strong>3 runs · session gone<\/strong>/);
+  // The members are named, by the same three steps a row names itself by, so the bar can
+  // never list GUIDs where its rows would have listed titles.
+  assert.match(pile, /Fix Busy State · Add E Keybinding · Review a UI Component/);
+  assert.doesNotMatch(pile, /a-note|b-note|c-note/);
+  // The whole pile is stopped, so the bar wears the row's own red edge rather than a fourth
+  // treatment a reader has to learn.
+  assert.match(pile, /class="line-group is-blocked"/);
+});
+
+test("the bar's disclosure and its batch are both reachable by name", () => {
+  const pile = reviewDrawer(Array.from({ length: 30 }, (_, i) => run({
+    id: `r${i}`,
+    noteKey: `r${i}-note`,
+    sessionId: null,
+    sessionName: `Run ${i}`,
+    status: "blocked",
+    phase: "session_disappeared",
+    activePersonaNames: [],
+    updatedAt: 1000 - i,
+  })));
+  // The disclosure is icon-only, which is the one shape free to carry a spelled-out
+  // accessible name without contradicting a visible label - and it says what is behind it.
+  assert.match(pile, /aria-expanded="false" aria-label="30 runs blocked, session gone"/);
+  // The bar counts thirty and names three of them, so the row is one line whatever the pile.
+  assert.match(pile, /<strong>30 runs · session gone<\/strong>/);
+  assert.match(pile, /Run 0 · Run 1 · Run 2 · \+27/);
+  // The batch's name is unique per bar: two piles on one fleet would otherwise offer two
+  // controls a person - or a spec - cannot tell apart.
+  assert.match(pile, /aria-label="Dismiss all 30 runs blocked, session gone"/);
+  assert.match(pile, /class="btn btn-remedy"[^>]*>Dismiss all</);
+});
+
+test("a bar with no argument-free remedy carries no control, and still says why", () => {
+  // Blocked on a DECISION is not blocked on a button, at the pile's grain exactly as at the
+  // row's. The bar still earns its place: it says the reason once instead of five times.
+  const findings = reviewDrawer(Array.from({ length: 5 }, (_, i) => run({
+    id: `r${i}`,
+    noteKey: `r${i}-note`,
+    sessionName: `Run ${i}`,
+    status: "blocked",
+    phase: "inspector_findings",
+    activePersonaNames: [],
+  })));
+  assert.match(findings, /<strong>5 runs · Inspector findings<\/strong>/);
+  assert.doesNotMatch(findings, /Dismiss all/);
+});
+
+test("a live run and a run waiting on you are never folded away", () => {
+  const html = reviewDrawer([
+    run({
+      id: "yours",
+      noteKey: "yours-note",
+      status: "waiting_for_action",
+      actionWait: "needs_operator",
+      activePersonaNames: [],
+      updatedAt: 5,
+    }),
+    ...Array.from({ length: 3 }, (_, i) => run({
+      id: `gone${i}`,
+      noteKey: `gone${i}-note`,
+      sessionName: `Gone ${i}`,
+      status: "blocked",
+      phase: "session_disappeared",
+      activePersonaNames: [],
+      updatedAt: 100 + i,
+    })),
+  ]);
+  // The row a person came here for is still a row, still first, still amber.
+  assert.match(html, /line-run-row is-waiting[\s\S]*?yours-note/);
+  assert.equal([...html.matchAll(/class="line-run-row/g)].length, 1);
+  assert.equal([...html.matchAll(/<li class="line-group /g)].length, 1);
+  // And the header counts the two jobs apart - one to answer, three that are simply dead.
+  assert.match(html, /1 needs you · 3 stalled/);
 });
 
 test("an empty Review drawer says what would fill it", () => {
@@ -391,6 +749,52 @@ test("a mission renders while the sources read is still out", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Shipped: the adoption ledger's own rows
+// ---------------------------------------------------------------------------
+
+const shippedDrawer = (): string =>
+  renderToStaticMarkup(createElement(ShippedDrawer, {
+    now: 1_000_000,
+    onClose: () => {},
+    onOpenShipLog: () => {},
+  }));
+
+// Under `renderToStaticMarkup` no effect runs, so every case here sees the drawer's PRE-FETCH
+// frame - a real frame a person sees for a tick, and the one the three load states are
+// easiest to get wrong in. The LOADED states need a ledger the browser fetched, so they are
+// `e2e/specs/line-drawers.spec.ts`' subject: rows, chips, the filter, and the failed read.
+test("before the ledger lands, the Shipped drawer counts nothing and claims no empty week", () => {
+  const html = shippedDrawer();
+  // Not "0 this week". A zero an operator cannot tell from a real zero is the one answer a
+  // panel about what shipped must never give while it does not know - and this drawer sits
+  // under a strip printing a number it would then contradict.
+  assert.match(html, /reading the ledger…/);
+  assert.doesNotMatch(html, /0 this week/);
+  // Nor the absence, which is a claim nothing has come back to support yet.
+  assert.doesNotMatch(html, /No pull request was adopted/);
+  assert.match(html, /Reading the adoption ledger…/);
+  // Chips are COUNTS. Four of them derived from nothing would be four zeroes asserting a
+  // quiet week in the one place the header just refused to.
+  assert.doesNotMatch(html, /line-ship-chip/);
+});
+
+test("the Shipped drawer escalates rather than acting, and is never amber", () => {
+  const html = shippedDrawer();
+  // The escalation is in the header's actions slot, where every other drawer keeps its own -
+  // the frame has no footer, and adding one for the fourth drawer would have changed the
+  // other three.
+  assert.match(html, /Ship log/);
+  assert.match(html, /line-drawer-head[\s\S]*Ship log[\s\S]*<\/header>/);
+  // Nothing on this surface mutates anything: every row's move belongs to GitHub or to the
+  // Ship log, and both are one click away.
+  assert.doesNotMatch(html, /btn-remedy/);
+  assert.doesNotMatch(html, /<input|<textarea/);
+  // Amber means "a person has to do something", and shipping is not an obligation. The stage
+  // has never been amber; neither is its drawer.
+  assert.doesNotMatch(html, /line-drawer-att/);
+});
+
+// ---------------------------------------------------------------------------
 // The frame every drawer wears
 // ---------------------------------------------------------------------------
 
@@ -399,7 +803,11 @@ test("every drawer is one named region with one body and three ways out", () => 
     ["review", reviewDrawer([run()])],
     ["decide", decideDrawer([{ id: "a" }])],
     ["intake", intakeDrawer([{ id: "m1" }])],
+    ["shipped", shippedDrawer()],
   ];
+  // Every stage that owns a drawer is in the list above. A fifth drawer added without a frame
+  // case here would be the one drawer nothing checks for a body, an id, or a way out.
+  assert.deepEqual(frames.map(([stage]) => stage).sort(), [...LINE_DRAWER_STAGES].sort());
   for (const [stage, html] of frames) {
     const title = stage[0]!.toUpperCase() + stage.slice(1);
     assert.match(html, new RegExp(`aria-label="${title} drawer"`), `${stage} names its region`);

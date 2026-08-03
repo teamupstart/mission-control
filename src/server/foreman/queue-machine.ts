@@ -388,10 +388,10 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
       : null;
 
     // A non-shipping contract changes WHAT happens after completion, not WHEN Foreman may
-    // declare the episode complete. Keep it behind the same settled-idle evidence as an
-    // a bound Workflow claim or direct PR. This branch still sits before every `ask-wrapup` return, so
-    // an eligible retirement cannot claim an existing Workflow or briefly expose a Ship it?
-    // card while the agent is finishing its report.
+    // declare the episode complete. Keep it behind the same settled-idle evidence as a
+    // bound Workflow claim or a direct PR. This branch still sits before every
+    // `ask-wrapup` return, so an eligible retirement cannot claim an existing Workflow
+    // or briefly expose a Ship it? card while the agent is finishing its report.
     if (blockedAction) {
       return settledIdle(session, now, cfg.settleMs) ? blockedAction : { kind: "none" };
     }

@@ -68,7 +68,10 @@ export function WorkflowBindingDialog({
   promptedWrapupEnabled?: boolean;
 }): React.JSX.Element {
   const live = useMemo(
-    () => sessions.filter((session) => session.state !== "exited"),
+    () =>
+      sessions.filter(
+        (session) => session.state !== "exited" && session.state !== "stopping",
+      ),
     [sessions],
   );
   const publishable = useMemo(

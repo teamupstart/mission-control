@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FleetCost, RateLimitWindow } from "@shared/types.ts";
-import { FIVE_HOUR_MS, SEVEN_DAY_MS, projectRunway } from "@shared/cost.ts";
+import { FIVE_HOUR_MS, SEVEN_DAY_MS, costPerPrToday, projectRunway } from "@shared/cost.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { spendRoleLabel } from "@shared/llm-spend.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -361,6 +361,7 @@ function SpendStats({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
     !automationHasContent(fleet)
   ) return null;
   const estimated = fleet.estimatedCostToday;
+  const perPr = costPerPrToday(fleet);
   return (
     <div className="spend-rows">
       {estimated !== null && estimated > 0 && (
@@ -403,10 +404,14 @@ function SpendStats({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
           tip={`${fleet.tokensToday.toLocaleString("en-US")} tokens since midnight - input, output and cache, every tier summed.`}
         />
       )}
-      {estimated !== null && estimated > 0 && fleet.prsToday > 0 && (
+      {/* Divided by `costPerPrToday` rather than here, because the Ship log's KPI prints
+          the same figure and the two must not disagree about when it can be printed at
+          all - the refusals (unpriced usage, a day with no adoptions) are the interesting
+          half of that fold. */}
+      {perPr !== null && (
         <SpendRow
           k="Per shipped PR"
-          v={`≈${fmtUsd(estimated / fleet.prsToday)}`}
+          v={`≈${fmtUsd(perPr)}`}
           sub={`· ${fleet.prsToday} today`}
           cost
           tip={

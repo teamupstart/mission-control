@@ -12,10 +12,11 @@ import {
 } from "../src/web/components/InspectorSettingsPanel.tsx";
 import {
   ShippingSettingsPanel,
-  mergeBucket,
-  mergeTallies,
   MERGE_STRIP_BUCKETS,
 } from "../src/web/components/ShippingSettingsPanel.tsx";
+// The folds themselves live in `lib/pr-standing.ts`, which is where the Ship log reads them
+// from too; the panel keeps only the STRIP - its tiles, their tones and their copy.
+import { mergeBucket, mergeTallies } from "../src/web/lib/pr-standing.ts";
 import { InspectorConfigSchema } from "../src/shared/protocol.ts";
 import type { InspectorState } from "../src/web/useInspector.ts";
 import type { ShippingState } from "../src/web/useShipping.ts";
@@ -65,6 +66,7 @@ function row(over: Partial<InspectorInspection> = {}): InspectorInspection {
     observedState: null,
     observedAt: null,
     headRefName: null,
+    title: null,
     adoptedAt: 0,
     updatedAt: 0,
     openFindings: 0,

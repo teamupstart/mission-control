@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { AppPageShell } from "../src/web/components/AppPageShell.tsx";
 import type { MissionRoute } from "../src/web/workflows/useWorkflowRoute.ts";
 import { missionRouteHash, parseMissionRoute } from "../src/web/workflows/useWorkflowRoute.ts";
+import { DEFAULT_SETTINGS_CATEGORY } from "../src/web/lib/settings-registry.ts";
 
 // What is at stake: the execution surfaces must coexist with the fleet without a router or a
 // second app mount. These hashes are durable links, so unknown values must fall safely to Fleet
@@ -38,6 +39,25 @@ test("the ensembles page parses and serializes, with an id and back to the list"
     parseMissionRoute(missionRouteHash({ page: "ensembles", ensembleId: "run 7" })),
     { page: "ensembles", ensembleId: "run 7" },
   );
+});
+
+test("the Ship log parses and serializes, and never falls through to the ensembles tail", () => {
+  assert.deepEqual(parseMissionRoute("#/shipped"), { page: "shipped" });
+  assert.deepEqual(parseMissionRoute("#/shipped/"), { page: "shipped" });
+  // The regression this exists for: `missionRouteHash` ends in an UNGUARDED ensembles
+  // return, so a page member with no branch of its own type-checks and then silently
+  // serializes to `#/ensembles`. Every `navigate({page:"shipped"})` would land on the
+  // wrong page - including the drawer escalation the next phase hangs off this route -
+  // with no error anywhere to say so.
+  assert.equal(missionRouteHash({ page: "shipped" }), "#/shipped");
+  assert.notEqual(missionRouteHash({ page: "shipped" }), "#/ensembles");
+  assert.deepEqual(parseMissionRoute(missionRouteHash({ page: "shipped" })), { page: "shipped" });
+  // Stateless by design: the range and repository filter are what you are looking at, not
+  // where you are, so no query survives into the route and the hash never grows one.
+  assert.deepEqual(parseMissionRoute("#/shipped?range=30&repo=o%2Fr"), { page: "shipped" });
+  // Matched on the path, so the retired prefix does not mint a second address for it - it
+  // takes the Library, where every unrecognized `#/workflows/*` spelling goes.
+  assert.deepEqual(parseMissionRoute("#/workflows/shipped"), { page: "library" });
 });
 
 // Every `#/workflows/*` spelling that ever shipped, and where it now lands.
@@ -174,14 +194,22 @@ test("the Workflows page is gone, not merely unreachable", () => {
     !existsSync(fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url))),
     "the retired page's module must be deleted, not left orphaned",
   );
-  // Runs and Ensembles are top-level pages now, so the shell union must name both - the
-  // inverse of what this asserted while they were tabs.
+  // Runs and Ensembles are top-level pages now - the inverse of what this asserted while
+  // they were tabs. Read off the ROUTE rather than off the shell, because the shell no
+  // longer spells any page out: it is keyed on `MissionRoute["page"]`, so the union below
+  // is the one place a page exists and the shell cannot disagree with it. The round trips
+  // above are the behavioural half of the same claim.
+  for (const page of ["runs", "ensembles", "shipped", "fleet", "library", "settings"] as const) {
+    const route: MissionRoute = page === "settings"
+      ? { page, category: DEFAULT_SETTINGS_CATEGORY }
+      : { page };
+    assert.equal(parseMissionRoute(missionRouteHash(route)).page, page);
+  }
   const shell = readFileSync(
     fileURLToPath(new URL("../src/web/components/AppPageShell.tsx", import.meta.url)),
     "utf8",
   );
-  assert.match(shell, /"ensembles"/);
-  assert.match(shell, /"runs"/);
+  assert.match(shell, /Record<MissionRoute\["page"\], ReactNode>/);
   assert.doesNotMatch(shell, /"workflows"/);
 });
 
@@ -200,15 +228,29 @@ test("ensemble deep links wait for the live snapshot and preserve direct 404 rea
 });
 
 test("global overlays stay mounted on every page, and only one page body renders", () => {
-  const pages = ["fleet", "library", "runs", "ensembles", "settings"] as const;
+  // A `Record` over the route's own page names rather than a hand-written list, and that is
+  // the point of the shape: a page added to `MissionRoute` and forgotten leaves this object
+  // missing a key, which does not compile. The list it replaced type-checked while silently
+  // covering one page fewer than the app had - the same drift `AppPageShell` itself was
+  // rebuilt to make impossible.
+  const bodies: Record<MissionRoute["page"], string> = {
+    fleet: "fleet body",
+    library: "library body",
+    runs: "runs body",
+    ensembles: "ensembles body",
+    shipped: "shipped body",
+    settings: "settings body",
+  };
+  const pages = Object.keys(bodies) as MissionRoute["page"][];
   for (const page of pages) {
     const html = renderToStaticMarkup(createElement(AppPageShell, {
       page,
-      fleet: createElement("main", null, "fleet body"),
-      library: createElement("main", null, "library body"),
-      runs: createElement("main", null, "runs body"),
-      ensembles: createElement("main", null, "ensembles body"),
-      settings: createElement("main", null, "settings body"),
+      fleet: createElement("main", null, bodies.fleet),
+      library: createElement("main", null, bodies.library),
+      runs: createElement("main", null, bodies.runs),
+      ensembles: createElement("main", null, bodies.ensembles),
+      shipped: createElement("main", null, bodies.shipped),
+      settings: createElement("main", null, bodies.settings),
       overlays: createElement("aside", null, "global overlays"),
     }));
     assert.match(html, new RegExp(`${page} body`));

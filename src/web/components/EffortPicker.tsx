@@ -55,7 +55,11 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
   const levels = sessionEffortLevels(session.agent, modelId, level);
   // Delivery intent, like the mode picker beside it: the TUI walk is one way to apply a
   // level, a driver's own control is another.
-  const canPick = session.effortBaselineReady && session.state !== "exited" && canMessage(session);
+  const canPick =
+    session.effortBaselineReady &&
+    session.state !== "exited" &&
+    session.state !== "stopping" &&
+    canMessage(session);
 
   const place = useCallback(() => {
     const el = chipRef.current;

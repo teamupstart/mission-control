@@ -335,17 +335,11 @@ kbd {
   background: color-mix(in srgb, var(--exited) 7%, var(--panel));
 }
 
-/* NEW: agent mark in front of the title - one glyph, the harness's own colour. */
-.agent-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  display: inline-block;
-  margin-right: 7px;
-  vertical-align: 1px;
-  background: var(--agent, var(--neutral));
-}
+/* There is deliberately NO `.agent-dot` rule here. An earlier draft put a per-harness
+   coloured dot in front of each title; it needs a second denormalized column on a summary
+   that ships for every run in the fleet on every change, which `externalSource`'s own doc
+   comment refuses, and it fixes neither complaint. Removed rather than left unused so a
+   reader cannot mistake it for part of the proposal. */
 .who-line {
   display: flex;
   align-items: center;

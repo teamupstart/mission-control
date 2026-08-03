@@ -6,9 +6,11 @@ import {
   ForemanSettingsPanel,
   episodeBucket,
   episodeTallies,
-  sessionHandle,
   FOREMAN_STRIP_BUCKETS,
 } from "../src/web/components/ForemanSettingsPanel.tsx";
+// Moved beside `SessionRef`, the leaf that renders it, when the Ship log became its second
+// caller - one abbreviation, so one session is not printed under two names on two screens.
+import { sessionHandle } from "../src/web/components/settings-console.tsx";
 import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { ForemanEpisodeSummary, ForemanStatus } from "../src/shared/types.ts";

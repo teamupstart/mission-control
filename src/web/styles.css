@@ -9669,6 +9669,384 @@ select.ensemble-judge-persona {
   font-size: 28px;
   color: var(--working);
 }
+
+/* ---- the Ship log: the adoption ledger as a cross-repo page ----
+
+   Its own `shiplog-` prefix in the routed pages' neighborhood, beside the frame it borrows
+   (`.workflow-page`, from `ExecutionPage`). Not `sc-`: that family belongs to the settings
+   console, and this page is not a settings panel - it only shares two of its leaves
+   (`.sc-pr`, `.sc-ref`), which is exactly the amount of the console it wanted.
+
+   Colour is the PR vocabulary the app already has - `--pr-merged` and `--pr-open` - not new
+   tokens and not the strip's tones. Both marks are joined by a WORD everywhere they appear,
+   because merged/open/gone differ here by hue and a hue is not a reading everyone has. */
+.shiplog-ranges {
+  display: flex;
+  gap: 6px;
+}
+.shiplog-chip {
+  padding: 4px 11px;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+.shiplog-chip:hover {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+.shiplog-chip.is-active {
+  color: var(--fg);
+  border-color: var(--pr-merged);
+  background: color-mix(in oklab, var(--pr-merged) 12%, transparent);
+}
+
+/* `auto-fit` with a floor, like `.sc-strip`: four tiles on a wide window, two on a narrow
+   one, and never four squeezed past the width their figures need. */
+.shiplog-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.shiplog-kpi {
+  position: relative;
+  min-height: 86px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.shiplog-kpi-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.shiplog-kpi-figure {
+  margin-top: 2px;
+  font-size: 24px;
+  font-weight: 640;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.shiplog-kpi-unit {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--dim);
+}
+.shiplog-kpi-note {
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+/* A rise in things shipped is good news and a fall is not bad news - a quiet week is a
+   quiet week. So the rise is toned and the fall is not: green here would put its opposite
+   in the reader's head, and this page has no opinion to offer about that. */
+.shiplog-kpi-note.is-up {
+  color: var(--idle);
+}
+.shiplog-spark {
+  position: absolute;
+  right: 12px;
+  bottom: 9px;
+  overflow: visible;
+}
+.shiplog-spark-history {
+  stroke: var(--dim);
+}
+.shiplog-spark-tail {
+  stroke: var(--pr-merged);
+}
+.shiplog-spark circle {
+  fill: var(--pr-merged);
+  /* Ringed in the tile's own background, so the head of the line stays a distinct mark
+     where it lands on top of the history behind it. */
+  stroke: var(--panel);
+  stroke-width: 1.5;
+}
+
+.shiplog-body {
+  display: grid;
+  grid-template-columns: minmax(0, 236px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+/* Under a narrow window the rail stops being a rail: two columns at this width leave the
+   feed's titles as three words and an ellipsis, and the rail is a filter you reach for
+   occasionally rather than the thing you came to read. */
+@media (max-width: 900px) {
+  .shiplog-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.shiplog-rail {
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.shiplog-rail-head {
+  margin: 0 0 4px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.shiplog-legend {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 8px;
+  font-size: 9.5px;
+  color: var(--dim);
+}
+.shiplog-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  border-radius: 2px;
+}
+.shiplog-legend i.is-merged,
+.shiplog-mix i.is-merged {
+  background: var(--pr-merged);
+}
+.shiplog-legend i.is-open,
+.shiplog-mix i.is-open {
+  background: var(--pr-open);
+}
+.shiplog-legend i.is-gone,
+.shiplog-mix i.is-gone {
+  background: var(--dim);
+}
+.shiplog-rail-empty,
+.shiplog-feed-empty {
+  margin: 0;
+  padding: 10px 2px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.shiplog-feed-empty {
+  padding: 18px 14px;
+}
+/* Widened past the rail's own padding so the hover and selected fills reach its edges: a
+   tint that stops short of the border reads as a misaligned box rather than as a row. */
+.shiplog-repo {
+  display: block;
+  width: calc(100% + 24px);
+  margin: 0 -12px;
+  padding: 7px 12px;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+.shiplog-repo:hover {
+  background: color-mix(in oklab, var(--fg) 5%, transparent);
+}
+.shiplog-repo:hover .shiplog-repo-name {
+  color: var(--fg);
+}
+.shiplog-repo:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: -2px;
+}
+/* The rail IS the filter, so the selected row has to be findable at a glance. One shade
+   brighter on the name was the mockup's whole selected state and it does not survive
+   contact with six real repositories - it is a nuance, not a state. The fill and the edge
+   mark say it at the distance the rail is actually read from, and the name still brightens
+   underneath them. */
+.shiplog-repo.is-active {
+  background: color-mix(in oklab, var(--pr-merged) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--pr-merged);
+}
+.shiplog-repo-top {
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.shiplog-repo-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+.shiplog-repo.is-active .shiplog-repo-name {
+  color: var(--fg);
+}
+.shiplog-repo-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+/* The mix bar. `flex` per segment carries the proportion, so the bar and the three numbers
+   in the row's accessible name are the same tally rendered twice - never two counts. */
+.shiplog-mix {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin-top: 5px;
+}
+.shiplog-mix i {
+  border-radius: 3px;
+  /* A one-of-sixty segment still has to be visible, or a repo with a single closed pull
+     request reads as a repo where everything merged. */
+  min-width: 3px;
+}
+.shiplog-repo:not(.is-active) .shiplog-mix {
+  opacity: 0.72;
+}
+.shiplog-clear {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 5px 0;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  color: var(--working);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+
+.shiplog-feed {
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.shiplog-day {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 14px 6px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.shiplog-day-right {
+  margin-left: auto;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--dim);
+}
+.shiplog-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.shiplog-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.shiplog-feed > div:last-child .shiplog-row:last-child {
+  border-bottom: 0;
+}
+.shiplog-ic {
+  flex: none;
+}
+.shiplog-ic.is-merged {
+  color: var(--pr-merged);
+}
+.shiplog-ic.is-open {
+  color: var(--pr-open);
+}
+.shiplog-ic.is-gone {
+  color: var(--dim);
+}
+.shiplog-standing {
+  flex: none;
+  min-width: 52px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.shiplog-standing.is-merged {
+  color: var(--pr-merged);
+}
+.shiplog-standing.is-open {
+  color: var(--pr-open);
+}
+.shiplog-standing.is-gone {
+  color: var(--dim);
+}
+.shiplog-repo-tag {
+  flex: none;
+  max-width: 160px;
+  overflow: hidden;
+  padding: 1px 6px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.shiplog-title-col {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+/* No rule for the title link: it is `.sc-pr`, which already truncates and already reads as
+   a link out, and this column is a flex context so that truncation applies unchanged. */
+.shiplog-sub {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.shiplog-row-meta {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.shiplog-when {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.shiplog-empty-sub {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--dim);
+}
 .persona-library,
 .wf-action-library {
   display: grid;

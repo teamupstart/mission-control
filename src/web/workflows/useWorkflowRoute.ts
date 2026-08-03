@@ -83,6 +83,19 @@ export type MissionRoute =
       /** The selected Ensemble run, mirroring `runId` for `runs`. */
       ensembleId?: string;
     }
+  | {
+      /**
+       * The Ship log: the Inspector's adoption ledger read as a cross-repo record of what
+       * the fleet landed.
+       *
+       * Stateless, and deliberately so. Its range and its repository filter are both
+       * answers to "what am I looking at right now" rather than to "where am I", and
+       * neither survives a reload in the address bar - the same call `runs` made the other
+       * way for its status filter, which IS in the hash because notifications and the
+       * Line link INTO a filtered run list. Nothing links into a filtered ship log.
+       */
+      page: "shipped";
+    }
   | { page: "settings"; category: SettingsCategoryId };
 
 /**
@@ -208,6 +221,12 @@ export function parseMissionRoute(hash: string): MissionRoute {
   // front door the whole page's front door took. Exactly the rule `#/library/<unknown-shelf>`
   // already follows a few lines up.
   if (path.startsWith("/workflows/")) return { page: "library" };
+  // On `path` rather than on `execution`, exactly as `/settings` below is. The Ship log
+  // never lived under the retired `#/workflows` prefix, so reading it off the stripped
+  // spelling would invent `#/workflows/shipped` as a second address for a page that has
+  // never had one - and the catch-all above has already sent that hash to the Library,
+  // which is where every unrecognized legacy sub-path goes.
+  if (path === "/shipped") return { page: "shipped" };
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
   if (settings) {
@@ -235,6 +254,11 @@ export function missionRouteHash(route: MissionRoute): string {
       ? `#/library/${route.shelf}/${encodeURIComponent(route.assetId)}`
       : `#/library/${route.shelf}`;
   }
+  // BEFORE the ensembles tail, which is unguarded: this function ends in a return rather
+  // than in a switch, so a page member that never names its own hash does not fail to
+  // compile - it silently serializes to `#/ensembles`, and `navigate({page:"shipped"})`
+  // lands on the wrong page with no error anywhere.
+  if (route.page === "shipped") return "#/shipped";
   if (route.page === "runs") {
     const path = route.runId ? `#/runs/${encodeURIComponent(route.runId)}` : "#/runs";
     const params = new URLSearchParams();

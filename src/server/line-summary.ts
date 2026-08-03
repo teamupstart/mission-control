@@ -13,7 +13,7 @@ import {
   workflowRunAttentionSplit,
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
-import { fmtUsd } from "@shared/cost.ts";
+import { costPerPrToday, fmtUsd } from "@shared/cost.ts";
 
 /**
  * The Line's fold: fleet state in, six stages out.
@@ -351,11 +351,11 @@ function foldShipped(input: LineFoldInput): LineStageSummary {
   }
 
   const prsToday = input.cost?.prsToday ?? 0;
-  const estimated = input.cost?.estimatedCostToday ?? null;
-  // The FleetStrip's own derivation, on the same gate: an estimate over zero pull requests
-  // is a division by zero, and a null estimate means some usage in the window is unpriced,
-  // so a per-PR figure built from it would be a subtotal wearing a total's clothes.
-  const perPr = estimated != null && estimated > 0 && prsToday > 0 ? estimated / prsToday : null;
+  // The one derivation, shared with the spend popover and the Ship log's KPI. It was
+  // written out here as well until those three existed; a division whose interesting half
+  // is when it REFUSES (unpriced usage in the window, no adoptions to divide by) is exactly
+  // the kind that drifts silently once there is more than one copy of it.
+  const perPr = costPerPrToday(input.cost ?? null);
 
   return {
     stage: "shipped",

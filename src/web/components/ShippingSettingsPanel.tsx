@@ -1,8 +1,10 @@
 import { useState } from "react";
 import type { InspectorInspection } from "@shared/types.ts";
-import { MERGE_BLOCK_LABEL } from "@shared/shipping.ts";
-import type { MergeBlock } from "@shared/shipping.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
+// The standing folds moved to `lib/pr-standing.ts` when the Ship log became their second
+// reader, and are NOT re-exported from here: this panel is one consumer of them now, and a
+// second import path would be the beginning of a second answer to "did this land".
+import { mergeBucket, mergeStatus, mergeTallies, type MergeBucket } from "../lib/pr-standing.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
 import type { ShippingState } from "../useShipping.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -44,51 +46,6 @@ const METHOD_SHORT: Record<"squash" | "merge" | "rebase", string> = {
   merge: "Commit",
   rebase: "Rebase",
 };
-
-/**
- * Where one adopted PR stands with YOLO mode, in one phrase.
- *
- * A stored `mergeBlock` that is not a known code is the message `gh` gave when it refused
- * the merge - branch protection, a required check we cannot see - so it is shown verbatim
- * rather than dropped. That message is the only account the operator gets of a rule this
- * app cannot read.
- */
-export function mergeStatus(row: InspectorInspection): string {
-  if (row.mergedAt !== null) return "merged";
-  if (row.state === "closed") return "closed";
-  if (!row.mergeBlock) return "not looked at yet";
-  return MERGE_BLOCK_LABEL[row.mergeBlock as MergeBlock] ?? row.mergeBlock;
-}
-
-/**
- * Which pile a row is in, for the count strip and the filter it doubles as.
- *
- * `soaking` is split out of `blocked` because it is the one block that clears itself: a
- * strip that folded the two together would say "3 blocked" about a queue in which nothing
- * is wrong, which is precisely the reading that gets the safety valve turned down to zero.
- */
-export type MergeBucket = "merged" | "soaking" | "blocked" | "waiting" | "closed";
-
-export function mergeBucket(row: InspectorInspection): MergeBucket {
-  if (row.mergedAt !== null) return "merged";
-  if (row.state === "closed") return "closed";
-  if (!row.mergeBlock) return "waiting";
-  return row.mergeBlock === "soaking" ? "soaking" : "blocked";
-}
-
-/** The strip's tallies. Derived from `mergeBucket`, so a tile's count and the rows it
- *  filters to are the same question asked once. */
-export function mergeTallies(rows: readonly InspectorInspection[]): Record<MergeBucket, number> {
-  const t: Record<MergeBucket, number> = {
-    merged: 0,
-    soaking: 0,
-    blocked: 0,
-    waiting: 0,
-    closed: 0,
-  };
-  for (const row of rows) t[mergeBucket(row)] += 1;
-  return t;
-}
 
 /**
  * When this row last did anything: merged, or reviewed. Blank rather than "not yet

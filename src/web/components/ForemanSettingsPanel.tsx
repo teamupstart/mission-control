@@ -21,6 +21,7 @@ import {
   ConsoleState,
   ConsoleStrip,
   SessionRef,
+  sessionHandle,
   type ConsoleStat,
 } from "./settings-console.tsx";
 
@@ -366,26 +367,6 @@ const DIVERGENCE_HINT: Record<string, string> = {
   minor: "The two disagreed, but neither would have answered.",
   deferred: "The cheap tier routed up rather than deciding, so there was nothing to compare.",
 };
-
-/**
- * A short, stable handle for the session a row happened on.
- *
- * The ledger stores a `noteKey`, which is an `agentSessionId` (a UUID) when one is known
- * and a synthetic `proc:<tty>:<pid>:<start>` otherwise. Neither is readable at full
- * length, and this panel has no session list to resolve a name from - a fleet-wide,
- * historical ledger names sessions that mostly no longer exist, so there would be nothing
- * to resolve most rows against anyway. Truncating each form where it actually carries its
- * identity beats printing 36 characters of UUID in a table cell. Pure, and exported for
- * the test.
- */
-export function sessionHandle(noteKey: string): string {
-  if (noteKey.startsWith("proc:")) {
-    const [, tty, pid] = noteKey.split(":");
-    const dev = tty?.split("/").pop() ?? "";
-    if (dev && pid) return `${dev}:${pid}`;
-  }
-  return noteKey.slice(0, 8) || "unknown";
-}
 
 /** Which tier decided, in the vocabulary the tier ladder uses. */
 function tierLabel(tier: number | null): string {

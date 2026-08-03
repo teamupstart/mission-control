@@ -1,4 +1,4 @@
-import type { AgentType, RateLimitWindow, SessionCost } from "./types.ts";
+import type { AgentType, FleetCost, RateLimitWindow, SessionCost } from "./types.ts";
 
 // One place that decides when a number stops being a fact and starts being a signal.
 //
@@ -30,6 +30,27 @@ export function fmtUsd(usd: number | null | undefined): string {
   if (usd > 0 && usd < 0.01) return "<$0.01";
   if (usd >= 1000) return "$" + Math.round(usd).toLocaleString("en-US");
   return "$" + usd.toFixed(2);
+}
+
+/**
+ * What one shipped pull request cost the fleet today, or null when that cannot be said.
+ *
+ * Fleet-wide and same-day by construction: it is today's estimate over today's adoptions,
+ * so it is an average of a day rather than a figure attributable to any one row. Two
+ * surfaces print it - the spend popover and the Ship log's KPI - and they must not disagree
+ * about the division or about when to refuse it.
+ *
+ * Null on every reading that would be a lie rather than a zero: no telemetry at all, an
+ * estimate withheld because part of today's usage is unpriced (`estimatedCostToday` is null
+ * exactly then), a day that has genuinely spent nothing, and - the one that matters - a day
+ * with no adopted pull requests, where the division is by zero and the honest answer is
+ * that nothing shipped, not that shipping was free.
+ */
+export function costPerPrToday(fleet: FleetCost | null | undefined): number | null {
+  if (!fleet) return null;
+  const estimated = fleet.estimatedCostToday;
+  if (estimated === null || estimated <= 0 || fleet.prsToday <= 0) return null;
+  return estimated / fleet.prsToday;
 }
 
 /** Where a session's API-equivalent estimate sits, for the chip's colour and rail glyph. */

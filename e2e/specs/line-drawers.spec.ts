@@ -726,21 +726,52 @@ test("runs that stopped for one reason fold into one bar, and the strip stops ca
     (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${seeded[0]!.runId}`)).run.status,
   ).toBe("blocked");
 
+  // ---- and a batch that only partly worked says so ----
+  // There is no batch route: `Dismiss all` is three independent POSTs, so "some of them
+  // failed" is a state that genuinely happens and the one a bar must never paper over. Break
+  // exactly one of the three first, so the mixed outcome is real rather than hoped for.
+  await dashboard.route(`**/api/workflow-runs/${seeded[0]!.runId}/cancel`, (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: '{"error":"The run changed before it could be cancelled"}',
+    }));
   await dismissAll.click();
   await dashboard.getByRole("button", { name: "Cancel 3 runs" }).click();
 
-  // One POST per run, the daemon's own publish, and the whole pile leaving over SSE with no
-  // refetch and no reload. There is no batch route, so this is three round trips the browser
-  // fired and three rows it watched leave.
+  // The count is the honest report: two runs left, one did not, and the drawer says which
+  // arithmetic it is describing rather than claiming it cleared a pile it did not.
+  const alert = review.getByRole("alert");
+  await expect(alert).toContainText("1 of 3 runs could not be dismissed");
+  await expect(alert).toContainText("The run changed before it could be cancelled");
+  // And the surface RECOUNTS from what is actually still there: one run is not a pile, so the
+  // bar is gone and what is left is the ordinary row it always would have been.
   await expect(bar).toHaveCount(0);
-  await expect(review.locator(".line-drawer-count")).toContainText("0 runs live");
-  await expect(review.locator(".line-drawer-att")).toHaveCount(0);
-  await expect(review).toContainText("No workflow runs are in flight");
-  for (const run of seeded) {
+  await expect(review.locator(".line-run-row")).toHaveCount(1);
+  await expect(review.locator(".line-run-row")).toContainText(seeded[0]!.sessionName);
+  await expect(review.locator(".line-drawer-count")).toContainText("1 run live");
+  await expect(review.locator(".line-drawer-att")).toHaveText("1 stalled");
+  // Two POSTs did land, on the daemon, which is what makes this a partial and not a refusal.
+  for (const run of seeded.slice(1)) {
     await expect.poll(async () =>
       (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.runId}`)).run.status,
     ).toBe("cancelled");
   }
+  expect(
+    (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${seeded[0]!.runId}`)).run.status,
+  ).toBe("blocked");
+
+  // ---- the survivor is still dismissable from its own row ----
+  await dashboard.unroute(`**/api/workflow-runs/${seeded[0]!.runId}/cancel`);
+  await review.locator(".line-run-row").getByRole("button", { name: "Dismiss" }).click();
+  await dashboard.getByRole("button", { name: "Cancel run" }).click();
+  await expect(review.locator(".line-drawer-count")).toContainText("0 runs live");
+  await expect(review.locator(".line-drawer-att")).toHaveCount(0);
+  await expect(review).toContainText("No workflow runs are in flight");
+  await expect(alert).toHaveCount(0);
+  await expect.poll(async () =>
+    (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${seeded[0]!.runId}`)).run.status,
+  ).toBe("cancelled");
 });
 
 test("every legacy #/workflows deep link redirects, and the Workflows page is gone", async ({

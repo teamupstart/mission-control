@@ -4,18 +4,18 @@ Running 8 tests using 1 worker
   ✓  1 [chromium] › e2e/specs/line-drawers.spec.ts:143:1 › a stage opens its drawer in place, and three gestures close it again (1.5s)
 CAPTURED docs/evidence/line-drawers/board-pushed-down.png
 CAPTURED docs/evidence/line-drawers/board-returned.png
-  ✓  2 [chromium] › e2e/specs/line-drawers.spec.ts:197:1 › the drawer pushes the board down and hands the space back, and never resizes a card (5.6s)
+  ✓  2 [chromium] › e2e/specs/line-drawers.spec.ts:197:1 › the drawer pushes the board down and hands the space back, and never resizes a card (5.5s)
 CAPTURED docs/evidence/line-drawers/intake-capped.png
-  ✓  3 [chromium] › e2e/specs/line-drawers.spec.ts:245:1 › past three rows the drawer caps and scrolls inside itself, never burying the board (1.4s)
+  ✓  3 [chromium] › e2e/specs/line-drawers.spec.ts:245:1 › past three rows the drawer caps and scrolls inside itself, never burying the board (1.3s)
   ✓  4 [chromium] › e2e/specs/line-drawers.spec.ts:286:1 › a task-source read that fails says so, instead of reporting an empty intake (1.1s)
 CAPTURED docs/evidence/line-drawers/review-open.png
-  ✓  5 [chromium] › e2e/specs/line-drawers.spec.ts:441:1 › the Review drawer reads a live run and escalates to it at #/runs/:id (3.2s)
+  ✓  5 [chromium] › e2e/specs/line-drawers.spec.ts:441:1 › the Review drawer reads a live run and escalates to it at #/runs/:id (3.3s)
 CAPTURED docs/evidence/line-drawers/review-blocked.png
   ✓  6 [chromium] › e2e/specs/line-drawers.spec.ts:481:1 › a run whose session was removed says who it is, why it stopped, and dismisses from the row (13.8s)
 CAPTURED docs/evidence/line-drawers/review-pair-not-a-pile.png
 CAPTURED docs/evidence/line-drawers/review-grouped.png
 CAPTURED docs/evidence/line-drawers/review-group-expanded.png
-  ✓  7 [chromium] › e2e/specs/line-drawers.spec.ts:603:1 › runs that stopped for one reason fold into one bar, and the strip stops calling them yours (33.0s)
-  ✓  8 [chromium] › e2e/specs/line-drawers.spec.ts:746:1 › every legacy #/workflows deep link redirects, and the Workflows page is gone (1.2s)
+  ✓  7 [chromium] › e2e/specs/line-drawers.spec.ts:603:1 › runs that stopped for one reason fold into one bar, and the strip stops calling them yours (33.1s)
+  ✓  8 [chromium] › e2e/specs/line-drawers.spec.ts:777:1 › every legacy #/workflows deep link redirects, and the Workflows page is gone (1.3s)
 
   8 passed (1.0m)

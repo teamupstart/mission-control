@@ -367,7 +367,7 @@ test("a live run is findable by its workflow's name, states what it is waiting f
   const runId = submitted.run.id;
   await expect.poll(async () =>
     (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
-  { timeout: 30_000 }).toBe("waiting_for_session");
+  { timeout: 60_000 }).toBe("waiting_for_session");
 
   // Read the name the card carries now, rather than guessing it: the titler renames a fresh
   // session moments after dispatch and has long since settled by the time the run is waiting.

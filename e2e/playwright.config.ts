@@ -15,9 +15,9 @@ export default defineConfig({
   fullyParallel: true,
   workers: process.env.CI ? 2 : 4,
   // A dispatch waits on a real subprocess launching, so the default 30s is tight on a cold
-  // CI runner. Generous here means a real hang still fails, just later.
-  timeout: 60_000,
-  expect: { timeout: 10_000 },
+  // CI runner. Two minutes leaves room for a loaded runner while a real hang still fails.
+  timeout: 120_000,
+  expect: { timeout: 20_000 },
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],

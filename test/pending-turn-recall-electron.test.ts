@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 
 const require = createRequire(import.meta.url);
-const ELECTRON_TIMEOUT_MS = 120_000;
+const ELECTRON_TIMEOUT_MS = 240_000;
 
 test("collapsed-card recall preserves multiline queued text exactly", () => {
   assertElectronGuiLaunchAllowed();

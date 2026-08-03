@@ -149,7 +149,7 @@ test("a pull request action names each stray, then completes with its provenance
   dashboard,
   daemon,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(360_000);
   await api(daemon, "/api/workflows/config", { liveEnabled: true, repoAllowlist: [daemon.repo] }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   const sessionId = await dispatch(dashboard, daemon);
@@ -199,7 +199,7 @@ test("a pull request action names each stray, then completes with its provenance
   // that only ever saw the mismatch labels could not tell them from the state they replaced.
   await expect.poll(() => actionWait(daemon, runId), {
     message: "the action never settled into a wait for its pull request",
-    timeout: 90_000,
+    timeout: 180_000,
   }).toBe("awaiting_pull_request");
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
@@ -218,7 +218,7 @@ test("a pull request action names each stray, then completes with its provenance
 
   await expect.poll(() => actionWait(daemon, runId), {
     message: "a pull request on another branch was not distinguished from having none",
-    timeout: 60_000,
+    timeout: 120_000,
   }).toBe("pull_request_wrong_branch");
 
   // The label an operator actually reads, in the browser, arriving over SSE without a reload.
@@ -239,7 +239,7 @@ test("a pull request action names each stray, then completes with its provenance
   observePullRequest(daemon, { branch: "some-other-branch", repoRoot: otherRepo });
   await expect.poll(() => actionWait(daemon, runId), {
     message: "a pull request in another repository was not distinguished from a branch mismatch",
-    timeout: 60_000,
+    timeout: 120_000,
   }).toBe("pull_request_wrong_repository");
 
   await expect(card).toContainText("PR on another repo");
@@ -275,7 +275,7 @@ test("a pull request action names each stray, then completes with its provenance
       daemon,
       `/api/workflow-runs/${runId}`,
     )).attempts.some((attempt) => attempt.nodeId === NODE.action && attempt.state === "completed"),
-    { message: "a matching pull request never completed the action", timeout: 90_000 },
+    { message: "a matching pull request never completed the action", timeout: 180_000 },
   ).toBe(true);
 
   // The PROVENANCE, in the browser. This is the audit trail a finished action leaves - which

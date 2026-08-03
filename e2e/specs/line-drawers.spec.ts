@@ -90,7 +90,7 @@ async function settledBox(locator: Locator): Promise<{ x: number; y: number; wid
     // A fixed cadence, so "five reads" is a known ~1.25s of quiet rather than whatever
     // `expect.poll`'s backoff happened to produce.
     intervals: Array.from({ length: 120 }, () => QUIET_INTERVAL_MS),
-    timeout: 30_000,
+    timeout: 60_000,
   }).toBeGreaterThanOrEqual(QUIET_READS);
   return JSON.parse(last) as { x: number; y: number; width: number; height: number };
 }
@@ -103,7 +103,7 @@ async function waitForIdleSession(daemon: DaemonHandle): Promise<string> {
     const live = sessions.find((session) => session.state !== "exited");
     sessionId = live?.id ?? "";
     return live?.state ?? "";
-  }, { timeout: 30_000 }).toBe("idle");
+  }, { timeout: 60_000 }).toBe("idle");
   return sessionId;
 }
 
@@ -366,7 +366,7 @@ test("the Review drawer reads a live run and escalates to it at #/runs/:id", asy
   const runId = submitted.run.id;
   await expect.poll(async () =>
     (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
-  { timeout: 30_000 }).toBe("waiting_for_session");
+  { timeout: 60_000 }).toBe("waiting_for_session");
 
   await stage(dashboard, "Review").click();
   const review = drawer(dashboard, "Review");

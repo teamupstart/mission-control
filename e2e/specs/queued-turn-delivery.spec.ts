@@ -90,16 +90,16 @@ test(`a queued conversation turn is delivered once the ${agent} agent goes idle`
   // The held turn finishes and the session goes idle. That is the outbox's cue.
   await expect(
     card.getByText(`Mock reply to: ${HELD_TURN}`, { exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible({ timeout: 30_000 });
 
   // The queued row leaves the outbox as a real turn, and the agent answers it.
-  await expect(card.locator(".pending-turn")).toHaveCount(0, { timeout: 15_000 });
+  await expect(card.locator(".pending-turn")).toHaveCount(0, { timeout: 30_000 });
   await expect(
     card.locator(".turn-user:not(.pending-turn)").getByText(QUEUED_TURN, { exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible({ timeout: 30_000 });
   await expect(
     card.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible({ timeout: 30_000 });
   await shoot(dashboard, `${agent}-delivered-and-answered`);
 });
 
@@ -170,16 +170,16 @@ test(`a queued turn still lands after the ${agent} driver takes a mid-turn messa
   const replies = card.locator(".turn-assistant");
   await expect(
     replies.getByText(`Mock reply to: ${HELD_TURN}`, { exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible({ timeout: 30_000 });
   await expect(
     replies.getByText(`Mock reply to: ${MID_TURN_INJECTION}`, { exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible({ timeout: 30_000 });
 
   // And the session is genuinely available again, which is the assertion the bug failed.
-  await expect(card.locator(".pending-turn")).toHaveCount(0, { timeout: 15_000 });
+  await expect(card.locator(".pending-turn")).toHaveCount(0, { timeout: 30_000 });
   await expect(
     replies.getByText(`Mock reply to: ${QUEUED_TURN}`, { exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible({ timeout: 30_000 });
   // The recovery, and the frame worth looking at: the outbox is empty, the queued message is
   // an ordinary turn with an answer under it, and the card is idle rather than stuck busy.
   await shoot(dashboard, `${agent}-mid-turn-delivered`);

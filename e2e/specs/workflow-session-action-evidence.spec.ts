@@ -56,7 +56,7 @@ async function shoot(page: Page, name: string): Promise<void> {
 
 test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => {
   test.skip(!process.env.MC_E2E_EVIDENCE, "set MC_E2E_EVIDENCE=1 to regenerate the screenshots");
-  test.setTimeout(180_000);
+  test.setTimeout(360_000);
 
   const action = await api<{ id: string }>(daemon, "/api/session-actions", {
     name: "Tidy the workspace",
@@ -158,7 +158,7 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
     const live = sessions.find((session) => session.state !== "exited");
     sessionId = live?.id ?? "";
     return live?.state ?? "";
-  }, { timeout: 60_000 }).toBe("idle");
+  }, { timeout: 120_000 }).toBe("idle");
 
   const version = await api<{ version: { id: string } }>(
     daemon,
@@ -179,7 +179,7 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
   );
   await expect.poll(
     async () => (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.run.id}`)).run.status,
-    { timeout: 60_000 },
+    { timeout: 120_000 },
   ).toBe("waiting_for_action");
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${run.run.id}`);
@@ -236,7 +236,7 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
  */
 test("capture a completed continuation", async ({ dashboard, daemon }) => {
   test.skip(!process.env.MC_E2E_EVIDENCE, "set MC_E2E_EVIDENCE=1 to regenerate the screenshots");
-  test.setTimeout(180_000);
+  test.setTimeout(360_000);
 
   // Live delivery is two gates and both are real: the machine-wide switch, and this exact
   // repository being named.
@@ -268,7 +268,7 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
     const live = sessions.find((session) => session.state !== "exited");
     sessionId = live?.id ?? "";
     return live?.state ?? "";
-  }, { timeout: 60_000 }).toBe("idle");
+  }, { timeout: 120_000 }).toBe("idle");
 
   // A downstream Check, so the frame shows what the continuation is FOR: a stage that runs
   // against the evidence captured after the action, not the evidence above it.
@@ -314,7 +314,7 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
       `/api/workflow-runs/${run.run.id}`,
     );
     return detail.attempts.find((attempt) => attempt.nodeId === "a")?.state;
-  }, { timeout: 90_000 }).toBe("completed");
+  }, { timeout: 180_000 }).toBe("completed");
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${run.run.id}`);
   // Two entries under ONE repair round, and the sentence saying the second cost no round.

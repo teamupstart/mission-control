@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
@@ -172,6 +174,49 @@ test("a card on each shelf opens the editor that owns it, and the hash names wha
     .toBeVisible();
   await expect(dashboard.locator("section.wf-action-fields").getByLabel("Name"))
     .toHaveValue("Shelf action");
+});
+
+test("the built-in workflow graph fills the full builder canvas", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.setViewportSize({ width: 1682, height: 1100 });
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
+  await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
+
+  const canvas = dashboard.getByLabel("Published workflow graph");
+  await expect(canvas).toBeVisible();
+  await expect(canvas.locator(".react-flow__node").first()).toBeVisible();
+  await expect(canvas.getByRole("button", { name: "Fit the graph to view" })).toBeVisible();
+  const geometry = await canvas.evaluate((element) => {
+    const flow = element.querySelector<HTMLElement>(":scope > .react-flow");
+    if (!flow) throw new Error("React Flow root is missing from the workflow canvas");
+    const canvasRect = element.getBoundingClientRect();
+    const flowRect = flow.getBoundingClientRect();
+    return {
+      canvasHeight: canvasRect.height,
+      flowHeight: flowRect.height,
+      bottomGap: Math.abs(canvasRect.bottom - flowRect.bottom),
+    };
+  });
+
+  // A built-in is read-only, but this is the full builder rather than the compact version
+  // preview in the properties rail. The interaction state must not collapse the graph to
+  // that preview's 250px height and leave the rest of the working surface blank.
+  expect(geometry.canvasHeight).toBeGreaterThan(500);
+  expect(geometry.flowHeight).toBe(geometry.canvasHeight);
+  expect(geometry.bottomGap).toBeLessThanOrEqual(1);
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    await dashboard.mouse.move(0, 0);
+    await dashboard.screenshot({
+      path: fileURLToPath(new URL("../evidence/workflow-graph-full-canvas.png", import.meta.url)),
+      fullPage: true,
+    });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/evidence/workflow-graph-full-canvas.png");
+  }
 });
 
 test("the hash follows the editor to a second asset, without stacking history", async ({

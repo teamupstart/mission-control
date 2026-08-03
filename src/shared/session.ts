@@ -19,6 +19,7 @@ import { canWriteTo } from "./pane.ts";
 export function canCycleMode(session: Session): boolean {
   return (
     session.state !== "exited" &&
+    session.state !== "stopping" &&
     capabilitiesFor(session.agent).permissionModes?.liveControl.kind === "cycle" &&
     canWriteTo(session)
   );
@@ -68,7 +69,7 @@ export function agentActive(s: Session): boolean {
  * offered buttons aimed at a dead pane.
  */
 export function activePaneDialog(s: Session): PaneDialog | null {
-  return s.state === "exited" ? null : s.paneDialog;
+  return s.state === "exited" || s.state === "stopping" ? null : s.paneDialog;
 }
 
 /**
@@ -146,6 +147,10 @@ export function settledIdle(s: Session, now: number, settleMs: number): boolean 
  */
 export function reportBucket(s: Session, _sessions: Session[] = [s]): ReportBucket {
   if (s.state === "exited") return "exited";
+  // Accepted shutdown is unavailable, not idle. Keeping it in the working bucket prevents
+  // Foreman from selecting a driver the supervisor has already closed to new sends while
+  // its final event stream drains into the ordinary eviction path.
+  if (s.state === "stopping") return "working";
   if (s.pendingReviews > 0) return "needs-you";
   // A menu on the screen is DIRECT evidence the session has stopped and cannot move
   // until someone answers - and unlike the state checks below, it needs no hooks to see.

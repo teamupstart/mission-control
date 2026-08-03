@@ -137,7 +137,7 @@ import { answeredQuestion } from "./sdk/answered-question.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
-import { stopSession } from "./sdk/control.ts";
+import { requestSessionStop } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
@@ -2200,7 +2200,10 @@ export function buildApp(
   app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const r = await stopSession(session, sdkSessions);
+    // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
+    // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
+    // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
+    const r = await requestSessionStop(session, sdkSessions);
     return c.json(r, r.ok ? 200 : 500);
   });
 

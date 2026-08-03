@@ -4564,10 +4564,11 @@ earns two surfaces a card has nowhere to put:
   **needs you** with the run's header repeated there, rather than dragging its working siblings
   out of the column that describes what they are. Dragging a backlog card onto a clustered tile
   works exactly as it does anywhere else - the frame is a drawing, not a drop target.
-- **Killing a session closes its detail**, without waiting for the session to disappear -
-  the board goes straight back to its columns, the console empties its pane, and Cards
-  leaves focus mode with the card still selected. A killed session lingers for a few
-  seconds before it's evicted, and there's nothing left to read in it.
+- **Killing a session closes its detail** once shutdown is accepted, without waiting for an
+  Agent SDK subprocess and event stream to finish draining. The board goes straight back to
+  its columns, the console empties its pane, and Cards leaves focus mode with the card still
+  selected. The card reads **stopping** during that drain, then **exited** until its ordinary
+  eviction; durable task, workflow, and review cleanup still begins only on `session_remove`.
 - **Double-click a column head to widen that column.** A board column is sized for a
   glance, and sometimes a glance is not enough: titles wrap to three lines, goals clamp at
   two, and a blocked chip ellipses after four words. Double-clicking the head - or pressing
@@ -4799,8 +4800,8 @@ names the layouts where a shortcut's target exists:
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
 | <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
-| <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then close the session; press <kbd>Enter</kbd> to confirm. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
-| <kbd>k</kbd> | Kill the selected session (press <kbd>Enter</kbd> to confirm) | Selected session |
+| <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then request session shutdown; press <kbd>Enter</kbd> to confirm. The detail closes once shutdown is accepted while an Agent SDK session drains in the background. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
+| <kbd>k</kbd> | Request shutdown of the selected session and close its detail once accepted (press <kbd>Enter</kbd> to confirm) | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move between Session, the stages, their reviewers and End. <kbd>Home</kbd> / <kbd>End</kbd> jump to either terminus | [Workflows](#workflows-and-personas) → Pipeline |
 | <kbd>⌥</kbd><kbd>←</kbd> <kbd>⌥</kbd><kbd>→</kbd> | Move the focused stage earlier or later in the chain | [Workflows](#workflows-and-personas) → Pipeline |

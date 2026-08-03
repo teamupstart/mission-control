@@ -2628,7 +2628,7 @@ function CommandBar({
   onRename: () => void;
   onDeselect: () => void;
 }): React.JSX.Element {
-  const live = session.state !== "exited";
+  const live = session.state !== "exited" && session.state !== "stopping";
   // The shortcut represents Shift+Tab, so menu-based permission controls stay on their card
   // picker rather than receiving a keystroke their TUI gives another meaning - the shared
   // `canCycleMode` is the same gate the keydown handler and the ActionBar button use.

@@ -110,6 +110,11 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
     async stop(id: string) {
       stopped.push(id);
     },
+    requestStop(id: string) {
+      if (!live) return false;
+      stopped.push(id);
+      return true;
+    },
     async setPermissionMode(id: string, mode: string) {
       modes.push(`${id}:${mode}`);
     },

@@ -27,7 +27,7 @@ export function KillModal({
   onClose,
 }: {
   session: Session;
-  /** Fired once the kill lands, so App can drop the detail it was ordered from. */
+  /** Fired once shutdown is accepted, so App can drop the detail it was ordered from. */
   onKilled?: () => void;
   /** Switch to Complete instead - offered only when there is a task to complete. */
   onComplete?: () => void;

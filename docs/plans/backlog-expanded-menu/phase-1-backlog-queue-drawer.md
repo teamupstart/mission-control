@@ -160,3 +160,35 @@ plan poll. No schema, storage, or protocol change. No migration.
 
 - 2026-08-02: initial write. Contract with Phase 2 set: static next-up pill here, trigger
   there; footer slot introduced here, extended there. No conflicts to reconcile yet.
+- 2026-08-03: implemented. Every cross-phase contract above holds as written. Six deviations
+  from the route this file proposed, all recorded in the pull request:
+  1. **Backlog is the FIFTH drawer, not the fourth.** `shipped` became a drawer between this
+     file being written and being executed, so `LINE_DRAWER_STAGES` is now five of six and the
+     only navigating stage left is Working. `"backlog"` was inserted in STRIP order rather
+     than appended, since the list is a set and strip order is the one a reader expects.
+  2. **The `sitrep` arm of `LineStageTarget` survives with no members**, alongside `route`,
+     which already had none. Both name a kind of destination the dashboard really has;
+     deleting the arm would make the next retarget a type change plus a new `case` in App's
+     handler rather than a one-line table edit. The test asserts no STAGE points at it.
+  3. **Band captions were dropped.** The mockup's `Ready · plan order` / `Blocked · parked`
+     headings cost ~44px inside a body capped at exactly three rows, which left 2.2 rows
+     showing - and the frame's stated rule is that the cap lands on a row boundary so no
+     half-row peeks over the edge. Caught in the runtime visual pass, not in review. The bands
+     are instead two `aria-label`ed lists, separated by a zero-cost `:has()` border, and are
+     said by the header count and the per-row marks.
+  4. **Parked rows are dimmed, never amber.** The mockup ambers every non-ready row. In this
+     app amber means "a person must act", which is untrue of a hold the operator applied
+     themselves and of a row waiting on a prerequisite that will finish. Amber is now exactly
+     `blockersNeedYou` - a dead or disabled prerequisite. The QUEUE still goes amber when
+     nothing is ready, which is the strip's own rule.
+  5. **`blockedLabel` / `blockersNeedYou` moved to `src/web/lib/backlog-copy.ts`** from
+     `BacklogColumn.tsx`, where they were private. The drawer needed the board's exact words,
+     and a `line/` component importing a helper out of `layouts/` would couple the drawer to
+     the board.
+  6. **Park/resume is `ScheduleSwitch` on BOTH bands**, not a switch on ready rows and a
+     `Resume` button on parked ones. One shared control for one write; a Resume button would
+     be a second affordance for `updateTask { enabled }`.
+
+  Coverage added beyond the plan: a `line-drawer-electron.test.ts` case proving the new footer
+  sits outside the capped body and costs the rows nothing, since the footer is the one
+  structural change to the shared frame and its consequences are all used height.

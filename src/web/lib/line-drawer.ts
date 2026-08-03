@@ -18,19 +18,21 @@ import type { LineStageId } from "@shared/line.ts";
 /**
  * The stages that own a drawer, and therefore the ones whose buttons are `aria-expanded`.
  *
- * Four of six, and the other two navigate instead - Backlog to the Sitrep, Working to the
- * board under the strip. That split is not a staging post: a drawer is worth its space only
- * where triage means comparing several rows against each other, and "show me the board I am
+ * Five of six, in strip order, and the sixth navigates instead: Working shows the board
+ * under the strip. That split is not a staging post: a drawer is worth its space only where
+ * triage means comparing several rows against each other, and "show me the board I am
  * already looking at" is not that.
  *
- * Shipped was in the navigating half for one release, pointed at the completed workflow runs
- * because no surface rendered the rows its count is actually made of. That target was wrong
- * in both directions - a session ships without ever starting a run, and a finished run ships
- * nothing - so it moved here the moment the adoption ledger had a reader. Comparing this
- * week's pull requests against each other is exactly the shape a drawer is for, and the full
- * cross-repo account escalates one click deeper to `#/shipped`.
+ * Two stages have crossed over, and both crossings are the same argument. Shipped pointed at
+ * the completed workflow runs because no surface rendered the rows its count is actually made
+ * of, and that target was wrong in both directions - a session ships without ever starting a
+ * run, and a finished run ships nothing. Backlog pointed at the SITREP, which reads the whole
+ * fleet: a panel that answers "how is everything" is not the answer to "what is queued, in
+ * what order, and what can I do about it". Both counts now land on their own rows, and both
+ * keep their wider read one click further out - `#/shipped` for the cross-repo ledger, the
+ * Sitrep for the fleet.
  */
-export const LINE_DRAWER_STAGES = ["intake", "review", "decide", "shipped"] as const;
+export const LINE_DRAWER_STAGES = ["intake", "backlog", "review", "decide", "shipped"] as const;
 export type LineDrawerStage = (typeof LINE_DRAWER_STAGES)[number];
 
 export function isLineDrawerStage(stage: LineStageId): stage is LineDrawerStage {

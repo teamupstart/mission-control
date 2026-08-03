@@ -141,11 +141,11 @@ test("the Line renders every stage, tracks the fleet live, and its stages reach 
 
   // ---- a stage click does something real ----
 
-  // Four of the six stages now open a drawer in place; Shipped was the last to, and it used
-  // to navigate to the completed workflow runs - a target that was wrong in both directions,
-  // since a session ships without ever starting a run and a finished run ships nothing. What
-  // is checked here is only that a stage press REACHES its target at all. The drawers' own
-  // semantics are `line-drawers.spec.ts`' subject.
+  // Five of the six stages now open a drawer in place; Shipped used to navigate to the
+  // completed workflow runs - a target that was wrong in both directions, since a session
+  // ships without ever starting a run and a finished run ships nothing. What is checked here
+  // is only that a stage press REACHES its target at all. The drawers' own semantics are
+  // `line-drawers.spec.ts`' subject.
   await line.getByRole("button", { name: /^Shipped,/ }).click();
   const shipped = dashboard.getByRole("region", { name: "Shipped drawer" });
   await expect(shipped).toBeVisible();

@@ -1546,8 +1546,9 @@ readable afterwards rather than a single row overwritten four times.
 ### Edit a shelved task
 
 **Click a backlog task and it opens back up in the form that wrote it** - on the
-[Board](#layout-cards-console-or-board)'s backlog column, or by its name in the
-[Roundup](#roundup) panel. Every field is editable, including its dependencies and more
+[Board](#layout-cards-console-or-board)'s backlog column, by its name in the
+[Roundup](#roundup) panel, or by its title in the Line's
+[Backlog drawer](#the-stage-drawers). Every field is editable, including its dependencies and more
 screenshots dropped onto it. Put **Model** or **Effort** back on its named **Default - …**
 choice to un-pin it, so the task follows the corresponding harness default when it finally
 launches. **Save** keeps it in the backlog;
@@ -1606,8 +1607,9 @@ catches a task whose agent died while the daemon was down.
 Every backlog row carries an **on/off switch**: turn it off and the
 [backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet) will not schedule that
 item - not into a fresh worktree, not onto an idle agent. It's on the board's backlog card
-next to the priority picker, and on the same row in [Sitrep](#roundup); both draw the same
-control, so you can park an item from wherever you happen to be reading the list.
+next to the priority picker, on the same row in [Sitrep](#roundup), and on every row of the
+Line's [Backlog drawer](#the-stage-drawers); all three draw the same control, so you can park
+an item from wherever you happen to be reading the list.
 
 **It's a hold on the machine, not on you.** **launch new agent** and dragging the card
 onto an idle agent both still start a parked item; the button reads **launch anyway**, the
@@ -1665,8 +1667,9 @@ The chain part matters: the card that *declared* the dead edge is not always the
 are looking at, and a phase three links downstream is just as stuck without knowing why.
 The walk stops at a prerequisite that already launched, because its earlier dependencies
 no longer gate downstream work. The warning follows the blocked downstream on the board's
-backlog card and on the same row in [Sitrep](#roundup), so the fix is reachable from
-wherever you are reading the list.
+backlog card, on the same row in [Sitrep](#roundup), and on the Line's
+[Backlog drawer](#the-stage-drawers) row, so the fix is reachable from wherever you are
+reading the list.
 
 Opening it names the stopped prerequisite and offers two ways out:
 
@@ -1711,6 +1714,7 @@ comma or a repeat is visibly a no-op.
 
 The **backlog column** on the board sorts by priority and lets you retriage in place - the
 chip on each card is a picker, and changing it re-sorts the column under your cursor. The
+Line's [Backlog drawer](#the-stage-drawers) carries the same picker on its ready rows. The
 **Sitrep** shows both marks on every backlog row, and `Copy as markdown` carries them
 (`- [blocker] "Fix the thing" (ship) {infra, flaky} - /repo`).
 
@@ -2276,6 +2280,13 @@ clicking its name, or drop it right from the panel, and **Mark
 done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).
+
+The ☰ **Backlog** stage on [the Line](#the-line-the-pipeline-strip-above-the-fleet) used to
+open this panel and now opens its own [drawer](#the-stage-drawers) - the queue in plan order,
+which is the narrower thing that button's sentence promises. The drawer's footer escalates
+here, because this is still where the backlog is read *against the rest of the fleet*: which
+of those queued items is waiting on an agent that needs you, and what finished while you were
+looking away. Nothing about this panel changed.
 
 ## Alerts & Away mode
 
@@ -4435,7 +4446,7 @@ reads it:
 | Stage | Click opens |
 |-------|-------------|
 | ⇊ Intake | **Drawer** - every task source and recurring mission, with its health line |
-| ☰ Backlog | The [Roundup](#roundup), which lists the backlog with its blockers |
+| ☰ Backlog | **Drawer** - the queue in the order autopilot would take it, with the triage moves on each row, escalating to the [Sitrep](#roundup) |
 | ▶ Working | The fleet, with the filter cleared - so the count and the cards agree again |
 | ⌁ Review | **Drawer** - one ladder per live run |
 | ⧉ Decide | **Drawer** - the condensed decision dossier, one row per live ensemble |
@@ -4467,8 +4478,9 @@ rather than assert.
   drops the drawer, so returning to the fleet does not resurrect a panel you had finished with.
 
 Each drawer is a **triage projection**, and **none of them reads run detail** - a drawer that
-fetched one detail per row would fire N bounded HTTP reads on a single strip click. Review and
-Decide are drawn entirely from the SSE summaries the fleet already holds and fetch nothing at
+fetched one detail per row would fire N bounded HTTP reads on a single strip click. Review,
+Decide and Backlog are drawn entirely from state the fleet already holds - the SSE summaries,
+the task list, and the backlog plan Foreman polls every four seconds - and fetch nothing at
 all. **Intake and Shipped each make exactly one read**, on the click that opens them and never
 otherwise, because their inputs never cross the wire: task-source health and the Inspector's
 adoption ledger are the two stages the daemon folds from data the browser has no copy of. Both
@@ -4476,17 +4488,48 @@ therefore hold **three** states rather than two - loading, failed, and the answe
 `fetchJson` resolves null on every failure, and a drawer that read that as "nothing here" would
 report an unreachable daemon as a healthy empty intake or a quiet week.
 
-Review alone can also *act*, and only where the summary by itself proves the run has stopped
-and the route needs no argument beyond the run id - which is what keeps `Reattach` (needs a
-session), resolving a delivery (needs a delivery and a choice) and disabling a reviewer (needs
-a stage member) on the full page, one click deeper.
+Review and Backlog can also *act*. Review acts only where the summary by itself proves the run
+has stopped and the route needs no argument beyond the run id - which is what keeps `Reattach`
+(needs a session), resolving a delivery (needs a delivery and a choice) and disabling a
+reviewer (needs a stage member) on the full page, one click deeper. Backlog carries the three
+moves triage is actually made of, each on a route that already existed: dispatch, the
+enable/disable switch, and the priority picker. **A refused request is reported on the drawer
+and the row stays** - on both of them, for the same reason: a triage surface that dropped a row
+on a failed call would be lying about the queue it is describing.
 
 | Drawer | Each row says | Escalates to |
 |--------|---------------|--------------|
 | **Review** | The session, the workflow and version, the repair round, a compact pipeline of chips (evidence → reviewers → session action → Inspector), and what the run is doing - **including why it stopped**, as `Blocked · session gone`. A run stopped on *you* is marked amber; a run that has stopped and will not move on its own is marked red. Three or more runs stopped for the *same* reason are one bar instead of three rows. A run an ensemble handed off wears its **⧉ from an ensemble** provenance, which opens that ensemble | The one remedy that run's state actually takes - `Dismiss`, `Retry`, `Resubmit`, `Restart…`, or `Dismiss all` for a bar - then `Open run` → `#/runs/:id`, `All runs →` → `#/runs`, and `Bind a workflow…` opens the binding dialog |
 | **Decide** | What was at stake, elapsed, the candidate progress dots, and what the run wants next. The ones awaiting an answer sort first | `Decide` (awaiting an answer) or `Open full dossier` → `#/ensembles/:id`, `All ensembles →` → `#/ensembles` |
+| **Backlog** | One queued task: its title (which reopens the [Dispatch](#dispatch-a-new-agent) form over it), its kind, agent and age, and the marks for its state - **next up**, what it is waiting on, **parked**. The ready band is in [plan order](#backlog-autopilot-foreman-schedules-the-fleet), so the top row is what autopilot takes next; blocked and parked follow | `Launch now` dispatches it into a fresh worktree, the switch parks or resumes it, the picker sets its priority, and a dead prerequisite resolves from the row it is blocking. `Sitrep →` in the footer opens the [Roundup](#roundup) |
 | **Intake** | Each source's last sweep and what it filed, or the error it failed with; each mission's cadence, next firing, and health | `Settings` → task sources, `Open` → [Recurring Missions](#recurring-missions) |
 | **Shipped** | One adopted pull request: its merge state as a **mark and a word** (merged / open / gone), its title - falling back to the branch, then to its own number - over `owner/repo#N`, the session that opened it, and when. Newest adoption first, over the same rolling seven days the count above it is folded from. Chips in the header split the week **All / Merged / Open / Gone** with their counts, and are toggles | The pull request itself on GitHub, and `Ship log →` → [`#/shipped`](#the-ship-log) |
+
+**The Backlog drawer answers the stage's own promise, which the Sitrep never did.** The stage
+sentence says *what autopilot would take next, and how many are blocked* - a claim about one
+list in one order - and the click used to open the [Roundup](#roundup), a whole-fleet report
+that carries a backlog section on the way past. The drawer is that list instead: the **ready**
+band is `readyBacklog` verbatim, the same derivation `backlog-machine.ts` schedules from and
+the same one the strip's sentence is folded from, so the row wearing **next up** is the task
+the autopilot actually takes next and not a second opinion about it. **Blocked** and **parked**
+follow, each row saying why in the [same words the board card uses](#hold-a-backlog-item-back).
+
+**The bands carry no captions over them**, and that is the cap's doing rather than an
+oversight. The body is capped at *exactly* three rows so that it ends on a row boundary and no
+half-row peeks over the edge; two captions inside that budget leave 2.2 rows showing, and the
+sliver reads as a broken panel rather than a capped one. So the bands are said three other
+ways, none of which costs the body a pixel: the header counts them, every row wears its own
+state as a mark, and each band is a **named list** for a reader who cannot see the marks.
+
+The header counts `4 ready · 1 blocked · 1 parked`, dropping whatever is zero, and goes amber
+with **nothing ready** on exactly the strip's own condition: items are queued and none of them
+can start, so capacity will never clear it. **Only ready rows carry the priority picker** -
+priority orders the queue, and setting it on a row that cannot run orders nothing - while a
+parked row keeps its switch and a row blocked by a cancelled or failed prerequisite keeps the
+[resolve button](#resolve-a-stopped-dependency), which targets the dead task and so releases
+every dependent rather than just that row. A task that is both parked *and*
+blocked is filed under **parked**, because that is the half you can clear from here, and its
+row prints both marks so resuming it does not silently fail to reach the ready band.
 
 **A Review row is named by whoever it is, not by whatever is left.** A workflow run outlives
 the session it reviewed - when a session is removed the run is blocked and its live name goes

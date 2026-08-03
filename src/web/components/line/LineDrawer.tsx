@@ -5,7 +5,7 @@ import { LINE_DRAWER_DOM_ID } from "../LineStrip.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
 /**
- * The drawer frame: everything true of all four drawers, and nothing about any of them.
+ * The drawer frame: everything true of all five drawers, and nothing about any of them.
  *
  * It sits BETWEEN the strip and the layouts, as a sibling of both, and that placement is the
  * whole feature. An overlay would have covered the board; a panel inside a layout would have
@@ -27,6 +27,7 @@ import { Tooltip } from "../Tooltip.tsx";
 /** The glyphs the strip uses, repeated in the drawer head so the two read as one surface. */
 const DRAWER_GLYPHS: Record<LineDrawerStage, string> = {
   intake: "⇊",
+  backlog: "☰",
   review: "⌁",
   decide: "⧉",
   shipped: "⚑",
@@ -48,6 +49,18 @@ export function LineDrawer({
    * the three drawers that only ever read pass nothing and render nothing.
    */
   notice = null,
+  /**
+   * One line UNDER the rows, for a drawer whose panel has something to say about the list as
+   * a whole rather than about any row in it.
+   *
+   * Outside the capped body for the `notice` reason, arrived at from the other end: the body
+   * scrolls, so a footer inside it is only visible once you have scrolled to the bottom of a
+   * list it is not part of. The header's `actions` slot was the alternative and it is the
+   * wrong shelf for this - it sits beside the count, where a control reads as "act on what
+   * this panel is showing", and a footer reads as "and here is what happens next". Optional,
+   * so the four drawers that have nothing to add below their rows render no footer at all.
+   */
+  footer = null,
   onClose,
   children,
 }: {
@@ -56,6 +69,7 @@ export function LineDrawer({
   attention?: string;
   actions?: ReactNode;
   notice?: ReactNode;
+  footer?: ReactNode;
   onClose: () => void;
   children: ReactNode;
 }): React.JSX.Element {
@@ -112,6 +126,7 @@ export function LineDrawer({
       {/* The cap and the scrollbar are this element's, in the stylesheet. Bodies render rows
           and never a height. */}
       <div className="line-drawer-body">{children}</div>
+      {footer && <footer className="line-drawer-foot">{footer}</footer>}
     </section>
   );
 }

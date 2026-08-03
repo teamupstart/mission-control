@@ -95,12 +95,29 @@ async function settledBox(locator: Locator): Promise<{ x: number; y: number; wid
   return JSON.parse(last) as { x: number; y: number; width: number; height: number };
 }
 
-/** The daemon's own word for "the launch turn is over", which no DOM poll can substitute for. */
-async function waitForIdleSession(daemon: DaemonHandle): Promise<string> {
+async function sessionIds(daemon: DaemonHandle): Promise<Set<string>> {
+  const sessions = await api<Array<{ id: string }>>(daemon, "/api/sessions");
+  return new Set(sessions.map((session) => session.id));
+}
+
+/**
+ * The daemon's own word for "the launch turn is over", which no DOM poll can substitute for.
+ *
+ * `before` is the set of session ids that existed when the dispatch was fired, and it is what
+ * makes this safe to call more than once on a fleet: "the first session that is not exited"
+ * returns the PREVIOUS session while it is still winding down, so a second seeded run would
+ * bind to a conversation that already has a binding and the daemon would answer 409. Naming
+ * the new one explicitly costs one extra read and removes the race entirely.
+ */
+async function waitForIdleSession(
+  daemon: DaemonHandle,
+  before: ReadonlySet<string> = new Set(),
+): Promise<string> {
   let sessionId = "";
   await expect.poll(async () => {
     const sessions = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
-    const live = sessions.find((session) => session.state !== "exited");
+    const live = sessions.find((session) =>
+      !before.has(session.id) && session.state !== "exited");
     sessionId = live?.id ?? "";
     return live?.state ?? "";
   }, { timeout: 60_000 }).toBe("idle");
@@ -327,7 +344,13 @@ async function seedReviewRun(
   daemon: DaemonHandle,
   intent: string,
   name: string,
+  /**
+   * A published version to reuse. Three runs of ONE workflow is what a real pile looks like,
+   * and it is three fewer publishes than a workflow each.
+   */
+  reuse: string | null = null,
 ): Promise<SeededRun> {
+  const before = await sessionIds(daemon);
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
@@ -337,8 +360,33 @@ async function seedReviewRun(
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
-  const sessionId = await waitForIdleSession(daemon);
+  const sessionId = await waitForIdleSession(daemon, before);
 
+  const versionId = reuse ?? await publishFailingWorkflow(daemon, name);
+  const binding = await api<{ id: string; sessionName: string; noteKey: string }>(
+    daemon,
+    "/api/workflow-bindings",
+    { workflowVersionId: versionId, sessionId, deliveryMode: "preview" },
+  );
+  const submitted = await api<{ run: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${binding.id}/submit`,
+    { requestId: `e2e-line-drawer-${name}` },
+  );
+  const runId = submitted.run.id;
+  await expect.poll(async () =>
+    (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
+  { timeout: 60_000 }).toBe("waiting_for_session");
+  return {
+    runId,
+    sessionId,
+    sessionName: binding.sessionName,
+    noteKey: binding.noteKey,
+  };
+}
+
+/** One published workflow whose only reviewer always fails, and its immutable version id. */
+async function publishFailingWorkflow(daemon: DaemonHandle, name: string): Promise<string> {
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: `Strict reviewer ${name}`,
     guidanceMarkdown: "# Strict reviewer\n\nE2E_FAIL_VERDICT",
@@ -363,26 +411,31 @@ async function seedReviewRun(
     `/api/workflows/${workflow.workflow.id}/publish`,
     { expectedDraftRevision: 1 },
   );
-  const binding = await api<{ id: string; sessionName: string; noteKey: string }>(
-    daemon,
-    "/api/workflow-bindings",
-    { workflowVersionId: published.version.id, sessionId, deliveryMode: "preview" },
-  );
-  const submitted = await api<{ run: { id: string } }>(
-    daemon,
-    `/api/workflow-bindings/${binding.id}/submit`,
-    { requestId: `e2e-line-drawer-${name}` },
-  );
-  const runId = submitted.run.id;
-  await expect.poll(async () =>
-    (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
-  { timeout: 60_000 }).toBe("waiting_for_session");
-  return {
-    runId,
-    sessionId,
-    sessionName: binding.sessionName,
-    noteKey: binding.noteKey,
-  };
+  return published.version.id;
+}
+
+/**
+ * Kill a session and wait for the run bound to it to reach `blocked:session_disappeared`.
+ *
+ * The state under test cannot be seeded by writing SQLite: run summaries are served from an
+ * in-memory map on the Registry rather than re-read per request, so a direct UPDATE never
+ * reaches the browser. The daemon has to do it - kill the session and let `session_remove`
+ * reach `orphanBinding`, which is the exact path all 31 blocked runs on the real fleet took.
+ *
+ * `EXIT_LINGER_MS` is a hardcoded 8s between the session exiting and `session_remove` firing,
+ * and it is not env-tunable - so the poll gets its own explicit budget rather than the 20s
+ * `expect` default. Killing several sessions FIRST and waiting afterwards spends one linger
+ * window on the whole set instead of one each, which is what keeps a three-run pile inside
+ * the per-spec timeout.
+ */
+async function waitForOrphanedRun(daemon: DaemonHandle, runId: string): Promise<void> {
+  await expect.poll(async () => {
+    const detail = await api<{ run: { status: string; currentPhase: string } }>(
+      daemon,
+      `/api/workflow-runs/${runId}`,
+    );
+    return `${detail.run.status}:${detail.run.currentPhase}`;
+  }, { timeout: 60_000 }).toBe("blocked:session_disappeared");
 }
 
 test("the Review drawer reads a live run and escalates to it at #/runs/:id", async ({
@@ -441,21 +494,10 @@ test("a run whose session was removed says who it is, why it stopped, and dismis
   expect(seeded.sessionName.length).toBeGreaterThan(0);
   expect(seeded.sessionName).not.toBe(seeded.noteKey);
 
-  // The state under test cannot be seeded by writing SQLite: run summaries are served from an
-  // in-memory map on the Registry rather than re-read per request, so a direct UPDATE never
-  // reaches the browser. The daemon has to do it - kill the session and let `session_remove`
-  // reach `orphanBinding`, which is the exact path all 31 blocked runs on the real fleet took.
+  // Kill the session and let `session_remove` reach `orphanBinding` - see
+  // `waitForOrphanedRun` for why this state cannot be seeded any other way.
   await api(daemon, `/api/sessions/${seeded.sessionId}/kill`, {});
-  // `EXIT_LINGER_MS` is a hardcoded 8s between the session exiting and `session_remove`
-  // firing, and it is not env-tunable - so this poll gets its own explicit budget rather than
-  // the 20s `expect` default.
-  await expect.poll(async () => {
-    const detail = await api<{ run: { status: string; currentPhase: string } }>(
-      daemon,
-      `/api/workflow-runs/${seeded.runId}`,
-    );
-    return `${detail.run.status}:${detail.run.currentPhase}`;
-  }, { timeout: 60_000 }).toBe("blocked:session_disappeared");
+  await waitForOrphanedRun(daemon, seeded.runId);
 
   // A SECOND run, still live, so the drawer holds one row with a remedy and one without. That
   // mix is the whole shape of the real fleet, and it is the only way to see whether the state
@@ -556,6 +598,149 @@ test("a run whose session was removed says who it is, why it stopped, and dismis
   expect(
     (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${live.runId}`)).run.status,
   ).toBe("waiting_for_session");
+});
+
+test("runs that stopped for one reason fold into one bar, and the strip stops calling them yours", async ({
+  dashboard,
+  daemon,
+}) => {
+  // Three runs of ONE workflow, which is what the real pile is: 31 runs of No-Mistakes Review
+  // whose sessions were removed. Publishing once means the bar's workflow line is a real
+  // claim about all three rather than an artefact of three separately-named fixtures.
+  const version = await publishFailingWorkflow(daemon, "Pile review");
+  const seeded: SeededRun[] = [];
+  /**
+   * One more run on the pile: dispatch, bind, submit, kill, and wait for the block.
+   *
+   * SEQUENTIAL, and that is a constraint of the fake rather than a preference. `fake-claude`
+   * reports one fixed conversation id per daemon (`MC_E2E_SESSION_ID`), so every session it
+   * launches shares a note key - and `createBinding` allows one active binding per note key.
+   * Two live bindings at once is a 409, so each session has to be orphaned (which releases
+   * its binding) before the next can be bound. The cost is one `EXIT_LINGER_MS` window each,
+   * which is why this spec seeds three and not thirty-one.
+   */
+  const pile = async (nth: string): Promise<void> => {
+    const run = await seedReviewRun(
+      dashboard,
+      daemon,
+      `hold the ${nth} session in the pile`,
+      `Pile ${nth}`,
+      version,
+    );
+    // The fixture has to be able to fail: a title that was never captured, or one that
+    // happened to equal the note key, would let a bar listing GUIDs pass this spec.
+    expect(run.sessionName.length).toBeGreaterThan(0);
+    expect(run.sessionName).not.toBe(run.noteKey);
+    await api(daemon, `/api/sessions/${run.sessionId}/kill`, {});
+    await waitForOrphanedRun(daemon, run.runId);
+    seeded.push(run);
+  };
+
+  // ---- two is two rows ----
+  await pile("first");
+  await pile("second");
+
+  await stage(dashboard, "Review").click();
+  const review = drawer(dashboard, "Review");
+  await expect(review).toBeVisible();
+  // A pair is not a pile. Two blocked runs sharing a reason stay two ordinary rows, with
+  // their chips, their round counters and a `Dismiss` each - a bar here would save one line
+  // and cost all six of those facts.
+  await expect(review.locator(".line-run-row")).toHaveCount(2);
+  await expect(review.locator(".line-group")).toHaveCount(0);
+  await shoot(dashboard, "review-pair-not-a-pile");
+
+  // ---- three is one bar ----
+  // The drawer stays open across the third seeding, which needs the fleet: closing it keeps
+  // the dispatch dialog reachable and reopening it is what the assertions below read.
+  await stage(dashboard, "Review").click();
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+  await pile("third");
+  await stage(dashboard, "Review").click();
+  await expect(review).toBeVisible();
+
+  const bar = review.locator(".line-group");
+  await expect(bar).toHaveCount(1);
+  // The reason once, the count once. And not one of the three rows it replaced: the drawer
+  // that used to make a person scroll thirty-one identical sentences now says it on one line.
+  await expect(bar).toContainText("3 runs · session gone");
+  await expect(review.locator(".line-run-row")).toHaveCount(0);
+  // The members are named by the binding titles that outlived their sessions, never by the
+  // conversation GUIDs - the bar resolves identity through the same three steps a row does.
+  for (const run of seeded) await expect(bar).toContainText(run.sessionName);
+  for (const run of seeded) await expect(bar).not.toContainText(run.noteKey);
+  await shoot(dashboard, "review-grouped");
+
+  // ---- the strip and the drawer say the same two numbers ----
+  // This is the headline: three dead runs are not three decisions waiting on a person. The
+  // strip's accessible name is built from the same fold the header prints, so if either
+  // surface drifted this fails on one of the two.
+  await expect(review.locator(".line-drawer-count")).toContainText("3 runs live");
+  await expect(review.locator(".line-drawer-att")).toHaveText("3 stalled");
+  await expect(review.locator(".line-drawer-att")).not.toContainText("waiting on you");
+  await expect(stage(dashboard, "Review")).toHaveAttribute("aria-label", /3 stalled/);
+  await expect(stage(dashboard, "Review")).not.toHaveAttribute("aria-label", /waiting on you/);
+
+  // ---- every member is still reachable ----
+  // The drawer's standing promise is that the cap is on the panel and never on the list. A
+  // fold that HID thirty runs would break it; the caret is what keeps it.
+  // `exact`, because the batch's own name deliberately extends this one - "Dismiss all 3 runs
+  // blocked, session gone" is what makes two bars' controls tellable apart on a real fleet.
+  const disclosure = review.getByRole("button", {
+    name: "3 runs blocked, session gone",
+    exact: true,
+  });
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await disclosure.click();
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  await expect(review.locator(".line-run-row")).toHaveCount(3);
+  for (const run of seeded) {
+    await expect(review.locator(".line-run-row").filter({ hasText: run.sessionName }))
+      .toContainText("Blocked · session gone");
+  }
+  // A member's title starts EXACTLY under the bar's title - the 44px indent is the bar's own
+  // padding plus its caret plus the gap after it, not a decorative number. Only a laid-out
+  // browser can see this, and a few pixels out would put two title columns down one panel.
+  const titleX = async (target: Locator): Promise<number> =>
+    (await target.locator("strong").first().boundingBox())!.x;
+  expect(await titleX(review.locator(".line-run-row").first())).toBe(await titleX(bar));
+  await shoot(dashboard, "review-group-expanded");
+  await disclosure.click();
+  await expect(review.locator(".line-run-row")).toHaveCount(0);
+
+  // ---- one control for the batch ----
+  const dismissAll = review.getByRole("button", { name: "Dismiss all 3 runs blocked, session gone" });
+  await expect(dismissAll).toBeVisible();
+  await dismissAll.click();
+  // It confirms with the COUNT echoed, because this ends three runs - thirty, on the fleet it
+  // was built for - from a panel one keystroke off the strip.
+  const confirm = dashboard.getByRole("dialog", { name: "Cancel 3 runs" });
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("3 runs stopped for the same reason: session gone");
+
+  // Escape backs out and changes nothing, which is the half of a confirm that matters.
+  await dashboard.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await expect(bar).toHaveCount(1);
+  expect(
+    (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${seeded[0]!.runId}`)).run.status,
+  ).toBe("blocked");
+
+  await dismissAll.click();
+  await dashboard.getByRole("button", { name: "Cancel 3 runs" }).click();
+
+  // One POST per run, the daemon's own publish, and the whole pile leaving over SSE with no
+  // refetch and no reload. There is no batch route, so this is three round trips the browser
+  // fired and three rows it watched leave.
+  await expect(bar).toHaveCount(0);
+  await expect(review.locator(".line-drawer-count")).toContainText("0 runs live");
+  await expect(review.locator(".line-drawer-att")).toHaveCount(0);
+  await expect(review).toContainText("No workflow runs are in flight");
+  for (const run of seeded) {
+    await expect.poll(async () =>
+      (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.runId}`)).run.status,
+    ).toBe("cancelled");
+  }
 });
 
 test("every legacy #/workflows deep link redirects, and the Workflows page is gone", async ({

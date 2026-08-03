@@ -14785,6 +14785,92 @@ button.sc-row:focus-visible {
 .line-drawer-rows > li.is-blocked {
   box-shadow: inset 2px 0 0 var(--danger);
 }
+/* A member of an expanded group. Tinted so the pile reads as one block rather than as rows
+   that happen to be adjacent - the tint is the group's own danger wash, at a fraction that
+   leaves the toned chips on the row still reading against one field.
+
+   46px is not a decorative indent: it is the row's own 14px padding plus the bar's 20px caret
+   plus the 12px gap after it, so a member's title starts EXACTLY under the bar's title. A
+   nested row a few pixels off would put two title columns down one panel, which is why the
+   e2e spec measures the two in a laid-out browser rather than trusting this sum. */
+.line-drawer-rows > li.is-member {
+  padding-left: 46px;
+  background: color-mix(in srgb, var(--danger) 3%, transparent);
+}
+
+/* THE GROUP BAR - several runs that stopped for one reason, said once.
+   A sibling of the row and, critically, the SAME HEIGHT: the body's cap is
+   `calc(var(--line-drawer-row-h) * 3)`, so a bar of any other height would stop the cap
+   landing on a row boundary and leave half a row peeking over the edge. It inherits the row
+   height and the divider from `.line-drawer-rows > li` above and only re-lays its columns. */
+.line-group {
+  background: color-mix(in srgb, var(--danger) 5%, transparent);
+}
+/* The disclosure. Icon-only and therefore free to carry a spelled-out accessible name -
+   "3 runs blocked, session gone" - without contradicting a visible label. */
+.line-group-caret {
+  flex: none;
+  width: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.line-group-caret:hover {
+  color: var(--fg);
+  background: var(--border-soft);
+}
+.line-group-caret:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+/* 340px minus the caret and its gap, so the bar's remaining columns land where the rows'
+   land. A pile whose chip rail started 32px right of its own members would read as a
+   different table. */
+.line-group-who {
+  flex: none;
+  width: 308px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.line-group-who strong {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The member titles, in the slot a row's chips occupy - and running on through the state
+   column, because the state is what the bar's bold line already said. One line, clipped, on
+   the row's own terms. */
+.line-group-mid {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The same floor as `.line-run-ops`, so the bar's one control lands on the same right edge as
+   the rows' controls above and below it. */
+.line-group-ops {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  min-width: 170px;
+  justify-content: flex-end;
+}
+.line-group-ops .btn {
+  padding: 4px 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
 
 /* Wide enough for the line that identifies the row - "No-Mistakes Review v4 · round 2/3" is
    33 mono characters, and at 190px it ellipsized on EVERY row rather than on a long one. The

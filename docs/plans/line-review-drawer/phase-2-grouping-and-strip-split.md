@@ -205,6 +205,76 @@ This is the last phase of the plan. It leaves behind, for anything later:
 - The `needs you` / `stalled` vocabulary, now used by both the strip fold and the drawer header.
   A third surface adopting it should read the same fold rather than recompute.
 
+## Implementation record - what the repository changed
+
+Written after the phase shipped. The plan above is the proposal; this is what the code said
+back.
+
+1. **The split lives in `src/shared/workflow.ts`, not in two places.** This phase's steps put
+   the count in `foldReview` and the header in `ReviewDrawer`, each computing it. That makes
+   "the strip and the drawer must agree" a thing two tests assert rather than a thing the code
+   guarantees, and the fold's doc comment is explicit that they must never disagree. So
+   `workflowRunAttentionSplit` (the two mutually exclusive counts) and
+   `workflowRunAttentionParts` (the two phrases) are exported beside
+   `workflowRunWaitsOnOperator`, and both surfaces read them.
+   `workflowRunWaitsOnOperator` itself is byte-for-byte unchanged, so the command palette's
+   "waiting on you" list keeps its meaning; only its doc comment gained a paragraph naming the
+   split as presentation.
+2. **The split is a SUBTRACTION, not two filters.** `stalled = status === "blocked"`,
+   `needsYou = waiting - stalled` where `waiting` is the old single total. The recommended
+   rule in the plan is the same rule, but computing `needsYou` as its own filter would let the
+   two halves drift out of summing to the total the moment either arm of the predicate grew.
+   The overlap case - blocked *and* `actionWait: "needs_operator"` - is pinned in
+   `test/line-summary-fold.test.ts`, as this phase asked.
+3. **`triageOrder` moved out of `ReviewDrawer.tsx` into `line-review-groups.ts`.** A group's
+   POSITION is part of the fold - a bar stands where its newest member stood - so the ordering
+   rule and the fold had to be one function or two functions that agree. It is exported and
+   still used unchanged for the drawer's live count.
+4. **The bar is exactly one row high, and the mockup's explanatory paragraph is not on it.**
+   `Option B` draws two lines of prose under the bar's title. The drawer's cap is
+   `calc(var(--line-drawer-row-h) * 3)`, so a bar of any other height stops the cap landing on
+   a row boundary and leaves half a row peeking over the edge. The paragraph also says what
+   the clause beside it already says. What the bar carries is the mockup's other three facts:
+   the count, the clause, and the member titles with a `+N`.
+5. **The caret is implemented, and it is not decoration.** The drawer's standing promise, in
+   the README and in `LineDrawer`'s own doc comment, is that the cap is on the panel and never
+   on the list - "every row is still in the panel". A fold that hid thirty rows with no way
+   back would break it. Members expand in place as ordinary rows in the SAME flat `<ul>`
+   (a nested list would not be `.line-drawer-rows > li`, which is the selector the row height
+   and therefore the cap arithmetic come from), indented 46px so their titles land exactly
+   under the bar's. The e2e spec measures that alignment in a laid-out browser.
+6. **Only `dismiss` batches.** A pile of `infrastructure_error` runs still folds into a bar -
+   saying the reason once is the point - but carries no `Retry all`: a batch button there is a
+   way to fire thirty provider calls by accident, and `Restart…` demands a typed phrase each
+   time, which batching would launder into one. A bar over runs with no argument-free remedy
+   at all renders with no control, which is honest.
+7. **A partial batch failure reports a count.** There is no batch route and inventing one
+   would put a second cancel path in the daemon, so `Dismiss all` is N independent POSTs of
+   each member's OWN `runRemedy` descriptor. The drawer's one alert reads `2 of 30 runs could
+   not be dismissed. <first message>`; cancelled runs leave over SSE, refused ones stay, and
+   the bar recounts from what is still there. A single-run remedy still reports the bare
+   message, which is what the existing e2e assertion reads.
+8. **The e2e seeds three same-phase runs sequentially, and proves one phase rather than two.**
+   Two constraints, both found by running it. `e2e/fixtures/fake-claude.mjs` reports one FIXED
+   conversation id per daemon, and `createBinding` allows one active binding per note key - so
+   two live bindings at once is a 409 and each session must be orphaned (which releases its
+   binding) before the next is bound. That is one `EXIT_LINGER_MS` window each. The spec
+   therefore builds the pile one run at a time and asserts the threshold from BOTH sides in
+   the browser for free: two blocked runs are two rows, and the third turns them into one bar.
+   The second blocked phase this phase suggested (`round_limit` via `maxRepairRounds: 1`) was
+   dropped - it is not automatic, it needs a `resubmit` per round to reach the limit, and
+   "two reasons are two bars" is a pure claim about the fold that `test/line-review-groups.test.ts`
+   pins directly. The spec runs in 33s; the per-spec budget is the config's **120s**, not the
+   60s this phase assumed.
+9. **`waitForIdleSession` gained a `before` set.** It found "the first session that is not
+   exited", which returns the PREVIOUS session while it is winding down - so the second seeded
+   run bound to a conversation that already had a binding. Naming the new session explicitly
+   removes the race for every caller in the file.
+10. **Two doc comments and one README section, extended rather than restated**, as this phase
+    predicted: `foldReview`'s (which described the single number),
+    `workflowRunWaitsOnOperator`'s, and `ReviewDrawer`'s - each keeping Phase 1's wording and
+    adding this phase's.
+
 ## Cross-phase audit record
 
 - **Written after Phase 1.** Consumes `blockedPhaseClause` and `runRemedy` exactly as Phase 1

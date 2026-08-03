@@ -23,6 +23,10 @@ import {
 } from "../src/web/workflows/run-model.ts";
 import { LINE_STAGES, type LineStageId, type LineSummary } from "../src/shared/line.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
+import {
+  workflowRunAttentionParts,
+  workflowRunAttentionSplit,
+} from "../src/shared/workflow.ts";
 import type { Session } from "../src/shared/types.ts";
 import { LADDER_SUMMARY } from "./helpers/workflow-ladder.ts";
 import { mkEnsembleSummary, mkSession } from "./helpers/session-fixture.ts";
@@ -247,9 +251,38 @@ test("the Review drawer lists live runs, tones stopped apart from your turn, and
   // colour that means nothing.
   assert.match(html, /line-run-row is-waiting[\s\S]*?yours-note/);
   assert.match(html, /line-run-row is-blocked[\s\S]*?stuck-note/);
-  // The header's count still reads the shared predicate, which is true of both tiers - the
-  // presentation split above must not have changed what "waiting on you" counts.
-  assert.match(html, /2 waiting on you/);
+  // And the header says the same two meanings as two numbers. The shared predicate still
+  // counts both tiers - one plus one is the two it always was - but "2 waiting on you" over
+  // one dead run and one live question was the aggregation that made the figure worthless.
+  assert.match(html, /1 needs you · 1 stalled/);
+  assert.doesNotMatch(html, /waiting on you/);
+});
+
+test("the header's split is the strip's split, to the word", () => {
+  // `foldReview`'s doc comment legislates it: a strip that says one thing over a drawer that
+  // says another is the surface arguing with itself. Both read
+  // `workflowRunAttentionParts`, so this pins the drawer's half of that contract - the fold's
+  // half is `line-summary-fold.test.ts`.
+  const runs = [
+    run({ id: "a", status: "blocked", phase: "session_disappeared", activePersonaNames: [] }),
+    run({ id: "b", status: "blocked", phase: "round_limit", activePersonaNames: [] }),
+    run({
+      id: "c",
+      status: "waiting_for_action",
+      actionWait: "needs_operator",
+      activePersonaNames: [],
+    }),
+  ];
+  assert.equal(
+    workflowRunAttentionParts(workflowRunAttentionSplit(runs)).join(" · "),
+    "1 needs you · 2 stalled",
+  );
+  assert.match(reviewDrawer(runs), /1 needs you · 2 stalled/);
+
+  // A fleet with nothing stopped says neither half rather than "0 stalled".
+  const quiet = reviewDrawer([run({ id: "q", status: "running" })]);
+  assert.doesNotMatch(quiet, /stalled|needs you/);
+  assert.doesNotMatch(quiet, /line-drawer-att/);
 });
 
 test("a run's row is named in three steps, and the GUID is the last of them", () => {
@@ -473,6 +506,107 @@ test("the Review drawer acts only where the summary proves a run is stopped", ()
   for (const excluded of ["Reattach", "Resolve", "Disable", "Recheck", "Mark delivered"]) {
     assert.ok(!stopped.includes(excluded), `the drawer must not offer ${excluded}`);
   }
+});
+
+test("three runs stopped for one reason draw one bar; two draw two rows", () => {
+  const gone = (id: string, name: string) => run({
+    id,
+    noteKey: `${id}-note`,
+    sessionId: null,
+    sessionName: name,
+    status: "blocked",
+    phase: "session_disappeared",
+    activePersonaNames: [],
+  });
+
+  // Two is two rows, with their chips, their round counters and a `Dismiss` each. A bar here
+  // would save one line and cost the reader all six of those facts.
+  const pair = reviewDrawer([gone("a", "Fix Busy State"), gone("b", "Add E Keybinding")]);
+  assert.doesNotMatch(pair, /line-group/);
+  assert.equal([...pair.matchAll(/class="line-run-row/g)].length, 2);
+
+  const pile = reviewDrawer([
+    gone("a", "Fix Busy State"),
+    gone("b", "Add E Keybinding"),
+    gone("c", "Review a UI Component"),
+  ]);
+  // One bar. The reason once, the count once, and - collapsed - not one of the three rows.
+  assert.equal([...pile.matchAll(/<li class="line-group /g)].length, 1);
+  assert.doesNotMatch(pile, /class="line-run-row/);
+  assert.match(pile, /<strong>3 runs · session gone<\/strong>/);
+  // The members are named, by the same three steps a row names itself by, so the bar can
+  // never list GUIDs where its rows would have listed titles.
+  assert.match(pile, /Fix Busy State · Add E Keybinding · Review a UI Component/);
+  assert.doesNotMatch(pile, /a-note|b-note|c-note/);
+  // The whole pile is stopped, so the bar wears the row's own red edge rather than a fourth
+  // treatment a reader has to learn.
+  assert.match(pile, /class="line-group is-blocked"/);
+});
+
+test("the bar's disclosure and its batch are both reachable by name", () => {
+  const pile = reviewDrawer(Array.from({ length: 30 }, (_, i) => run({
+    id: `r${i}`,
+    noteKey: `r${i}-note`,
+    sessionId: null,
+    sessionName: `Run ${i}`,
+    status: "blocked",
+    phase: "session_disappeared",
+    activePersonaNames: [],
+    updatedAt: 1000 - i,
+  })));
+  // The disclosure is icon-only, which is the one shape free to carry a spelled-out
+  // accessible name without contradicting a visible label - and it says what is behind it.
+  assert.match(pile, /aria-expanded="false" aria-label="30 runs blocked, session gone"/);
+  // The bar counts thirty and names three of them, so the row is one line whatever the pile.
+  assert.match(pile, /<strong>30 runs · session gone<\/strong>/);
+  assert.match(pile, /Run 0 · Run 1 · Run 2 · \+27/);
+  // The batch's name is unique per bar: two piles on one fleet would otherwise offer two
+  // controls a person - or a spec - cannot tell apart.
+  assert.match(pile, /aria-label="Dismiss all 30 runs blocked, session gone"/);
+  assert.match(pile, /class="btn btn-remedy"[^>]*>Dismiss all</);
+});
+
+test("a bar with no argument-free remedy carries no control, and still says why", () => {
+  // Blocked on a DECISION is not blocked on a button, at the pile's grain exactly as at the
+  // row's. The bar still earns its place: it says the reason once instead of five times.
+  const findings = reviewDrawer(Array.from({ length: 5 }, (_, i) => run({
+    id: `r${i}`,
+    noteKey: `r${i}-note`,
+    sessionName: `Run ${i}`,
+    status: "blocked",
+    phase: "inspector_findings",
+    activePersonaNames: [],
+  })));
+  assert.match(findings, /<strong>5 runs · Inspector findings<\/strong>/);
+  assert.doesNotMatch(findings, /Dismiss all/);
+});
+
+test("a live run and a run waiting on you are never folded away", () => {
+  const html = reviewDrawer([
+    run({
+      id: "yours",
+      noteKey: "yours-note",
+      status: "waiting_for_action",
+      actionWait: "needs_operator",
+      activePersonaNames: [],
+      updatedAt: 5,
+    }),
+    ...Array.from({ length: 3 }, (_, i) => run({
+      id: `gone${i}`,
+      noteKey: `gone${i}-note`,
+      sessionName: `Gone ${i}`,
+      status: "blocked",
+      phase: "session_disappeared",
+      activePersonaNames: [],
+      updatedAt: 100 + i,
+    })),
+  ]);
+  // The row a person came here for is still a row, still first, still amber.
+  assert.match(html, /line-run-row is-waiting[\s\S]*?yours-note/);
+  assert.equal([...html.matchAll(/class="line-run-row/g)].length, 1);
+  assert.equal([...html.matchAll(/<li class="line-group /g)].length, 1);
+  // And the header counts the two jobs apart - one to answer, three that are simply dead.
+  assert.match(html, /1 needs you · 3 stalled/);
 });
 
 test("an empty Review drawer says what would fill it", () => {

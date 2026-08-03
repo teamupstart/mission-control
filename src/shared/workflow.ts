@@ -594,20 +594,72 @@ export function sessionActionWaitsOnOperator(
 /**
  * True when this RUN is stopped on something only a person can clear.
  *
- * The Line's Review fold counts these for the strip's "N waiting on you", and the Review
- * drawer marks exactly these rows amber. Stated once, here, because the two are the same
- * claim rendered at two grains: a strip that says one run needs you, above a drawer that
- * marks none, is the surface arguing with itself - and both readings would be defensible
- * if each carried its own copy of the rule.
+ * The Line's Review fold and the Review drawer both count these, and the drawer marks
+ * exactly these rows. Stated once, here, because the two are the same claim rendered at two
+ * grains: a strip that says one run needs you, above a drawer that marks none, is the
+ * surface arguing with itself - and both readings would be defensible if each carried its
+ * own copy of the rule.
  *
  * `blocked` and an operator-only action wait, and deliberately nothing else.
  * `waiting_for_session` is absent because it is the workflow's ordinary repair loop: the
  * session is being told what to fix and will resubmit on its own.
+ *
+ * This predicate is the WHOLE of "does a person owe this run anything". How that total is
+ * SAID - one number, or the two `workflowRunAttentionSplit` reports - is presentation, and
+ * splitting the sentence must never narrow the predicate: the command palette's "waiting on
+ * you" list reads this too.
  */
 export function workflowRunWaitsOnOperator(
   run: Pick<WorkflowRunSummary, "status" | "actionWait">,
 ): boolean {
   return run.status === "blocked" || sessionActionWaitsOnOperator(run.actionWait);
+}
+
+/** The two halves of `workflowRunWaitsOnOperator`, counted so they cannot overlap. */
+export interface WorkflowRunAttentionSplit {
+  /** Waiting on a person, and a person's answer still moves it. */
+  needsYou: number;
+  /** Stopped. No answer restarts it from here; it is dismissed, reattached, or it stays. */
+  stalled: number;
+}
+
+/**
+ * "1 needs you · 31 stalled" - one number for what you owe, one for what is simply dead.
+ *
+ * `workflowRunWaitsOnOperator` is a UNION, and a run can satisfy both of its arms at once:
+ * `orphanBinding` blocks a run whose session action was already parked on `needs_operator`.
+ * So the split is defined by SUBTRACTION rather than by two independent filters -
+ * `needsYou + stalled` is exactly the old single total, and a run counted twice would have
+ * the strip claiming more attention than the fleet owes.
+ *
+ * Blocked wins the overlap, and that is the truer reading rather than a tie-break: a blocked
+ * run cannot act on an action wait at all, because `orphanBinding` cancelled its attempts on
+ * the way past. Answering its question would move nothing.
+ */
+export function workflowRunAttentionSplit(
+  runs: readonly Pick<WorkflowRunSummary, "status" | "actionWait">[],
+): WorkflowRunAttentionSplit {
+  const stalled = runs.filter((run) => run.status === "blocked").length;
+  const waiting = runs.filter(workflowRunWaitsOnOperator).length;
+  return { needsYou: waiting - stalled, stalled };
+}
+
+/**
+ * The split as the parts a sentence is joined from, empty halves dropped.
+ *
+ * PARTS rather than a finished string, because the strip joins with `line-summary.ts`'s own
+ * `sentence()` helper - which is what turns them into the " · " the accessible name rewrites
+ * to commas - while the drawer header joins them itself. The WORDS live here so the two
+ * surfaces cannot drift: `foldReview`'s doc comment requires them to read the same, and a
+ * strip saying "stalled" over a drawer saying "blocked" is that promise broken quietly.
+ *
+ * "needs/need you" is the Working stage's own plural, so one fleet vocabulary covers both.
+ */
+export function workflowRunAttentionParts(split: WorkflowRunAttentionSplit): string[] {
+  return [
+    split.needsYou > 0 ? `${split.needsYou} need${split.needsYou === 1 ? "s" : ""} you` : "",
+    split.stalled > 0 ? `${split.stalled} stalled` : "",
+  ].filter((part) => part.length > 0);
 }
 
 /**

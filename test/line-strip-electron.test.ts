@@ -65,7 +65,7 @@ const FULL: LineSummary = {
     stage({ stage: "intake", count: 2, sentence: "github-issues swept 4m ago · next mission in 3h", tone: "idle" }),
     stage({ stage: "backlog", count: 4, sentence: "next up: Fix pane focus stealing", tone: "idle" }),
     stage({ stage: "working", count: 5, sentence: "1 needs you · 4 working", tone: "attention" }),
-    stage({ stage: "review", count: 5, sentence: "No-Mistakes Review v8 ×4 · 1 waiting on you", tone: "attention" }),
+    stage({ stage: "review", count: 5, sentence: "No-Mistakes Review v8 ×4 · 1 needs you · 3 stalled", tone: "attention" }),
     stage({ stage: "decide", count: 1, sentence: "Best of N · waiting on you", tone: "attention" }),
     stage({ stage: "shipped", count: 3, sentence: "this week · ≈$4.05 per PR today", tone: "idle" }),
   ],

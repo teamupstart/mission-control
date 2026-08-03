@@ -1075,13 +1075,12 @@ body {
   margin: 0;
 }
 
-/* ---- the page segment: the app's two homes ----
+/* ---- the page segment: the app's primary pages ----
 
-   One control rather than the lone self-renaming button it replaces. A segment states that
-   there are exactly two places to be and which one you are in; a button that says "Workflows"
-   and then "Fleet" states neither, and cost a click to discover. It sits at the LEFT, beside
-   the brand, because that is where a person looks for "where am I" - the right side is the
-   fleet's actions. */
+   Fleet, Library and Runs share one control because they are the three persistent destinations
+   in the operator's loop. Each owns its own chord instead of borrowing another segment as a
+   toggle. It sits at the LEFT, beside the brand, because that is where a person looks for
+   "where am I" - the right side is the fleet's actions. */
 .page-seg {
   display: flex;
   align-items: stretch;
@@ -1509,10 +1508,9 @@ body {
 
    So each rung fires ~45px ABOVE the widest its previous state has been measured at. A
    word disappearing 45px early is invisible; a bar jumping to two rows is not. Re-sweep
-   every integer width if you add a control - and note the real limit this leaves: laid out
-   in full the bar needs 1552 of a 1622px maximum container, so the two destination labels
-   only survive on a nearly-maximised window. `flex-wrap` below is still the last resort,
-   and on a busy enough fleet it is what catches the overflow. A rung that fires late is a
+   every integer width if you add a control. The Runs destination grows the segment while
+   removing the Sitrep glyph buys part of that width back; `flex-wrap` below is still the
+   last resort, and on a busy enough fleet it is what catches the overflow. A rung that fires late is a
    wrapped row, one that fires early is a word thrown away for nothing, and a rung that
    saves much more than the width it was crossed at leaves the bar half empty for the next
    several hundred px - which is why the last two are split rather than one 369px cliff.
@@ -1531,7 +1529,7 @@ body {
      an `aria-label`, so this costs the word and nothing else.
 
      The page SEGMENT is deliberately not here. It sheds at rung 4, with Foreman: it is the
-     one control that answers "where am I", and two unlabelled squares beside the brand is
+     one control that answers "where am I", and three unlabelled glyphs beside the brand are
      the question rather than the answer. A 16" laptop sits at 1512px - inside this rung -
      so shedding it here would mean most windows never see the words at all.
 
@@ -7031,9 +7029,9 @@ select:not([multiple]) option:focus-visible {
    their own. The name still reaches screen readers + the tooltip.
    (Distinct from .icon-btn above, which is the borderless modal close button.) */
 .glyph-btn {
-  /* Fixed box: the glyph is centred inside it and never sizes it, so a bigger
-     icon can't shoulder this button taller or wider than the rest of the
-     cluster. min-width (not width) so Sitrep's backlog badge can still grow it. */
+  /* Fixed minimum box: the glyph is centred inside it and never sizes it, so a bigger
+     icon can't shoulder this button taller or narrower than the rest of the cluster;
+     status badges may still grow it. */
   height: 30px;
   min-width: 36px;
   justify-content: center;

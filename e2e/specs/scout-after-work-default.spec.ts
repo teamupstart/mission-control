@@ -184,7 +184,9 @@ test("an edit keeps its Workflow when kind flips before the config has loaded", 
   });
   await dashboard.reload();
 
-  await dashboard.getByRole("button", { name: "Sitrep" }).first().click();
+  // Sitrep no longer consumes title-bar space; its direct entry is the Shift+P shortcut.
+  await dashboard.keyboard.press("Shift+P");
+  await expect(dashboard.getByRole("heading", { name: "Sitrep" })).toBeVisible();
   await dashboard.getByRole("button", { name: title, exact: true }).click();
 
   const dialog = dashboard.getByRole("dialog", { name: "Edit a backlog task" });

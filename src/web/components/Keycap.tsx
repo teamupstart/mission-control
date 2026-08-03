@@ -15,8 +15,8 @@ import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindi
  * Renders NOTHING when hints are off or the action is unset - not an empty element - so
  * a host laid out with `gap` closes up rather than keeping a hole where the keycap was.
  *
- * Not every bound action gets one. Very small buttons (the settings gear, the sitrep
- * glyph, the expand chevron, the rename ✓/✕) carry their chord in the tooltip instead:
+ * Not every bound action gets one. Very small buttons (the settings gear, the expand
+ * chevron, the rename ✓/✕) carry their chord in the tooltip instead:
  * a keycap on a 24px icon is bigger than the icon. The command bar is the other
  * exception - see `useKeybindingHints`.
  */

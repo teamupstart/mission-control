@@ -30,7 +30,7 @@ import {
  * The Library: the one home for everything an operator authors once and reuses.
  *
  * It renders no live execution state. Each shelf carries a single cross-link to where its
- * assets are actually running, and that is the whole of the traffic between the two homes -
+ * assets are actually running, and that is the whole of the traffic between authoring and execution -
  * a shelf that grew a status column would be a second, slower answer to a question the runs
  * and ensembles surfaces already answer properly.
  */

@@ -84,7 +84,7 @@ test("hints are on out of the box, so the shortcuts are discoverable without bei
   setHints(true);
   // The card row in drawn order: Send, Focus, Files, Queue, Reset, Complete, Kill - every
   // one of them bound, and every one of them silent about it before this.
-  assert.deepEqual(keycaps(cardBar()), ["s", "p", "f", "q", "⌃R", "c", "k"]);
+  assert.deepEqual(keycaps(cardBar()), ["s", "p", "⇧F", "q", "⌃R", "c", "k"]);
 });
 
 test("turning the preference off leaves the buttons, and not one keycap", () => {

@@ -13,7 +13,9 @@ export type ConversationRow =
 
 function precedesTranscript(row: ConversationRow, transcriptTs: number): boolean {
   if (row.ts !== transcriptTs) return row.ts < transcriptTs;
-  return row.kind === "review" && row.review.createdAt === row.review.resolvedAt;
+  return (
+    row.ts > 0 && row.kind === "review" && row.review.createdAt === row.review.resolvedAt
+  );
 }
 
 /**

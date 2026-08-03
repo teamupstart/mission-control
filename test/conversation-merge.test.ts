@@ -185,6 +185,12 @@ test("a review with no resolution stamp sorts LAST, not first", () => {
   assert.deepEqual(order(merged), ["a", "b", "r1"]);
 });
 
+test("a born-settled review with only the missing-time sentinel still sorts last", () => {
+  const rows = transcriptRows([msg("a", 0), msg("b", 200)]);
+  const merged = mergeConversation(rows, [], [review("r1", 0, { createdAt: 0 })]);
+  assert.deepEqual(order(merged), ["a", "b", "r1"]);
+});
+
 test("reviews render even when the transcript has no turns at all", () => {
   // The auto-discovered session whose JSONL cannot be resolved: what you decided is then
   // the only account of the session there is.

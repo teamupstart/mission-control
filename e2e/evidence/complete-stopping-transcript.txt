@@ -1,0 +1,7 @@
+Running 1 test using 1 worker
+
+OBSERVED Complete closed while the accepted SDK stop was still draining
+CAPTURED e2e/evidence/complete-stopping-state.png
+  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:143:1 › Complete closes promptly while an accepted SDK stop drains (8.0s)
+
+  1 passed (8.8s)

@@ -140,6 +140,35 @@ test("an Agent SDK Fable 5 session uses its 1M context window", async ({ dashboa
   await expect(card).not.toContainText("92%");
 });
 
+test("Complete closes promptly while an accepted SDK stop drains", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, { task: "E2E_SLOW_SESSION_STOP finish and close" });
+
+  const card = dashboard.locator("article.card").first();
+  const complete = card.getByRole("button", { name: "Complete" });
+  await expect(complete).toBeVisible();
+  await settled(complete);
+  await complete.click();
+
+  const dialog = dashboard.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Complete & close" }).click();
+
+  // The fake keeps its SDK subprocess alive for four seconds after stdin closes. The modal
+  // must follow the daemon's accepted stop rather than that later process exit and pump
+  // drain, while the retained card truthfully becomes unavailable in between.
+  await expect(dialog).toBeHidden({ timeout: 1_500 });
+  await expect(card).toContainText("stopping");
+  await expect(card.getByRole("button", { name: "Complete" })).toHaveCount(0);
+  if (process.env.MC_E2E_EVIDENCE) {
+    console.log("OBSERVED Complete closed while the accepted SDK stop was still draining");
+    await card.screenshot({
+      path: fileURLToPath(new URL("../evidence/complete-stopping-state.png", import.meta.url)),
+    });
+    console.log("CAPTURED e2e/evidence/complete-stopping-state.png");
+  }
+  await expect(card).toContainText("exited", { timeout: 10_000 });
+});
+
 test("typing into the conversation gets a reply back from the agent", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 

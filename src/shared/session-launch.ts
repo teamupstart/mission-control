@@ -60,6 +60,7 @@ export interface LaunchableSession extends PaneHandles {
  * with no resume spec even though focusing its pane would have worked perfectly.
  */
 export function agentLaunchAction(s: LaunchableSession): AgentLaunchAction | null {
+  if (s.state === "stopping") return null;
   if (s.state !== "exited" && canWriteTo(s)) return "focus";
   if (!capabilitiesFor(s.agent).resumes) return null;
   if (!s.agentSessionId) return null;
@@ -82,6 +83,7 @@ export function agentLaunchAction(s: LaunchableSession): AgentLaunchAction | nul
  */
 export function agentLaunchBlockedReason(s: LaunchableSession): string | null {
   if (agentLaunchAction(s) !== null) return null;
+  if (s.state === "stopping") return "this session is stopping";
   if (!capabilitiesFor(s.agent).resumes) {
     return `${s.agent} cannot reopen a conversation from its command line`;
   }

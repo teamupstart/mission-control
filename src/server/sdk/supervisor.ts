@@ -431,6 +431,34 @@ export class SdkSupervisor {
   }
 
   /**
+   * Accept an operator stop without making the HTTP request wait for driver exit.
+   *
+   * `stop()` remains the draining primitive used by terminal handoff and daemon shutdown.
+   * This method changes only who waits: it marks the card unavailable synchronously, starts
+   * that same stop path, and lets the existing pump own `exited` and eviction. If asking the
+   * handle to stop rejects before the handle disappears, put the card back rather than leave
+   * a live driver permanently presented as stopping.
+   */
+  requestStop(id: string): boolean {
+    const handle = this.handles.get(id);
+    if (!handle) return false;
+    // A handoff, merge reconciliation, or another blocking caller may already own the
+    // graceful drain. Complete still has to make that accepted stop visible before it
+    // returns success; the existing drain remains the single owner of handle shutdown.
+    if (this.stopping.has(id)) return this.registry.markSessionStopping(id) !== null;
+    const previous = this.registry.markSessionStopping(id);
+    if (!previous) return false;
+    const stopping = this.stop(id);
+    void stopping.catch((err) => {
+      console.error(`[sdk] accepted stop for ${id} failed:`, err);
+      if (this.handles.get(id) !== handle) return;
+      this.stopping.delete(id);
+      this.registry.restoreSessionAfterStopFailure(id, previous);
+    });
+    return true;
+  }
+
+  /**
    * Stop a session's driver.
    *
    * Deliberately NOT queued behind pending sends: stopping is what a caller asks for when

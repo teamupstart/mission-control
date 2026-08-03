@@ -34,6 +34,39 @@ Successful-path artifacts are committed for the dispatch-and-converse suite beca
 Playwright run leaves nothing behind on its own: `screenshot`, `video` and `trace` are all
 configured `on-failure`, so success is exactly the case with no record.
 
+### Accepted SDK stop
+
+The focused Complete case keeps its fake SDK subprocess alive for four seconds after stop is
+accepted. It verifies the Complete modal closes within 1.5 seconds, the retained session card
+reads `stopping` with its Complete action unavailable, and the card later reaches `exited`.
+
+The actual successful command output is committed as
+[`evidence/complete-stopping-transcript.txt`](evidence/complete-stopping-transcript.txt).
+[`evidence/complete-stopping-state.png`](evidence/complete-stopping-state.png) is the visual
+capture from that same run and shows the session card while the SDK event stream is draining.
+
+Regenerate both with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/dispatch-and-converse.spec.ts \
+  -g 'Complete closes promptly while an accepted SDK stop drains' \
+  --reporter=list
+```
+
+Actual output from the captured run:
+
+```text
+Running 1 test using 1 worker
+
+OBSERVED Complete closed while the accepted SDK stop was still draining
+CAPTURED e2e/evidence/complete-stopping-state.png
+  ✓  1 [chromium] › e2e/specs/dispatch-and-converse.spec.ts:143:1 › Complete closes promptly while an accepted SDK stop drains (8.0s)
+
+  1 passed (8.8s)
+```
+
 ### Accepted workflow submission
 
 The focused bind-and-submit case holds evidence compaction open for five seconds, observes the

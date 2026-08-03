@@ -47,6 +47,8 @@ function argvValue(flag) {
 const MODEL = argvValue("--model") ?? "claude-e2e-mock";
 const HELD_TURN = "hold the current turn open";
 const HELD_TURN_MS = 5_000;
+const SLOW_STOP = "E2E_SLOW_SESSION_STOP";
+const SLOW_STOP_MS = 4_000;
 const SLOW_WORKFLOW_CONTEXT = "E2E_SLOW_WORKFLOW_CONTEXT";
 const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
 
@@ -243,6 +245,7 @@ function replyTo(prompt) {
 
 /** The turn the CLI is running right now, and every prompt it has absorbed. */
 let openTurn = null;
+let slowStop = false;
 
 /**
  * Answer a turn and close it.
@@ -293,6 +296,7 @@ rl.on("line", (line) => {
           : "";
 
     appendTurn("user", prompt);
+    if (prompt.includes(SLOW_STOP)) slowStop = true;
 
     // A message that arrives while a turn is open is ABSORBED BY THAT TURN, and the turn
     // still ends with exactly one `result`. That is what Claude Code does - it attaches the
@@ -325,6 +329,9 @@ rl.on("line", (line) => {
 // Exiting early is what makes a card die: the driver turns any nonzero exit OR an early
 // close into `{kind:"exited"}` and evicts the session. Stay alive until the SDK closes
 // stdin, then leave cleanly.
-rl.on("close", () => process.exit(0));
+rl.on("close", () => {
+  if (slowStop) setTimeout(() => process.exit(0), SLOW_STOP_MS);
+  else process.exit(0);
+});
 
 }

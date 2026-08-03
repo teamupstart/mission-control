@@ -573,6 +573,112 @@ test("stopping refuses queued and new delivery before the driver exits", async (
   await settle();
 });
 
+test("an accepted stop returns before the driver drains and keeps the card unavailable", async () => {
+  const r = new Registry();
+  const sup = new SdkSupervisor(r);
+  const driver = fakeHandle();
+  let releaseStop!: () => void;
+  let stops = 0;
+  const stopBlocked = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  driver.handle.stop = async () => {
+    stops += 1;
+    await stopBlocked;
+    driver.end();
+  };
+  sup.adopt({
+    registration: registration(),
+    handle: driver.handle,
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
+  });
+  driver.emit({ kind: "state", state: "idle", activity: null });
+  await settle();
+
+  assert.equal(sup.requestStop(SDK_ID), true);
+  assert.equal(stops, 1, "the stop starts before the accepted request returns");
+  assert.equal(r.getSession(SDK_ID)?.state, "stopping");
+  assert.equal(sup.requestStop(SDK_ID), true, "a repeated request joins the same stop");
+  assert.equal(stops, 1);
+  await assert.rejects(sup.send(SDK_ID, { text: "too late" }), /no live driver/);
+
+  // A final turn boundary may race shutdown, but it cannot repaint the accepted stop as
+  // idle and expose controls aimed at a driver the supervisor has closed to delivery.
+  driver.emit({ kind: "state", state: "idle", activity: null });
+  await settle();
+  assert.equal(r.getSession(SDK_ID)?.state, "stopping");
+
+  releaseStop();
+  await settle();
+  assert.equal(r.getSession(SDK_ID)?.state, "exited");
+});
+
+test("an accepted stop marks a card unavailable when a blocking stop already owns the drain", async () => {
+  const r = new Registry();
+  const sup = new SdkSupervisor(r);
+  const driver = fakeHandle();
+  let markStopStarted!: () => void;
+  let releaseStop!: () => void;
+  let stops = 0;
+  const stopStarted = new Promise<void>((resolve) => {
+    markStopStarted = resolve;
+  });
+  const stopBlocked = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  driver.handle.stop = async () => {
+    stops += 1;
+    markStopStarted();
+    await stopBlocked;
+    driver.end();
+  };
+  sup.adopt({
+    registration: registration(),
+    handle: driver.handle,
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
+  });
+  driver.emit({ kind: "state", state: "idle", activity: null });
+  await settle();
+
+  const blockingStop = sup.stop(SDK_ID);
+  await stopStarted;
+  assert.equal(r.getSession(SDK_ID)?.state, "idle");
+
+  assert.equal(sup.requestStop(SDK_ID), true);
+  assert.equal(r.getSession(SDK_ID)?.state, "stopping");
+  assert.equal(stops, 1, "Complete joins the existing drain instead of starting another");
+
+  releaseStop();
+  await blockingStop;
+  await settle();
+  assert.equal(r.getSession(SDK_ID)?.state, "exited");
+});
+
+test("an accepted stop failure restores a driver that is still live", async () => {
+  const r = new Registry();
+  const sup = new SdkSupervisor(r);
+  const driver = fakeHandle();
+  driver.handle.stop = async () => {
+    throw new Error("driver refused stop");
+  };
+  sup.adopt({
+    registration: registration(),
+    handle: driver.handle,
+    durable: { taskId: null, model: null, effort: null, turnInProgress: false },
+  });
+  driver.emit({ kind: "state", state: "idle", activity: null });
+  await settle();
+
+  assert.equal(sup.requestStop(SDK_ID), true);
+  assert.equal(r.getSession(SDK_ID)?.state, "stopping");
+  await settle();
+  assert.equal(r.getSession(SDK_ID)?.state, "idle");
+  assert.equal(await sup.send(SDK_ID, { text: "still reachable" }), "started");
+  assert.deepEqual(driver.sent, ["still reachable"]);
+  driver.end();
+  await settle();
+});
+
 test("a driver event about a pane-backed session is refused", async () => {
   const r = new Registry();
   r.applyDiscovery([discovered("proc:ttys9:4242:0")]);

@@ -413,7 +413,7 @@ export function SessionCard({
         </span>
       </footer>
 
-      {session.state !== "exited" && (
+      {session.state !== "exited" && session.state !== "stopping" && (
         <ActionBar
           session={session}
           hasReply={hasReply}

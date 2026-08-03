@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan: backlog expanded menu</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2128; --muted: #57606a; --border: #d0d7de;
+    --panel: #f6f8fa; --accent: #0969da;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --fg: #e7ebf1; --muted: #939eae; --border: #232a33;
+      --panel: #171c23; --accent: #4a9eff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-size: 15px; line-height: 1.6;
+    padding: 48px 24px 96px;
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 26px; line-height: 1.25; letter-spacing: -0.01em; margin: 0 0 16px; }
+  h2 { font-size: 19px; margin: 40px 0 12px; letter-spacing: -0.01em; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px; padding-left: 24px; }
+  li { margin-bottom: 6px; }
+  strong { font-weight: 600; }
+  code {
+    font-family: var(--mono); font-size: 0.86em;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 5px; white-space: nowrap;
+  }
+  a { color: var(--accent); }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 0 0 14px; }
+  th, td { border: 1px solid var(--border); padding: 7px 11px; text-align: left; }
+  th { background: var(--panel); font-weight: 600; }
+  pre {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 16px; overflow-x: auto; font-family: var(--mono); font-size: 13px;
+    margin: 0 0 14px;
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Phased plan: backlog expanded menu</h1>
+
+<p>Implementation index for <a href="plan.html">plan.md</a> - the approved source plan
+turning the BACKLOG stage click into the queue drawer (mockup A) and the autopilot planner
+(mockup B), per the mockups in <code>docs/mockups/backlog-expanded-menu.html</code>.</p>
+
+<h2>Incorporated human decisions</h2>
+<p>Submitted through the dashboard review of the source plan and written into it:</p>
+<ol>
+  <li><strong>Composition: two surfaces.</strong> The click opens the queue drawer; the
+  planner is an anchored popover opened from the drawer's next-up affordance.</li>
+  <li><strong>Ordering control: inline priority select per row.</strong> No rank/pin
+  concept.</li>
+  <li><strong>Skip once: dropped.</strong> Park covers deferral.</li>
+  <li><strong>Autopilot: readout plus toggle in the drawer</strong>, bound to
+  <code>ForemanConfig.autoBacklog</code>.</li>
+  <li><strong>Follow-up: create this phased implementation plan</strong> and schedule its
+  tasks.</li>
+</ol>
+
+<h2>Investigated findings that shaped the split</h2>
+<ul>
+  <li>The drawer seam (<code>LINE_DRAWER_STAGES</code>, <code>LINE_STAGE_TARGETS</code>, the
+  <code>LineDrawer</code> frame) was built for a fourth stage; no strip or App architecture
+  changes are needed.</li>
+  <li>Every action in scope has an existing Zod-validated route and client wrapper; neither
+  phase adds an endpoint, schema, or migration.</li>
+  <li><code>BacklogPlanEntry.reason</code> (the Foreman's own explanation) and
+  <code>status.autopilot</code> / <code>ForemanConfig.autoBacklog</code> already exist, so
+  the planner is pure presentation over held state.</li>
+  <li>"Move to top" and "Skip once" from the mockups have no backing; both were resolved by
+  the adopted decisions rather than invented.</li>
+  <li><code>test/line-drawer.test.ts</code> pins the exact three-drawer list; changing it is
+  a deliberate part of Phase 1, not a regression.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+  <tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr>
+  <tr><td>1</td><td>The Backlog queue drawer</td>
+    <td><a href="phase-1-backlog-queue-drawer.md"><code>phase-1-backlog-queue-drawer.md</code></a></td>
+    <td>none</td></tr>
+  <tr><td>2</td><td>The autopilot planner</td>
+    <td><a href="phase-2-autopilot-planner.md"><code>phase-2-autopilot-planner.md</code></a></td>
+    <td>Phase 1</td></tr>
+</table>
+</div>
+
+<h2>Dependency graph and merge order</h2>
+<pre>phase-1-backlog-queue-drawer  ──►  phase-2-autopilot-planner</pre>
+<p>Strictly serial: Phase 2 renders inside the component Phase 1 creates and extends its
+footer. There are no concurrency groups. Merge order equals phase order.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>Named in the phase files' handoff sections; summarized:</p>
+<ul>
+  <li>After Phase 1: <code>LINE_DRAWER_STAGES</code> includes <code>"backlog"</code>;
+  <code>src/web/components/line/BacklogDrawer.tsx</code> exists with the props Phase 1
+  names; the <code>LineDrawer</code> frame accepts an optional <code>footer</code> slot
+  containing the Sitrep button.</li>
+  <li>The next-up marker is a static pill in Phase 1 and is the <strong>one</strong> row
+  element Phase 2 replaces (with the planner trigger). Everything else in the row layout is
+  Phase 1's and stays.</li>
+  <li>Phase 2 adds the autopilot line to the footer without moving the Sitrep button, and
+  owns Escape layering (popover closes before drawer).</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<p>Each phase runs its own gate (<code>typecheck</code>, <code>lint</code>,
+<code>npm test</code>, <code>build</code> + <code>test:e2e</code>, README parity). After
+Phase 2 merges, the end state is checked against the source plan's Verification section in
+one pass: stage click behavior, drawer semantics, bands and actions, planner content
+including a seeded plan <code>reason</code>, and the autopilot toggle round-trip observed
+from both the drawer and ForemanBar.</p>
+
+<h2>Task map</h2>
+<p>One Mission Control task per phase, created after these artifacts are pushed; each task
+depends on this planning session (released when the plan PR merges) and Phase 2's task
+additionally depends on Phase 1's. Task ids are recorded in the plan PR description.</p>
+
+</main>
+</body>
+</html>

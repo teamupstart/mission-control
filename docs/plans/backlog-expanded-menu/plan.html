@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backlog expanded menu: the queue drawer and the autopilot planner</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c2128; --muted: #57606a; --border: #d0d7de;
+    --panel: #f6f8fa; --accent: #0969da; --warn: #9a6700;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --fg: #e7ebf1; --muted: #939eae; --border: #232a33;
+      --panel: #171c23; --accent: #4a9eff; --warn: #f6a733;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-size: 15px; line-height: 1.6;
+    padding: 48px 24px 96px;
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 26px; line-height: 1.25; letter-spacing: -0.01em; margin: 0 0 16px; }
+  h2 { font-size: 19px; margin: 40px 0 12px; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 28px 0 8px; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px; padding-left: 24px; }
+  li { margin-bottom: 6px; }
+  li > ul { margin-top: 6px; }
+  strong { font-weight: 600; }
+  code {
+    font-family: var(--mono); font-size: 0.86em;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 5px; white-space: nowrap;
+  }
+  .lede { color: var(--muted); }
+  .decisions li { margin-bottom: 10px; }
+  .note {
+    border-left: 3px solid var(--warn); background: var(--panel);
+    padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 0 0 14px;
+  }
+  .scroll { overflow-x: auto; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Backlog expanded menu: the queue drawer and the autopilot planner</h1>
+
+<p class="lede">Clicking the BACKLOG stage on The Line opens the Sitrep panel today (README's
+Roundup). That panel reads the whole fleet; the stage click deserves a surface about the
+backlog itself. This plan delivers two composed features, explored as mockups A and B in
+<code>docs/mockups/backlog-expanded-menu.html</code>:</p>
+
+<ul>
+  <li><strong>The queue drawer (A)</strong>: Backlog joins Intake, Review, and Decide as the
+  fourth Line drawer. Plan-ordered rows, one per task, with the actions an operator reaches
+  for while triaging: launch now, park/resume, priority.</li>
+  <li><strong>The autopilot planner (B)</strong>: an anchored popover opened from the
+  drawer's next-up affordance, saying what autopilot would take next and why - the Foreman's
+  own recorded reason plus the computed facts - with a launch button. The autopilot readout
+  and toggle live in the drawer's footer.</li>
+</ul>
+
+<h2>What the repository already provides</h2>
+<p>Verified against the code, not the mockups:</p>
+<ul>
+  <li><strong>The drawer seam is ready.</strong> <code>src/web/lib/line-drawer.ts</code>
+  (<code>LINE_DRAWER_STAGES</code>) and <code>src/web/lib/line-targets.ts</code>
+  (<code>backlog: { kind: "sitrep" }</code>) were cut exactly for this: adding a fourth drawer
+  is that list, the target table, a glyph in
+  <code>src/web/components/line/LineDrawer.tsx</code>, a body component, and a render site in
+  <code>App.tsx</code> beside the other three. The <code>LineDrawer</code> frame owns focus,
+  <code>esc</code>, <code>aria-controls</code>, and the three-row/38vh body cap.</li>
+  <li><strong>Every queue action already has a route.</strong> Launch:
+  <code>POST /api/tasks/:id/dispatch</code> (<code>api.dispatchBacklog</code>). Park/resume:
+  <code>POST /api/tasks/:id/update</code> with <code>enabled</code>
+  (<code>ScheduleSwitch</code> in <code>session-bits.tsx</code> is the shared control).
+  Priority: same route with <code>priority</code>. Dead prerequisites:
+  <code>DeadBlockerButton</code> (reschedule / mark done) is a shared leaf. No new endpoint is
+  needed for the drawer.</li>
+  <li><strong>Order is computed, and the browser holds everything needed.</strong>
+  <code>readyBacklog(tasks, plan)</code> in <code>src/shared/backlog.ts</code> is plan-entry
+  order first, then priority/age; <code>nextUpTaskId</code> is its head - the same derivation
+  the daemon's fold uses for the stage sentence, so the drawer introduces no second source of
+  truth. <code>App.tsx</code> already holds <code>tasks</code>, <code>visibleBacklog</code>,
+  and <code>foreman.backlogPlan</code> (polled every 4s by <code>useForeman</code>).</li>
+  <li><strong>The planner's "why" exists server-side.</strong> <code>BacklogPlanEntry</code>
+  carries <code>reason: string | null</code> - the Foreman's own explanation for each planned
+  task. The featured section quotes it and adds the computed facts (priority band, age,
+  blocker status, how many tasks it unblocks via <code>backlogIndex</code>).</li>
+  <li><strong>Autopilot state is real and toggleable.</strong>
+  <code>ForemanConfig.autoBacklog</code> (<code>PUT /api/foreman/config</code>) with the
+  derived readout <code>status.autopilot { on, active, max, ready, blocked, disabled }</code>.
+  The only UI for it today is the ForemanBar checkbox.</li>
+</ul>
+
+<h2>Where the mockups and the repository disagree</h2>
+<p>Recorded as decisions, not silently copied:</p>
+<ol>
+  <li><strong>"Move to top" (mockup A) has no backing.</strong> No rank field, no reorder
+  route; the operator's ordering levers are priority and dependencies. Resolution below.</li>
+  <li><strong>"Skip once" (mockup B) has no backing.</strong> The worker's cooldowns are
+  in-memory and not operator concepts; the operator-facing skip today is
+  <code>enabled: false</code> (park). Resolution below.</li>
+  <li><strong>Naming: Sitrep vs Roundup.</strong> The panel is <code>ReportPanel</code>,
+  README calls it Roundup, the Line comment and button call it Sitrep. The drawer's escalation
+  link follows whatever the panel's accessible name is today (Sitrep); this plan does not
+  rename anything.</li>
+</ol>
+
+<h2>Design</h2>
+
+<h3>The queue drawer</h3>
+<p>Clicking BACKLOG toggles the Backlog drawer in place of opening the Sitrep, with the same
+radio-group toggle/swap behavior the other three stages have (<code>nextLineDrawer</code>).
+The body:</p>
+<ul>
+  <li><strong>Ready band</strong>, in <code>readyBacklog</code> order. Each row: priority mark
+  and title, kind/agent/age meta, and actions - Launch now (<code>dispatchBacklog</code>),
+  park (<code>ScheduleSwitch</code> semantics), and an inline priority select (the ordering
+  lever that actually exists, reusing the <code>BacklogColumn</code> pattern). The head of the
+  list carries the next-up marker.</li>
+  <li><strong>Blocked and parked band</strong>: blocked rows show their blocker (from
+  <code>blockersIn</code>), with the shared <code>DeadBlockerButton</code> when the blocker is
+  dead; parked rows dim and offer Resume.</li>
+  <li><strong>Header count</strong>: <code>N ready · N blocked · N parked</code>, amber
+  attention half when nothing is ready but tasks exist (mirroring the fold's
+  <code>tone: "attention"</code> case).</li>
+  <li><strong>Footer escalation</strong>: one link to the Sitrep panel, which keeps the
+  full-fleet read.</li>
+  <li><strong>Empty state</strong>: a <code>LineDrawerEmpty</code> sentence pointing at Intake
+  and the dispatch modal.</li>
+</ul>
+
+<h3>The autopilot planner</h3>
+<p>The planner is a second surface: an anchored popover in the app's existing popover family
+(<code>.launch-pop</code> recipe), opened from the next-up affordance inside the drawer - the
+"next up" marker on the head row is the trigger, so the queue read stays one click and the
+"why" is one more. It contains:</p>
+<ul>
+  <li>The next-up task: priority, title, intent excerpt.</li>
+  <li><strong>Why this one</strong>: the plan entry's <code>reason</code> verbatim when
+  present, plus computed lines - priority band, age, "no blockers", "unblocks N tasks".</li>
+  <li><strong>Launch now</strong> (same dispatch route).</li>
+  <li>When nothing is ready, the next-up affordance is absent and the drawer's attention copy
+  states why (all blocked / all parked / empty) instead.</li>
+</ul>
+<p>The autopilot readout and toggle live in the drawer itself, not the popover: a footer line
+under the rows with the <code>status.autopilot</code> readout
+(<code>on · active/max · ready/blocked/disabled</code>) and a toggle bound to
+<code>ForemanConfig.autoBacklog</code> - the same config write the ForemanBar checkbox makes,
+never a parallel state. The footer also carries the Sitrep escalation link, so the frame gains
+one optional footer slot.</p>
+
+<h2>Adopted decisions</h2>
+<p>Submitted through the dashboard review of this plan:</p>
+<ol class="decisions">
+  <li><strong>Composition: two surfaces.</strong> The BACKLOG click opens the queue drawer;
+  the planner keeps mockup B's anchored-popover form, opened from the drawer's next-up
+  affordance. Not merged into one panel.</li>
+  <li><strong>Ordering control: inline priority select per row.</strong> The lever that
+  exists (<code>updateTask</code> with <code>priority</code>), reusing the
+  <code>BacklogColumn</code> pattern. No rank/pin concept.</li>
+  <li><strong>Skip once: dropped.</strong> Park covers deferral; no new deferral state.</li>
+  <li><strong>Autopilot: readout plus toggle in the drawer</strong>, bound to the existing
+  <code>ForemanConfig.autoBacklog</code> write.</li>
+</ol>
+
+<h2>Contracts and constraints</h2>
+<ul>
+  <li><code>LINE_STAGE_TARGETS</code> flips <code>backlog</code> to
+  <code>{ kind: "drawer", stage: "backlog" }</code>; <code>LINE_DRAWER_STAGES</code> gains
+  <code>"backlog"</code>; <code>lineStageHasDrawer</code> then advertises
+  <code>aria-expanded</code> on the stage button for free.
+  <code>test/line-drawer.test.ts</code> pins the current three-stage list and changes
+  deliberately with this plan.</li>
+  <li>All mutations go through existing Zod-validated routes; no hand-parsing, no new
+  endpoint. The autopilot toggle writes through the existing
+  <code>PUT /api/foreman/config</code> client wrapper.</li>
+  <li>The drawer reads only state the browser already holds (SSE tasks, <code>useForeman</code>
+  plan poll); no new fetch on open, unlike Intake's one-shot sources read.</li>
+  <li>UI changes require Playwright specs in <code>e2e/specs/line-drawers.spec.ts</code>
+  (role/label selectors, never <code>data-testid</code>; seed via
+  <code>POST /api/tasks</code> with <code>backlog: true</code>, park via <code>/update</code>,
+  blockers via <code>dependencies</code>). Markup projections extend
+  <code>test/line-drawer.test.ts</code>; the Electron geometry tests cover the cap if row
+  height changes.</li>
+  <li>README updates land in the same changes: the stage click table row (line ~4292), the
+  drawer table (~4331), and the three-of-six drawer arithmetic (~4286), plus the Backlog stage
+  row if the sentence changes.</li>
+  <li>Keyboard: no new shortcut; <code>esc</code> and focus behavior come from the frame. The
+  <code>r</code> Roundup shortcut is untouched.</li>
+</ul>
+
+<h2>Out of scope</h2>
+<ul>
+  <li>Renaming Sitrep/Roundup, or changing the Sitrep panel itself.</li>
+  <li>Manual backlog reordering (rank/pin) beyond priority, unless decided otherwise
+  above.</li>
+  <li>Quick-add capture, aging radar, and dispatch-cockpit ideas from mockups C, D, E.</li>
+  <li>Any change to the Foreman planner's algorithm or the plan storage.</li>
+</ul>
+
+<h2>Verification</h2>
+<ul>
+  <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>
+  (line-drawer, line-strip, backlog suites).</li>
+  <li><code>npm run build</code> then <code>npm run test:e2e</code> with new specs: stage
+  click opens the drawer (not the Sitrep), toggle/swap/esc semantics, ready/blocked/parked
+  rows render seeded tasks, launch dispatches the fake agent, park flips <code>enabled</code>,
+  planner shows the seeded plan reason, autopilot toggle round-trips
+  <code>autoBacklog</code>.</li>
+  <li>Visual pass against the mockups for spacing, tones, and the cap behavior.</li>
+</ul>
+
+</main>
+</body>
+</html>

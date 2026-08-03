@@ -924,8 +924,8 @@ test("a completed final answer ends the turn when lifecycle notifications are lo
   assert.equal(fallbackDone.length, 1);
   assert.equal(fallbackDone[0]?.kind === "turn_done" && fallbackDone[0].usage?.output, 1);
 
-  // The outbox may start turn 2 before turn 1's unidentifiable idle arrives. That late
-  // status must pay the recovered turn's idle debt, not retire the new active turn.
+  // The outbox may start turn 2 before turn 1's unidentifiable idle arrives. Because turn
+  // 2 has not emitted its own active status yet, the stale idle has no paired turn to end.
   assert.equal(await handle.send({ text: "next queued turn" }), "started");
   server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
   server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-1" } });
@@ -937,7 +937,13 @@ test("a completed final answer ends the turn when lifecycle notifications are lo
     "turn 1's delayed idle cannot complete turn 2",
   );
 
-  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-2" } });
+  // The stale frame did not consume turn 2's future completion. Its own active -> idle
+  // status pair remains sufficient even when its ID-bearing completion is also absent.
+  server.notify("thread/status/changed", {
+    threadId: THREAD.id,
+    status: { type: "active", activeFlags: [] },
+  });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
   await settle();
   assert.equal(events.filter((event) => event.kind === "turn_done").length, 2);
   await handle.stop();

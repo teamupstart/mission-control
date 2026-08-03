@@ -321,12 +321,12 @@ class CodexSdkSession implements SdkSessionHandle {
    * as a precondition and FAILS if it has moved.
    */
   private activeTurnId: string | null = null;
+  /** The turn paired with the latest `thread/status: active` notification. */
+  private statusActiveTurnId: string | null = null;
   /** The most recent per-turn token usage, reported with `turn_done`. */
   private lastUsage: SdkUsage | null = null;
   /** A short backstop when a final answer is not followed by either lifecycle frame. */
   private finalAnswerCompletion: ReturnType<typeof setTimeout> | null = null;
-  /** Unattributed idle frames that may still arrive for final-answer-recovered turns. */
-  private recoveredIdleDebt = 0;
   private modelId: string | null = null;
   /**
    * The sandbox the RUNNING thread resolved to, read off its own start response.
@@ -415,6 +415,10 @@ class CodexSdkSession implements SdkSessionHandle {
     // Recorded from the RESPONSE as well as from `turn/started`, so a second `send` racing
     // the notification cannot see an idle thread and start a turn that never runs.
     this.lastUsage = null;
+    // An idle status may finish this turn only after its own active status pairs with it.
+    // A delayed idle from the previous turn can arrive between this response and that
+    // notification, and has no turn id by which it could otherwise be rejected.
+    this.statusActiveTurnId = null;
     this.activeTurnId = started.turn.id;
     this.out.emit({ kind: "state", state: "working", activity: null });
   }
@@ -653,6 +657,7 @@ class CodexSdkSession implements SdkSessionHandle {
     }
     this.threadId = thread.thread.id;
     this.activeTurnId = activeTurn?.id ?? null;
+    this.statusActiveTurnId = thread.thread.status.type === "active" ? this.activeTurnId : null;
     this.lastUsage = null;
     this.modelId = thread.model || null;
     this.appliedSandbox = sandboxModeOf(thread.sandbox);
@@ -803,7 +808,10 @@ class CodexSdkSession implements SdkSessionHandle {
       case "turn/started": {
         if (!this.isCurrentThread(params)) return;
         const turnId = (params as TurnStartedNotification).turn.id;
-        if (this.activeTurnId !== turnId) this.lastUsage = null;
+        if (this.activeTurnId !== turnId) {
+          this.lastUsage = null;
+          this.statusActiveTurnId = null;
+        }
         this.activeTurnId = turnId;
         this.out.emit({ kind: "state", state: "working", activity: null });
         return;
@@ -815,21 +823,17 @@ class CodexSdkSession implements SdkSessionHandle {
       case "thread/status/changed": {
         if (!this.isCurrentThread(params)) return;
         const status = (params as ThreadStatusChangedNotification).status;
-        // The backstop for an idle we would otherwise learn only from `turn/completed`.
-        // Both fire today, in this order, and `finishTurn` is idempotent - but a card stuck
-        // reading "working" for ever is the failure mode worth being redundant about.
+        // Status notifications carry no turn id, so an idle can finish only the turn paired
+        // with the preceding active status. A final-answer fallback clears that pairing;
+        // if its delayed idle arrives after the next `turn/start` response but before the
+        // next active status, it has no turn to finish. The next turn's own active -> idle
+        // pair still remains a valid backstop when `turn/completed` is missing.
         if (status.type === "idle") {
-          // Status frames carry no turn id. A final-answer recovery can release the outbox
-          // before that recovered turn's delayed idle arrives, at which point blindly
-          // applying the idle to `activeTurnId` would finish the NEW turn. Each recovery
-          // therefore leaves one unattributed idle debt: the next idle pays that debt and
-          // cannot retire whichever newer turn happens to be active.
-          if (this.recoveredIdleDebt > 0) {
-            this.recoveredIdleDebt -= 1;
-            return;
-          }
-          this.finishTurn(this.activeTurnId);
+          const pairedTurnId = this.statusActiveTurnId;
+          this.statusActiveTurnId = null;
+          this.finishTurn(pairedTurnId);
         } else if (status.type === "active") {
+          this.statusActiveTurnId = this.activeTurnId;
           this.out.emit({ kind: "state", state: "working", activity: null });
         }
         return;
@@ -939,9 +943,6 @@ class CodexSdkSession implements SdkSessionHandle {
   private retireThread(threadId: string): void {
     this.retiredThreads.set(threadId, true);
     capped(this.retiredThreads, RETIRED_THREAD_CAP);
-    // Idle debt belongs to the root being retired. Its late frames are filtered above and
-    // must not suppress lifecycle notifications from the replacement thread.
-    this.recoveredIdleDebt = 0;
     for (const [itemId, retained] of this.fileChanges) {
       if (this.isRetired(retained.threadId)) this.fileChanges.delete(itemId);
     }
@@ -1040,6 +1041,7 @@ class CodexSdkSession implements SdkSessionHandle {
       clearTimeout(this.finalAnswerCompletion);
       this.finalAnswerCompletion = null;
     }
+    if (this.statusActiveTurnId === turnId) this.statusActiveTurnId = null;
     this.activeTurnId = null;
     this.out.emit({ kind: "turn_done", usage: this.lastUsage });
     return true;
@@ -1051,7 +1053,7 @@ class CodexSdkSession implements SdkSessionHandle {
     const timer = setTimeout(() => {
       if (this.finalAnswerCompletion !== timer) return;
       this.finalAnswerCompletion = null;
-      if (this.finishTurn(turnId)) this.recoveredIdleDebt += 1;
+      this.finishTurn(turnId);
     }, FINAL_ANSWER_COMPLETION_GRACE_MS);
     this.finalAnswerCompletion = timer;
   }

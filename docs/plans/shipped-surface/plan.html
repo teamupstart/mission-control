@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shipped surface - approved plan</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --card: #ffffff;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-3: #898781;
+    --rule: #e1e0d9;
+    --accent: #6f56c0;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --card: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --ink-3: #898781;
+      --rule: #2c2c2a;
+      --accent: #9a7bef;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.6 var(--sans);
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 48px 0 8px; }
+  h3 { font-size: 15px; margin: 24px 0 6px; }
+  p { margin: 8px 0; color: var(--ink-2); }
+  p strong, li strong { color: var(--ink); }
+  .lede { font-size: 16px; color: var(--ink-2); margin-bottom: 24px; }
+  table.doc { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  table.doc th, table.doc td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  table.doc th { color: var(--ink-3); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  table.doc code, p code, li code { font-family: var(--mono); font-size: .88em; background: color-mix(in srgb, var(--ink) 7%, transparent); padding: 1px 5px; border-radius: 4px; }
+  .scroll-x { overflow-x: auto; }
+  ul { color: var(--ink-2); margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+  .tags li { margin: 0; font: 11px/1 var(--mono); letter-spacing: .03em; color: var(--ink-2); border: 1px solid var(--rule); border-radius: 999px; padding: 6px 10px; }
+  .tags li.good::before { content: "✓ "; color: #0ca30c; }
+  .tags li.todo::before { content: "+ "; color: var(--accent); }
+
+  /* ---- dark artboards: these depict the dark-only app, fixed palette ---- */
+  .ab {
+    background: #0a0c0f; border: 1px solid var(--rule); border-radius: 12px;
+    padding: 22px; margin: 16px 0 8px; overflow-x: auto;
+    --bg: #0a0c0f; --bg2: #0e1116; --panel: #14181e; --panel2: #171c23;
+    --border: #232a33; --border-soft: #1b2129;
+    --fg: #e7ebf1; --muted: #939eae; --dim: #7c8798;
+    --working: #4a9eff; --idle: #35c08a; --attention: #f6a733; --danger: #f85149;
+    --merged: #a371f7; --open-ic: #3fb950; --open-seg: #2ea043;
+    font-family: var(--mono); color: var(--fg);
+  }
+  .ab, .ab * { line-height: 1.4; }
+  .cap { font-size: 12.5px; color: var(--ink-3); margin: 6px 0 0; }
+
+  /* line strip */
+  .line { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; min-width: 820px; }
+  .stg { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 9px; padding: 9px 11px 8px; }
+  .stg .hd { display: flex; align-items: baseline; gap: 7px; }
+  .stg .gl { color: var(--dim); font-size: 11px; }
+  .stg .nm { font-size: 10px; letter-spacing: .12em; color: var(--muted); text-transform: uppercase; }
+  .stg .ct { margin-left: auto; font-size: 17px; font-variant-numeric: tabular-nums; color: var(--fg); }
+  .stg .sub { display: block; font-size: 10.5px; color: var(--dim); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stg.hot { border-color: var(--merged); box-shadow: 0 0 0 1px color-mix(in srgb, var(--merged) 35%, transparent); }
+  .stg.hot .gl, .stg.hot .nm { color: var(--merged); }
+
+  /* shared row bits */
+  .ic { width: 15px; height: 15px; flex: none; }
+  .ic.m { color: var(--merged); } .ic.o { color: var(--open-ic); } .ic.g { color: var(--dim); }
+  .repo { color: var(--dim); } .num { color: var(--fg); }
+  .br { color: var(--muted); font-size: 11px; }
+  .sess { font-size: 10px; color: var(--muted); background: var(--panel2); border: 1px solid var(--border-soft); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+  .when { font-size: 11px; color: var(--dim); white-space: nowrap; }
+  .cost { font-size: 11px; color: var(--merged); white-space: nowrap; }
+
+  /* drawer (mockup A) */
+  .drawer { min-width: 820px; margin-top: 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .dr-hd { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border-soft); }
+  .dr-hd .t { font-size: 10px; letter-spacing: .12em; color: var(--merged); }
+  .dr-hd .s { font-size: 11px; color: var(--dim); }
+  .chips { display: flex; gap: 6px; margin-left: auto; }
+  .chip { font-size: 10px; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; background: transparent; }
+  .chip.on { color: var(--fg); border-color: var(--merged); }
+  .dr-row { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--border-soft); font-size: 12.5px; }
+  .dr-row .main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .dr-row .meta { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .dr-ft { display: flex; align-items: center; padding: 9px 14px; font-size: 11px; color: var(--dim); }
+  .dr-ft .link { margin-left: auto; color: var(--working); }
+  .st { font-size: 10px; padding: 1px 7px; border-radius: 999px; border: 1px solid; }
+  .st.m { color: var(--merged); border-color: color-mix(in srgb, var(--merged) 45%, transparent); }
+  .st.o { color: var(--open-ic); border-color: color-mix(in srgb, var(--open-ic) 45%, transparent); }
+  .st.g { color: var(--dim); border-color: var(--border); }
+
+  /* ship log page (mockup B) */
+  .page { min-width: 860px; background: var(--bg); }
+  .pg-hd { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+  .pg-hd .title { font-size: 16px; color: var(--fg); letter-spacing: .02em; }
+  .pg-hd .sub { font-size: 11px; color: var(--dim); }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 11px 13px; position: relative; min-height: 84px; }
+  .kpi .lb { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .kpi .vl { font-size: 22px; color: var(--fg); margin-top: 2px; }
+  .kpi .vl .unit { font-size: 12px; color: var(--dim); }
+  .kpi .dl { font-size: 10.5px; margin-top: 1px; }
+  .kpi .dl.up { color: var(--idle); } .kpi .dl.dn { color: var(--idle); } .kpi .dl.flat { color: var(--dim); }
+  .kpi svg.spark { position: absolute; right: 12px; bottom: 10px; }
+  .body2 { display: grid; grid-template-columns: 232px 1fr; gap: 10px; }
+  .rail { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px 12px; align-self: start; }
+  .rail .rl-hd { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+  .legend { display: flex; gap: 10px; font-size: 9.5px; color: var(--dim); margin-bottom: 10px; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .rr { padding: 7px 0; border-top: 1px solid var(--border-soft); }
+  .rr .top { display: flex; font-size: 11.5px; }
+  .rr .top .n { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rr.on .top .n { color: var(--fg); }
+  .rr .top .c { margin-left: auto; color: var(--fg); font-variant-numeric: tabular-nums; }
+  .mix { display: flex; gap: 2px; height: 6px; margin-top: 5px; }
+  .mix i { border-radius: 3px; }
+  .mix .m { background: var(--merged); } .mix .o { background: var(--open-seg); } .mix .g { background: var(--dim); }
+  .feed { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; overflow: hidden; }
+  .day { display: flex; align-items: baseline; gap: 10px; padding: 8px 14px 6px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border-soft); background: var(--panel2); }
+  .day .r { margin-left: auto; letter-spacing: 0; text-transform: none; color: var(--dim); }
+  .fr { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border-soft); font-size: 12.5px; }
+  .fr .tcol { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+  .fr .tt { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fr .sub2 { color: var(--dim); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fr .meta { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
+  .rchip { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+
+  /* merge matrix (mockup C) */
+  .mx-wrap { min-width: 840px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; position: relative; }
+  .mx-hd { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+  .mx-hd .t { font-size: 10px; letter-spacing: .12em; color: var(--merged); }
+  .mx-hd .s { font-size: 11px; color: var(--dim); }
+  .mx { display: grid; grid-template-columns: 170px repeat(14, 22px) 56px; align-items: center; row-gap: 2px; }
+  .mx .cl { font-size: 9.5px; color: var(--dim); text-align: center; padding-bottom: 4px; }
+  .mx .rl { font-size: 11.5px; color: var(--muted); padding-right: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mx .tot { font-size: 11.5px; color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
+  .cell { width: 18px; height: 18px; border-radius: 4px; margin: 0 2px; }
+  .c0 { box-shadow: inset 0 0 0 1px var(--border-soft); }
+  .c1 { background: #57428f; } .c2 { background: #7a5cc7; } .c3 { background: #9a7bef; } .c4 { background: #bfa4fd; }
+  .cell.hov { outline: 1.5px solid var(--fg); outline-offset: 1px; }
+  .mx-ft { display: flex; align-items: center; gap: 14px; margin-top: 12px; font-size: 10px; color: var(--dim); }
+  .mx-ft .sw { display: inline-flex; align-items: center; gap: 4px; }
+  .mx-ft .sw i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .tip { position: absolute; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 11px; color: var(--fg); box-shadow: 0 6px 20px rgba(0,0,0,.5); pointer-events: none; }
+  .tip .tl { color: var(--dim); font-size: 10px; }
+  .drill { margin-top: 14px; border-top: 1px solid var(--border-soft); padding-top: 10px; }
+  .drill .dh { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  .drill .dr-row { padding: 7px 2px; }
+  .more { font-size: 11px; color: var(--working); padding: 6px 2px 0; }
+
+  /* flow diagram card */
+  .diagram { background: #0e1116; border: 1px solid var(--rule); border-radius: 12px; padding: 12px; margin: 16px 0 8px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Shipped surface</h1>
+  <p class="lede">Approved: clicking Shipped opens a Shipped drawer in The Line, and the
+  drawer's header "Ship log" action escalates to a new cross-repo Ship log page. PR titles
+  live on the adoption ledger, written by the Inspector's per-tick poll. The adopted mockups
+  are below; the decision record is at the end.</p>
+
+  <h2>Problem</h2>
+  <p>Clicking Shipped today navigates to the Workflow runs page filtered to
+  <code>status=completed</code> (<code>src/web/lib/line-targets.ts</code>). That target is
+  wrong in both directions: sessions ship code without ever passing through a workflow run,
+  and a completed workflow run does not guarantee any code shipped.</p>
+  <p>Meanwhile the number on the bar is real: a 7-day <code>COUNT</code> over the Inspector's
+  adoption ledger (<code>inspector_prs.adopted_at</code>). The ledger already holds one row per
+  PR across every repository the fleet touches, but no surface in the app renders those rows.
+  The click should land on the PRs the count is made of.</p>
+
+  <h2>Flow change</h2>
+  <div class="diagram">
+    <svg width="900" height="238" viewBox="0 0 900 238" role="img" aria-label="Flow: inspector_prs feeds line_summary and the strip; the click moves from Workflow runs to the new Shipped surface, which reads full rows from GET /api/inspector/prs" font-family="ui-monospace, Menlo, monospace">
+      <defs>
+        <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#939eae"/></marker>
+        <marker id="arrP" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#a371f7"/></marker>
+        <marker id="arrR" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#f85149"/></marker>
+      </defs>
+      <!-- top row -->
+      <rect x="16" y="34" width="186" height="52" rx="9" fill="#171c23" stroke="#232a33"/>
+      <text x="30" y="56" fill="#e7ebf1" font-size="12">inspector_prs</text>
+      <text x="30" y="72" fill="#7c8798" font-size="10">SQLite · one row per PR, every repo</text>
+
+      <rect x="282" y="34" width="180" height="52" rx="9" fill="#171c23" stroke="#232a33"/>
+      <text x="296" y="56" fill="#e7ebf1" font-size="12">line_summary fold</text>
+      <text x="296" y="72" fill="#7c8798" font-size="10">COUNT(adopted_at), 7 days</text>
+
+      <rect x="542" y="34" width="180" height="52" rx="9" fill="#171c23" stroke="#232a33"/>
+      <text x="556" y="56" fill="#e7ebf1" font-size="12">The Line · SHIPPED</text>
+      <text x="556" y="72" fill="#7c8798" font-size="10">111 · ≈$40.74 per PR</text>
+
+      <line x1="202" y1="60" x2="276" y2="60" stroke="#939eae" marker-end="url(#arr)"/>
+      <line x1="462" y1="60" x2="536" y2="60" stroke="#939eae" marker-end="url(#arr)"/>
+      <text x="470" y="52" fill="#7c8798" font-size="10">SSE</text>
+
+      <!-- now: wrong target -->
+      <rect x="632" y="152" width="252" height="52" rx="9" fill="#171c23" stroke="#f85149" stroke-dasharray="5 4"/>
+      <text x="646" y="174" fill="#e7ebf1" font-size="12">Workflow runs (completed)</text>
+      <text x="646" y="190" fill="#f85149" font-size="10">now · workflows ≠ shipped code</text>
+      <path d="M 700 86 C 720 112, 740 128, 752 146" fill="none" stroke="#f85149" stroke-dasharray="5 4" marker-end="url(#arrR)"/>
+      <text x="742" y="118" fill="#f85149" font-size="10">click, today</text>
+
+      <!-- proposed target -->
+      <rect x="282" y="152" width="252" height="52" rx="9" fill="#171c23" stroke="#a371f7"/>
+      <text x="296" y="174" fill="#e7ebf1" font-size="12">Shipped drawer → Ship log page</text>
+      <text x="296" y="190" fill="#a371f7" font-size="10">approved · the rows behind the count</text>
+      <path d="M 612 86 C 570 118, 520 136, 480 148" fill="none" stroke="#a371f7" marker-end="url(#arrP)"/>
+      <text x="540" y="124" fill="#a371f7" font-size="10">click, approved</text>
+      <path d="M 109 86 C 120 130, 180 160, 276 174" fill="none" stroke="#939eae" marker-end="url(#arr)"/>
+      <text x="96" y="140" fill="#7c8798" font-size="10">GET /api/inspector/prs · full rows</text>
+    </svg>
+  </div>
+  <p class="cap">The summary path is untouched; only the click target changes, plus a surface
+  reading rows the browser can already fetch.</p>
+
+  <h2>Data inventory</h2>
+  <div class="scroll-x">
+  <table class="doc">
+    <tr><th>Field</th><th>Exists today</th><th>Where</th></tr>
+    <tr><td>owner / repo / number / url</td><td>yes</td><td><code>inspector_prs</code></td></tr>
+    <tr><td>branch (<code>head_ref_name</code>)</td><td>yes</td><td><code>inspector_prs</code></td></tr>
+    <tr><td>merge state (<code>merged_at</code>, <code>observed_state</code>)</td><td>yes</td><td><code>inspector_prs</code></td></tr>
+    <tr><td>owning session</td><td>yes</td><td><code>inspector_prs.session_id</code></td></tr>
+    <tr><td>adopted time</td><td>yes</td><td><code>inspector_prs.adopted_at</code></td></tr>
+    <tr><td>list endpoint</td><td>yes</td><td><code>GET /api/inspector/prs</code></td></tr>
+    <tr><td>PR title</td><td><strong>no</strong></td><td>in scope: stored on the ledger, written by the first Inspector poll after adoption (approved)</td></tr>
+    <tr><td>per-PR cost</td><td><strong>no</strong></td><td>not adopted; the KPI keeps the fleet-wide daily average</td></tr>
+  </table>
+  </div>
+
+  <!-- ======================= MOCKUP A ======================= -->
+  <h2>Adopted 1 - Shipped drawer (Mockup A)</h2>
+  <p>Clicking Shipped opens a drawer under the strip, exactly like Intake, Review, and Decide
+  already do. Rows are the adoption ledger newest-first; chips split the week by merge state
+  with their counts; the "Ship log" escalation sits in the drawer header's actions slot, the
+  same place the other drawers keep theirs (the frame has no footer).</p>
+
+  <div class="ab">
+    <div class="line">
+      <div class="stg"><span class="hd"><span class="gl">⌄</span><span class="nm">Intake</span><span class="ct">0</span></span><span class="sub">quiet</span></div>
+      <div class="stg"><span class="hd"><span class="gl">☰</span><span class="nm">Backlog</span><span class="ct">12</span></span><span class="sub">12 queued</span></div>
+      <div class="stg"><span class="hd"><span class="gl">◐</span><span class="nm">Working</span><span class="ct">3</span></span><span class="sub">2 running · 1 waiting</span></div>
+      <div class="stg"><span class="hd"><span class="gl">⌕</span><span class="nm">Review</span><span class="ct">2</span></span><span class="sub">2 open rounds</span></div>
+      <div class="stg"><span class="hd"><span class="gl">⚖</span><span class="nm">Decide</span><span class="ct">1</span></span><span class="sub">1 waiting on you</span></div>
+      <div class="stg hot"><span class="hd"><span class="gl">⚑</span><span class="nm">Shipped</span><span class="ct">111</span></span><span class="sub">this week · ≈$40.74 per PR today</span></div>
+    </div>
+    <div class="drawer">
+      <div class="dr-hd">
+        <span class="t">⚑ SHIPPED</span>
+        <span class="s">111 this week · ≈$40.74 per PR today</span>
+        <div class="chips">
+          <span class="chip on">All 111</span>
+          <span class="chip">Merged 89</span>
+          <span class="chip">Open 14</span>
+          <span class="chip">Gone 8</span>
+        </div>
+        <span style="font-size:11px; color: var(--working); white-space:nowrap; margin-left:4px">Ship log →</span>
+        <span style="font-size:10px; color: var(--dim)">✕</span>
+      </div>
+      <div class="dr-row">
+        <svg class="ic m" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="8" r="1.9"/><path d="M4 5.5v5M4 5.8c0 2.2 2.6 2.2 6 2.2"/></g></svg>
+        <span class="main"><span><span class="repo">mancej-cyc/ai-harness</span><span class="num">#241</span></span><span class="br">fix/line-drawer-focus</span></span>
+        <span class="meta"><span class="st m">merged</span><span class="sess">sess drawer-focus</span><span class="when">2h ago</span></span>
+      </div>
+      <div class="dr-row">
+        <svg class="ic m" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="8" r="1.9"/><path d="M4 5.5v5M4 5.8c0 2.2 2.6 2.2 6 2.2"/></g></svg>
+        <span class="main"><span><span class="repo">mancej-cyc/upstart</span><span class="num">#87</span></span><span class="br">feat/goal-refiner-floor</span></span>
+        <span class="meta"><span class="st m">merged</span><span class="sess">sess upstart-goals</span><span class="when">5h ago</span></span>
+      </div>
+      <div class="dr-row">
+        <svg class="ic o" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="12.5" r="1.9"/><path d="M4 5.5v5M6 3.5h3.5A2.5 2.5 0 0 1 12 6v4.5"/></g></svg>
+        <span class="main"><span><span class="repo">mancej-cyc/ai-harness</span><span class="num">#243</span></span><span class="br">e2e/shipped-drawer-spec</span></span>
+        <span class="meta"><span class="st o">open</span><span class="sess">sess e2e-specs</span><span class="when">6h ago</span></span>
+      </div>
+      <div class="dr-row">
+        <svg class="ic m" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="8" r="1.9"/><path d="M4 5.5v5M4 5.8c0 2.2 2.6 2.2 6 2.2"/></g></svg>
+        <span class="main"><span><span class="repo">mancej-cyc/infra</span><span class="num">#19</span></span><span class="br">chore/node-26-matrix</span></span>
+        <span class="meta"><span class="st m">merged</span><span class="sess">sess infra-node26</span><span class="when">yesterday</span></span>
+      </div>
+      <div class="dr-row" style="border-bottom:none">
+        <svg class="ic g" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="12.5" r="1.9"/><path d="M4 5.5v5M10.2 3.2l3 3M13.2 3.2l-3 3"/></g></svg>
+        <span class="main"><span><span class="repo">jordanmance/notes</span><span class="num">#12</span></span><span class="br">draft/summarizer</span></span>
+        <span class="meta"><span class="st g">gone</span><span class="sess">sess notes-sum</span><span class="when">yesterday</span></span>
+      </div>
+    </div>
+  </div>
+  <p class="cap">Merge-state icons always ride with a text label (merged / open / gone), never color alone.</p>
+  <ul class="tags">
+    <li class="good">data ships today: repo, number, branch, state, session, time</li>
+    <li class="good">drawer machinery exists (LINE_DRAWER_STAGES + one body)</li>
+    <li class="good">smallest change</li>
+    <li class="todo">no cross-repo aggregation; 111 rows means scrolling</li>
+  </ul>
+
+  <!-- ======================= MOCKUP B ======================= -->
+  <h2>Adopted 2 - Ship log page (Mockup B, cross-repo ledger)</h2>
+  <p>A new routed page. KPI row on top, a repository rail on the left showing where the week's
+  work landed (each repo with its merged / open / gone mix), and the ledger grouped by day on
+  the right. <strong>This is the "PRs merged across various repositories" surface</strong>:
+  every row is repo-tagged and the rail doubles as a filter.</p>
+
+  <div class="ab">
+    <div class="page">
+      <div class="pg-hd">
+        <span class="title">Ship log</span>
+        <span class="sub">what the fleet landed, across every repo</span>
+        <div class="chips" style="margin-left:auto">
+          <span class="chip">Today</span><span class="chip on">7 days</span><span class="chip">30 days</span>
+        </div>
+      </div>
+      <div class="kpis">
+        <div class="kpi">
+          <div class="lb">Shipped this week</div>
+          <div class="vl">111</div>
+          <div class="dl up">▲ +23 vs last wk</div>
+          <svg class="spark" width="70" height="30" viewBox="0 0 70 30" aria-label="12-week shipped trend, rising">
+            <polyline points="0,26 5.8,23.5 11.6,20.6 17.5,25.2 23.3,18.9 29.1,16 34.9,21.4 40.7,19.4 46.5,13.5 52.4,11.9 58.2,13.5" fill="none" stroke="#566173" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+            <polyline points="58.2,13.5 64,4" fill="none" stroke="#a371f7" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="64" cy="4" r="3" fill="#a371f7" stroke="#14181e" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="kpi">
+          <div class="lb">Merged</div>
+          <div class="vl">89 <span class="unit">of 111</span></div>
+          <div class="dl flat">80% of adopted PRs landed</div>
+        </div>
+        <div class="kpi">
+          <div class="lb">Per PR today</div>
+          <div class="vl">≈$40.74</div>
+          <div class="dl dn">▼ $6.10 vs yesterday</div>
+        </div>
+        <div class="kpi">
+          <div class="lb">Repos</div>
+          <div class="vl">6</div>
+          <div class="dl flat">3 active today</div>
+        </div>
+      </div>
+      <div class="body2">
+        <div class="rail">
+          <div class="rl-hd">Repositories</div>
+          <div class="legend">
+            <span><i style="background:#a371f7"></i>merged</span>
+            <span><i style="background:#2ea043"></i>open</span>
+            <span><i style="background:#7c8798"></i>gone</span>
+          </div>
+          <div class="rr on">
+            <div class="top"><span class="n">mancej-cyc/ai-harness</span><span class="c">64</span></div>
+            <div class="mix"><i class="m" style="flex:53"></i><i class="o" style="flex:8"></i><i class="g" style="flex:3"></i></div>
+          </div>
+          <div class="rr">
+            <div class="top"><span class="n">mancej-cyc/upstart</span><span class="c">23</span></div>
+            <div class="mix"><i class="m" style="flex:18"></i><i class="o" style="flex:3"></i><i class="g" style="flex:2"></i></div>
+          </div>
+          <div class="rr">
+            <div class="top"><span class="n">mancej-cyc/infra</span><span class="c">11</span></div>
+            <div class="mix"><i class="m" style="flex:9"></i><i class="o" style="flex:1"></i><i class="g" style="flex:1"></i></div>
+          </div>
+          <div class="rr">
+            <div class="top"><span class="n">jordanmance/notes</span><span class="c">7</span></div>
+            <div class="mix"><i class="m" style="flex:4"></i><i class="o" style="flex:2"></i><i class="g" style="flex:1"></i></div>
+          </div>
+          <div class="rr">
+            <div class="top"><span class="n">mancej-cyc/pi-tools</span><span class="c">4</span></div>
+            <div class="mix"><i class="m" style="flex:3"></i><i class="g" style="flex:1"></i></div>
+          </div>
+          <div class="rr">
+            <div class="top"><span class="n">jordanmance/dotfiles</span><span class="c">2</span></div>
+            <div class="mix"><i class="m" style="flex:2"></i></div>
+          </div>
+        </div>
+        <div class="feed">
+          <div class="day">Today<span class="r">3 merged</span></div>
+          <div class="fr">
+            <svg class="ic m" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="8" r="1.9"/><path d="M4 5.5v5M4 5.8c0 2.2 2.6 2.2 6 2.2"/></g></svg>
+            <span class="rchip">ai-harness</span>
+            <span class="tcol"><span class="tt">Focus order for line drawer chips</span><span class="sub2">#241 · fix/line-drawer-focus</span></span>
+            <span class="meta"><span class="sess">sess drawer-focus</span><span class="when">2h ago</span></span>
+          </div>
+          <div class="fr">
+            <svg class="ic m" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="8" r="1.9"/><path d="M4 5.5v5M4 5.8c0 2.2 2.6 2.2 6 2.2"/></g></svg>
+            <span class="rchip">upstart</span>
+            <span class="tcol"><span class="tt">Goal refiner floor for short prompts</span><span class="sub2">#87 · feat/goal-refiner-floor</span></span>
+            <span class="meta"><span class="sess">sess upstart-goals</span><span class="when">5h ago</span></span>
+          </div>
+          <div class="fr">
+            <svg class="ic o" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="12.5" r="1.9"/><path d="M4 5.5v5M6 3.5h3.5A2.5 2.5 0 0 1 12 6v4.5"/></g></svg>
+            <span class="rchip">ai-harness</span>
+            <span class="tcol"><span class="tt">Playwright spec for shipped drawer</span><span class="sub2">#243 · e2e/shipped-drawer-spec</span></span>
+            <span class="meta"><span class="sess">sess e2e-specs</span><span class="when">6h ago</span></span>
+          </div>
+          <div class="day">Yesterday<span class="r">5 merged</span></div>
+          <div class="fr">
+            <svg class="ic m" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="8" r="1.9"/><path d="M4 5.5v5M4 5.8c0 2.2 2.6 2.2 6 2.2"/></g></svg>
+            <span class="rchip">infra</span>
+            <span class="tcol"><span class="tt">Add Node 26 to the CI matrix</span><span class="sub2">#19 · chore/node-26-matrix</span></span>
+            <span class="meta"><span class="sess">sess infra-node26</span><span class="when">Aug 1</span></span>
+          </div>
+          <div class="fr" style="border-bottom:none">
+            <svg class="ic g" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.9"/><circle cx="4" cy="12.5" r="1.9"/><circle cx="12" cy="12.5" r="1.9"/><path d="M4 5.5v5M10.2 3.2l3 3M13.2 3.2l-3 3"/></g></svg>
+            <span class="rchip">notes</span>
+            <span class="tcol"><span class="tt">Summarizer draft</span><span class="sub2">#12 · draft/summarizer · closed unmerged</span></span>
+            <span class="meta"><span class="sess">sess notes-sum</span><span class="when">Aug 1</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">Titles ship with this plan, written to the ledger by the Inspector's poll (rows
+  fall back to branch names until the first poll). Per-row cost was considered and not adopted;
+  the KPI keeps the existing fleet-wide ≈$ per PR figure.</p>
+  <ul class="tags">
+    <li class="good">rows, states, repos, sessions: <code>GET /api/inspector/prs</code> today</li>
+    <li class="good">PR title on the ledger, written by the Inspector poll (approved)</li>
+    <li class="todo">new MissionRoute page</li>
+  </ul>
+
+  <h2>Not adopted</h2>
+  <p>The merge matrix - a repos x days heatmap of merged PRs with per-cell drill-in - and
+  per-row cost approximation were considered and not adopted. The matrix remains a candidate
+  module for the ship log later.</p>
+
+  <h2>Decision record (submitted 2026-08-02)</h2>
+  <ul>
+    <li><strong>Surface:</strong> Drawer + ship log (A then B). The drawer gives the in-place
+        glance, consistent with the other stages; its header "Ship log" action escalates to the
+        full page (the frame has no footer - escalation lives in the actions slot, the existing
+        drawers' precedent).</li>
+    <li><strong>Data:</strong> store PR titles on the ledger. Submitted as "store at adoption";
+        the adoption signal carries no title, so the Inspector's per-tick poll writes it - null
+        until the first observation, with branch-name fallback. Per-PR cost approximation and
+        the embedded merge matrix were not adopted.</li>
+    <li><strong>Follow-up:</strong> phased implementation plan.</li>
+  </ul>
+
+  <p class="cap">Source of truth: <code>docs/plans/shipped-surface/plan.md</code>. This page is its
+  rendering, with the adopted mockups inline.</p>
+</main>
+</body>
+</html>

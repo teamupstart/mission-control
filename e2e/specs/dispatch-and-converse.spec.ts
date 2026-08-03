@@ -557,6 +557,55 @@ test("Foreman removes automatic review and separates CI follow-through from revi
   })).not.toBeChecked();
 });
 
+/**
+ * The Foreman card is taller than a short window, and the tail of it must stay reachable.
+ *
+ * This is a regression test with a real failure behind it. The card is anchored under the
+ * topbar and had no height bound, so on a short window - or simply a topbar that had grown
+ * a second row - it ran off the bottom edge with no scroll container. The controls down
+ * there were not merely clipped, they were unclickable: `uncheck()` on the CI row spent its
+ * whole budget reporting `element is outside of the viewport`. It reproduced on CI while
+ * passing locally, because how far down the card starts depends on the topbar's height.
+ *
+ * 560px is chosen to be shorter than the card's own content, which is what forces the
+ * overflow deterministically instead of depending on the topbar. The assertion is the one
+ * that matters to a person: the card ends inside the window, and the last control in it
+ * still takes a click.
+ */
+test.describe(() => {
+  test.use({ viewport: { width: 1280, height: 560 } });
+
+  test("a Foreman card taller than the window scrolls instead of running off it", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await api(daemon, "/api/foreman/config", { enabled: true, trackCiFailures: true }, "PUT");
+    await dashboard.goto(daemon.baseURL);
+    await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
+
+    const popover = dashboard.getByRole("dialog", { name: "Foreman settings" });
+    await expect(popover).toBeVisible();
+
+    const box = await popover.evaluate((el) => ({
+      overflows: el.scrollHeight > el.clientHeight,
+      bottom: Math.round(el.getBoundingClientRect().bottom),
+      viewport: window.innerHeight,
+    }));
+    // The defect, stated as a person meets it: the card ended below the window.
+    expect(box.bottom).toBeLessThanOrEqual(box.viewport);
+    // And the card really is taller than the room it has, so the above is not vacuous.
+    expect(box.overflows).toBe(true);
+
+    // And the control that was unreachable takes a click and persists.
+    const ci = popover.getByRole("checkbox", { name: "Keep sessions on track with CI" });
+    await ci.uncheck();
+    await expect.poll(async () => {
+      const config = await api<{ trackCiFailures: boolean }>(daemon, "/api/foreman/config");
+      return config.trackCiFailures;
+    }).toBe(false);
+  });
+});
+
 test("Foreman never resurfaces Ship it actions after a scout completes", async ({
   dashboard,
   daemon,

@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phased implementation - the Line's Review drawer</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1b1f24;
+        --muted: #5a6472;
+        --dim: #6e7781;
+        --border: #d8dee4;
+        --border-soft: #eaeef2;
+        --panel: #f6f8fa;
+        --panel-2: #eef1f4;
+        --accent: #0969da;
+        --danger: #cf222e;
+        --good: #1a7f37;
+        --warn: #9a6700;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d1117;
+          --fg: #e6edf3;
+          --muted: #9198a1;
+          --dim: #7d8590;
+          --border: #30363d;
+          --border-soft: #21262d;
+          --panel: #161b22;
+          --panel-2: #1c2128;
+          --accent: #4493f8;
+          --danger: #f85149;
+          --good: #3fb950;
+          --warn: #d29922;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 16px;
+        line-height: 1.62;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 900px; margin: 0 auto; padding: 48px 24px 120px; }
+      h1 {
+        font-size: 30px;
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+        margin: 0 0 6px;
+      }
+      .lede { color: var(--muted); font-size: 15px; margin: 0 0 34px; }
+      h2 {
+        font-size: 21px;
+        letter-spacing: -0.01em;
+        margin: 44px 0 12px;
+        padding-bottom: 7px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      h3 { font-size: 16.5px; margin: 28px 0 8px; }
+      p { margin: 0 0 14px; }
+      ul, ol { margin: 0 0 14px; padding-left: 24px; }
+      li { margin: 5px 0; }
+      code {
+        font-family: var(--mono);
+        font-size: 0.87em;
+        background: var(--panel-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        margin: 0 0 16px;
+      }
+      pre code {
+        background: none;
+        border: 0;
+        padding: 0;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .scroll { overflow-x: auto; margin: 0 0 18px; }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+        min-width: 560px;
+      }
+      th, td {
+        text-align: left;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th { background: var(--panel); font-weight: 620; }
+      td code { font-size: 0.85em; white-space: nowrap; }
+      blockquote {
+        margin: 0 0 16px;
+        padding: 2px 0 2px 16px;
+        border-left: 3px solid var(--border);
+        color: var(--muted);
+      }
+      .callout {
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 9px 9px 0;
+        background: var(--panel);
+        padding: 13px 16px;
+        margin: 0 0 18px;
+        font-size: 14.5px;
+      }
+      .callout.bad { border-left-color: var(--danger); }
+      .callout.good { border-left-color: var(--good); }
+      .callout.warn { border-left-color: var(--warn); }
+      .callout p:last-child { margin-bottom: 0; }
+      .phase-tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 9px;
+        color: var(--muted);
+        vertical-align: 3px;
+        margin-left: 9px;
+      }
+      figure { margin: 0 0 22px; }
+      figcaption {
+        font-size: 13px;
+        color: var(--dim);
+        margin-top: 8px;
+        text-align: center;
+      }
+      svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+      .svg-box { fill: var(--panel); stroke: var(--border); }
+      .svg-box-new { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+      .svg-t { fill: var(--fg); font-family: var(--sans); font-size: 13px; }
+      .svg-t-sm { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+      .svg-t-new { fill: var(--accent); font-family: var(--mono); font-size: 10.5px; font-weight: 600; }
+      .svg-hd { fill: var(--dim); font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; }
+      .svg-line { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+      .svg-line-new { stroke: var(--accent); stroke-width: 2; fill: none; }
+      .svg-head-new { fill: var(--accent); }
+      .footer {
+        margin-top: 56px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border-soft);
+        font-size: 13px;
+        color: var(--dim);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+
+      <h1>Phased implementation - the Line's Review drawer</h1>
+      <p class="lede">
+        Source plan: <a href="plan.md">plan.md</a> (<a href="plan.html">rendered</a>) &middot;
+        mockups: <code>docs/mockups/line-review-drawer/index.html</code>
+      </p>
+
+      <h2>Incorporated human decisions</h2>
+      <p>Submitted through the dashboard's plan review. These are requirements, not open questions.</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Decision</th><th>Answer</th><th>Owned by</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Which remedies the drawer offers inline</td>
+              <td><strong>All argument-free remedies</strong> - <code>Dismiss</code> (cancel),
+                <code>Restart</code> (restart-full), <code>Retry</code>, <code>Resubmit</code>.
+                Every route that needs nothing but a run id. <code>Reattach</code> stays out
+                because it needs a session picker.</td>
+              <td>Phase 1</td>
+            </tr>
+            <tr>
+              <td>When blocked runs fold into a group bar</td>
+              <td><strong>3 or more sharing a phase.</strong> A pair renders as two ordinary rows.</td>
+              <td>Phase 2</td>
+            </tr>
+            <tr>
+              <td>After the plan</td>
+              <td>Create the phased implementation plan and schedule dependency-linked tasks.</td>
+              <td>this document</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>What the repository confirmed</h2>
+      <p>Read against the working tree before the phases were drawn.</p>
+      <ul>
+        <li><strong>The two complaints are one bug.</strong> All 31 blocked runs in the live
+          database carry <code>phase = "session_disappeared"</code>.
+          <code>ReviewDrawer.tsx:154</code> resolves a name only from live sessions, so a run
+          whose session was removed falls through to the <code>noteKey</code> GUID.</li>
+        <li><strong>The durable title already exists.</strong>
+          <code>workflow_bindings.session_name</code> is captured at bind time and survives the
+          session. <code>WORKFLOW_RUN_SUMMARY_SELECT</code> already <code>JOIN</code>s
+          <code>workflow_bindings</code> - adding <code>b.session_name</code> is a projection
+          change with no new join and no new statement.</li>
+        <li><strong>The reason already ships.</strong> <code>WorkflowRunSummary.phase</code> is on
+          the SSE payload for every run. <code>phase</code> is a free <code>string</code>, not a
+          union, so any map over it needs the <code>replaceAll("_", " ")</code> fallback
+          <code>alerts.ts:369</code> already uses.</li>
+        <li><strong>All four remedy routes are argument-free</strong>, taking
+          <code>{ requestId }</code> plus optional fields that default.</li>
+        <li><strong>Two tests encode the rule this work revises.</strong>
+          <code>test/line-drawer.test.ts</code>'s <em>"the Review drawer offers escalation and
+          never a mutation"</em>, and <code>test/workflow-external-source.test.ts:774</code> which
+          pins the summary's exact key set. Both are rewritten deliberately in Phase 1.</li>
+        <li><strong>README carries the same rule in prose</strong> and is Phase 1 work, not a
+          follow-up.</li>
+        <li><strong>A blocked run cannot be seeded by writing SQLite.</strong> Run summaries come
+          from an in-memory map on the <code>Registry</code>, so the e2e spec drives the daemon and
+          waits out the hardcoded 8s <code>EXIT_LINGER_MS</code>.</li>
+      </ul>
+
+      <h3>Discrepancies recorded against the source plan</h3>
+      <p>Three, all found by reading the code rather than trusting the plan:</p>
+      <ol>
+        <li><strong><code>src/web/App.tsx</code> is probably not where the remedy handlers go.</strong>
+          The right seam is the one <code>WorkflowLadderPanel</code> already uses on a secondary
+          surface: local <code>confirm</code>/<code>localError</code> state,
+          <code>run-action-store.ts</code> for pending and <code>requestId</code> retention,
+          <code>workflowRequest</code>, and the shared <code>WorkflowConfirmModal</code>.</li>
+        <li><strong><code>src/web/lib/api.ts</code> has no wrapper for any of the four routes.</strong>
+          Workflow mutations go through <code>workflowRequest</code> in
+          <code>src/web/workflows/workflowApi.ts</code>.</li>
+        <li><strong>Two remedies' run-page guards are not summary-only.</strong>
+          <code>restart-full</code> guards on <code>detail.inspectorGate</code> and
+          <code>retry</code> reads <code>detail.attempts</code> for an optional
+          <code>nodeAttemptId</code>. Both remain reachable with coarser summary-only guards.</li>
+      </ol>
+
+      <h2>Phases</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Durable identity, the blocked cause, and inline remedies</td>
+              <td><a href="phase-1-identity-cause-remedy.md">phase-1-identity-cause-remedy.md</a></td><td>-</td></tr>
+            <tr><td>2</td><td>Grouping by reason and the strip's split count</td>
+              <td><a href="phase-2-grouping-and-strip-split.md">phase-2-grouping-and-strip-split.md</a></td><td>Phase 1</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <figure>
+        <svg viewBox="0 0 700 120" role="img" aria-label="Phase 1 precedes Phase 2; nothing runs concurrently">
+          <rect class="svg-box-new" x="20" y="26" width="250" height="62" rx="10" />
+          <text class="svg-t" x="145" y="52" text-anchor="middle">Phase 1</text>
+          <text class="svg-t-sm" x="145" y="72" text-anchor="middle">identity &middot; cause &middot; remedy</text>
+          <path class="svg-line" d="M272 57 H408" marker-end="url(#a)" />
+          <text class="svg-t-sm" x="340" y="48" text-anchor="middle">merges first</text>
+          <rect class="svg-box" x="410" y="26" width="250" height="62" rx="10" />
+          <text class="svg-t" x="535" y="52" text-anchor="middle">Phase 2</text>
+          <text class="svg-t-sm" x="535" y="72" text-anchor="middle">grouping &middot; strip split</text>
+          <defs>
+            <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0 0 L8 4 L0 8 z" fill="currentColor" fill-opacity="0.5" />
+            </marker>
+          </defs>
+        </svg>
+        <figcaption>
+          Phase 1 &rarr; Phase 2. Nothing runs concurrently: Phase 2 labels its groups with Phase
+          1's <code>blockedPhaseClause</code> and its <code>Dismiss all</code> is Phase 1's cancel
+          remedy applied to a set.
+        </figcaption>
+      </figure>
+
+      <p><strong>Merge order:</strong> Phase 1, then Phase 2. Splitting them further would leave a
+      dead surface - a group bar with no reason text and no action is a worse row than the one it
+      replaces.</p>
+
+      <h2>Cross-phase contracts</h2>
+      <p>Phase 1 establishes these; Phase 2 consumes them and must not change their shape.</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Contract</th><th>Shape</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>WorkflowRunSummary.sessionName</code></td>
+              <td><code>sessionName?: string</code> on <code>src/shared/workflow.ts</code></td>
+              <td>Optional and append-only. Emitted only when non-empty, using the
+                <code>...(x ? { x } : {})</code> spread <code>externalSource</code> already uses,
+                so a run with no captured name costs no bytes on a payload that ships for every
+                run on every change.</td>
+            </tr>
+            <tr>
+              <td><code>blockedPhaseClause(phase: string): string</code></td>
+              <td>exported from <code>src/web/workflows/run-model.ts</code></td>
+              <td>Short lower-case clause for the state column ("session gone"). Falls back to
+                <code>phase.replaceAll("_", " ")</code> for any unmapped phase.</td>
+            </tr>
+            <tr>
+              <td><code>runRemedy(run): RunRemedy | null</code></td>
+              <td>exported from <code>src/web/workflows/run-model.ts</code></td>
+              <td>The single argument-free action for the run's phase, decided from the summary
+                alone. <code>RunRemedy</code>'s <code>kind</code> doubles as the
+                <code>RunActionId</code>, so it must be one id per intent.</td>
+            </tr>
+            <tr>
+              <td>The revised drawer rule</td>
+              <td>doc comment on <code>ReviewDrawer.tsx</code> + README</td>
+              <td>"No fetch and no run detail. Actions only where the summary alone proves the run
+                is stopped and the route needs no argument beyond the run id."</td>
+            </tr>
+            <tr>
+              <td>Row name resolution</td>
+              <td>live session name &rarr; <code>run.sessionName</code> &rarr; <code>run.noteKey</code></td>
+              <td>The GUID is the third fallback and renders as a dim mono identifier, never as a
+                bold title.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Final verification</h2>
+      <p>Each phase runs its own verification. Across both, the definition of done is the repository's:</p>
+      <pre><code>npm run typecheck
+npm run lint
+npm test
+npm run build &amp;&amp; npm run smoke
+npm run test:e2e</code></pre>
+      <p>
+        <code>npm run test:e2e</code> needs <code>npm run build</code> first and
+        <code>npx playwright install chromium</code> once per machine. README and this plan
+        directory must match the implementation when Phase 2 merges.
+      </p>
+
+      <h2>Cross-phase audit record</h2>
+      <ul>
+        <li><strong>After Phase 1 was written.</strong> Confirmed Phase 1 leaves the repository
+          valid on its own: rows are named and explain themselves, and every remedy is wired, with
+          no reference to grouping. Confirmed the two deliberately-broken tests and the README rule
+          are inside Phase 1, not deferred.</li>
+        <li><strong>After Phase 2 was written.</strong> Confirmed Phase 2 adds no field to
+          <code>WorkflowRunSummary</code> and no server change beyond <code>foldReview</code>.
+          Confirmed the group threshold (3) lives in Phase 2 alone, and that the strip/drawer count
+          split changes presentation only - <code>workflowRunWaitsOnOperator</code> is untouched,
+          so the command palette's "waiting on you" list keeps its meaning. Phase 2 raised the
+          bucket-overlap trap (a run can be both <code>blocked</code> and operator-action-waiting)
+          and owns the test that pins it.</li>
+        <li><strong>Phase 1 revised after reading the client action plumbing.</strong> The source
+          plan's <code>App.tsx</code> seam was replaced by the
+          <code>WorkflowLadderPanel</code> / <code>WorkflowConfirmModal</code> /
+          <code>run-action-store</code> shape the repository already has, and a guard table was
+          added.</li>
+        <li><strong>Final pass over both.</strong> Every source-plan requirement and every
+          submitted selection is owned by exactly one phase. The dependency direction is single and
+          forward. No phase depends on a later phase to repair an intermediate state.</li>
+      </ul>
+
+      <p class="footer">
+        Rendered from <code>docs/plans/line-review-drawer/phased-plan.md</code>.
+      </p>
+
+    </div>
+  </body>
+</html>

@@ -69,9 +69,19 @@ test("drain and prompted markers are stable proof hashes and change with a re-ar
     promptRevision: 3,
     episodeKey: "intent:2:3",
   });
-  assert.equal(prompted.fallbackWorkflow, null);
   assert.equal(drain.expectedIntent, null);
-  assert.equal(drain.fallbackWorkflow, null);
+  // A claim is a proof, not a request for a workflow. Pin the whole key set so no future
+  // field can smuggle workflow identity back onto the wire and let the worker start a
+  // second PR-producing path beside whatever is already bound.
+  for (const claim of [drain, prompted]) {
+    assert.deepEqual(Object.keys(claim).sort(), [
+      "completionKind",
+      "evidenceFingerprint",
+      "expectedIntent",
+      "marker",
+      "summary",
+    ]);
+  }
 });
 
 test("claimed suppresses, explicit false falls through, and HTTP failure is fail closed", async () => {

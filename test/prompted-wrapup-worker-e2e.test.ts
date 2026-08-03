@@ -516,12 +516,12 @@ test("a verified prompt submits its existing workflow instead of Straight to PR"
   assert.equal(retires.length, 0, `retired outside the daemon's claim transaction\n${out}`);
   assert.equal(
     (claims[0]?.body as { fallbackWorkflow?: string } | undefined)?.fallbackWorkflow,
-    null,
-    out,
+    undefined,
+    `the worker named a workflow on its completion claim\n${out}`,
   );
 
-  // The binding request is downstream of Foreman's proof reads and verifier. It is not
-  // an eager setting-side effect on every idle unbound conversation.
+  // The claim is downstream of Foreman's proof reads and verifier. It is not an eager
+  // setting-side effect fired on every idle conversation.
   const transcript = stub.calls.find((c) => c.path === "/api/sessions/s1/transcript");
   assert.ok(transcript);
   assert.ok(

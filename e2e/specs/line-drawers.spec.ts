@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 
@@ -188,10 +189,31 @@ test("a stage opens its drawer in place, and three gestures close it again", asy
   await expect(review).toHaveAttribute("aria-expanded", "false");
   await expect(decide).toHaveAttribute("aria-expanded", "true");
 
-  // ---- and the third drawer is reachable the same way ----
+  // ---- and the other two are reachable the same way ----
   await stage(dashboard, "Intake").click();
   await expect(drawer(dashboard, "Intake")).toBeVisible();
   await expect(anyDrawer(dashboard)).toHaveCount(1);
+
+  // Shipped is the fourth, and the one that used to NAVIGATE. Swapping to it from another
+  // open drawer is the gesture that would have failed loudest on a build where the flip was
+  // half done: the old target would have left the fleet mid-swap.
+  const shippedStage = stage(dashboard, "Shipped");
+  await shippedStage.click();
+  await expect(drawer(dashboard, "Shipped")).toBeVisible();
+  await expect(drawer(dashboard, "Intake")).toHaveCount(0);
+  await expect(anyDrawer(dashboard)).toHaveCount(1);
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/fleet");
+  await expect(shippedStage).toHaveAttribute("aria-expanded", "true");
+  await expect(shippedStage).toHaveAttribute("aria-controls", "line-drawer");
+
+  // It toggles and takes `esc` like the other three - the frame's promises are the frame's,
+  // and a fourth body must not have needed its own copy of any of them.
+  await shippedStage.click();
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+  await shippedStage.click();
+  await dashboard.keyboard.press("Escape");
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+  await expect(shippedStage).toBeFocused();
 });
 
 test("the drawer pushes the board down and hands the space back, and never resizes a card", async ({
@@ -772,6 +794,333 @@ test("runs that stopped for one reason fold into one bar, and the strip stops ca
   await expect.poll(async () =>
     (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${seeded[0]!.runId}`)).run.status,
   ).toBe("cancelled");
+});
+
+// ---------------------------------------------------------------------------
+// SHIPPED - the adoption ledger, one click off the count that is made of it
+// ---------------------------------------------------------------------------
+
+/**
+ * The daemon's own adoption signal: the hook a harness fires when `gh pr create` returns.
+ *
+ * The AGENT's session id, not the card's - a hook naming the wrong one lands on no session at
+ * all, and the test would then pass by never adopting anything. Same lever
+ * `ship-log.spec.ts` uses, because it is the production path: no route writes `inspector_prs`
+ * directly, and the two signals that can are this hook and a driver's `pr_created` event.
+ */
+async function announcePullRequest(daemon: DaemonHandle, url: string): Promise<void> {
+  const sessions = await api<Array<{
+    id: string;
+    state: string;
+    agent: string;
+    cwd: string;
+    agentSessionId: string | null;
+  }>>(daemon, "/api/sessions");
+  const live = sessions.find((session) => session.state !== "exited");
+  if (!live) throw new Error("no live session to adopt a pull request onto");
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const response = await fetch(`${daemon.baseURL}/hooks/Stop`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      agent: live.agent,
+      sessionId: live.agentSessionId ?? live.id,
+      cwd: live.cwd,
+      prCreated: true,
+      prUrl: url,
+    }),
+  });
+  if (!response.ok) throw new Error(`hook answered ${response.status}: ${await response.text()}`);
+}
+
+/**
+ * A ledger row as the route serves it.
+ *
+ * A cross-repo week cannot be dispatched out of one temporary repository, and the two columns
+ * that name a row (`title`, `head_ref_name`) are written by the Inspector's GitHub poll, which
+ * reaches a network this layer has none of. So the multi-row cases fulfil the READ - the same
+ * split, and the same shape, `ship-log.spec.ts` draws.
+ */
+function ledgerRow(over: Record<string, unknown>): Record<string, unknown> {
+  return {
+    key: "owner/repo#1",
+    url: "https://github.example/owner/repo/pull/1",
+    owner: "owner",
+    repo: "repo",
+    number: 1,
+    repoRoot: "/repo",
+    cwd: "/repo",
+    sessionId: null,
+    source: "hook",
+    state: "open",
+    headSha: null,
+    reviewPosture: null,
+    round: 0,
+    lastReviewedAt: null,
+    lastError: null,
+    failCount: 0,
+    lastFailKind: null,
+    nextAttemptAt: null,
+    lastAttemptSha: null,
+    mergedAt: null,
+    mergeBlock: null,
+    observedHeadSha: null,
+    observedState: null,
+    observedAt: null,
+    headRefName: null,
+    title: null,
+    adoptedAt: Date.now(),
+    updatedAt: Date.now(),
+    openFindings: 0,
+    postedOpenFindings: 0,
+    resolvedFindings: 0,
+    ...over,
+  };
+}
+
+test("a pull request adopted through the hook lands in the Shipped drawer, over the week the strip counts", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The real path end to end: a dispatched session, the hook the harness fires when
+  // `gh pr create` returns, the row that lands in `inspector_prs`, the windowed read the
+  // drawer makes, and the browser rendering it back. A spec that only fulfilled the route
+  // would pass on a build where nothing the fleet does ever reaches this list.
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("open a pull request, notionally");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  await waitForIdleSession(daemon);
+
+  // What the drawer ASKS for, recorded on the way through rather than asserted about the
+  // component. The parameterless read is 50 rows ordered by review recency, which truncates
+  // and reorders a busy week - a drawer that then disagrees with the number on the button
+  // that opened it, about rows from one table.
+  const asked: string[] = [];
+  await dashboard.route("**/api/inspector/prs*", async (route) => {
+    asked.push(new URL(route.request().url()).search);
+    await route.fallback();
+  });
+
+  await announcePullRequest(daemon, "https://github.com/mancej-cyc/ai-harness/pull/241");
+  await expect
+    .poll(async () => (await api<unknown[]>(daemon, "/api/inspector/prs")).length)
+    .toBe(1);
+
+  await stage(dashboard, "Shipped").click();
+  const shipped = drawer(dashboard, "Shipped");
+  await expect(shipped).toBeVisible();
+
+  // The strip's own count and the drawer's are the same seven days off the same column, so
+  // they agree by construction rather than by two folds being kept in step by hand.
+  await expect(shipped.locator(".line-drawer-count")).toHaveText("1 this week");
+  await expect(stage(dashboard, "Shipped")).toHaveAttribute("aria-label", /^Shipped, 1 /);
+
+  await expect.poll(() => asked.length).toBeGreaterThan(0);
+  for (const search of asked) {
+    expect(search, "the Shipped drawer must never take the parameterless ledger read")
+      .toMatch(/^\?adoptedSince=\d+$/);
+  }
+
+  // Nothing has polled this row, so it has neither a title nor a branch - both are written by
+  // the same observation. The number is the last thing that is always true about a pull
+  // request, and it is what the row is named by.
+  const row = shipped.locator(".line-ship-row");
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("#241");
+  await expect(row).toContainText("open");
+  // ONCE in the title line: the subline carries whatever the title did not already say, and
+  // on this rung of the fallback the title IS the number.
+  const heading = await row.locator(".sc-pr").innerText();
+  expect(heading.trim()).toBe("#241");
+  // The row's one destination is the pull request itself.
+  await expect(row.getByRole("link")).toHaveAttribute(
+    "href",
+    "https://github.com/mancej-cyc/ai-harness/pull/241",
+  );
+  // And the owning session rides with it, abbreviated - this is the fact that makes a ledger
+  // row traceable back to the fleet.
+  await expect(row.locator(".sc-ref")).toBeVisible();
+  await shoot(dashboard, "shipped-adopted");
+});
+
+test("the chips split the week by merge state, and the header escalates to the Ship log", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.route("**/api/inspector/prs*", async (route) => {
+    const now = Date.now();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        ledgerRow({
+          key: "mancej-cyc/ai-harness#241",
+          owner: "mancej-cyc",
+          repo: "ai-harness",
+          number: 241,
+          title: "Focus order for line drawer chips",
+          headRefName: "fix/line-drawer-focus",
+          mergedAt: now,
+          adoptedAt: now - 2 * 3600_000,
+          sessionId: "proc:/dev/ttys004:4123:1700",
+        }),
+        ledgerRow({
+          key: "mancej-cyc/ai-harness#243",
+          owner: "mancej-cyc",
+          repo: "ai-harness",
+          number: 243,
+          headRefName: "e2e/shipped-drawer-spec",
+          adoptedAt: now - 6 * 3600_000,
+        }),
+        ledgerRow({
+          key: "jordanmance/notes#12",
+          owner: "jordanmance",
+          repo: "notes",
+          number: 12,
+          title: "Summarizer draft",
+          headRefName: "draft/summarizer",
+          state: "closed",
+          adoptedAt: now - 30 * 3600_000,
+        }),
+      ]),
+    });
+  });
+
+  await stage(dashboard, "Shipped").click();
+  const shipped = drawer(dashboard, "Shipped");
+  await expect(shipped).toBeVisible();
+  await expect(shipped.locator(".line-drawer-count")).toHaveText("3 this week");
+
+  // Newest adoption FIRST, which is the ledger's own ordering and the only one that makes a
+  // three-row cap show the rows worth glancing at.
+  await expect(shipped.locator(".line-ship-row").first())
+    .toContainText("Focus order for line drawer chips");
+  await expect(shipped.locator(".line-ship-row").last()).toContainText("Summarizer draft");
+
+  // A titled row is named by its title, and the branch drops to the subline beside the repo
+  // and number rather than vanishing - it is what the operator typed and still recognizes.
+  const titled = shipped.locator(".line-ship-row").filter({ hasText: "Focus order" });
+  await expect(titled.locator(".line-ship-sub"))
+    .toHaveText("mancej-cyc/ai-harness#241 · fix/line-drawer-focus");
+  // An untitled one falls back to its branch, and then the subline must not print that branch
+  // a second time in a smaller type size.
+  const untitled = shipped.locator(".line-ship-row").filter({ hasText: "e2e/shipped-drawer-spec" });
+  await expect(untitled.locator(".sc-pr")).toHaveText("e2e/shipped-drawer-spec");
+  await expect(untitled.locator(".line-ship-sub")).toHaveText("mancej-cyc/ai-harness#243");
+
+  // Every state is spelled with a WORD and not only a hue, on the row and on the chip.
+  await expect(titled).toContainText("merged");
+  await expect(untitled).toContainText("open");
+  await expect(shipped.locator(".line-ship-row").filter({ hasText: "Summarizer" }))
+    .toContainText("gone");
+  await shoot(dashboard, "shipped-open");
+
+  // ---- narrow: the session handle goes, the merge state never does ----
+  // The other drawers drop their free-text state column under 1180px, because it is the one
+  // field also reachable from the chips beside it. On THIS row the state is the whole point,
+  // the chips filter on exactly it, and dropping the word would leave a hue carrying it
+  // alone - so the session handle goes instead. Only a laid-out browser can see which one
+  // actually disappeared.
+  await dashboard.setViewportSize({ width: 1100, height: 720 });
+  await expect(titled.locator(".sc-ref")).toBeHidden();
+  await expect(titled).toContainText("merged");
+  await expect(titled).toContainText("2h ago");
+  // And the row is still one row: the drawer's three-row cap is arithmetic over a fixed
+  // height, and a column that wrapped instead of clipping would leave half a row peeking
+  // over the edge of the body.
+  expect((await titled.boundingBox())!.height).toBe(58);
+  await dashboard.setViewportSize({ width: 1280, height: 720 });
+  await expect(titled.locator(".sc-ref")).toBeVisible();
+
+  // ---- the chips are the filter, and they are toggles ----
+  // Case-insensitive on purpose: the words come from `PR_STANDING_LABELS`, which the rows
+  // spell in small caps and the chips case up in CSS. Pinning the casing here would pin a
+  // stylesheet rule through an accessible name.
+  const chip = (name: RegExp) => shipped.getByRole("button", { name });
+  await expect(chip(/^All 3$/i)).toHaveAttribute("aria-pressed", "true");
+  await chip(/^merged 1$/i).click();
+  await expect(chip(/^merged 1$/i)).toHaveAttribute("aria-pressed", "true");
+  await expect(chip(/^All 3$/i)).toHaveAttribute("aria-pressed", "false");
+  await expect(shipped.locator(".line-ship-row")).toHaveCount(1);
+  await expect(shipped.locator(".line-ship-row")).toContainText("Focus order");
+  // The counts do NOT narrow with the selection: they are what the selection was made from,
+  // and a chip strip that re-tallied itself could never be used to get back out.
+  await expect(chip(/^All 3$/i)).toBeVisible();
+  await expect(chip(/^gone 1$/i)).toBeVisible();
+
+  // Pressing the pressed chip is the way back out - the off state is "all of them".
+  await chip(/^merged 1$/i).click();
+  await expect(shipped.locator(".line-ship-row")).toHaveCount(3);
+  await expect(chip(/^All 3$/i)).toHaveAttribute("aria-pressed", "true");
+
+  // And none of it reaches the address bar: which pile you are reading is what you are
+  // looking at, not where you are.
+  const border = (name: RegExp): Promise<string> =>
+    chip(name).evaluate((el) => getComputedStyle(el).borderTopColor);
+  const resting = await border(/^gone 1$/i);
+  await chip(/^gone 1$/i).click();
+  await expect(shipped.locator(".line-ship-row")).toHaveCount(1);
+  expect(await dashboard.evaluate(() => location.hash)).toBe("#/fleet");
+  // `aria-pressed` is the half a DOM assertion can read; this is the half a person reads.
+  // Compared against the same chip's own resting paint rather than against a hex, so it
+  // survives a theme without being a restatement of the stylesheet - and waiting for it
+  // settles the 140ms crossfade, so the frame below is a pressed chip and not one halfway
+  // between two fills.
+  await expect.poll(() => border(/^gone 1$/i)).not.toBe(resting);
+  await shoot(dashboard, "shipped-filtered");
+
+  // ---- the escalation ----
+  await shipped.getByRole("button", { name: /^Ship log/ }).click();
+  await expect(dashboard).toHaveURL(/#\/shipped$/);
+  await expect(dashboard.getByRole("heading", { level: 2, name: "Ship log" })).toBeVisible();
+  // The strip is fleet chrome: it did not follow us, and neither did the drawer.
+  await expect(dashboard.getByRole("navigation", { name: "The Line" })).toBeHidden();
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+
+  // Back on the fleet, the stage opens rather than toggling shut - the drawer was genuinely
+  // dropped on the way out and not merely hidden.
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await stage(dashboard, "Shipped").click();
+  await expect(drawer(dashboard, "Shipped")).toBeVisible();
+});
+
+test("a ledger read that fails says so, instead of reporting a week in which nothing shipped", async ({
+  dashboard,
+}) => {
+  // The CONTROL first, and it is not optional: the assertion below is that a sentence is
+  // absent, and a sentence that could never appear here would make it pass through the exact
+  // regression it names. On a fleet that has adopted nothing, the drawer does say so.
+  const shipped = () => drawer(dashboard, "Shipped");
+  await stage(dashboard, "Shipped").click();
+  await expect(shipped()).toContainText("No pull request was adopted in the last seven days");
+  await expect(shipped().locator(".line-drawer-count")).toHaveText("0 this week");
+  await stage(dashboard, "Shipped").click();
+  await expect(anyDrawer(dashboard)).toHaveCount(0);
+
+  // Now break the read. `fetchJson` swallows every failure and resolves null, so this is the
+  // shape a real outage takes: not an exception, just an absence.
+  await dashboard.route("**/api/inspector/prs*", (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"boom"}' }));
+
+  await stage(dashboard, "Shipped").click();
+  await expect(shipped()).toBeVisible();
+  await expect(shipped()).toContainText("The adoption ledger could not be read");
+  await expect(shipped()).toContainText("It is not a report that nothing did");
+  // It must not claim the absence, and above all must not print a zero the operator cannot
+  // tell from a real one - the strip above it is showing a number this drawer would then be
+  // contradicting.
+  await expect(shipped()).not.toContainText("No pull request was adopted");
+  await expect(shipped().locator(".line-drawer-count")).toHaveText("ledger unavailable");
+  // Counts it does not have are not drawn as zeroes either.
+  await expect(shipped().locator(".line-ship-chip")).toHaveCount(0);
+  // The escalation survives: the page one click deeper reads the same ledger through the
+  // same route, and it is the obvious next thing to try.
+  await expect(shipped().getByRole("button", { name: /^Ship log/ })).toBeVisible();
 });
 
 test("every legacy #/workflows deep link redirects, and the Workflows page is gone", async ({

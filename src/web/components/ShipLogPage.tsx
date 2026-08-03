@@ -3,6 +3,9 @@ import type { FleetCost, InspectorInspection } from "@shared/types.ts";
 import { costPerPrToday, fmtUsd } from "@shared/cost.ts";
 import { ExecutionPage } from "../workflows/ExecutionPage.tsx";
 import { PrLink, SessionRef, sessionHandle } from "./settings-console.tsx";
+// The Line's Shipped drawer draws the same three marks beside the same rows, one click
+// shallower, so the drawing moved out of this file rather than being copied into that one.
+import { StandingIcon } from "./pr-standing-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { fetchInspectorPrs } from "../lib/api.ts";
 import { relativeTime } from "../lib/format.ts";
@@ -55,50 +58,6 @@ import {
 const SPARK_W = 68;
 const SPARK_H = 28;
 const SPARK_PLOT_H = 22;
-
-/**
- * The merge-state marks, drawn rather than spelled with an emoji.
- *
- * Each one always rides with its word (see `FeedRow`): the three states differ by colour in
- * the mockup and colour alone is not a reading anyone is required to have. The paths are
- * the three shapes GitHub itself uses, which is what an operator's eye is already trained
- * on from the pull request page these rows link to.
- */
-function StandingIcon({ standing }: { standing: PrStanding }): React.JSX.Element {
-  return (
-    <svg
-      className={`shiplog-ic is-${standing}`}
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      aria-hidden
-      focusable="false"
-    >
-      <g fill="none" stroke="currentColor" strokeWidth="1.5">
-        <circle cx="4" cy="3.5" r="1.9" />
-        {standing === "merged" ? (
-          <>
-            <circle cx="4" cy="12.5" r="1.9" />
-            <circle cx="12" cy="8" r="1.9" />
-            <path d="M4 5.5v5M4 5.8c0 2.2 2.6 2.2 6 2.2" />
-          </>
-        ) : standing === "open" ? (
-          <>
-            <circle cx="4" cy="12.5" r="1.9" />
-            <circle cx="12" cy="12.5" r="1.9" />
-            <path d="M4 5.5v5M6 3.5h3.5A2.5 2.5 0 0 1 12 6v4.5" />
-          </>
-        ) : (
-          <>
-            <circle cx="4" cy="12.5" r="1.9" />
-            <circle cx="12" cy="12.5" r="1.9" />
-            <path d="M4 5.5v5M10.2 3.2l3 3M13.2 3.2l-3 3" />
-          </>
-        )}
-      </g>
-    </svg>
-  );
-}
 
 /** One KPI tile. `figure` is the number; everything else is what makes it readable. */
 function Kpi({

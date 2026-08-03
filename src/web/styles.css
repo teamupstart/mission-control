@@ -9973,16 +9973,21 @@ select.ensemble-judge-persona {
 .shiplog-feed > div:last-child .shiplog-row:last-child {
   border-bottom: 0;
 }
-.shiplog-ic {
+/* The merge-state mark, and NOT a `shiplog-` class: `StandingIcon` is drawn on this page's
+   feed and on the Line's Shipped drawer, and a rule named for one of the two surfaces is how
+   the other quietly loses its colours. The word beside it carries the same three tones from
+   `.shiplog-standing` / `.line-ship-word`, which is deliberate duplication of a HUE and not
+   of a reading - each surface sizes its own type. */
+.pr-ic {
   flex: none;
 }
-.shiplog-ic.is-merged {
+.pr-ic.is-merged {
   color: var(--pr-merged);
 }
-.shiplog-ic.is-open {
+.pr-ic.is-open {
   color: var(--pr-open);
 }
-.shiplog-ic.is-gone {
+.pr-ic.is-gone {
   color: var(--dim);
 }
 .shiplog-standing {
@@ -15294,7 +15299,8 @@ button.sc-row:focus-visible {
 }
 .line-run-wf,
 .line-ens-strategy,
-.line-intake-kind {
+.line-intake-kind,
+.line-ship-sub {
   font-family: var(--mono);
   font-size: 10px;
   color: var(--dim);
@@ -15418,12 +15424,164 @@ span.line-run-prov {
   white-space: nowrap;
 }
 
+/* THE SHIPPED ROW - one adopted pull request, and where it stands.
+   ----------------------------------------------------------------------------
+   The one drawer row whose columns are not the who / middle / state / ops grammar the other
+   three share, and the reason is what the row is FOR. On a Review or a Decide row the state
+   is a trailing gloss on a title; here the state IS the fact being scanned for - "did this
+   land" over a week of rows - so it leads, and the title it qualifies takes the flexible
+   column behind it. Forcing this into the shared four would have put the answer in the last
+   190px of the row, which is the column the narrow-viewport rule below hides.
+
+   It shares what genuinely IS shared: the row's height and divider from
+   `.line-drawer-rows > li`, and its mono subline from the grouped `.line-run-wf` rule above. */
+.line-ship-mark {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Sized to `merged`, the longest of the three, so the title column starts at one indent
+     down the panel rather than stepping in and out with the word beside it. */
+  width: 84px;
+}
+.line-ship-word {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* The same three tones the Ship log's feed spends, from the same two variables. Duplicated as
+   a HUE and not as a reading - each surface sizes its own type, and `PR_STANDING_LABELS` is
+   the one place the words come from. */
+.line-ship-mark.is-merged .line-ship-word {
+  color: var(--pr-merged);
+}
+.line-ship-mark.is-open .line-ship-word {
+  color: var(--pr-open);
+}
+.line-ship-mark.is-gone .line-ship-word {
+  color: var(--dim);
+}
+/* Flexible rather than the shared 240px/340px, because exactly one column on this row grows:
+   with the mark, the session and the time all fixed, the titles still line up down the panel
+   by construction, and a fixed width here would ellipsize a pull request title on a 1600px
+   window to leave empty space beside it. */
+.line-ship-who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* The title, in the slot a `<strong>` holds on the other rows - and it is a LINK, because the
+   row's one destination is the pull request itself. Sized and weighted like those bold lines
+   so four drawers do not print their titles four ways. */
+.line-ship-who .sc-pr {
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.line-ship-meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  /* A floor rather than a fixed width: `2h ago` and `yesterday` are different lengths and the
+     session handle is optional, so without one the time column ripples down the panel. */
+  min-width: 168px;
+}
+.line-ship-when {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* THE FILTER CHIPS, in the header's actions slot beside the escalation.
+   The mockup drew them under the count; the frame's header is where every drawer's controls
+   already live, and a strip of its own between the header and the rows would have cost the
+   three-row body a row's worth of height for four numbers. */
+.line-ship-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.line-ship-chip {
+  padding: 3px 9px;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  /* The words come from `PR_STANDING_LABELS`, which is lower case because a ROW spells them
+     in small caps. Cased here rather than there so "All" and "Merged" read as one set of
+     chips, and so the accessible name stays the label the rows and the tests share. */
+  text-transform: capitalize;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+.line-ship-chip:hover {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+.line-ship-chip:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+.line-ship-chip-n {
+  color: var(--dim);
+}
+/* The pressed chip wears the tone of the pile it selects, so the chip and the rows under it
+   read as one selection rather than as a control and a list that happen to agree. Every one
+   of the four has a tone, including `gone`: a pressed state that falls back to the neutral
+   fill on one chip of four is the chip a reader cannot tell is pressed. */
+.line-ship-chip.is-active {
+  color: var(--fg);
+  border-color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+}
+.line-ship-chip.is-active .line-ship-chip-n {
+  color: var(--fg);
+}
+.line-ship-chip.is-merged.is-active {
+  border-color: var(--pr-merged);
+  background: color-mix(in srgb, var(--pr-merged) 18%, transparent);
+}
+.line-ship-chip.is-open.is-active {
+  border-color: var(--pr-open);
+  background: color-mix(in srgb, var(--pr-open) 18%, transparent);
+}
+.line-ship-chip.is-gone.is-active {
+  border-color: var(--dim);
+  background: color-mix(in srgb, var(--dim) 22%, transparent);
+}
+
 /* Narrow: the free-text state column goes first. It is the one field on the row whose
-   content is also reachable from the chips beside it and the page one click deeper. */
+   content is also reachable from the chips beside it and the page one click deeper.
+
+   The Shipped row gives up its SESSION instead, and deliberately not its state: merged /
+   open / gone is the one thing that row exists to say, the chips above filter on exactly it,
+   and dropping the word would leave the mark's hue carrying the state alone - which is the
+   rule this whole surface is built against. The session handle is the row's least load-
+   bearing field (a synthetic id most of whose sessions no longer exist) and it is still on
+   the Ship log one click deeper, which is the test the other two columns pass. */
 @media (max-width: 1180px) {
   .line-run-state,
   .line-ens-state {
     display: none;
+  }
+  .line-ship-meta .sc-ref {
+    display: none;
+  }
+  .line-ship-meta {
+    min-width: 72px;
   }
 }
 

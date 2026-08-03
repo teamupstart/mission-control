@@ -18,13 +18,19 @@ import type { LineStageId } from "@shared/line.ts";
 /**
  * The stages that own a drawer, and therefore the ones whose buttons are `aria-expanded`.
  *
- * Three of six, and the other three navigate instead - Backlog to the Sitrep, Working to the
- * board under the strip, Shipped to the completed runs. That split is not a staging post: a
- * drawer is worth its space only where triage means comparing several rows against each
- * other, and "show me the board I am already looking at" is not that. Adding a fourth later
- * is additive - this list and a body component.
+ * Four of six, and the other two navigate instead - Backlog to the Sitrep, Working to the
+ * board under the strip. That split is not a staging post: a drawer is worth its space only
+ * where triage means comparing several rows against each other, and "show me the board I am
+ * already looking at" is not that.
+ *
+ * Shipped was in the navigating half for one release, pointed at the completed workflow runs
+ * because no surface rendered the rows its count is actually made of. That target was wrong
+ * in both directions - a session ships without ever starting a run, and a finished run ships
+ * nothing - so it moved here the moment the adoption ledger had a reader. Comparing this
+ * week's pull requests against each other is exactly the shape a drawer is for, and the full
+ * cross-repo account escalates one click deeper to `#/shipped`.
  */
-export const LINE_DRAWER_STAGES = ["intake", "review", "decide"] as const;
+export const LINE_DRAWER_STAGES = ["intake", "review", "decide", "shipped"] as const;
 export type LineDrawerStage = (typeof LINE_DRAWER_STAGES)[number];
 
 export function isLineDrawerStage(stage: LineStageId): stage is LineDrawerStage {

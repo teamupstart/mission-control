@@ -4,13 +4,15 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PlanDecision, PlanDecisionAnswer, ReviewItem } from "../src/shared/types.ts";
 import { ResolveReviewSchema } from "../src/shared/protocol.ts";
-import { isHumanResolvedReview } from "../src/shared/review-item.ts";
+import {
+  formatResponse,
+  isHumanResolvedReview,
+  selectedOptions,
+} from "../src/shared/review-item.ts";
 import {
   answeredDecisions,
-  formatResponse,
   isAnswered,
   reviewAnswerVerb,
-  selectedOptions,
 } from "../src/web/lib/reviews.ts";
 import { ReviewAnswerCard } from "../src/web/components/ReviewAnswer.tsx";
 import { timelineReviewsFor } from "../src/web/lib/timelineReviews.ts";

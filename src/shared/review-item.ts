@@ -10,7 +10,13 @@
 // spellings of "does this belong in the transcript" would show an entry on submit that
 // vanished on reload, or the reverse.
 
-import type { ReviewItem, ReviewStatus } from "./types.ts";
+import type {
+  PlanDecision,
+  PlanDecisionAnswer,
+  ReviewItem,
+  ReviewKind,
+  ReviewStatus,
+} from "./types.ts";
 
 /**
  * The terminal statuses a person can put a review into.
@@ -46,4 +52,74 @@ export const HUMAN_REVIEW_STATUSES: ReadonlySet<ReviewStatus> = new Set<ReviewSt
  */
 export function isHumanResolvedReview(review: ReviewItem): boolean {
   return review.resolvedBy === "human" && HUMAN_REVIEW_STATUSES.has(review.status);
+}
+
+// ---- how a filled-in form reads as text, for both sides ----
+//
+// These moved out of `web/lib/reviews.ts` when the daemon acquired a second writer of
+// answered reviews: an Agent SDK session's native `AskUserQuestion` is answered through
+// `/submit-options`, and the record it leaves has to read exactly like the one the browser
+// writes through `/api/reviews/:id/resolve`. Two spellings of "what did they pick" would
+// put two different sentences in the same column of the same table.
+
+/**
+ * The options the human took, in the order the agent listed them.
+ *
+ * Driven off `decision.options` rather than off `answer.selected`, so the replayed form
+ * reads down the page in the order it was asked however the clicks arrived, and an id that
+ * no longer names an option (a review answered against a question since rewritten) is
+ * dropped instead of rendering as a blank row.
+ */
+export function selectedOptions(
+  decision: PlanDecision,
+  answer: PlanDecisionAnswer | undefined,
+): PlanDecision["options"] {
+  if (!answer) return [];
+  return decision.options.filter((o) => answer.selected.includes(o.id));
+}
+
+/**
+ * The opening line of the response the agent receives when the form is submitted.
+ *
+ * Not cosmetic: the string is handed back as the tool result verbatim and lands in the
+ * transcript. Telling a `request_input` caller that "Plan decisions" were submitted would
+ * credit it with a plan it never wrote, and a later reader - Foreman included - would go
+ * looking for one.
+ */
+export function decisionLead(kind: ReviewKind): string {
+  return kind === "input" ? "Answered:" : "Plan decisions submitted:";
+}
+
+/**
+ * Format the selections into the response string the agent receives verbatim as its tool
+ * result. Deterministic and human-legible, one block per question with the chosen labels
+ * and any free-text note.
+ *
+ * Derived from `PlanDecisionAnswer[]` - the same array that is persisted - rather than from
+ * the form's own state, so the string the agent reads and the record the conversation
+ * replays cannot describe different answers.
+ *
+ * `lead` names what was answered, because this form serves several askers: a
+ * `plan-decisions` review resolving several choices about a plan, an `input` review where
+ * `request_input` asked one question with options, and the record left behind when a driver
+ * session's own `AskUserQuestion` form is answered from the dashboard. Telling the second
+ * one "Plan decisions submitted" would hand the agent a plan it never wrote.
+ */
+export function formatResponse(
+  decisions: PlanDecision[],
+  answers: PlanDecisionAnswer[],
+  lead: string,
+): string {
+  const byId = new Map(answers.map((a) => [a.decisionId, a]));
+  const blocks = decisions.map((d) => {
+    const answer = byId.get(d.id);
+    const labels = selectedOptions(d, answer).map((o) => o.label);
+    const other = answer?.other?.trim() ?? "";
+    const lines = [`• ${d.question}`];
+    if (labels.length) lines.push(`  → ${labels.join(", ")}`);
+    if (d.allowOther && other) lines.push(`  Other: ${other}`);
+    if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
+    return lines.join("\n");
+  });
+  return `${lead}\n\n${blocks.join("\n\n")}`;
 }

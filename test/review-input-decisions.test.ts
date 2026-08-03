@@ -4,7 +4,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 import { CreateReviewSchema } from "../src/shared/protocol.ts";
-import { reviewDecisions, decisionLead, showsBody } from "../src/web/lib/reviews.ts";
+import { decisionLead } from "../src/shared/review-item.ts";
+import { reviewDecisions, showsBody } from "../src/web/lib/reviews.ts";
 import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
 import { titleLine, TITLE_MAX_CHARS } from "../src/shared/title.ts";
 

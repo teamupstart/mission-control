@@ -1,6 +1,7 @@
 import type { PlanDecision, PlanDecisionAnswer, ReviewItem } from "@shared/types.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
-import { answeredDecisions, reviewAnswerVerb, selectedOptions } from "../lib/reviews.ts";
+import { selectedOptions } from "@shared/review-item.ts";
+import { answeredDecisions, reviewAnswerVerb } from "../lib/reviews.ts";
 
 /**
  * What the human answered, replayed in the conversation where they answered it.

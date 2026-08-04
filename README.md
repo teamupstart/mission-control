@@ -91,7 +91,13 @@ and get your decision back.
 ```sh
 make init          # one-time bootstrap (deps, build, hooks, treehouse)
 make dev           # daemon + Vite, open http://127.0.0.1:5173
+make db            # inspect the live SQLite database in a read-only shell
 ```
+
+`make db` resolves the same state directory as the daemon and opens its `harness.db`
+with both SQLite read-only mode and `PRAGMA query_only` enabled. See the
+[SQLite database field guide](docs/sqlite-database.html) for the table catalog, storage
+conventions, query examples, and offline backup guidance.
 
 `make init` is idempotent - it installs dependencies, builds, wires the Claude
 hooks, and makes sure [treehouse](#isolated-worktrees-per-session-treehouse) is

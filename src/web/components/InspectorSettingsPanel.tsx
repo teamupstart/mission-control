@@ -13,7 +13,9 @@ import {
   ConsoleState,
   ConsoleStrip,
   ConsoleSwitch,
+  ConsoleTable,
   PrLink,
+  type ConsoleColumn,
   type ConsoleStat,
 } from "./settings-console.tsx";
 
@@ -199,6 +201,14 @@ const EMPTY_FILTER: Record<InspectionBucket, string> = {
   failed: "No review has failed.",
   retired: "No adopted pull request has closed yet.",
 };
+
+/** The ledger's column names. `sc-when` matches the cells, so the header tracks them. */
+const COLUMNS: readonly ConsoleColumn[] = [
+  { label: "Pull request" },
+  { label: "Verdict" },
+  { label: "Fixed" },
+  { label: "Reviewed", className: "sc-when" },
+];
 
 export function InspectorSettingsPanel({
   state,
@@ -405,62 +415,52 @@ export function InspectorSettingsPanel({
             active={filter}
             onPick={setFilter}
           />
-          <div className="sc-table sc-table-inspector">
-            <div className="sc-head">
-              <h3>Inspections</h3>
-              {active && (
-                <Tooltip label="Show every adopted pull request again">
-                  <button type="button" className="sc-clear" onClick={() => setFilter(null)}>
-                    {active.label} only - show all
-                  </button>
-                </Tooltip>
-              )}
-            </div>
-            <div className="sc-row sc-row-head" aria-hidden="true">
-              <span>Pull request</span>
-              <span>Verdict</span>
-              <span>Fixed</span>
-              <span className="sc-when">Reviewed</span>
-            </div>
-            {rows.length === 0 ? (
-              <p className="settings-hint sc-empty">
-                {inspections.length === 0
-                  ? "Nothing yet. A pull request appears here once Mission Control opens one."
-                  : EMPTY_FILTER[active!.id]}
-              </p>
-            ) : (
-              rows.map((row) => {
-                const bucket = inspectionBucket(row);
-                return (
-                  <div
-                    className={`sc-row${bucket === "retired" ? " is-retired" : ""}`}
-                    key={row.key}
-                  >
-                    <PrLink
-                      repo={row.repo}
-                      number={row.number}
-                      url={row.url}
-                      tooltip={row.lastError ?? `Open ${row.repo}#${row.number} on GitHub`}
-                    />
-                    <span className={`sc-verdict sc-verdict-${bucket}`}>
-                      {inspectionSummary(row)}
-                    </span>
-                    {/* The Inspector's own evidence that it was worth running, and the one
-                        tally nothing else in the app shows. Blank rather than "0", so the
-                        column reads as a list of wins instead of a column of zeroes. */}
-                    <span className="sc-fixed">
-                      {row.resolvedFindings > 0 ? `${row.resolvedFindings} fixed` : ""}
-                    </span>
-                    <span className="sc-when">{ago(row.lastReviewedAt, now)}</span>
-                  </div>
-                );
-              })
-            )}
-          </div>
-          <p className="settings-hint sc-foot">
-            In dry run this table is the only place the Inspector's findings exist - nothing is
-            posted, and nothing else in the app shows them.
-          </p>
+          <ConsoleTable
+            title="Inspections"
+            variant="inspector"
+            columns={COLUMNS}
+            rows={rows}
+            rowKey={(row) => row.key}
+            filter={
+              active && {
+                label: active.label,
+                hint: "Show every adopted pull request again",
+                onClear: () => setFilter(null),
+              }
+            }
+            // Computed whether or not it is shown, so it has to be TOTAL: `active` is null
+            // whenever the strip is showing everything, and a `!` here would throw on the
+            // ordinary render rather than on the empty one it was written for.
+            empty={
+              active === null || inspections.length === 0
+                ? "Nothing yet. A pull request appears here once Mission Control opens one."
+                : EMPTY_FILTER[active.id]
+            }
+            foot="In dry run this table is the only place the Inspector's findings exist - nothing is posted, and nothing else in the app shows them."
+            renderRow={(row) => {
+              const bucket = inspectionBucket(row);
+              return (
+                <div className={`sc-row${bucket === "retired" ? " is-retired" : ""}`}>
+                  <PrLink
+                    repo={row.repo}
+                    number={row.number}
+                    url={row.url}
+                    tooltip={row.lastError ?? `Open ${row.repo}#${row.number} on GitHub`}
+                  />
+                  <span className={`sc-verdict sc-verdict-${bucket}`}>
+                    {inspectionSummary(row)}
+                  </span>
+                  {/* The Inspector's own evidence that it was worth running, and the one
+                      tally nothing else in the app shows. Blank rather than "0", so the
+                      column reads as a list of wins instead of a column of zeroes. */}
+                  <span className="sc-fixed">
+                    {row.resolvedFindings > 0 ? `${row.resolvedFindings} fixed` : ""}
+                  </span>
+                  <span className="sc-when">{ago(row.lastReviewedAt, now)}</span>
+                </div>
+              );
+            }}
+          />
         </div>
       </div>
 

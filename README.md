@@ -3775,7 +3775,8 @@ Foreman drawer, so there was no answer anywhere to *what has this thing actually
 doing* - which is the question you open its settings to ask before giving it more rope.
 The count strip above the table filters it: **escalated**, **drafted**, **answered**,
 **left alone**. The last 100 decisions are shown, and episodes are kept for 30 days, so the
-list reaches back only as far as the cap allows.
+list reaches back only as far as the cap allows - 25 rows to a page, walked with **Newer**
+and **Older**, in the [same table](#dry-run) the Inspector and Shipping panels use.
 
 A row leads with **what the decision was for**, not with what was literally asked. The
 verbatim ask is not an identity - `Needs approval: Bash` and `running AskUserQuestion` cover
@@ -5233,6 +5234,14 @@ failure, which is the difference between an Inspector that is quiet and one that
 erroring for three hours; in the list those look identical, because every row simply keeps
 its last verdict.
 
+The table shows 25 rows at a time, with **Newer** and **Older** under it and a `1-25 of 50`
+readout between them, and it scrolls inside its own frame rather than growing the page. This
+is the same table the Shipping and Foreman panels use, on purpose: the strip is the only
+control for shortening the list, so it has to stay in view while you read the list it
+filters. Picking a tile starts that filtered list at its first page, and the pager is absent
+when everything already fits. The Inspector's list is the 50 most recently reviewed pull
+requests, so the total counts what this panel was served, not everything the database holds.
+
 ## Shipping (YOLO mode)
 
 **Settings → Shipping** is where you decide what lands without you. **YOLO mode** merges
@@ -5317,7 +5326,8 @@ three open findings, not on the allowlist. *Soaking* is its own tile in the stri
 than part of *held at a gate*, because it is the one block that clears itself - counting it
 as an obstruction is how the safety valve ends up turned down to zero. When GitHub refuses the merge
 outright - a branch protection rule this app cannot see - its own message is shown there
-verbatim, because that is the only account you get of a rule nothing here can read.
+verbatim, because that is the only account you get of a rule nothing here can read. The
+queue is drawn as the [same paged table](#dry-run) the Inspector's is, over the same 50 rows.
 
 ### When a task's pull request merges
 

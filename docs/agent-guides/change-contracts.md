@@ -231,6 +231,25 @@ version was published with. And `none` beneath an Inspector policy means "the ru
 reached the gate", not "there is no gate" - `inspectorFooterStatus` exists so the footer does
 not contradict its own sentence for most of a live run's life.
 
+## Ledger tables
+
+A settings panel whose subject keeps an append-only record - Inspector, Shipping, Foreman today - draws that record with `ConsoleTable` from `src/web/components/settings-console.tsx`, and never assembles a table of its own out of the `sc-` leaves. The component owns the heading, the column-name row, the bounded scroller, the pager and the caption; a panel supplies its filtered rows, its columns, its `renderRow` and its copy.
+
+Three properties come with it, and all three are the component's rather than the panel's:
+
+- **A height budget on the table, not on the rows.** `.sc-table` is capped at `62vh` and `.sc-scroll` takes what is left. Bounding the rows alone leaves the pager below the table's budget and, on a short window, below the fold - which `overscroll-behavior: contain` then makes unreachable by continuing to scroll.
+- **One page of rows, at `CONSOLE_PAGE_SIZE`.** Slice through `consolePage`, which clamps: every one of these ledgers is polled and filtered, so the row count moves underneath an operator sitting on the last page. The pager is absent, not disabled, when everything fits on one page.
+- **The count strip is the filter, and the pager restarts with it.** Tiles fold over one bucket function so a tally and the rows it selects cannot disagree, and changing the filter is a new list, so it opens at its first page.
+- **Paging keeps the keyboard's place.** Reaching the first or last page disables the button that was just pressed, and a browser blurs a control that becomes disabled; the focus is handed to the button that can still act. Two pages is the ordinary case here, so this fires on most page changes rather than at an edge.
+
+This is a rule because the drift it prevents is invisible in a one-file diff. The three panels shared a vocabulary of leaves and each assembled its own table, so they diverged on the one thing a class name says nothing about - how much of a list they will put on screen. Foreman grew a budget at its 100-row cap; Inspector and Shipping reached 50 and grew nothing, running the settings page on for screens of table beside a control column a quarter of their height, with the filter strip scrolled out of reach.
+
+Ledger reads stay capped server-side (`loadInspectorInspections(50)`, `recentEpisodes(100)`); the pager pages what the panel was served and its total says so. A new bucket needs a strip tile and an `EMPTY_FILTER` sentence, both `Record`-typed so the compiler asks.
+
+Tests: `test/settings-console.test.ts` for the fold and the rendered page, `e2e/specs/settings-ledger-pagination.spec.ts` for the bounds and the paging, `e2e/specs/foreman-decision-ledger.spec.ts` for the ledger it was taken from.
+
+Feeds and logs that are not settings ledgers - the Ship log's day feed, `WorkflowRuns`' cursor-paginated list - keep their own shapes. This contract is about the settings console, not about every list in the app.
+
 ## Harness changes
 
 Add an agent ID only to `AGENT_TYPES`. The resulting type errors identify the exhaustive records that need real values:

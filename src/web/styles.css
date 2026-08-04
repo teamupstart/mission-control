@@ -13679,8 +13679,25 @@ select.sc-input {
   outline-offset: 2px;
 }
 
-/* ---- the ledger table ---- */
+/* ---- the ledger table ----
+   A flex column with a height budget, and the budget is on the TABLE rather than on the
+   rows inside it. The first cut bounded `.sc-scroll` alone at 50vh, which bounds the rows
+   and nothing else - so the table's real height was 50vh plus its heading, its column
+   names and its pager, and at a 720px window that put the pager just under the fold. That
+   is the one place it must not be: `overscroll-behavior: contain` stops a flick that
+   reaches the end of the rows from continuing into the page, so the reader who has just
+   read to the bottom of a page cannot reach the control for the next one by carrying on
+   scrolling. One budget over the whole table keeps the pager the last thing inside it, at
+   any window this app is usable at.
+
+   62vh, which is the same rows the 50vh gave (the chrome is about 95px at a laptop height)
+   with the chrome now counted. It stays a share of the window rather than a row count for
+   the reason it always was: the point is that the panel below the fold is reachable, so the
+   ledger must not be able to claim the whole viewport however many rows land in it. */
 .sc-table {
+  display: flex;
+  flex-direction: column;
+  max-height: 62vh;
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--panel);
@@ -13722,7 +13739,7 @@ select.sc-input {
   font-size: 12px;
 }
 
-/* The ledger's rows scroll, and its header and column names do not.
+/* The ledger's rows scroll, and its header, column names and pager do not.
    At the 100-row cap the Foreman table is roughly 3,500px tall. Rendered whole into the
    settings page's own scroller it sat beside a control column a quarter of its height, so
    the panel ran on for two and a half screens of table with nothing to its left - and the
@@ -13734,16 +13751,81 @@ select.sc-input {
    `overscroll-behavior` stops a flick that reaches the end from continuing into the page,
    which is the failure that makes a nested scroller feel broken.
 
-   `50vh` rather than a row count: the budget is what is left of the window, and the point
-   is that the panel below the fold is reachable, so the ledger must not be able to claim
-   the whole viewport however many rows land in it.
+   The height budget itself is on `.sc-table` - see there for why it covers the chrome and
+   not only the rows. What this element does is take whatever that budget has left: `min-height:
+   0` is what allows a flex item to shrink below its content at all, and without it the rows
+   would push the table past its own maximum and the scrollbar would never appear.
 
    The column names stay pinned for free rather than by `position: sticky`: they are a
-   SIBLING above the scroller, not the first thing inside it, so they simply never move. */
+   SIBLING above the scroller, not the first thing inside it, so they simply never move. And
+   the pager is a sibling BELOW it for the same reason. */
 .sc-scroll {
-  max-height: 50vh;
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+/* ---- the ledger's pager ----
+   Below the scroller and inside the table's border, so it reads as this list's own footer
+   rather than as a control belonging to the settings page. It is a SIBLING of the scroller
+   for the same reason the column names are: it must not move while the rows do.
+
+   The two bounds do different jobs and neither replaces the other. `.sc-table` bounds the
+   HEIGHT, as a share of the viewport, so the panel below the fold stays reachable at any
+   window size - which is a number that changes when the window does. The pager bounds the
+   LIST at a fixed count, so "26-50 of 50" says how far through the record you are in a
+   figure that does not. See `CONSOLE_PAGE_SIZE`.
+
+   Rendered only when there is a second page, so this row is never a pair of dead buttons
+   over a list that is already whole. */
+.sc-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 13px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.sc-pager-range {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+/* `margin-left: auto` lives on the GROUP, not on the first button: a disabled trigger is
+   wrapped in `.tt-anchor` by `Tooltip`, so which element is first here changes with the
+   page you are on. */
+.sc-pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.sc-pager-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.sc-pager-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  color: var(--fg);
+}
+.sc-pager-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.sc-pager-btn:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 
 /* A row that OPENS is a button, so it is reachable by keyboard and announces its state -

@@ -5903,6 +5903,15 @@ moment is an approval request, not `AskUserQuestion`, and this phase does not im
 an `ask` step on a Codex session narrates the question as prose instead of blocking, so a
 scenario written for Claude does not stall a Codex run.
 
+**`pi` has no scenario player, and this is not a scoping gap - it is a hard floor.** `pi`'s
+harness registry entry sets `sdk: null` (`src/server/harness/index.ts`): it has no SDK
+runtime anywhere in this codebase, in demo mode or otherwise, and the only way it ever runs
+is as a real terminal pane a person types into. Demo mode's fleet is SDK-runtime sessions
+only (discovery is off and no terminal backend is stood up), so there is no path by which a
+dispatched `pi` task would ever invoke a binary at all - `MISSION_PI_BIN` points at a loud
+exit-1 stub for the same reason `e2e/fixtures/fake-agents.ts` points it at one: so nothing
+silently falls through to a real `pi` on `PATH`.
+
 ## Security
 
 The daemon binds to loopback only, and every data endpoint (`/api/*`, `/events`)

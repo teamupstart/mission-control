@@ -179,6 +179,21 @@ function installPlayer(source, dest) {
   chmodSync(dest, 0o755);
 }
 
+/**
+ * DEVIATION from "every agent binary is a scenario-player fake": `pi` is a loud exit-1 stub,
+ * never a played scenario, and this is a hard architectural floor rather than a scoping
+ * choice. `pi`'s harness registry entry sets `sdk: null` (`src/server/harness/index.ts`) - it
+ * has no SDK runtime at all, anywhere in this codebase, in demo mode or in production; the
+ * only way it ever runs is as a real terminal pane a person types into (`piControl`'s
+ * `kind: "keystroke"`, `src/server/harness/pi/control.ts`). The approved source plan
+ * (docs/plans/demo-mode/plan.md) already decided the demo fleet is SDK-runtime sessions
+ * only, precisely because discovery is off and no terminal backend is stood up - so there is
+ * no runtime path in this demo, in any phase, that would ever invoke a `pi` binary as a
+ * session driver. A "scenario player" for `pi` would have nothing to play against. `pi` is
+ * pointed at a stub for the same reason `e2e/fixtures/fake-agents.ts` points it at one: so
+ * nothing silently falls through to a real binary on `PATH`, not because a fake is coming
+ * later.
+ */
 function installPlayers(root) {
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
@@ -187,7 +202,7 @@ function installPlayers(root) {
   const pi = join(binDir, "pi");
   writeFileSync(
     pi,
-    `#!/bin/sh\necho "fake-pi: demo mode has no pi scenario player yet" >&2\nexit 1\n`,
+    `#!/bin/sh\necho "fake-pi: pi has no SDK runtime in this codebase (sdk: null), so demo mode - which is SDK-runtime-only by design - has no path that would ever invoke this binary" >&2\nexit 1\n`,
   );
   chmodSync(pi, 0o755);
   return { claude: join(binDir, "claude"), codex: join(binDir, "codex"), pi };

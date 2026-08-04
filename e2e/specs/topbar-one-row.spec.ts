@@ -86,7 +86,7 @@ const ASK_TURN = "ask me which linter to use";
  * session sits in an attention tone with the question outstanding for as long as nobody
  * answers it, which holds `need you` and `to answer` on the readout indefinitely.
  */
-async function busyFleet(page: Page, daemon: DaemonHandle): Promise<void> {
+async function busyFleet(page: Page, daemon: DaemonHandle): Promise<number> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
@@ -118,6 +118,22 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<void> {
   // measured against. Asserted so the rest of the spec cannot quietly degrade into measuring
   // an idle bar and passing on the ladder this change replaced.
   await expect(page.locator(".pulse .pulse-seg")).toHaveCount(4);
+
+  // The fourth segment is width the reported bar did not carry: the report's fleet read
+  // `live · 4 sessions · 2 working` - three segments - and every pinned width below was
+  // calibrated against that shape. Handing back its measured width lets the tests keep
+  // pinning the reported CASE - a bar exactly this side of a rung - rather than the reported
+  // number, which the busier readout has moved by one segment. Measured, not a constant,
+  // because it moves with font metrics: the segment is ~146px in this browser and ~20px wider
+  // on CI's Linux fonts, which is exactly the difference that made a constant fail there
+  // while passing here.
+  return await page.evaluate(() => {
+    const seg = [...document.querySelectorAll(".pulse .pulse-seg")].find((el) =>
+      (el.textContent ?? "").includes("to answer"),
+    ) as HTMLElement | undefined;
+    // +1 for the hairline divider the extra segment brought with it.
+    return seg ? Math.ceil(seg.offsetWidth) + 1 : 0;
+  });
 }
 
 interface Bar {
@@ -184,15 +200,17 @@ test("a working fleet keeps the title bar on one row at the width it used to sta
   daemon,
 }) => {
   await seedCost(daemon);
-  await busyFleet(dashboard, daemon);
+  const extra = await busyFleet(dashboard, daemon);
   await expect(dashboard.getByRole("button", { name: /^Spend - / })).toBeVisible();
 
   // The reported width, in this browser's terms. The report came from the desktop shell,
   // where the bar is the window's title bar and gives up another ~45px to the traffic-light
   // inset, so the container it wrapped at (~1300px) sits behind a wider window than it does
   // here. Matching the CONTAINER is what makes this the reported case rather than a number
-  // that happens to be in the screenshot's filename.
-  await dashboard.setViewportSize({ width: 1360, height: 900 });
+  // that happens to be in the screenshot's filename - and the container is widened by the
+  // segment this fixture carries that the reported bar did not, so the bar's ROOM relative
+  // to its content is the reported one.
+  await dashboard.setViewportSize({ width: 1360 + extra, height: 900 });
   const bar = await readBar(dashboard);
 
   // Photographed BEFORE the assertion, so the same command run against the commit this fixes
@@ -268,8 +286,8 @@ test("a font-metrics change re-fits the bar, though neither guard can see it", a
   daemon,
 }) => {
   await seedCost(daemon);
-  await busyFleet(dashboard, daemon);
-  await dashboard.setViewportSize({ width: 1360, height: 900 });
+  const extra = await busyFleet(dashboard, daemon);
+  await dashboard.setViewportSize({ width: 1360 + extra, height: 900 });
 
   const before = await readBar(dashboard);
   expect(before.rows, "precondition: the bar starts on one row").toBe(1);
@@ -305,7 +323,7 @@ test("the bar never stacks until it has nothing left to shed, at any width", asy
   daemon,
 }) => {
   await seedCost(daemon);
-  await busyFleet(dashboard, daemon);
+  const extra = await busyFleet(dashboard, daemon);
 
   // The invariant, stated without a magic number: at every width the bar is either on one row
   // or has already spent every rung it has. Anything else is a rung that fired too late -
@@ -333,7 +351,7 @@ test("the bar never stacks until it has nothing left to shed, at any width", asy
   await readBar(dashboard);
   await expectDrawn(word, false, "precondition: a narrow window sheds the page segment's words");
 
-  await dashboard.setViewportSize({ width: 1360, height: 900 });
+  await dashboard.setViewportSize({ width: 1360 + extra, height: 900 });
   const back = await readBar(dashboard);
   expect(back.rows).toBe(1);
   await expectDrawn(word, true, "the words never came back when the room did");

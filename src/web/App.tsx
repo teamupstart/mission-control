@@ -2932,10 +2932,17 @@ function FleetPulse({
   /**
    * How many answers the operator owes - the attention fold's total, not a review count.
    *
-   * A separate segment from `attention`, which counts SESSIONS in an attention tone: they
-   * overlap heavily but are different questions, and the one that must match what a click
-   * opens is this one. It reads "to answer" rather than borrowing "need you", because two
-   * segments carrying the same word in one readout is a figure nobody can attribute.
+   * A separate segment from `attention`, which counts SESSIONS in an attention tone. The two
+   * are different UNITS of one set, not different sets: `attention` is how many agents are
+   * blocked, `inbox` is how many replies it takes to unblock them, so one session holding
+   * three questions reads `1 need you` beside `3 to answer`. It reads "to answer" rather than
+   * borrowing "need you" because two segments carrying the same word in one readout is a
+   * figure nobody can attribute.
+   *
+   * `inbox >= attention` always, and `attention-pill-invariant.test.ts` holds the fold to it.
+   * The reverse used to be reachable - a session parked on a permission prompt, or one whose
+   * `awaiting_input` came from a hook that files no review, counted in `attention` and
+   * produced no inbox row - which put `1 need you` next to a click that opened an empty list.
    */
   inbox: number;
   onOpenInbox: () => void;

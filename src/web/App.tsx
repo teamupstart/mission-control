@@ -5,6 +5,7 @@ import { backlogTasks, canCycleMode } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
+import { fitTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "./components/TranscriptPanel.tsx";
@@ -1291,20 +1292,47 @@ export function App(): React.JSX.Element {
       ?.focus({ preventScroll: true });
   }, [selectedId]);
 
-  // Publish the live topbar height so a focus-expanded card can size itself to
-  // exactly fill the screen beneath the sticky bar (which wraps taller on narrow
-  // viewports). Measured, not hard-coded, so the fit stays right on any width.
+  // Fit the topbar to one row, and publish the height it settles at as `--topbar-h` so a
+  // focus-expanded card can size itself to exactly fill the screen beneath the sticky bar.
+  // See `topbarLadder.ts` for why the rungs are measured rather than keyed on a width.
+  //
+  // After EVERY render, not once on mount: the bar's width requirement is a function of its
+  // content, and its content is the fleet. A session arriving adds a pulse segment, which is
+  // ~150px on a bar that may have had 40px to spare. `fitTopbar` guards its own cost.
+  useLayoutEffect(() => {
+    if (topbarRef.current) fitTopbar(topbarRef.current);
+  });
+
+  // And when the room it has changes rather than the content. Watching the bar ITSELF rather
+  // than its parent is deliberate: in the default layout `.app` caps at 1400px, so above that
+  // width the parent stops changing while the desktop shell's traffic-light inset - clamped
+  // against `100vw` - keeps eating into the bar for another 168px.
+  //
+  // Only an INLINE change is a resize. Fitting the bar changes its block size, which would
+  // otherwise re-enter this callback on every step of the ladder; its inline size comes from
+  // the parent and no rung can move it.
   useEffect(() => {
     const bar = topbarRef.current;
     if (!bar) return;
-    const root = document.documentElement;
-    const apply = (): void => root.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
-    apply();
-    const ro = new ResizeObserver(apply);
+    let inline = -1;
+    const ro = new ResizeObserver(([entry]) => {
+      const next = entry?.contentBoxSize?.[0]?.inlineSize ?? bar.clientWidth;
+      if (next === inline) {
+        // A block-size-only change, which is usually this callback watching its own fit
+        // settle. The ladder's answer cannot have moved - no rung changes the bar's inline
+        // size - but the height it publishes just did, and everything below sizes against
+        // that. Republishing is safe here where re-fitting would not be: `--topbar-h` is read
+        // by other elements, never by this one, so it cannot come back round.
+        document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+        return;
+      }
+      inline = next;
+      fitTopbar(bar, true);
+    });
     ro.observe(bar);
     return () => {
       ro.disconnect();
-      root.style.removeProperty("--topbar-h");
+      document.documentElement.style.removeProperty("--topbar-h");
     };
   }, []);
 

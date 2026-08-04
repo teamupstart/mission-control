@@ -975,7 +975,11 @@ body {
      which it should never have been: wrapping is per-ITEM, so a squeezed bar shed one
      control at a time onto ragged extra rows and grew from 110px to 191px at half screen -
      and `--topbar-h` is measured off this element, so every full-height surface under it
-     shrank by however much the bar had chosen to sprawl. */
+     shrank by however much the bar had chosen to sprawl.
+
+     It is also what the ladder READS. `fitTopbar` steps the rungs down until this stops
+     happening, so wrapping is the signal as well as the fallback, and setting it to `nowrap`
+     would leave the ladder unable to see anything and the bar overflowing instead. */
   flex-wrap: wrap;
   gap: 12px 24px;
   padding: 18px 4px;
@@ -983,16 +987,6 @@ body {
   background: linear-gradient(var(--bg), rgba(10, 12, 15, 0.72));
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-soft);
-  /* The ladder below queries THIS element, not the viewport, and that is the whole reason
-     it is correct. The bar's usable width is the window minus the traffic-light inset
-     (`.is-desktop`, which itself moves with `100vw`), the page gutters, and - in the two
-     layouts that do not run full width - `.app`'s 1400px cap. A `@media` rung would fire at
-     a width the bar does not have: too early on a wide screen, too late in the desktop
-     shell, and differently again per layout. Containment is safe here: the popovers inside
-     the bar are `position: absolute` against their own relative parents, and every tooltip
-     is a body-level portal, so nothing in it depends on this element not being a
-     containing block. */
-  container: topbar / inline-size;
 }
 
 /* Desktop shell only: the window has no native title bar, so the topbar is it.
@@ -1506,200 +1500,206 @@ body {
    Five rungs, each shedding the least useful ink first, so the bar stays ONE row from a
    maximised window down to roughly half a 16" screen instead of wrapping into three.
 
-   The thresholds are MEASURED, and they carry HEADROOM on purpose. In each state the bar
-   needs roughly 1552 / 1364 / 1226 / 1072 / 1004 / 724px of content including gaps, and
-   its container is the window less about 106px of chrome and padding. They predate the
-   cost chip, which adds roughly 130px in full and about 70px once rung 1 takes its rate
-   back, so the widest state is tighter than these numbers say and `flex-wrap` below
-   catches it sooner on a busy fleet. And those figures were never constants anyway: the
-   pulse is sized by its own text, so a fleet that reaches three
-   digits, or a review count appearing, moves them 10-25px on its own. A rung set to the
-   exact width its state stops fitting therefore opens a band - tens of px wide - where the
-   bar has already wrapped and its rung has not yet fired. Sampling at round window widths
-   does not find those; sweeping every integer width does, which is how they were found.
+   WHICH rungs apply is decided by `fitTopbar` in `topbarLadder.ts`, which measures. It puts
+   the bar at rung 0, asks whether it wrapped, and steps down until it did not, writing the
+   rungs it landed on into `data-rung` as a cumulative token list. Nothing here needs to know
+   a width, and that is the point.
 
-   So each rung fires ~45px ABOVE the widest its previous state has been measured at. A
-   word disappearing 45px early is invisible; a bar jumping to two rows is not. Re-sweep
-   every integer width if you add a control. The Runs destination grows the segment while
-   removing the Sitrep glyph buys part of that width back; `flex-wrap` below is still the
-   last resort, and on a busy enough fleet it is what catches the overflow. A rung that fires late is a
-   wrapped row, one that fires early is a word thrown away for nothing, and a rung that
-   saves much more than the width it was crossed at leaves the bar half empty for the next
-   several hundred px - which is why the last two are split rather than one 369px cliff.
+   These rungs used to fire from `@container topbar (max-width: Npx)`, against five widths
+   found by sweeping every integer width - and the bar still wrapped, because that keys on the
+   wrong quantity. A rung fires on the width the bar HAS; whether it needs to fire depends on
+   the width its content NEEDS, and the two are independent. The pulse is sized by its own
+   text and its segments are conditional on the fleet, so `live · 0 sessions` is 165px and
+   `live · 4 sessions · 3 need you · 2 working · 5 to answer` is 622px. Every state inherits
+   that 457px swing while a threshold inherits none of it: measured against an idle fleet, the
+   widths held for an idle fleet only, and a busy one wrapped continuously from a 1046px
+   container up to 1844px. Tuned the other way they would pin an idle bar to unlabelled glyphs
+   at every width. The full measurements are in `topbarLadder.ts`.
 
-   Every label the ladder sheds goes VISUALLY HIDDEN, never `display: none`: out of flow so
-   it costs no width and no flex gap, clipped so it paints nothing, and still in the
+   So a rung is now a statement about PRIORITY - what is worth less than a second row - and
+   not about px. Order them by that and nothing else; the fit finds the width on its own.
+
+   Every label a rung sheds goes VISUALLY HIDDEN, never `display: none`: out of flow so it
+   costs no width and no flex gap, clipped so it paints nothing, and still in the
    accessibility tree - so the control keeps its accessible name and its tooltip, and only
    its glyph is drawn. `display: none` would have taken the name with it and turned a
    narrow window into a row of unnamed icons.
 
    The brand wordmark is the one exception and takes `display: none`, because it is
    decorative rather than a control's name: the mark beside it and the window itself
-   already say which app this is. */
-@container topbar (max-width: 1600px) {
-  /* Rung 1: the Missions button becomes a glyph. It already carries a real icon (the ◷) and
-     an `aria-label`, so this costs the word and nothing else.
+   already say which app this is.
 
-     The page SEGMENT is deliberately not here. It sheds at rung 4, with Foreman: it is the
-     one control that answers "where am I", and three unlabelled glyphs beside the brand are
-     the question rather than the answer. A 16" laptop sits at 1512px - inside this rung -
-     so shedding it here would mean most windows never see the words at all.
+   `~=` because the rungs STACK: at rung 3 the bar has also shed 1 and 2. The container query
+   got that for free (a bar under 1270px is also under 1600px); an attribute has to say so, so
+   `fitTopbar` writes "1 2 3" and each rung matches its own token. */
+/* Rung 1: the Missions button becomes a glyph. It already carries a real icon (the ◷) and
+   an `aria-label`, so this costs the word and nothing else.
 
-     Foreman's word survives here and gives up its mode chip instead - the dot beside it
-     already carries live/off, and the chip is the wider of the two. Dispatch has no
-     `.tb-label` at all and so never degrades: it is the one control you would hunt for. */
-  .missions-btn .tb-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-  .foreman-chip {
-    display: none;
-  }
-  /* The cost chip's rate segment, and it belongs at the first rung because it is the most
-     redundant ink the chip carries: the popover behind it states the same figure in a
-     labelled row, one click away. `display: none` is correct here where it would not be on
-     a `.tb-label` - this is a duplicated FIGURE, not a control's name, and the chip's
-     `aria-label` carries both figures at every width. The chip itself never degrades
-     further: a readout you cannot find is one you stop trusting. */
-  .spend-chip-rate {
-    display: none;
-  }
+   The page SEGMENT is deliberately not here. It sheds at rung 4, with Foreman: it is the
+   one control that answers "where am I", and three unlabelled glyphs beside the brand are
+   the question rather than the answer.
 
-  /* Disconnected compaction, and it belongs at the FIRST rung rather than the last.
-     `reconnecting` is about 76px wider than `live`, which is more than the ~45px of
-     headroom every rung carries - so a disconnected bar overflows as soon as the ladder
-     starts, not only at half screen. Placed on rung 5 it left a band of widths around
-     1518px where the connected bar sat on one row and the disconnected one wrapped, which
-     is precisely the moment a stable bar matters most. From here on it applies wherever the
-     ladder applies.
-
-     What it spends is the count segments' TONE DOTS and 2px of their padding - about 72px,
-     which very nearly cancels the 76px the longer word costs. The dot is the only genuinely
-     redundant ink in that segment: the figure beside it already carries the same tone
-     (`.pulse-attention .pulse-n`, `.pulse-working .pulse-n`), and while the stream is down
-     every one of them is at 50% opacity anyway. No figure and no control is removed - the
-     reviews button in particular stays present and clickable at every width. */
-  .pulse.is-down .pulse-seg:not(.pulse-link) .pulse-dot {
-    display: none;
-  }
-  .pulse.is-down .pulse-seg:not(.pulse-link) {
-    padding: 0 7px;
-  }
+   Foreman's word survives here and gives up its mode chip instead - the dot beside it
+   already carries live/off, and the chip is the wider of the two. Dispatch has no
+   `.tb-label` at all and so never degrades: it is the one control you would hunt for. */
+.topbar[data-rung~="1"] .missions-btn .tb-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
-@container topbar (max-width: 1410px) {
-  /* Rung 2 (-138px): the wordmark. */
-  .brand h1 {
-    display: none;
-  }
+.topbar[data-rung~="1"] .foreman-chip {
+  display: none;
 }
-@container topbar (max-width: 1270px) {
-  /* Rung 3 (-154px): the filter collapses to its ⌕. Before the pulse's words, deliberately -
-     an empty 184px text box is the least useful ink on the bar, and the words beside it are
-     the readout an operator actually scans.
-
-     It reopens on focus and needs no new affordance to do it: the box is a <label>, so its
-     own glyph is the click target, and the `/` chord already focuses this input. */
-  .filter-input {
-    width: 0;
-    opacity: 0;
-    transition: width 0.16s ease, opacity 0.16s ease;
-  }
-  /* Open while it has focus - and ALSO while it holds a term, focus or not. A filter that
-     is actually filtering must never be a glyph: the fleet below would be missing cards
-     with nothing on screen saying why, which is a far worse failure than a wide bar. */
-  .filter-box:focus-within .filter-input,
-  .filter-input:not(:placeholder-shown) {
-    width: 150px;
-    opacity: 1;
-  }
-  .filter-box {
-    padding-right: 4px;
-  }
-  /* Once the filter is collapsed there is no longer room for both it and the full readout:
-     at half screen the bar has about 49px of slack, and a usable field needs 150. So the
-     four count readouts step aside while the field has focus or holds a term, but the
-     reviews control does not - an active filter must not make the bar's only route to
-     reviews unreachable. The surviving control sheds its redundant tone dot and becomes a
-     complete pill, including cancelling the divider it still inherits from preceding
-     siblings even when they are hidden. When no reviews control exists, the now-empty
-     wrapper is neutralized; the guard ensures a wrapper containing a control is never
-     hidden. Together these preserve the one-row budget without hiding an interactive
-     element.
-
-     Scoped to `.topbar` rather than written as a bare `:has()` so it cannot reach the
-     search boxes on the settings and workflow pages. */
-  .topbar:has(.filter-box:focus-within) .pulse-seg:not(.pulse-btn),
-  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse-seg:not(.pulse-btn) {
-    display: none;
-  }
-  .topbar:has(.filter-box:focus-within) .pulse-btn .pulse-dot,
-  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse-btn .pulse-dot {
-    display: none;
-  }
-  .topbar:has(.filter-box:focus-within) .pulse-btn,
-  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse-btn {
-    padding: 0 9px;
-    border-left: none;
-    border-radius: 999px;
-  }
-  .topbar:has(.filter-box:focus-within) .pulse:not(:has(.pulse-btn)),
-  .topbar:has(.filter-input:not(:placeholder-shown)) .pulse:not(:has(.pulse-btn)) {
-    display: none;
-  }
+/* The cost chip's rate segment, and it belongs at the first rung because it is the most
+   redundant ink the chip carries: the popover behind it states the same figure in a
+   labelled row, one click away. `display: none` is correct here where it would not be on
+   a `.tb-label` - this is a duplicated FIGURE, not a control's name, and the chip's
+   `aria-label` carries both figures at every width. The chip itself never degrades
+   further: a readout you cannot find is one you stop trusting. */
+.topbar[data-rung~="1"] .spend-chip-rate {
+  display: none;
 }
-@container topbar (max-width: 1115px) {
-  /* Rung 4 (-60px): Foreman drops to its dot and queue badge. Split from rung 5
-     deliberately - bundled, the two shed 349px at once, and a rung that saves far more than
-     the width it was crossed at leaves the bar visibly half empty for the next 300px of
-     window. A rung cannot restyle `.topbar` itself because `.topbar` is its container. */
-  .foreman-btn .tb-label,
-  .page-seg-btn .tb-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-  /* The chord hint goes with its word: a keycap floating beside a bare glyph reads as a
-     second glyph. The chord still works, and the tooltip still names it. */
-  .page-seg-btn .kb-hint {
-    display: none;
-  }
+
+/* Disconnected compaction, and it belongs at the FIRST rung rather than the last.
+   `reconnecting` is about 76px wider than `live`, so a disconnected bar needs the ladder
+   sooner than a connected one at the same width. Placed on rung 5 it left a band of widths
+   where the connected bar sat on one row and the disconnected one wrapped, which is
+   precisely the moment a stable bar matters most. From here on it applies wherever the
+   ladder applies.
+
+   What it spends is the count segments' TONE DOTS and 2px of their padding - about 72px,
+   which very nearly cancels the 76px the longer word costs. The dot is the only genuinely
+   redundant ink in that segment: the figure beside it already carries the same tone
+   (`.pulse-attention .pulse-n`, `.pulse-working .pulse-n`), and while the stream is down
+   every one of them is at 50% opacity anyway. No figure and no control is removed - the
+   reviews button in particular stays present and clickable at every width. */
+.topbar[data-rung~="1"] .pulse.is-down .pulse-seg:not(.pulse-link) .pulse-dot {
+  display: none;
 }
-@container topbar (max-width: 1045px) {
-  /* Rung 5 (-289px): the pulse drops to dots and figures. Last, because it is the readout an
-     operator actually scans - and this is the rung that holds half a 16" screen (a 758px
-     container against 699px of content).
+.topbar[data-rung~="1"] .pulse.is-down .pulse-seg:not(.pulse-link) {
+  padding: 0 7px;
+}
 
-     Every pulse segment carries a Tooltip precisely so it can survive this, and Tooltip
-     always renders its label into a hidden `aria-describedby` node, so the meaning is still
-     there for a screen reader as well as for a pointer.
+/* Rung 2: the wordmark. */
+.topbar[data-rung~="2"] .brand h1 {
+  display: none;
+}
 
-     `:not(.is-down)` on the link label is the one exception in the other direction: a lone
-     red dot cannot be the only notice that every figure beside it stopped being true.
+/* Rung 3: the filter collapses to its ⌕. Before the pulse's words, deliberately - an empty
+   184px text box is the least useful ink on the bar, and the words beside it are the readout
+   an operator actually scans.
 
-     The disconnected state's own compaction is NOT here - it moved up to rung 1, for the
-     reason recorded there. */
-  .pulse .tb-label,
-  .pulse:not(.is-down) .pulse-link-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-  .pulse-seg {
-    padding: 0 9px;
-  }
+   It reopens on focus and needs no new affordance to do it: the box is a <label>, so its
+   own glyph is the click target, and the `/` chord already focuses this input.
+
+   The 160ms transition is declared on the OPEN state only, so it animates open and closes
+   instantly - and that asymmetry is load bearing, not a flourish. `width` is a layout
+   property, so while it animates the field really is 150px wide to layout. Declared on the
+   collapse, this rung freed nothing on the frame it was applied: `fitTopbar` measured a bar
+   that was still wrapped, stepped past rung 3 to rung 4 and rung 5 looking for room the rung
+   below had already found, and the bar flashed two rows for the length of the animation
+   before settling several rungs over-collapsed. The open direction has no such problem: it is
+   driven by focus, which the ladder never measures across. */
+.topbar[data-rung~="3"] .filter-input {
+  width: 0;
+  opacity: 0;
+}
+/* Open while it has focus - and ALSO while it holds a term, focus or not. A filter that
+   is actually filtering must never be a glyph: the fleet below would be missing cards
+   with nothing on screen saying why, which is a far worse failure than a wide bar. */
+.topbar[data-rung~="3"] .filter-box:focus-within .filter-input,
+.topbar[data-rung~="3"] .filter-input:not(:placeholder-shown) {
+  width: 150px;
+  opacity: 1;
+  transition: width 0.16s ease, opacity 0.16s ease;
+}
+.topbar[data-rung~="3"] .filter-box {
+  padding-right: 4px;
+}
+/* Once the filter is collapsed there is no longer room for both it and the full readout, so
+   the four count readouts step aside while the field has focus or holds a term - but the
+   reviews control does not: an active filter must not make the bar's only route to reviews
+   unreachable. The surviving control sheds its redundant tone dot and becomes a complete
+   pill, including cancelling the divider it still inherits from preceding siblings even when
+   they are hidden. When no reviews control exists, the now-empty wrapper is neutralized; the
+   guard ensures a wrapper containing a control is never hidden. Together these preserve the
+   one-row budget without hiding an interactive element.
+
+   Scoped to `.topbar` rather than written as a bare `:has()` so it cannot reach the search
+   boxes on the settings and workflow pages. */
+.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-seg:not(.pulse-btn),
+.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-seg:not(.pulse-btn) {
+  display: none;
+}
+.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-btn .pulse-dot,
+.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-btn .pulse-dot {
+  display: none;
+}
+.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse-btn,
+.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse-btn {
+  padding: 0 9px;
+  border-left: none;
+  border-radius: 999px;
+}
+.topbar[data-rung~="3"]:has(.filter-box:focus-within) .pulse:not(:has(.pulse-btn)),
+.topbar[data-rung~="3"]:has(.filter-input:not(:placeholder-shown)) .pulse:not(:has(.pulse-btn)) {
+  display: none;
+}
+
+/* Rung 4: Foreman and the page segment drop to their glyphs. Split from rung 5 deliberately -
+   bundled, the two shed everything at once, and a rung that saves far more than it had to
+   leaves the bar visibly half empty for the next several hundred px of window. */
+.topbar[data-rung~="4"] .foreman-btn .tb-label,
+.topbar[data-rung~="4"] .page-seg-btn .tb-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* The chord hint goes with its word: a keycap floating beside a bare glyph reads as a
+   second glyph. The chord still works, and the tooltip still names it. */
+.topbar[data-rung~="4"] .page-seg-btn .kb-hint {
+  display: none;
+}
+
+/* Rung 5: the pulse drops to dots and figures. Last, because it is the readout an operator
+   actually scans.
+
+   Last by PRIORITY, which is the only thing a rung's position means now. It is also the
+   widest thing on the bar and the only one that grows with the fleet, so under the old
+   width-keyed ladder "last" also meant "too late": the rung that could free 287px did not
+   fire until the bar was already three rungs and several hundred px past needing it. The
+   measured fit reaches it exactly when the four cheaper rungs have not been enough, which is
+   what makes going last affordable.
+
+   Every pulse segment carries a Tooltip precisely so it can survive this, and Tooltip
+   always renders its label into a hidden `aria-describedby` node, so the meaning is still
+   there for a screen reader as well as for a pointer.
+
+   `:not(.is-down)` on the link label is the one exception in the other direction: a lone
+   red dot cannot be the only notice that every figure beside it stopped being true.
+
+   The disconnected state's own compaction is NOT here - it moved up to rung 1, for the
+   reason recorded there. */
+.topbar[data-rung~="5"] .pulse .tb-label,
+.topbar[data-rung~="5"] .pulse:not(.is-down) .pulse-link-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.topbar[data-rung~="5"] .pulse-seg {
+  padding: 0 9px;
 }
 
 /* ---- grid ---- */
@@ -13685,8 +13685,25 @@ select.sc-input {
   outline-offset: 2px;
 }
 
-/* ---- the ledger table ---- */
+/* ---- the ledger table ----
+   A flex column with a height budget, and the budget is on the TABLE rather than on the
+   rows inside it. The first cut bounded `.sc-scroll` alone at 50vh, which bounds the rows
+   and nothing else - so the table's real height was 50vh plus its heading, its column
+   names and its pager, and at a 720px window that put the pager just under the fold. That
+   is the one place it must not be: `overscroll-behavior: contain` stops a flick that
+   reaches the end of the rows from continuing into the page, so the reader who has just
+   read to the bottom of a page cannot reach the control for the next one by carrying on
+   scrolling. One budget over the whole table keeps the pager the last thing inside it, at
+   any window this app is usable at.
+
+   62vh, which is the same rows the 50vh gave (the chrome is about 95px at a laptop height)
+   with the chrome now counted. It stays a share of the window rather than a row count for
+   the reason it always was: the point is that the panel below the fold is reachable, so the
+   ledger must not be able to claim the whole viewport however many rows land in it. */
 .sc-table {
+  display: flex;
+  flex-direction: column;
+  max-height: 62vh;
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--panel);
@@ -13728,7 +13745,7 @@ select.sc-input {
   font-size: 12px;
 }
 
-/* The ledger's rows scroll, and its header and column names do not.
+/* The ledger's rows scroll, and its header, column names and pager do not.
    At the 100-row cap the Foreman table is roughly 3,500px tall. Rendered whole into the
    settings page's own scroller it sat beside a control column a quarter of its height, so
    the panel ran on for two and a half screens of table with nothing to its left - and the
@@ -13740,16 +13757,81 @@ select.sc-input {
    `overscroll-behavior` stops a flick that reaches the end from continuing into the page,
    which is the failure that makes a nested scroller feel broken.
 
-   `50vh` rather than a row count: the budget is what is left of the window, and the point
-   is that the panel below the fold is reachable, so the ledger must not be able to claim
-   the whole viewport however many rows land in it.
+   The height budget itself is on `.sc-table` - see there for why it covers the chrome and
+   not only the rows. What this element does is take whatever that budget has left: `min-height:
+   0` is what allows a flex item to shrink below its content at all, and without it the rows
+   would push the table past its own maximum and the scrollbar would never appear.
 
    The column names stay pinned for free rather than by `position: sticky`: they are a
-   SIBLING above the scroller, not the first thing inside it, so they simply never move. */
+   SIBLING above the scroller, not the first thing inside it, so they simply never move. And
+   the pager is a sibling BELOW it for the same reason. */
 .sc-scroll {
-  max-height: 50vh;
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+/* ---- the ledger's pager ----
+   Below the scroller and inside the table's border, so it reads as this list's own footer
+   rather than as a control belonging to the settings page. It is a SIBLING of the scroller
+   for the same reason the column names are: it must not move while the rows do.
+
+   The two bounds do different jobs and neither replaces the other. `.sc-table` bounds the
+   HEIGHT, as a share of the viewport, so the panel below the fold stays reachable at any
+   window size - which is a number that changes when the window does. The pager bounds the
+   LIST at a fixed count, so "26-50 of 50" says how far through the record you are in a
+   figure that does not. See `CONSOLE_PAGE_SIZE`.
+
+   Rendered only when there is a second page, so this row is never a pair of dead buttons
+   over a list that is already whole. */
+.sc-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 13px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.sc-pager-range {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+/* `margin-left: auto` lives on the GROUP, not on the first button: a disabled trigger is
+   wrapped in `.tt-anchor` by `Tooltip`, so which element is first here changes with the
+   page you are on. */
+.sc-pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.sc-pager-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.sc-pager-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  color: var(--fg);
+}
+.sc-pager-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.sc-pager-btn:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 
 /* A row that OPENS is a button, so it is reachable by keyboard and announces its state -
@@ -14167,7 +14249,7 @@ button.sc-row:focus-visible {
    remove button gets a hairline column of its own. */
 .trust-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px 168px 130px 44px;
+  grid-template-columns: minmax(0, 1fr) 150px 140px 168px 130px 44px;
   align-items: stretch;
 }
 .trust-h {
@@ -14252,6 +14334,18 @@ button.sc-row:focus-visible {
 .trust-grant.is-trapped .trust-grant-dot {
   background: var(--attention);
 }
+/* Armed check execution. The same amber as a trapped cell, and deliberately so: both mean
+   "read the footnote", and giving this a colour of its own would make the matrix teach two
+   alert vocabularies for one glance. It stays a granted pill - `is-on`'s green dot would
+   contradict the wash, so the dot moves with it. */
+.trust-grant.is-armed {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, transparent);
+  background: color-mix(in oklab, var(--attention) 9%, transparent);
+}
+.trust-grant.is-armed .trust-grant-dot {
+  background: var(--attention);
+}
 .trust-grant:hover:not(:disabled) {
   border-color: var(--dim);
 }
@@ -14282,6 +14376,11 @@ button.sc-row:focus-visible {
 /* The dagger footnote: the same amber as a trapped cell, since it names the same fact. */
 .trust-trap-note {
   margin-top: 10px;
+}
+/* The double-dagger footnote, on the same rhythm. Tighter to the note above it than to the
+   matrix, so that when both are flying they read as two footnotes rather than two sections. */
+.trust-arm-note {
+  margin-top: 8px;
 }
 .trust-add {
   display: flex;

@@ -22,7 +22,7 @@ FOREMAN_MATCH := src/server/foreman/worker.ts
 NPM_STAMP := node_modules/.install-stamp
 
 .DEFAULT_GOAL := help
-.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs build app install-app icons test lint check smoke hooks setup
+.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs db build app install-app icons test lint check smoke hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -89,6 +89,9 @@ status: ## Show whether the daemon is running
 
 logs: ## Tail the background daemon log
 	@touch $(LOG); tail -f $(LOG)
+
+db: ## Open the Mission Control SQLite database in a read-only shell
+	node scripts/db-shell.mjs
 
 build: $(NPM_STAMP) ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
 	npm run build

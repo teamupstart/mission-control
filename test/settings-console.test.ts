@@ -14,26 +14,35 @@ import {
   ShippingSettingsPanel,
   MERGE_STRIP_BUCKETS,
 } from "../src/web/components/ShippingSettingsPanel.tsx";
+import { ForemanSettingsPanel } from "../src/web/components/ForemanSettingsPanel.tsx";
+import { CONSOLE_PAGE_SIZE, consolePage } from "../src/web/components/settings-console.tsx";
 // The folds themselves live in `lib/pr-standing.ts`, which is where the Ship log reads them
 // from too; the panel keeps only the STRIP - its tiles, their tones and their copy.
 import { mergeBucket, mergeTallies } from "../src/web/lib/pr-standing.ts";
 import { InspectorConfigSchema } from "../src/shared/protocol.ts";
 import type { InspectorState } from "../src/web/useInspector.ts";
 import type { ShippingState } from "../src/web/useShipping.ts";
-import type { InspectorInspection } from "../src/shared/types.ts";
+import type { ForemanState } from "../src/web/useForeman.ts";
+import type { ForemanConfig } from "../src/shared/protocol.ts";
+import type { ForemanEpisodeSummary, InspectorInspection } from "../src/shared/types.ts";
 
 // What is at stake: the settings panels that own a LEDGER are drawn from one set of pieces
-// (`settings-console.tsx`), and Inspector and Shipping are the two this file covers. Two
-// things have to stay true, and neither is visible in a diff of one file.
+// (`settings-console.tsx`) - Inspector, Shipping and Foreman. Three things have to stay
+// true, and none is visible in a diff of one file.
 //
 //  1. The count strip is also the filter. A tile that says "3 blocked" and then shows two
 //     rows is worse than no tile at all - it is a number the operator now distrusts on the
 //     one screen where the whole point is to explain why nothing is happening. So the
 //     tallies and the filter are derived from ONE bucket function, and this pins that.
-//  2. The two panels keep the same vocabulary. They looked alike before, in two parallel
+//  2. The panels keep the same vocabulary. They looked alike before, in two parallel
 //     class sets that had already drifted; a chip restyled on one side only says these two
 //     subsystems work differently, which is the last thing "posts a comment" and "lands a
 //     commit on the default branch" should imply about each other.
+//  3. Every one of them BOUNDS its ledger, and bounds it the same way. This is the drift a
+//     shared class name could not prevent and `ConsoleTable` now does: Foreman grew a
+//     height budget when its list reached 100 rows, and Inspector and Shipping reached 50
+//     and grew nothing, so two of the three ran the settings page on for screens of table
+//     beside a control column a quarter of their height.
 //
 // Rendered as static markup rather than driven in a browser, same reason as
 // inspector-panel and shipping-panel-warnings: the dashboard holds an SSE connection open
@@ -244,14 +253,148 @@ function shippingHtml(): string {
   );
 }
 
-test("both outbound panels are drawn from the same settings-console pieces", () => {
+const FOREMAN_CONFIG: ForemanConfig = {
+  enabled: true,
+  mode: "live",
+  repoAllowlist: ["/repo"],
+  autoApproveAccess: true,
+  triage: "shadow",
+  maxFixAttempts: 3,
+  maxFixRounds: 10,
+  skipScoutWrapup: true,
+  skipReviewArtifactWrapup: true,
+  wrapupTriggers: ["drain"],
+  wrapup: "ask",
+  trackReviewFeedback: true,
+  trackCiFailures: true,
+  autoBacklog: false,
+  backlogRespectOpenPrs: true,
+  backlogDefaultModel: { claude: null, codex: null, pi: null },
+  maxSessions: 3,
+};
+
+function episode(over: Partial<ForemanEpisodeSummary> = {}): ForemanEpisodeSummary {
+  return {
+    id: 1,
+    noteKey: "3f2a91cc-0d44-4d1e-9f1a-000000000001",
+    marker: "m1",
+    ask: "Needs approval: Bash",
+    purpose: "Polling GitHub until the pending CI job finishes.",
+    tier: 2,
+    cheapAction: null,
+    divergence: null,
+    disposition: "answered",
+    classification: "access",
+    triageReason: "routine-access",
+    skipReason: null,
+    resolvedBy: "foreman",
+    createdAt: 1_700_000_000_000,
+    ...over,
+  };
+}
+
+function foremanHtml(episodes: ForemanEpisodeSummary[] = [episode()]): string {
+  const state: ForemanState = {
+    config: FOREMAN_CONFIG,
+    status: null,
+    backlogPlan: null,
+    episodes,
+    update: async () => true,
+    error: null,
+  };
+  return renderToStaticMarkup(
+    createElement(ForemanSettingsPanel, { state, onNavigate: () => {} }),
+  );
+}
+
+test("every ledger panel is drawn from the same settings-console pieces", () => {
+  for (const [name, html] of [
+    ["inspector", inspectorHtml()],
+    ["shipping", shippingHtml()],
+    // Foreman carries no master switch (its enable lives in the topbar popover), so it is
+    // held to the pieces every ledger panel has rather than to all of them.
+    ["foreman", foremanHtml()],
+  ] as const) {
+    for (const cls of ["sc-split", "sc-card", "sc-state", "sc-strip", "sc-table", "sc-scroll"]) {
+      assert.match(html, new RegExp(cls), `${name} is missing ${cls}`);
+    }
+  }
   for (const [name, html] of [
     ["inspector", inspectorHtml()],
     ["shipping", shippingHtml()],
   ] as const) {
-    for (const cls of ["sc-split", "sc-card", "sc-switch", "sc-state", "sc-strip", "sc-table"]) {
-      assert.match(html, new RegExp(cls), `${name} is missing ${cls}`);
-    }
+    assert.match(html, /sc-switch/, `${name} is missing sc-switch`);
+  }
+});
+
+// ---- one page, on every ledger ---------------------------------------------------------
+//
+// The fold, first. The clamp is the half a rendered page cannot show: these lists are
+// POLLED, and the strip above them is a filter, so the row count moves underneath an
+// operator who is sitting on the last page.
+
+test("a page is a slice, and its readout is 1-based over the whole list", () => {
+  const rows = Array.from({ length: 60 }, (_, i) => i);
+  const first = consolePage(rows, 1, 25);
+  assert.deepEqual([...first.rows], rows.slice(0, 25));
+  assert.deepEqual([first.page, first.pages, first.from, first.to, first.total], [1, 3, 1, 25, 60]);
+
+  const last = consolePage(rows, 3, 25);
+  assert.deepEqual([...last.rows], rows.slice(50));
+  assert.deepEqual([last.page, last.from, last.to], [3, 51, 60]);
+});
+
+test("a page past the end of a list that shrank under it clamps to the last one", () => {
+  // The operator is on page 3 and a merge sweep retires most of the ledger. Unclamped this
+  // renders an empty table with rows in it, which reads as the ledger having broken.
+  const shrunk = consolePage([1, 2, 3], 3, 25);
+  assert.deepEqual([...shrunk.rows], [1, 2, 3]);
+  assert.deepEqual([shrunk.page, shrunk.pages, shrunk.from, shrunk.to], [1, 1, 1, 3]);
+
+  // And a page below the first, which no button can produce but a future caller could.
+  assert.equal(consolePage([1, 2, 3], 0, 25).page, 1);
+  assert.equal(consolePage([1, 2, 3], -4, 25).page, 1);
+});
+
+test("an empty ledger is one page that reports no rows, not a zeroth page", () => {
+  const none = consolePage([], 1, 25);
+  assert.deepEqual([none.pages, none.from, none.to, none.total], [1, 0, 0, 0]);
+});
+
+test("a ledger longer than a page shows one page of rows and a pager", () => {
+  const rows = Array.from({ length: CONSOLE_PAGE_SIZE + 12 }, (_, i) =>
+    row({ key: `owner/repo#${i}`, number: i, url: `https://github.com/owner/repo/pull/${i}` }),
+  );
+  const html = renderToStaticMarkup(
+    createElement(InspectorSettingsPanel, {
+      state: {
+        config: InspectorConfigSchema.parse({ enabled: true, mode: "live" }),
+        inspections: rows,
+        model: null,
+        update: async () => true,
+        error: null,
+      } satisfies InspectorState,
+      onNavigate: () => {},
+    }),
+  );
+  assert.equal(
+    (html.match(/class="sc-pr"/g) ?? []).length,
+    CONSOLE_PAGE_SIZE,
+    "the whole ledger is on screen - the page size is not being applied",
+  );
+  assert.match(html, /class="sc-pager-range"[^>]*>1-25 of 37</);
+  // Both directions exist as real buttons, and the one with nowhere to go is disabled
+  // rather than absent - a control that appears and disappears under the cursor is worse
+  // than one that is visibly unavailable.
+  assert.match(html, /<button[^>]*class="sc-pager-btn"[^>]*disabled=""[^>]*>Newer<\/button>/);
+  assert.match(html, /<button[^>]*class="sc-pager-btn"(?![^>]*disabled)[^>]*>Older<\/button>/);
+});
+
+test("a ledger that fits on one page draws no pager at all", () => {
+  // Nothing to page, and nothing the reader has not been shown. A range that can only ever
+  // read "1-1 of 1" over two dead buttons is a control that has never done anything.
+  for (const html of [inspectorHtml(), shippingHtml(), foremanHtml()]) {
+    assert.doesNotMatch(html, /sc-pager/);
   }
 });
 

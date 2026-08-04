@@ -80,7 +80,9 @@ function state(over: Partial<WorkflowSettingsState> = {}): WorkflowSettingsState
 
 function render(over: Partial<WorkflowSettingsState> = {}): string {
   return renderToStaticMarkup(
-    withOverlayHost(createElement(WorkflowSettingsPanel, { state: state(over) })),
+    withOverlayHost(
+      createElement(WorkflowSettingsPanel, { state: state(over), onNavigate: () => {} }),
+    ),
   );
 }
 
@@ -113,6 +115,7 @@ test("the settings panel offers active published Workflows as the dispatch defau
   const html = renderToStaticMarkup(
     withOverlayHost(createElement(WorkflowSettingsPanel, {
       state: state(ANSWERED),
+      onNavigate: () => {},
       foremanEnabled: true,
       workflows: [{
         id: "workflow-review",
@@ -189,8 +192,13 @@ test("with no answer from the daemon the panel says so rather than showing defau
   assert.match(html, /is unknown/);
   assert.doesNotMatch(
     html,
-    /No repositories yet - Live delivery has nowhere to send/,
+    /Workflows may act in no repositories yet/,
     "an unanswered panel must not assert an empty allowlist",
+  );
+  assert.match(
+    html,
+    /Unknown - the daemon hasn.{0,8}t said/,
+    "the grant count reads unknown, which is not the same as zero",
   );
   assert.match(
     html,
@@ -199,11 +207,12 @@ test("with no answer from the daemon the panel says so rather than showing defau
   );
 });
 
-test("an answered panel lists the allowlist and the health counters", () => {
+test("an answered panel counts the allowlist and carries the health counters", () => {
   const html = render(ANSWERED);
   assert.doesNotMatch(html, /wf-settings-unknown/);
-  assert.match(html, /<code>\/src\/mission-control<\/code>/);
-  assert.match(html, /Remove<\/button>/);
+  // The one granted repo is a COUNT here, not a row: the paths themselves live in Trust,
+  // which is the surface that can also say what else that repo is trusted with.
+  assert.match(html, /Workflows may act in 1 repository\b/);
   // The counters come from the status payload, not from a placeholder. The two that mean
   // "somebody must look" were promoted out of this list into the strip; what is left is the
   // throughput and sweep bookkeeping, and it still has to carry real numbers.
@@ -212,9 +221,73 @@ test("an answered panel lists the allowlist and the health counters", () => {
   assert.match(html, /Running Persona calls<\/span><span class="sc-health-value">7</);
 });
 
-test("an empty allowlist says Live delivery has nowhere to send", () => {
+// The defect class the Inspector caught on this panel, pinned rather than the one sentence.
+//
+// When the repo list moved to Trust, three of the four sentences describing "which
+// repositories" were reworded to name Trust and one was left pointing at the page itself
+// ("the repositories granted below"). It rendered perfectly and was wrong: an operator who
+// followed it downward found a count and a link, not the list the sentence promised.
+//
+// So the invariant is spatial, not lexical - no sentence on this panel may locate the
+// repository grant ON this panel - which also catches the next sentence someone adds. The
+// legitimate "below"s here (the controls, the retention stages, the check-command table)
+// are all about things that really are below, and none of them mentions a repository.
+//
+// Driven over EVERY state the panel renders, which is the whole difficulty: the offending
+// sentence lives behind `liveEnabled`, so a scan of the default fixture passes while the bug
+// is on screen. A guard that cannot see the copy it guards is worse than none - it reports
+// safety it never checked. The two conditional warnings are each other's blind spot, so both
+// switches are turned on here.
+const COPY_STATES: [string, Partial<WorkflowSettingsState>][] = [
+  ["unanswered", {}],
+  ["answered, live off", ANSWERED],
+  ["live on", { config: { ...ANSWERED.config, liveEnabled: true }, status: STATUS }],
+  ["checks on", { config: { ...ANSWERED.config, checksEnabled: true }, status: STATUS }],
+  [
+    "live and checks on",
+    {
+      config: { ...ANSWERED.config, liveEnabled: true, checksEnabled: true },
+      status: STATUS,
+    },
+  ],
+];
+
+test("no sentence on the panel claims the granted repositories are on this page", () => {
+  for (const [label, state] of COPY_STATES) {
+    // Segmented on ELEMENT boundaries as well as sentence ends. Collapsing the markup to one
+    // string first glues a tooltip label (which has no full stop) onto the paragraph after
+    // it, and the pair reads as one sentence containing both "below" and "repository" when
+    // neither element says both - a false positive that would make this guard useless the
+    // day it fired.
+    const offenders = render(state)
+      .replace(/<[^>]+>/g, "\n")
+      .replace(/&#x27;/g, "'")
+      .split("\n")
+      .flatMap((block) => block.split(/(?<=\.)\s+/))
+      .map((s) => s.replace(/\s+/g, " ").trim())
+      .filter((s) => /repositor/i.test(s) && /\b(above|below)\b/i.test(s));
+    assert.deepEqual(
+      offenders,
+      [],
+      `${label}: a sentence about repositories points at this page, but the grant is in Trust`,
+    );
+  }
+});
+
+// The guard above is only worth having if the states it scans really do carry the sentences.
+// Pinned separately so a fixture that quietly stops rendering the conditional warnings fails
+// here - loudly - instead of turning the scan into a no-op that always passes.
+test("the copy scan actually reaches both conditional warnings", () => {
+  const live = render({ config: { ...ANSWERED.config, liveEnabled: true }, status: STATUS });
+  assert.match(live, /Live bindings write into a real terminal pane/);
+  const checks = render({ config: { ...ANSWERED.config, checksEnabled: true }, status: STATUS });
+  assert.match(checks, /A check runs a command in the repository under review/);
+});
+
+test("an empty allowlist reads as a real nowhere, not as an unanswered daemon", () => {
   const html = render({ config: DEFAULT_WORKFLOW_CONFIG, status: STATUS });
-  assert.match(html, /No repositories yet - Live delivery has nowhere to send/);
+  assert.match(html, /Workflows may act in no repositories yet/);
+  assert.doesNotMatch(html, /Unknown - the daemon hasn.{0,8}t said/);
 });
 
 // The consent sentence is part of the feature, not decoration: it is what an operator reads
@@ -427,17 +500,19 @@ test("the last sweep reports nothing until a sweep has run", () => {
   assert.match(render({ config: ANSWERED.config }), /Last sweep removed<\/span><span[^>]*>unknown</);
 });
 
-// Not a `TrustGrantSummary`. Workflows is not a column of the Trust matrix, so a summary
-// pointing at Trust for a grant Trust does not hold would be a dead link - the editor stays
-// here, inside the card.
-test("the allowlist keeps its own editor rather than pointing at Trust", () => {
+// The inverse of what this test used to pin. Workflows IS a column of the Trust matrix now,
+// so the editor moved there and the card summarises it - one repo list with one editor, on
+// the surface that can show what else the same repo is trusted with. Two editors over one
+// stored list is the state this rules out: they would disagree the moment either polled.
+test("the allowlist card summarises the grant and points at Trust, editing nothing", () => {
   const html = render(ANSWERED);
   const card = /<section class="sc-card" data-anchor="workflows\/allowlist">(.*?)<\/section>/s
     .exec(html);
   assert.ok(card, "the allowlist should be a console card on its anchor");
-  assert.match(card[1]!, /id="workflow-allowlist-path"/, "the add box stays on this panel");
-  assert.match(card[1]!, /Add repository/);
-  assert.doesNotMatch(html, /trust-grant/, "no Trust summary stands in for this editor");
+  assert.match(card[1]!, /trust-summary/, "the card carries the shared grant summary");
+  assert.match(card[1]!, /Manage in Trust/);
+  assert.doesNotMatch(card[1]!, /id="workflow-allowlist-path"/, "no add box survives here");
+  assert.doesNotMatch(card[1]!, /Add repository/);
 });
 
 // No run list. The whole reason this panel takes the leaves and the strip but not the
@@ -654,15 +729,16 @@ test("the check row's repository box is the shared picker, empty, and still labe
   assert.match(pre[0], /disabled/, "an unanswered daemon leaves the picker inert");
 });
 
-// Scope, pinned: the adjacent Allowed repositories box is a DIFFERENT flow and was left as
-// it was. Its "Add repository" button grants Live delivery, so a picker there is a decision
-// about consent, not about convenience, and it is not this change's to make.
-test("the allowlist add box is left as a plain text input", () => {
-  const card = /<section class="sc-card" data-anchor="workflows\/allowlist">(.*?)<\/section>/s
-    .exec(render(ANSWERED));
-  assert.ok(card, "the allowlist card should render");
-  assert.match(card[1]!, /id="workflow-allowlist-path"/);
-  assert.doesNotMatch(card[1]!, /combobox/, "this row is not part of the picker change");
+// Scope, pinned: the check row's picker is a DIFFERENT flow from the grant that moved to
+// Trust. A check command is a per-repository mapping, not a permission - it decides what a
+// slot runs, never where a workflow may act - so it stays on this panel with its own box.
+test("the check row keeps its picker on this panel, separate from the grant", () => {
+  const html = render(ANSWERED);
+  const card = /<div class="wf-settings-checks-table"[^>]*>(.*?)<p class="settings-hint wf-settings-check-preview">/s
+    .exec(html);
+  assert.ok(card, "the check commands table should render");
+  assert.match(card[1]!, /id="workflow-check-path"/);
+  assert.match(card[1]!, /combobox/, "the check path is picked, not typed from memory");
 });
 
 // The one thing about this picker that no render can see, and the thing it is useless

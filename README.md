@@ -91,7 +91,13 @@ and get your decision back.
 ```sh
 make init          # one-time bootstrap (deps, build, hooks, treehouse)
 make dev           # daemon + Vite, open http://127.0.0.1:5173
+make db            # inspect the live SQLite database in a read-only shell
 ```
+
+`make db` resolves the same state directory as the daemon and opens its `harness.db`
+with both SQLite read-only mode and `PRAGMA query_only` enabled. See the
+[SQLite database field guide](docs/sqlite-database.html) for the table catalog, storage
+conventions, query examples, and offline backup guidance.
 
 `make init` is idempotent - it installs dependencies, builds, wires the Claude
 hooks, and makes sure [treehouse](#isolated-worktrees-per-session-treehouse) is
@@ -2880,11 +2886,16 @@ the run visibly rather than reporting a verdict.
 **Checks are consent-gated twice**, and are off by default. **Settings → Workflows**
 (`#/settings/workflows`) carries both controls: **Enable workflow check commands**, the switch,
 and **Check commands**, the table of repository root, slot and argv. The switch alone is not
-enough - the repository must also be on the same Workflow allowlist Live delivery uses, and
-neither is granted by default. Enabling both authorizes running code the reviewed branch
-supplies - its scripts, dependencies and build steps - with the daemon's own filesystem
-authority. **This is not a sandbox**, and the allowlist rather than anything in the runtime is
-what bounds it.
+enough - the repository must also hold the **Workflows** grant in
+**Settings → Trust** (`#/settings/trust`), the same grant Live delivery uses, and neither is
+granted by default. Enabling both authorizes running code the reviewed branch supplies - its
+scripts, dependencies and build steps - with the daemon's own filesystem authority. **This is
+not a sandbox**, and the grant rather than anything in the runtime is what bounds it.
+
+Because that pairing is the heaviest thing any grant in the matrix permits, Trust flies a
+double dagger on every Workflows cell while the check switch is on, names those repositories,
+and offers **Turn checks off** in place. A grant with checks off is not flagged: no command
+can run, and amber on an inert grant is how a matrix teaches you to stop reading it.
 
 **Checks share the treehouse pool with dispatch.** Two check commands run at once, and each one
 holds a pooled worktree for as long as it runs - drawn from the same `max_trees` a dispatched
@@ -3229,9 +3240,11 @@ leaving **Cancel run** as the only thing to reach.
 
 Live workflow delivery is **on by default, and authorised nowhere**. Those are two halves of
 one gate, and only the second one is consent: the switch says *this machine may type repair
-packets into panes*, and the **Workflow allowlist** says *in these repositories*. The allowlist
+packets into panes*, and the **Workflows** grant says *in these repositories*. The grant
 ships empty, so a fresh install delivers nothing until you name a repository. Open
-**Settings → Workflows** (`#/settings/workflows`) and add canonical repository roots.
+**Settings → Trust** (`#/settings/trust`), add a canonical repository root, and click its
+**Workflows act** cell. **Settings → Workflows** (`#/settings/workflows`) holds the switch and
+reports how many repositories hold the grant, with a link into the matrix.
 
 It is that way round because two gates that both default closed means the second one never
 gets read. With Live off by default the loop below was dead on arrival for everyone - the
@@ -3239,12 +3252,14 @@ packet was prepared, never sent, and the run parked forever - while the allowlis
 carrying the consent the switch looked like it was carrying. A run that has nowhere to deliver
 says so: the refusal is `live_not_authorized` on the run, not silence.
 
-A Live binding can be saved only while its current session is in an allowlisted checkout.
-Removing consent keeps the binding choice visible but refuses the next delivery; it is never
-silently changed to Preview. The same panel holds the second, independent switch for
-[Check nodes](#check-nodes), which shares that allowlist and is still
+A Live binding can be saved only while its current session is in a granted checkout. Revoking
+consent keeps the binding choice visible but refuses the next delivery; it is never silently
+changed to Preview. The Workflows panel holds the second, independent switch for
+[Check nodes](#check-nodes), which shares that one grant and is still
 **off** by default, because it grants something different in kind: running branch-authored code
-on your disk, rather than typing text a human can read before it acts.
+on your disk, rather than typing text a human can read before it acts. One cell in Trust,
+two capabilities, each still armed by its own switch - which is why the cell's tooltip names
+both, and why revoking it stops delivery and checks together.
 
 When a Persona failure returns to Session, the daemon renders one bounded deterministic repair
 packet in published graph order. The packet preserves the original raw goal, identifies the
@@ -3760,7 +3775,8 @@ Foreman drawer, so there was no answer anywhere to *what has this thing actually
 doing* - which is the question you open its settings to ask before giving it more rope.
 The count strip above the table filters it: **escalated**, **drafted**, **answered**,
 **left alone**. The last 100 decisions are shown, and episodes are kept for 30 days, so the
-list reaches back only as far as the cap allows.
+list reaches back only as far as the cap allows - 25 rows to a page, walked with **Newer**
+and **Older**, in the [same table](#dry-run) the Inspector and Shipping panels use.
 
 A row leads with **what the decision was for**, not with what was literally asked. The
 verbatim ask is not an identity - `Needs approval: Bash` and `running AskUserQuestion` cover
@@ -4312,7 +4328,9 @@ repo before the source exists, and the source still starts switched off.
 **Workflows** joined the rail later, from a floating drawer on the page the run list used to
 share with the builder. It carries
 the same four things the drawer did - the [Live delivery](#live-repair-delivery-and-foreman-completion)
-switch and its explicit warning, the repositories Live delivery may send in, the
+switch and its explicit warning, the scope of repositories Live delivery may send in (a grant
+**count** and a **Manage in Trust** link, since the list itself became a
+[Trust](#trust-who-may-act-in-which-repository) column), the
 [retention](#retention-history-exports-and-workflow-health) limits (shortening one still asks
 first), and the health counters - on the same routes, with nothing about the config changed. What
 it gains by being here is everything a drawer could not have: a rail row, a scope badge, a deep
@@ -4391,18 +4409,25 @@ is on screen when it changes.
 
 ### Trust (who may act in which repository)
 
-Three subsystems act on GitHub under your account, and each keeps its own list of the repos
-it is allowed to act in: Foreman sends live, the Inspector posts reviews, and Shipping
-(YOLO) merges. **Settings → Trust** (`#/settings/trust`) is one table over all three - a row
-per repository, a column per grant - so the whole surface of "what may act where" is on one
-screen instead of scattered across three panels.
+Four subsystems act outside this app, and each keeps its own list of the repos it is allowed
+to act in: Foreman sends live, Workflows deliver repairs and run checks, the Inspector posts
+reviews, and Shipping (YOLO) merges. **Settings → Trust** (`#/settings/trust`) is one table
+over all four - a row per repository, a column per grant - so the whole surface of "what may
+act where" is on one screen instead of scattered across four panels. Columns run local blast
+radius first (Foreman, Workflows), then GitHub (Inspector, YOLO).
 
 - **It is a view, not a new store.** Each column is the subsystem's existing allowlist;
   ticking a cell writes to that subsystem's own config through the same route its panel used
-  to, and the daemon's three consent gates are unchanged. The Foreman, Inspector and Shipping
-  panels now show a grant **count** and a **Manage in Trust** link where their repo editors
-  used to be - a grant is not the same permission in each column, which is the whole reason
-  they stay three lists.
+  to, and the daemon's four consent gates are unchanged. The Foreman, Workflows, Inspector and
+  Shipping panels now show a grant **count** and a **Manage in Trust** link where their repo
+  editors used to be - a grant is not the same permission in each column, which is the whole
+  reason they stay four lists.
+- **One column carries two capabilities**, and says so. Workflows stores a single allowlist
+  that gates both Live repair delivery and Check-node command execution, so the matrix draws
+  one cell and its tooltip names both. Two columns over one stored list would flip together
+  and lie about being separate grants; splitting them for real would take two stored lists
+  first. Each capability still has its own switch in **Settings → Workflows**, so the cell is
+  necessary for both and sufficient for neither.
 - **Adding is configuration; enabling is consent.** Adding a repo (resolved and canonicalized
   first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
   off, one deliberate click each. A staged, ungranted repo is remembered per machine so it
@@ -4412,8 +4437,24 @@ screen instead of scattered across three panels.
 - **The blind spot is visible.** If YOLO may merge in a repo the Inspector may not review,
   nothing there can ever qualify - the merge cell and the empty review cell both go amber, and
   a footnote offers the two fixes in place: **grant the review**, or **revoke the merge**.
-  Shipping's own dependency warnings link straight here. The rail's Trust dot summarizes the
-  same blind spot.
+  Shipping's own dependency warnings link straight here. The rail's Trust dot carries it, so
+  the trap is visible from any other category.
+- **So is the heaviest grant.** While workflow check commands are switched on, every granted
+  Workflows cell flies a **double dagger** and a footnote names those repositories: a Check
+  node may run branch-authored code there with the daemon's filesystem authority, and it is
+  not a sandbox. **Turn checks off** is offered in place. This one is not a contradiction like
+  the merge trap - nothing is stuck - it is flagged because a cell reading "allowed" cannot
+  show that on its own and the confirm dialog was agreed to once, months ago. The rail's Trust
+  dot carries this one too.
+- **The warning outlives the connection.** Both surfaces remember the last **confirmed**
+  arming, so a failed config poll cannot retire them. This is a deliberate exception to the
+  daemon-reading rule everywhere else in Settings, where a failed read becomes "unknown" and
+  replaces the last good value: that is right for a switch, whose stale posture must never be
+  drawn as current, and wrong for a safety claim, which would then switch itself off five
+  seconds after the daemon went quiet. Nothing about an unreachable daemon disarms the switch
+  it is storing. While the config is unreadable the footnote says so and stops naming
+  repositories - it cannot see which - but it does not go silent, and it is never invented:
+  a page that has never read a config claims nothing.
 
 ## The Line (the pipeline strip above the fleet)
 
@@ -5193,6 +5234,14 @@ failure, which is the difference between an Inspector that is quiet and one that
 erroring for three hours; in the list those look identical, because every row simply keeps
 its last verdict.
 
+The table shows 25 rows at a time, with **Newer** and **Older** under it and a `1-25 of 50`
+readout between them, and it scrolls inside its own frame rather than growing the page. This
+is the same table the Shipping and Foreman panels use, on purpose: the strip is the only
+control for shortening the list, so it has to stay in view while you read the list it
+filters. Picking a tile starts that filtered list at its first page, and the pager is absent
+when everything already fits. The Inspector's list is the 50 most recently reviewed pull
+requests, so the total counts what this panel was served, not everything the database holds.
+
 ## Shipping (YOLO mode)
 
 **Settings → Shipping** is where you decide what lands without you. **YOLO mode** merges
@@ -5277,7 +5326,8 @@ three open findings, not on the allowlist. *Soaking* is its own tile in the stri
 than part of *held at a gate*, because it is the one block that clears itself - counting it
 as an obstruction is how the safety valve ends up turned down to zero. When GitHub refuses the merge
 outright - a branch protection rule this app cannot see - its own message is shown there
-verbatim, because that is the only account you get of a rule nothing here can read.
+verbatim, because that is the only account you get of a rule nothing here can read. The
+queue is drawn as the [same paged table](#dry-run) the Inspector's is, over the same 50 rows.
 
 ### When a task's pull request merges
 

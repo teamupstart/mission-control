@@ -158,7 +158,7 @@ export const SETTINGS_CATEGORIES = [
     // The same glyph the topbar's Workflows button carries, so the rail row and the page
     // it configures are recognisably the same subsystem.
     icon: "⌘",
-    blurb: "Live repair delivery, its trusted repos, and how long run history is kept",
+    blurb: "Live repair delivery, check commands, and how long run history is kept",
     group: "background",
     // `machine`, not `home`: Live delivery types a repair packet into a terminal pane, and
     // the config itself lives in the daemon's own state - nothing here edits a file in the
@@ -221,7 +221,21 @@ export const SETTINGS_CATEGORIES = [
     blurb: "Which repositories each subsystem may act in",
     group: "outbound",
     scope: "github",
-    keywords: ["allowlist", "repo", "repository", "permission", "grant", "matrix", "merge", "review"],
+    keywords: [
+      "allowlist",
+      "repo",
+      "repository",
+      "permission",
+      "grant",
+      "matrix",
+      "merge",
+      "review",
+      // Workflows' grant lives here now, so the words an operator would search for to find
+      // its repo list have to resolve to this category rather than only to `workflows`.
+      "workflow",
+      "live delivery",
+      "check",
+    ],
   },
 ] as const satisfies readonly {
   id: string;

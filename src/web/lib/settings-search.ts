@@ -243,10 +243,14 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "workflow-allowlist",
     label: "Workflow allowed repositories",
-    description: "Where Live workflow delivery may send - and nowhere else.",
+    // Still a `workflows` row, and it still lands on `workflows/allowlist`, because that is
+    // where an operator asking this question is going: the card names the count and carries
+    // the Manage-in-Trust link. Pointing the row straight at `trust/matrix` would skip the
+    // sentence explaining that one grant covers both delivery and checks.
+    description: "Where Live delivery may send and Check nodes may run. Granted in Trust.",
     category: "workflows",
     anchor: "workflows/allowlist",
-    keywords: ["allowlist", "repo", "repository", "workflow", "live delivery", "grant"],
+    keywords: ["allowlist", "repo", "repository", "workflow", "live delivery", "grant", "trust"],
     kind: "jump",
   },
   {

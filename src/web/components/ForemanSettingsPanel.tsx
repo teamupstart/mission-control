@@ -20,8 +20,10 @@ import {
   ConsoleCard,
   ConsoleState,
   ConsoleStrip,
+  ConsoleTable,
   SessionRef,
   sessionHandle,
+  type ConsoleColumn,
   type ConsoleStat,
 } from "./settings-console.tsx";
 
@@ -327,6 +329,21 @@ const EMPTY_FILTER: Record<EpisodeBucket, string> = {
   answered: "Foreman has not answered anything itself yet.",
   skipped: "Every decision here was answered by somebody.",
 };
+
+/**
+ * The ledger's column names. The shadow column is appended only under the posture that
+ * MEASURES - see `showShadow` for why an empty 112px track is not free.
+ */
+function columns(showShadow: boolean): readonly ConsoleColumn[] {
+  return [
+    { label: "Session" },
+    { label: "Asked" },
+    { label: "Outcome" },
+    { label: "Decided by" },
+    ...(showShadow ? [{ label: "Cheap tier" }] : []),
+    { label: "When", className: "sc-when" },
+  ];
+}
 
 /** How a divergence reads in the ledger, and how loud it is. */
 const DIVERGENCE_LABEL: Record<string, string> = {
@@ -695,60 +712,45 @@ export function ForemanSettingsPanel({
             active={filter}
             onPick={setFilter}
           />
-          <div className={`sc-table sc-table-foreman${showShadow ? " has-shadow" : ""}`}>
-            <div className="sc-head">
-              <h3>Decisions</h3>
-              {active && (
-                <Tooltip label="Show every recorded decision again">
-                  <button type="button" className="sc-clear" onClick={() => setFilter(null)}>
-                    {active.label} only - show all
-                  </button>
-                </Tooltip>
-              )}
-            </div>
-            <div className="sc-row sc-row-head" aria-hidden="true">
-              <span>Session</span>
-              <span>Asked</span>
-              <span>Outcome</span>
-              <span>Decided by</span>
-              {showShadow && <span>Cheap tier</span>}
-              <span className="sc-when">When</span>
-            </div>
-            {/* The rows scroll INSIDE the table, and the header and strip above them do
-                not. At the 100-row cap this list is about 3,500px tall - it was rendered
-                whole into the page's own scroller, beside a control column a quarter of
-                its height, so the panel ran on for two and a half screens of nothing but
-                table. Worse than the length was what the length did to the controls: the
-                count strip is the filter, and it scrolled out of reach on the first flick,
-                so the one affordance for cutting the list down was only available from a
-                position where you could not see the list. */}
-            <div className="sc-scroll">
-              {rows.length === 0 ? (
-                <p className="settings-hint sc-empty">
-                  {episodes.length === 0
-                    ? "Nothing yet. Every prompt Foreman decides on appears here, across every session."
-                    : EMPTY_FILTER[active!.id]}
-                </p>
-              ) : (
-                rows.map((row) => (
-                  <EpisodeLedgerRow
-                    key={`${row.noteKey}:${row.marker}`}
-                    row={row}
-                    now={now}
-                    showShadow={showShadow}
-                    open={opened === row.id}
-                    onToggle={() => setOpened(opened === row.id ? null : row.id)}
-                  />
-                ))
-              )}
-            </div>
-          </div>
-          <p className="settings-hint sc-foot">
-            The last {FOREMAN_EPISODE_LEDGER} decisions across every session, newest first.
-            Episodes are kept for 30 days, so this list reaches back only as far as the cap
-            allows. Open a row for the ask, the screen it was read on, Foreman&apos;s
-            reasoning, and what was sent back.
-          </p>
+          <ConsoleTable
+            title="Decisions"
+            variant="foreman"
+            modifier={showShadow ? "has-shadow" : undefined}
+            columns={columns(showShadow)}
+            rows={rows}
+            rowKey={(row) => `${row.noteKey}:${row.marker}`}
+            filter={
+              active && {
+                label: active.label,
+                hint: "Show every recorded decision again",
+                onClear: () => setFilter(null),
+              }
+            }
+            // Total, not `active!` - see the Inspector's for why. It is computed on every
+            // render, including the ones where the table has rows to show instead.
+            empty={
+              active === null || episodes.length === 0
+                ? "Nothing yet. Every prompt Foreman decides on appears here, across every session."
+                : EMPTY_FILTER[active.id]
+            }
+            foot={
+              <>
+                The last {FOREMAN_EPISODE_LEDGER} decisions across every session, newest first.
+                Episodes are kept for 30 days, so this list reaches back only as far as the cap
+                allows. Open a row for the ask, the screen it was read on, Foreman&apos;s
+                reasoning, and what was sent back.
+              </>
+            }
+            renderRow={(row) => (
+              <EpisodeLedgerRow
+                row={row}
+                now={now}
+                showShadow={showShadow}
+                open={opened === row.id}
+                onToggle={() => setOpened(opened === row.id ? null : row.id)}
+              />
+            )}
+          />
         </div>
       </div>
 

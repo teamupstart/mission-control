@@ -5,130 +5,185 @@
  * rows - the bar grew from 110px to 191px between a maximised window and half a screen,
  * and everything under it shrank by however much the bar had chosen to sprawl.
  *
- * The replacement is a five-rung `@container` ladder, and it has three failure modes that
- * are all completely silent - no console, no compile error, and a diff that reads fine:
+ * The replacement is a five-rung ladder, applied by MEASUREMENT: `fitTopbar` puts the bar at
+ * rung 0, asks whether it wrapped, and steps down until it did not, writing the rungs it
+ * landed on into `data-rung`. It replaced a `@container topbar (max-width: Npx)` ladder that
+ * keyed on the width the bar HAD rather than the width its content NEEDED - two independent
+ * quantities, because the pulse is sized by its own text and swings 457px with the fleet.
  *
- * 1. `.topbar` stops declaring a container. Every `@container topbar` rule below is then
- *    dead, the bar reverts to wrapping, and nothing says so.
- * 2. A rung is authored ABOVE the base rule it overrides. `@container` adds no
- *    specificity, so source order alone decides - `.filter-input { width: 150px }` after
- *    the rung that zeroes it simply wins. This one bit during development: the pulse
- *    collapsed and the filter did not.
- * 3. A rung sheds a label with `display: none`. The bar looks right and every collapsed
+ * The failure modes are all completely silent - no console, no compile error, and a diff that
+ * reads fine:
+ *
+ * 1. The CSS and `TOPBAR_RUNGS` disagree on how many rungs there are. The fit then either
+ *    stops one rung early with room still to give back, or steps onto a rung that does not
+ *    exist and reports the bar unfittable.
+ * 2. `.topbar` stops wrapping. The fit READS `flex-wrap`, so `nowrap` means it can never
+ *    observe a second row, never steps down at all, and the bar silently overflows instead.
+ * 3. A rung animates a LAYOUT property in the collapsing direction. While the animation runs
+ *    the property still has its old value, so the rung frees nothing on the frame it is
+ *    applied: the fit steps straight past it looking for room it had already found, and the
+ *    bar flashes two rows before settling several rungs over-collapsed.
+ * 4. A rung sheds a label with `display: none`. The bar looks right and every collapsed
  *    control loses its accessible name at the same time, turning a narrow window into a
  *    row of unnamed icons.
  *
  * Driven from source for the reason `topbar-popover-dismiss.test.ts` gives: App sits
- * behind an SSE stream that hangs headless automation, and there is no jsdom here.
+ * behind an SSE stream that hangs headless automation, and there is no jsdom here. What a
+ * browser has to answer instead - that the bar actually stays on one row, at every width and
+ * on every fleet - is `e2e/specs/topbar-one-row.spec.ts`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { TOPBAR_RUNGS } from "../src/web/topbarLadder.ts";
+
 const CSS_PATH = fileURLToPath(new URL("../src/web/styles.css", import.meta.url));
 const css = readFileSync(CSS_PATH, "utf8");
 const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
 
-/** Comments discuss `display: none` and container widths in prose, so they go first. */
+/** Comments discuss `display: none` and rung numbers in prose, so they go first. */
 const bare = css.replace(/\/\*[\s\S]*?\*\//g, " ");
 
-interface Rung {
-  /** The rung's `max-width`, in px. */
-  width: number;
-  /** Index in `bare` where the rung's `@container` opens, and where its `}` closes. */
-  at: number;
-  end: number;
-  /** The rules inside it, as `[selector, body]` pairs. */
-  rules: [string, string][];
+/** Every `[selector, body]` pair in the sheet. The ladder is flat now, so this reads it. */
+const RULES: [string, string][] = [...bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(
+  ([, s = "", b = ""]) => [s.trim().replace(/\s+/g, " "), b],
+);
+
+/** The token a rung's selector carries, e.g. 3 for `.topbar[data-rung~="3"] .filter-input`. */
+function rungOf(selector: string): number | null {
+  const found = [...selector.matchAll(/\.topbar\[data-rung~="(\d+)"\]/g)].map((m) => Number(m[1]));
+  if (found.length === 0) return null;
+  // A selector list is only ever one rung's; a rule spanning two would apply at the wider of
+  // them and silently shed early.
+  assert.equal(
+    new Set(found).size,
+    1,
+    `"${selector}" mixes rungs ${[...new Set(found)].join(" and ")} in one rule`,
+  );
+  return found[0]!;
 }
 
-/**
- * The ladder's rungs, each with its own rules - by brace matching, not by slicing to the
- * end of the file. `@container` bodies are rules-inside-rules, so the flat `[^{}]*` pass
- * the other CSS tests use cannot read them, and slicing from the first rung to EOF sweeps
- * in every unrelated rule below the topbar section (which is how the first draft of this
- * file "found" `display: none` on the files toolbar).
- */
-function ladder(source: string): Rung[] {
-  const out: Rung[] = [];
-  const re = /@container topbar \(max-width: (\d+)px\)\s*\{/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(source))) {
-    let depth = 1;
-    let i = m.index + m[0].length;
-    const start = i;
-    while (i < source.length && depth > 0) {
-      if (source[i] === "{") depth++;
-      else if (source[i] === "}") depth--;
-      i++;
-    }
-    assert.equal(depth, 0, `unbalanced braces in the ${m[1]}px rung`);
-    const body = source.slice(start, i - 1);
-    const rules = [...body.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(
-      ([, s = "", b = ""]) => [s.trim().replace(/\s+/g, " "), b] as [string, string],
-    );
-    out.push({ width: Number(m[1]), at: m.index, end: i, rules });
-  }
-  return out;
+/** The ladder: every rule keyed on a rung, grouped by rung number. */
+const LADDER = new Map<number, [string, string][]>();
+for (const [selector, body] of RULES) {
+  const rung = rungOf(selector);
+  if (rung === null) continue;
+  if (!LADDER.has(rung)) LADDER.set(rung, []);
+  LADDER.get(rung)!.push([selector, body]);
 }
 
-const RUNGS = ladder(bare);
+test("every rung the fit can reach exists in the stylesheet, and no rung beyond it does", () => {
+  // Failure mode 1, in both directions. `fitTopbar` counts to TOPBAR_RUNGS and the sheet has
+  // to mean the same thing by that number: a rung it never reaches is dead ink the bar could
+  // have spent, and a number past the last rung is a step that frees nothing while the fit
+  // reports the bar unfittable.
+  const defined = [...LADDER.keys()].sort((a, b) => a - b);
+  assert.deepEqual(
+    defined,
+    Array.from({ length: TOPBAR_RUNGS }, (_, i) => i + 1),
+    `styles.css defines rungs [${defined.join(", ")}] but topbarLadder.ts steps through ` +
+      `1..${TOPBAR_RUNGS}. They have to agree - the fit cannot see what it did not apply.`,
+  );
+});
 
-/** The properties a declaration block sets, e.g. `width`, `display`. */
-function props(body: string): string[] {
-  return [...body.matchAll(/(^|;)\s*([a-z-]+)\s*:/g)].map((m) => m[2]!);
-}
-
-test("the bar actually declares the container every rung queries", () => {
-  // Without this the whole ladder is inert and the bar silently goes back to wrapping.
+test("the bar still wraps, because the fit reads wrapping as its signal", () => {
+  // Failure mode 2, and the most tempting edit in the file: with a ladder in place `nowrap`
+  // reads like the tidy way to state "this bar is one row". It is the one value that makes
+  // the ladder inert - `fitTopbar` measures the bar's laid-out height against its tallest
+  // child, so with nowrap it observes one row at every width, never steps down, and the bar
+  // overflows its container instead of wrapping under it.
   const topbar = bare.slice(bare.indexOf(".topbar {"));
+  const block = topbar.slice(0, topbar.indexOf("}"));
   assert.match(
-    topbar.slice(0, topbar.indexOf("}")),
-    /container(-type)?:[^;]*inline-size/,
-    "`.topbar` no longer declares an inline-size container - every @container rung below it is dead",
+    block,
+    /flex-wrap:\s*wrap/,
+    "`.topbar` no longer wraps. The measured ladder has nothing to measure: it steps down " +
+      "only while the bar is taller than one row, so `nowrap` freezes it at rung 0.",
   );
-  assert.match(
+  assert.match(block, /display:\s*flex/, "`.topbar` is no longer a flex row");
+});
+
+test("the retired container query is gone, not merely unused", () => {
+  // `.topbar` no longer declares a container, so any `@container topbar` rule left behind is
+  // dead - it matches nothing, reports nothing, and reads exactly like live code.
+  assert.doesNotMatch(
+    bare,
+    /@container\s+topbar\b/,
+    "an `@container topbar` rule survives, but `.topbar` declares no container - it is dead",
+  );
+  const topbar = bare.slice(bare.indexOf(".topbar {"));
+  assert.doesNotMatch(
     topbar.slice(0, topbar.indexOf("}")),
-    /container:\s*topbar\b/,
-    "the container's NAME must stay `topbar`; the rungs query it by name",
+    /container(-type|-name)?:/,
+    "`.topbar` declares a container again - either the ladder moved back to container " +
+      "queries, or this is containment nothing asked for",
   );
 });
 
-test("the rungs are ordered widest-first, and each one is reachable", () => {
-  assert.ok(RUNGS.length >= 2, "the ladder is gone");
-  for (let i = 1; i < RUNGS.length; i++) {
-    // Not merely a tidiness rule: rungs stack, so one authored out of order either fires
-    // before the state it was measured against or is masked by a wider one entirely.
-    assert.ok(
-      RUNGS[i]!.width < RUNGS[i - 1]!.width,
-      `rung ${RUNGS[i]!.width}px comes after ${RUNGS[i - 1]!.width}px - the ladder must descend`,
+test("no rung animates a layout property in the direction it collapses", () => {
+  // Failure mode 3, and it cost a full debugging pass: `.filter-input` collapsed with
+  // `transition: width 0.16s`, so on the frame rung 3 was applied the field was still 150px
+  // to layout. The fit measured a bar that was still wrapped, walked past rung 3 to rungs 4
+  // and 5, and the bar flashed two rows for the length of the animation before settling
+  // over-collapsed. The transition now lives on the OPEN state, which is driven by focus and
+  // never measured across.
+  const LAYOUT = /\b(width|height|padding|margin|font-size|gap|flex-basis|inset)\b/;
+  for (const [selector, body] of LADDER.get(3) ?? []) {
+    // The open states are the exception, and they are exactly the ones that re-widen it.
+    if (/:focus-within|:not\(:placeholder-shown\)/.test(selector)) continue;
+    const transition = /transition:\s*([^;]*)/.exec(body)?.[1] ?? "";
+    assert.doesNotMatch(
+      transition,
+      LAYOUT,
+      `"${selector}" animates a layout property while collapsing. The rung then frees ` +
+        `nothing on the frame it is applied, and fitTopbar steps past it.`,
     );
   }
+  // And the open state does keep its animation, so this test cannot pass by the transition
+  // having simply been deleted.
+  const open = (LADDER.get(3) ?? []).find(([s]) => /:focus-within/.test(s));
+  assert.ok(open, "the filter's focus-driven open state is gone");
+  assert.match(open[1], /transition:[^;]*width/, "the filter no longer animates back open");
 });
 
-test("no rung is overridden by the base rule it is trying to beat", () => {
-  // `@container` contributes NO specificity, so between an identical selector inside a rung
-  // and one outside it, SOURCE ORDER alone decides. This is checked per PROPERTY rather
-  // than per selector: `.foreman-chip`'s base rule sits far down in the Foreman section and
-  // is no problem at all, because it never declares `display`. It is the pair that collides
-  // - `.filter-input { width }` in both places - that silently does nothing.
-  const outside = [...bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-    .filter((m) => !RUNGS.some((r) => m.index! > r.at && m.index! < r.end))
-    .map((m) => ({ at: m.index!, sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]! }));
-
-  for (const rung of RUNGS) {
-    for (const [sel, body] of rung.rules) {
-      for (const prop of props(body)) {
-        const loser = outside.find(
-          (r) => r.sel === sel && props(r.body).includes(prop) && r.at > rung.at,
-        );
-        assert.equal(
-          loser,
-          undefined,
-          `\`${sel} { ${prop} }\` is declared again at index ${loser?.at} - AFTER the ` +
-            `${rung.width}px rung that sets it. @container adds no specificity, so the later ` +
-            `rule wins and the rung silently does nothing. Move the ladder below it.`,
+test("every rung rule leads with its rung prefix", () => {
+  // The `@container` ladder contributed NO specificity, so between an identical selector
+  // inside a rung and one outside it, source order alone decided - and a base rule authored
+  // below the ladder silently won. That is what `.filter-input { width }` did during
+  // development: the pulse collapsed and the filter did not.
+  //
+  // The `.topbar[data-rung~="N"]` prefix ends that whole class of bug, and this is the check
+  // that the construction holds. A rung rule that lost its prefix is two failures at once: it
+  // applies at every width, and it is back to deciding by source order.
+  //
+  // There is deliberately no source-order assertion beside this one. The prefix adds a class
+  // and an attribute selector to every rung rule, so a rung always outranks the bare base rule
+  // it overrides - `.topbar[data-rung~="3"] .filter-input` is (0,3,0) against `.filter-input`
+  // at (0,1,0) - and it wins wherever either is authored. Pinning the base rules above the
+  // ladder would only pin the current file layout: a reorder for readability would fail with a
+  // message claiming a cascade bug that the specificity rules make impossible.
+  //
+  // What is left unguarded by that reasoning is a FUTURE base rule that is itself at least as
+  // specific, and no regex over source text settles that - it depends on which elements two
+  // selectors can both match. `e2e/specs/topbar-one-row.spec.ts` settles it instead, in the
+  // only place it can be settled. Its first case is the one that bites: at the reported width
+  // it asserts the bar is on one row, that the search is NOT drawn, and that the page
+  // segment's and pulse's words ARE. An overridden rung 3 fails it twice over - the field is
+  // still 150px wide, and the bar it was supposed to fit is still on two rows.
+  //
+  // Note it is that case rather than the width sweep in the same file. The sweep excuses a bar
+  // that has spent every rung, so a rung silently doing nothing would just push the fit one
+  // rung further down and slip through it.
+  for (const [rung, rules] of LADDER) {
+    for (const [selector] of rules) {
+      for (const part of selector.split(",")) {
+        assert.match(
+          part.trim(),
+          new RegExp(`^\\.topbar\\[data-rung~="${rung}"\\]`),
+          `"${part.trim()}" is in rung ${rung} but does not lead with the rung prefix, so it ` +
+            `applies at every width`,
         );
       }
     }
@@ -136,35 +191,35 @@ test("no rung is overridden by the base rule it is trying to beat", () => {
 });
 
 test("a shed label goes visually hidden, never display:none", () => {
-  // The line is between hiding a WHOLE control (or region) and hiding the NAME off one that
-  // stays on screen. `display: none` on the brand wordmark, the keycap, Foreman's mode chip
-  // or the entire pulse takes the pixels and the accessible node together, and leaves
-  // nothing behind that a reader could meet unlabelled. `display: none` on a `.tb-label`
-  // leaves a live, clickable glyph with no name at all - which is the whole failure mode
-  // the ladder is written to avoid, and the one that is invisible in a screenshot.
+  // Failure mode 4. The line is between hiding a WHOLE control (or region) and hiding the
+  // NAME off one that stays on screen. `display: none` on the brand wordmark, the keycap,
+  // Foreman's mode chip or the entire pulse takes the pixels and the accessible node
+  // together, and leaves nothing behind that a reader could meet unlabelled. `display: none`
+  // on a `.tb-label` leaves a live, clickable glyph with no name at all - which is the whole
+  // failure mode the ladder is written to avoid, and the one invisible in a screenshot.
   const LABELS = /\.tb-label|\.pulse-link-label/;
-  for (const rung of RUNGS) {
-    for (const [sel, body] of rung.rules) {
-      if (!LABELS.test(sel)) continue;
+  for (const [rung, rules] of LADDER) {
+    for (const [selector, body] of rules) {
+      if (!LABELS.test(selector)) continue;
       assert.doesNotMatch(
         body,
         /display:\s*none/,
-        `the ${rung.width}px rung hides "${sel}" with display:none. A label must be hidden ` +
-          `VISUALLY (position: absolute + clip-path) so the control it names keeps its ` +
-          `accessible name and its tooltip.`,
+        `rung ${rung} hides "${selector}" with display:none. A label must be hidden VISUALLY ` +
+          `(position: absolute + clip-path) so the control it names keeps its accessible ` +
+          `name and its tooltip.`,
       );
       assert.match(
         body,
         /position:\s*absolute[\s\S]*clip-path:\s*inset\(50%\)|clip-path:\s*inset\(50%\)[\s\S]*position:\s*absolute/,
-        `the ${rung.width}px rung's "${sel}" does not use the visually-hidden pattern. ` +
-          `Without \`position: absolute\` it still costs width and a flex gap; without the ` +
-          `clip it is still drawn.`,
+        `rung ${rung}'s "${selector}" does not use the visually-hidden pattern. Without ` +
+          `\`position: absolute\` it still costs width and a flex gap; without the clip it ` +
+          `is still drawn.`,
       );
     }
   }
   // And at least the three known label sheds are present, so the test cannot pass by the
   // ladder having quietly stopped collapsing anything.
-  const shed = RUNGS.flatMap((r) => r.rules).filter(([s]) => LABELS.test(s));
+  const shed = [...LADDER.values()].flat().filter(([s]) => LABELS.test(s));
   assert.ok(shed.length >= 3, `only ${shed.length} label rules left in the ladder`);
 });
 
@@ -174,29 +229,27 @@ test("a disconnected pulse keeps its stale figures and review control visible", 
     /\.pulse\.is-down \.pulse-seg:not\(\.pulse-link\)\s*\{[^}]*opacity:\s*0\.5/,
     "the disconnected pulse no longer dims its stale figures",
   );
-  for (const rung of RUNGS) {
-    for (const [sel, body] of rung.rules) {
-      const hidesSegment = sel
+  for (const [rung, rules] of LADDER) {
+    for (const [selector, body] of rules) {
+      const hidesSegment = selector
         .split(",")
-        .some((part) =>
-          /\.pulse\.is-down \.pulse-seg:not\(\.pulse-link\)\s*$/.test(part.trim()),
-        );
+        .some((part) => /\.pulse\.is-down \.pulse-seg:not\(\.pulse-link\)\s*$/.test(part.trim()));
       if (!hidesSegment) continue;
       assert.doesNotMatch(
         body,
         /display:\s*none/,
-        `the ${rung.width}px rung removes the disconnected pulse's figures and review control`,
+        `rung ${rung} removes the disconnected pulse's figures and review control`,
       );
     }
   }
 });
 
 test("filter compaction keeps the review control visible", () => {
-  const rung = RUNGS.find(({ width }) => width === 1270);
-  assert.ok(rung, "the filter rung is gone");
-  const rules = rung.rules.flatMap(([selectors, body]) =>
+  const rules = (LADDER.get(3) ?? []).flatMap(([selectors, body]) =>
     selectors.split(",").map((selector) => ({ selector: selector.trim(), body })),
   );
+  assert.ok(rules.length > 0, "the filter rung is gone");
+
   const readoutSelectors = rules.filter(({ selector }) =>
     /\.pulse-seg:not\(\.pulse-btn\)$/.test(selector),
   );
@@ -246,8 +299,7 @@ test("Dispatch never degrades, and the labels that do are marked", () => {
     "missions-btn lost its `.tb-label`, so the ladder can no longer collapse it",
   );
   // The page segment sheds too, and it lives at the LEFT of the bar rather than in the
-  // action cluster - so it is read from the whole topbar. It is still inside the container,
-  // so the same rung reaches it.
+  // action cluster - so it is read from the whole topbar.
   const seg = app.slice(app.indexOf('<nav className="page-seg"'));
   assert.match(
     seg.slice(0, seg.indexOf("</nav>")),
@@ -260,24 +312,20 @@ test("the cost chip survives every rung; only its duplicated rate is shed", () =
   // The chip is now the ONLY cost surface in the app's chrome - the row it replaced could
   // afford to fold away because folding left the figure beside the toggle, and there is no
   // toggle any more. A rung that hid it would take the fleet's economics off screen
-  // entirely at half a 16" screen, silently.
-  for (const rung of RUNGS) {
-    for (const [sel, body] of rung.rules) {
-      const hidesChip = sel
+  // entirely on a narrow window, silently.
+  for (const [rung, rules] of LADDER) {
+    for (const [selector, body] of rules) {
+      const hidesChip = selector
         .split(",")
         .some((part) => /\.spend-chip(-wrap)?$/.test(part.trim()));
       if (!hidesChip) continue;
-      assert.doesNotMatch(
-        body,
-        /display:\s*none/,
-        `the ${rung.width}px rung hides the cost chip itself`,
-      );
+      assert.doesNotMatch(body, /display:\s*none/, `rung ${rung} hides the cost chip itself`);
     }
   }
   // And the one segment that IS shed is still shed, so the bar has something to give back.
-  const shed = RUNGS.flatMap((r) => r.rules).filter(
-    ([sel, body]) => sel.trim().endsWith(".spend-chip-rate") && /display:\s*none/.test(body),
-  );
+  const shed = [...LADDER.values()]
+    .flat()
+    .filter(([sel, body]) => sel.trim().endsWith(".spend-chip-rate") && /display:\s*none/.test(body));
   assert.equal(shed.length, 1, "the chip's rate segment no longer collapses with the bar");
 });
 
@@ -285,8 +333,6 @@ test("a control that keeps only a glyph still says what it is", () => {
   // Every button the ladder strips to an icon has to carry its own name - the visually
   // hidden label covers the ones that have one, an `aria-label` covers the rest.
   const bar = app.slice(app.indexOf('<div className="topbar-actions">'));
-  // `</header>` rather than `<UsageBar`: the usage row this used to stop at is gone, and
-  // the cost chip that replaced it lives inside the bar.
   const cluster = bar.slice(0, bar.indexOf("</header>"));
   const missions = cluster.indexOf("missions-btn");
   assert.match(
@@ -296,7 +342,7 @@ test("a control that keeps only a glyph still says what it is", () => {
   );
   // The page segment takes the other route: its `.tb-label` IS its accessible name, and the
   // rung hides it visually rather than removing it, so Fleet, Library and Runs survive the
-  // collapse. That is checked by the `display: none` sweep below, which is what makes this
+  // collapse. That is checked by the `display: none` sweep above, which is what makes this
   // the safe option rather than the lazy one - an `aria-label` here would be a second name
   // beside the visible word, and the two would drift.
   const seg = app.slice(app.indexOf('<nav className="page-seg"'));
@@ -322,15 +368,55 @@ test("a control that keeps only a glyph still says what it is", () => {
   );
 });
 
-test("the pulse opts out of the desktop drag region", () => {
-  // Its segments are divs, and on the narrow rungs they are a dot and a figure with the
-  // word taken away - so the tooltip is the only thing left saying what "3" counts. A drag
-  // region swallows the mouse, so a hover inside one never reaches the renderer at all.
-  const rules = [...bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
-  const optedOut = rules.some(
-    ([, selectors = "", body = ""]) =>
+test("the pulse opts out of the desktop drag region, because the last rung takes its words", () => {
+  // This belongs to the LADDER, not to the generic drag-region sweep, which is why it lives
+  // here rather than in `desktop-drag-region.test.ts`. That file scans for layers painted
+  // OVER the bar - `position: fixed`, or a `z-index` above the bar's 10 - and skips
+  // everything else outright (`if (!floats) continue`). `.pulse` is a normal in-flow child of
+  // the draggable `.topbar` itself, so it does not match there and never will.
+  //
+  // What makes the rule load bearing is the last rung. Four of the pulse's five segments are
+  // divs, and that rung draws them as a dot and a figure with the word taken away - so the
+  // tooltip becomes the only place a bare "3" still says "need you". A drag region swallows
+  // the mouse entirely: a hover inside one never reaches the renderer, so that tooltip would
+  // simply never appear, at exactly the widths where it is the only thing carrying the
+  // meaning. Both halves are asserted, because it is the pair that states the hazard - a rung
+  // that stopped shedding, or a no-drag rule that went away, each make this comment a lie.
+  const sheds = (LADDER.get(TOPBAR_RUNGS) ?? []).some(([selector]) =>
+    selector.split(",").some((part) => /\.pulse\b.*\.tb-label\s*$/.test(part.trim())),
+  );
+  assert.ok(
+    sheds,
+    `rung ${TOPBAR_RUNGS} no longer sheds the pulse's words, so this test is guarding the ` +
+      `wrong rung - find where the words go now and re-anchor it`,
+  );
+
+  const optedOut = RULES.some(
+    ([selectors, body]) =>
       /-webkit-app-region:\s*no-drag/.test(body) &&
       selectors.split(",").some((s) => /\.is-desktop \.topbar \.pulse\s*$/.test(s.trim())),
   );
-  assert.ok(optedOut, "`.is-desktop .topbar .pulse` is not in the no-drag list");
+  assert.ok(
+    optedOut,
+    "`.is-desktop .topbar .pulse` is not in the no-drag list, so in the desktop shell the OS " +
+      `swallows every hover on the pulse - and with rung ${TOPBAR_RUNGS} drawing its segments ` +
+      "as bare figures, the tooltip it kills is the only thing naming them",
+  );
+});
+
+test("the fit runs after every render, not only on mount", () => {
+  // The bar's requirement is a function of its CONTENT, and its content is the fleet: one
+  // session arriving adds a ~150px pulse segment to a bar that may have had 40px to spare.
+  // A mount-only fit would be correct exactly until the first server event. `useLayoutEffect`
+  // rather than `useEffect` so it lands before paint - and with no dependency array, which is
+  // what makes it "every render".
+  const at = app.indexOf("fitTopbar(topbarRef.current)");
+  assert.notEqual(at, -1, "App no longer fits the topbar on render");
+  const effect = app.lastIndexOf("useLayoutEffect", at);
+  assert.notEqual(effect, -1, "the per-render fit is not in a useLayoutEffect");
+  assert.match(
+    app.slice(at, app.indexOf("\n\n", at)),
+    /\}\);/,
+    "the per-render fit grew a dependency array - it must run after EVERY render",
+  );
 });

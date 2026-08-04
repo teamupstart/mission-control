@@ -4438,9 +4438,16 @@ radius first (Foreman, Workflows), then GitHub (Inspector, YOLO).
   not a sandbox. **Turn checks off** is offered in place. This one is not a contradiction like
   the merge trap - nothing is stuck - it is flagged because a cell reading "allowed" cannot
   show that on its own and the confirm dialog was agreed to once, months ago. The rail's Trust
-  dot carries this one too, and unlike the merge trap it does not wait for the status
-  snapshot: the fact comes off the Workflow config the page already holds, so a daemon that
-  has stopped answering cannot retire the warning.
+  dot carries this one too.
+- **The warning outlives the connection.** Both surfaces remember the last **confirmed**
+  arming, so a failed config poll cannot retire them. This is a deliberate exception to the
+  daemon-reading rule everywhere else in Settings, where a failed read becomes "unknown" and
+  replaces the last good value: that is right for a switch, whose stale posture must never be
+  drawn as current, and wrong for a safety claim, which would then switch itself off five
+  seconds after the daemon went quiet. Nothing about an unreachable daemon disarms the switch
+  it is storing. While the config is unreadable the footnote says so and stops naming
+  repositories - it cannot see which - but it does not go silent, and it is never invented:
+  a page that has never read a config claims nothing.
 
 ## The Line (the pipeline strip above the fleet)
 

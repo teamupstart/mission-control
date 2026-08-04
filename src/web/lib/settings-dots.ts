@@ -40,6 +40,11 @@ export interface SettingsDotInputs {
    * Client-side for `trustBlindSpot`'s reason: the Workflow config is already held by the
    * page, so the dot needs no new server signal and cannot disagree with the footnote it
    * summarizes.
+   *
+   * The caller is responsible for it SURVIVING a failed config poll - see
+   * `checksArmedReading`. This function only sees the boolean, so a caller that derives it
+   * with `config?.checksEnabled ?? false` silently retires the dot five seconds after the
+   * daemon goes quiet, and nothing here can tell. That was the first cut of this input.
    */
   trustCheckExecution: boolean;
 }
@@ -57,10 +62,11 @@ export function settingsRailDot(
 ): SettingsDotTone | null {
   // Foreman's dot is knowable even before the snapshot: App holds that state, not the payload.
   if (id === "foreman") return foremanEnabled ? "foreman" : null;
-  // Armed check execution is knowable without the tuple too - it comes off the Workflow
-  // config the page holds - so it is answered BEFORE the null-status return below. Behind
-  // that return it would go dark exactly when the daemon stops answering, which is not a
-  // reason to stop saying that branch-authored code may run.
+  // Armed check execution is knowable without the tuple - it comes off the Workflow config
+  // the page holds - so it is answered BEFORE the null-status return below. Behind that
+  // return it would go dark whenever the SSE snapshot lapsed, which is not a reason to stop
+  // saying that branch-authored code may run. (The OTHER way it could go dark, the config
+  // poll itself failing, is the caller's to prevent; see the field docs above.)
   if (id === "trust" && trustCheckExecution) return "armed";
   // Everything else needs the daemon's tuple; null status is "unknown", so no dot.
   if (!status) return null;

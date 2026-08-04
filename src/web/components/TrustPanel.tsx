@@ -11,6 +11,7 @@ import {
   grantPatch,
   mergeBlindSpots,
   trustRows,
+  type ChecksArmedReading,
   type GrantColumn,
   type TrustRow,
 } from "../lib/trust.ts";
@@ -74,6 +75,7 @@ export function TrustPanel({
   workflows,
   inspector,
   shipping,
+  checks,
 }: {
   /**
    * The four subsystem states, OWNED ELSEWHERE and passed in: Foreman by App (the topbar
@@ -86,6 +88,16 @@ export function TrustPanel({
   workflows: WorkflowSettingsState;
   inspector: InspectorState;
   shipping: ShippingState;
+  /**
+   * Whether a Check node may run branch-authored code, and whether that is confirmed.
+   *
+   * PASSED IN, not derived from `workflows.config` here, because it has to survive a failed
+   * poll: `useWorkflowSettings` nulls its config on any read that fails, and this panel
+   * unmounts whenever another category is open, so a memory kept here would reset every
+   * time you navigated away. `SettingsPage` is mounted for the whole settings session and
+   * owns it, which is also what keeps this footnote and the rail dot saying the same thing.
+   */
+  checks: ChecksArmedReading;
 }): React.JSX.Element {
   const ui = useUiConfig();
   const [repos, setRepos] = useState<string[]>([]);
@@ -104,7 +116,7 @@ export function TrustPanel({
   const shippingList = shipping.config?.repoAllowlist ?? [];
   const staged = ui.trustStaged;
   const yolo = shipping.config?.autoMerge ?? false;
-  const checksArmed = workflows.config?.checksEnabled ?? false;
+  const checksArmed = checks.armed;
 
   // The stale-closure guard the panels use, five times over: every write does a server
   // round-trip while the configs poll every 4-5s underneath it, so a cell click must
@@ -402,6 +414,21 @@ export function TrustPanel({
             </button>
           </Tooltip>
           , or revoke a repo's Workflows cell above - which also stops Live delivery there.
+        </p>
+      )}
+
+      {/* The same warning, for the window where the daemon has stopped answering.
+          `checkGrants` is empty here whatever the arming says - the rows come from the
+          Workflows allowlist, and an unreadable config contributes none - so the confirmed
+          note above cannot cover this case, and letting it fall through to nothing is the
+          exact self-retiring warning this reading exists to prevent. It names no repository
+          because it genuinely does not know which; what it will not do is go quiet. */}
+      {checks.armed && !checks.confirmed && (
+        <p className="settings-warn trust-arm-note trust-arm-unconfirmed">
+          ‡ Check commands were <strong>on</strong> at the last reading, so a workflow may be
+          able to run <strong>branch-authored code</strong> with this daemon's filesystem
+          authority. Which repositories cannot be listed while Workflows is unreachable, and
+          nothing here has been disarmed - only rendered unverifiable.
         </p>
       )}
 

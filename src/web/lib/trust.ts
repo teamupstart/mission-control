@@ -107,6 +107,42 @@ export function checkExecutionGrants(
 }
 
 /**
+ * Whether check execution is armed, and whether we can currently see that it is.
+ *
+ * TWO booleans because `null` config has two readings and only one of them is "off".
+ * `useWorkflowSettings` deliberately replaces its config with `null` on any failed poll -
+ * "a failed read is unknown, and unknown REPLACES the last good reading" - which is right
+ * for a switch (never draw a stale posture as the daemon's current answer) and wrong for a
+ * safety claim read straight through `?? false`: one missed poll, five seconds after the
+ * daemon goes quiet, and the warning that branch-authored code may run retires itself.
+ * Nothing about an unreachable daemon disarms the switch it is storing.
+ *
+ * So a remembered arming SURVIVES the gap and is marked unconfirmed, and the surfaces say
+ * which they are looking at. `remembered` defaults to false, so a page that has never seen
+ * a config claims nothing - absence of evidence is not evidence of arming either.
+ */
+export interface ChecksArmedReading {
+  /** Branch-authored code may run somewhere: the newest reading that landed said so. */
+  armed: boolean;
+  /** That reading came from a config we can see now, not one we are remembering. */
+  confirmed: boolean;
+}
+
+export function checksArmedReading(
+  config: { checksEnabled: boolean; repoAllowlist: readonly string[] } | null,
+  remembered: boolean,
+): ChecksArmedReading {
+  if (!config) return { armed: remembered, confirmed: false };
+  return {
+    // Both halves, because arming needs the switch AND somewhere to run: checks on with an
+    // empty grant can execute nothing, and flagging it would be the inert-grant amber this
+    // module refuses everywhere else.
+    armed: config.checksEnabled && config.repoAllowlist.length > 0,
+    confirmed: true,
+  };
+}
+
+/**
  * Repos worth offering in the add picker: known repos, minus the ones already in the
  * matrix. Moved here from `ForemanSettingsPanel` when the three panels stopped editing
  * repo lists - the Trust add row is its one remaining consumer.

@@ -235,3 +235,64 @@ test("armed check execution flags the granted cell, and Turn checks off clears i
   // which is the distinction the single column has to keep legible.
   expect((await storedConfig(daemon.baseURL)).repoAllowlist).toEqual([daemon.repo]);
 });
+
+test("the armed-checks warning survives the config poll failing", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The failure this exists for, driven end to end rather than argued about.
+  //
+  // `useWorkflowSettings` replaces its config with null on ANY read that fails - the
+  // deliberate "unknown, not off" rule - and the first cut of this feature read the arming
+  // straight off that config. So five seconds after the daemon went quiet, the amber saying
+  // a workflow may execute branch-authored code retired itself, in all three places at
+  // once, while the daemon's stored config was untouched and still armed.
+  //
+  // Only a browser can catch it: the poll, the null, the re-render and the three surfaces
+  // are four separate layers, and every unit test around them passes with the bug in place.
+  await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);
+  await stageRepo(dashboard, daemon.repo);
+  await dashboard
+    .getByRole("button", { name: `Grant: Workflows act for ${daemon.repo}` })
+    .click();
+  await expect
+    .poll(async () => (await storedConfig(daemon.baseURL)).repoAllowlist)
+    .toEqual([daemon.repo]);
+
+  await openSettings(dashboard, "workflows", /Review workflows run Personas/);
+  await dashboard.getByRole("checkbox", { name: "Enable workflow check commands" }).click();
+  await dashboard.getByRole("button", { name: "Enable check commands" }).click();
+  await expect
+    .poll(async () => (await storedConfig(daemon.baseURL)).checksEnabled)
+    .toBe(true);
+
+  await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);
+  await expect(dashboard.getByText(/Check commands are on/)).toBeVisible();
+  // The rail dot agrees before the daemon goes away, so the assertion after it is a change
+  // rather than a state that was never there.
+  const dot = dashboard.getByRole("img", { name: /Trust needs a look/ });
+  await expect(dot).toBeVisible();
+
+  // Now the daemon stops answering for this route only. Aborting rather than 500ing, so the
+  // fetch rejects exactly as an unreachable daemon makes it reject.
+  await dashboard.route("**/api/workflows/config", (route) => route.abort());
+
+  // Past one full 5s poll interval, so a config read has certainly failed and landed.
+  await expect
+    .poll(
+      async () =>
+        dashboard.getByText(/were .*on.* at the last reading|Check commands are on/).count(),
+      { timeout: 15_000, message: "some armed-checks warning must survive the failed poll" },
+    )
+    .toBeGreaterThan(0);
+
+  // The specific shape: it degrades to the unconfirmed sentence rather than vanishing, and
+  // it stops naming repositories it can no longer read.
+  await expect(dashboard.getByText(/at the last reading/)).toBeVisible();
+  await expect(dashboard.getByText(/nothing here has been disarmed/)).toBeVisible();
+  // And the rail dot has NOT gone dark, which was the headline regression.
+  await expect(dot).toBeVisible();
+
+  // The daemon never disarmed anything - only our ability to read it lapsed.
+  expect((await storedConfig(daemon.baseURL)).checksEnabled).toBe(true);
+});

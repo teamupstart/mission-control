@@ -7,8 +7,10 @@ import {
   trustRows,
   mergeBlindSpots,
   checkExecutionGrants,
+  checksArmedReading,
   grantPatch,
   candidateRepos,
+  type ChecksArmedReading,
   type TrustLists,
 } from "../src/web/lib/trust.ts";
 import {
@@ -119,6 +121,48 @@ test("an armed daemon flags only the repos actually holding the workflow grant",
     foreman: ["/other"], inspector: ["/other"], shipping: ["/other"], workflows: ["/repo"],
   }));
   assert.deepEqual(checkExecutionGrants(rows, true).map((r) => r.repo), ["/repo"]);
+});
+
+// ---- surviving a failed config poll ------------------------------------------------------
+
+// The bug this reading exists for. `useWorkflowSettings` replaces its config with null on any
+// failed poll, so reading `config?.checksEnabled ?? false` retires the warning within one 5s
+// interval of the daemon going quiet - while three places claimed it could not. An
+// unreachable daemon has not disarmed the switch it is storing.
+test("a confirmed reading needs the switch AND somewhere to run", () => {
+  assert.deepEqual(
+    checksArmedReading({ checksEnabled: true, repoAllowlist: ["/repo"] }, false),
+    { armed: true, confirmed: true },
+  );
+  // Checks on with nothing granted can execute nothing - the inert-grant amber this module
+  // refuses everywhere else.
+  assert.deepEqual(
+    checksArmedReading({ checksEnabled: true, repoAllowlist: [] }, false),
+    { armed: false, confirmed: true },
+  );
+  assert.deepEqual(
+    checksArmedReading({ checksEnabled: false, repoAllowlist: ["/repo"] }, false),
+    { armed: false, confirmed: true },
+  );
+});
+
+test("a remembered arming survives an unreadable config, marked unconfirmed", () => {
+  assert.deepEqual(checksArmedReading(null, true), { armed: true, confirmed: false });
+});
+
+test("an unreadable config claims nothing when nothing was ever read", () => {
+  // Absence of evidence is not evidence of arming: a page that has never seen a config must
+  // not invent an amber, or every cold start behind a slow daemon flies one.
+  assert.deepEqual(checksArmedReading(null, false), { armed: false, confirmed: false });
+});
+
+test("a confirmed disarm overrides the memory rather than being outvoted by it", () => {
+  // The other direction of the same rule. Remembering must not make the warning permanent:
+  // once the daemon answers and says checks are off, that is the live fact.
+  assert.deepEqual(
+    checksArmedReading({ checksEnabled: false, repoAllowlist: ["/repo"] }, true),
+    { armed: false, confirmed: true },
+  );
 });
 
 // ---- what one cell click writes --------------------------------------------------------
@@ -234,9 +278,15 @@ function render(
   i: InspectorState,
   s: ShippingState,
   w: WorkflowSettingsState = workflowState(),
+  /**
+   * The armed reading, defaulted to what `SettingsPage` would derive from `w` with no
+   * memory. Overridable so the remembered-across-a-failed-poll case is reachable, which is
+   * the whole point of the panel taking it as a prop rather than deriving it.
+   */
+  checks: ChecksArmedReading = checksArmedReading(w.config, false),
 ): string {
   return renderToStaticMarkup(
-    createElement(TrustPanel, { foreman: f, workflows: w, inspector: i, shipping: s }),
+    createElement(TrustPanel, { foreman: f, workflows: w, inspector: i, shipping: s, checks }),
   );
 }
 
@@ -347,6 +397,49 @@ test("a repo that is both trapped and armed flies both footnotes, each on its ow
   assert.match(html, /trust-grant is-on is-trapped/);
   assert.match(html, /trust-grant is-on is-armed/);
   assert.doesNotMatch(html, /is-trapped is-armed/, "one pill never claims both");
+});
+
+// The render half of the poll-failure bug. With the config unreadable there are no
+// Workflows-granted rows at all, so the confirmed footnote cannot fire whatever the arming
+// says - falling through to nothing here is exactly the self-retiring warning the reading
+// exists to prevent.
+test("a remembered arming still warns when the config has gone unreadable", () => {
+  const html = render(
+    foreman(),
+    inspector(),
+    shipping(),
+    workflowState({ config: null }),
+    { armed: true, confirmed: false },
+  );
+  assert.match(html, /trust-arm-unconfirmed/);
+  assert.match(html, /were <strong>on<\/strong> at the last reading/);
+  assert.match(html, /nothing here has been disarmed/);
+  // It names no repository, because it genuinely does not know which. Claiming one from a
+  // list we cannot read would be worse than the silence this replaces.
+  assert.doesNotMatch(html, /trust-repo-path/);
+});
+
+test("an unreadable config with nothing remembered stays silent", () => {
+  const html = render(foreman(), inspector(), shipping(), workflowState({ config: null }));
+  assert.doesNotMatch(html, /trust-arm-unconfirmed/);
+  assert.doesNotMatch(html, /trust-arm-note/);
+  // The unknown banner still names Workflows, so the gap is not invisible - it is just not
+  // being reported as an arming nobody has evidence of.
+  assert.match(html, /trust-unknown/);
+});
+
+// Confirmed and unconfirmed are different sentences and must never both fly: one names
+// repositories, the other says it cannot, and together they would contradict each other.
+test("the confirmed footnote and the unconfirmed one are mutually exclusive", () => {
+  const html = render(
+    foreman(),
+    inspector(),
+    shipping(),
+    workflowState({ repoAllowlist: ["/repo"], checksEnabled: true }),
+  );
+  assert.match(html, /trust-arm-note/);
+  assert.doesNotMatch(html, /trust-arm-unconfirmed/);
+  assert.match(html, /in \/repo with this daemon/);
 });
 
 test("an unreachable subsystem renders the unknown warning, and names which - not 'off'", () => {

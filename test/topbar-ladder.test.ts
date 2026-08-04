@@ -368,6 +368,42 @@ test("a control that keeps only a glyph still says what it is", () => {
   );
 });
 
+test("the pulse opts out of the desktop drag region, because the last rung takes its words", () => {
+  // This belongs to the LADDER, not to the generic drag-region sweep, which is why it lives
+  // here rather than in `desktop-drag-region.test.ts`. That file scans for layers painted
+  // OVER the bar - `position: fixed`, or a `z-index` above the bar's 10 - and skips
+  // everything else outright (`if (!floats) continue`). `.pulse` is a normal in-flow child of
+  // the draggable `.topbar` itself, so it does not match there and never will.
+  //
+  // What makes the rule load bearing is the last rung. Four of the pulse's five segments are
+  // divs, and that rung draws them as a dot and a figure with the word taken away - so the
+  // tooltip becomes the only place a bare "3" still says "need you". A drag region swallows
+  // the mouse entirely: a hover inside one never reaches the renderer, so that tooltip would
+  // simply never appear, at exactly the widths where it is the only thing carrying the
+  // meaning. Both halves are asserted, because it is the pair that states the hazard - a rung
+  // that stopped shedding, or a no-drag rule that went away, each make this comment a lie.
+  const sheds = (LADDER.get(TOPBAR_RUNGS) ?? []).some(([selector]) =>
+    selector.split(",").some((part) => /\.pulse\b.*\.tb-label\s*$/.test(part.trim())),
+  );
+  assert.ok(
+    sheds,
+    `rung ${TOPBAR_RUNGS} no longer sheds the pulse's words, so this test is guarding the ` +
+      `wrong rung - find where the words go now and re-anchor it`,
+  );
+
+  const optedOut = RULES.some(
+    ([selectors, body]) =>
+      /-webkit-app-region:\s*no-drag/.test(body) &&
+      selectors.split(",").some((s) => /\.is-desktop \.topbar \.pulse\s*$/.test(s.trim())),
+  );
+  assert.ok(
+    optedOut,
+    "`.is-desktop .topbar .pulse` is not in the no-drag list, so in the desktop shell the OS " +
+      `swallows every hover on the pulse - and with rung ${TOPBAR_RUNGS} drawing its segments ` +
+      "as bare figures, the tooltip it kills is the only thing naming them",
+  );
+});
+
 test("the fit runs after every render, not only on mount", () => {
   // The bar's requirement is a function of its CONTENT, and its content is the fleet: one
   // session arriving adds a ~150px pulse segment to a bar that may have had 40px to spare.

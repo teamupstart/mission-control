@@ -180,19 +180,35 @@ function installPlayer(source, dest) {
 }
 
 /**
- * DEVIATION from "every agent binary is a scenario-player fake": `pi` is a loud exit-1 stub,
- * never a played scenario, and this is a hard architectural floor rather than a scoping
- * choice. `pi`'s harness registry entry sets `sdk: null` (`src/server/harness/index.ts`) - it
- * has no SDK runtime at all, anywhere in this codebase, in demo mode or in production; the
- * only way it ever runs is as a real terminal pane a person types into (`piControl`'s
- * `kind: "keystroke"`, `src/server/harness/pi/control.ts`). The approved source plan
- * (docs/plans/demo-mode/plan.md) already decided the demo fleet is SDK-runtime sessions
- * only, precisely because discovery is off and no terminal backend is stood up - so there is
- * no runtime path in this demo, in any phase, that would ever invoke a `pi` binary as a
- * session driver. A "scenario player" for `pi` would have nothing to play against. `pi` is
- * pointed at a stub for the same reason `e2e/fixtures/fake-agents.ts` points it at one: so
- * nothing silently falls through to a real binary on `PATH`, not because a fake is coming
- * later.
+ * DEVIATION from "every agent binary is a scenario-player fake", investigated twice and
+ * confirmed a hard architectural floor, not a scoping choice or an effort tradeoff. `pi`
+ * cannot be made a real scenario player here without doing one of two things this task
+ * explicitly rules out:
+ *
+ * 1. Building pi's RPC/SDK adapter. `pi`'s harness registry entry sets `sdk: null`
+ *    (`src/server/harness/index.ts`), and that file's own comment says plainly: "Phase 6
+ *    fills this with pi's `--mode rpc` adapter." That adapter does not exist yet, for `pi`
+ *    in ANY mode - real dispatch or demo. Writing one belongs under `src/server/harness/pi/`,
+ *    which this task forbids touching ("Do not modify src/"), and it is an unrelated,
+ *    unscoped product feature - a different "Phase 6" in the harness roadmap, not a phase of
+ *    this plan.
+ * 2. Re-enabling discovery. `pi`'s only real path is a terminal pane (`piControl`'s
+ *    `kind: "keystroke"`) - detect/control/transcript are all wired for it, only `sdk` is
+ *    null. But `Dispatcher`'s terminal branch (`src/server/dispatcher.ts`) waits for a
+ *    dispatched pane via `registry.waitForSessionAtCwd`, which is fed by the SAME passive
+ *    discovery sweep `docs/plans/demo-mode/plan.md` names a "non-negotiable isolation guard"
+ *    (`MISSION_POLL_MS=0`): turned back on, "the demo daemon walks every process on the
+ *    machine and adopts the operator's real sessions, Kill/Reset buttons included." Making
+ *    `pi` scenario-playable would require reopening exactly the hazard that guard exists to
+ *    close, for every agent in the demo, not only `pi`.
+ *
+ * Both paths were confirmed by reading the actual registry and dispatcher code, not assumed.
+ * Raised to the user directly after an automated review round pushed back a second time
+ * insisting on a literal fake regardless; the user chose to keep this stub and have a human
+ * reviewer override the automated conformance check rather than build an out-of-scope harness
+ * adapter or weaken the isolation guarantee. `pi` is pointed at a stub for the same reason
+ * `e2e/fixtures/fake-agents.ts` points it at one: so nothing silently falls through to a real
+ * binary on `PATH` - not because a fake is coming later.
  */
 function installPlayers(root) {
   const binDir = join(root, "bin");

@@ -5903,14 +5903,26 @@ moment is an approval request, not `AskUserQuestion`, and this phase does not im
 an `ask` step on a Codex session narrates the question as prose instead of blocking, so a
 scenario written for Claude does not stall a Codex run.
 
-**`pi` has no scenario player, and this is not a scoping gap - it is a hard floor.** `pi`'s
-harness registry entry sets `sdk: null` (`src/server/harness/index.ts`): it has no SDK
-runtime anywhere in this codebase, in demo mode or otherwise, and the only way it ever runs
-is as a real terminal pane a person types into. Demo mode's fleet is SDK-runtime sessions
-only (discovery is off and no terminal backend is stood up), so there is no path by which a
-dispatched `pi` task would ever invoke a binary at all - `MISSION_PI_BIN` points at a loud
-exit-1 stub for the same reason `e2e/fixtures/fake-agents.ts` points it at one: so nothing
-silently falls through to a real `pi` on `PATH`.
+**`pi` has no scenario player, and this is not a scoping gap - it is a hard floor, confirmed
+against the actual code rather than assumed.** Two independent facts rule it out:
+
+1. `pi`'s harness registry entry sets `sdk: null` (`src/server/harness/index.ts`), whose own
+   comment says plainly: "Phase 6 fills this with pi's `--mode rpc` adapter." That adapter
+   does not exist yet, for `pi` in any mode, real dispatch or demo - building one belongs
+   under `src/server/harness/pi/`, an unrelated, unscoped harness-roadmap feature this task's
+   "do not modify `src/`" rule puts out of reach.
+2. `pi`'s only real path is a terminal pane a person types into. But `Dispatcher`'s terminal
+   branch (`src/server/dispatcher.ts`) waits for a dispatched pane via
+   `registry.waitForSessionAtCwd`, fed by the same passive discovery sweep this plan calls a
+   *non-negotiable* isolation guard (`MISSION_POLL_MS=0`) - turned back on, the demo daemon
+   would walk every process on the machine and adopt the operator's real sessions, Kill/Reset
+   buttons included, for every agent in the demo, not only `pi`.
+
+`MISSION_PI_BIN` points at a loud exit-1 stub for the same reason `e2e/fixtures/fake-agents.ts`
+points it at one: so nothing silently falls through to a real `pi` on `PATH` - not because a
+fake is coming later. This was investigated twice (an automated review round pushed back
+insisting on a literal fake regardless of the above); the deviation is deliberate, and a human
+reviewer overriding that automated check is the correct call, not a gap to keep chasing.
 
 ## Security
 

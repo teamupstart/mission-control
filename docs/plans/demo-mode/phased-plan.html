@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo mode - phased implementation plan - Mission Control</title>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --fg: #1c1c1a;
+    --muted: #6b6b66;
+    --accent: #0f62fe;
+    --border: #e0e0dc;
+    --surface: #ffffff;
+    --surface-2: #f1f1ee;
+    --code-bg: #f1f1ee;
+    --good: #1a7f37;
+    --warn: #9a6700;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14141a;
+      --fg: #e8e8e4;
+      --muted: #9a9a94;
+      --accent: #6ea8ff;
+      --border: #2c2c34;
+      --surface: #1c1c24;
+      --surface-2: #22222b;
+      --code-bg: #22222b;
+      --good: #4cc38a;
+      --warn: #e2b93d;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .subtitle { color: var(--muted); margin: 0 0 28px; font-size: 0.95rem; }
+  h2 { font-size: 1.35rem; margin: 44px 0 12px; padding-top: 20px; border-top: 1px solid var(--border); letter-spacing: -0.01em; }
+  p { margin: 10px 0; }
+  ul, ol { margin: 10px 0; padding-left: 26px; }
+  li { margin: 5px 0; }
+  code {
+    font: 0.86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    overflow-x: auto;
+    margin: 14px 0;
+  }
+  pre code { background: none; border: none; padding: 0; white-space: pre; }
+  strong { font-weight: 650; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; margin: 14px 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; background: var(--surface); font-size: 0.93rem; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--surface-2); font-weight: 650; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td code, th code { white-space: normal; word-break: break-word; }
+  .callout {
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--good);
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 16px 0;
+  }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Demo mode - phased implementation plan</h1>
+<p class="subtitle">Source plan: <a href="plan.html">plan.html</a> (markdown source of truth:
+<code>docs/plans/demo-mode/plan.md</code>) &middot; this index:
+<code>docs/plans/demo-mode/phased-plan.md</code></p>
+
+<p>This index turns the approved investigation into implementation units that separate agents can
+execute and merge safely.</p>
+
+<h2>Incorporated human decisions (submitted 2026-08-04 via Mission Control)</h2>
+
+<div class="callout">
+<p style="margin-top:0">These are requirements, not open questions:</p>
+<ol style="margin-bottom:0">
+<li><strong>Build path: Phases A then B.</strong> The launcher plus scenario-player fakes ship first
+as one unit; the pre-seeded lived-in fleet follows.</li>
+<li><strong>Demo state: persistent <code>~/.mission-control-demo</code> with a <code>--fresh</code>
+flag</strong> that rebuilds it from scratch.</li>
+<li><strong>Foreman: the demo runs the real Foreman with the real <code>claude</code> bin</strong>
+in Foreman's own environment, so it genuinely reasons about the fake fleet. Foreman tokens are
+allowed.</li>
+<li><strong>Follow-up: this phased plan.</strong> Option C (in-product <code>--demo</code>) is
+rejected; Option D (record/replay) is deferred and not scheduled.</li>
+</ol>
+</div>
+
+<h2>Investigated findings the phases rely on</h2>
+
+<p>Verified against the repository at commit <code>45521e02</code>:</p>
+
+<ul>
+<li>Every model interaction is a spawned CLI resolved through one chain
+(<code>resolveBinSpec</code>, <code>src/server/harness/bin.ts</code>;
+<code>MISSION_&lt;AGENT&gt;_BIN</code> et al.), and the SDK runtime uses the same chain
+(<code>src/server/harness/claude/sdk-deps.ts</code> pins <code>pathToClaudeCodeExecutable</code>).
+Nothing in <code>src/</code> reaches a model HTTP API.</li>
+<li><code>MISSION_HOME</code> moves the DB, token, logs, and dispatch worktrees as a unit
+(<code>stateDir()</code>, <code>src/shared/harness-runtime.mjs</code>);
+<code>migrate-state.ts</code> is a no-op under an explicit override. <code>HOME</code> must be
+overridden separately: Claude transcript paths derive from <code>homedir()</code> as
+<code>~/.claude/projects/&lt;mangled cwd&gt;/&lt;session id&gt;.jsonl</code>
+(<code>resolveTranscriptPath</code>, <code>src/server/harness/claude/transcript.ts</code>).</li>
+<li><code>e2e/fixtures/daemon.ts</code> (<code>startDaemon()</code>) is a working isolated boot:
+temp <code>MISSION_HOME</code>+<code>HOME</code>, free loopback port, <code>writeFakeAgents</code>,
+a real seeded git repo, the full isolation env block, an <code>/api/health</code> pid identity
+check, a db-landed-under-home check, and a <code>PUT /api/harnesses/config</code> flip to the SDK
+runtime. Its <code>startForeman()</code> spawns the real worker
+(<code>src/server/foreman/worker.ts</code>) against the same env.</li>
+<li><code>e2e/fixtures/fake-claude.mjs</code> speaks both protocols:
+<code>claude -p --output-format json</code> one-shots (<code>headlessAnswer()</code>) and the SDK
+session control protocol (<code>runSession()</code>), and it writes the JSONL transcript file
+itself (<code>appendTurn()</code>). The driver reads only four frame kinds:
+<code>system</code>/<code>init</code>, new <code>session_id</code>, <code>assistant</code>,
+<code>result</code>. <code>writeFakeAgents</code> (<code>e2e/fixtures/fake-agents.ts</code>) copies
+fakes to extension-less paths because the vendored SDK runs <code>node &lt;path&gt;</code> only for
+known JS extensions.</li>
+<li>Diff and Files are computed live from git in the session cwd (<code>src/server/diff.ts</code>,
+<code>src/server/session-files.ts</code>); nothing is persisted. Conversation is read from the
+JSONL file, not the control wire. The transcript parser normalizes arbitrary <code>tool_use</code>
+blocks into tool chips (<code>src/server/harness/claude/transcript.ts</code>).</li>
+<li>Two sweeps are NOT scoped by <code>MISSION_HOME</code> and must be disabled in the demo daemon:
+<code>MISSION_POLL_MS=0</code> (terminal discovery adopts the operator's real sessions) and
+<code>MISSION_POOL_REAP_MS=0</code> (reaps the shared treehouse worktree pool).</li>
+<li><code>fleetCost</code>/<code>lineSummary</code>/<code>settingsStatus</code> are recomputed from
+<code>usage_ledger</code> rows and <code>app_config</code> blobs on every snapshot; turn
+attribution is in-memory only (<code>src/server/injections.ts</code>), so origin chips exist only
+for live deliveries.</li>
+<li><code>sdk_sessions</code> rows in <code>suspended</code> status are restored at daemon startup
+as resumable session cards (<code>src/server/sdk/store.ts</code>, supervisor
+<code>restore()</code>).</li>
+</ul>
+
+<h2>Phases</h2>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>Phase</th><th>File</th><th>Delivers</th><th>Direct prerequisites</th></tr></thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>phase-1-demo-launcher-and-scenario-player.md</code></td>
+<td><code>npm run demo</code>: isolated daemon + dashboard on <code>~/.mission-control-demo</code>,
+scenario-player fakes (tool chips, worktree file writes, waiting states), real Foreman,
+<code>--fresh</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>phase-2-seeded-lived-in-fleet.md</code></td>
+<td><code>--fresh</code> rebuilds a lived-in fleet: task history, reviews, workflow runs, cost
+ledger, suspended sessions with transcripts, dirty worktrees</td>
+<td>Phase 1</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>Dependency graph and merge order</h2>
+
+<pre><code>Phase 1  -&gt;  Phase 2</code></pre>
+
+<p>Serial. Phase 2 consumes files, env contracts, and the <code>--fresh</code> hook that Phase 1
+owns, so there are no concurrency groups. Merge order equals phase order.</p>
+
+<h2>Cross-phase contracts</h2>
+
+<p>Phase 1 fixes these and Phase 2 (and any later work) must not change them:</p>
+
+<ul>
+<li><strong>Demo state root:</strong> <code>~/.mission-control-demo</code>, used as BOTH
+<code>MISSION_HOME</code> and <code>HOME</code> for the demo daemon. Layout owned by the launcher:
+<code>workspace/</code> (seeded repos), <code>bin/</code> (installed fakes),
+<code>scenarios/</code> (scenario tables), plus whatever the daemon creates
+(<code>harness.db</code>, <code>token</code>, <code>worktrees/</code>).</li>
+<li><strong>Launcher entry point:</strong> <code>scripts/demo/launch.mjs</code>, exposed as
+<code>npm run demo</code>. Flags: <code>--fresh</code> (delete and rebuild the state root before
+boot; Phase 2 attaches the seeder here), <code>--no-foreman</code> (skip the real Foreman, which is
+otherwise started), <code>--port &lt;n&gt;</code> (override the fixed default), <code>--check</code>
+(boot, assert identity and isolation, exit; Phase 2 extends it with a reduced seed assertion). The
+launcher factors boot-and-wait apart from open-and-attach so Phase 2's seeder can boot quietly.</li>
+<li><strong>Scenario contract:</strong> scenario tables are JSON files in
+<code>&lt;state root&gt;/scenarios/</code>, sourced from <code>scripts/demo/scenarios/</code> at
+install time; the player receives the directory via <code>MISSION_DEMO_SCENARIO_DIR</code>. The
+scenario schema is owned by <code>scripts/demo/</code> and documented in the phase 1 file.</li>
+<li><strong>Foreman environment split:</strong> the demo daemon's env carries the fake bins,
+<code>HOME=&lt;state root&gt;</code>, and <code>ANTHROPIC_API_KEY=""</code>; the Foreman child's env
+carries the REAL <code>claude</code> resolution (no <code>MISSION_CLAUDE_BIN</code> override), the
+operator's real <code>HOME</code> (its CLI credentials live there), and the demo's
+<code>MISSION_HOME</code>/<code>MISSION_PORT</code> so it reaches the demo daemon and token.</li>
+<li><strong>Identity guards:</strong> the launcher refuses to proceed unless
+<code>/api/health</code> reports the spawned child's pid and <code>harness.db</code> exists under
+the state root after boot.</li>
+</ul>
+
+<h2>Decisions recorded against the repository</h2>
+
+<ul>
+<li><strong>The demo player is a separate file, not an edit to the e2e fixture.</strong>
+<code>e2e/fixtures/fake-claude.mjs</code> is a deliberately minimal, determinism-critical test
+asset; growing scenario features inside it would couple the e2e suite to demo behavior. Phase 1
+creates <code>scripts/demo/fake-claude.mjs</code> (and codex/pi equivalents) derived from the e2e
+fixtures, with a header comment naming the derivation so drift is a documented contract, not an
+accident. If the implementing agent finds a clean extraction of the shared protocol core
+(transcript writer + control loop) that leaves the e2e fixture byte-for-byte equivalent in
+behavior, that is preferred; duplication is the accepted fallback because the protocol surface is
+four frame kinds.</li>
+<li><strong>Seeding strategy (Phase 2): replay through real routes, not handwritten DB rows.</strong>
+The seeder boots the daemon quietly and drives the same public HTTP routes the e2e specs use
+(tasks, dispatch, reviews, workflows, schedules), letting the scenario player generate transcripts,
+worktree edits, and completions; the state root that remains IS the lived-in fleet. Direct SQLite
+writes are a documented fallback for surfaces no route feeds (for example <code>usage_ledger</code>
+rows for the cost chip), performed only while the daemon is stopped. This respects the
+daemon-is-the-only-writer boundary at runtime.</li>
+<li><strong>Port:</strong> a fixed default distinct from the dev daemon (7317) and the smoke port
+(7519), overridable via <code>--port</code>. The exact default is the implementer's choice within
+that constraint.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+
+<ol>
+<li><code>npm run build &amp;&amp; npm run demo -- --fresh</code> boots the demo daemon; the
+dashboard opens onto a lived-in fleet (tasks in several states, a waiting prompt, workflow history,
+a nonzero cost chip).</li>
+<li>Dispatching a new task from the UI cuts a real worktree, plays a scenario with tool chips, live
+file edits visible in Diff/Files, a waiting-on-you question, and a completion - with
+<code>MISSION_CLAUDE_BIN</code> pointing at the player throughout (no tokens).</li>
+<li>The real Foreman holds its lease against the demo daemon and its decisions appear in the
+dashboard.</li>
+<li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+<code>npm run build</code>, and <code>npm run smoke</code> stay green;
+<code>npm run test:e2e</code> stays green untouched (the e2e fixtures are not modified).</li>
+<li>The operator's real <code>~/.mission-control</code> and <code>~/.claude</code> are untouched;
+the demo daemon adopts no real sessions.</li>
+</ol>
+
+<p class="subtitle" style="margin-top:48px;padding-top:16px;border-top:1px solid var(--border)">
+Rendered from <code>docs/plans/demo-mode/phased-plan.md</code> (the source of truth). Detailed
+phase documents: <code>phase-1-demo-launcher-and-scenario-player.md</code>,
+<code>phase-2-seeded-lived-in-fleet.md</code>. Self-contained page: no external requests, works
+from <code>file://</code>, light and dark via <code>prefers-color-scheme</code>.</p>
+
+</main>
+</body>
+</html>

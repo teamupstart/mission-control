@@ -385,6 +385,28 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 thing that produces `transcript.txt` - without it you regenerate sixteen files out of
 seventeen.
 
+### The topbar's one row
+
+[`docs/evidence/topbar-one-row/`](../docs/evidence/topbar-one-row/) carries two frames of the
+same bar, same fleet, same 1360px viewport, separated only by the commit: 113px on two rows,
+and 69px on one. `specs/topbar-one-row.spec.ts` asserts the row count in the DOM as a height,
+which is the honest check and is completely illegible as a title bar - these are what make it
+readable, and what answer the question the after frame raises on its own ("the search is a
+glyph, so what did that buy?").
+
+The capture sits deliberately ABOVE the assertion it illustrates, so the same command run
+against the previous commit produces the two-row frame instead of stopping at a red assertion
+with nothing to look at. The directory README records both commands, including the pre-fix
+round trip.
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/topbar-one-row.spec.ts \
+  -g 'one row at the width' \
+  --workers=1 --reporter=list
+```
+
 ### The everything-palette
 
 [`docs/evidence/palette/`](../docs/evidence/palette/) carries three frames and the run's own

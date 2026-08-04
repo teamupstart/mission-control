@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -22,6 +23,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * full-height surface sizes itself against it, so a second row takes ~45px off the
  * conversation underneath.
  */
+
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/topbar-one-row/", import.meta.url));
 
 /** The daemon's loopback token, which the cost ingest route requires. */
 function token(daemon: DaemonHandle): string {
@@ -182,6 +185,17 @@ test("a working fleet keeps the title bar on one row at the width it used to sta
   // that happens to be in the screenshot's filename.
   await dashboard.setViewportSize({ width: 1360, height: 900 });
   const bar = await readBar(dashboard);
+
+  // Photographed BEFORE the assertion, so the same command run against the commit this fixes
+  // produces the two-row frame rather than stopping at a red assertion with nothing to look
+  // at. "One row" is checkable in the DOM as a height; it is only legible as a title bar here.
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.mouse.move(0, 0); // Tooltip portals a bubble under a resting pointer.
+    await dashboard.locator("header.topbar").screenshot({ path: `${EVIDENCE}topbar-1360.png` });
+    console.log(`CAPTURED ${EVIDENCE}topbar-1360.png (${bar.rows} row(s), ${bar.height}px)`);
+  }
+
   expect(bar.rows, `the bar wrapped to ${bar.rows} rows`).toBe(1);
   expect(bar.topbarH, "--topbar-h must report the height the bar actually settled at")
     .toBe(`${bar.height}px`);

@@ -148,15 +148,34 @@ test("no rung animates a layout property in the direction it collapses", () => {
   assert.match(open[1], /transition:[^;]*width/, "the filter no longer animates back open");
 });
 
-test("a rung outranks the base rule it is trying to beat", () => {
+test("every rung rule leads with its rung prefix", () => {
   // The `@container` ladder contributed NO specificity, so between an identical selector
   // inside a rung and one outside it, source order alone decided - and a base rule authored
   // below the ladder silently won. That is what `.filter-input { width }` did during
   // development: the pulse collapsed and the filter did not.
   //
-  // The `.topbar[data-rung~="N"]` prefix ends that class of bug by construction, since it
-  // adds two selectors' worth of specificity to every rung rule. This checks the construction
-  // holds: a rung rule that lost its prefix is back to relying on source order.
+  // The `.topbar[data-rung~="N"]` prefix ends that whole class of bug, and this is the check
+  // that the construction holds. A rung rule that lost its prefix is two failures at once: it
+  // applies at every width, and it is back to deciding by source order.
+  //
+  // There is deliberately no source-order assertion beside this one. The prefix adds a class
+  // and an attribute selector to every rung rule, so a rung always outranks the bare base rule
+  // it overrides - `.topbar[data-rung~="3"] .filter-input` is (0,3,0) against `.filter-input`
+  // at (0,1,0) - and it wins wherever either is authored. Pinning the base rules above the
+  // ladder would only pin the current file layout: a reorder for readability would fail with a
+  // message claiming a cascade bug that the specificity rules make impossible.
+  //
+  // What is left unguarded by that reasoning is a FUTURE base rule that is itself at least as
+  // specific, and no regex over source text settles that - it depends on which elements two
+  // selectors can both match. `e2e/specs/topbar-one-row.spec.ts` settles it instead, in the
+  // only place it can be settled. Its first case is the one that bites: at the reported width
+  // it asserts the bar is on one row, that the search is NOT drawn, and that the page
+  // segment's and pulse's words ARE. An overridden rung 3 fails it twice over - the field is
+  // still 150px wide, and the bar it was supposed to fit is still on two rows.
+  //
+  // Note it is that case rather than the width sweep in the same file. The sweep excuses a bar
+  // that has spent every rung, so a rung silently doing nothing would just push the fit one
+  // rung further down and slip through it.
   for (const [rung, rules] of LADDER) {
     for (const [selector] of rules) {
       for (const part of selector.split(",")) {
@@ -168,15 +187,6 @@ test("a rung outranks the base rule it is trying to beat", () => {
         );
       }
     }
-  }
-  // The base rules the ladder overrides still have to come FIRST, because a later rule at
-  // equal-or-greater specificity would still win.
-  const ladderAt = bare.search(/\.topbar\[data-rung~="1"\]/);
-  assert.ok(ladderAt > 0, "the ladder is gone");
-  for (const base of [".filter-input {", ".pulse-seg {", ".brand h1 {"]) {
-    const at = bare.indexOf(base);
-    if (at === -1) continue;
-    assert.ok(at < ladderAt, `\`${base.trim()}\` is authored below the ladder that overrides it`);
   }
 });
 

@@ -221,6 +221,69 @@ test("an answered panel counts the allowlist and carries the health counters", (
   assert.match(html, /Running Persona calls<\/span><span class="sc-health-value">7</);
 });
 
+// The defect class the Inspector caught on this panel, pinned rather than the one sentence.
+//
+// When the repo list moved to Trust, three of the four sentences describing "which
+// repositories" were reworded to name Trust and one was left pointing at the page itself
+// ("the repositories granted below"). It rendered perfectly and was wrong: an operator who
+// followed it downward found a count and a link, not the list the sentence promised.
+//
+// So the invariant is spatial, not lexical - no sentence on this panel may locate the
+// repository grant ON this panel - which also catches the next sentence someone adds. The
+// legitimate "below"s here (the controls, the retention stages, the check-command table)
+// are all about things that really are below, and none of them mentions a repository.
+//
+// Driven over EVERY state the panel renders, which is the whole difficulty: the offending
+// sentence lives behind `liveEnabled`, so a scan of the default fixture passes while the bug
+// is on screen. A guard that cannot see the copy it guards is worse than none - it reports
+// safety it never checked. The two conditional warnings are each other's blind spot, so both
+// switches are turned on here.
+const COPY_STATES: [string, Partial<WorkflowSettingsState>][] = [
+  ["unanswered", {}],
+  ["answered, live off", ANSWERED],
+  ["live on", { config: { ...ANSWERED.config, liveEnabled: true }, status: STATUS }],
+  ["checks on", { config: { ...ANSWERED.config, checksEnabled: true }, status: STATUS }],
+  [
+    "live and checks on",
+    {
+      config: { ...ANSWERED.config, liveEnabled: true, checksEnabled: true },
+      status: STATUS,
+    },
+  ],
+];
+
+test("no sentence on the panel claims the granted repositories are on this page", () => {
+  for (const [label, state] of COPY_STATES) {
+    // Segmented on ELEMENT boundaries as well as sentence ends. Collapsing the markup to one
+    // string first glues a tooltip label (which has no full stop) onto the paragraph after
+    // it, and the pair reads as one sentence containing both "below" and "repository" when
+    // neither element says both - a false positive that would make this guard useless the
+    // day it fired.
+    const offenders = render(state)
+      .replace(/<[^>]+>/g, "\n")
+      .replace(/&#x27;/g, "'")
+      .split("\n")
+      .flatMap((block) => block.split(/(?<=\.)\s+/))
+      .map((s) => s.replace(/\s+/g, " ").trim())
+      .filter((s) => /repositor/i.test(s) && /\b(above|below)\b/i.test(s));
+    assert.deepEqual(
+      offenders,
+      [],
+      `${label}: a sentence about repositories points at this page, but the grant is in Trust`,
+    );
+  }
+});
+
+// The guard above is only worth having if the states it scans really do carry the sentences.
+// Pinned separately so a fixture that quietly stops rendering the conditional warnings fails
+// here - loudly - instead of turning the scan into a no-op that always passes.
+test("the copy scan actually reaches both conditional warnings", () => {
+  const live = render({ config: { ...ANSWERED.config, liveEnabled: true }, status: STATUS });
+  assert.match(live, /Live bindings write into a real terminal pane/);
+  const checks = render({ config: { ...ANSWERED.config, checksEnabled: true }, status: STATUS });
+  assert.match(checks, /A check runs a command in the repository under review/);
+});
+
 test("an empty allowlist reads as a real nowhere, not as an unanswered daemon", () => {
   const html = render({ config: DEFAULT_WORKFLOW_CONFIG, status: STATUS });
   assert.match(html, /Workflows may act in no repositories yet/);

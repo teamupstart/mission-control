@@ -569,7 +569,8 @@ export function WorkflowSettingsPanel({
           {liveEnabled && (
             <p className="settings-warn wf-settings-live-warn">
               Live bindings write into a real terminal pane. A repair packet is typed into the
-              agent's own composer, in the repositories granted below and nowhere else.
+              agent's own composer, in the repositories granted the Workflows cell in Trust
+              and nowhere else.
             </p>
           )}
         </ConsoleCard>

@@ -1,6 +1,17 @@
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import { stateDisplay } from "./format.ts";
+
+/**
+ * A session on its way out, whose questions can no longer be delivered.
+ *
+ * The same two states `stateDisplay` returns on ABOVE its `pendingReviews` check, named once
+ * so the fold and the pulse cannot drift apart on what "settling" means.
+ */
+function isSettling(session: Session): boolean {
+  return session.state === "exited" || session.state === "stopping";
+}
 
 /**
  * Everything that is waiting on the operator, folded into ONE ordered queue.
@@ -40,12 +51,36 @@ export type AttentionItem =
       context: string | null;
     }
   | {
-      kind: "member_dialog";
+      kind: "session_dialog";
       id: string;
       session: Session;
-      context: string;
+      /** The run clause when the session is an ensemble member, null for an ordinary one. */
+      context: string | null;
       /** The question the menu answers, when the parse found one above the rows. */
       prompt: string | null;
+    }
+  | {
+      /**
+       * A session the fleet paints amber that NOTHING else in this fold accounts for.
+       *
+       * The backstop that makes `total` a superset of the pulse's `need you`. Two real
+       * populations land here. A hook-reported `awaiting_input` is the common one: the only
+       * writers of that state are the Claude `Notification` and Codex `PermissionRequest`
+       * translators, neither of which files a review, so before this the most definitively
+       * blocked sessions on the board were the ones the inbox could not show. The second is
+       * the sub-second window where `session_upsert` has landed a raised `pendingReviews` and
+       * the `review_upsert` carrying the row itself has not - two SSE frames, two `useState`
+       * maps, one render in between.
+       *
+       * Derived LAST, from what the earlier sections did not claim, so it can never
+       * double-count a session that already has a row.
+       */
+      kind: "session_blocked";
+      id: string;
+      session: Session;
+      context: string | null;
+      /** The agent's own word for what it is waiting on ("Needs approval: Bash"). */
+      activity: string | null;
     }
   | {
       kind: "parked_finalization";
@@ -63,6 +98,12 @@ export interface AttentionFold {
    * A session holding three questions is one row and three answers, and the chip has always
    * counted answers (it counted `answerableReviews.length`). Counting rows instead would have
    * made the number drop when a second question arrived on a session already listed.
+   *
+   * INVARIANT: `total >= ` the pulse's `need you` (sessions in an attention tone). The two
+   * segments are different UNITS on purpose - agents blocked vs answers owed - but they must
+   * not be different SETS, because a header reading "1 need you / 0 to answer" says a thing is
+   * stuck and simultaneously offers an empty inbox to fix it in. `session_blocked` is what
+   * closes the gap; `attention-pill-invariant.test.ts` is what keeps it closed.
    */
   total: number;
 }
@@ -109,8 +150,9 @@ export interface AttentionInput {
  *
  *  1. **Ensemble decisions** - a run parked on you; nothing else in the run moves until it is answered.
  *  2. **Session reviews** - answerable inline, right here, which is what makes this an inbox.
- *  3. **Blocked member dialogs** - a TUI menu, answered on the card (see the inbox's comment).
- *  4. **Parked finalizations** - a stuck destructive step.
+ *  3. **Pane dialogs** - a TUI menu, answered on the card (see the inbox's comment).
+ *  4. **Blocked sessions** - amber on the fleet with no row above; the invariant's backstop.
+ *  5. **Parked finalizations** - a stuck destructive step.
  *
  * Within a section the oldest wait leads, so draining top-to-bottom answers whoever has been
  * waiting longest. Every order is total (a timestamp then an id) so the list cannot reshuffle
@@ -120,6 +162,12 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   const items: AttentionItem[] = [];
   const sessionById = new Map(input.sessions.map((s) => [s.id, s]));
   const summaryByRun = new Map(input.ensembles.map((e) => [e.id, e]));
+  /** Sessions that already own a row, so the section (4) backstop cannot double-count them. */
+  const represented = new Set<string>();
+  const contextFor = (session: Session): string | null => {
+    const link = session.task?.ensemble ?? null;
+    return link ? ensembleRunContext(link, summaryByRun.get(link.runId) ?? null) : null;
+  };
 
   // (1) Runs parked on a human decision.
   for (const summary of [...input.ensembles]
@@ -136,9 +184,16 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // (2) Answerable reviews, grouped by the session that raised them. Grouped rather than
   // listed flat because the header (agent, name, run context) belongs to the session, and a
   // session with three questions is one thing to sit down with, not three.
+  //
+  // A settling session's questions are dropped, mirroring `stateDisplay`'s precedence, which
+  // returns on `exited`/`stopping` ABOVE its `pendingReviews` check. Without this the fold
+  // listed answers nobody could deliver: an exited session carries its reviews for the whole
+  // 8s eviction linger (`EXIT_LINGER_MS`) before `orphanReviewsFor` settles them, and a
+  // `stopping` session whose driver hangs while draining carries them indefinitely.
   const bySession = new Map<string, ReviewItem[]>();
   for (const review of input.reviews) {
-    if (!sessionById.has(review.sessionId)) continue;
+    const session = sessionById.get(review.sessionId);
+    if (!session || isSettling(session)) continue;
     const group = bySession.get(review.sessionId);
     if (group) group.push(review);
     else bySession.set(review.sessionId, [review]);
@@ -153,36 +208,59 @@ export function foldAttention(input: AttentionInput): AttentionFold {
       (a.session.id < b.session.id ? -1 : 1),
   );
   for (const group of groups) {
-    const link = group.session.task?.ensemble ?? null;
+    represented.add(group.session.id);
     items.push({
       kind: "session_reviews",
       id: `reviews:${group.session.id}`,
       session: group.session,
       reviews: group.reviews,
-      context: link ? ensembleRunContext(link, summaryByRun.get(link.runId) ?? null) : null,
+      context: contextFor(group.session),
     });
   }
 
-  // (3) Ensemble members parked on a TUI/driver menu. A deep link, not an answer surface:
-  // a pane dialog and a review are two wire protocols, and only the review's is
-  // session-agnostic today. Listed at all because a member holding one is invisible from the
-  // run, and NOT deduplicated against section 2 - a session can hold both, and answering one
+  // (3) Any session parked on a TUI/driver menu. A deep link, not an answer surface: a pane
+  // dialog and a review are two wire protocols, and only the review's is session-agnostic
+  // today. NOT deduplicated against section 2 - a session can hold both, and answering one
   // does not clear the other.
+  //
+  // This used to be `s.task?.ensemble && activePaneDialog(s)`, on the reasoning that an
+  // ordinary session parked on a menu "is already amber on the fleet and is not duplicated
+  // here" (phase-4 dossier 5.1(c)). That reasoning assumed the two pulse segments were meant
+  // to describe different sets. They are meant to describe different UNITS of the same set,
+  // and under the narrow filter a lone session sitting on a permission prompt - the most
+  // definitively blocked thing the board can show - produced `1 need you` beside an inbox
+  // that opened empty.
   const dialogs = input.sessions
-    .filter((s) => s.task?.ensemble && activePaneDialog(s))
+    .filter((s) => activePaneDialog(s))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1));
   for (const session of dialogs) {
-    const link = session.task!.ensemble!;
+    represented.add(session.id);
     items.push({
-      kind: "member_dialog",
+      kind: "session_dialog",
       id: `dialog:${session.id}`,
       session,
-      context: ensembleRunContext(link, summaryByRun.get(link.runId) ?? null),
+      context: contextFor(session),
       prompt: activePaneDialog(session)?.prompt ?? null,
     });
   }
 
-  // (4a) A finalization that stopped on an error. The run is past its decision and holding a
+  // (4) The backstop: sessions the fleet paints amber that nothing above accounts for. See
+  // the `session_blocked` doc for the two populations this catches. Ordered by name then id
+  // like the dialogs, because a lifecycle state carries no "waiting since" to sort on.
+  const blocked = input.sessions
+    .filter((s) => !represented.has(s.id) && stateDisplay(s).tone === "attention")
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1));
+  for (const session of blocked) {
+    items.push({
+      kind: "session_blocked",
+      id: `blocked:${session.id}`,
+      session,
+      context: contextFor(session),
+      activity: session.activity,
+    });
+  }
+
+  // (5) A finalization that stopped on an error. The run is past its decision and holding a
   // half-finished destructive step, which is a retry only a person can ask for.
   for (const summary of [...input.ensembles]
     .filter((e) => e.status === "finalizing" && e.error)

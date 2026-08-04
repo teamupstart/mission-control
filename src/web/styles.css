@@ -3286,6 +3286,7 @@ body {
 /* Rows whose answer is a keystroke at a terminal somewhere else. A neutral rule rather than
    the accent, so the eye lands first on the two that can be settled from this list. */
 .inbox-dialog,
+.inbox-blocked,
 .inbox-gate {
   border-left: 3px solid var(--border);
 }
@@ -3315,10 +3316,15 @@ body {
   border-radius: 999px;
   background: var(--panel-2);
 }
+/* One step ABOVE the bottom of the ramp, because these rows nest a `.dim` trailing note
+   ("Answered on the session card, not here") inside this line. At --dim the note matched its
+   parent exactly, so the intended two-tone sentence rendered as one flat grey run-on and the
+   aside read as part of the instruction. --muted is lighter than --dim, so this raises
+   contrast rather than spending any. */
 .inbox-line {
   margin: 6px 0 0;
   font-size: 12px;
-  color: var(--dim);
+  color: var(--muted);
 }
 .inbox-error {
   color: var(--danger);

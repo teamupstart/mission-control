@@ -34,7 +34,8 @@ import { ReviewCard } from "./ReviewModal.tsx";
 const SECTION_TITLES: Record<AttentionItem["kind"], string> = {
   ensemble_decision: "Decisions",
   session_reviews: "Questions from agents",
-  member_dialog: "Members parked on a menu",
+  session_dialog: "Parked on a menu",
+  session_blocked: "Waiting on you",
   parked_finalization: "Stuck finalizations",
 };
 
@@ -64,11 +65,22 @@ export function AttentionInbox({
       id={OVERLAY_IDS.attention}
       onClose={onClose}
       className="modal attention-inbox"
+      // `Overlay` defaults `role` to undefined, and an `aria-label` on a role-less div is
+      // dropped by most screen readers - so this modal announced itself as nothing at all,
+      // alone among the overlays (every sibling passes this). It is also what lets a test
+      // address the inbox by role instead of by class.
+      role="dialog"
       ariaLabel="Attention inbox"
     >
       <header className="modal-head">
         <div>
-          <strong>{fold.total > 0 ? `${fold.total} need you` : "Nothing needs you"}</strong>
+          {/*
+            "to answer", matching the segment that opens this - not "need you", which is the
+            OTHER segment (sessions in an attention tone). Clicking `3 to answer` and landing
+            on a panel headed `3 need you` made the operator reconcile two labels for one
+            figure at the moment they were trying to drain it.
+          */}
+          <strong>{fold.total > 0 ? `${fold.total} to answer` : "Nothing to answer"}</strong>
           <span className="dim"> · answers, decisions and stuck finalizations</span>
         </div>
         <Tooltip label="Close the inbox - nothing is resolved">
@@ -158,13 +170,13 @@ function InboxItem({
           ))}
         </section>
       );
-    case "member_dialog":
+    case "session_dialog":
       return (
         <section className="inbox-item inbox-dialog">
           <div className="inbox-head">
             <AgentDot agent={item.session.agent} />
             <strong>{item.session.name || "(unnamed)"}</strong>
-            <span className="inbox-context">{item.context}</span>
+            {item.context && <span className="inbox-context">{item.context}</span>}
             <span className="inbox-spacer" />
             <Tooltip label="Focus this session - a terminal menu is answered on its card">
               <button className="btn btn-ghost" onClick={() => onOpenSession(item.session.id)}>
@@ -173,8 +185,33 @@ function InboxItem({
             </Tooltip>
           </div>
           <p className="inbox-line">
-            {item.prompt ? `Parked on: ${item.prompt}` : "Parked on a menu in its terminal."}{" "}
-            <span className="dim">Answered on the session card, not here.</span>
+            {item.prompt ? `Parked on: ${item.prompt}` : "Parked on a menu in its terminal."}
+            {/* The agent's own text ends without punctuation, so the aside used to butt
+                straight onto it ("...use Bash Answered on the session card"). The app's
+                separator rather than a full stop, because the clause is a different voice. */}
+            <span className="dim"> · Answered on the session card, not here.</span>
+          </p>
+        </section>
+      );
+    case "session_blocked":
+      return (
+        <section className="inbox-item inbox-blocked">
+          <div className="inbox-head">
+            <AgentDot agent={item.session.agent} />
+            <strong>{item.session.name || "(unnamed)"}</strong>
+            {item.context && <span className="inbox-context">{item.context}</span>}
+            <span className="inbox-spacer" />
+            <Tooltip label="Focus this session - it reported that it is waiting on you, so the answer goes to the agent directly">
+              <button className="btn btn-ghost" onClick={() => onOpenSession(item.session.id)}>
+                Open session
+              </button>
+            </Tooltip>
+          </div>
+          <p className="inbox-line">
+            {item.activity
+              ? `Waiting on you: ${item.activity}`
+              : "Reported that it is waiting on you."}
+            <span className="dim"> · Answered in the session, not here.</span>
           </p>
         </section>
       );

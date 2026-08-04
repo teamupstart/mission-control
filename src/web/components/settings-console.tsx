@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { Tooltip } from "./Tooltip.tsx";
 
 // The pieces a settings panel with a LEDGER is drawn from - Inspector, Shipping and
@@ -24,6 +24,18 @@ import { Tooltip } from "./Tooltip.tsx";
 // alike by coincidence: a chip restyled on one side and not the other says the two
 // subsystems work differently, which is exactly the thing this app cannot afford to imply
 // about "posts a comment" versus "lands a commit". Test: `settings-console.test.ts`.
+//
+// Sharing the leaves turned out not to be enough, and `ConsoleTable` is what that cost.
+// The first cut handed out `.sc-row`, `.sc-when` and the rest, and left each panel to
+// assemble its own table around them - so the three tables drifted in the one dimension a
+// shared class name says nothing about, which is how much of a list they are willing to
+// put on screen. Foreman's grew a height budget when its ledger reached 100 rows; the
+// other two reached 50 and grew nothing, running the settings page on for two screens of
+// pull requests beside a control column a quarter of their height. Nobody edited the
+// "wrong" file; there was no file in which the answer lived. Now the heading, the column
+// names, the bounded scroller, the pager and the caption are ONE component, and a panel
+// supplies its rows, its columns and its copy. There is no prop with which to render an
+// unbounded list. See `docs/agent-guides/change-contracts.md`, "Ledger tables".
 //
 // One thing that is NOT shared: the danger tone. The Inspector's live mode publishes a
 // comment; YOLO mode writes to a default branch and nothing here can take it back. The
@@ -265,6 +277,244 @@ export function ConsoleLinkStrip({
         </Tooltip>
       ))}
     </div>
+  );
+}
+
+/**
+ * How many ledger rows one page holds. ONE number, for every console table.
+ *
+ * 25 rather than "as many as fit", because the two bounds this table has answer different
+ * questions and neither replaces the other. The scroller bounds HEIGHT - it is a share of
+ * the viewport, so the panel below the fold stays reachable at any window size. The page
+ * bounds the LIST - it is a fixed count, so the table says how far through the record you
+ * are ("26-50 of 50") in a figure that does not move when the window does.
+ *
+ * The three ledgers are capped at 50 (Inspector, Shipping) and 100 (Foreman) rows by their
+ * reads, so this is two pages and four. That is the size worth having: a pager that never
+ * has a second page is chrome, and one with fifteen pages is a scrollbar with extra steps.
+ */
+export const CONSOLE_PAGE_SIZE = 25;
+
+/** One page of a ledger, and everything the pager has to say about where it sits. */
+export interface ConsolePage<Row> {
+  /** The rows on this page. */
+  rows: readonly Row[];
+  /** The page actually shown, CLAMPED into range - never the number that was asked for. */
+  page: number;
+  pages: number;
+  /** 1-based position of the first row on this page; 0 when there are no rows at all. */
+  from: number;
+  to: number;
+  total: number;
+}
+
+/**
+ * Cut a ledger into one page, and clamp the page number rather than trusting it.
+ *
+ * The clamp is the whole reason this is a named fold and not a `slice` at three call sites.
+ * Every one of these ledgers is POLLED - four seconds for Foreman's, the same for the two
+ * Inspector reads - and the strip above it is a filter. So the row count moves underneath
+ * an operator who is sitting on page 3: a merge sweep retires rows, a filter is clicked, a
+ * daemon restarts and answers with nothing. An unclamped page renders an empty table with
+ * rows in it, which reads exactly like the ledger having broken.
+ *
+ * Exported for `settings-console.test.ts`, which pins the clamp and the 1-based readout -
+ * the two things a component test rendering one page cannot see.
+ */
+export function consolePage<Row>(
+  rows: readonly Row[],
+  page: number,
+  size: number = CONSOLE_PAGE_SIZE,
+): ConsolePage<Row> {
+  const total = rows.length;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const current = Math.min(Math.max(1, Math.trunc(page) || 1), pages);
+  const start = (current - 1) * size;
+  return {
+    rows: rows.slice(start, start + size),
+    page: current,
+    pages,
+    from: total === 0 ? 0 : start + 1,
+    to: Math.min(start + size, total),
+    total,
+  };
+}
+
+/** One column name in a ledger's header row. `className` is the cell class it labels. */
+export interface ConsoleColumn {
+  label: string;
+  /** Matches the class on the cells below it, so the header tracks their alignment. */
+  className?: string;
+}
+
+/**
+ * The ledger table itself: heading, column names, a bounded scroller of rows, a pager, and
+ * the caption under it. Every console panel's wide column is drawn by this and nothing else.
+ *
+ * **It owns the paging rather than accepting a page**, and that is the point of the
+ * component. Two of these three tables shipped without a height budget and all three
+ * without a pager, which is precisely the drift a shared vocabulary of leaf elements does
+ * not prevent: `settings-console.tsx` handed out `.sc-row` and `.sc-when` and left each
+ * panel to assemble its own table, so Foreman grew a scroller when its ledger reached 100
+ * rows and the other two grew nothing when theirs reached 50. A panel cannot make that
+ * mistake through this component, because there is no prop with which to render an unpaged,
+ * unbounded list. See `docs/agent-guides/change-contracts.md`, "Ledger tables".
+ *
+ * The rows are handed in FILTERED (the strip is the panel's, since only the panel knows its
+ * buckets) and newest-first, which is what lets the pager say "newer" and "older" rather
+ * than "previous" and "next" - a direction the reader can check against the timestamps in
+ * the last column.
+ */
+export function ConsoleTable<Row>({
+  title,
+  variant,
+  modifier,
+  columns,
+  rows,
+  rowKey,
+  renderRow,
+  filter,
+  empty,
+  foot,
+}: {
+  /** The heading over the table - "Inspections", "Merge queue", "Decisions". */
+  title: string;
+  /** Which ledger this is, as the `sc-table-<variant>` class its grid tracks are keyed on. */
+  variant: "inspector" | "shipping" | "foreman";
+  /** An extra class on the table, for a variant whose columns change - Foreman's shadow. */
+  modifier?: string;
+  columns: readonly ConsoleColumn[];
+  /** The rows to show, already filtered by the strip and ordered newest first. */
+  rows: readonly Row[];
+  rowKey: (row: Row) => string;
+  renderRow: (row: Row) => ReactNode;
+  /** The strip's active tile, so the head can offer the way back. Null shows everything. */
+  filter: { label: string; hint: string; onClear: () => void } | null;
+  /** What an empty list says. The panel writes it, because only it knows why it is empty. */
+  empty: ReactNode;
+  /** The caption under the table - what this ledger is, and how far back it reaches. */
+  foot: ReactNode;
+}): React.JSX.Element {
+  const [page, setPage] = useState(1);
+  // Changing the filter starts a new list, so it starts at its first page. Reconciled during
+  // render (React's documented "adjust state when a prop changes" pattern) rather than in an
+  // effect: an effect would paint page 4 of a two-page filter for one frame first.
+  const key = filter?.label ?? "";
+  const [pagedKey, setPagedKey] = useState(key);
+  if (pagedKey !== key) {
+    setPagedKey(key);
+    setPage(1);
+  }
+  const view = consolePage(rows, page);
+  const scroller = useRef<HTMLDivElement>(null);
+  const newerRef = useRef<HTMLButtonElement>(null);
+  const olderRef = useRef<HTMLButtonElement>(null);
+  /** Which button was pressed, so the effect below can tell whether it just went dead. */
+  const pressed = useRef<"newer" | "older" | null>(null);
+  const go = (next: number): void => {
+    pressed.current = next < view.page ? "newer" : "older";
+    setPage(next);
+    // The scroller keeps its offset across a re-render, so without this the next page opens
+    // wherever the last one was left - which on the older page is its middle, and reads as
+    // rows having been skipped.
+    scroller.current?.scrollTo({ top: 0 });
+  };
+
+  // Focus survives reaching the end of the list.
+  //
+  // On a two-page ledger - which the Inspector's and Shipping's 50 rows make the ordinary
+  // case - pressing Older lands on the last page and disables Older in the same commit. A
+  // browser blurs a control that becomes disabled, so a keyboard reader who pressed it is
+  // returned to the top of the document, on the one screen whose whole point is that you
+  // do not lose your place in a long list. Hand the focus to the button that can still act.
+  //
+  // After the commit rather than in the handler: the button is still enabled while the
+  // handler runs, so focus moved there would simply be dropped a moment later.
+  useEffect(() => {
+    const which = pressed.current;
+    pressed.current = null;
+    if (which === null) return;
+    const used = which === "newer" ? newerRef.current : olderRef.current;
+    // It kept the focus, or the press came from a pointer and never held it. Either way
+    // there is nothing to rescue, and stealing focus would be worse than leaving it.
+    if (!used || !used.disabled || document.activeElement !== document.body) return;
+    (which === "newer" ? olderRef : newerRef).current?.focus();
+  }, [view.page]);
+
+  return (
+    <>
+      <div className={`sc-table sc-table-${variant}${modifier ? ` ${modifier}` : ""}`}>
+        <div className="sc-head">
+          <h3>{title}</h3>
+          {filter && (
+            <Tooltip label={filter.hint}>
+              <button type="button" className="sc-clear" onClick={filter.onClear}>
+                {filter.label} only - show all
+              </button>
+            </Tooltip>
+          )}
+        </div>
+        <div className="sc-row sc-row-head" aria-hidden="true">
+          {columns.map((c) => (
+            <span key={c.label} className={c.className}>
+              {c.label}
+            </span>
+          ))}
+        </div>
+        {/* The rows scroll INSIDE the table, and the heading, the column names and the
+            pager do not. See `.sc-scroll` for the height budget and what it is a share of. */}
+        <div className="sc-scroll" ref={scroller}>
+          {view.rows.length === 0 ? (
+            <p className="settings-hint sc-empty">{empty}</p>
+          ) : (
+            // A keyed `Fragment`, so a panel may return SEVERAL elements for one row without
+            // a wrapper that would break the grid. Foreman's rows do exactly that: the row
+            // is a button, and an opened one is followed by a detail card that is its
+            // sibling rather than its child, because a card carrying a whole terminal
+            // screen cannot live inside a grid cell.
+            view.rows.map((row) => <Fragment key={rowKey(row)}>{renderRow(row)}</Fragment>)
+          )}
+        </div>
+        {/* Absent on a single page, rather than present with both buttons dead. There is
+            nothing to page and nothing the reader has not already been shown, so a range
+            that can only ever read "1-6 of 6" is a control that has never done anything. */}
+        {view.pages > 1 && (
+          <div className="sc-pager">
+            {/* Announced, because the number is the only thing that changes when you page:
+                the rows above it are the same shape and, to a screen reader moving by
+                landmark, the same table. */}
+            <span className="sc-pager-range" aria-live="polite">
+              {view.from}-{view.to} of {view.total}
+            </span>
+            <div className="sc-pager-nav">
+              <Tooltip label="Show the page of more recent rows">
+                <button
+                  type="button"
+                  ref={newerRef}
+                  className="sc-pager-btn"
+                  disabled={view.page === 1}
+                  onClick={() => go(view.page - 1)}
+                >
+                  Newer
+                </button>
+              </Tooltip>
+              <Tooltip label="Show the page of older rows">
+                <button
+                  type="button"
+                  ref={olderRef}
+                  className="sc-pager-btn"
+                  disabled={view.page === view.pages}
+                  onClick={() => go(view.page + 1)}
+                >
+                  Older
+                </button>
+              </Tooltip>
+            </div>
+          </div>
+        )}
+      </div>
+      <p className="settings-hint sc-foot">{foot}</p>
+    </>
   );
 }
 

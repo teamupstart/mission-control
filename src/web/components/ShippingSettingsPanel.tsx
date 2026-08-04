@@ -17,7 +17,9 @@ import {
   ConsoleState,
   ConsoleStrip,
   ConsoleSwitch,
+  ConsoleTable,
   PrLink,
+  type ConsoleColumn,
   type ConsoleStat,
 } from "./settings-console.tsx";
 
@@ -97,6 +99,13 @@ const EMPTY_FILTER: Record<MergeBucket, string> = {
   merged: "YOLO mode has not merged anything yet.",
   closed: "No adopted pull request has closed without merging.",
 };
+
+/** The ledger's column names - see the Inspector's for why `sc-when` is named here. */
+const COLUMNS: readonly ConsoleColumn[] = [
+  { label: "Pull request" },
+  { label: "Where it stands" },
+  { label: "Last event", className: "sc-when" },
+];
 
 export function ShippingSettingsPanel({
   state,
@@ -379,53 +388,48 @@ export function ShippingSettingsPanel({
             active={filter}
             onPick={setFilter}
           />
-          <div className="sc-table sc-table-shipping">
-            <div className="sc-head">
-              <h3>Merge queue</h3>
-              {active && (
-                <Tooltip label="Show every adopted pull request again">
-                  <button type="button" className="sc-clear" onClick={() => setFilter(null)}>
-                    {active.label} only - show all
-                  </button>
-                </Tooltip>
-              )}
-            </div>
-            <div className="sc-row sc-row-head" aria-hidden="true">
-              <span>Pull request</span>
-              <span>Where it stands</span>
-              <span className="sc-when">Last event</span>
-            </div>
-            {rows.length === 0 ? (
-              <p className="settings-hint sc-empty">
-                {inspections.length === 0
-                  ? "Nothing yet. A pull request appears here once Mission Control opens one."
-                  : EMPTY_FILTER[active!.id]}
-              </p>
-            ) : (
-              rows.map((row) => {
-                const bucket = mergeBucket(row);
-                return (
-                  <div
-                    className={`sc-row${bucket === "closed" ? " is-retired" : ""}`}
-                    key={row.key}
-                  >
-                    <PrLink
-                      repo={row.repo}
-                      number={row.number}
-                      url={row.url}
-                      tooltip={`Open ${row.repo}#${row.number} on GitHub`}
-                    />
-                    <span className={`sc-standing sc-standing-${bucket}`}>{mergeStatus(row)}</span>
-                    <span className="sc-when">{when(row, now)}</span>
-                  </div>
-                );
-              })
-            )}
-          </div>
-          <p className="settings-hint sc-foot">
-            Every row states its own reason, including a refusal <code>gh</code> gave us that this
-            app cannot interpret - branch protection, or a required check we cannot see.
-          </p>
+          <ConsoleTable
+            title="Merge queue"
+            variant="shipping"
+            columns={COLUMNS}
+            rows={rows}
+            rowKey={(row) => row.key}
+            filter={
+              active && {
+                label: active.label,
+                hint: "Show every adopted pull request again",
+                onClear: () => setFilter(null),
+              }
+            }
+            // Total, not `active!` - see the Inspector's for why. It is computed on every
+            // render, including the ones where the table has rows to show instead.
+            empty={
+              active === null || inspections.length === 0
+                ? "Nothing yet. A pull request appears here once Mission Control opens one."
+                : EMPTY_FILTER[active.id]
+            }
+            foot={
+              <>
+                Every row states its own reason, including a refusal <code>gh</code> gave us that
+                this app cannot interpret - branch protection, or a required check we cannot see.
+              </>
+            }
+            renderRow={(row) => {
+              const bucket = mergeBucket(row);
+              return (
+                <div className={`sc-row${bucket === "closed" ? " is-retired" : ""}`}>
+                  <PrLink
+                    repo={row.repo}
+                    number={row.number}
+                    url={row.url}
+                    tooltip={`Open ${row.repo}#${row.number} on GitHub`}
+                  />
+                  <span className={`sc-standing sc-standing-${bucket}`}>{mergeStatus(row)}</span>
+                  <span className="sc-when">{when(row, now)}</span>
+                </div>
+              );
+            }}
+          />
         </div>
       </div>
 

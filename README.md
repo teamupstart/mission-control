@@ -4846,11 +4846,18 @@ recent turns, and reports when it had to drop an older prefix.
 ## Open a checkout file outside Mission Control
 
 The Files workspace reads and edits the checkout in place, and its HTML preview is
-deliberately inert: the sandbox gets no scripts and no network access. That is the right
-trade for a preview pane and the wrong one for a mockup with any JavaScript in it, so the
-file toolbar carries **Open in ▾** - it hands the file on screen to an application outside
-the dashboard, where the document is just a document again and resolves its own relative
-assets.
+deliberately inert: the sandbox gets no scripts and no network access. One kind of link
+still works, because a multi-page mockup is built out of it: an anchor that resolves to
+another file in this checkout opens that file in the preview, exactly as the same link
+would in a Markdown preview. Every other link is inert rather than followed - a srcdoc
+document resolves relative URLs against the dashboard itself, so letting one navigate
+showed the SPA fallback's blank shell where the mockup used to be. Fragment links scroll
+in place, as always.
+
+The inert sandbox is the right trade for a preview pane and the wrong one for a mockup
+with any JavaScript in it, so the file toolbar carries **Open in ▾** - it hands the file
+on screen to an application outside the dashboard, where the document is just a document
+again and resolves its own relative assets.
 
 **Browser** is the target this build ships. It is not `open <file>`: the platform's default
 handler routes by file TYPE, which lands an `.html` mockup in your browser and lands

@@ -8,28 +8,50 @@ test("HTML preview prefixes a restrictive CSP before an existing head", () => {
   assert.match(source, /Content-Security-Policy/);
   assert.match(source, /default-src 'none'/);
   assert.match(source, /connect-src 'none'/);
-  const script = source.match(/<script>([^<]+)<\/script>/)?.[1];
-  assert.ok(script);
-  const hash = createHash("sha256").update(script).digest("base64");
-  assert.match(source, new RegExp(`script-src 'sha256-${hash}'`));
   assert.match(source, /form-action 'none'/);
   assert.match(source, /navigate-to 'none'/);
   assert.ok(source.indexOf("Content-Security-Policy") < source.indexOf("<title>"));
 });
 
-test("HTML fragments stay opaque and authorize only the scroll bridge", () => {
+test("every injected bridge is hash-authorized, and nothing else is", () => {
+  // Recomputed from the emitted scripts rather than copied from the constants, so a
+  // bridge edited without its hash - which fails invisibly, as a bridge that simply
+  // does not run - fails HERE instead.
+  const source = htmlPreviewSource("ok");
+  const scripts = [...source.matchAll(/<script>([^<]+)<\/script>/g)].map((match) => match[1]!);
+  assert.equal(scripts.length, 2);
+  const allowed = [...source.matchAll(/'sha256-([^']+)'/g)].map((match) => match[1]!);
+  const hashes = scripts.map((script) => createHash("sha256").update(script).digest("base64"));
+  assert.deepEqual(allowed.toSorted(), hashes.toSorted());
+});
+
+test("HTML fragments stay opaque and authorize only the two bridges", () => {
   const source = htmlPreviewSource("<h1>Hello</h1><script>alert(1)</script>");
   assert.match(source, /^<!doctype html><meta http-equiv="Content-Security-Policy"/);
   assert.doesNotMatch(source, /allow-same-origin/);
   assert.match(source, /event\.source===parent/);
   assert.match(source, /mission:file-preview-scroll/);
+  assert.match(source, /mission:file-preview-link/);
 });
 
-test("a head-looking comment cannot swallow the preview CSP or scroll bridge", () => {
+test("the link bridge claims non-fragment clicks instead of letting them navigate", () => {
+  const source = htmlPreviewSource("ok");
+  const bridge = [...source.matchAll(/<script>([^<]+)<\/script>/g)]
+    .map((match) => match[1]!)
+    .find((script) => script.includes("mission:file-preview-link"));
+  assert.ok(bridge);
+  assert.match(bridge, /preventDefault/);
+  // Fragment links are the one navigation the sandbox performs correctly, so they are
+  // the one kind the bridge must leave alone.
+  assert.match(bridge, /startsWith\("#"\)/);
+});
+
+test("a head-looking comment cannot swallow the preview CSP or its bridges", () => {
   const hostile = '<!-- <head> --><script>fetch("https://example.com/leak")</script>';
   const source = htmlPreviewSource(hostile);
   assert.ok(source.indexOf("Content-Security-Policy") < source.indexOf(hostile));
   assert.ok(source.indexOf("mission:file-preview-scroll") < source.indexOf(hostile));
+  assert.ok(source.indexOf("mission:file-preview-link") < source.indexOf(hostile));
 });
 
 test("checkout-local stylesheets are inlined without weakening the preview CSP", async () => {

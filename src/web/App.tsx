@@ -5,7 +5,7 @@ import { backlogTasks, canCycleMode } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
-import { fitTopbar } from "./topbarLadder.ts";
+import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "./components/TranscriptPanel.tsx";
@@ -1303,38 +1303,11 @@ export function App(): React.JSX.Element {
     if (topbarRef.current) fitTopbar(topbarRef.current);
   });
 
-  // And when the room it has changes rather than the content. Watching the bar ITSELF rather
-  // than its parent is deliberate: in the default layout `.app` caps at 1400px, so above that
-  // width the parent stops changing while the desktop shell's traffic-light inset - clamped
-  // against `100vw` - keeps eating into the bar for another 168px.
-  //
-  // Only an INLINE change is a resize. Fitting the bar changes its block size, which would
-  // otherwise re-enter this callback on every step of the ladder; its inline size comes from
-  // the parent and no rung can move it.
-  useEffect(() => {
-    const bar = topbarRef.current;
-    if (!bar) return;
-    let inline = -1;
-    const ro = new ResizeObserver(([entry]) => {
-      const next = entry?.contentBoxSize?.[0]?.inlineSize ?? bar.clientWidth;
-      if (next === inline) {
-        // A block-size-only change, which is usually this callback watching its own fit
-        // settle. The ladder's answer cannot have moved - no rung changes the bar's inline
-        // size - but the height it publishes just did, and everything below sizes against
-        // that. Republishing is safe here where re-fitting would not be: `--topbar-h` is read
-        // by other elements, never by this one, so it cannot come back round.
-        document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
-        return;
-      }
-      inline = next;
-      fitTopbar(bar, true);
-    });
-    ro.observe(bar);
-    return () => {
-      ro.disconnect();
-      document.documentElement.style.removeProperty("--topbar-h");
-    };
-  }, []);
+  // And for the changes a render cannot report - the window resizing, or anything that resizes
+  // the bar's content at a fixed width, like a browser minimum font size. Both live in
+  // `observeTopbar`, with the reasoning, because telling those apart from the fit's own
+  // settling is the subtle part and it belongs beside the fit.
+  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), []);
 
   // When a card enters focus mode, lift it to the top of the viewport (just under
   // the sticky topbar) so its now-full-screen conversation and reply box land

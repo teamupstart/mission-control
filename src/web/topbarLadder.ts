@@ -64,6 +64,12 @@ function signature(bar: HTMLElement, available: number): string {
 const lastFit = new WeakMap<HTMLElement, string>();
 
 /**
+ * The height each bar last SETTLED at, which is how `observeTopbar` tells its own work from
+ * everyone else's without having to guess.
+ */
+const settledHeight = new WeakMap<HTMLElement, number>();
+
+/**
  * Step the bar down its ladder until its children sit on one row, and publish the height it
  * settled at as `--topbar-h`.
  *
@@ -101,5 +107,49 @@ export function fitTopbar(bar: HTMLElement, force = false): void {
     bar.dataset.rung = RUNG_TOKENS[level]!;
   }
 
-  document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+  const height = bar.offsetHeight;
+  settledHeight.set(bar, height);
+  document.documentElement.style.setProperty("--topbar-h", `${height}px`);
+}
+
+/**
+ * Watch the bar for the changes a render cannot report, and re-fit when one lands.
+ *
+ * Two things reach the bar without going through React. Its available width moves when the
+ * window does - and the bar is watched rather than its parent, because in the default layout
+ * `.app` caps at 1400px, so above that the parent stops changing while the desktop shell's
+ * traffic-light inset, clamped against `100vw`, keeps eating into the bar for another 168px.
+ *
+ * The second is anything that resizes the bar's CONTENT at a fixed width: a browser minimum
+ * font size, a user stylesheet, a zoom that lands on different text metrics. This callback
+ * used to treat every block-size-only notification as its own fit settling and skip the
+ * re-fit, which was wrong in a way that stuck: a 16px minimum font size wraps the bar at a
+ * width where it had been on one row, the notification arrives with the inline size unchanged,
+ * the rung never steps down - and the render path cannot recover it either, because
+ * `signature` keys on the available width and the text length and this trigger moves neither.
+ * The bar stayed on two rows for the life of the page.
+ *
+ * So it is not inferred. `fitTopbar` records the height it settled at, and any other height
+ * means something outside the ladder resized the bar and the ladder has to look again. That
+ * cannot loop: the fit is deterministic for a given width and content, so the height it
+ * settles at is the one the next notification reports, and the comparison stops there.
+ */
+export function observeTopbar(bar: HTMLElement): () => void {
+  let inline = -1;
+  const ro = new ResizeObserver(([entry]) => {
+    const next = entry?.contentBoxSize?.[0]?.inlineSize ?? bar.clientWidth;
+    if (next !== inline) {
+      inline = next;
+      fitTopbar(bar, true);
+      return;
+    }
+    // Same width, different height. Forced, because the signature guard is blind to exactly
+    // the change that got us here and would wave the re-fit straight through.
+    if (bar.offsetHeight !== settledHeight.get(bar)) fitTopbar(bar, true);
+  });
+  ro.observe(bar);
+  return () => {
+    ro.disconnect();
+    document.documentElement.style.removeProperty("--topbar-h");
+  };
 }

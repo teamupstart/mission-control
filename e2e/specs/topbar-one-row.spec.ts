@@ -126,6 +126,9 @@ interface Bar {
   /** The bar's own height, and the height it published for everything beneath it. */
   height: number;
   topbarH: string;
+  /** The room the bar has, and how much text it is carrying - the fit's two guards. */
+  container: number;
+  textLength: number;
 }
 
 /**
@@ -151,6 +154,10 @@ async function readBar(page: Page): Promise<Bar> {
       rung: bar.dataset.rung ?? "",
       height: bar.offsetHeight,
       topbarH: getComputedStyle(document.documentElement).getPropertyValue("--topbar-h").trim(),
+      container: Math.round(
+        bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+      ),
+      textLength: (bar.textContent ?? "").length,
     };
   });
 }
@@ -252,6 +259,43 @@ test("the search is still a working control once it has collapsed to its glyph",
 
   await field.fill("");
   await expect(card).toHaveCount(1);
+});
+
+test("a font-metrics change re-fits the bar, though neither guard can see it", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seedCost(daemon);
+  await busyFleet(dashboard, daemon);
+  await dashboard.setViewportSize({ width: 1360, height: 900 });
+
+  const before = await readBar(dashboard);
+  expect(before.rows, "precondition: the bar starts on one row").toBe(1);
+
+  // A browser minimum font size, which some browsers apply over explicit `px` values. It is
+  // the awkward case for a measured ladder because it reaches the bar without going through
+  // React and without moving the bar's own width: the children get bigger, the bar is pinned
+  // by its parent, and the text is untouched. Both of the fit's guards are blind to it - the
+  // render path keys on available width and text length, and the observer used to treat every
+  // block-size-only notification as its own fit settling and skip the re-fit. The bar wrapped
+  // and stayed wrapped for the life of the page.
+  await dashboard.addStyleTag({ content: "header.topbar * { font-size: 18px !important }" });
+  const after = await readBar(dashboard);
+
+  // Asserted, not assumed: if the injection moved either of these, the observer's ordinary
+  // resize path would have caught it and this test would be passing for the wrong reason,
+  // guarding nothing.
+  expect(after.container, "the bar's own width moved, so this is not the case under test")
+    .toBe(before.container);
+  expect(after.textLength, "the bar's text moved, so this is not the case under test")
+    .toBe(before.textLength);
+
+  expect(after.rows, `the bar wrapped to ${after.rows} rows and did not re-fit`).toBe(1);
+  // And it got there by spending a rung, which is what proves a re-fit actually ran rather
+  // than the bar having had room to spare all along.
+  expect(after.rung.split(" ").length).toBeGreaterThan(before.rung.split(" ").length);
+  expect(after.topbarH, "--topbar-h did not follow the bar through the re-fit")
+    .toBe(`${after.height}px`);
 });
 
 test("the bar never stacks until it has nothing left to shed, at any width", async ({

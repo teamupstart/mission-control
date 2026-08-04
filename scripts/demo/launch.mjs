@@ -359,7 +359,14 @@ function buildForemanEnv(daemonEnv, realHome) {
   return env;
 }
 
-async function startForeman(env) {
+/**
+ * Spawn the Foreman child and return its handle immediately - before waiting for the lease,
+ * not after. That ordering is load-bearing: the caller registers this handle for cleanup
+ * (including on a signal) right away, so a SIGINT/SIGTERM that lands anywhere during the
+ * lease wait below still has a live handle to stop, rather than a spawned-but-unreachable
+ * child that outlives the process which spawned it.
+ */
+function spawnForeman(env) {
   const child = spawn(
     process.execPath,
     ["--import", "tsx", join(REPO_ROOT, "src/server/foreman/worker.ts")],
@@ -371,24 +378,10 @@ async function startForeman(env) {
   let exited = null;
   child.on("exit", (code, signal) => (exited = { code, signal }));
 
-  const deadline = Date.now() + FOREMAN_TIMEOUT_MS;
-  for (;;) {
-    if (exited) {
-      throw new Error(
-        `[demo] Foreman exited before acquiring its lease (code ${exited.code}, signal ${exited.signal}):\n${log}`,
-      );
-    }
-    if (log.includes("[foreman] acquired the lease")) break;
-    if (Date.now() > deadline) {
-      child.kill("SIGTERM");
-      throw new Error(`[demo] Foreman did not acquire its lease within ${FOREMAN_TIMEOUT_MS}ms:\n${log}`);
-    }
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
-
   return {
     child,
     readLog: () => log,
+    hasExited: () => exited,
     stop: async () => {
       if (exited) return;
       child.kill("SIGTERM");
@@ -396,6 +389,25 @@ async function startForeman(env) {
       if (!exited) child.kill("SIGKILL");
     },
   };
+}
+
+/** Wait for an already-spawned Foreman's lease-acquired log line, or throw. Does not spawn
+ * or stop anything itself - the caller owns the handle's lifecycle either way. */
+async function waitForForemanLease(foreman) {
+  const deadline = Date.now() + FOREMAN_TIMEOUT_MS;
+  for (;;) {
+    const exited = foreman.hasExited();
+    if (exited) {
+      throw new Error(
+        `[demo] Foreman exited before acquiring its lease (code ${exited.code}, signal ${exited.signal}):\n${foreman.readLog()}`,
+      );
+    }
+    if (foreman.readLog().includes("[foreman] acquired the lease")) return;
+    if (Date.now() > deadline) {
+      throw new Error(`[demo] Foreman did not acquire its lease within ${FOREMAN_TIMEOUT_MS}ms:\n${foreman.readLog()}`);
+    }
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
 }
 
 function openDashboard(baseURL) {
@@ -433,17 +445,16 @@ async function main() {
     return;
   }
 
+  // From here on, the daemon (and, once spawned, Foreman) must be stopped on EVERY exit
+  // path - a thrown error, a signal, or a clean shutdown - or the next `npm run demo`
+  // invocation finds this one still squatting on the port and refuses to start (see
+  // `bootDaemon`'s pid-identity check). `foreman` is declared and the signal handlers are
+  // registered BEFORE it is spawned, so `shutdown` can always reach it even if a signal
+  // lands mid-lease-wait, before `spawnForeman` itself has returned - the gap a prior
+  // review round found: registering handlers only after a successful Foreman start left
+  // a signal received during that wait to fall through to Node's default (immediate exit,
+  // no cleanup at all).
   let foreman = null;
-  if (!args.noForeman) {
-    console.log("[demo] starting the real Foreman against the demo daemon...");
-    foreman = await startForeman(buildForemanEnv(daemonEnv, realHome));
-    console.log(`[demo] Foreman is up (pid ${foreman.child.pid}) and holds its lease`);
-  } else {
-    console.log("[demo] --no-foreman: skipping the Foreman worker");
-  }
-
-  openDashboard(daemon.baseURL);
-
   let stopping = false;
   const shutdown = async (signal) => {
     if (stopping) return;
@@ -455,6 +466,33 @@ async function main() {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  if (!args.noForeman) {
+    console.log("[demo] starting the real Foreman against the demo daemon...");
+    foreman = spawnForeman(buildForemanEnv(daemonEnv, realHome));
+    try {
+      await waitForForemanLease(foreman);
+    } catch (err) {
+      // A signal may have already won this race and be mid-`shutdown` - which is ALSO
+      // awaiting `foreman.stop()`/`daemon.stop()` right now, on the same handles. If this
+      // branch called `process.exit(1)` unconditionally here, it would win that race and
+      // exit the process before `shutdown`'s own `daemon.stop()` ever got to run, leaking
+      // the daemon despite this whole function's purpose being to prevent exactly that.
+      // Rechecking `stopping` and returning defers entirely to `shutdown`'s already
+      // in-flight cleanup and its own `process.exit(0)` instead.
+      if (stopping) return;
+      stopping = true;
+      console.error(err instanceof Error ? err.message : String(err));
+      await foreman.stop();
+      await daemon.stop();
+      process.exit(1);
+    }
+    console.log(`[demo] Foreman is up (pid ${foreman.child.pid}) and holds its lease`);
+  } else {
+    console.log("[demo] --no-foreman: skipping the Foreman worker");
+  }
+
+  openDashboard(daemon.baseURL);
 }
 
 main().catch((err) => {

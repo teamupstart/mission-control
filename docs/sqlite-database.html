@@ -1,0 +1,778 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Mission Control SQLite database design and operator guide">
+  <title>harness.db | Mission Control database field guide</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #edf3f5;
+      --sheet: #fbfdfd;
+      --ink: #132a3a;
+      --muted: #586b76;
+      --line: #b9cbd1;
+      --blue: #1f607d;
+      --blue-deep: #17465c;
+      --aqua: #66b8b4;
+      --amber: #b86f1e;
+      --amber-pale: #f6e5c9;
+      --red: #9b3d37;
+      --code: #0f2431;
+      --shadow: 0 18px 54px rgba(19, 42, 58, 0.12);
+      --display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      --body: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(31, 96, 125, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(31, 96, 125, 0.055) 1px, transparent 1px),
+        var(--paper);
+      background-size: 24px 24px;
+      font-family: var(--body);
+      font-size: 16px;
+      line-height: 1.62;
+    }
+
+    a { color: var(--blue-deep); text-underline-offset: 0.2em; }
+    a:hover { color: var(--amber); }
+    a:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--aqua);
+      outline-offset: 4px;
+      border-radius: 2px;
+    }
+
+    code, pre, .eyebrow, .tag, .rail-title, th {
+      font-family: var(--mono);
+    }
+
+    .shell {
+      width: min(1440px, calc(100% - 32px));
+      margin: 24px auto 72px;
+      display: grid;
+      grid-template-columns: 244px minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+    }
+
+    .rail {
+      position: sticky;
+      top: 24px;
+      max-height: calc(100vh - 48px);
+      overflow: auto;
+      padding: 20px 18px 22px;
+      color: #e9f4f5;
+      background: var(--ink);
+      border-top: 5px solid var(--aqua);
+      box-shadow: var(--shadow);
+    }
+
+    .rail-title {
+      margin: 0 0 16px;
+      color: var(--aqua);
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .rail nav { display: grid; gap: 3px; }
+    .rail a {
+      padding: 6px 9px;
+      color: #d7e4e7;
+      border-left: 2px solid transparent;
+      text-decoration: none;
+      font-size: 0.85rem;
+      line-height: 1.25;
+    }
+    .rail a:hover { color: white; border-left-color: var(--amber); }
+    .rail .source-link {
+      display: block;
+      margin-top: 18px;
+      padding-top: 16px;
+      color: var(--aqua);
+      border-top: 1px solid rgba(255, 255, 255, 0.18);
+      font-size: 0.78rem;
+    }
+
+    main {
+      min-width: 0;
+      background: var(--sheet);
+      box-shadow: var(--shadow);
+      border-top: 5px solid var(--blue);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 520px;
+      padding: clamp(42px, 8vw, 100px) clamp(26px, 7vw, 92px) 64px;
+      color: #eef8f9;
+      background: var(--blue-deep);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -130px;
+      bottom: -190px;
+      width: 520px;
+      height: 520px;
+      border: 74px solid rgba(102, 184, 180, 0.17);
+      border-radius: 50%;
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.2;
+      background: repeating-linear-gradient(135deg, transparent 0 52px, rgba(255,255,255,.12) 53px 54px);
+    }
+    .hero > * { position: relative; z-index: 1; }
+
+    .eyebrow {
+      margin: 0 0 22px;
+      color: #9dd9d4;
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.17em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { font-family: var(--display); font-weight: 600; }
+    h1 {
+      max-width: 860px;
+      margin: 0;
+      font-size: clamp(3.2rem, 9vw, 7.7rem);
+      line-height: 0.84;
+      letter-spacing: -0.055em;
+    }
+    h1 code {
+      display: block;
+      color: #f1c887;
+      font-family: var(--mono);
+      font-size: 0.49em;
+      font-weight: 550;
+      letter-spacing: -0.04em;
+    }
+    .lede {
+      max-width: 690px;
+      margin: 34px 0 0;
+      color: #d8e8eb;
+      font-size: clamp(1.08rem, 2vw, 1.32rem);
+    }
+    .launch {
+      width: min(720px, 100%);
+      margin-top: 38px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 18px;
+      background: var(--code);
+      border-left: 5px solid var(--amber);
+      box-shadow: 0 12px 30px rgba(0,0,0,.2);
+    }
+    .launch code { color: white; font-size: 1.12rem; }
+    .launch span {
+      margin-left: auto;
+      color: #9dd9d4;
+      font: 0.72rem var(--mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .metrics {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      margin: -27px clamp(18px, 5vw, 62px) 0;
+      background: white;
+      border: 1px solid var(--line);
+      box-shadow: 0 10px 24px rgba(19, 42, 58, 0.08);
+    }
+    .metric { padding: 22px 24px; border-right: 1px solid var(--line); }
+    .metric:last-child { border: 0; }
+    .metric strong {
+      display: block;
+      color: var(--blue-deep);
+      font: 700 1.4rem var(--mono);
+    }
+    .metric span { color: var(--muted); font-size: 0.83rem; }
+
+    .content { padding: 44px clamp(22px, 6vw, 76px) 80px; }
+    section { scroll-margin-top: 30px; margin-top: 76px; }
+    section:first-child { margin-top: 12px; }
+    h2 {
+      margin: 0 0 18px;
+      color: var(--blue-deep);
+      font-size: clamp(2rem, 4vw, 3.25rem);
+      line-height: 1.02;
+      letter-spacing: -0.035em;
+    }
+    h3 {
+      margin: 0 0 8px;
+      color: var(--ink);
+      font-size: 1.35rem;
+      line-height: 1.25;
+    }
+    p { max-width: 78ch; }
+    .section-note { color: var(--muted); font-size: 1.05rem; }
+
+    .callout {
+      margin: 28px 0;
+      padding: 20px 22px;
+      background: var(--amber-pale);
+      border-left: 5px solid var(--amber);
+    }
+    .callout strong { color: #70400d; }
+    .callout p { margin: 5px 0 0; }
+    .callout.danger { background: #f5dfdc; border-color: var(--red); }
+    .callout.danger strong { color: #6f2925; }
+
+    .path-stack {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 28px;
+    }
+    .path-step {
+      min-width: 0;
+      padding: 18px;
+      background: #eef6f6;
+      border-top: 3px solid var(--aqua);
+    }
+    .path-step .tag { color: var(--blue); }
+    .path-step code { overflow-wrap: anywhere; }
+
+    .flow {
+      margin: 30px 0;
+      padding: 18px;
+      background: #e6f0f2;
+      border: 1px solid var(--line);
+    }
+    .flow svg { display: block; width: 100%; height: auto; }
+    .flow text { font-family: var(--mono); fill: var(--ink); }
+
+    pre {
+      overflow: auto;
+      margin: 18px 0;
+      padding: 20px;
+      color: #e9f3f4;
+      background: var(--code);
+      border-left: 5px solid var(--aqua);
+      font-size: 0.88rem;
+      line-height: 1.65;
+      tab-size: 2;
+    }
+    pre .comment { color: #8fb4bd; }
+    :not(pre) > code {
+      padding: 0.12em 0.32em;
+      color: #164a61;
+      background: #e0edf0;
+      border-radius: 3px;
+      font-size: 0.91em;
+    }
+
+    .catalog {
+      margin-top: 32px;
+      display: grid;
+      gap: 18px;
+    }
+    details.family {
+      border: 1px solid var(--line);
+      background: white;
+    }
+    details.family[open] { box-shadow: 0 8px 24px rgba(19, 42, 58, 0.07); }
+    details.family summary {
+      cursor: pointer;
+      list-style: none;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 14px;
+      align-items: baseline;
+      padding: 18px 20px;
+      color: var(--blue-deep);
+      border-left: 5px solid var(--blue);
+    }
+    details.family summary::-webkit-details-marker { display: none; }
+    details.family summary::before {
+      content: "+";
+      color: var(--amber);
+      font: 700 1.2rem var(--mono);
+    }
+    details.family[open] summary::before { content: "−"; }
+    details.family summary strong { font-family: var(--display); font-size: 1.35rem; }
+    details.family summary span { color: var(--muted); font: 0.73rem var(--mono); }
+
+    .table-list { padding: 4px 20px 22px 58px; }
+    .table-row {
+      display: grid;
+      grid-template-columns: minmax(190px, 0.7fr) minmax(0, 1.5fr);
+      gap: 20px;
+      padding: 12px 0;
+      border-top: 1px solid #dbe5e8;
+    }
+    .table-row code {
+      align-self: start;
+      width: fit-content;
+      color: var(--blue-deep);
+      background: transparent;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .table-row p { margin: 0; color: #425966; font-size: 0.92rem; }
+
+    .principles, .cookbook {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 26px;
+    }
+    .principle, .recipe {
+      min-width: 0;
+      padding: 21px;
+      background: #f3f8f9;
+      border-top: 4px solid var(--aqua);
+    }
+    .principle p, .recipe p { margin-bottom: 0; color: var(--muted); }
+    .recipe pre { margin-bottom: 0; font-size: 0.78rem; }
+
+    .shape-table {
+      width: 100%;
+      margin: 24px 0;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    .shape-table th, .shape-table td {
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+    }
+    .shape-table th {
+      color: white;
+      background: var(--blue-deep);
+      font-size: 0.73rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .shape-table tr:nth-child(even) td { background: #edf4f5; }
+
+    footer {
+      padding: 24px clamp(22px, 6vw, 76px) 38px;
+      color: #cfe0e3;
+      background: var(--ink);
+      font-size: 0.8rem;
+    }
+
+    @media (max-width: 920px) {
+      .shell { grid-template-columns: 1fr; width: min(100% - 20px, 820px); margin-top: 10px; }
+      .rail { position: static; max-height: none; }
+      .rail nav { grid-template-columns: repeat(3, 1fr); }
+      .hero { min-height: 470px; }
+    }
+    @media (max-width: 640px) {
+      body { background-size: 18px 18px; }
+      .rail nav { grid-template-columns: repeat(2, 1fr); }
+      .hero { padding-top: 50px; }
+      .launch { align-items: flex-start; flex-direction: column; }
+      .launch span { margin-left: 0; }
+      .metrics, .path-stack, .principles, .cookbook { grid-template-columns: 1fr; }
+      .metric { border-right: 0; border-bottom: 1px solid var(--line); }
+      .table-list { padding-left: 22px; }
+      .table-row { grid-template-columns: 1fr; gap: 4px; }
+      details.family summary { grid-template-columns: auto 1fr; }
+      details.family summary span { grid-column: 2; }
+      .shape-table { display: block; overflow-x: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    @media print {
+      body { background: white; font-size: 11pt; }
+      .shell { display: block; width: 100%; margin: 0; }
+      .rail { display: none; }
+      main { box-shadow: none; }
+      .hero { min-height: auto; color: black; background: white; border-bottom: 3px solid black; }
+      .hero h1, .hero .lede, .eyebrow { color: black; }
+      .metrics { margin-top: 0; box-shadow: none; }
+      details.family:not([open]) > *:not(summary) { display: block; }
+      pre { white-space: pre-wrap; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail" aria-label="Document navigation">
+      <p class="rail-title">Database field guide</p>
+      <nav>
+        <a href="#access">Open the database</a>
+        <a href="#ownership">Ownership model</a>
+        <a href="#catalog">Table catalog</a>
+        <a href="#relationships">Relationships</a>
+        <a href="#storage">Storage conventions</a>
+        <a href="#migrations">Schema lifecycle</a>
+        <a href="#queries">Query cookbook</a>
+        <a href="#backup">Backup and restore</a>
+        <a href="#sources">Source of truth</a>
+      </nav>
+      <a class="source-link" href="../src/server/db.ts">Current schema: src/server/db.ts</a>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Mission Control / operator reference / 2026-08-03</p>
+        <h1>A field guide to <code>harness.db</code></h1>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of its 49 tables owns.</p>
+        <div class="launch" aria-label="Database shell command">
+          <code>make db</code>
+          <span>read-only shell</span>
+        </div>
+      </header>
+
+      <div class="metrics" aria-label="Database summary">
+        <div class="metric"><strong>49</strong><span>application tables in the current fresh schema</span></div>
+        <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
+        <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
+      </div>
+
+      <div class="content">
+        <section id="access">
+          <p class="eyebrow">Operator entry point</p>
+          <h2>Open the same file the daemon uses</h2>
+          <p class="section-note">Run <code>make db</code> from the repository root. The command calls the shared state-directory resolver, refuses to create a missing database, opens SQLite with <code>-readonly</code>, and enables <code>PRAGMA query_only</code>.</p>
+
+          <div class="path-stack" aria-label="Database path resolution">
+            <div class="path-step"><span class="tag">Explicit</span><br><code>$MISSION_HOME/harness.db</code></div>
+            <div class="path-step"><span class="tag">Default</span><br><code>~/.mission-control/harness.db</code></div>
+            <div class="path-step"><span class="tag">Compatibility</span><br>existing <code>.fleet-control</code> or <code>.ai-harness</code> state</div>
+          </div>
+
+          <pre><code><span class="comment"># Open the normal operator database</span>
+make db
+
+<span class="comment"># Open an isolated Mission Control state directory</span>
+MISSION_HOME=/path/to/state make db
+
+<span class="comment"># If sqlite3 is installed outside PATH</span>
+SQLITE3_BIN=/absolute/path/to/sqlite3 make db</code></pre>
+
+          <p>Useful commands once the prompt opens:</p>
+          <pre><code>.tables
+.schema tasks
+.indexes workflow_runs
+.mode box
+SELECT id, title, status, datetime(updated_at / 1000, 'unixepoch', 'localtime') AS updated
+FROM tasks
+ORDER BY updated_at DESC
+LIMIT 20;
+.quit</code></pre>
+
+          <div class="callout">
+            <strong>The shell is intentionally read-only.</strong>
+            <p>Mission Control treats the daemon as the sole database writer. Read while it runs. For manual repair or mutation, stop every Mission Control process, make an offline backup, and prefer a reviewed migration or application route over ad hoc SQL.</p>
+          </div>
+        </section>
+
+        <section id="ownership">
+          <p class="eyebrow">Operating model</p>
+          <h2>The daemon owns persistence</h2>
+          <p>The browser, MCP bridge, hooks, and Foreman reach the daemon over HTTP or event channels. They do not open SQLite. This gives write policy, migrations, transactions, and event publication one owner.</p>
+
+          <figure class="flow" aria-label="Database ownership flow">
+            <svg viewBox="0 0 960 360" role="img" aria-labelledby="flow-title flow-desc">
+              <title id="flow-title">Mission Control database access flow</title>
+              <desc id="flow-desc">Browser, MCP, hooks, Foreman, and workers communicate with the daemon. Only the daemon writes SQLite. The operator make command reads SQLite directly in read-only mode.</desc>
+              <defs>
+                <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#1f607d"/></marker>
+              </defs>
+              <g fill="#fbfdfd" stroke="#7aa2af" stroke-width="2">
+                <rect x="30" y="34" width="176" height="54"/><rect x="30" y="112" width="176" height="54"/>
+                <rect x="30" y="190" width="176" height="54"/><rect x="30" y="268" width="176" height="54"/>
+                <rect x="376" y="103" width="208" height="116" fill="#dcebed" stroke="#1f607d" stroke-width="3"/>
+                <path d="M748 78 h144 l26 26 v174 l-26 26 H748 l-26-26 V104z" fill="#132a3a" stroke="#132a3a"/>
+                <rect x="376" y="278" width="208" height="54" fill="#f6e5c9" stroke="#b86f1e"/>
+              </g>
+              <g font-size="16" text-anchor="middle">
+                <text x="118" y="67">Web dashboard</text><text x="118" y="145">MCP + hooks</text>
+                <text x="118" y="223">Foreman</text><text x="118" y="301">SDK + workers</text>
+                <text x="480" y="145" font-size="21" font-weight="700">Daemon</text>
+                <text x="480" y="174">routes · stores · migrations</text><text x="480" y="198">sole application writer</text>
+                <text x="820" y="161" fill="#f1c887" font-size="21">harness.db</text>
+                <text x="820" y="190" fill="#d7e7e9">WAL + foreign keys</text>
+                <text x="820" y="217" fill="#d7e7e9">durable state</text>
+                <text x="480" y="312">make db · read-only</text>
+              </g>
+              <g fill="none" stroke="#1f607d" stroke-width="3" marker-end="url(#arrow)">
+                <path d="M206 61 C292 61 294 128 376 128"/><path d="M206 139 H376"/>
+                <path d="M206 217 C292 217 294 194 376 194"/><path d="M206 295 C292 295 294 214 376 214"/>
+                <path d="M584 161 H722"/>
+              </g>
+              <path d="M584 305 C674 305 666 257 722 257" fill="none" stroke="#b86f1e" stroke-width="3" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+            </svg>
+          </figure>
+
+          <div class="principles">
+            <article class="principle"><h3>Durable, not live</h3><p>Terminal sessions are rebuilt from the operating system and are not stored as session rows. State the OS cannot reconstruct is persisted, including tasks, reviews, work episodes, and event history.</p></article>
+            <article class="principle"><h3>SDK sessions are different</h3><p><code>sdk_sessions</code> is a durable supervisor ledger because daemon-owned embedded processes are deliberately excluded from terminal discovery and must resume after restart.</p></article>
+            <article class="principle"><h3>WAL supports readers</h3><p>The daemon selects write-ahead logging. A read-only shell can inspect a running database while the daemon writes, subject to SQLite snapshot behavior.</p></article>
+            <article class="principle"><h3>Transactions guard side effects</h3><p>Uniqueness, partial indexes, claims, operation keys, and explicit transactions protect exactly-once work and recovery boundaries where duplicate dispatch or delivery would be costly.</p></article>
+          </div>
+        </section>
+
+        <section id="catalog">
+          <p class="eyebrow">Schema atlas</p>
+          <h2>What every table owns</h2>
+          <p class="section-note">The catalog groups tables by responsibility. Open any family below. For exact columns and indexes in your installed database, use <code>.schema TABLE</code> because migrations may add columns after the original <code>CREATE TABLE</code> block.</p>
+
+          <div class="catalog">
+            <details class="family" open>
+              <summary><strong>Tasks and work episodes</strong><span>7 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>tasks</code><p>The backlog and execution record: intent, harness choices, repository and worktree coordinates, current session binding, source or schedule provenance, status, and outcome.</p></div>
+                <div class="table-row"><code>session_work_episodes</code><p>The current unit of work associated with a live session, including branch and pull request provenance plus restart rebind state.</p></div>
+                <div class="table-row"><code>session_work_episode_prompts</code><p>Prompt timestamps for one session and episode, used to make prompting idempotent.</p></div>
+                <div class="table-row"><code>task_work_episode_bindings</code><p>The current one-to-one task and work-episode association. A unique session index prevents two active tasks from claiming the same session.</p></div>
+                <div class="table-row"><code>historical_task_work_episode_bindings</code><p>Retained task-to-episode provenance after the current binding moves on.</p></div>
+                <div class="table-row"><code>task_source_seen</code><p>A durable deduplication ledger for external task sources. Its rows outlive deleted tasks so a deleted imported item stays deleted.</p></div>
+                <div class="table-row"><code>session_agent_bindings</code><p>Maps a transient synthetic session ID to the harness-native agent session ID used as a durable note and queue key.</p></div>
+              </div>
+            </details>
+
+            <details class="family" open>
+              <summary><strong>Sessions, reviews, and operator state</strong><span>10 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>reviews</code><p>Human review requests and resolutions, including kind, body, structured decisions, answer selections, status, response, and attribution.</p></div>
+                <div class="table-row"><code>session_events</code><p>An append-only session event log written by hook ingestion. It also proves whether precise hooks have ever been observed for a session.</p></div>
+                <div class="table-row"><code>session_notes</code><p>Current Foreman-facing note state for a stable note key: purpose, brief, recommendation, disposition, and last handled marker.</p></div>
+                <div class="table-row"><code>session_goals</code><p>The durable objective and latest prompt reconciliation state shown as a session goal.</p></div>
+                <div class="table-row"><code>sdk_sessions</code><p>Restorable daemon-owned session identity, runtime choices, lifecycle status, and whether a turn was interrupted.</p></div>
+                <div class="table-row"><code>pending_turns</code><p>The durable operator outbox for human messages not yet accepted by a harness, with sequence, revision, claim, retry, and uncertainty state.</p></div>
+                <div class="table-row"><code>skills_acks</code><p>The last skill catalog generation acknowledged by each stable session note key.</p></div>
+                <div class="table-row"><code>app_config</code><p>Generic JSON-encoded application settings stored as key and value text.</p></div>
+                <div class="table-row"><code>personas</code><p>Reusable, revisioned model-review definitions with exact operator-authored Markdown guidance and optional provider/model choices.</p></div>
+                <div class="table-row"><code>session_actions</code><p>Reusable workflow instructions with exact Markdown prompts, required skill capabilities, and server-owned completion proof kinds.</p></div>
+              </div>
+            </details>
+
+            <details class="family">
+              <summary><strong>Foreman</strong><span>3 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>foreman_episodes</code><p>Append-only decision history: situation, captured question or terminal pane, triage evidence, chosen action, delivery, and resolution attribution.</p></div>
+                <div class="table-row"><code>foreman_queues</code><p>One current queue header per stable note key, including checkout reattach hints and wrap-up guards.</p></div>
+                <div class="table-row"><code>foreman_queue_items</code><p>Ordered durable instructions and their propose, send, verify, recover, complete, or escalation lifecycle.</p></div>
+              </div>
+            </details>
+
+            <details class="family" open>
+              <summary><strong>Workflow definitions and execution</strong><span>12 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>workflow_definitions</code><p>Mutable workflow identity, draft graph, policies, draft revision, archive state, and pointer to the current published version.</p></div>
+                <div class="table-row"><code>workflow_versions</code><p>Immutable published graph and policy snapshots, numbered within a workflow.</p></div>
+                <div class="table-row"><code>workflow_bindings</code><p>A published version attached to a stable session note key, with frozen compatibility facts, trigger and delivery modes, and repair budget.</p></div>
+                <div class="table-row"><code>workflow_runs</code><p>One execution of a binding: status, phase, trigger identity, Inspector gate state, timestamps, and retention markers.</p></div>
+                <div class="table-row"><code>workflow_submissions</code><p>Immutable evidence snapshots scoped by run, repair round, and continuation segment.</p></div>
+                <div class="table-row"><code>workflow_node_attempts</code><p>Each attempt to execute one graph node against one submission, including frozen Persona or session-action snapshots and its verdict or output.</p></div>
+                <div class="table-row"><code>workflow_edge_receipts</code><p>Deduplicated proof that a source attempt activated one graph edge for a submission.</p></div>
+                <div class="table-row"><code>workflow_deliveries</code><p>Durable packets sent to sessions, including payload hashes and prepared, sending, delivered, uncertain, refused, or cancelled lifecycle.</p></div>
+                <div class="table-row"><code>workflow_llm_calls</code><p>Provider/model, timing, bytes, cost, state, and error metadata for workflow-owned model calls.</p></div>
+                <div class="table-row"><code>workflow_events</code><p>Append-only operator-visible run audit events.</p></div>
+                <div class="table-row"><code>workflow_binding_claims</code><p>Idempotent external-orchestrator ownership of a workflow binding.</p></div>
+                <div class="table-row"><code>workflow_check_leases</code><p>The durable owner and cleanup state of a worktree held by a workflow Check node.</p></div>
+              </div>
+            </details>
+
+            <details class="family">
+              <summary><strong>Usage and source cursors</strong><span>2 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>usage_ledger</code><p>Deduplicated token and cost cells by stable note key, model, query source, and high-precision source window identity. It separates session and automation spend.</p></div>
+                <div class="table-row"><code>usage_sources</code><p>Durable byte cursors and file identity for append-only usage inputs so a crash may replay data but cannot skip it.</p></div>
+              </div>
+            </details>
+
+            <details class="family">
+              <summary><strong>Inspector</strong><span>2 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>inspector_prs</code><p>The pull requests Mission Control is allowed to inspect, plus last reviewed head, last observed remote state, retry state, merge posture, and adoption provenance.</p></div>
+                <div class="table-row"><code>inspector_comments</code><p>One deduplicated finding per pull request fingerprint, with path, line, title, scrubbed body, severity, round, reply state, and status.</p></div>
+              </div>
+            </details>
+
+            <details class="family">
+              <summary><strong>Recurring missions</strong><span>3 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>mission_schedules</code><p>The current schedule catalog and durable next-run cursor, pointing at the active immutable revision.</p></div>
+                <div class="table-row"><code>mission_schedule_revisions</code><p>Immutable copies of the task template, cadence, timezone, and execution policies for historical explanation.</p></div>
+                <div class="table-row"><code>mission_schedule_occurrences</code><p>One claim for each schedule and instant, recording overlap or missed-run decisions, task identity, recovery status, and terminal result.</p></div>
+              </div>
+            </details>
+
+            <details class="family" open>
+              <summary><strong>Multi-agent ensembles</strong><span>10 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>ensemble_runs</code><p>The root aggregate: idempotent source identity, compiled strategy plan, pinned repository base, current stage, optional workflow handoff, terminal outcome, and error.</p></div>
+                <div class="table-row"><code>ensemble_members</code><p>One durable logical role per compiled plan, independent from any specific launch attempt.</p></div>
+                <div class="table-row"><code>ensemble_attempts</code><p>Each member launch, recording requested and observed runtime facts, worktree and branch, timestamps, and result state.</p></div>
+                <div class="table-row"><code>ensemble_artifacts</code><p>Immutable evidence locators and digests. Git or another external store owns the actual bytes.</p></div>
+                <div class="table-row"><code>ensemble_stage_attempts</code><p>Idempotent execution of a compiled strategy stage, pinned to an exact versioned driver.</p></div>
+                <div class="table-row"><code>ensemble_evaluations</code><p>Review-stage judgments over fingerprinted artifact inputs, with provider/model and structured results.</p></div>
+                <div class="table-row"><code>ensemble_llm_calls</code><p>Cost, timing, byte counts, operation identity, and state for ensemble-owned model calls.</p></div>
+                <div class="table-row"><code>ensemble_events</code><p>Append-only, deduplicated transition audit trail for a run.</p></div>
+                <div class="table-row"><code>ensemble_decisions</code><p>Versioned human selections and rationale under the evidence visible at decision time.</p></div>
+                <div class="table-row"><code>ensemble_deletion_intents</code><p>A recoverable, single in-progress deletion record for external refs that must be cleaned before the run is removed.</p></div>
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <section id="relationships">
+          <p class="eyebrow">Relational design</p>
+          <h2>Constraints carry business meaning</h2>
+          <p>Most table families relate through identifiers enforced by their store code and focused indexes. The ensemble family is the exception: it declares foreign keys and cascading deletes, and the daemon enables <code>PRAGMA foreign_keys = ON</code> on its connection.</p>
+
+          <table class="shape-table">
+            <thead><tr><th>Pattern</th><th>Examples</th><th>Reason</th></tr></thead>
+            <tbody>
+              <tr><td>Stable note key</td><td><code>session_notes</code>, <code>session_goals</code>, queues, usage</td><td>Harness-native session identity survives replacement of a synthetic terminal process identity.</td></tr>
+              <tr><td>Append-only audit</td><td>events, Foreman episodes, ensemble decisions</td><td>History explains what happened without overwriting the prior state.</td></tr>
+              <tr><td>Immutable revision</td><td>workflow versions, schedule revisions</td><td>An execution remains explainable under the exact configuration that started it.</td></tr>
+              <tr><td>Idempotency key</td><td>trigger keys, source keys, operation keys</td><td>A retry after a lost response or crash returns to the same durable operation.</td></tr>
+              <tr><td>Partial unique index</td><td>one active workflow binding, one sending turn, one live lease</td><td>The database rejects unsafe concurrent live states while retaining terminal history.</td></tr>
+              <tr><td>Explicit foreign keys</td><td><code>ensemble_runs</code> descendants</td><td>Unreachable children are corruption, so run deletion cascades through the family.</td></tr>
+            </tbody>
+          </table>
+
+          <div class="callout">
+            <strong>Do not assume every <code>*_id</code> is a declared foreign key.</strong>
+            <p>For most families, relations are application contracts rather than SQLite <code>REFERENCES</code> clauses. Check the owning store and schema source before deleting or rewriting related rows.</p>
+          </div>
+        </section>
+
+        <section id="storage">
+          <p class="eyebrow">Reading rows correctly</p>
+          <h2>Storage conventions</h2>
+          <div class="principles">
+            <article class="principle"><h3>Time is epoch milliseconds</h3><p>Most <code>*_at</code>, <code>ts</code>, and schedule timestamps are integer Unix epoch milliseconds. Nanosecond usage source identities stay as text to avoid JavaScript precision loss.</p></article>
+            <article class="principle"><h3>Booleans are integers</h3><p>Flags such as <code>enabled</code>, <code>turn_in_progress</code>, and <code>cost_known</code> use <code>0</code> and <code>1</code>.</p></article>
+            <article class="principle"><h3>Structured values use text JSON</h3><p>Columns ending in <code>_json</code> and several named fields such as labels, dependencies, menus, and app-config values contain serialized JSON owned by application schemas.</p></article>
+            <article class="principle"><h3>Null has domain meaning</h3><p>Null often means not observed, not applicable, or no override. Empty string is used when a uniqueness key needs one normalized unknown value. They are not interchangeable.</p></article>
+            <article class="principle"><h3>Enums are durable identifiers</h3><p>Status, kind, role, and strategy strings are persisted contracts. Renaming one can orphan history or make a row unreadable.</p></article>
+            <article class="principle"><h3>Payload retention is selective</h3><p>Workflow retention can prune evidence and delivery payload content while keeping lifecycle and audit rows. Ensemble artifacts store locators and digests, not full patches.</p></article>
+          </div>
+        </section>
+
+        <section id="migrations">
+          <p class="eyebrow">Schema lifecycle</p>
+          <h2>Fresh schema first, idempotent upgrades second</h2>
+          <p><code>openDb()</code> creates every current table and safe initial index, then <code>migrate()</code> upgrades existing files. Each migration runs on every open and must be idempotent.</p>
+          <pre><code><span class="comment">// The project contract for adding a column</span>
+1. Add it to the fresh CREATE TABLE definition.
+2. Add the same column through addColumn() in migrate().
+3. Create indexes that name it only after addColumn().
+4. Add an upgrade test seeded with the older schema.</code></pre>
+          <p>This ordering matters because <code>CREATE TABLE IF NOT EXISTS</code> does nothing to an existing table. An index in the initial block that names a newly migrated column would run before the column exists and prevent every upgraded database from opening.</p>
+          <div class="callout danger">
+            <strong>The source file is the contract, not a diagram.</strong>
+            <p>Use <a href="../src/server/db.ts"><code>src/server/db.ts</code></a> and the subsystem stores for implementation work. This guide explains intent and navigation. It does not replace migration tests or live schema introspection.</p>
+          </div>
+        </section>
+
+        <section id="queries">
+          <p class="eyebrow">Read-only cookbook</p>
+          <h2>Questions worth asking</h2>
+          <div class="cookbook">
+            <article class="recipe">
+              <h3>Recent tasks</h3>
+              <pre><code>SELECT id, title, status, agent,
+  datetime(updated_at / 1000,
+    'unixepoch', 'localtime') AS updated
+FROM tasks
+ORDER BY updated_at DESC
+LIMIT 25;</code></pre>
+            </article>
+            <article class="recipe">
+              <h3>Columns per table</h3>
+              <pre><code>SELECT name,
+  (SELECT COUNT(*) FROM pragma_table_info(name))
+    AS columns
+FROM sqlite_schema
+WHERE type = 'table'
+  AND name NOT LIKE 'sqlite_%'
+ORDER BY name;</code></pre>
+            </article>
+            <article class="recipe">
+              <h3>Active workflow runs</h3>
+              <pre><code>SELECT id, status, current_phase,
+  datetime(updated_at / 1000,
+    'unixepoch', 'localtime') AS updated
+FROM workflow_runs
+WHERE completed_at IS NULL
+ORDER BY updated_at DESC;</code></pre>
+            </article>
+            <article class="recipe">
+              <h3>Open adopted pull requests</h3>
+              <pre><code>SELECT key, title, url, state,
+  observed_state, head_ref_name,
+  fail_count, last_error
+FROM inspector_prs
+WHERE state = 'open'
+ORDER BY updated_at DESC;</code></pre>
+            </article>
+            <article class="recipe">
+              <h3>Database health</h3>
+              <pre><code>PRAGMA quick_check;
+PRAGMA journal_mode;
+PRAGMA foreign_key_check;
+PRAGMA database_list;</code></pre>
+            </article>
+            <article class="recipe">
+              <h3>Exact installed schema</h3>
+              <pre><code>SELECT type, name, sql
+FROM sqlite_schema
+WHERE name = 'tasks'
+   OR tbl_name = 'tasks'
+ORDER BY type DESC, name;</code></pre>
+            </article>
+          </div>
+          <p class="section-note">SQLite cannot parameterize a table name in a generic row-count query. For data volume, query the specific family you care about or generate statements from <code>sqlite_schema</code> and review them before running.</p>
+        </section>
+
+        <section id="backup">
+          <p class="eyebrow">Recovery boundaries</p>
+          <h2>Back up a stopped database</h2>
+          <p>For an offline backup, stop Mission Control and copy <code>harness.db</code> together with <code>harness.db-wal</code> and <code>harness.db-shm</code> when present. Keeping the WAL sidecars matters because committed pages may not yet have been checkpointed into the main file.</p>
+          <pre><code><span class="comment"># 1. Stop development processes</span>
+make stop-all
+
+<span class="comment"># 2. Copy all SQLite files from the resolved state directory</span>
+<span class="comment">#    Default: ~/.mission-control/</span>
+
+<span class="comment"># 3. Restore only while the daemon is stopped</span>
+<span class="comment">#    Use the same or a newer Mission Control build.</span></code></pre>
+          <p>Workflow and ensemble exports are portable audit artifacts. They are not database restore formats. If the daemon is packaged or installed as a login service, stop that owner too before replacing files.</p>
+        </section>
+
+        <section id="sources">
+          <p class="eyebrow">Review trail</p>
+          <h2>Source of truth</h2>
+          <ul>
+            <li><a href="../src/server/db.ts"><code>src/server/db.ts</code></a>: core schema, migrations, and several focused stores.</li>
+            <li><a href="../src/server/config.ts"><code>src/server/config.ts</code></a>: <code>STATE_DIR</code> and <code>DB_PATH</code>.</li>
+            <li><a href="../src/shared/harness-runtime.mjs"><code>src/shared/harness-runtime.mjs</code></a>: shared state-directory and compatibility resolution.</li>
+            <li><a href="agent-guides/change-contracts.md"><code>docs/agent-guides/change-contracts.md</code></a>: database change rules.</li>
+            <li><a href="agent-guides/architecture.md"><code>docs/agent-guides/architecture.md</code></a>: process and ownership boundaries.</li>
+            <li><a href="../Makefile"><code>Makefile</code></a> and <a href="../scripts/db-shell.mjs"><code>scripts/db-shell.mjs</code></a>: operator shell entry point.</li>
+          </ul>
+        </section>
+      </div>
+
+      <footer>
+        Mission Control database field guide. The installed schema wins over this snapshot: run <code>make db</code>, then <code>.schema</code>.
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

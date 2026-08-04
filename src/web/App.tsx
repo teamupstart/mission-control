@@ -5,6 +5,7 @@ import { backlogTasks, canCycleMode } from "@shared/session.ts";
 import { agentLaunchAction } from "@shared/session-launch.ts";
 import { api } from "./lib/api.ts";
 import { useEventStream } from "./useEventStream.ts";
+import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
 import type { TranscriptFindHandle } from "./components/TranscriptPanel.tsx";
@@ -1291,22 +1292,22 @@ export function App(): React.JSX.Element {
       ?.focus({ preventScroll: true });
   }, [selectedId]);
 
-  // Publish the live topbar height so a focus-expanded card can size itself to
-  // exactly fill the screen beneath the sticky bar (which wraps taller on narrow
-  // viewports). Measured, not hard-coded, so the fit stays right on any width.
-  useEffect(() => {
-    const bar = topbarRef.current;
-    if (!bar) return;
-    const root = document.documentElement;
-    const apply = (): void => root.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
-    apply();
-    const ro = new ResizeObserver(apply);
-    ro.observe(bar);
-    return () => {
-      ro.disconnect();
-      root.style.removeProperty("--topbar-h");
-    };
-  }, []);
+  // Fit the topbar to one row, and publish the height it settles at as `--topbar-h` so a
+  // focus-expanded card can size itself to exactly fill the screen beneath the sticky bar.
+  // See `topbarLadder.ts` for why the rungs are measured rather than keyed on a width.
+  //
+  // After EVERY render, not once on mount: the bar's width requirement is a function of its
+  // content, and its content is the fleet. A session arriving adds a pulse segment, which is
+  // ~150px on a bar that may have had 40px to spare. `fitTopbar` guards its own cost.
+  useLayoutEffect(() => {
+    if (topbarRef.current) fitTopbar(topbarRef.current);
+  });
+
+  // And for the changes a render cannot report - the window resizing, or anything that resizes
+  // the bar's content at a fixed width, like a browser minimum font size. Both live in
+  // `observeTopbar`, with the reasoning, because telling those apart from the fit's own
+  // settling is the subtle part and it belongs beside the fit.
+  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), []);
 
   // When a card enters focus mode, lift it to the top of the viewport (just under
   // the sticky topbar) so its now-full-screen conversation and reply box land

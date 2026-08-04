@@ -26,6 +26,7 @@
     "build:main": "esbuild src/main/index.ts src/preload/index.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --main-fields=module,main --alias:@shared=./src/shared --outdir=dist --outbase=src --out-extension:.js=.cjs",
     "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/mcp/server.mjs",
     "smoke": "node scripts/smoke-bundles.mjs",
+    "demo": "node scripts/demo/launch.mjs",
     "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs",
     "build:codex-hook": "esbuild hooks/codex-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/codex-hook.mjs",
     "package": "npm run build && electron-builder --mac",

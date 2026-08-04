@@ -1,0 +1,36 @@
+{
+  "title": "Surface rate limits on the dashboard",
+  "match": ["rate limit", "rate-limit", "429", "throttle"],
+  "default": false,
+  "steps": [
+    { "kind": "assistant", "text": "Looking at how the fleet summary should surface a rate limit to an operator.", "delayMs": 700 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "grep -rn \"summarize(\" src" }, "delayMs": 800 },
+    { "kind": "assistant", "text": "There are two reasonable designs here and I don't want to guess wrong on the one that's user-facing.", "delayMs": 700 },
+    {
+      "kind": "ask",
+      "questions": [
+        {
+          "question": "How should a rate limit show up in the summary?",
+          "header": "Rate limit UX",
+          "options": [
+            { "label": "Inline suffix", "description": "append \"- rate limited (retry in Ns)\" to the existing summary line" },
+            { "label": "Separate banner", "description": "a distinct warning line above the summary" }
+          ]
+        },
+        {
+          "question": "Should the retry countdown be shown?",
+          "header": "Countdown",
+          "options": [
+            { "label": "Yes", "description": "show the seconds remaining until retry" },
+            { "label": "No", "description": "just say it's rate limited" }
+          ]
+        }
+      ]
+    },
+    { "kind": "assistant", "text": "Got it - an inline suffix with the countdown. Wiring that up now.", "delayMs": 600 },
+    { "kind": "tool", "name": "Edit", "input": { "file_path": "src/dashboard.ts", "description": "add an optional rate-limit suffix to summarize()" }, "delayMs": 700 },
+    { "kind": "editFile", "path": "src/dashboard.ts", "content": "export interface FleetCounts {\n  active: number;\n  waiting: number;\n  idle: number;\n}\n\nexport interface RateLimitState {\n  limited: boolean;\n  retryAfterMs: number | null;\n}\n\n/** A one-line summary of the fleet's current state, including rate-limit backpressure. */\nexport function summarize(counts: FleetCounts, rateLimit?: RateLimitState): string {\n  const base = `${counts.active} active, ${counts.waiting} waiting, ${counts.idle} idle`;\n  if (!rateLimit?.limited) return base;\n  const wait = rateLimit.retryAfterMs != null ? ` (retry in ${Math.ceil(rateLimit.retryAfterMs / 1000)}s)` : \"\";\n  return `${base} - rate limited${wait}`;\n}\n", "delayMs": 200 },
+    { "kind": "assistant", "text": "Done - the summary now reads \"...- rate limited (retry in 12s)\" when the fleet is throttled.", "delayMs": 500 },
+    { "kind": "result" }
+  ]
+}

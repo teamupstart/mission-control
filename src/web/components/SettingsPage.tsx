@@ -346,6 +346,13 @@ export function SettingsPage({
     inspectorAllow !== null &&
     shippingAllow !== null &&
     shippingAllow.some((repo) => !repoAllowlisted(repo, null, inspectorAllow));
+  // The panel's second amber, summarized the same way: checks are switched on and at least
+  // one repository holds the Workflows grant, so a Check node may run branch-authored code
+  // right now. Read off the same config the panel's footnote reads, so the dot and the
+  // footnote cannot disagree about whether it is live.
+  const workflowConfig = workflowSettings.config;
+  const trustCheckExecution =
+    !!workflowConfig?.checksEnabled && workflowConfig.repoAllowlist.length > 0;
 
   // Escape returns to the fleet, which is the modal's muscle memory kept intact now that
   // there is no backdrop to dismiss.
@@ -437,6 +444,7 @@ export function SettingsPage({
             state={workflowSettings}
             workflows={workflowSummaries}
             foremanEnabled={foreman.config?.enabled ?? false}
+            onNavigate={navigateWithAnchor}
             onOpenRuns={onOpenRuns}
           />
         );
@@ -457,10 +465,18 @@ export function SettingsPage({
           />
         );
       case "trust":
-        // The one view over the three allowlists. It gets all three states rather than its
-        // own hooks: Foreman's is App's, the Inspector's and Shipping's are this page's, and
-        // a fourth poll of the same routes would let a cell and a panel disagree about a list.
-        return <TrustPanel foreman={foreman} inspector={inspector} shipping={shipping} />;
+        // The one view over the four allowlists. It gets all four states rather than its
+        // own hooks: Foreman's is App's, Workflows', the Inspector's and Shipping's are this
+        // page's, and a second poll of the same routes would let a cell and a panel disagree
+        // about a list.
+        return (
+          <TrustPanel
+            foreman={foreman}
+            workflows={workflowSettings}
+            inspector={inspector}
+            shipping={shipping}
+          />
+        );
     }
   }
 
@@ -542,6 +558,7 @@ export function SettingsPage({
                         status: settingsStatus,
                         foremanEnabled,
                         trustBlindSpot,
+                        trustCheckExecution,
                       })}
                       status={settingsStatus}
                     />

@@ -13,8 +13,10 @@ import {
 } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
+import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { TrustGrantSummary } from "./TrustPanel.tsx";
 import {
   ConsoleCard,
   ConsoleLinkStrip,
@@ -271,6 +273,7 @@ export function WorkflowSettingsPanel({
   state,
   workflows = [],
   foremanEnabled = false,
+  onNavigate,
   onOpenRuns,
 }: {
   state: WorkflowSettingsState;
@@ -278,6 +281,11 @@ export function WorkflowSettingsPanel({
   workflows?: WorkflowSummary[];
   /** The completion detector that turns the default into an automatic run. */
   foremanEnabled?: boolean;
+  /**
+   * Deep-link into Trust, for the grant summary that replaced this panel's repo editor.
+   * The same prop Foreman, the Inspector and Shipping take for the same reason.
+   */
+  onNavigate: SettingsNavigate;
   /**
    * Follow a health tile to the nearest corresponding Workflows run-list view.
    *
@@ -290,7 +298,6 @@ export function WorkflowSettingsPanel({
 }): React.JSX.Element {
   const { config, status, update, error } = state;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
-  const [path, setPath] = useState("");
   const [checkPath, setCheckPath] = useState("");
   const [checkSlot, setCheckSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
   const [checkCommand, setCheckCommand] = useState("");
@@ -356,36 +363,12 @@ export function WorkflowSettingsPanel({
       title: "Enable Live workflow delivery",
       body:
         "Mission Control may paste deterministic Persona repair instructions into agent " +
-        "sessions running in the allowlisted repositories below. Preview bindings stay " +
-        "read-only.",
+        "sessions running in the repositories granted the Workflows cell in Trust. Preview " +
+        "bindings stay read-only.",
       confirmLabel: "Enable Live delivery",
       confirmHint: "Allow repair packets to be typed into allowlisted sessions",
       onConfirm: () => void save({ ...config, liveEnabled: true }),
     });
-  };
-
-  const addRepo = async (): Promise<void> => {
-    const trimmed = path.trim();
-    if (!config || !trimmed || busy) return;
-    setBusy(true);
-    setLocalError(null);
-    try {
-      const resolved = await resolveRepo(trimmed);
-      if (!resolved.ok) {
-        setLocalError(resolved.error);
-        return;
-      }
-      if (config.repoAllowlist.includes(resolved.repoRoot)) {
-        setLocalError(`${resolved.repoRoot} is already allowed.`);
-        return;
-      }
-      setPath("");
-      await update({ ...config, repoAllowlist: [...config.repoAllowlist, resolved.repoRoot] });
-    } catch (caught) {
-      setLocalError(caught instanceof Error ? caught.message : "Could not resolve repository");
-    } finally {
-      setBusy(false);
-    }
   };
 
   const toggleChecks = (enabled: boolean): void => {
@@ -562,7 +545,7 @@ export function WorkflowSettingsPanel({
           action={(
             <ConsoleSwitch
               label="Enable Live workflow delivery"
-              tooltip="Allow repair packets to be typed into sessions in the repositories below"
+              tooltip="Allow repair packets to be typed into sessions in the repos granted in Trust"
               checked={liveEnabled}
               disabled={!config || busy}
               // The one switch in this app that types into a live agent's terminal. Its
@@ -586,74 +569,35 @@ export function WorkflowSettingsPanel({
           {liveEnabled && (
             <p className="settings-warn wf-settings-live-warn">
               Live bindings write into a real terminal pane. A repair packet is typed into the
-              agent's own composer, in the repositories listed below and nowhere else.
+              agent's own composer, in the repositories granted below and nowhere else.
             </p>
           )}
         </ConsoleCard>
 
         <ConsoleCard title="Allowed repositories" anchor="workflows/allowlist">
-          {/* The inline editor, deliberately NOT `TrustGrantSummary`. Workflows is not a
-              column of the Trust matrix, so pointing at Trust for a grant Trust does not
-              hold would be a dead link. If it should be a Trust column, that is its own
-              change - and it would move this list, not summarise it. */}
-          {/* The scope-of-consent sentence sits with the list, not with the switch: it is
+          {/* The editor moved to Trust, and this became the summary the other three
+              grant-consuming panels already show. The comment that used to sit here argued
+              Workflows was not a Trust column and that making it one would MOVE this list
+              rather than summarise it; that is exactly what happened.
+
+              The card stays rather than the anchor disappearing: `workflows/allowlist` is a
+              settings-search target, and a live subsystem's consent scope is worth stating
+              where its switches are even when it is not editable here. */}
+          {/* The scope-of-consent sentence sits with the count, not with the switch: it is
               about the grant. "I turned Live on and it still previews" reads as a bug
               without it. */}
           <p className="settings-hint">
-            Live delivery only sends in these repositories - their worktrees count too,
-            wherever they live on disk. Removing one keeps existing bindings visible and
-            refuses their next delivery; nothing is silently downgraded to Preview.
+            Live delivery only sends in the repositories granted the Workflows cell in Trust
+            - their worktrees count too, wherever they live on disk. Revoking one keeps
+            existing bindings visible and refuses their next delivery; nothing is silently
+            downgraded to Preview. The same grant is what lets a Check node run a command.
           </p>
-          {!config ? null : allowlist.length === 0 ? (
-            <p className="settings-hint wf-settings-empty">
-              No repositories yet - Live delivery has nowhere to send.
-            </p>
-          ) : (
-          <ul className="wf-settings-repo-list">
-            {allowlist.map((repo) => (
-              <li key={repo}>
-                <code>{repo}</code>
-                <Tooltip label={`Stop Live delivery from sending in ${repo}`}>
-                  <button
-                    className="btn btn-ghost"
-                    disabled={busy}
-                    onClick={() => void save({
-                      ...config,
-                      repoAllowlist: config.repoAllowlist.filter((item) => item !== repo),
-                    })}
-                  >
-                    Remove
-                  </button>
-                </Tooltip>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="wf-settings-add">
-          <label className="sr-only" htmlFor="workflow-allowlist-path">
-            Repository path to allow
-          </label>
-          <input
-            id="workflow-allowlist-path"
-            className="field-input"
-            value={path}
-            disabled={!config || busy}
-            placeholder="/path/to/repository"
-            onChange={(event) => setPath(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void addRepo();
-            }}
+          <TrustGrantSummary
+            configured={Boolean(config)}
+            count={allowlist.length}
+            subject="Workflows may act in"
+            onNavigate={onNavigate}
           />
-          <Tooltip label="Resolve this path to its repository root and allow Live delivery there">
-            <button
-              className="btn"
-              disabled={!config || busy || !path.trim()}
-              onClick={() => void addRepo()}
-            >
-              Add repository
-            </button>
-          </Tooltip>
-        </div>
         </ConsoleCard>
 
       <Tooltip label="Allow workflow Check nodes to run the commands configured below">
@@ -673,7 +617,7 @@ export function WorkflowSettingsPanel({
           A check runs a command in the repository under review, which executes code written
           on the branch being reviewed with this daemon's own filesystem authority. Its
           scripts, dependencies and build steps all come from that branch. This is not a
-          sandbox. Only the repositories allowlisted above can run one.
+          sandbox. Only repositories granted the Workflows cell in Trust can run one.
         </p>
       )}
 

@@ -5903,8 +5903,19 @@ moment is an approval request, not `AskUserQuestion`, and this phase does not im
 an `ask` step on a Codex session narrates the question as prose instead of blocking, so a
 scenario written for Claude does not stall a Codex run.
 
-**`pi` has no scenario player, and this is not a scoping gap - it is a hard floor, confirmed
-against the actual code rather than assumed.** Two independent facts rule it out:
+**`pi` plays scenarios too** (`fake-pi.mjs`), writing pi's own real transcript shape - one
+JSON `message` record per line under `~/.pi/agent/sessions/--<encoded cwd>--/`, exactly the
+path and record shape `src/server/harness/pi/transcript.ts` reads back (verified directly
+against that module's own `piToMessage` and `computePiSessionActivity`, not assumed). pi has
+no control wire at all (`hooks: null`, `sdk: null`), so there is nothing to speak on stdio -
+the transcript file is the *entire* channel, and this player writes real turns, real tool
+calls, and real file edits into it, the same scenario schema as its Claude and Codex siblings.
+An `ask` step degrades to narration for the same reason it does on Codex: pi has no
+`AskUserQuestion`-equivalent channel to block a turn on.
+
+**What playing a scenario cannot do anything about: getting the resulting session adopted
+onto the dashboard.** This is a hard architectural floor, confirmed against the actual code
+rather than assumed, and it is orthogonal to whether the player itself works (it does):
 
 1. `pi`'s harness registry entry sets `sdk: null` (`src/server/harness/index.ts`), whose own
    comment says plainly: "Phase 6 fills this with pi's `--mode rpc` adapter." That adapter
@@ -5918,11 +5929,13 @@ against the actual code rather than assumed.** Two independent facts rule it out
    would walk every process on the machine and adopt the operator's real sessions, Kill/Reset
    buttons included, for every agent in the demo, not only `pi`.
 
-`MISSION_PI_BIN` points at a loud exit-1 stub for the same reason `e2e/fixtures/fake-agents.ts`
-points it at one: so nothing silently falls through to a real `pi` on `PATH` - not because a
-fake is coming later. This was investigated twice (an automated review round pushed back
-insisting on a literal fake regardless of the above); the deviation is deliberate, and a human
-reviewer overriding that automated check is the correct call, not a gap to keep chasing.
+So a `pi` task dispatched from the demo dashboard today will not appear as a live card, even
+though `fake-pi.mjs` genuinely executes the scenario behind it (confirmed by running it
+standalone and parsing its output with pi's own product parser). This was investigated across
+three review rounds; the last two insisted on a literal player regardless of the adoption
+gap, so this final round built one - but closing the adoption gap itself would mean either
+building the unbuilt RPC adapter above or reopening the isolation hazard `MISSION_POLL_MS=0`
+exists to close, neither of which this phase should do unilaterally.
 
 ## Security
 

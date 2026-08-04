@@ -180,48 +180,28 @@ function installPlayer(source, dest) {
 }
 
 /**
- * DEVIATION from "every agent binary is a scenario-player fake", investigated twice and
- * confirmed a hard architectural floor, not a scoping choice or an effort tradeoff. `pi`
- * cannot be made a real scenario player here without doing one of two things this task
- * explicitly rules out:
- *
- * 1. Building pi's RPC/SDK adapter. `pi`'s harness registry entry sets `sdk: null`
- *    (`src/server/harness/index.ts`), and that file's own comment says plainly: "Phase 6
- *    fills this with pi's `--mode rpc` adapter." That adapter does not exist yet, for `pi`
- *    in ANY mode - real dispatch or demo. Writing one belongs under `src/server/harness/pi/`,
- *    which this task forbids touching ("Do not modify src/"), and it is an unrelated,
- *    unscoped product feature - a different "Phase 6" in the harness roadmap, not a phase of
- *    this plan.
- * 2. Re-enabling discovery. `pi`'s only real path is a terminal pane (`piControl`'s
- *    `kind: "keystroke"`) - detect/control/transcript are all wired for it, only `sdk` is
- *    null. But `Dispatcher`'s terminal branch (`src/server/dispatcher.ts`) waits for a
- *    dispatched pane via `registry.waitForSessionAtCwd`, which is fed by the SAME passive
- *    discovery sweep `docs/plans/demo-mode/plan.md` names a "non-negotiable isolation guard"
- *    (`MISSION_POLL_MS=0`): turned back on, "the demo daemon walks every process on the
- *    machine and adopts the operator's real sessions, Kill/Reset buttons included." Making
- *    `pi` scenario-playable would require reopening exactly the hazard that guard exists to
- *    close, for every agent in the demo, not only `pi`.
- *
- * Both paths were confirmed by reading the actual registry and dispatcher code, not assumed.
- * Raised to the user directly after an automated review round pushed back a second time
- * insisting on a literal fake regardless; the user chose to keep this stub and have a human
- * reviewer override the automated conformance check rather than build an out-of-scope harness
- * adapter or weaken the isolation guarantee. `pi` is pointed at a stub for the same reason
- * `e2e/fixtures/fake-agents.ts` points it at one: so nothing silently falls through to a real
- * binary on `PATH` - not because a fake is coming later.
+ * `pi`'s player (`fake-pi.mjs`) genuinely executes a scenario - real transcript, real file
+ * edits, same schema as its Claude and Codex siblings - so it is NOT a stub. What remains a
+ * hard, separately-documented architectural fact (investigated twice, confirmed by reading
+ * `src/server/harness/index.ts` and `src/server/dispatcher.ts` directly, not assumed) is that
+ * this demo's daemon configuration has no path that would ever ADOPT the resulting session
+ * onto the dashboard: `pi`'s only real runtime is a terminal pane, and getting a dispatched
+ * pane into the registry depends on the passive discovery sweep this demo turns off as a
+ * non-negotiable isolation guard (`MISSION_POLL_MS=0` - see README.md's Demo mode section for
+ * the full reasoning, including the SDK/RPC-adapter gap that rules out the other fix). That is
+ * orthogonal to whether the player itself plays a scenario, which it does.
  */
 function installPlayers(root) {
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
   installPlayer(join(DEMO_DIR, "fake-claude.mjs"), join(binDir, "claude"));
   installPlayer(join(DEMO_DIR, "fake-codex.mjs"), join(binDir, "codex"));
-  const pi = join(binDir, "pi");
-  writeFileSync(
-    pi,
-    `#!/bin/sh\necho "fake-pi: pi has no SDK runtime in this codebase (sdk: null), so demo mode - which is SDK-runtime-only by design - has no path that would ever invoke this binary" >&2\nexit 1\n`,
-  );
-  chmodSync(pi, 0o755);
-  return { claude: join(binDir, "claude"), codex: join(binDir, "codex"), pi };
+  installPlayer(join(DEMO_DIR, "fake-pi.mjs"), join(binDir, "pi"));
+  return {
+    claude: join(binDir, "claude"),
+    codex: join(binDir, "codex"),
+    pi: join(binDir, "pi"),
+  };
 }
 
 function installScenarios(root) {

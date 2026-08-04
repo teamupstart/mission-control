@@ -40,6 +40,34 @@ const BOOT_TIMEOUT_MS = 30_000;
 const FOREMAN_TIMEOUT_MS = 30_000;
 const POLL_MS = 100;
 
+/**
+ * Guarantees a cleanup runs exactly once, no matter how many of `stop`'s callers race to
+ * claim it - a signal, a Foreman lease failure, `--check`'s own natural completion. This is
+ * the exact site of the orphan-daemon bug a Code Risk Reviewer round found (cleanup that
+ * only ran on ONE of several exit paths) and the race in this fix's own first attempt
+ * (`process.exit` on a losing path could still run before the winning path's cleanup did).
+ * Extracted so that ordering is unit-testable without booting a real daemon or Foreman -
+ * see `launch.test.mjs`.
+ */
+export function createShutdownGate(onStop) {
+  let stopping = false;
+  return {
+    /** Whether a caller has already claimed the stop. */
+    isStopping: () => stopping,
+    /**
+     * Claim the stop and run `onStop` - but only for the FIRST caller. Every later caller
+     * (concurrent or sequential) gets `false` back and must not act further: `onStop` is
+     * already running, or has already finished, on someone else's claim.
+     */
+    async stop(reason) {
+      if (stopping) return false;
+      stopping = true;
+      await onStop(reason);
+      return true;
+    },
+  };
+}
+
 function parseArgs(argv) {
   const args = { fresh: false, noForeman: false, check: false, port: DEFAULT_PORT };
   for (let i = 0; i < argv.length; i++) {
@@ -448,24 +476,26 @@ async function main() {
   // From here on, the daemon (and, once spawned, Foreman) must be stopped on EVERY exit
   // path - a thrown error, a signal, or a clean shutdown - or the next `npm run demo`
   // invocation finds this one still squatting on the port and refuses to start (see
-  // `bootDaemon`'s pid-identity check). `foreman` is declared and the signal handlers are
-  // registered BEFORE it is spawned, so `shutdown` can always reach it even if a signal
+  // `bootDaemon`'s pid-identity check). `foreman` is declared and the gate's signal handlers
+  // are registered BEFORE it is spawned, so a stop can always reach it even if a signal
   // lands mid-lease-wait, before `spawnForeman` itself has returned - the gap a prior
-  // review round found: registering handlers only after a successful Foreman start left
-  // a signal received during that wait to fall through to Node's default (immediate exit,
-  // no cleanup at all).
+  // review round found: registering handlers only after a successful Foreman start left a
+  // signal received during that wait to fall through to Node's default (immediate exit, no
+  // cleanup at all). `createShutdownGate` is what then keeps a losing racer from also
+  // calling `process.exit` before the winner's own cleanup has run - the second, subtler
+  // bug that same round's fix first introduced and this one closes; see `launch.test.mjs`.
   let foreman = null;
-  let stopping = false;
-  const shutdown = async (signal) => {
-    if (stopping) return;
-    stopping = true;
-    console.log(`\n[demo] ${signal}: stopping (state root kept at ${root})`);
+  const gate = createShutdownGate(async (reason) => {
+    console.log(`\n[demo] ${reason}: stopping (state root kept at ${root})`);
     if (foreman) await foreman.stop();
     await daemon.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  });
+  process.on("SIGINT", async () => {
+    if (await gate.stop("SIGINT")) process.exit(0);
+  });
+  process.on("SIGTERM", async () => {
+    if (await gate.stop("SIGTERM")) process.exit(0);
+  });
 
   if (!args.noForeman) {
     console.log("[demo] starting the real Foreman against the demo daemon...");
@@ -473,19 +503,12 @@ async function main() {
     try {
       await waitForForemanLease(foreman);
     } catch (err) {
-      // A signal may have already won this race and be mid-`shutdown` - which is ALSO
-      // awaiting `foreman.stop()`/`daemon.stop()` right now, on the same handles. If this
-      // branch called `process.exit(1)` unconditionally here, it would win that race and
-      // exit the process before `shutdown`'s own `daemon.stop()` ever got to run, leaking
-      // the daemon despite this whole function's purpose being to prevent exactly that.
-      // Rechecking `stopping` and returning defers entirely to `shutdown`'s already
-      // in-flight cleanup and its own `process.exit(0)` instead.
-      if (stopping) return;
-      stopping = true;
       console.error(err instanceof Error ? err.message : String(err));
-      await foreman.stop();
-      await daemon.stop();
-      process.exit(1);
+      // If a signal already claimed the gate, it owns cleanup and its own process.exit(0) -
+      // this branch must not also stop things or exit, or it can win that race and exit
+      // before the signal's cleanup finishes.
+      if (await gate.stop("foreman-failed")) process.exit(1);
+      return;
     }
     console.log(`[demo] Foreman is up (pid ${foreman.child.pid}) and holds its lease`);
   } else {
@@ -495,7 +518,12 @@ async function main() {
   openDashboard(daemon.baseURL);
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+// Guarded so a test can `import { createShutdownGate } from "./launch.mjs"` without
+// booting a real daemon - importing a script must not run it.
+const isMain = import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

@@ -84,7 +84,7 @@ const ASK_TURN = "ask me which linter to use";
  * A dispatched agent is only `working` for as long as the fake takes to answer, which is not
  * long enough to assert against. Parking it on its own `AskUserQuestion` is stable: the
  * session sits in an attention tone with the question outstanding for as long as nobody
- * answers it, which holds `need you` on the readout indefinitely.
+ * answers it, which holds `need you` and `to answer` on the readout indefinitely.
  */
 async function busyFleet(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -110,12 +110,14 @@ async function busyFleet(page: Page, daemon: DaemonHandle): Promise<void> {
   await composer.press("Enter");
   await expect(card.locator(".pane-dialog")).toBeVisible({ timeout: 15_000 });
 
-  // `live · 1 session · 1 need you` - three segments, the same shape as the reported
-  // screenshot's `live · 4 sessions · 2 working`, and ~146px wider than the two-segment idle
-  // readout every threshold in the old ladder had been measured against. Asserted so the rest
-  // of the spec cannot quietly degrade into measuring an idle bar and passing on the ladder
-  // this change replaced.
-  await expect(page.locator(".pulse .pulse-seg")).toHaveCount(3);
+  // `live · 1 session · 1 need you · 1 to answer` - four segments. A session parked on a
+  // pane dialog raises both amber figures since the attention pills were reconciled: `need
+  // you` counts the session, `to answer` counts the dialog the inbox can now drain. That is
+  // wider still than the three-segment readout this spec was first measured against, and
+  // ~300px wider than the two-segment idle readout every threshold in the old ladder had been
+  // measured against. Asserted so the rest of the spec cannot quietly degrade into measuring
+  // an idle bar and passing on the ladder this change replaced.
+  await expect(page.locator(".pulse .pulse-seg")).toHaveCount(4);
 }
 
 interface Bar {

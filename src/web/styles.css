@@ -14161,7 +14161,7 @@ button.sc-row:focus-visible {
    remove button gets a hairline column of its own. */
 .trust-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px 168px 130px 44px;
+  grid-template-columns: minmax(0, 1fr) 150px 140px 168px 130px 44px;
   align-items: stretch;
 }
 .trust-h {
@@ -14246,6 +14246,18 @@ button.sc-row:focus-visible {
 .trust-grant.is-trapped .trust-grant-dot {
   background: var(--attention);
 }
+/* Armed check execution. The same amber as a trapped cell, and deliberately so: both mean
+   "read the footnote", and giving this a colour of its own would make the matrix teach two
+   alert vocabularies for one glance. It stays a granted pill - `is-on`'s green dot would
+   contradict the wash, so the dot moves with it. */
+.trust-grant.is-armed {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, transparent);
+  background: color-mix(in oklab, var(--attention) 9%, transparent);
+}
+.trust-grant.is-armed .trust-grant-dot {
+  background: var(--attention);
+}
 .trust-grant:hover:not(:disabled) {
   border-color: var(--dim);
 }
@@ -14276,6 +14288,11 @@ button.sc-row:focus-visible {
 /* The dagger footnote: the same amber as a trapped cell, since it names the same fact. */
 .trust-trap-note {
   margin-top: 10px;
+}
+/* The double-dagger footnote, on the same rhythm. Tighter to the note above it than to the
+   matrix, so that when both are flying they read as two footnotes rather than two sections. */
+.trust-arm-note {
+  margin-top: 8px;
 }
 .trust-add {
   display: flex;

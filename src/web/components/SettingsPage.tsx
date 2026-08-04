@@ -12,6 +12,7 @@ import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { TrustPanel } from "./TrustPanel.tsx";
+import { checksArmedReading } from "../lib/trust.ts";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
@@ -70,12 +71,26 @@ function ScopeBadge({ scope }: { scope: keyof typeof SETTINGS_SCOPES }): React.J
 }
 
 /** What one rail dot means, for the title and screen-reader label the colour alone can't. */
-function dotLabel(tone: SettingsDotTone, status: SettingsStatus | null): string {
+function dotLabel(
+  tone: SettingsDotTone,
+  status: SettingsStatus | null,
+  /**
+   * Which row the dot sits on. Needed because `armed` stopped meaning one thing when Trust
+   * gained the check-execution input: a Trust dot can now be amber with YOLO switched off
+   * entirely, and the tone alone cannot tell you which of the two lit it. Without this, a
+   * screen reader announced "YOLO mode is armed" on a fleet where YOLO was off and the real
+   * cause was a workflow that may execute branch code - the one reading a sighted operator
+   * gets from the panel and a blind one could not.
+   */
+  category: SettingsCategoryId,
+): string {
   switch (tone) {
     case "live":
       return "Inspector is live - reviews post to GitHub";
     case "armed":
-      return "YOLO mode is armed - clean pull requests may merge themselves";
+      return category === "trust"
+        ? "Trust needs a look - a repository grant is armed"
+        : "YOLO mode is armed - clean pull requests may merge themselves";
     case "failing": {
       const n = status?.taskSources.failing ?? 0;
       return `${n} task source${n === 1 ? "" : "s"} failed their last sweep`;
@@ -97,16 +112,18 @@ function dotLabel(tone: SettingsDotTone, status: SettingsStatus | null): string 
 function RailDot({
   tone,
   status,
+  category,
 }: {
   tone: SettingsDotTone | null;
   status: SettingsStatus | null;
+  category: SettingsCategoryId;
 }): React.JSX.Element | null {
   if (!tone) return null;
   return (
     <span
       className={`settings-dot settings-dot-${tone}`}
       role="img"
-      aria-label={dotLabel(tone, status)}
+      aria-label={dotLabel(tone, status, category)}
     />
   );
 }
@@ -340,12 +357,37 @@ export function SettingsPage({
   // something different from the panels. It feeds the trust dot, now that Phase 2 has added
   // the `trust` category to the registry the rail draws from.
   const foremanEnabled = !!foreman.config?.enabled;
+  // The last CONFIRMED answer to "may a check run branch-authored code somewhere". A ref
+  // rather than state: it is written during render from a value already being rendered, so
+  // setting state here would be a second pass that produces the identical output.
+  const rememberedChecksArmed = useRef(false);
   const inspectorAllow = inspector.config?.repoAllowlist ?? null;
   const shippingAllow = shipping.config?.repoAllowlist ?? null;
   const trustBlindSpot =
     inspectorAllow !== null &&
     shippingAllow !== null &&
     shippingAllow.some((repo) => !repoAllowlisted(repo, null, inspectorAllow));
+  // The panel's second amber: checks are switched on and at least one repository holds the
+  // Workflows grant, so a Check node may run branch-authored code right now.
+  //
+  // Remembered ACROSS a failed poll, which is the whole subtlety - see `checksArmedReading`.
+  // `useWorkflowSettings` nulls its config on any read that fails, so deriving this straight
+  // off `config?.checksEnabled` retired the warning five seconds after the daemon went
+  // quiet, while claiming in three places that it could not.
+  //
+  // Owned HERE rather than inside TrustPanel because this component stays mounted for the
+  // whole settings session while TrustPanel mounts only on its own category: a ref in the
+  // panel would forget every time you navigated away, so the dot and the footnote would
+  // disagree about the same fact the moment you came back with the daemon still down. The
+  // panel is handed the reading for the same reason it is handed the four subsystem states.
+  const checksReading = checksArmedReading(
+    workflowSettings.config,
+    rememberedChecksArmed.current,
+  );
+  // Only a CONFIRMED reading updates the memory; an unconfirmed one must not overwrite the
+  // last thing we actually saw with a guess derived from itself.
+  if (checksReading.confirmed) rememberedChecksArmed.current = checksReading.armed;
+  const trustCheckExecution = checksReading.armed;
 
   // Escape returns to the fleet, which is the modal's muscle memory kept intact now that
   // there is no backdrop to dismiss.
@@ -437,6 +479,7 @@ export function SettingsPage({
             state={workflowSettings}
             workflows={workflowSummaries}
             foremanEnabled={foreman.config?.enabled ?? false}
+            onNavigate={navigateWithAnchor}
             onOpenRuns={onOpenRuns}
           />
         );
@@ -457,10 +500,19 @@ export function SettingsPage({
           />
         );
       case "trust":
-        // The one view over the three allowlists. It gets all three states rather than its
-        // own hooks: Foreman's is App's, the Inspector's and Shipping's are this page's, and
-        // a fourth poll of the same routes would let a cell and a panel disagree about a list.
-        return <TrustPanel foreman={foreman} inspector={inspector} shipping={shipping} />;
+        // The one view over the four allowlists. It gets all four states rather than its
+        // own hooks: Foreman's is App's, Workflows', the Inspector's and Shipping's are this
+        // page's, and a second poll of the same routes would let a cell and a panel disagree
+        // about a list.
+        return (
+          <TrustPanel
+            foreman={foreman}
+            workflows={workflowSettings}
+            inspector={inspector}
+            shipping={shipping}
+            checks={checksReading}
+          />
+        );
     }
   }
 
@@ -542,8 +594,10 @@ export function SettingsPage({
                         status: settingsStatus,
                         foremanEnabled,
                         trustBlindSpot,
+                        trustCheckExecution,
                       })}
                       status={settingsStatus}
+                      category={c.id}
                     />
                   </button>
                 </Tooltip>

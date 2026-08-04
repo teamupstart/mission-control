@@ -2,13 +2,16 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import type { ForemanState } from "../useForeman.ts";
 import type { InspectorState } from "../useInspector.ts";
 import type { ShippingState } from "../useShipping.ts";
+import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import { useUiConfig, updateUiConfig } from "../lib/uiConfig.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import {
   candidateRepos,
+  checkExecutionGrants,
   grantPatch,
   mergeBlindSpots,
   trustRows,
+  type ChecksArmedReading,
   type GrantColumn,
   type TrustRow,
 } from "../lib/trust.ts";
@@ -16,27 +19,44 @@ import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
-// Trust: one repository x grant matrix over the three existing allowlists.
+// Trust: one repository x grant matrix over the four existing allowlists.
 //
 // It stores NOTHING of its own about who may act where - each column is a subsystem's own
 // `repoAllowlist`, and a cell click patches that subsystem's config through the exact route
-// its panel used to. The daemon's three consent gates are untouched; this is a view that
+// its panel used to. The daemon's four consent gates are untouched; this is a view that
 // happens to be able to write to what it shows. The one piece of state it does own is the
 // staged list (`UiConfig.trustStaged`): a repo added to the table but granted nothing lives
 // in no allowlist, so without a home of its own it would vanish on the next reload - which
 // would quietly break the plan's "adding is configuration; enabling is consent".
 //
-// The blind spot the three separate panels could only warn about in prose renders here
-// structurally: a repo that YOLO may merge but the Inspector may not review can never
-// qualify, and both the trapped merge cell and the empty inspector cell that would fix it
-// go amber, with a footnote offering the two fixes in place.
+// Two combinations are flagged amber, and they are different kinds of thing. The merge
+// blind spot is a CONTRADICTION - a repo YOLO may merge but the Inspector may not review
+// can never qualify, so nothing happens and the reason is invisible - and both the trapped
+// merge cell and the empty inspector cell that would fix it go amber, with a footnote
+// offering the two fixes in place. Armed check execution is not broken at all; it is
+// flagged because it is the heaviest grant here and the one whose weight the cell cannot
+// show on its own. See `checkExecutionGrants`.
 
-/** The three columns, left to right, each naming the grant by what it permits. */
+/** The four columns, left to right, each naming the grant by what it permits. */
 const COLUMNS = [
   {
     key: "foreman",
     label: "Foreman sends live",
     title: "Foreman answers prompts in this repo's sessions without asking you.",
+  },
+  {
+    // Second, not last: the columns run local-blast-radius first (Foreman, Workflows) and
+    // GitHub second (Inspector, YOLO), so the two halves of the "Acts on GitHub" badge the
+    // rail draws over this category are contiguous rather than interleaved.
+    key: "workflows",
+    label: "Workflows act",
+    // ONE cell, both capabilities, because it is one stored list - said in full here since
+    // this tooltip is the only place the second one is visible from the matrix. Each still
+    // needs its own switch on the Workflows panel, which is why this reads "may".
+    title:
+      "Workflows may act in this repo: Live repairs typed into its sessions, and Check "
+      + "commands run against branch code with the daemon's filesystem authority. Each is "
+      + "still armed separately in Workflows settings.",
   },
   {
     key: "inspector",
@@ -52,18 +72,32 @@ const COLUMNS = [
 
 export function TrustPanel({
   foreman,
+  workflows,
   inspector,
   shipping,
+  checks,
 }: {
   /**
-   * The three subsystem states, OWNED ELSEWHERE and passed in: Foreman by App (the topbar
-   * shares it), the Inspector and Shipping by `SettingsPage`. Trust must not instantiate a
-   * second `useForeman`/`useInspector`/`useShipping` - that would double-poll the same
-   * routes App and the page already poll, and let a cell and a panel disagree about a list.
+   * The four subsystem states, OWNED ELSEWHERE and passed in: Foreman by App (the topbar
+   * shares it), Workflows, the Inspector and Shipping by `SettingsPage`. Trust must not
+   * instantiate a second `useForeman`/`useWorkflowSettings`/`useInspector`/`useShipping` -
+   * that would double-poll the same routes App and the page already poll, and let a cell
+   * and a panel disagree about a list.
    */
   foreman: ForemanState;
+  workflows: WorkflowSettingsState;
   inspector: InspectorState;
   shipping: ShippingState;
+  /**
+   * Whether a Check node may run branch-authored code, and whether that is confirmed.
+   *
+   * PASSED IN, not derived from `workflows.config` here, because it has to survive a failed
+   * poll: `useWorkflowSettings` nulls its config on any read that fails, and this panel
+   * unmounts whenever another category is open, so a memory kept here would reset every
+   * time you navigated away. `SettingsPage` is mounted for the whole settings session and
+   * owns it, which is also what keeps this footnote and the rail dot saying the same thing.
+   */
+  checks: ChecksArmedReading;
 }): React.JSX.Element {
   const ui = useUiConfig();
   const [repos, setRepos] = useState<string[]>([]);
@@ -71,38 +105,57 @@ export function TrustPanel({
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
-  // The workspace's git repos, for the add picker - same source the three panels used.
+  // The workspace's git repos, for the add picker - same source the four panels used.
   useEffect(() => {
     void fetchRepos().then(setRepos);
   }, []);
 
   const foremanList = foreman.config?.repoAllowlist ?? [];
+  const workflowsList = workflows.config?.repoAllowlist ?? [];
   const inspectorList = inspector.config?.repoAllowlist ?? [];
   const shippingList = shipping.config?.repoAllowlist ?? [];
   const staged = ui.trustStaged;
   const yolo = shipping.config?.autoMerge ?? false;
+  const checksArmed = checks.armed;
 
-  // The stale-closure guard the three panels use, four times over: every write does a
-  // server round-trip while the configs poll every 4s underneath it, so a cell click must
+  // The stale-closure guard the panels use, five times over: every write does a server
+  // round-trip while the configs poll every 4-5s underneath it, so a cell click must
   // extend whatever is in force when it lands, not what was on screen when it was clicked.
   const foremanRef = useRef(foremanList);
   foremanRef.current = foremanList;
+  const workflowsRef = useRef(workflowsList);
+  workflowsRef.current = workflowsList;
   const inspectorRef = useRef(inspectorList);
   inspectorRef.current = inspectorList;
   const shippingRef = useRef(shippingList);
   shippingRef.current = shippingList;
   const stagedRef = useRef(staged);
   stagedRef.current = staged;
+  // Workflows' route is a PUT of the WHOLE config, not a patch like the other three, so a
+  // write here has to spread a config object - and spreading the render-time one would post
+  // a stale `liveEnabled`/`checksEnabled`/retention back over whatever a poll or another tab
+  // changed in the meantime. Held as a ref for the same reason the lists are.
+  const workflowConfigRef = useRef(workflows.config);
+  workflowConfigRef.current = workflows.config;
 
-  const rows = trustRows(foremanList, inspectorList, shippingList, staged);
+  const rows = trustRows({
+    foreman: foremanList,
+    workflows: workflowsList,
+    inspector: inspectorList,
+    shipping: shippingList,
+    staged,
+  });
   const blindSpots = mergeBlindSpots(rows, yolo);
   const blindRepos = blindSpots.map((r) => r.repo);
+  const checkGrants = checkExecutionGrants(rows, checksArmed);
+  const checkRepos = checkGrants.map((r) => r.repo);
 
   // "Unknown, not off" (D7): a null config is an unreachable daemon, which is not evidence
   // the grant is absent. Name which subsystems we cannot read rather than drawing their
   // columns as if empty were fact.
   const unknown = [
     !foreman.config && "Foreman",
+    !workflows.config && "Workflows",
     !inspector.config && "the Inspector",
     !shipping.config && "Shipping",
   ].filter((x): x is string => Boolean(x));
@@ -112,6 +165,7 @@ export function TrustPanel({
     // it can be tested without a click; the refs feed it whatever is in force right now.
     const plan = grantPatch(key, repo, on, {
       foreman: foremanRef.current,
+      workflows: workflowsRef.current,
       inspector: inspectorRef.current,
       shipping: shippingRef.current,
       staged: stagedRef.current,
@@ -120,6 +174,10 @@ export function TrustPanel({
     if (plan.subsystem === "foreman") {
       if (!foreman.config) return;
       ok = await foreman.update({ repoAllowlist: plan.repoAllowlist });
+    } else if (plan.subsystem === "workflows") {
+      const config = workflowConfigRef.current;
+      if (!config) return;
+      ok = await workflows.update({ ...config, repoAllowlist: plan.repoAllowlist });
     } else if (plan.subsystem === "inspector") {
       if (!inspector.config) return;
       ok = await inspector.update({ repoAllowlist: plan.repoAllowlist });
@@ -139,6 +197,12 @@ export function TrustPanel({
   function removeRow(row: TrustRow): void {
     if (row.foreman && foreman.config) {
       void foreman.update({ repoAllowlist: foremanRef.current.filter((p) => p !== row.repo) });
+    }
+    if (row.workflows && workflowConfigRef.current) {
+      void workflows.update({
+        ...workflowConfigRef.current,
+        repoAllowlist: workflowsRef.current.filter((p) => p !== row.repo),
+      });
     }
     if (row.inspector && inspector.config) {
       void inspector.update({ repoAllowlist: inspectorRef.current.filter((p) => p !== row.repo) });
@@ -167,6 +231,21 @@ export function TrustPanel({
     });
   }
 
+  /**
+   * Disarm check execution everywhere, from the footnote that named it.
+   *
+   * The ONE fix offered, deliberately, though the double dagger has two. Revoking the
+   * workflow grants would also silence Live delivery in those repos - a strictly larger
+   * change than the operator asked for, applied to every flagged repo at once - so that
+   * half stays a sentence pointing at the cells, which are right there and already know how
+   * to revoke one repo at a time.
+   */
+  function disarmChecks(): void {
+    const config = workflowConfigRef.current;
+    if (!config) return;
+    void workflows.update({ ...config, checksEnabled: false });
+  }
+
   async function add(): Promise<void> {
     const path = draft.trim();
     if (!path || adding) return;
@@ -185,6 +264,7 @@ export function TrustPanel({
     // repo already granted somewhere, or already staged, is refused rather than staged twice.
     const present = new Set([
       ...foremanRef.current,
+      ...workflowsRef.current,
       ...inspectorRef.current,
       ...shippingRef.current,
       ...stagedRef.current,
@@ -198,6 +278,14 @@ export function TrustPanel({
     await updateUiConfig({ trustStaged: [...stagedRef.current, root] });
   }
 
+  /** Whether each column's owning daemon has answered, so a cell can disable rather than lie. */
+  const configPresent: Record<GrantColumn, boolean> = {
+    foreman: Boolean(foreman.config),
+    workflows: Boolean(workflows.config),
+    inspector: Boolean(inspector.config),
+    merge: Boolean(shipping.config),
+  };
+
   function cell(row: TrustRow, col: (typeof COLUMNS)[number]): React.JSX.Element {
     const on = row[col.key];
     const blind = yolo && row.merge && !row.inspector;
@@ -205,25 +293,28 @@ export function TrustPanel({
     // both go amber - the second is where the fix goes.
     const trapCell = (col.key === "merge" && blind) || (col.key === "inspector" && blind);
     const trappedPill = col.key === "merge" && blind;
-    const configFor =
-      col.key === "foreman"
-        ? foreman.config
-        : col.key === "inspector"
-          ? inspector.config
-          : shipping.config;
+    // Armed check execution. Only ever the workflows cell, and only when it is granted:
+    // unlike the merge trap there is no second cell that would fix it, because the fix is
+    // either this grant or a switch that lives on another page.
+    const arms = col.key === "workflows" && on && checksArmed;
+    // The marker the pill flies, or none. Kept as one expression so the two amber states
+    // cannot both claim the same pill - they are on different columns, and this says so.
+    const marker = trappedPill ? " †" : arms ? " ‡" : "";
     return (
-      <div key={col.key} className={`trust-c${trapCell ? " is-trap" : ""}`}>
+      <div key={col.key} className={`trust-c${trapCell || arms ? " is-trap" : ""}`}>
         <Tooltip label={col.title}>
           <button
             type="button"
-            className={`trust-grant ${on ? "is-on" : "is-off"}${trappedPill ? " is-trapped" : ""}`}
-            disabled={!configFor}
+            className={`trust-grant ${on ? "is-on" : "is-off"}${
+              trappedPill ? " is-trapped" : ""
+            }${arms ? " is-armed" : ""}`}
+            disabled={!configPresent[col.key]}
             aria-pressed={on}
             aria-label={`${on ? "Revoke" : "Grant"}: ${col.label} for ${row.repo}`}
             onClick={() => void grant(col.key, row.repo, on)}
           >
             <span className="trust-grant-dot" aria-hidden />
-            {on ? (trappedPill ? "allowed †" : "allowed") : "grant"}
+            {on ? `allowed${marker}` : "grant"}
           </button>
         </Tooltip>
       </div>
@@ -232,6 +323,7 @@ export function TrustPanel({
 
   const candidates = candidateRepos(repos, [
     ...foremanList,
+    ...workflowsList,
     ...inspectorList,
     ...shippingList,
     ...staged,
@@ -242,8 +334,8 @@ export function TrustPanel({
       <p className="settings-hint">
         Every grant that lets Mission Control act outside this app, in one table. Each column
         is its subsystem's own allowlist - clicking a cell writes there, and the Foreman,
-        Inspector and Shipping panels keep working against the same lists. Worktrees of a
-        trusted repo count too, wherever they live on disk.
+        Workflows, Inspector and Shipping panels keep working against the same lists.
+        Worktrees of a trusted repo count too, wherever they live on disk.
       </p>
 
       {unknown.length > 0 && (
@@ -308,6 +400,35 @@ export function TrustPanel({
             </button>
           </Tooltip>
           .
+        </p>
+      )}
+
+      {checkGrants.length > 0 && (
+        <p className="settings-warn trust-arm-note">
+          ‡ Check commands are on, so a workflow may run <strong>branch-authored code</strong>{" "}
+          in {checkRepos.join(", ")} with this daemon's filesystem authority. It is not a
+          sandbox.{" "}
+          <Tooltip label="Switch off workflow check commands everywhere">
+            <button type="button" className="settings-link" onClick={disarmChecks}>
+              Turn checks off
+            </button>
+          </Tooltip>
+          , or revoke a repo's Workflows cell above - which also stops Live delivery there.
+        </p>
+      )}
+
+      {/* The same warning, for the window where the daemon has stopped answering.
+          `checkGrants` is empty here whatever the arming says - the rows come from the
+          Workflows allowlist, and an unreadable config contributes none - so the confirmed
+          note above cannot cover this case, and letting it fall through to nothing is the
+          exact self-retiring warning this reading exists to prevent. It names no repository
+          because it genuinely does not know which; what it will not do is go quiet. */}
+      {checks.armed && !checks.confirmed && (
+        <p className="settings-warn trust-arm-note trust-arm-unconfirmed">
+          ‡ Check commands were <strong>on</strong> at the last reading, so a workflow may be
+          able to run <strong>branch-authored code</strong> with this daemon's filesystem
+          authority. Which repositories cannot be listed while Workflows is unreachable, and
+          nothing here has been disarmed - only rendered unverifiable.
         </p>
       )}
 

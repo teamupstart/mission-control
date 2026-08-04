@@ -28,6 +28,25 @@ export interface SettingsDotInputs {
    * the merge and review allowlists the page holds; only meaningful once YOLO is armed.
    */
   trustBlindSpot: boolean;
+  /**
+   * A workflow Check node may execute branch-authored code somewhere right now: checks are
+   * switched on AND at least one repository holds the Workflows grant.
+   *
+   * Its own input rather than folded into `trustBlindSpot`, which is a different claim -
+   * that one is a contradiction that stops work, this one is a live capability - and
+   * folding them would leave the dot meaning "one of two unrelated things". Both raise the
+   * same amber because the rail has one job here: say the panel is worth opening.
+   *
+   * Client-side for `trustBlindSpot`'s reason: the Workflow config is already held by the
+   * page, so the dot needs no new server signal and cannot disagree with the footnote it
+   * summarizes.
+   *
+   * The caller is responsible for it SURVIVING a failed config poll - see
+   * `checksArmedReading`. This function only sees the boolean, so a caller that derives it
+   * with `config?.checksEnabled ?? false` silently retires the dot five seconds after the
+   * daemon goes quiet, and nothing here can tell. That was the first cut of this input.
+   */
+  trustCheckExecution: boolean;
 }
 
 /**
@@ -39,10 +58,16 @@ export interface SettingsDotInputs {
  */
 export function settingsRailDot(
   id: SettingsCategoryId | "trust",
-  { status, foremanEnabled, trustBlindSpot }: SettingsDotInputs,
+  { status, foremanEnabled, trustBlindSpot, trustCheckExecution }: SettingsDotInputs,
 ): SettingsDotTone | null {
   // Foreman's dot is knowable even before the snapshot: App holds that state, not the payload.
   if (id === "foreman") return foremanEnabled ? "foreman" : null;
+  // Armed check execution is knowable without the tuple - it comes off the Workflow config
+  // the page holds - so it is answered BEFORE the null-status return below. Behind that
+  // return it would go dark whenever the SSE snapshot lapsed, which is not a reason to stop
+  // saying that branch-authored code may run. (The OTHER way it could go dark, the config
+  // poll itself failing, is the caller's to prevent; see the field docs above.)
+  if (id === "trust" && trustCheckExecution) return "armed";
   // Everything else needs the daemon's tuple; null status is "unknown", so no dot.
   if (!status) return null;
   switch (id) {
@@ -54,7 +79,8 @@ export function settingsRailDot(
       return status.taskSources.failing > 0 ? "failing" : null;
     case "trust":
       // Armed AND a merge-without-review blind spot somewhere: the same trap the Shipping
-      // panel warns about, summarized to one rail dot.
+      // panel warns about, summarized to one rail dot. The panel's other amber - armed check
+      // execution - is handled above, since it does not need the tuple.
       return status.shipping.autoMerge && trustBlindSpot ? "armed" : null;
     default:
       return null;

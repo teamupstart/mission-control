@@ -25,7 +25,7 @@ function status(over: Partial<SettingsStatus> = {}): SettingsStatus {
   };
 }
 
-const OFF = { foremanEnabled: false, trustBlindSpot: false };
+const OFF = { foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false };
 
 // ---- rail: which category lights, and in which tone ----
 
@@ -56,21 +56,44 @@ test("the Task sources dot is red exactly when a source is failing", () => {
 
 test("the Foreman dot rides App-owned state, not the status payload", () => {
   // Knowable even with a null status: Foreman is deliberately absent from the payload.
-  assert.equal(settingsRailDot("foreman", { status: null, foremanEnabled: true, trustBlindSpot: false }), "foreman");
-  assert.equal(settingsRailDot("foreman", { status: null, foremanEnabled: false, trustBlindSpot: false }), null);
+  assert.equal(settingsRailDot("foreman", { status: null, foremanEnabled: true, trustBlindSpot: false, trustCheckExecution: false }), "foreman");
+  assert.equal(settingsRailDot("foreman", { status: null, foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false }), null);
   // And it does not read any status fact, so a busy status leaves it off when Foreman is off.
   assert.equal(
-    settingsRailDot("foreman", { status: status({ taskSources: { failing: 3 } }), foremanEnabled: false, trustBlindSpot: false }),
+    settingsRailDot("foreman", { status: status({ taskSources: { failing: 3 } }), foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false }),
     null,
   );
 });
 
 test("the trust dot is amber only when armed AND there is a merge-without-review blind spot", () => {
   const armed = status({ shipping: { autoMerge: true } });
-  assert.equal(settingsRailDot("trust", { status: armed, foremanEnabled: false, trustBlindSpot: true }), "armed");
+  assert.equal(settingsRailDot("trust", { status: armed, foremanEnabled: false, trustBlindSpot: true, trustCheckExecution: false }), "armed");
   // Armed with no blind spot, or a blind spot with YOLO disarmed, is not a trap.
-  assert.equal(settingsRailDot("trust", { status: armed, foremanEnabled: false, trustBlindSpot: false }), null);
-  assert.equal(settingsRailDot("trust", { status: status(), foremanEnabled: false, trustBlindSpot: true }), null);
+  assert.equal(settingsRailDot("trust", { status: armed, foremanEnabled: false, trustBlindSpot: false, trustCheckExecution: false }), null);
+  assert.equal(settingsRailDot("trust", { status: status(), foremanEnabled: false, trustBlindSpot: true, trustCheckExecution: false }), null);
+});
+
+// The trust panel's OTHER amber, summarized. Without this the rail claims less than the
+// panel: an operator sitting on any other category gets no signal that a Check node may run
+// branch-authored code, which is the heaviest thing any grant in the matrix permits.
+test("the trust dot is amber when a workflow check may execute, independent of YOLO", () => {
+  assert.equal(
+    settingsRailDot("trust", { status: status(), ...OFF, trustCheckExecution: true }),
+    "armed",
+  );
+  // Disarmed checks, or checks armed with no repository granted, is nothing to flag - the
+  // caller collapses both to false, and this pins that the dot agrees.
+  assert.equal(settingsRailDot("trust", { status: status(), ...OFF }), null);
+});
+
+test("armed check execution lights the trust dot even before the status snapshot lands", () => {
+  // The fact comes off the Workflow config the page holds, not the SSE tuple, so a daemon
+  // that has stopped answering must not silently retire the warning. A dot that went dark
+  // here would read as "nothing armed" at exactly the moment nothing can be confirmed.
+  assert.equal(
+    settingsRailDot("trust", { status: null, ...OFF, trustCheckExecution: true }),
+    "armed",
+  );
 });
 
 test("a category with no rule, and any category before the snapshot, lights nothing", () => {

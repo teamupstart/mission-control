@@ -200,6 +200,36 @@ test("paging from the keyboard keeps the focus on a control that can still act",
   await expect(older(ledger)).toBeFocused();
 });
 
+test("picking a filter opens the new list at its top, not at the last offset", async ({
+  page,
+  daemon,
+}) => {
+  // The pager's own reset was written first and covered only the pager, so a filter change -
+  // the OTHER way this list gets replaced - reset the page to 1 and left the scroller where it
+  // was. The reader lands in the middle of a list they have not seen the top of, and if the
+  // filtered list is shorter the browser clamps to its new maximum and opens them at its END.
+  seedPullRequests(daemon, SEEDED);
+  const ledger = await openLedger(page, daemon, "inspector");
+  const scroller = ledger.locator(".sc-scroll");
+
+  await scroller.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+  expect(
+    await scroller.evaluate((el) => el.scrollTop),
+    "the fixture has to be able to fail - these rows are not scrolling",
+  ).toBeGreaterThan(0);
+
+  // A different list of the same length, so a preserved offset stays genuinely non-zero
+  // rather than being clamped to 0 by a list too short to scroll. That would pass either way.
+  await ledger.getByRole("button", { name: /retired/ }).click();
+  await expect(rows(ledger)).toHaveCount(PAGE);
+  await expect.poll(async () => scroller.evaluate((el) => el.scrollTop)).toBe(0);
+
+  // And the way back out of the filter is a replaced list too.
+  await scroller.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+  await ledger.getByRole("button", { name: /show all/ }).click();
+  await expect.poll(async () => scroller.evaluate((el) => el.scrollTop)).toBe(0);
+});
+
 test("filtering the ledger starts the new list at its first page", async ({ page, daemon }) => {
   seedPullRequests(daemon, SEEDED);
   const ledger = await openLedger(page, daemon, "inspector");

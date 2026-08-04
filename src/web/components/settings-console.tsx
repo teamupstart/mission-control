@@ -414,11 +414,26 @@ export function ConsoleTable<Row>({
   const go = (next: number): void => {
     pressed.current = next < view.page ? "newer" : "older";
     setPage(next);
-    // The scroller keeps its offset across a re-render, so without this the next page opens
-    // wherever the last one was left - which on the older page is its middle, and reads as
-    // rows having been skipped.
-    scroller.current?.scrollTo({ top: 0 });
   };
+
+  // A replaced list opens at its top.
+  //
+  // The scroller keeps its offset across a re-render, so without this the rows underneath it
+  // change while the viewport stays where it was - which shows the middle of the new list and
+  // reads as rows having been skipped. Worse when the new list is SHORTER: the browser clamps
+  // to its new maximum, so a short filter opens at its end.
+  //
+  // Keyed on both halves of "which list is this", because there are two ways to replace it and
+  // the first cut only handled one. `view.page` is the pager. `pagedKey` is the strip: picking
+  // a tile is a different list of different length, and it reset the page without resetting
+  // the offset. A clamp counts too - a poll that shrinks the ledger past the current page
+  // moves `view.page`, and those rows are entirely different rows.
+  //
+  // An effect rather than a line in `go`, so the rule is stated once over every way the list
+  // can change, instead of once per caller that remembers to.
+  useEffect(() => {
+    scroller.current?.scrollTo({ top: 0 });
+  }, [view.page, pagedKey]);
 
   // Focus survives reaching the end of the list.
   //

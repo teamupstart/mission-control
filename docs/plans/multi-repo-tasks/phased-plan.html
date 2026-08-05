@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-repo tasks - phased implementation plan</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1f27; --muted: #5a6472; --line: #d9dee5;
+    --accent: #2563eb; --accent-soft: #eaf1fe; --code-bg: #f4f6f9;
+    --table-head: #f0f3f7; --box: #ffffff; --box-line: #94a3b8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1319; --fg: #e4e9f0; --muted: #98a3b3; --line: #2a323e;
+      --accent: #7aa7ff; --accent-soft: #16233c; --code-bg: #171d26;
+      --table-head: #1a212c; --box: #141a23; --box-line: #4a5768;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 6px; }
+  h2 { font-size: 1.3rem; margin: 2.2em 0 0.6em; padding-top: 0.6em; border-top: 1px solid var(--line); }
+  p, li { max-width: 76ch; }
+  .meta { color: var(--muted); margin: 0 0 28px; }
+  a { color: var(--accent); }
+  code { font: 0.875em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg); border-radius: 4px; padding: 0.1em 0.35em; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  .scroll { overflow-x: auto; margin: 1em 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; }
+  th, td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--table-head); }
+  ol, ul { padding-left: 1.3em; }
+  li { margin: 0.35em 0; }
+  figure { margin: 1.4em 0; }
+  figure .scroll { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  figcaption { color: var(--muted); font-size: 0.9em; margin-top: 6px; }
+  svg { display: block; min-width: 620px; width: 100%; height: auto; }
+  svg text { font: 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: var(--fg); }
+  svg .lbl { fill: var(--muted); font-size: 11px; }
+  svg .box { fill: var(--box); stroke: var(--box-line); stroke-width: 1.2; }
+  svg .arrow { stroke: var(--box-line); stroke-width: 1.4; fill: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Multi-repo tasks - phased implementation plan</h1>
+  <p class="meta"><strong>Source plan:</strong> <a href="plan.html">plan.html</a> (source of truth: <code>plan.md</code>)<br>
+  <strong>Status:</strong> Phases written 2026-08-05; tasks scheduled on creation of this document's PR.</p>
+
+  <h2>Incorporated decisions</h2>
+  <p>Submitted by the operator on 2026-08-05 (recorded in the source plan and treated as requirements):</p>
+  <ol>
+    <li><strong>Completion:</strong> a multi-repo task auto-completes only when every changed repo's PR has merged.</li>
+    <li><strong>Review workflows:</strong> per-repo workflow runs - one session supports N concurrent runs, one full review per changed repo; unchanged repos skipped.</li>
+    <li><strong>Harnesses:</strong> Claude and Codex in v1 behind a <code>HARNESS_CAPABILITIES</code> flag; Codex sandbox writable roots for secondary worktrees.</li>
+    <li><strong>Auto-merge:</strong> independent per-PR merges; no coordinated-merge mechanism (this decision removes a workstream rather than adding one).</li>
+    <li>Recommended defaults not overridden: primary-cwd session layout; additive <code>task_repos</code> data shape; dispatch-modal-only creation in v1; dispatch-only assignment.</li>
+  </ol>
+
+  <h2>Investigated findings that shaped the split</h2>
+  <ul>
+    <li>The additive primary-plus-secondaries data shape makes phase 1 self-contained: every existing single-repo consumer keeps a meaningful scalar, so dispatch can ship before any PR or workflow surface changes.</li>
+    <li>The pool reaper spares only pinned worktrees; pins for secondary worktrees are therefore inside phase 1's provisioning change, never a follow-up (destructive if split).</li>
+    <li>The Foreman allowlist AND rule moved from the polish phase into phase 1: without it, Foreman could auto-dispatch an agent into a secondary repo the operator never allowlisted. Consent ships with capability.</li>
+    <li>Secondary-repo PRs are only reliably <em>adopted</em> once multi-URL sniffing and poller fan-out exist (phase 2), and per-repo workflow runs prove their PRs against the adoption ledger - so phase 3 depends on phase 2, and the graph is serial. An earlier concurrency claim was withdrawn during the audit.</li>
+    <li>The workflow subsystem's single-repo contracts (the <code>pull_request</code> adapter, evidence identity, wait/block vocabulary) are never widened; phase 3 moves concurrency to the binding/run layer instead, per decision 2.</li>
+    <li><code>provisionWorktree</code>/<code>teardownWorktree</code> live in <code>src/server/dispatcher.ts</code> (739/899), pins in <code>src/server/pool.ts</code> (208/223) - one scoping report misattributed the file; phase files carry the verified locations.</li>
+    <li>The exact Claude Agent SDK additional-directories option and the Codex writable-roots config key could not be verified at scoping time (no <code>node_modules</code> in the planning worktree; Codex needs a live installation). Phase 1 names both as verify-first steps, and the Codex capability ships as <code>null</code> if unverified rather than guessed.</li>
+  </ul>
+
+  <h2>Phases</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>#</th><th>File</th><th>Delivers</th><th>Direct prerequisites</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><a href="phase-1-multi-repo-dispatch.md"><code>phase-1-multi-repo-dispatch.md</code></a></td><td><code>task_repos</code> schema, contracts, per-repo provisioning with pins and rollback, capability flag, Claude/Codex write access, intent manifest, dispatch modal chips, allowlist AND rule, assignment refusal</td><td>-</td></tr>
+        <tr><td>2</td><td><a href="phase-2-multi-pr-tracking.md"><code>phase-2-multi-pr-tracking.md</code></a></td><td>Multi-URL sniffing, poller fan-out, <code>work_episode_prs</code>, all-merged completion quorum, per-repo PR projection and UI</td><td>Phase 1</td></tr>
+        <tr><td>3</td><td><a href="phase-3-per-repo-workflow-runs.md"><code>phase-3-per-repo-workflow-runs.md</code></a></td><td>Binding repository dimension, lazy per-changed-repo run creation, per-repo evidence scoping, submission routing, cross-run delivery serialization, merge-veto membership, workflow chip fan-out</td><td>Phase 2</td></tr>
+        <tr><td>4</td><td><a href="phase-4-policy-and-prose.md"><code>phase-4-policy-and-prose.md</code></a></td><td>Per-PR review follow-up marks, skills and session-action prompt updates, agent-guide and README sweep</td><td>Phase 3</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Dependency graph and merge order</h2>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 700 90" role="img" aria-label="Serial dependency chain: phase 1 to phase 2 to phase 3 to phase 4">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--box-line)"/>
+          </marker>
+        </defs>
+        <rect class="box" x="10"  y="22" width="140" height="46" rx="7"/>
+        <text x="80"  y="42" text-anchor="middle">Phase 1</text>
+        <text class="lbl" x="80"  y="58" text-anchor="middle">dispatch</text>
+        <rect class="box" x="190" y="22" width="140" height="46" rx="7"/>
+        <text x="260" y="42" text-anchor="middle">Phase 2</text>
+        <text class="lbl" x="260" y="58" text-anchor="middle">PR tracking</text>
+        <rect class="box" x="370" y="22" width="140" height="46" rx="7"/>
+        <text x="440" y="42" text-anchor="middle">Phase 3</text>
+        <text class="lbl" x="440" y="58" text-anchor="middle">workflow runs</text>
+        <rect class="box" x="550" y="22" width="140" height="46" rx="7"/>
+        <text x="620" y="42" text-anchor="middle">Phase 4</text>
+        <text class="lbl" x="620" y="58" text-anchor="middle">policy + prose</text>
+        <line class="arrow" x1="150" y1="45" x2="188" y2="45" marker-end="url(#arr)"/>
+        <line class="arrow" x1="330" y1="45" x2="368" y2="45" marker-end="url(#arr)"/>
+        <line class="arrow" x1="510" y1="45" x2="548" y2="45" marker-end="url(#arr)"/>
+      </svg>
+    </div>
+    <figcaption>Serial; merge order equals numbering. Each later phase consumes a behavior the previous one introduces.</figcaption>
+  </figure>
+  <p>No concurrency groups. Every phase leaves the repository operable, with single-repo behavior proven unchanged by the existing suites.</p>
+
+  <h2>Cross-phase contracts</h2>
+  <ul>
+    <li><code>task_repos</code> columns and PK; <code>base_sha</code> is a full oid recorded at cut time (phase 1, consumed by 2 and 3).</li>
+    <li><code>TaskRepoEntry</code> declares <code>prUrl</code>/<code>prState</code>/<code>mergedAt</code> in phase 1 (null); phase 2 populates them - the wire shape never changes after phase 1.</li>
+    <li>The changed-set predicate (episode PR present, or head differs from <code>base_sha</code>) lives in <code>src/shared</code>, introduced in phase 2, imported by phase 3's run creation - one definition of "changed".</li>
+    <li>Session cwd is always the primary worktree; multi-repo tasks are dispatch-only (phase 1, relied on by everything).</li>
+    <li>One workflow run = one repository; binding uniqueness <code>(note_key, repo_root)</code> with the primary stored explicitly; one outstanding delivery per session (phase 3, relied on by phase 4's nudging).</li>
+    <li><code>Session.prUrl</code> stays the scalar current-branch PR everywhere.</li>
+  </ul>
+
+  <h2>Final verification strategy</h2>
+  <ul>
+    <li>Per phase: <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build &amp;&amp; npm run smoke</code>, <code>npm run test:e2e</code>, each with the phase's own specs (see each file's section 7).</li>
+    <li>Feature acceptance after phase 4: a two-repo dispatch on the e2e daemon yields two worktrees, two PRs, two repo-labeled workflow runs with independent repair budgets, completion only when both PRs merge, and byte-identical single-repo behavior across the pre-existing suites.</li>
+    <li>Migration: every phase with schema changes carries a pre-feature-database upgrade test per the change contract.</li>
+  </ul>
+</main>
+</body>
+</html>

@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -48,6 +49,32 @@ const ASK_TURN = "ask me which linter to use";
 const SUGGESTION = "Choose biome - it is already in the toolchain.";
 /** The sentence the dashboard shows for a note whose review has since been resolved. */
 const STALE_HINT = /already been resolved/;
+
+const EVIDENCE = fileURLToPath(
+  new URL("../../docs/evidence/foreman-note-retires-on-your-answer/", import.meta.url),
+);
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * Behind `MC_E2E_EVIDENCE` like every other capture in this suite: an ordinary run would
+ * rewrite the binaries for no added signal. Taken inside the regression test rather than from
+ * a staged fixture, so each frame is of a run whose assertions passed.
+ *
+ * This bug was reported as a screenshot of a stale banner, so a before/after pair is the only
+ * form of evidence that answers the report in its own terms - route and registry assertions
+ * cannot show a reader that the banner went.
+ */
+async function shoot(page: Page, name: string, target?: Locator): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and both
+  // frames here are of a panel whose controls sit under the cursor's last position.
+  await page.mouse.move(0, 0);
+  await (target ?? page).screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED docs/evidence/foreman-note-retires-on-your-answer/${name}.png`);
+}
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -193,6 +220,11 @@ test("answering the agent's own question retires the note pinned on it", async (
   await expect(note).toContainText("Suggested answer");
   await expect(note).toContainText(SUGGESTION);
 
+  // The reported state, photographed: the banner and the question it is about, on one card.
+  // A viewport tall enough to hold both, so the frame is not a crop that cuts one off.
+  await dashboard.setViewportSize({ width: 1280, height: 1500 });
+  await shoot(dashboard, "note-pinned-beside-the-open-question", card);
+
   // Answer the agent, and touch nothing on the Foreman panel. Deliberately NOT what Foreman
   // recommended: the note is retired because the question is closed, not because the operator
   // happened to agree with the suggestion.
@@ -212,6 +244,10 @@ test("answering the agent's own question retires the note pinned on it", async (
   // The purpose survives: this retires a spent DECISION, not the card's account of what the
   // session is for.
   await expect(note).toContainText("Which linter this repo should adopt.");
+
+  // The same card, same run, after one answer and no Dismiss. This is the frame the bug report
+  // was missing.
+  await shoot(dashboard, "note-retired-after-your-answer", card);
 });
 
 test("the drafted reply's Approve button goes with it", async ({ dashboard, daemon }) => {
@@ -283,6 +319,8 @@ test("answering the review channel's question retires it too", async ({ dashboar
   await expect(note).toContainText(SUGGESTION);
   // While the review is live the note is not stale, so the dashboard makes no such claim.
   await expect(note).not.toContainText(STALE_HINT);
+  await dashboard.setViewportSize({ width: 1280, height: 1500 });
+  await shoot(dashboard, "review-note-pinned", card);
 
   await card.getByRole("button", { name: "to review" }).click();
   const form = dashboard.locator(".review-modal");
@@ -297,6 +335,9 @@ test("answering the review channel's question retires it too", async ({ dashboar
   // An explanation of a stale note is not a substitute for clearing it.
   await goneFromCard(card, STALE_HINT);
   await expect(card.getByRole("button", { name: "Dismiss" })).toHaveCount(0);
+
+  // What used to sit here instead: the same banner, plus the stale sentence and a Dismiss.
+  await shoot(dashboard, "review-note-retired", card);
 });
 
 test("a note about a DIFFERENT ask is still yours to decide", async ({ dashboard, daemon }) => {

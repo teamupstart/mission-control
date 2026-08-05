@@ -52,6 +52,16 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### A spent Foreman note retiring itself
+
+[`docs/evidence/foreman-note-retires-on-your-answer/`](../docs/evidence/foreman-note-retires-on-your-answer/)
+holds two before/after pairs from the run that asserts answering an ask retires the Foreman
+note pinned on it - one pair for the driver form, one for the MCP review channel. The bug was
+reported as a screenshot of a stale `SUGGESTED ANSWER` banner, so the frames answer it in the
+same terms: route and registry assertions can prove the row changed, but only a capture shows
+a reader that the banner went. The directory README records the regeneration command, and is
+explicit about the two pre-existing warts the frames also happen to show.
+
 ### Per-harness dispatch defaults propagating
 
 [`docs/evidence/harness-defaults-propagate/`](../docs/evidence/harness-defaults-propagate/)

@@ -809,12 +809,21 @@ export class SdkSupervisor {
 /**
  * What a restored card is called.
  *
- * Derived rather than persisted, and the derivation is the better answer: the task's title
- * is the same source the dispatch named it from, so a task renamed since the launch comes
- * back under its current name instead of the one a column froze. The checkout's directory
- * is the fallback for a session whose task was deleted - never empty, because a nameless
- * card is one nobody can pick out of a rail.
+ * An operator's own rename wins outright, and nothing else here is persisted. That split is
+ * the point: it keeps the good property of deriving while fixing what deriving cannot do.
+ *
+ *  - DERIVED, for a card nobody has renamed: the task's title is the same source the dispatch
+ *    named it from, so a task retitled since the launch - which is the ordinary case, because
+ *    a dispatch refines its heuristic title with an async model call moments later - comes
+ *    back under its current name instead of one a column froze at launch.
+ *  - PERSISTED, once someone has typed a name: a rename that a restart reverted would not be
+ *    a rename, and the derivation has no way to know it was overruled. `display_name` is
+ *    written by nothing but `POST /api/sessions/:id/rename`, so its presence IS the fact that
+ *    a human overruled the title.
+ *
+ * The checkout's directory is the fallback for a session whose task was deleted - never
+ * empty, because a nameless card is one nobody can pick out of a rail.
  */
 function restoredName(row: SdkSessionRow, taskTitle: string | null): string {
-  return taskTitle?.trim() || basename(row.cwd) || row.id;
+  return row.displayName ?? (taskTitle?.trim() || basename(row.cwd) || row.id);
 }

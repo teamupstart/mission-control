@@ -13,13 +13,19 @@ and get your decision back.
   controlling TTY → terminal pane, and registers the embedded sessions it dispatches.
   No per-session setup is required for terminal discovery.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
-  card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying
-  terminal home, which the next sweep reads straight back onto the card. Only a live session
-  with a terminal pane can be renamed - a session found in no backend at all, or one that
-  has exited, has nothing to rename, so its title isn't clickable. A Ghostty tab is named
-  and still cannot be renamed, for a different reason: its titles are read-only, so that
-  backend declares no retitle at all. See
+  card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it. Where that name lands depends
+  on the runtime, and both are durable: a **terminal** session's name IS its terminal home, so
+  the rename moves the multiplexer session (and retitles the tabs hosting it) and the next
+  sweep reads it straight back onto the card; an **Agent SDK** session has no home, so the name
+  is written to the row the daemon already keeps for it and comes back under that name after a
+  restart. Any live session can be renamed except a terminal one found in no backend at all -
+  that has nowhere to put a name, so its title isn't clickable - and one that has exited or is
+  stopping. A Ghostty tab is named and still cannot be renamed, for a different reason: its
+  titles are read-only, so that backend declares no retitle at all. See
   [Which terminal you use is declared](#which-terminal-you-use-is-declared-not-assumed).
+  - A renamed Agent SDK session **stays** renamed. Left alone, its card follows the title of
+    the task it is running, which a dispatch refines with a headless model call moments after
+    launching; typing a name overrides that for good.
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
@@ -251,7 +257,7 @@ declares what it genuinely cannot do rather than stubbing it.
 
 A session therefore carries a **list** of the panes it is reachable through, one per
 backend, rather than a field per vendor - so a backend the dashboard has never heard of
-is drawn, typed into and torn down like any other. Pane mechanics such as Rename ask one
+is drawn, typed into and torn down like any other. Pane mechanics such as Focus ask one
 predicate over that list instead of naming particular terminals. Delivery features such as
 the Send box, mode picker, work queue and Foreman ask the runtime-aware predicate described
 below; for today's terminal sessions the two answers are identical.
@@ -278,9 +284,12 @@ opened on the multiplexer's own attach command. A machine with a multiplexer and
 scriptable terminal still lands the first half and says plainly that it could not do the
 second.
 
-Rename and Kill split the same way. Renaming a multiplexer-hosted session moves the
-session name *and* retitles every tab attached to it; renaming an emulator-hosted one sets
-a tab title. Kill always signals the agent, and additionally tears down the whole group
+Rename and Kill split the same way *on the terminal runtime*. Renaming a multiplexer-hosted
+session moves the session name *and* retitles every tab attached to it; renaming an
+emulator-hosted one sets a tab title. An Agent SDK session sits outside this split entirely -
+it has no home to move, so its name is a durable field of its own and no backend is consulted,
+which is also why the characters tmux reserves are ordinary text in its title. Kill always
+signals the agent, and additionally tears down the whole group
 when the backend says it has one - a multiplexer session is a group, a terminal tab is
 not, and that is declared rather than inferred from which vendor answered. If a Mission
 Control task was running in that session, killing it also settles the task - see
@@ -1525,8 +1534,9 @@ landed commit has a different SHA and never appears on `origin/main`).
 its session is cut - so a recycled agent's card is titled by its work rather than by
 the pooled worktree it was handed out as, or by the task it finished ten minutes ago. The
 name is cut to the rules of the backend *this* session lives in, which is not necessarily
-the one a fresh dispatch would land on. This happens after the task has been typed, and
-never fails the assign: if the terminal can't be renamed (no terminal handle at all, or
+the one a fresh dispatch would land on, and an Agent SDK session is renamed the same way it
+is from the card - by writing its own durable name. This happens after the task has been
+typed, and never fails the assign: if the session can't be renamed (nowhere to put a name, or
 the name is already spoken for) the old name simply stands. It applies to [the backlog
 autopilot's](#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
@@ -5075,7 +5085,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>⇧</kbd><kbd>T</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
-| <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
+| <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session - its terminal home, or an Agent SDK session's own durable name | Selected session |
 | <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then request session shutdown; press <kbd>Enter</kbd> to confirm. The detail closes once shutdown is accepted while an Agent SDK session drains in the background. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Request shutdown of the selected session and close its detail once accepted (press <kbd>Enter</kbd> to confirm) | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |

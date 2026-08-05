@@ -137,6 +137,7 @@ import { answeredQuestion } from "./sdk/answered-question.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
+import { renameDriverSession } from "./sdk/rename.ts";
 import { requestSessionStop } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
@@ -2047,10 +2048,16 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  // Rename the session's terminal handle; discovery reads the new name
-  // back onto the card, and the registry echoes it immediately so it doesn't lag a
-  // poll. A name the backing handle can't accept, or one a task's teardown still
-  // aims at, is a 400 the editor can show; a shelled-out failure a 500.
+  // Rename the session. On the terminal runtime that means the session's handle - discovery
+  // reads the new name back onto the card - and on the embedded one it means the durable row,
+  // which is the only place an SDK session's name can live. Either way the registry echoes it
+  // immediately so the card doesn't lag a poll. A name the backing handle can't accept, or one
+  // a task's teardown still aims at, is a 400 the editor can show; a failure to land it a 500.
+  //
+  // ONE route for both runtimes rather than a second endpoint: everything the caller sees is
+  // the same - `{name}` in, the card renamed out - which is what keeps the title click, the
+  // command bar's keycap and Shift+R on one code path instead of branching per runtime in the
+  // browser, where the runtime is the least interesting thing about the session being named.
   app.post("/api/sessions/:id/rename", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -2060,7 +2067,7 @@ export function buildApp(
     if (!valid.ok) return c.json({ ok: false, error: valid.error }, 400);
     const free = validateSessionNameAgainstTasks(session, valid.name, registry.listTasks());
     if (!free.ok) return c.json({ ok: false, error: free.error }, 400);
-    const r = await rename(session, valid.name);
+    const r = await rename(session, valid.name, undefined, renameDriverSession);
     if (r.ok) registry.renameSession(session.id, valid.name);
     return c.json(r, r.ok ? 200 : 500);
   });

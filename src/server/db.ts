@@ -869,6 +869,13 @@ export function openDb(): DatabaseSync {
       status            TEXT NOT NULL,
       -- Independent of lifecycle status: a suspended driver may owe a continuation turn.
       turn_in_progress  INTEGER NOT NULL DEFAULT 0,
+      -- The name a PERSON gave this session, and only that. NULL is not "unnamed" - it means
+      -- nobody has renamed this card, so its name is still derived (see restoredName: the
+      -- bound task's title, else the cwd basename, else the id). The distinction is the whole
+      -- point of the column rather than caching the launch name here: a dispatch's title is
+      -- refined by an async model call afterwards, so a persisted launch name would make a
+      -- restart revert every card to its pre-refinement guess. A rename outranks both.
+      display_name      TEXT,
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL
     );
@@ -1426,6 +1433,12 @@ function migrate(d: DatabaseSync): void {
   // facts cannot say whether the old process died in the middle of a turn. Existing rows
   // default idle: no older build recorded proof that they owe an automatic continuation.
   addColumn(d, "sdk_sessions", "turn_in_progress", "INTEGER NOT NULL DEFAULT 0");
+
+  // The operator's own name for an embedded session. Nullable with NO default, and that is
+  // exact rather than convenient: every row written before this column existed was named by
+  // derivation, which is precisely what NULL means here, so an upgraded database keeps
+  // deriving until someone actually renames a card.
+  addColumn(d, "sdk_sessions", "display_name", "TEXT");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2

@@ -71,8 +71,12 @@ Non-goals:
 - **Warning semantics** (keeps the generic surface honest on a non-Upstart machine):
   - Plugin absent AND no state file -> silent (`warning: null`).
   - State file exists and reads `completed` -> silent.
-  - Plugin present (or state file exists) and the value is anything else -> warning naming
-    the fix: run `/upstartclaw-core:setup` in an interactive Claude Code session.
+  - Plugin present AND no state file -> **warning**. A freshly installed, never-set-up
+    plugin is precisely the stall case: Claw's gate exits 2 when the file is missing.
+  - State file exists and reads anything other than `completed` (`no_setup`,
+    `in_progress`, unreadable) -> warning.
+  - Every warning names the fix: run `/upstartclaw-core:setup` in an interactive Claude
+    Code session.
 - **Route placement**: a new always-200 GET beside the UI-config/cost-config region
   (`routes.ts:3053-3087`). `POST /api/ensembles/preview` (`routes.ts:1752-1760`) is the
   precedent that a validation read is a 200 carrying its own result.
@@ -183,3 +187,6 @@ cross-link it, in either merge order).
   audit record). The registry deliberately does not touch `SettingsStatus`, `ui-config`, or
   the settings rail dots, so no contract overlap with any settings surface another phase
   edits.
+- 2026-08-05 (PR #431 review): made the plugin-present-with-no-state-file case an explicit
+  warning row in the semantics table (Inspector round 1). No contract change; the case was
+  intended and is the stall case Claw's gate creates on a missing file.

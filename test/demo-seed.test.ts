@@ -10,6 +10,7 @@ import {
   SpendReportSchema,
 } from "../src/shared/protocol.ts";
 import { LLM_SPEND_ROLES } from "../src/shared/llm-spend.ts";
+import { holdSignals } from "../scripts/demo/launch.mjs";
 import { loadScenarios, selectScenario } from "../scripts/demo/fake-claude.mjs";
 import {
   SEED_BACKLOG_TASKS,
@@ -301,4 +302,38 @@ test("the full backlog covers ready, blocked, parked and cancelled", () => {
   const blocked = backlog.findIndex((t) => t.dependsOn);
   const blocker = backlog.findIndex((t) => t.key === backlog[blocked]!.dependsOn);
   assert.ok(blocker >= 0 && blocker < blocked, "a blocker must be declared before its dependent");
+});
+
+test("holdSignals registers exactly one handler per signal and releases both", () => {
+  // The leak this pins is not the orphan - it is the STALE LISTENER. The seed holds a daemon
+  // for minutes and wires signals to it; `main` then boots a second daemon and installs its
+  // own handlers. A release that missed one would leave a signal stopping the daemon the
+  // operator is no longer looking at, while the one they are looking at survives.
+  const before = {
+    int: process.listenerCount("SIGINT"),
+    term: process.listenerCount("SIGTERM"),
+  };
+
+  let stops = 0;
+  const release = holdSignals(async () => {
+    stops += 1;
+  });
+  assert.equal(process.listenerCount("SIGINT"), before.int + 1);
+  assert.equal(process.listenerCount("SIGTERM"), before.term + 1);
+  assert.equal(stops, 0, "holding must not stop anything by itself");
+
+  release();
+  assert.equal(process.listenerCount("SIGINT"), before.int);
+  assert.equal(process.listenerCount("SIGTERM"), before.term);
+});
+
+test("holdSignals releases idempotently, so a double release cannot strip a later hold", () => {
+  // `seedDemoFleet` releases in a `finally` that also runs on the error path, and a caller
+  // could reasonably release again. Removing a listener twice must not reach past this hold
+  // into whatever registered before it.
+  const baseline = process.listenerCount("SIGINT");
+  const release = holdSignals(async () => {});
+  release();
+  release();
+  assert.equal(process.listenerCount("SIGINT"), baseline);
 });

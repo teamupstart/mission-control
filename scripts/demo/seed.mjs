@@ -37,7 +37,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { assertDemoRoot, bootDaemon, buildDaemonEnv } from "./launch.mjs";
+import { assertDemoRoot, bootDaemon, buildDaemonEnv, holdSignals } from "./launch.mjs";
 
 const DAY_MS = 86_400_000;
 
@@ -551,6 +551,12 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
     ledgerRows: 0,
   };
 
+  // Signals wired to THIS daemon for as long as we hold it, because the seed takes minutes: a
+  // Ctrl-C in that window would otherwise leave it holding the port, and the next
+  // `npm run demo` would refuse to boot against a pid it does not own. Released in the
+  // `finally` below - `main` installs its own long-lived handlers afterwards.
+  const releaseSignals = holdSignals(() => daemon.stop());
+
   try {
     // --- backlog first, so a dependency edge exists before the task that needs it ---------
     const byKey = new Map();
@@ -811,6 +817,7 @@ export async function seedDemoFleet({ root, port, reduced = false, log = console
     // seed with no fleet in it at all.
     log("[seed] stopping the daemon so its sessions suspend...");
     await daemon.stop();
+    releaseSignals();
   }
 
   seeded.headline = [

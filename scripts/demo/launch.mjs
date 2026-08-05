@@ -85,6 +85,37 @@ export function createShutdownGate(onStop) {
   };
 }
 
+/**
+ * Wire SIGINT/SIGTERM to `stop` and hand back the function that unwires them.
+ *
+ * The seed and `--check` each hold a live daemon for minutes with no signal handlers of their
+ * own - a Ctrl-C in that window would take this process down and leave that daemon squatting
+ * the port, so the NEXT run refuses to start on `bootDaemon`'s pid check. Built on
+ * `createShutdownGate` rather than a second ad-hoc guard, so a signal racing a natural failure
+ * still cleans up exactly once (the bug that gate exists for).
+ *
+ * Releasing matters as much as holding, because these phases hand off: `main` installs its own
+ * long-lived pair after the seed returns, and a stale listener from this one would stop a
+ * daemon that had already been replaced by the one the operator is looking at.
+ */
+export function holdSignals(stop) {
+  const gate = createShutdownGate(async (reason) => {
+    console.error(`\n[demo] ${reason}: stopping the daemon before exiting`);
+    await stop();
+  });
+  const onSignal = (signal) => {
+    void gate.stop(signal).then((won) => {
+      if (won) process.exit(130);
+    });
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  return () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  };
+}
+
 export function parseArgs(argv) {
   const args = {
     fresh: false,

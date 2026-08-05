@@ -93,10 +93,29 @@ function runner(verdict: () => "pass" | "fail"): LlmRunner {
   };
 }
 
+/**
+ * The budget for an in-process wait - no spawn, no compile, nothing off-box.
+ *
+ * Five seconds was the original figure on the theory that a sweep and a store write are a
+ * tick away, and on an idle machine they are: this file runs in under two seconds on its own.
+ * It is not idle under `npm test`, where `--test-concurrency=2` keeps another file's HTTP
+ * servers, spawned `node --import tsx` children and real Electron geometry tests on the same
+ * CPU, and a wall-clock budget measures the machine's load rather than the code's progress.
+ * The wait at "an action pipeline captures a segment per action" timed out at exactly this
+ * budget during a full run and passed alone immediately after - the segment was captured, the
+ * poll just did not get scheduled to say so inside five seconds.
+ *
+ * Ten seconds, matching `IN_PROCESS_WAIT_MS` in test/foreman-spend-delivery.test.ts and the
+ * same reasoning: generous costs nothing when the condition is already true, because the loop
+ * returns on the first poll that sees it. A tight bound here buys no earlier signal and only
+ * ever spends it on false failures.
+ */
+const IN_PROCESS_WAIT_MS = 10_000;
+
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > 5_000) assert.fail(message);
+    if (Date.now() - started > IN_PROCESS_WAIT_MS) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }

@@ -32,22 +32,7 @@ function token(ts: string): string {
   });
 }
 
-/**
- * The budget for an in-process wait, matching `IN_PROCESS_WAIT_MS` in
- * `test/foreman-spend-delivery.test.ts` and `test/session-action-runtime.test.ts`.
- *
- * One second - the figure this file used to carry, and the tightest in the suite - was a bet
- * that the poller's next tick always wins its race against the scheduler, and it is the wrong
- * way round. These conditions are reached in milliseconds on an idle machine, so a tight ceiling
- * can only change the outcome of a run that was ALREADY contending, and there it turns a slow
- * pass into a red suite. The two files above raised the same bet after watching it lose.
- *
- * A larger number cannot hide a hang, only report it later: the loop exits the moment the
- * condition holds, so a healthy run is not slowed at all.
- */
-const IN_PROCESS_WAIT_MS = 10_000;
-
-async function eventually(check: () => boolean, timeoutMs = IN_PROCESS_WAIT_MS): Promise<void> {
+async function eventually(check: () => boolean, timeoutMs = 1_000): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if (check()) return;

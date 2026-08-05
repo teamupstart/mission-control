@@ -286,6 +286,17 @@ test("the console rail draws the same rule, since the ordering it renders is sha
   // The rail is denser than a board column, so it keeps the label and drops the sentence.
   await expect(rail.locator(".fleet-section-why")).toBeHidden();
 
+  // The group count splits like the board head's - "idle 2" over one held agent reads as
+  // two free ones - and the held ROW carries its own mark, because the rail scrolls the
+  // section label away soonest of any surface.
+  await expect(rail.locator(".rail-group-split .n-free")).toHaveText("1 free");
+  await expect(rail.locator(".rail-group-split .n-held")).toHaveText("1 held");
+  const heldRow = rail.locator(".rail-row.is-held");
+  await expect(heldRow).toHaveCount(1);
+  await expect(heldRow.locator(".rail-held")).toHaveText("held");
+
+  await shoot(dashboard, "rail-held-split");
+
   // The board's drilled-in column is the SAME RailRow rendering at the same width, so it must
   // read the same way: label kept, sentence dropped. Reached by actually drilling in, because
   // the claim is about a surface a person arrives at, not about a selector.
@@ -299,6 +310,8 @@ test("the console rail draws the same rule, since the ordering it renders is sha
   await expect(drilled).toBeVisible();
   await expect(drilled.locator(".fleet-section-held")).toContainText("held by a workflow");
   await expect(drilled.locator(".fleet-section-why")).toBeHidden();
+  // The drilled-in rows are the same RailRow, so the held row is marked here too.
+  await expect(drilled.locator(".rail-row.is-held .rail-held")).toHaveText("held");
 });
 
 test("Cards wears the held mark too, since it has no column to say it", async ({

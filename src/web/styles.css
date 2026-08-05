@@ -16276,6 +16276,19 @@ span.line-run-prov {
   font-variant-numeric: tabular-nums;
   color: var(--dim);
 }
+/* The rail's split count, in the board head's colours at the rail's size. Plain words
+   rather than the board's bordered pills: the rail group head is an 11px caption, and two
+   framed pills inside it out-shouted the label they were counting for. */
+.rail-group-split {
+  display: inline-flex;
+  gap: 7px;
+}
+.rail-group-split .n-free {
+  color: var(--idle);
+}
+.rail-group-split .n-held {
+  color: var(--held);
+}
 /* An ensemble's siblings, gathered under one header inside their tone section. The frame
    is a left hairline rather than a box: the rail is a dense vertical list and a bordered
    card per run would turn five rows into five cards. Shared by the console rail and the
@@ -16440,11 +16453,36 @@ span.line-run-prov {
   align-items: center;
   gap: 6px;
 }
+/* The state word and, on a held row, the pill that qualifies it - one line of the
+   `.rail-right` column, so the held mark never spends the row's second line. */
+.rail-state-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
 .rail-state {
   font-size: 10.5px;
   font-weight: 650;
   color: var(--tone-color, var(--neutral));
   white-space: nowrap;
+}
+/* The row-sized held mark: the tile's and the card's pill, at rail density. The spine
+   recolours through `--tone-color` below, so the row reads held even collapsed to a sliver. */
+.rail-held {
+  flex: none;
+  padding: 0 5px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--held) 45%, var(--border));
+  background: color-mix(in oklab, var(--held) 13%, transparent);
+  color: var(--held);
+  cursor: help;
+}
+.rail-row.is-held {
+  --tone-color: var(--held);
 }
 .rail-marks {
   font-size: 9.5px;

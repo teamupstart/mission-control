@@ -4,6 +4,7 @@ import { heldSessionIds } from "../../lib/held.ts";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { blockedMembersIn, EnsembleRailGroup, FleetSectionHead } from "../session-bits.tsx";
+import { Tooltip } from "../Tooltip.tsx";
 import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 
 /**
@@ -63,7 +64,25 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
           <div key={g.tone}>
             <div className={`rail-group tone-${g.tone}`}>
               {g.label}
-              <span className="rail-group-n">{g.sessions.length}</span>
+              {/* The same split the board head draws, in the rail's register: "idle 5" over
+                  three held agents reads as five free ones, and the rail is the surface a
+                  dispatch glance actually scans. One number when the group is one kind of
+                  thing, two when it is not; the free side drops at zero exactly as the
+                  board's pill and `fleetRows`' free rule do. */}
+              {g.heldFrom === null ? (
+                <span className="rail-group-n">{g.sessions.length}</span>
+              ) : (
+                <span className="rail-group-n rail-group-split">
+                  {g.heldFrom > 0 && (
+                    <Tooltip label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}>
+                      <span className="n-free">{g.heldFrom} free</span>
+                    </Tooltip>
+                  )}
+                  <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                    <span className="n-held">{g.sessions.length - g.heldFrom} held</span>
+                  </Tooltip>
+                </span>
+              )}
             </div>
             {/* Sibling members of one run sit under a header row of their own, inside the
                 tone section they belong to. The header is NOT a session row: rail navigation

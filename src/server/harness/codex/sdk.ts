@@ -155,6 +155,40 @@ export function codexPosture(mode: PermissionMode | null): CodexPosture | null {
 }
 
 /**
+ * The flags that re-assert `mode`'s posture on a `codex resume` argv, or nothing when the
+ * mode is null or not one of Codex's own profiles (a Claude mode arriving through the
+ * shared union takes the same no-overrides exit `codexPosture` gives every caller).
+ *
+ * Measured against codex-cli 0.145.0: `codex resume --help` documents `-s, --sandbox` and
+ * `-a, --ask-for-approval` on the subcommand, and `approvals_reviewer` is a top-level
+ * `config.toml` key (it is also the rollout `turn_context` field `rollout.ts` reads the
+ * mode back from), so the reviewer rides as a `-c` override - no dedicated flag exists.
+ *
+ * The reviewer cannot be dropped even when it is `user`, the config default:
+ * `askForApproval` and `approveForMe` are the SAME sandbox and the SAME approval policy,
+ * and the reviewer is the only thing separating them - see the `CODEX_POSTURES` note. An
+ * operator whose `~/.codex/config.toml` names `auto_review` would otherwise reopen an
+ * `askForApproval` session as `approveForMe` without anyone choosing that.
+ *
+ * Read off the TABLE rather than through `codexPosture`, deliberately: that accessor
+ * widens to the protocol's `AskForApproval`, which admits a granular object form the flag
+ * cannot spell, while the table is known to hold only the three string policies the CLI
+ * documents as choices.
+ */
+export function codexResumeModeArgs(mode: PermissionMode | null): string[] {
+  if (!mode || !(mode in CODEX_POSTURES)) return [];
+  const posture = CODEX_POSTURES[mode as keyof typeof CODEX_POSTURES];
+  return [
+    "--sandbox",
+    posture.sandbox,
+    "--ask-for-approval",
+    posture.approvalPolicy,
+    "-c",
+    `approvals_reviewer="${posture.approvalsReviewer}"`,
+  ];
+}
+
+/**
  * The `SandboxMode` a resolved `SandboxPolicy` corresponds to, or null when it is one this
  * table has no name for.
  *

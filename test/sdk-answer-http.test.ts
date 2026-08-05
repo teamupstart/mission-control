@@ -408,6 +408,17 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
     },
   );
 
+  // Put the session in auto first, the way an operator's live mode change would have. The
+  // handoff must carry that mode onto the resume argv: the mode lived only in the driver's
+  // options, so a bare `--resume` reopens the terminal in manual and the operator has to
+  // notice and walk it back to auto by hand.
+  const mode = await app.request("/api/sessions/sdk:launch/mode", {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ mode: "auto" }),
+  });
+  assert.equal(mode.status, 200);
+
   const res = await app.request("/api/sessions/sdk:launch/launch", {
     method: "POST",
     headers: HEADERS,
@@ -419,6 +430,7 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
   assert.equal(launched.length, 1);
   assert.equal(launched[0]?.backend, "ghostty");
   assert.match(launched[0]?.argv.join(" ") ?? "", /--resume/);
+  assert.match(launched[0]?.argv.join(" ") ?? "", /--permission-mode auto/);
   assert.equal(((await res.json()) as { label: string }).label, "Ghostty");
 });
 

@@ -114,7 +114,11 @@ async function transfer(
   // be driven embedded" and "how is its conversation reopened" - used to be one slot, which
   // meant a harness had to have a driver before it could say how to continue itself. The
   // driver check stays because a handoff stops a driver; the argv comes from elsewhere.
-  const argv = resumeArgvFor(session.agent, session.agentSessionId);
+  //
+  // The mode rides along because an embedded session's mode lived only in the driver's
+  // options - there is nothing on disk for the reopened CLI to restore it from, and
+  // without it a session running in auto reopens in the CLI's own default mode.
+  const argv = resumeArgvFor(session.agent, session.agentSessionId, session.permissionMode);
   if (!argv) return { ok: false, error: `${session.agent} cannot reopen a conversation` };
 
   // Before the stop, deliberately. See the ordering note above.

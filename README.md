@@ -497,6 +497,15 @@ which is what makes this a handoff rather than a lost conversation. Discovery ad
 process, and the task's binding follows it across even when discovery takes longer than the
 handoff request waits.
 
+The permission mode crosses with it. An embedded session's mode lives in the driver's own
+options - nothing on disk records it - so a bare resume would reopen a session you were
+running in auto back in the CLI's default mode. The handoff therefore re-asserts the stored
+mode on the command line: `--permission-mode` for Claude, and `--sandbox` /
+`--ask-for-approval` (plus the approvals-reviewer override that separates **Ask for
+approval** from **Approve for me**) for Codex. The same carry applies when an exited
+session's card resumes its conversation. Model and reasoning effort are deliberately not
+re-stated; the resumed conversation carries those itself.
+
 It is one way. After the handoff the terminal session is the one holding the conversation;
 the embedded card goes away. Nothing is lost if the terminal cannot be opened - the error
 tells you the exact resume command to run yourself.

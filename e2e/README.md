@@ -175,6 +175,23 @@ CAPTURED e2e/evidence/workflow-submit-accepted.png
   1 passed (3.5s)
 ```
 
+### Continue in terminal carries the permission mode
+
+[`docs/evidence/resume-mode-carry/`](../docs/evidence/resume-mode-carry/) holds the paired
+red and green transcripts for `specs/continue-in-terminal-mode.spec.ts`, the two frames of
+the asserted browser state (the card's mode chip beside the open "resume this conversation
+in" chooser, per harness), and the real CLIs' own `--help` output for the flags the resume
+argv re-asserts. The red transcript is the same spec run against a build with the fix
+stashed, and its received strings are the reported bug verbatim: a spawned resume command
+that ends at the conversation id, mode gone.
+
+That spec is the reason the fixture set includes a fake `cmux` (`CMUX_BIN`, written by
+`fake-agents.ts`): tmux availability is a question about a pair - its sessions open
+detached and need an emulator to raise them, and CI has neither - while cmux's workspaces
+draw their own window, resolve through an env override, and launch with a single
+`new-workspace` call whose `--command` argument IS the command line a click asked a
+terminal to run. The directory README records the regeneration commands.
+
 ### Board workflow shortcut
 
 [`docs/evidence/board-workflow-shortcut/`](../docs/evidence/board-workflow-shortcut/) contains

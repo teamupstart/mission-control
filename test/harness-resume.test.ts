@@ -56,43 +56,126 @@ test("resume is independent of having an embedded driver", () => {
 // Each of these was read off `--help` on a real install, not off release notes. They are
 // three DIFFERENT shapes - a flag, a subcommand, another flag - so the only way to get one
 // right is to have looked. `HARNESSES.codex.tui` is what assuming a capability costs.
-test("claude resumes with a flag", () => {
-  // No `--model` or mode flags ride along: a resumed session carries its own, and re-stating
-  // them would silently change a conversation the operator asked to CONTINUE.
-  assert.deepEqual([...HARNESSES.claude.resume!.argv("agent-9")], ["--resume", "agent-9"]);
+//
+// The MODE is the one setting that rides along, and the exception is deliberate: no
+// `--model` or effort flags, because the resumed conversation carries those itself and
+// re-stating them would silently change a conversation the operator asked to CONTINUE. The
+// mode is the setting neither CLI restores - an embedded session's mode lived in driver
+// options, nothing on disk records it - so without the flag a session running in auto
+// reopens in the CLI's default and the operator has to notice and re-set it by hand.
+test("claude resumes with a flag, carrying the mode it was running in", () => {
+  assert.deepEqual([...HARNESSES.claude.resume!.argv("agent-9", null)], ["--resume", "agent-9"]);
+  assert.deepEqual(
+    [...HARNESSES.claude.resume!.argv("agent-9", "auto")],
+    ["--resume", "agent-9", "--permission-mode", "auto"],
+  );
+  // The CLI spells the default mode `manual` (verified against 2.1.222) - the same bridge
+  // the dispatch path's `launchArgs` renders, because it IS that renderer.
+  assert.deepEqual(
+    [...HARNESSES.claude.resume!.argv("agent-9", "default")],
+    ["--resume", "agent-9", "--permission-mode", "manual"],
+  );
+  // A Codex profile on a Claude session cannot happen in practice, but the union is shared
+  // and `--permission-mode readOnly` would abort the resume rather than open it - so a mode
+  // outside Claude's vocabulary rides as no flag, never as a guess.
+  assert.deepEqual(
+    [...HARNESSES.claude.resume!.argv("agent-9", "approveForMe")],
+    ["--resume", "agent-9"],
+  );
 });
 
-test("codex resumes with a subcommand and a positional id", () => {
-  // `codex resume --help`: "Session id (UUID) or session name". NOT a flag - `--resume` is
-  // not a thing on codex, and passing one would be read as a prompt.
-  assert.deepEqual([...HARNESSES.codex.resume!.argv("01JF-abc")], ["resume", "01JF-abc"]);
+test("codex resumes with a subcommand, re-asserting its posture as flags", () => {
+  // `codex resume --help` (0.145.0): "Session id (UUID) or session name". NOT a flag -
+  // `--resume` is not a thing on codex, and passing one would be read as a prompt. The
+  // subcommand takes `--sandbox` and `--ask-for-approval` directly; the reviewer has no
+  // flag and rides as a `-c` override of the top-level `approvals_reviewer` config key.
+  assert.deepEqual([...HARNESSES.codex.resume!.argv("01JF-abc", null)], ["resume", "01JF-abc"]);
+  assert.deepEqual(
+    [...HARNESSES.codex.resume!.argv("01JF-abc", "approveForMe")],
+    [
+      "resume",
+      "01JF-abc",
+      "--sandbox",
+      "workspace-write",
+      "--ask-for-approval",
+      "on-request",
+      "-c",
+      'approvals_reviewer="auto_review"',
+    ],
+  );
+  // `askForApproval` differs from `approveForMe` ONLY in the reviewer, so the `-c`
+  // override is load-bearing even at its default value: dropping it would let an operator
+  // config naming `auto_review` silently flip which of the two profiles reopens.
+  assert.deepEqual(
+    [...HARNESSES.codex.resume!.argv("01JF-abc", "askForApproval")],
+    [
+      "resume",
+      "01JF-abc",
+      "--sandbox",
+      "workspace-write",
+      "--ask-for-approval",
+      "on-request",
+      "-c",
+      'approvals_reviewer="user"',
+    ],
+  );
+  assert.deepEqual(
+    [...HARNESSES.codex.resume!.argv("01JF-abc", "fullAccess")],
+    [
+      "resume",
+      "01JF-abc",
+      "--sandbox",
+      "danger-full-access",
+      "--ask-for-approval",
+      "never",
+      "-c",
+      'approvals_reviewer="user"',
+    ],
+  );
+  // A Claude mode on a Codex session renders nothing - `codexPosture` has no row for it,
+  // and a posture nobody picked is worse than the operator's own default.
+  assert.deepEqual([...HARNESSES.codex.resume!.argv("01JF-abc", "auto")], ["resume", "01JF-abc"]);
 });
 
-test("pi resumes with --session, not the two flags beside it", () => {
+test("pi resumes with --session, not the two flags beside it, and has no mode to carry", () => {
   // `pi --help` lists `--session <path|id>`, `--resume` (an interactive PICKER that takes no
   // id) and `--fork` (which BRANCHES the conversation) adjacently. Only the first continues
   // a known conversation, and picking either neighbour fails in a way a user would report as
   // "it opened the wrong thing" rather than as an error.
-  assert.deepEqual([...HARNESSES.pi.resume!.argv("sess-3")], ["--session", "sess-3"]);
+  assert.deepEqual([...HARNESSES.pi.resume!.argv("sess-3", null)], ["--session", "sess-3"]);
+  // `permissionModes: null` - a mode arriving anyway must not invent a flag pi cannot spell.
+  assert.deepEqual([...HARNESSES.pi.resume!.argv("sess-3", "auto")], ["--session", "sess-3"]);
 });
 
 test("the composed argv leads with the harness binary", () => {
   // One composer, so no caller pairs `resolveAgentBin` with a hand-written flag. The two
   // readers - the embedded handoff and the conversation pane's launcher - must spawn the
   // same command line, and they only do if neither builds it itself.
-  const argv = resumeArgvFor("claude", "agent-9");
+  const argv = resumeArgvFor("claude", "agent-9", null);
   assert.ok(argv);
   assert.equal(argv.length, 3);
   assert.match(argv[0]!, /claude/);
   assert.deepEqual(argv.slice(1), ["--resume", "agent-9"]);
+
+  const withMode = resumeArgvFor("claude", "agent-9", "auto");
+  assert.ok(withMode);
+  assert.deepEqual(withMode.slice(1), ["--resume", "agent-9", "--permission-mode", "auto"]);
 });
 
-test("the handoff route composes its argv from the harness, not from the driver", () => {
+test("both resume readers compose from the harness and pass the session's stored mode", () => {
   // A source grep, because the failure it guards is invisible at runtime until a harness
   // that has a resume spec but no driver reaches this path. If the handoff goes back to
   // reading the spec off `sdkFor`, the second reader of this capability silently diverges
-  // from the first.
+  // from the first. The mode argument is pinned for the same reason: dropping it from
+  // either call site would compile fine only if the parameter went optional, and the
+  // symptom - a resumed session opening in the wrong mode - reproduces only with a real
+  // CLI at the other end.
   const src = readFileSync(new URL("../src/server/sdk/handoff.ts", import.meta.url), "utf8");
-  assert.match(src, /resumeArgvFor\(session\.agent, session\.agentSessionId\)/);
+  assert.match(src, /resumeArgvFor\(session\.agent, session\.agentSessionId, session\.permissionMode\)/);
   assert.doesNotMatch(src, /\.resumeArgv\(/);
+  const routes = readFileSync(new URL("../src/server/routes.ts", import.meta.url), "utf8");
+  assert.match(
+    routes,
+    /resumeArgvFor\(session\.agent, session\.agentSessionId!, session\.permissionMode\)/,
+  );
 });

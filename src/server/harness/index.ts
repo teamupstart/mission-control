@@ -1,5 +1,5 @@
 import { AGENT_TYPES } from "@shared/types.ts";
-import type { AgentType, Session } from "@shared/types.ts";
+import type { AgentType, PermissionMode, Session } from "@shared/types.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import { resolveBinSpec } from "./bin.ts";
 import type {
@@ -29,7 +29,7 @@ import { codexBin } from "./codex/bin.ts";
 import { codexControl } from "./codex/control.ts";
 import { codexHooks } from "./codex/hooks.ts";
 import { codexUsage } from "./codex/usage.ts";
-import { codexSdk } from "./codex/sdk.ts";
+import { codexSdk, codexResumeModeArgs } from "./codex/sdk.ts";
 import { piTranscript } from "./pi/transcript.ts";
 import { piDetect } from "./pi/detect.ts";
 import { piBin } from "./pi/bin.ts";
@@ -59,6 +59,33 @@ import { piControl } from "./pi/control.ts";
 // Test: `session-contracts.test.ts` pins both records, `harness-transcript.test.ts` and
 // `harness-capabilities.test.ts` pin the degradations.
 
+// The six modes Claude's own footer, hooks, and driver can report - the only values a
+// Claude session's `permissionMode` can actually hold. The shared `PermissionMode` union
+// also carries Codex's four profiles, and `--permission-mode readOnly` would abort the
+// resume instead of opening it, so anything outside this set rides as "no flag" rather
+// than as a guess - the mirror of `codexPosture` returning null for a Claude mode.
+const CLAUDE_MODES: ReadonlySet<PermissionMode> = new Set([
+  "default",
+  "plan",
+  "acceptEdits",
+  "auto",
+  "dontAsk",
+  "bypassPermissions",
+]);
+
+/**
+ * The flags that re-assert `mode` on a `claude --resume` argv, or nothing when the mode is
+ * null or not Claude's. Rendered through the capability's own `launchArgs` - the same
+ * renderer the dispatch path spends - so the `default` -> `manual` spelling bridge lives
+ * exactly once. Verified against 2.1.222: `--permission-mode` is a global option and rides
+ * with `--resume`, choices acceptEdits, auto, bypassPermissions, manual, dontAsk, plan.
+ */
+function claudeResumeModeArgs(mode: PermissionMode | null): string[] {
+  const spec = HARNESS_CAPABILITIES.claude.permissionModes;
+  if (!mode || !spec?.launchArgs || !CLAUDE_MODES.has(mode)) return [];
+  return [...spec.launchArgs(mode)];
+}
+
 export const HARNESSES: Record<AgentType, Harness> = {
   claude: {
     ...HARNESS_CAPABILITIES.claude,
@@ -76,9 +103,17 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // when the operator turns it on: `control` above is still how a Claude session someone
     // else started is reached, because we do not own their pty.
     sdk: claudeSdk,
-    // `claude --resume <id>`. This argv used to live INSIDE `claudeSdk`, which made it
-    // reachable only for a harness that also had an embedded driver - see `ResumeSpec`.
-    resume: { argv: (agentSessionId) => ["--resume", agentSessionId] },
+    // `claude --resume <id>`, plus the mode the session was running in - the one setting
+    // the reopened CLI does not restore itself (see `ResumeSpec`). This argv used to live
+    // INSIDE `claudeSdk`, which made it reachable only for a harness that also had an
+    // embedded driver - see `ResumeSpec`.
+    resume: {
+      argv: (agentSessionId, permissionMode) => [
+        "--resume",
+        agentSessionId,
+        ...claudeResumeModeArgs(permissionMode),
+      ],
+    },
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -115,10 +150,20 @@ export const HARNESSES: Record<AgentType, Harness> = {
     sdk: codexSdk,
     // `codex resume <uuid>` - a SUBCOMMAND, not a flag, and the id is positional. Codex's
     // interactive and programmatic surfaces share the same session store, so an app-server
-    // thread id reopens the same rollout in the TUI. No model, effort, or sandbox flags ride
-    // along: the resumed rollout carries its own settings. This remains separate from `sdk`;
-    // Pi's non-null `resume` beside `sdk: null` demonstrates why the split is load-bearing.
-    resume: { argv: (agentSessionId) => ["resume", agentSessionId] },
+    // thread id reopens the same rollout in the TUI. No model or effort flags ride along:
+    // the resumed rollout carries those itself. The permission POSTURE is the exception -
+    // an embedded session's sandbox, approval policy, and reviewer were turn parameters on
+    // the app-server, nothing the reopened TUI reads back, so `codexResumeModeArgs`
+    // re-asserts them as flags rather than letting `~/.codex/config.toml` decide. This
+    // remains separate from `sdk`; Pi's non-null `resume` beside `sdk: null` demonstrates
+    // why the split is load-bearing.
+    resume: {
+      argv: (agentSessionId, permissionMode) => [
+        "resume",
+        agentSessionId,
+        ...codexResumeModeArgs(permissionMode),
+      ],
+    },
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
@@ -151,7 +196,9 @@ export const HARNESSES: Record<AgentType, Harness> = {
     sdk: null,
     // `pi --session <id>`. NOT `--resume`, which opens pi's interactive picker and takes no
     // id, and NOT `--fork`, which branches rather than continues. Three adjacent flags in
-    // `pi --help`, one of which is the right answer.
+    // `pi --help`, one of which is the right answer. The mode parameter is deliberately
+    // unread: pi declares `permissionModes: null`, so there is no mode to carry and no
+    // flag to spell one with.
     resume: { argv: (agentSessionId) => ["--session", agentSessionId] },
   },
 };
@@ -237,15 +284,21 @@ export function resumeFor(agent: AgentType): ResumeSpec | null {
 
 /**
  * The full argv - binary included - that reopens `agentSessionId` for this agent, or null
- * when the harness cannot.
+ * when the harness cannot. `permissionMode` is the mode the session was running in, so the
+ * reopened CLI starts where the operator left it rather than on its own default - see
+ * `ResumeSpec` for why it is the one setting that has to ride along.
  *
  * The one composer, so a caller never pairs `resolveAgentBin` with a hand-written flag.
  * Both readers (the embedded handoff, and the conversation pane's agent launcher) go
  * through here, which is what keeps them spawning the same command line.
  */
-export function resumeArgvFor(agent: AgentType, agentSessionId: string): string[] | null {
+export function resumeArgvFor(
+  agent: AgentType,
+  agentSessionId: string,
+  permissionMode: PermissionMode | null,
+): string[] | null {
   const spec = resumeFor(agent);
-  return spec ? [resolveAgentBin(agent), ...spec.argv(agentSessionId)] : null;
+  return spec ? [resolveAgentBin(agent), ...spec.argv(agentSessionId, permissionMode)] : null;
 }
 
 /**

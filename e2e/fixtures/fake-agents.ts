@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 export interface FakeAgents {
   /** Directory the fakes write their invocation records into. */
   recordDir: string;
-  bins: { claude: string; codex: string; pi: string };
+  bins: { claude: string; codex: string; pi: string; cmux: string };
 }
 
 /**
@@ -42,6 +42,38 @@ echo "fake-${agent}: this agent has no e2e fake yet - see e2e/fixtures/fake-agen
 exit 1
 `;
 }
+
+/**
+ * The stand-in terminal backend, so a spec can watch what a click asks a terminal to run.
+ *
+ * cmux, not tmux, and the choice is structural. tmux availability is a question about a
+ * PAIR - its sessions open detached, so `terminalTargetViews` reports it unavailable unless
+ * an emulator exists to raise them, and CI has neither. cmux is the one backend whose
+ * sessions need nobody's help to be seen (`attachArgv: null`), whose binary resolves
+ * through an env override (`CMUX_BIN`), and whose launch is a single `new-workspace`
+ * subprocess call - one fake, and the continue-in-terminal path is drivable end to end on
+ * a machine with no terminal at all.
+ *
+ * The record it writes is the assertion surface: `--command` carries the exact shell
+ * command the workspace would run, which is where a resumed conversation's argv - and the
+ * permission mode it must carry - either shows up or provably does not.
+ *
+ * CommonJS `require`, deliberately: the file is extension-less, which Node treats as CJS,
+ * and an `import` here would crash the fake at spawn time in a way that reads as a
+ * launch failure rather than a broken fixture.
+ */
+const FAKE_CMUX = `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, \`cmux-\${Date.now()}-\${process.pid}.json\`),
+    JSON.stringify({ argv: process.argv.slice(2) }, null, 2),
+  );
+}
+`;
 
 /**
  * Write the three fakes into `home` and return their paths.
@@ -72,5 +104,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(pi, unimplemented("pi"));
   chmodSync(pi, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi } };
+  const cmux = join(binDir, "fake-cmux");
+  writeFileSync(cmux, FAKE_CMUX);
+  chmodSync(cmux, 0o755);
+
+  return { recordDir, bins: { claude, codex, pi, cmux } };
 }

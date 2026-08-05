@@ -32,7 +32,20 @@ function token(ts: string): string {
   });
 }
 
-async function eventually(check: () => boolean, timeoutMs = 1_000): Promise<void> {
+/**
+ * Poll until `check` holds, or give up.
+ *
+ * One second was a bet that the poller's next tick always wins a race against the scheduler,
+ * and it is the wrong way round: the conditions here are reached in milliseconds when the
+ * machine is idle, so a tight ceiling can only change the outcome of runs that are ALREADY
+ * contending - two test files at once under `npm test`, on a loaded laptop or a shared CI
+ * runner - and there it turns a slow pass into a red suite. `foreman-spend-delivery.test.ts`
+ * spells the same argument out at length beside its own spawn ceiling.
+ *
+ * A larger number cannot hide a real hang, only report it later: the loop exits the moment the
+ * condition holds, so a healthy run is not slowed at all.
+ */
+async function eventually(check: () => boolean, timeoutMs = 10_000): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if (check()) return;

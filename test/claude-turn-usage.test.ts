@@ -104,6 +104,47 @@ test("a turn served by two models keeps both ids and sums the flat view", () => 
   assert.equal(usage.costUsd, 1.25, "the envelope's own total, not a re-derived sum");
 });
 
+test("a turn that delegated to a subagent bills the subagent too", () => {
+  // The property that makes reading the driver's frame a FIX rather than a trade, and the one
+  // that would fail silently if the fallback order were ever swapped. The exporter this
+  // replaced split usage across `query_source` (main / subagent / auxiliary) and therefore
+  // counted delegated work; `modelUsage` counts it, and the flat `usage` block does NOT - it
+  // is the main thread alone.
+  //
+  // The numbers are from a real two-turn `claude -p` run that spawned one `Task` subagent:
+  // modelUsage totalled 78,321 tokens where the flat block saw 52,380, and `total_cost_usd`
+  // agreed with modelUsage. Both are internally consistent, which is exactly why preferring
+  // the wrong one would under-report a third of a delegating session with nothing looking odd.
+  const frame = {
+    type: "result",
+    uuid: "sub-1",
+    num_turns: 2,
+    total_cost_usd: 0.04455075,
+    modelUsage: {
+      "claude-haiku-4-5": {
+        inputTokens: 21,
+        outputTokens: 1_920,
+        cacheReadInputTokens: 50_439,
+        cacheCreationInputTokens: 25_941,
+        costUSD: 0.04455075,
+      },
+    },
+    usage: {
+      input_tokens: 21,
+      output_tokens: 1_920,
+      cache_read_input_tokens: 50_439,
+      cache_creation_input_tokens: 0,
+    },
+  };
+  const usage = claudeTurnUsage(frame, "claude-haiku-4-5");
+  assert.ok(usage);
+  const total = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  assert.equal(total, 78_321, "the delegated work is in the figure the ledger stores");
+  const flat = 21 + 1_920 + 50_439 + 0;
+  assert.ok(total > flat, `modelUsage (${total}) must exceed the main thread alone (${flat})`);
+  assert.equal(usage.costUsd, 0.04455075, "and the cost is the whole run's, subagent included");
+});
+
 test("a frame with no per-model breakdown falls back to the flat block", () => {
   const { modelUsage, ...noBreakdown } = FRAME;
   void modelUsage;

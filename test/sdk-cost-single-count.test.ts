@@ -31,9 +31,13 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "mission-sdk-cost-"));
 process.env.MISSION_HOME = home;
 
-const { openDb, sessionCostFor, upsertUsageCell, usageLedgerHasRows } = await import(
-  "../src/server/db.ts"
-);
+const {
+  fleetEstimatedCostSince,
+  openDb,
+  recordAutomationUsage,
+  sessionCostFor,
+  usageLedgerHasRows,
+} = await import("../src/server/db.ts");
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 const { recordSdkSessionBinding, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 import type { SdkEvent } from "../src/server/harness/types.ts";
@@ -74,6 +78,56 @@ const TURN_DONE: SdkEvent = {
     ],
   },
 };
+
+/** One datapoint's attributes, as the exporter stamps them. */
+function otelAttrs(noteKey: string, extra: Record<string, string> = {}) {
+  return [
+    { key: "session.id", value: { stringValue: noteKey } },
+    { key: "model", value: { stringValue: "claude-opus-4-8[1m]" } },
+    { key: "query_source", value: { stringValue: "main" } },
+    ...Object.entries(extra).map(([key, value]) => ({ key, value: { stringValue: value } })),
+  ];
+}
+
+/** One `claude_code.token.usage` datapoint for a tier. */
+function tokenPoint(noteKey: string, value: number, type: string) {
+  return {
+    asInt: value,
+    timeUnixNano: `10000000000000${String(200 + value).slice(0, 5)}`,
+    startTimeUnixNano: "1000000000000000100",
+    attributes: otelAttrs(noteKey, { type }),
+  };
+}
+
+/** A whole `claude_code.cost.usage` export for one session, as the exporter POSTs it. */
+function otelCost(noteKey: string, usd: number, windowEndNs: string) {
+  return {
+    resourceMetrics: [
+      {
+        scopeMetrics: [
+          {
+            metrics: [
+              {
+                name: "claude_code.cost.usage",
+                sum: {
+                  aggregationTemporality: 1,
+                  dataPoints: [
+                    {
+                      asDouble: usd,
+                      timeUnixNano: windowEndNs,
+                      startTimeUnixNano: "1000000000000000001",
+                      attributes: otelAttrs(noteKey),
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
 
 /** The same turn with the display view only - what a driver that owns no ledger write sends. */
 const TURN_DONE_UNATTRIBUTED: SdkEvent = {
@@ -210,36 +264,7 @@ test("the subprocess's own OTel export does not double the driver's report", () 
     usage: { ...TURN_DONE.usage!, turnId: "22222222-2222-4222-8222-222222222222" },
   });
 
-  registry.applyOtelMetrics({
-    resourceMetrics: [
-      {
-        scopeMetrics: [
-          {
-            metrics: [
-              {
-                name: "claude_code.cost.usage",
-                sum: {
-                  aggregationTemporality: 1,
-                  dataPoints: [
-                    {
-                      asDouble: 0.42,
-                      timeUnixNano: "1000000000000000002",
-                      startTimeUnixNano: "1000000000000000001",
-                      attributes: [
-                        { key: "session.id", value: { stringValue: noteKey } },
-                        { key: "model", value: { stringValue: "claude-opus-4-8[1m]" } },
-                        { key: "query_source", value: { stringValue: "main" } },
-                      ],
-                    },
-                  ],
-                },
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  });
+  registry.applyOtelMetrics(otelCost(noteKey, 0.42, "1000000000000000002"));
 
   const cost = sessionCostFor(noteKey);
   assert.ok(cost, "the driver's report is what the ledger holds");
@@ -282,36 +307,7 @@ test("an export that beats the driver's first report is dropped, not banked", ()
   });
 
   // The export arrives first, with no driver row anywhere in the ledger for this key.
-  registry.applyOtelMetrics({
-    resourceMetrics: [
-      {
-        scopeMetrics: [
-          {
-            metrics: [
-              {
-                name: "claude_code.cost.usage",
-                sum: {
-                  aggregationTemporality: 1,
-                  dataPoints: [
-                    {
-                      asDouble: 0.42,
-                      timeUnixNano: "1000000000000000012",
-                      startTimeUnixNano: "1000000000000000011",
-                      attributes: [
-                        { key: "session.id", value: { stringValue: noteKey } },
-                        { key: "model", value: { stringValue: "claude-opus-4-8[1m]" } },
-                        { key: "query_source", value: { stringValue: "main" } },
-                      ],
-                    },
-                  ],
-                },
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  });
+  registry.applyOtelMetrics(otelCost(noteKey, 0.42, "1000000000000000012"));
   assert.equal(sessionCostFor(noteKey), null, "the export for a driven key never lands");
 
   registry.applyDriverEvent(id, {
@@ -324,24 +320,92 @@ test("an export that beats the driver's first report is dropped, not banked", ()
 });
 
 test("OTel remains the writer for a session no driver owns", () => {
-  // The sessions this must not break: a `claude` a human started in a terminal, which Mission
-  // Control discovered rather than launched. Nothing drives it, so its exporter is the only
-  // party that can ever report its cost, and `sdkOwnedNoteKey` must not match it.
+  // The regression this guards, and the reason it goes through `applyOtelMetrics` rather than
+  // calling `upsertUsageCell`: a discovered session - a `claude` a human started in a terminal -
+  // has no driver, so its exporter is the only party that can ever report its cost. The new
+  // yield in the ingest is a `continue` BEFORE the write, so a test that wrote the cell
+  // directly would bypass the very branch that could break this and pass either way.
+  const registry = new Registry();
   const noteKey = "discovered-session-1";
-  upsertUsageCell(
-    {
-      noteKey,
-      sessionId: null,
-      agent: "claude",
-      modelId: "claude-opus-4-8[1m]",
-      querySource: "main",
-      windowEndNs: "1000000000000000009",
-      ts: 9_000,
-    },
-    "costUsd",
-    0.17,
-  );
+  registry.applyOtelMetrics(otelCost(noteKey, 0.17, "1000000000000000009"));
   const cost = sessionCostFor(noteKey);
   assert.ok(cost, "a discovered session's telemetry still lands");
   assert.equal(cost.costUsd, 0.17);
+  assert.equal(cost.basis, "reported", "with the provenance it always had");
+});
+
+test("token metrics still ride the same ingest, tier by tier", () => {
+  // The other half of what the exporter carries. Cost and tokens are separate metrics sharing
+  // one window, and the yield is applied per DATAPOINT, so a guard that matched too broadly
+  // could drop one and keep the other - leaving a session with dollars and no tokens.
+  const registry = new Registry();
+  const noteKey = "discovered-session-2";
+  registry.applyOtelMetrics({
+    resourceMetrics: [
+      {
+        scopeMetrics: [
+          {
+            metrics: [
+              {
+                name: "claude_code.token.usage",
+                sum: {
+                  aggregationTemporality: 1,
+                  dataPoints: [
+                    tokenPoint(noteKey, 1_200, "input"),
+                    tokenPoint(noteKey, 800, "output"),
+                    tokenPoint(noteKey, 4_000, "cacheRead"),
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const cost = sessionCostFor(noteKey);
+  assert.ok(cost, "a discovered session's tokens still land");
+  assert.equal(cost.input, 1_200);
+  assert.equal(cost.output, 800);
+  assert.equal(cost.cacheRead, 4_000);
+});
+
+test("a headless run's OTel twin is still admitted, and still kept out of session spend", () => {
+  // The pre-existing arrangement this must not disturb. A `claude -p` automation run IS Claude
+  // Code, so it exports under the fresh session id it minted - a key belonging to no card. The
+  // ingest cannot tell, and should not: it accepts the rows, and `SESSION_SPEND_ONLY` excludes
+  // them at READ time by matching the automation row's `window_end_ns`. The new yield sits in
+  // the same branch that admits them, so this pins that it did not start swallowing them.
+  const registry = new Registry();
+  const runId = "headless-run-1";
+  recordAutomationUsage({
+    role: "inspector:review",
+    agent: "claude",
+    runId,
+    ts: 50_000,
+    models: [
+      {
+        modelId: "claude-sonnet-5",
+        input: 100,
+        output: 50,
+        reasoningOutput: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        costUsd: 0.9,
+        basis: "reported",
+        pricingVersion: "",
+      },
+    ],
+  });
+  const fleetBefore = fleetEstimatedCostSince(0);
+
+  // The twin arrives under the run's own id, which is what the automation row stored.
+  registry.applyOtelMetrics(otelCost(runId, 0.9, "1000000000000000020"));
+
+  assert.ok(sessionCostFor(runId), "the twin is written, exactly as it always was");
+  assert.equal(
+    fleetEstimatedCostSince(0),
+    fleetBefore,
+    "and excluded from session spend at read time, so it is not billed twice",
+  );
 });

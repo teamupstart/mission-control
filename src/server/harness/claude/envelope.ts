@@ -26,11 +26,25 @@ function number(value: unknown): number {
 /**
  * The per-model token breakdown, preferring the model that ACTUALLY served each request.
  *
- * `modelUsage` is read before the flat `usage` block on purpose. A run that asked for one
- * model and was served by another - a fallback, an alias resolving differently, a haiku
- * summarization turn folded into an opus conversation - would otherwise be filed under the
- * id we asked for, and the ledger's `model_id` would quietly stop meaning what it says. The
- * flat block is the fallback for an envelope carrying no breakdown, and only then is
+ * `modelUsage` is read before the flat `usage` block for two reasons, and the second is the
+ * one that decides real money.
+ *
+ * It names the model that ACTUALLY served each request. A run that asked for one model and was
+ * served by another - a fallback, an alias resolving differently, a haiku summarization turn
+ * folded into an opus conversation - would otherwise be filed under the id we asked for, and
+ * the ledger's `model_id` would quietly stop meaning what it says.
+ *
+ * And it is the only one of the two that INCLUDES SUBAGENTS. Measured on a real two-turn run
+ * that spawned one `Task` subagent: `modelUsage` reported 78,321 tokens against the flat
+ * block's 52,380, and `total_cost_usd` agreed with `modelUsage`. The flat block counts the
+ * main thread alone. Reading it by preference would silently under-report every session that
+ * delegates - roughly a third on that run, and far more on a fleet whose agents fan out - and
+ * it would under-report SILENTLY, because both numbers are internally consistent and neither
+ * looks wrong beside the other. The exporter this replaced split the same usage across its
+ * `query_source` attribute (`main` / `subagent` / `auxiliary`) and so counted it too, which is
+ * the parity that has to hold for the switch to be a fix rather than a trade.
+ *
+ * The flat block is the fallback for an envelope carrying no breakdown, and only then is
  * `requestedModel` used, because only then is it the best answer available.
  *
  * Note the tier convention needs no subtraction: Anthropic reports `input_tokens` EXCLUSIVE

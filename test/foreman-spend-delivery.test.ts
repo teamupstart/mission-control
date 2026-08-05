@@ -213,7 +213,20 @@ function spoolRunIds(path: string): string[] {
  */
 const SPAWN_WAIT_MS = 30_000;
 
-async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+/**
+ * Poll until `check` holds, or give up.
+ *
+ * The ceiling gets the SAME asymmetry argument as `SPAWN_WAIT_MS` above, because it is the
+ * same bet on the same machine and there is no reason for the two to disagree. It sat at 2s
+ * while its neighbour sat at 30s, which is the shape a flake hides in: every condition here
+ * is reached in milliseconds on an idle machine, so the only runs the old ceiling could
+ * change were the ones already contending for CPU - `npm test` running two files at once on a
+ * loaded laptop or a shared CI runner - and on those it converted a slow pass into a failure.
+ *
+ * Raising it cannot mask a genuine hang, only delay reporting one: the loop returns the
+ * instant the condition holds, so a healthy run pays nothing for the larger number.
+ */
+async function eventually(check: () => boolean, timeoutMs = 10_000): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if (check()) return;

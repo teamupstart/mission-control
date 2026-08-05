@@ -339,9 +339,6 @@ export function WorkflowLadder({
             && members.every((member) => member.status.skipKind === "inspector_repair")
             ? inspectorOnlySkipStatus()
             : stageStatus(members.map((member) => member.status), stage.kind);
-          const expanded = status.tone === "running"
-            || status.tone === "failed"
-            || members.some((member) => member.status.degraded);
           const objection = members.find((member) => member.verdict?.verdict === "fail");
           const repeatOffenders = status.tone === "failed"
             ? (detail.repeatOffenders ?? []).filter((offender) =>
@@ -357,7 +354,18 @@ export function WorkflowLadder({
               sub={stageSummary(stage)}
               status={status}
             >
-              {expanded && (
+              {/* EVERY member, whatever the stage folded to. A stage that hid its rows once it
+                  passed threw away the only thing that says who passed it: "All passed" beside
+                  `3 reviewers` names none of the three, and the reviewers are the evidence. The
+                  Runs monitor has always listed every member unconditionally
+                  (`wf-pipeline-members`), so a collapsing ladder also meant two readings of one
+                  run disagreeing about how much of it is knowable. The Board tile's compact case
+                  is served by a purpose-built view instead - `WorkflowLadderPeek`, which is what
+                  a collapsed tile shows - so the full ladder is only ever reached by the
+                  Workflows tab or by an explicit `Show full workflow`, and both of those asked
+                  for all of it. Guarded on length only so a memberless stage emits no empty
+                  list. */}
+              {members.length > 0 && (
                 <ul className="wf-ladder-members">
                   {members.map((member) => {
                     // One note slot, two sources. A check explains a gate that advanced

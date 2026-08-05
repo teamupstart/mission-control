@@ -34,7 +34,9 @@ const EMBEDDED = mkSession({
 });
 const NO_ID = mkSession({ id: "noid", runtime: "sdk", terminals: [], agentSessionId: null });
 const NO_CWD = mkSession({ id: "nocwd", runtime: "sdk", terminals: [], cwd: null });
-const EXITED = mkSession({ id: "exited", state: "exited" });
+// With a measured mode, so the resume assert below can pin that the stored mode rides the
+// argv - a session that was running in acceptEdits must not reopen in manual.
+const EXITED = mkSession({ id: "exited", state: "exited", permissionMode: "acceptEdits" });
 const EXITED_UNCERTAIN = mkSession({
   id: "exited-uncertain",
   name: "Uncertain resume",
@@ -178,7 +180,9 @@ test("an exited session resumes through the selected backend despite stale pane 
   assert.equal(res.status, 200);
   assert.equal(launched.length, 1);
   assert.equal(launched[0]?.backend, "tmux");
-  assert.match(launched[0]?.argv.join(" ") ?? "", /--resume/);
+  // The stored mode rides along - the reopened CLI does not restore it from the
+  // conversation, so a bare `--resume` would land the operator back in manual.
+  assert.match(launched[0]?.argv.join(" ") ?? "", /--resume agent-1 --permission-mode acceptEdits/);
 
   const repeated = await launch("exited", { backend: "ghostty", payload: "agent" });
   assert.equal(repeated.status, 409);

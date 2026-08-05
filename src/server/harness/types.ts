@@ -590,8 +590,19 @@ export interface ResumeSpec {
    * Measured against a real install for each harness, never read off release notes - the
    * `HARNESSES.codex.tui` correction is what assuming costs. Claude takes a flag, Codex a
    * subcommand, pi a different flag; the shape is not shared and must not be guessed.
+   *
+   * `permissionMode` is the mode the session was RUNNING in, or null when nobody measured
+   * one. It rides along because it is the one setting neither CLI restores from the
+   * conversation itself: an embedded session's mode lived in driver options and turn
+   * parameters, and a terminal one reopens on the operator's own defaults - so without it
+   * a session the operator was running in auto comes back in manual and they have to
+   * notice and re-set it by hand. Model and effort deliberately still do NOT ride along:
+   * the resumed conversation carries those, and re-stating them would silently change a
+   * conversation the operator asked to CONTINUE. Each harness renders only its own mode
+   * vocabulary and drops the rest - the union is shared, and a flag rendered from another
+   * harness's mode would abort the resume instead of opening it.
    */
-  argv(agentSessionId: string): readonly string[];
+  argv(agentSessionId: string, permissionMode: PermissionMode | null): readonly string[];
 }
 
 export interface SdkLaunchOptions {

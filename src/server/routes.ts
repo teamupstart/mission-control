@@ -1419,7 +1419,10 @@ export function buildApp(
         return c.json({ ok: false, error: "this conversation is already being resumed" }, 409);
       }
 
-      const argv = resumeArgvFor(session.agent, session.agentSessionId!);
+      // With the mode the session was last observed in, so the resumed CLI starts where
+      // the operator left it - the same carry the embedded handoff makes, and null when
+      // nobody measured one, which renders no flag rather than a guess.
+      const argv = resumeArgvFor(session.agent, session.agentSessionId!, session.permissionMode);
       if (!argv) return c.json({ ok: false, error: agentLaunchBlockedReason(session) }, 409);
 
       agentResumeClaims.add(session.id);

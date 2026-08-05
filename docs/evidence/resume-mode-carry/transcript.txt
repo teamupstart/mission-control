@@ -1,0 +1,11 @@
+
+Running 2 tests using 1 worker
+
+OBSERVED the claude card reads mode "auto" and offers "resume this conversation in" with cmux available
+OBSERVED the claude terminal command carries the mode: '/private/var/folders/1c/djbypfjn4px99pjhhdj8xhyc0000gn/T/mc-e2e-Ar8leZ/fake-bin/fake-claude' '--resume' 'e2e00000-0000-4000-8000-000000000001' '--permission-mode' 'auto'
+  ✓  1 [chromium] › e2e/specs/continue-in-terminal-mode.spec.ts:109:3 › continuing a claude SDK session in a terminal carries its auto mode (3.3s)
+OBSERVED the codex card reads mode "approve" and offers "resume this conversation in" with cmux available
+OBSERVED the codex terminal command carries the mode: '/private/var/folders/1c/djbypfjn4px99pjhhdj8xhyc0000gn/T/mc-e2e-uUfSU9/fake-bin/fake-codex' 'resume' '01999999-0000-7000-8000-000000000001' '--sandbox' 'workspace-write' '--ask-for-approval' 'on-request' '-c' 'approvals_reviewer="auto_review"'
+  ✓  2 [chromium] › e2e/specs/continue-in-terminal-mode.spec.ts:109:3 › continuing a codex SDK session in a terminal carries its approve mode (3.1s)
+
+  2 passed (6.9s)

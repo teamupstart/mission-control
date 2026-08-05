@@ -154,6 +154,12 @@ export async function startDaemon(): Promise<DaemonHandle> {
     MISSION_CLAUDE_BIN: bins.claude,
     MISSION_CODEX_BIN: bins.codex,
     MISSION_PI_BIN: bins.pi,
+    // The one terminal backend this suite installs, so continue-in-terminal is drivable on
+    // a machine with no terminal: cmux resolves through this env override, needs no
+    // emulator to raise its workspaces, and the fake records the `new-workspace --command`
+    // it was handed - the exact command line a click asked a terminal to run. See
+    // `FAKE_CMUX` in fake-agents.ts for why the other backends cannot play this role.
+    CMUX_BIN: bins.cmux,
     MC_E2E_RECORD_DIR: recordDir,
     // The pool sweep is NOT scoped to MISSION_HOME - it reaps the shared treehouse
     // worktree pool, so an isolated daemon will still delete a sibling checkout's work.

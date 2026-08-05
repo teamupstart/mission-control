@@ -319,7 +319,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     block.kind === "session" ? (
                       railRow(block.session)
                     ) : (
-                      <div className="rail-cluster" key={`cluster-${block.runId}`}>
+                      // `block.key`, not the runId: a run split across the free/held boundary
+                      // frames once per side, and two frames keyed by one run collide.
+                      <div className="rail-cluster" key={block.key}>
                         <EnsembleRailGroup
                           summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
                           fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
@@ -343,7 +345,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                         className={`board-cluster${
                           blockedMembersIn(block.sessions) > 0 ? " needs-you" : ""
                         }`}
-                        key={`cluster-${block.runId}`}
+                        // `block.key`, not the runId - see the rail cluster above.
+                        key={block.key}
                       >
                         <EnsembleClusterHead
                           summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}

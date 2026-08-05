@@ -100,7 +100,9 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
               ) : row.kind === "session" ? (
                 railRow(row.session)
               ) : (
-                <div className="rail-cluster" key={`cluster-${row.runId}`}>
+                // `row.key`, not the runId: a run split across the free/held boundary
+                // frames once per side, and two frames keyed by one run collide.
+                <div className="rail-cluster" key={row.key}>
                   <EnsembleRailGroup
                     summary={props.ensembleSummaryByRun?.get(row.runId) ?? null}
                     fallbackLabel={clusterFallbackLabel(row.sessions[0]!)}

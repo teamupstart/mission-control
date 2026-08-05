@@ -50,7 +50,19 @@ export interface FleetOrder {
  */
 export type FleetBlock =
   | { kind: "session"; session: Session }
-  | { kind: "cluster"; runId: string; sessions: Session[] };
+  | {
+      kind: "cluster";
+      runId: string;
+      /**
+       * The React key for this frame, computed HERE because `runId` alone is not one: a run
+       * with one free member and one held member clusters once per side of the boundary (see
+       * `clusterGroup`), and two frames keyed by the same run collide - React matches one
+       * fiber and remounts or misassigns the other's header and disclosure state. The first
+       * member's id disambiguates, and is as stable as the span itself.
+       */
+      key: string;
+      sessions: Session[];
+    };
 
 /**
  * The ONE fleet ordering: tone first, then siblings of an ensemble run adjacent.
@@ -216,10 +228,12 @@ export function fleetBlocks(group: FleetToneGroup): FleetBlock[] {
   for (let i = 0; i < group.sessions.length; ) {
     const span = spanAt.get(i);
     if (span) {
+      const members = group.sessions.slice(i, i + span.length);
       blocks.push({
         kind: "cluster",
         runId: span.runId,
-        sessions: group.sessions.slice(i, i + span.length),
+        key: `cluster-${span.runId}-${members[0]!.id}`,
+        sessions: members,
       });
       i += span.length;
       continue;

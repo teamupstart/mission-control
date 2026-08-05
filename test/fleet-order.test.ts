@@ -301,6 +301,14 @@ test("a cluster never straddles the free/held boundary", () => {
     const startsAfter = c.startIndex >= idle.heldFrom!;
     assert.ok(endsBefore || startsAfter, `cluster ${c.runId} straddles the boundary`);
   }
+  // And the two frames of the one run carry DISTINCT render keys. `runId` alone is not a
+  // key here: both sides of the split share it, React would match one fiber and remount or
+  // misassign the other's header and disclosure state.
+  const clusterBlocks = fleetBlocks(idle).filter((b) => b.kind === "cluster");
+  assert.equal(clusterBlocks.length, 2);
+  const keys = clusterBlocks.map((b) => (b as { key: string }).key);
+  assert.notEqual(keys[0], keys[1]);
+  for (const key of keys) assert.match(key, /^cluster-run-a-/);
 });
 
 test("fleetRows places both rules, and the walk lands exactly on the boundary", () => {

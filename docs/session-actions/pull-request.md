@@ -14,16 +14,14 @@ work you just pushed, update that pull request rather than opening a second one.
 
 Write for a reviewer who has not been in this session and will not read the transcript.
 
-- The goal, in the user's terms, and why the change was needed.
-- The design decisions that were not obvious, and the alternatives that were rejected.
-- The tradeoffs the change accepts, stated plainly rather than defended.
-- Concrete proof the work works: the commands that were run and what they reported, the tests
-  that were added and what they would catch, and the behaviour that was observed rather than
-  assumed.
-- For a UI change, attach or link screenshots of the working feature so the reviewer can see
-  the result without reconstructing it locally.
+The skill owns the shape, and it is two top-level sections. `## For Humans` carries the why,
+a concise description of the total feature, the tradeoffs, the known gaps, the evidence -
+including screenshots of a UI change - and the recommended follow-up work, each under its own
+heading. `## For Agents` carries the design decisions and the implementation detail. Follow
+that contract exactly rather than inventing a shape here.
 
-A list of changed files is not a description. Neither is a restatement of the diff.
+Every claim in the evidence subsection is something that was run and reported, not something
+assumed. A list of changed files is not a description. Neither is a restatement of the diff.
 
 ## What not to do
 

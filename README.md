@@ -4267,7 +4267,10 @@ agent's own loading path; the harness never reimplements it.
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
 PR. Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
 through the bound harness's native skill syntax, so that final handoff is enforced rather
-than left to model selection. Its reviewer-ready description contract lives in
+than left to model selection. Its reviewer-ready description contract - two sections, **For
+Humans** for the why, the concise feature description, the tradeoffs, the known gaps, the
+evidence and the recommended follow-ups, and **For Agents** for the design decisions and
+implementation detail - lives in
 [`skills/pull-request/SKILL.md`](skills/pull-request/SKILL.md).
 
 The opt-in **Phased Plan** row investigates an approved plan against the repository, writes

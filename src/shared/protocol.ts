@@ -1811,20 +1811,21 @@ export interface CostTelemetryStatus {
    */
   receiving: boolean;
   /**
-   * True once Claude Code's OTel EXPORTER specifically has delivered something.
+   * True when Claude Code's exporter has been silent for a week WHILE the fleet was working.
    *
-   * Narrower than `receiving`, which a driven session's own driver now satisfies on its own.
-   * Both are needed because they fail independently and only one of them can be worked
-   * around: spend for a session the daemon RUNS comes off the driver's stream, but a session
-   * it merely DISCOVERED - a human's terminal `claude` - has no driver, and this export is
-   * the only way its cost is ever counted.
+   * The state this describes has no other symptom. Spend for a session the daemon RUNS comes
+   * off the driver's own stream, so `receiving` is satisfied, the topbar has numbers on it and
+   * the `env` block is in the file - every signal reads healthy. But a session the daemon
+   * merely DISCOVERED, a human's terminal `claude`, has no driver, and the export is the only
+   * way its cost is ever counted. So the total looks complete while an entire category of
+   * session is missing from it.
    *
-   * So `installed && receiving && !otelExporting` is a real and otherwise invisible state:
-   * the dashboard shows plausible session spend, and every terminal session is missing from
-   * it. That reads as "working" on every other signal the panel has, which is why it gets
-   * one of its own.
+   * Both halves of the condition are the server's to judge, which is why this arrives as one
+   * derived boolean rather than as the timestamps behind it. Silence alone is not a fault - an
+   * idle machine exports nothing because it runs nothing - and session spend alone is not
+   * either. See `exporterSilentWhileActive`.
    */
-  otelExporting: boolean;
+  exporterSilent: boolean;
   /**
    * Set when `OTEL_METRICS_INCLUDE_SESSION_ID` reads false anywhere we can see it. That
    * value silently destroys per-session attribution - every datapoint arrives

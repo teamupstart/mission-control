@@ -4292,19 +4292,65 @@ export function sdkOwnedNoteKey(noteKey: string): boolean {
   return Boolean(r);
 }
 
+/** Where the last observed OTLP export is remembered, so a restart does not forget it. */
+const OTEL_SEEN_KEY = "costOtelLastSeen";
+
 /**
- * True once Claude Code's OTel exporter has delivered anything at all.
+ * How often the last-seen stamp is actually persisted.
  *
- * Distinct from `reportedUsageLedgerHasRows`, which now answers the broader "is session spend
- * landing" and is satisfied by the driver alone. This one is specifically about the exporter,
- * because that is what a passively-discovered TERMINAL session depends on and nothing else
- * can substitute for: no driver owns those, so if this is false while telemetry is installed,
- * every session the daemon did not start is silently reading $0.
+ * Exports arrive every `exportIntervalMs` - 15s by default, per live session - so writing on
+ * each one would turn a passive health signal into a steady stream of database writes for a
+ * value nothing reads more than once every few seconds. A minute of granularity is far finer
+ * than the staleness window that consumes it.
  */
-export function otelUsageHasRows(): boolean {
+const OTEL_SEEN_WRITE_THROTTLE_MS = 60_000;
+
+/**
+ * Remember that an attributable OTLP export ARRIVED, whatever became of its datapoints.
+ *
+ * Called from the ingest before any datapoint is filtered, and that position is the whole
+ * point. The obvious implementation of "is the exporter working" is to look for rows it wrote,
+ * and it is unsound here for two independent reasons:
+ *
+ *   - Rows are DROPPED for a driven session, deliberately, by `sdkOwnedNoteKey`. A fleet of
+ *     embedded sessions with a perfectly healthy exporter writes no `otel` row at all, so a
+ *     row test would report a broken exporter and the panel would cry wolf. (In practice
+ *     headless automation twins land under un-owned keys and mask this, which is luck rather
+ *     than design - it disappears the moment the loops are switched off.)
+ *   - Rows are PRUNED at 180 days and, worse, an unbounded "has one ever existed" test never
+ *     goes back to false. An exporter that worked and then silently stopped - exactly the
+ *     failure this whole change exists to make visible - would keep reporting healthy for
+ *     months while every terminal session read $0.
+ *
+ * Arrival is what the flag claims to measure, so arrival is what it measures.
+ */
+export function noteOtelExportSeen(now: number): void {
+  const previous = getAppConfig<number>(OTEL_SEEN_KEY);
+  // One comparison, two properties, and both are wanted. It throttles a rewrite that is sooner
+  // than the granularity anything reads, AND it refuses to move the stamp BACKWARDS - a clock
+  // that steps back must not be able to age a live exporter into looking dead.
+  if (typeof previous === "number" && now - previous < OTEL_SEEN_WRITE_THROTTLE_MS) return;
+  setAppConfig(OTEL_SEEN_KEY, now);
+}
+
+/** When an OTLP export was last observed arriving, or null if one never has. */
+export function lastOtelExportSeenAt(): number | null {
+  const stored = getAppConfig<number>(OTEL_SEEN_KEY);
+  return typeof stored === "number" ? stored : null;
+}
+
+/**
+ * Whether any SESSION spend was recorded on or after `tsMs`.
+ *
+ * Pairs with the stamp above to answer "is the exporter silent while there is work to report".
+ * Silence on its own proves nothing - a machine nobody has used since Friday has no exports
+ * because it has no sessions, and warning about that would be noise that teaches an operator
+ * to ignore the panel.
+ */
+export function hasSessionUsageSince(tsMs: number): boolean {
   const r = openDb()
-    .prepare(`SELECT 1 AS x FROM usage_ledger WHERE writer = 'otel' LIMIT 1`)
-    .get() as { x: number } | undefined;
+    .prepare(`SELECT 1 AS x FROM usage_ledger WHERE ${SESSION_SPEND_ONLY} AND ts >= ? LIMIT 1`)
+    .get(tsMs) as { x: number } | undefined;
   return Boolean(r);
 }
 

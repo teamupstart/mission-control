@@ -81,12 +81,17 @@ missing, so every layer except a browser reported success. It is now pinned by n
 ## `cost-settings-warning.png`
 
 **Settings · Cost** in the state that previously had no symptom at all: telemetry installed,
-session spend landing, and the exporter having never delivered once. Every older signal reads
-healthy here - the toggle is on, the `env` block is in the file, the dashboard has numbers - so
-the panel now says which sessions are missing from a total that looks complete, in amber:
+session spend landing, and the exporter silent. Every older signal reads healthy here - the
+toggle is on, the `env` block is in the file, the dashboard has numbers - so the panel now says
+which sessions are missing from a total that looks complete, in amber:
 
-> Claude Code has never exported telemetry to this daemon, so the estimate covers only sessions
-> Mission Control runs. Sessions you started yourself in a terminal are not counted.
+> Claude Code has not exported telemetry to this daemon in the past week, so the estimate covers
+> only sessions Mission Control runs. Sessions you started yourself in a terminal are not counted.
+
+The warning needs BOTH halves of its condition to fire, which is why the capture is taken after a
+dispatch rather than on an empty fleet: the exporter must be silent AND the fleet must have been
+working, because silence on an idle machine reports nothing missing and a panel that warns about a
+quiet weekend is one an operator learns to scroll past.
 
 The long absolute path in the capture is the isolated test home, not what an operator sees; in
 normal use it reads `~/.claude/settings.json`. The first-run hint (*"No Claude telemetry has

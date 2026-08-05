@@ -49,21 +49,26 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         </p>
       )}
 
-      {status?.config.enabled && status.installed && status.receiving && !status.otelExporting && (
+      {status?.config.enabled && status.installed && status.exporterSilent && (
         // The state that has no other symptom. Session spend is landing, so every signal a
         // person would think to check reads healthy - the switch is on, the env block is in
-        // the file, the dashboard has numbers - and yet the exporter has never delivered, so
-        // the numbers are ONLY the sessions Mission Control drives. Anything a human started
-        // in a terminal is missing from a total that looks complete. Naming the shortfall is
-        // the whole point: the cause is usually outside this app (a Claude Code build whose
-        // metrics pipeline emits nothing, an enterprise policy, a version regression), so the
-        // useful thing the panel can do is say which sessions are not being counted.
+        // the file, the dashboard has numbers - and yet the exporter has said nothing all
+        // week, so the numbers are ONLY the sessions Mission Control drives. Anything a human
+        // started in a terminal is missing from a total that looks complete. Naming the
+        // shortfall is the whole point: the cause is usually outside this app (a Claude Code
+        // build whose metrics pipeline emits nothing, an enterprise policy, a version
+        // regression), so the useful thing the panel can do is say what is not being counted.
+        //
+        // The condition is one flag rather than the pair behind it because deciding WHEN
+        // silence is a fault needs the ledger, which is the daemon's to read. See
+        // `exporterSilentWhileActive`.
         <p className="settings-error">
-          Claude Code has never exported telemetry to this daemon, so the estimate covers only
-          sessions Mission Control runs. Sessions you started yourself in a terminal are not
-          counted. The <code>env</code> block is present in <code>{status.settingsPath}</code>
-          {" "}and the daemon is listening, so this is Claude Code declining to export - check
-          that <code>claude</code> is current and that no managed policy disables telemetry.
+          Claude Code has not exported telemetry to this daemon in the past week, so the
+          estimate covers only sessions Mission Control runs. Sessions you started yourself in
+          a terminal are not counted. The <code>env</code> block is present in{" "}
+          <code>{status.settingsPath}</code> and the daemon is listening, so this is Claude Code
+          declining to export - check that <code>claude</code> is current and that no managed
+          policy disables telemetry.
         </p>
       )}
 

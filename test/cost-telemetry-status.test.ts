@@ -6,20 +6,24 @@ import { join } from "node:path";
 
 // What the Cost panel is allowed to claim about telemetry, and when.
 //
-// Three states, and the middle one is new. It exists because this change gave session spend a
-// SECOND writer, which broke a shortcut the panel used to be able to take: while OTel was the
-// only writer, "any reported session row exists" and "the exporter is working" were the same
-// sentence. They are not any more. A driven session's driver satisfies the first and says
-// nothing about the second, so a panel reading only `receiving` would report healthy telemetry
-// while every passively-discovered terminal session silently recorded nothing.
+// The warning here exists because this change gave session spend a SECOND writer, which broke a
+// shortcut the panel used to be able to take: while OpenTelemetry was the only writer, "any
+// reported session row exists" and "the exporter is working" were the same sentence. They are
+// not any more. A driven session's driver satisfies the first and says nothing about the second,
+// so a panel reading only `receiving` would report healthy telemetry while every
+// passively-discovered terminal session silently recorded nothing.
 //
-//   installed, no session rows        -> receiving false          -> the first-run hint
-//   installed, driver rows only       -> receiving, NOT exporting -> the new warning
-//   installed, an OTel row exists     -> receiving AND exporting  -> no message
+// The signal is ARRIVAL, stamped in the ingest before any datapoint is filtered, and not the
+// rows the ingest went on to write. Two independent reasons, each with a test below:
 //
-// The fourth case is the one the original bug wore: rows in the ledger, none of them a
-// session's. Automation spend must move neither flag, or the panel would have called this
-// feature healthy on the very machine where session spend had been zero all day.
+//   - a driven session's datapoints are deliberately DROPPED, so a healthy exporter on an
+//     embedded fleet writes no `otel` row and a row test would cry wolf;
+//   - rows are pruned at 180 days and an unbounded "has one ever existed" test never returns to
+//     false, so an exporter that worked and then stopped would read healthy for months.
+//
+// And the flag pairs arrival with recent session spend, because silence on an idle machine is
+// not a fault. A panel that warns about a quiet weekend is one an operator learns to scroll
+// past, which is how a silent failure becomes invisible a second time.
 //
 // `CLAUDE_SETTINGS_PATH` is redirected at a temp file for the same reason `MISSION_HOME` is:
 // `costTelemetryStatus` READS the operator's real settings file to report what is actually
@@ -31,14 +35,21 @@ const settingsPath = join(home, "claude-settings.json");
 process.env.CLAUDE_SETTINGS_PATH = settingsPath;
 writeFileSync(settingsPath, "{}\n");
 
-const { openDb, recordAutomationUsage, recordDriverSessionUsage, upsertUsageCell } = await import(
-  "../src/server/db.ts"
-);
+const {
+  noteOtelExportSeen,
+  openDb,
+  recordAutomationUsage,
+  recordDriverSessionUsage,
+  upsertUsageCell,
+} = await import("../src/server/db.ts");
 const { costTelemetryStatus, setCostConfig } = await import("../src/server/cost.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
 openDb();
+
+const DAY = 24 * 60 * 60 * 1000;
+const NOW = 1_800_000_000_000;
 
 /** One model's worth of driver usage, valued. */
 const MODELS = [
@@ -53,26 +64,39 @@ const MODELS = [
   },
 ];
 
-test("a fresh install reports installed but not yet receiving", () => {
+/** A driven turn recorded at `ts`, which is what makes the fleet count as active. */
+function driverTurn(id: string, ts: number): void {
+  recordDriverSessionUsage({
+    noteKey: `status-session-${id}`,
+    sessionId: `sdk:${id}`,
+    agent: "claude",
+    turnId: `status-turn-${id}`,
+    ts,
+    models: MODELS,
+  });
+}
+
+test("a fresh install reports installed, not receiving, and warns about nothing", () => {
   // Writing the env block is what `installed` reflects, and it is deliberately not enough to
   // claim anything is working: the block only reaches sessions started AFTER it was written.
+  // Nor is it enough to warn - there is no spend yet, so nothing is going uncounted.
   setCostConfig({ enabled: true });
-  const status = costTelemetryStatus();
+  const status = costTelemetryStatus(NOW);
   assert.equal(status.installed, true, "the env block is in the file");
   assert.equal(status.receiving, false, "and nothing has reported through it yet");
-  assert.equal(status.otelExporting, false);
+  assert.equal(status.exporterSilent, false, "silence with no work to report is not a fault");
   assert.equal(status.settingsPath, settingsPath, "the panel names the file it would edit");
 });
 
 test("automation spend alone claims nothing about session telemetry", () => {
   // The shape of the original bug. The ledger had 48 rows and $40 on it, every one of them the
-  // app's own overhead, while session spend was zero. Neither flag may move for these, or the
-  // panel would have reported a working feature on exactly the machine it was broken on.
+  // app's own overhead, while session spend was zero. `receiving` may not move for these, or the
+  // panel would report a working feature on exactly the machine it was broken on.
   recordAutomationUsage({
     role: "foreman:review",
     agent: "claude",
     runId: "status-run-1",
-    ts: 1_000,
+    ts: NOW - 1_000,
     models: [
       {
         modelId: "claude-opus-5",
@@ -87,58 +111,93 @@ test("automation spend alone claims nothing about session telemetry", () => {
       },
     ],
   });
-  const status = costTelemetryStatus();
+  const status = costTelemetryStatus(NOW);
   assert.equal(status.receiving, false, "the app's own spend is not a session reporting");
-  assert.equal(status.otelExporting, false, "and it is certainly not an export");
 });
 
-test("a driver row means receiving, and still not exporting", () => {
-  // The state with no other symptom, and the whole reason `otelExporting` exists. Session spend
-  // is landing and the topbar has numbers on it, so every older signal reads healthy - while a
-  // terminal `claude` is contributing nothing and no one has been told.
-  recordDriverSessionUsage({
-    noteKey: "status-session-1",
-    sessionId: "sdk:status-1",
-    agent: "claude",
-    turnId: "status-turn-1",
-    ts: 2_000,
-    models: MODELS,
-  });
-  const status = costTelemetryStatus();
+test("a driven fleet with a silent exporter is the state that gets the warning", () => {
+  // Session spend is landing and the topbar has numbers on it, so every older signal reads
+  // healthy - while a terminal `claude` contributes nothing and nobody has been told.
+  driverTurn("a", NOW - 1_000);
+  const status = costTelemetryStatus(NOW);
   assert.equal(status.receiving, true, "session spend is reaching the ledger");
   assert.equal(
-    status.otelExporting,
-    false,
-    "but the exporter has still never delivered, which is what the warning says",
+    status.exporterSilent,
+    true,
+    "and the exporter has said nothing while it did, which is what the warning names",
   );
 });
 
-test("an exported row is what finally reports the exporter healthy", () => {
+test("an export ARRIVING clears the warning, even though its rows were all dropped", () => {
+  // The unsoundness a row test would have. Every datapoint in a driven fleet's export is
+  // discarded by `sdkOwnedNoteKey`, so no `otel` row is ever written - and yet the exporter
+  // plainly ran. Reading rows here would report a healthy exporter as a dead one and put a
+  // false warning in front of every operator whose fleet is embedded.
+  noteOtelExportSeen(NOW - 60_000);
+  const status = costTelemetryStatus(NOW);
+  assert.equal(status.exporterSilent, false, "arrival is the signal, not the surviving rows");
+});
+
+test("an exporter that worked and then stopped goes back to warning", () => {
+  // THE REGRESSION THIS FILE EXISTS FOR, and the one the first implementation got wrong. It
+  // asked whether an `otel` row had EVER been written, with no time bound, against a ledger
+  // that keeps rows for 180 days. So an operator whose exporter worked once and then silently
+  // stopped - the exact failure this change is about - kept reading healthy for up to six
+  // months while every terminal session was uncounted the whole time.
+  //
+  // Driven forwards in time rather than by back-dating the stamp, because `noteOtelExportSeen`
+  // refuses to move backwards on purpose and a test that fought that would be testing a
+  // scenario production cannot produce. The real arrival above is the last one there was; here
+  // it is eight days old, and the fleet worked yesterday.
+  const later = NOW + 8 * DAY;
+  driverTurn("b", later - 1 * DAY);
+  const status = costTelemetryStatus(later);
+  assert.equal(status.receiving, true, "spend is still landing, so nothing else looks wrong");
+  assert.equal(
+    status.exporterSilent,
+    true,
+    "a working exporter that stops must return to warning, not stay healthy until retention",
+  );
+
+  // A real `otel` row from the working period is still sitting in the ledger, well inside
+  // retention - which is exactly what the first implementation found and trusted.
   upsertUsageCell(
     {
-      noteKey: "status-session-2",
+      noteKey: "discovered-session-old",
       sessionId: null,
       agent: "claude",
       modelId: "claude-opus-5",
       querySource: "main",
       windowEndNs: "1000000000000000777",
-      ts: 3_000,
+      ts: NOW,
     },
     "costUsd",
     0.4,
   );
-  const status = costTelemetryStatus();
-  assert.equal(status.receiving, true);
-  assert.equal(status.otelExporting, true, "one real export is enough to clear the warning");
+  assert.equal(
+    costTelemetryStatus(later).exporterSilent,
+    true,
+    "an old row is history, not evidence the exporter is running now",
+  );
+});
+
+test("an idle stretch is not a fault, however long the exporter has been quiet", () => {
+  // The false positive the pairing prevents. The exporter has now been silent for weeks, but the
+  // fleet has done nothing recently either - so there is no work going uncounted and nothing to
+  // say. Warning here would be noise, and noise is what makes the real warning ignorable.
+  const quiet = NOW + 60 * DAY;
+  assert.equal(
+    costTelemetryStatus(quiet).exporterSilent,
+    false,
+    "no recent session spend means no shortfall to report",
+  );
 });
 
 test("switching the toggle off uninstalls the block without rewriting history", () => {
-  // The flags answer different questions and must not be conflated: `installed` is about the
-  // operator's file right now, the other two are about what the ledger has recorded. Turning
-  // telemetry off does not un-spend anything.
+  // `installed` is about the operator's file right now; `receiving` is about what the ledger has
+  // recorded. Turning telemetry off does not un-spend anything.
   setCostConfig({ enabled: false });
-  const status = costTelemetryStatus();
+  const status = costTelemetryStatus(NOW);
   assert.equal(status.installed, false, "the env block is gone from the file");
   assert.equal(status.receiving, true, "the rows it already wrote are still there");
-  assert.equal(status.otelExporting, true);
 });

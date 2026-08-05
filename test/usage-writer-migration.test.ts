@@ -52,7 +52,7 @@ raw.exec(`
 `);
 raw.close();
 
-const { openDb, otelUsageHasRows } = await import("../src/server/db.ts");
+const { openDb, sdkOwnedNoteKey } = await import("../src/server/db.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 /** Every row's writer, keyed by note key, after migrate() ran on open. */
@@ -90,11 +90,20 @@ test("no row is left unlabelled, so '' can only ever mean a newer bug", () => {
   );
 });
 
-test("a relabelled export satisfies the exporter-specific health check", () => {
-  // The reason the column exists. `otelUsageHasRows` is what tells the Cost panel whether
-  // Claude Code's exporter has ever delivered - a question that became unanswerable from
-  // (spend_kind, cost_basis) alone once a driver could write rows matching both.
-  assert.equal(otelUsageHasRows(), true, "the upgraded session row counts as a real export");
+test("no legacy row is relabelled into the driver's dedup clause", () => {
+  // The consequence a wrong arm would have, rather than just a wrong label. `sdkOwnedNoteKey`
+  // treats an existing `writer = 'driver'` row as proof that a key's spend is already owned and
+  // makes the OTel ingest YIELD for it. If the backfill had swept any legacy row into 'driver',
+  // the exporter would fall silent for that note key permanently - and for a discovered terminal
+  // session, whose export is the only report of its cost that will ever exist, that is the whole
+  // cost of the session lost. None of these rows may match.
+  for (const noteKey of ["a-session", "foreman:review", "a-codex", "a-codex-un"]) {
+    assert.equal(
+      sdkOwnedNoteKey(noteKey),
+      false,
+      `${noteKey} predates the driver and must not be read as owned by one`,
+    );
+  }
 });
 
 test("the backfill is idempotent across a reopen", () => {

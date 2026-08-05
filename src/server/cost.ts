@@ -1,6 +1,12 @@
 import { CostConfigSchema } from "@shared/protocol.ts";
 import type { CostConfig, CostConfigPatch, CostTelemetryStatus } from "@shared/protocol.ts";
-import { getAppConfig, otelUsageHasRows, reportedUsageLedgerHasRows, setAppConfig } from "./db.ts";
+import {
+  getAppConfig,
+  hasSessionUsageSince,
+  lastOtelExportSeenAt,
+  reportedUsageLedgerHasRows,
+  setAppConfig,
+} from "./db.ts";
 import {
   claudeSettingsPath,
   otelEnvFlags,
@@ -56,19 +62,53 @@ export function setCostConfig(patch: CostConfigPatch): CostConfig {
 }
 
 /**
- * Config plus what is actually true of the user's settings file right now.
+ * How long the exporter may stay quiet before its silence counts as a fault.
  *
- * One `otelEnvFlags()` for both facts, not one call each: the dashboard polls this while
- * it is open, and the settings file is read and JSONC-parsed synchronously on the
- * daemon's own thread.
+ * Exports arrive every `exportIntervalMs` while any Claude session is alive, so a working
+ * exporter on a machine in use refreshes this many times an hour and never approaches the
+ * window. It is measured in days anyway, because the alternative failure is worse than a slow
+ * alarm: a tight window turns every quiet weekend into a warning, and a panel that cries wolf
+ * is a panel an operator learns to scroll past - which is how the silent failure this change
+ * exists to surface would become invisible again for a second time.
  */
-export function costTelemetryStatus(): CostTelemetryStatus {
+const OTEL_SILENCE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Whether the exporter is silent WHILE there is work it should have reported.
+ *
+ * Both halves are load-bearing, and the pairing is what makes the warning trustworthy rather
+ * than merely correct. Silence alone proves nothing: a machine nobody has touched since Friday
+ * has no exports because it has no sessions. Session spend alone proves nothing either, because
+ * this change made a driver able to supply all of it on its own. Together they say something an
+ * operator can act on - the fleet has been working this week, and the exporter has not spoken
+ * in that time, so whatever it was supposed to be counting is missing.
+ *
+ * Deliberately a derived boolean rather than two flags on the wire. The judgement has one
+ * reader and one meaning, and computing it here keeps the panel from having to re-derive it -
+ * which is how the two would eventually disagree.
+ */
+function exporterSilentWhileActive(now: number): boolean {
+  if (!hasSessionUsageSince(now - OTEL_SILENCE_MS)) return false;
+  const seen = lastOtelExportSeenAt();
+  return seen === null || now - seen > OTEL_SILENCE_MS;
+}
+
+/**
+ * Config plus what is actually true of the user's settings file and ledger right now.
+ *
+ * One `otelEnvFlags()` for both file facts, not one call each: the dashboard polls this while
+ * it is open, and the settings file is read and JSONC-parsed synchronously on the daemon's
+ * own thread.
+ *
+ * `now` is a parameter so the staleness judgement can be tested without waiting a week for it.
+ */
+export function costTelemetryStatus(now = Date.now()): CostTelemetryStatus {
   const flags = otelEnvFlags();
   return {
     config: getCostConfig(),
     installed: flags.installed,
     receiving: reportedUsageLedgerHasRows(),
-    otelExporting: otelUsageHasRows(),
+    exporterSilent: exporterSilentWhileActive(now),
     sessionIdDisabled: flags.sessionIdDisabled,
     settingsPath: claudeSettingsPath(),
   };

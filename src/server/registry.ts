@@ -128,6 +128,7 @@ import {
   prsOpenedSince,
   pruneUsageLedger,
   pruneUsageSources,
+  noteOtelExportSeen,
   recordDriverSessionUsage,
   reorderQueueItems,
   sdkOwnedNoteKey,
@@ -3567,6 +3568,7 @@ export class Registry extends EventEmitter {
   applyOtelMetrics(body: OtlpMetrics): void {
     const touched = new Set<string>();
     const sdkOwned = new Map<string, boolean>();
+    let sawAttributableExport = false;
     for (const rm of body.resourceMetrics ?? []) {
       for (const sm of rm.scopeMetrics ?? []) {
         for (const m of sm.metrics ?? []) {
@@ -3586,6 +3588,11 @@ export class Registry extends EventEmitter {
             const attrs = attrMap(dp.attributes);
             const noteKey = attrs["session.id"];
             if (!noteKey) continue;
+            // The exporter is ALIVE, and this is the only place that can honestly say so -
+            // before a single datapoint has been filtered. Recorded here rather than inferred
+            // from rows later because the next few lines throw most of these away on a driven
+            // fleet, and a row test would then read a healthy exporter as a dead one.
+            sawAttributableExport = true;
             // A DRIVEN session's subprocess is ordinary Claude Code, so it exports these
             // datapoints for turns its driver has already written under the same note key.
             // Whichever of the two wrote it, the spend is recorded once; admitting both
@@ -3631,6 +3638,9 @@ export class Registry extends EventEmitter {
         }
       }
     }
+    // Stamped even when every datapoint was dropped: an export whose rows all belonged to
+    // driven sessions still proves the exporter ran, which is the one thing this records.
+    if (sawAttributableExport) noteOtelExportSeen(Date.now());
     if (touched.size === 0) return;
     for (const key of touched) this.syncSessionsForCost(key);
     this.recomputeFleetCost();

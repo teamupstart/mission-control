@@ -161,9 +161,14 @@ test("Cost settings names the sessions telemetry is not covering", async ({
   // The state with no other symptom, and the reason it gets a warning of its own. Session
   // spend is landing, so every signal a person would think to check reads healthy - the switch
   // is on, the env block is in the file, the topbar has numbers on it - while Claude Code's
-  // exporter has never delivered. The numbers are therefore ONLY the sessions Mission Control
+  // exporter has said nothing. The numbers are therefore ONLY the sessions Mission Control
   // drives, and anything a human started in a terminal is missing from a total that looks
   // complete. Before this, nothing on screen said so.
+  //
+  // The dispatched turn below is what makes the fleet count as ACTIVE, which is half the
+  // warning's condition: silence on an idle machine is not a fault and must stay quiet. The
+  // other half is that no export has arrived, which is true here because this daemon has never
+  // received one - nothing in this spec posts to `/v1/metrics`.
   const res = await fetch(`${daemon.baseURL}/api/cost/config`, {
     method: "PUT",
     headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
@@ -185,7 +190,7 @@ test("Cost settings names the sessions telemetry is not covering", async ({
   // Names which sessions are uncounted, rather than claiming telemetry is fine or that
   // nothing has reported.
   const warning = dashboard.getByText(
-    /Claude Code has never exported telemetry to this daemon/,
+    /Claude Code has not exported telemetry to this daemon in the past week/,
   );
   await expect(warning).toBeVisible();
   await expect(warning).toContainText("only sessions Mission Control runs");

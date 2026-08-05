@@ -1133,6 +1133,14 @@ amiss anywhere. If that happens now, only discovered sessions are affected, and 
 Cost** says so in as many words instead of leaving the gap to be inferred from a total that
 looks complete.
 
+That warning is judged on the export ARRIVING, recorded as each one lands rather than inferred
+from the rows it produced. Both alternatives are unsound: a driven session's datapoints are
+deliberately discarded, so a healthy exporter on an embedded fleet writes no row at all, and rows
+live for 180 days, so "has one ever existed" would keep reporting healthy for months after the
+exporter fell silent - the very regression the warning is for. It also has to see recent session
+spend before it fires, because silence on a machine nobody is using reports nothing missing, and a
+panel that warns about a quiet weekend is one you learn to scroll past.
+
 #### What the app spends on itself
 
 The Foreman and the Inspector call models on their own schedule, with nobody asking them

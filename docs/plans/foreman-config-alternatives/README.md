@@ -8,6 +8,7 @@
 | [`phased-plan.md`](phased-plan.md) ([rendered](phased-plan.html)) | The implementation index - findings, phase table, cross-phase contracts |
 | [`phase-1-tab-strip-and-anchors.md`](phase-1-tab-strip-and-anchors.md) | Phase 1 - the tab strip, the group table, the deep-link contract |
 | [`phase-2-blurbs-on-demand.md`](phase-2-blurbs-on-demand.md) | Phase 2 - the prose stops being printed twice |
+| [`schedule-phase-tasks.sh`](schedule-phase-tasks.sh) | Creates the two implementation tasks. **Run after the planning PR merges** - it refuses until the phase files are on `origin/main` |
 
 The mockups below are the evidence the decision was made from. They remain accurate and are
 not superseded by the plan.

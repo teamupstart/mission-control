@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Foreman settings: group the control column behind tabs</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1b1f24;
+        --muted: #5a6472;
+        --dim: #6e7781;
+        --border: #d8dee4;
+        --border-soft: #eaeef2;
+        --panel: #f6f8fa;
+        --panel-2: #eef1f4;
+        --accent: #0969da;
+        --danger: #cf222e;
+        --good: #1a7f37;
+        --warn: #9a6700;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d1117;
+          --fg: #e6edf3;
+          --muted: #9198a1;
+          --dim: #7d8590;
+          --border: #30363d;
+          --border-soft: #21262d;
+          --panel: #161b22;
+          --panel-2: #1c2128;
+          --accent: #4493f8;
+          --danger: #f85149;
+          --good: #3fb950;
+          --warn: #d29922;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 16px;
+        line-height: 1.62;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 900px; margin: 0 auto; padding: 48px 24px 120px; }
+      h1 {
+        font-size: 30px;
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+        margin: 0 0 6px;
+      }
+      .lede { color: var(--muted); font-size: 15px; margin: 0 0 34px; }
+      h2 {
+        font-size: 21px;
+        letter-spacing: -0.01em;
+        margin: 44px 0 12px;
+        padding-bottom: 7px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      h3 { font-size: 16.5px; margin: 28px 0 8px; }
+      p { margin: 0 0 14px; }
+      ul, ol { margin: 0 0 14px; padding-left: 24px; }
+      li { margin: 5px 0; }
+      code {
+        font-family: var(--mono);
+        font-size: 0.87em;
+        background: var(--panel-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        margin: 0 0 16px;
+      }
+      pre code {
+        background: none;
+        border: 0;
+        padding: 0;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .scroll { overflow-x: auto; margin: 0 0 18px; }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+        min-width: 560px;
+      }
+      th, td {
+        text-align: left;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th { background: var(--panel); font-weight: 620; }
+      td code { font-size: 0.85em; white-space: nowrap; }
+      blockquote {
+        margin: 0 0 16px;
+        padding: 2px 0 2px 16px;
+        border-left: 3px solid var(--border);
+        color: var(--muted);
+      }
+      .callout {
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 9px 9px 0;
+        background: var(--panel);
+        padding: 13px 16px;
+        margin: 0 0 18px;
+        font-size: 14.5px;
+      }
+      .callout.bad { border-left-color: var(--danger); }
+      .callout.good { border-left-color: var(--good); }
+      .callout.warn { border-left-color: var(--warn); }
+      .callout p:last-child { margin-bottom: 0; }
+      .phase-tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 9px;
+        color: var(--muted);
+        vertical-align: 3px;
+        margin-left: 9px;
+      }
+      figure { margin: 0 0 22px; }
+      figcaption {
+        font-size: 13px;
+        color: var(--dim);
+        margin-top: 8px;
+        text-align: center;
+      }
+      svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+      .svg-box { fill: var(--panel); stroke: var(--border); }
+      .svg-box-new { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+      .svg-t { fill: var(--fg); font-family: var(--sans); font-size: 13px; }
+      .svg-t-sm { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+      .svg-t-new { fill: var(--accent); font-family: var(--mono); font-size: 10.5px; font-weight: 600; }
+      .svg-hd { fill: var(--dim); font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; }
+      .svg-line { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+      .svg-line-new { stroke: var(--accent); stroke-width: 2; fill: none; }
+      .svg-head-new { fill: var(--accent); }
+      .footer {
+        margin-top: 56px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border-soft);
+        font-size: 13px;
+        color: var(--dim);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Foreman settings: group the control column behind tabs</h1>
+      <p class="lede">
+        Source of truth: <code>docs/plans/foreman-config-alternatives/plan.md</code>
+        &middot; mockups: <code>index.html</code> (all six) and
+        <code>option-b-tabs.html</code> (the adopted design, interactive)
+      </p>
+
+      <p>
+        The Foreman settings pane's left control column is 2.3 screens tall beside a ledger
+        that never grows. This plan adopts <strong>Option B, grouped tabs</strong>, from the
+        six alternatives mocked up in this directory.
+      </p>
+
+      <h2>The problem, measured</h2>
+      <p>Taken from the live pane at an 849px viewport, against the running daemon.</p>
+      <div class="scroll">
+        <table>
+          <tr><th>Control column (<code>.sc-controls</code>)</th><td><strong>1988px</strong> - 2.3 screens</td></tr>
+          <tr><th>Interactive elements in it</th><td><strong>14</strong>, across <strong>11</strong> distinct settings - roughly one every 142px</td></tr>
+          <tr><th>Ledger beside it</th><td><strong>597px</strong>, and it scrolls inside itself, so it never grows</td></tr>
+          <tr><th>Ledger's <code>Asked</code> column</th><td><strong>366px</strong>, truncating the <code>purpose</code> line on nearly every row</td></tr>
+        </table>
+      </div>
+      <p>Two facts explain the length:</p>
+      <ul>
+        <li>
+          <strong>Seven of the eleven settings are model dropdowns</strong> - the provider,
+          four Foreman roles, three backlog harnesses. They are set once and then never
+          touched, and they occupy about 900px, roughly 45% of the column.
+        </li>
+        <li>
+          <strong>Most of the pixels are prose.</strong> Every field carries a two-to-three
+          line blurb that is load bearing the first time it is read and noise every time
+          after.
+        </li>
+      </ul>
+      <p>Everything past the first screenful is form on the left and dead space on the right.</p>
+
+      <h2>The decision</h2>
+      <p>
+        Six alternatives were built as interactive mockups and measured.
+        <strong>Option B, grouped tabs, is adopted.</strong> The others are recorded in
+        <code>index.html</code> with their measurements and trade-offs, and are not revisited
+        here.
+      </p>
+      <div class="callout">
+        <p>
+          Option B was chosen because it is the only option that fixes the length while
+          changing no control, no copy and no deep-link anchor, and it leaves the two sibling
+          console panels (Inspector and Shipping) untouched.
+        </p>
+        <p>
+          It is explicitly <strong>not</strong> the option that produces the shortest column -
+          A (digest rows) reaches 553px and E (the config as a sentence) reaches 325px - and
+          that trade is accepted: this change buys a shorter panel at a known, reversible cost
+          rather than buying the shortest panel at the cost of the shared console layout.
+        </p>
+      </div>
+
+      <h2>What Option B is</h2>
+      <p>
+        The stacked <code>ConsoleCard</code>s in the control column become four groups behind
+        a tab strip, so the column's height is the tallest group rather than the sum of all of
+        them.
+      </p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Tab</th><th>Settings</th><th>Contents</th></tr></thead>
+          <tbody>
+            <tr><td>Posture</td><td>1</td><td>The cheap tier segmented control</td></tr>
+            <tr><td>Models</td><td>5</td><td>Provider, then the four Foreman roles - Review, Verify, Triage, Backlog</td></tr>
+            <tr><td>Launches</td><td>3</td><td>The three per-harness backlog launch models - Claude, Codex, Pi</td></tr>
+            <tr><td>Safety</td><td>2</td><td>The two completion safeguards</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Two things stay outside the tabs, permanently visible:</p>
+      <ul>
+        <li>
+          <strong>The posture line</strong> (<code>ConsoleState</code>) sits above the tab
+          strip in every tab. It is a reading rather than a setting, and it is the one thing
+          on the panel that must never be a click away: <code>Live</code>, and especially
+          <em>"Enabled, but no worker is running"</em>, are exactly the states a tab could
+          hide.
+        </li>
+        <li>
+          <strong>Live repositories and Right now.</strong> Both are read-only. See the
+          correctness note below.
+        </li>
+      </ul>
+      <p>
+        The second half of the fix is the prose. A three-line blurb under every dropdown is
+        what turned 11 settings into 1988px, so each field's blurb moves to a hover affordance
+        and prints in full under whichever field currently has focus. No sentence is deleted;
+        it is spent when asked for rather than always.
+      </p>
+
+      <h3>Measured result</h3>
+      <p>From the interactive mockup, read off the laid-out page rather than asserted:</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Tab</th><th>Group card</th><th>Whole control column</th></tr></thead>
+          <tbody>
+            <tr><td>Posture</td><td>207px</td><td>557px</td></tr>
+            <tr><td>Models</td><td>380px</td><td><strong>729px</strong> (worst case)</td></tr>
+            <tr><td>Launches</td><td>307px</td><td>657px</td></tr>
+            <tr><td>Safety</td><td>369px</td><td>718px</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        1988px becomes 557-729px depending on the tab. The column stops being the reason the
+        page scrolls.
+      </p>
+
+      <h2>Correctness: Foreman has no Trust setting</h2>
+      <div class="callout bad">
+        <p>
+          An earlier draft of the mockups gave Foreman a fifth "Trust" tab. That invented a
+          control the panel does not have, and it must not be built.
+        </p>
+        <p>
+          Foreman cannot edit the repo allowlist. <code>TrustGrantSummary</code> renders a
+          read-only count and a <code>settings-link</code> that navigates to the separate
+          Trust settings category, which is where the grant is edited. The Live repositories
+          card therefore stays outside the tab strip as a sentence that links out, and
+          <strong>no tab may contain a repository editor</strong>.
+        </p>
+      </div>
+      <p>Two related facts the implementation must preserve:</p>
+      <ul>
+        <li>
+          <strong>The model lists are provider-scoped.</strong> Changing the provider clears
+          all four role overrides, and the option list re-lists for the newly selected
+          provider. A Claude model id is not interchangeable with a Codex one.
+        </li>
+        <li>
+          <strong>The ledger's Cheap-tier column is keyed on the Shadow posture only.</strong>
+          It is not part of this change and its existing condition stays exactly as it is.
+        </li>
+      </ul>
+
+      <h2>The one flow this changes: the deep-link jump</h2>
+      <p>
+        Everything else here is layout. The one path that genuinely changes is how a deep link
+        reaches a control, because a tab can make the target absent from the DOM.
+      </p>
+      <p>
+        Today the settings search resolves a hit to a category plus an anchor, <code>App</code>
+        navigates to the category, and <code>SettingsPage</code> scrolls the
+        <code>data-anchor</code> element into view and flashes it. Every anchor is always
+        mounted, so the scroll always finds its target.
+      </p>
+      <p>
+        After this change, four of the anchors live inside a tab panel that may not be
+        rendered. The jump therefore gains one step: resolve which tab owns the anchor, select
+        that tab, and only then scroll and flash. An anchor whose tab is not selected first
+        would scroll to nothing and flash nothing - silently, which is the failure mode this
+        plan is most concerned with.
+      </p>
+      <figure>
+        <svg viewBox="0 0 860 200" role="img" aria-label="The deep-link jump path, before and after">
+          <text class="svg-hd" x="0" y="14">TODAY</text>
+          <rect class="svg-box" x="0" y="26" width="150" height="42" rx="7" />
+          <text class="svg-t" x="75" y="43" text-anchor="middle">Settings search</text>
+          <text class="svg-t-sm" x="75" y="58" text-anchor="middle">category + anchor</text>
+          <path class="svg-line" d="M152 47 H 226" />
+          <path class="svg-line" d="M220 42 l 8 5 l -8 5 z" fill="currentColor" />
+          <rect class="svg-box" x="230" y="26" width="150" height="42" rx="7" />
+          <text class="svg-t" x="305" y="43" text-anchor="middle">App.navigate</text>
+          <text class="svg-t-sm" x="305" y="58" text-anchor="middle">sets the category</text>
+          <path class="svg-line" d="M382 47 H 456" />
+          <path class="svg-line" d="M450 42 l 8 5 l -8 5 z" fill="currentColor" />
+          <rect class="svg-box" x="460" y="26" width="150" height="42" rx="7" />
+          <text class="svg-t" x="535" y="43" text-anchor="middle">SettingsPage</text>
+          <text class="svg-t-sm" x="535" y="58" text-anchor="middle">scroll + flash</text>
+          <path class="svg-line" d="M612 47 H 686" />
+          <path class="svg-line" d="M680 42 l 8 5 l -8 5 z" fill="currentColor" />
+          <rect class="svg-box" x="690" y="26" width="160" height="42" rx="7" />
+          <text class="svg-t" x="770" y="43" text-anchor="middle">the control</text>
+          <text class="svg-t-sm" x="770" y="58" text-anchor="middle">always mounted</text>
+
+          <text class="svg-hd" x="0" y="118">AFTER</text>
+          <rect class="svg-box" x="0" y="130" width="150" height="42" rx="7" />
+          <text class="svg-t" x="75" y="147" text-anchor="middle">Settings search</text>
+          <text class="svg-t-sm" x="75" y="162" text-anchor="middle">category + anchor</text>
+          <path class="svg-line" d="M152 151 H 226" />
+          <path class="svg-line" d="M220 146 l 8 5 l -8 5 z" fill="currentColor" />
+          <rect class="svg-box" x="230" y="130" width="150" height="42" rx="7" />
+          <text class="svg-t" x="305" y="147" text-anchor="middle">App.navigate</text>
+          <text class="svg-t-sm" x="305" y="162" text-anchor="middle">sets the category</text>
+          <path class="svg-line-new" d="M382 151 H 456" />
+          <path class="svg-head-new" d="M450 146 l 8 5 l -8 5 z" />
+          <rect class="svg-box-new" x="460" y="130" width="150" height="42" rx="7" />
+          <text class="svg-t" x="535" y="147" text-anchor="middle">select the tab</text>
+          <text class="svg-t-new" x="535" y="162" text-anchor="middle">NEW STEP</text>
+          <path class="svg-line-new" d="M612 151 H 686" />
+          <path class="svg-head-new" d="M680 146 l 8 5 l -8 5 z" />
+          <rect class="svg-box" x="690" y="130" width="160" height="42" rx="7" />
+          <text class="svg-t" x="770" y="147" text-anchor="middle">scroll + flash</text>
+          <text class="svg-t-sm" x="770" y="162" text-anchor="middle">now it resolves</text>
+        </svg>
+        <figcaption>
+          Without the new step, an anchor inside an unopened tab scrolls to nothing and
+          flashes nothing.
+        </figcaption>
+      </figure>
+
+      <h2>Requirements</h2>
+      <ol>
+        <li>The four groups above, behind a tab strip, with the stated membership.</li>
+        <li>The posture line renders above the tab strip in every tab.</li>
+        <li>Live repositories and Right now stay outside the tab strip and stay read-only.</li>
+        <li>
+          Every existing <code>data-anchor</code> deep link still resolves. A jump to an anchor
+          inside a tab that is not open must switch to that tab before scrolling and flashing
+          the target.
+        </li>
+        <li>
+          The tab strip is keyboard operable and correctly announced:
+          <code>role="tablist"</code> / <code>role="tab"</code> /
+          <code>role="tabpanel"</code>, <code>aria-selected</code>, roving tab index, and
+          arrow-key movement.
+        </li>
+        <li>
+          Each tab states how many settings it holds, so an unopened tab still says how much is
+          behind it.
+        </li>
+        <li>Every field's blurb remains reachable - on hover and on focus - and none is deleted.</li>
+        <li>No control is added, removed, or changed in what it writes.</li>
+        <li>Inspector and Shipping are not modified.</li>
+        <li>No <code>data-testid</code>. Selection is by role, label, or placeholder.</li>
+      </ol>
+
+      <h2>Non-goals</h2>
+      <ul>
+        <li>Changing the ledger, its columns, its strip, or its filtering.</li>
+        <li>Changing what any setting does, its persisted shape, or any server route.</li>
+        <li>Changing the Inspector or Shipping panels, or the shared <code>sc-split</code> layout itself.</li>
+        <li>Adding a repository editor to Foreman under any tab.</li>
+        <li>
+          Persisting the selected tab across sessions. The tab resets to Posture on mount;
+          deep links select a tab for the duration of the visit.
+        </li>
+      </ul>
+
+      <h2>Verification</h2>
+      <p>
+        Per the repository's definition of done, and because this is a UI change it requires a
+        Playwright spec in <code>e2e/</code>:
+      </p>
+      <pre><code>npm run typecheck
+npm run lint
+npm test
+npm run build &amp;&amp; npm run smoke
+npm run test:e2e</code></pre>
+      <p>
+        The e2e spec must cover, at minimum: each tab reveals its own group and hides the
+        others; the posture line is visible in every tab; a deep link into a closed tab opens
+        that tab and lands on the control; and Live repositories renders as a link rather than
+        an editor.
+      </p>
+
+      <div class="footer">
+        Rendered from <code>docs/plans/foreman-config-alternatives/plan.md</code>. The markdown
+        is the source of truth; this page is a rendering of it.
+      </div>
+    </div>
+  </body>
+</html>

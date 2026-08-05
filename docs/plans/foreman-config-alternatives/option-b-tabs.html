@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Foreman config - Option B: grouped tabs</title>
+    <link rel="stylesheet" href="console.css" />
+    <link rel="stylesheet" href="mock.css" />
+    <style>
+      /* ---- grouped tabs ----
+         The stacked cards become four groups behind a tab strip, so the column's height
+         stops being the SUM of the groups and becomes the tallest one. Nothing is collapsed
+         and nothing takes a second click: inside a group every control is open exactly as
+         it is today. The prose is the other half of the fix - a three-line blurb under every
+         dropdown is what made 14 controls cost 1988px - so it moves to a hover and prints in
+         full under the field that has focus.
+
+         There is no Trust tab. Foreman does not edit the repo allowlist; it shows a count
+         and a link into the Trust category, so that sentence sits below the tabs where it
+         is always readable and is never mistaken for a group you can edit here. */
+      .tb-tabs {
+        display: flex;
+        gap: 2px;
+        padding: 4px;
+        margin-bottom: 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel-2);
+      }
+      .tb-tab {
+        flex: 1;
+        padding: 7px 4px;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: none;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 620;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .tb-tab:hover {
+        color: var(--fg);
+      }
+      .tb-tab.is-on {
+        background: var(--panel);
+        border-color: var(--border);
+        color: var(--fg);
+      }
+      .tb-tab:focus-visible {
+        outline: 2px solid var(--working);
+        outline-offset: 1px;
+      }
+      /* How many controls the group holds, so a tab you have not opened still says how
+         much is behind it. Without it the strip is four words and no information. */
+      .tb-tab i {
+        font-style: normal;
+        margin-left: 5px;
+        opacity: 0.55;
+      }
+      .tb-field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .tb-field-head {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .tb-field-head label {
+        font-size: 11.5px;
+        font-weight: 560;
+        color: var(--muted);
+      }
+      .tb-cost {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 8.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .tb-cost.is-expensive {
+        color: color-mix(in oklab, var(--attention) 75%, var(--muted));
+      }
+      .tb-why {
+        width: 14px;
+        height: 14px;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: none;
+        color: var(--dim);
+        font-size: 9px;
+        line-height: 1;
+        cursor: help;
+      }
+      .tb-why:hover {
+        color: var(--fg);
+        border-color: var(--muted);
+      }
+      /* Compact, but never at the cost of clipping the value: the padding shrinks and the
+         line box does not. A dropdown whose own selected option is cut off is a worse
+         panel than a long one. */
+      .tb-field select {
+        padding: 5px 10px;
+      }
+      /* The blurb prints for whichever field has focus, so the explanation is one Tab away
+         from the control it explains rather than permanently under it. */
+      .tb-field-hint {
+        margin: 0;
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--dim);
+        display: none;
+      }
+      .tb-field:focus-within .tb-field-hint {
+        display: block;
+      }
+      .tb-sub {
+        margin: 4px 0 0;
+        padding-top: 10px;
+        border-top: 1px solid var(--border-soft);
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      /* The read-only grant summary, parked under the tabs. */
+      .tb-repos {
+        padding: 10px 13px;
+        border: 1px dashed var(--border);
+        border-radius: 10px;
+      }
+      .tb-repos .trust-summary {
+        margin: 0;
+      }
+      .tb-live {
+        display: block;
+        font-family: var(--mono);
+        font-size: 8.5px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-bottom: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mock-head">
+      <div class="mock-nav">
+        <a href="index.html">← all six</a>
+        <a href="option-a-digest.html">A · digest</a>
+        <a href="option-b-tabs.html" class="is-here">B · tabs</a>
+        <a href="option-c-ledger-first.html">C · ledger first</a>
+        <a href="option-d-grid.html">D · grid</a>
+        <a href="option-e-sentence.html">E · sentence</a>
+        <a href="option-f-presets.html">F · presets</a>
+      </div>
+      <div class="mock-tag">Option B · tabs are live, click them</div>
+      <h1>Grouped tabs - the column's height becomes the tallest group, not their sum</h1>
+      <p class="mock-thesis">
+        The smallest change that fixes the length. The stacked cards become four tabbed
+        groups, so the column is as tall as <b>Models</b> rather than as tall as
+        <b>everything</b>. Inside a group nothing is collapsed and nothing takes a second
+        click. The second half of the fix is the prose: a three-line blurb under every
+        dropdown is what turned 14 controls into 1988px, so it moves to a hover and prints
+        in full under the field that has focus.
+      </p>
+      <div class="mock-metrics">
+        <div class="mock-metric"><span>control column</span> <b id="m-col">-</b></div>
+        <div class="mock-metric"><span>this group</span> <b id="m-card">-</b></div>
+        <div class="mock-metric"><span>clicks to edit</span> <b>0 within a group</b></div>
+        <div class="mock-metric is-cost"><span>cost</span> <b>weakest on height</b></div>
+      </div>
+      <p class="mock-live">
+        Click a tab, or focus it and use ← → . The measurements above update as you switch,
+        so the worst group is not a claim you have to take on trust.
+      </p>
+    </div>
+
+    <div class="settings-pane">
+      <div class="mock-panel-head">
+        <h2>Foreman</h2>
+        <span class="mock-scope">this machine</span>
+      </div>
+
+      <section class="settings-section sc-section">
+        <p class="settings-hint sc-lede">
+          Foreman's set-once configuration, and the record of what it has decided. Turning it
+          on, its mode, the work queues, and the wrap-up action stay in the topbar Foreman
+          control.
+        </p>
+
+        <div class="sc-split">
+          <div class="sc-controls">
+            <!-- The posture line sits ABOVE the tabs, in every tab. It is the one thing on
+                 this panel that must not be one click away: "Live" and "no worker is
+                 running" are readings, not settings, and a tab could hide them. -->
+            <div id="state-slot"></div>
+
+            <div class="tb-tabs" role="tablist" aria-label="Foreman configuration groups">
+              <button
+                class="tb-tab is-on"
+                type="button"
+                role="tab"
+                id="tab-posture"
+                aria-controls="panel-posture"
+              >
+                Posture<i>1</i>
+              </button>
+              <button
+                class="tb-tab"
+                type="button"
+                role="tab"
+                id="tab-models"
+                aria-controls="panel-models"
+              >
+                Models<i>5</i>
+              </button>
+              <button
+                class="tb-tab"
+                type="button"
+                role="tab"
+                id="tab-launch"
+                aria-controls="panel-launch"
+              >
+                Launches<i>3</i>
+              </button>
+              <button
+                class="tb-tab"
+                type="button"
+                role="tab"
+                id="tab-safety"
+                aria-controls="panel-safety"
+              >
+                Safety<i>2</i>
+              </button>
+            </div>
+
+            <section
+              class="sc-card"
+              id="panel-posture"
+              role="tabpanel"
+              aria-labelledby="tab-posture"
+            >
+              <div class="sc-card-head"><h3 class="sc-card-title">Posture</h3></div>
+              <div class="sc-card-body" id="posture-body"></div>
+            </section>
+
+            <section
+              class="sc-card"
+              id="panel-models"
+              role="tabpanel"
+              aria-labelledby="tab-models"
+              hidden
+            >
+              <div class="sc-card-head"><h3 class="sc-card-title">Models</h3></div>
+              <div class="sc-card-body" id="models-body"></div>
+            </section>
+
+            <section
+              class="sc-card"
+              id="panel-launch"
+              role="tabpanel"
+              aria-labelledby="tab-launch"
+              hidden
+            >
+              <div class="sc-card-head"><h3 class="sc-card-title">Backlog launches</h3></div>
+              <div class="sc-card-body" id="launch-body"></div>
+            </section>
+
+            <section
+              class="sc-card"
+              id="panel-safety"
+              role="tabpanel"
+              aria-labelledby="tab-safety"
+              hidden
+            >
+              <div class="sc-card-head"><h3 class="sc-card-title">Completion safeguards</h3></div>
+              <div class="sc-card-body" id="safety-body"></div>
+            </section>
+
+            <!-- NOT a tab. Foreman does not edit this; it reports a count and links out. -->
+            <div class="tb-repos">
+              <span class="tb-live">Live repositories</span>
+              <div data-live-repos></div>
+            </div>
+
+            <div data-health></div>
+          </div>
+
+          <div data-ledger></div>
+        </div>
+
+        <p class="mock-note">
+          <b>Whichever group you have open, look at the tab strip.</b> Posture holds one
+          control, Safety two, Launches three, Models five - and Models is the group that
+          made the column long. A tab strip paginates that; it does not shrink it. That is
+          why this option finishes last on the metric that started the exercise, and why it
+          is still worth having on the table: it is the only one of the six that changes no
+          control, no copy and no anchor.
+        </p>
+      </section>
+    </div>
+
+    <div class="mock-foot">
+      <div>
+        <h4>Why this one</h4>
+        <ul>
+          <li>
+            <b>Smallest change.</b> Cards, fields, anchors, and copy all survive; the panel
+            gains one piece of tab state.
+          </li>
+          <li>
+            <b>Nothing takes a second click</b> once you are in a group - better than A if
+            you are actually tuning something.
+          </li>
+          <li>
+            <b>Reversible.</b> If it reads badly, delete the tab strip and you are back to
+            today with shorter blurbs, which is an improvement on its own.
+          </li>
+        </ul>
+      </div>
+      <div class="is-con">
+        <h4>What it costs</h4>
+        <ul>
+          <li>
+            <b>You cannot see the tier and the safeguards at once.</b> Tabs hide state, and
+            this panel's state is the point.
+          </li>
+          <li>
+            <b>Still the tallest of the six</b> on its worst tab. Models is five controls and
+            a tab cannot make five dropdowns short.
+          </li>
+          <li>
+            <b>Deep links need a tab to open.</b> The settings search jumping to
+            <code>foreman/skip-scout-wrapup</code> has to switch tabs first, and a tab that
+            switches under you is disorienting unless it flashes.
+          </li>
+          <li><b>A fifth group</b> makes the strip too narrow to label in words.</li>
+        </ul>
+      </div>
+    </div>
+
+    <script src="mock-data.js"></script>
+    <script src="mock.js"></script>
+    <script>
+      const F = FOREMAN;
+      document.getElementById("state-slot").innerHTML = Mock.stateHtml();
+
+      // Posture: the cheap tier, and nothing else. Enabling Foreman, its mode, the work
+      // queues and the wrap-up action are the topbar's, and this panel must not claim them.
+      document.getElementById("posture-body").innerHTML =
+        Mock.tierSegHtml() +
+        `<p class="settings-hint">Enabling Foreman, its mode, the work queues and the
+         wrap-up action stay in the topbar Foreman control. What lives here is the durable
+         posture - what Foreman considers eligible, not what it does in one moment.</p>`;
+
+      const field = (f) => `<div class="tb-field">
+        <div class="tb-field-head">
+          <label for="f-${f.id}">${Mock.esc(f.label)}</label>
+          <button class="tb-why" type="button" title="${Mock.esc(f.blurb)}" aria-label="What ${Mock.esc(f.label)} does">?</button>
+          ${f.cost ? `<span class="tb-cost is-${f.cost}">${f.cost}</span>` : ""}
+        </div>
+        ${Mock.selectHtml(f).replace("<select", `<select id="f-${f.id}"`)}
+        <p class="tb-field-hint">${Mock.esc(f.blurb)}</p>
+      </div>`;
+
+      document.getElementById("models-body").innerHTML =
+        field({
+          id: "provider",
+          label: "Provider",
+          value: F.provider.value,
+          options: F.provider.options,
+          blurb: F.provider.blurb,
+        }) +
+        `<p class="tb-sub">Foreman's own calls</p>` +
+        F.roles.map(field).join("");
+
+      document.getElementById("launch-body").innerHTML =
+        `<p class="settings-hint">${Mock.esc(F.backlogLaunch.blurb)}</p>` +
+        F.backlogLaunch.rows.map(field).join("");
+
+      document.getElementById("safety-body").innerHTML =
+        `<p class="settings-hint">${Mock.esc(F.safeguards.blurb)}</p>` +
+        F.safeguards.rows
+          .map(
+            (s) => `<div class="kb-row">
+              <div class="kb-row-text">
+                <span class="kb-row-label">${Mock.esc(s.label)}</span>
+                <span class="kb-row-desc">${Mock.esc(s.desc)}</span>
+              </div>
+              <div class="kb-row-controls">
+                <label class="skill-switch"><input type="checkbox" ${s.on ? "checked" : ""} aria-label="${Mock.esc(s.label)}" /></label>
+              </div>
+            </div>`,
+          )
+          .join("");
+
+      Mock.boot();
+
+      // The measurements are read off the laid-out page, not asserted in the copy, so the
+      // claim in the header cannot drift from what the mockup actually renders.
+      const measure = () => {
+        const col = document.querySelector(".sc-controls");
+        const open = document.querySelector('.sc-card[role="tabpanel"]:not([hidden])');
+        document.getElementById("m-col").textContent =
+          "1988px → " + Math.round(col.getBoundingClientRect().height) + "px";
+        document.getElementById("m-card").textContent =
+          (open?.querySelector(".sc-card-title")?.textContent ?? "-") +
+          ", " +
+          Math.round(open?.getBoundingClientRect().height ?? 0) +
+          "px";
+      };
+      measure();
+      for (const t of document.querySelectorAll('[role="tab"]')) {
+        t.addEventListener("click", () => requestAnimationFrame(measure));
+        t.addEventListener("keyup", () => requestAnimationFrame(measure));
+      }
+    </script>
+  </body>
+</html>

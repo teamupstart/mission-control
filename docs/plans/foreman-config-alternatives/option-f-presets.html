@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Foreman config - Option F: postures, not fields</title>
+    <link rel="stylesheet" href="console.css" />
+    <link rel="stylesheet" href="mock.css" />
+    <style>
+      /* ---- postures, not fields ----
+         The other five options rearrange fourteen controls. This one asks whether the
+         operator should be answering fourteen questions at all. Seven of them are model
+         dropdowns that are set once and never touched, and behind all of them there is a
+         single intent: how much rope does Foreman get. So the resting state is one choice
+         between three named postures, and the fields become the detail behind it.
+
+         The cheap tier is not one of the settings a posture prescribes - it IS the posture.
+         Off, Shadow and On are the three cards, which is why the segmented control does not
+         appear separately anywhere on this page.
+
+         Two things a posture is not allowed to touch, and both are load bearing:
+
+         1. Live repositories. Foreman has NO Trust setting; the repo allowlist is edited in
+            the separate Trust category and this panel shows a read-only count plus a link
+            out. A posture must never be able to widen a security grant - "Trusting" that
+            silently added repositories to the allowlist would turn a convenience control
+            into a privilege escalation, and no amount of good copy fixes that.
+         2. Provider. Switching it clears all four role overrides, so a preset that flipped
+            it would silently rewrite four other settings the operator can see. It is drawn
+            in the detail list marked as nobody's to preset. */
+      .pf-cards {
+        display: grid;
+        gap: 8px;
+      }
+      .pf-card {
+        padding: 10px 12px 11px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--bg-2);
+        cursor: pointer;
+      }
+      .pf-card:hover {
+        border-color: var(--muted);
+      }
+      .pf-card[aria-checked="true"] {
+        border-color: color-mix(in oklab, var(--purple) 55%, var(--border));
+        background: color-mix(in oklab, var(--purple) 10%, var(--panel));
+      }
+      .pf-card:focus-visible {
+        outline: 2px solid var(--working);
+        outline-offset: 1px;
+      }
+      .pf-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .pf-radio {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        border: 1px solid var(--muted);
+      }
+      .pf-card[aria-checked="true"] .pf-radio {
+        border-color: var(--purple);
+        background: radial-gradient(circle at center, var(--purple) 0 3.5px, transparent 4px);
+      }
+      .pf-name {
+        font-size: 13.5px;
+        font-weight: 620;
+        color: var(--fg);
+      }
+      .pf-mark {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 8.5px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--purple);
+      }
+      .pf-desc {
+        margin: 4px 0 8px;
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      /* The summary lines. Four of them, because a card that listed all nine would be the
+         field list again with worse typography. The four chosen are the ones that decide
+         whether a wrong answer gets sent. */
+      .pf-sum {
+        margin: 0;
+        padding: 7px 0 0;
+        list-style: none;
+        display: grid;
+        gap: 3px;
+        border-top: 1px solid var(--border-soft);
+      }
+      .pf-sum li {
+        display: flex;
+        gap: 10px;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .pf-sum b {
+        margin-left: auto;
+        font-weight: 580;
+        color: var(--muted);
+        text-align: right;
+      }
+      .pf-card[aria-checked="true"] .pf-sum b {
+        color: var(--fg);
+      }
+      /* The modified state. It is small on purpose: it has to be readable without
+         competing with the cards, because the cards are what it is qualifying. */
+      .pf-drift {
+        display: flex;
+        align-items: baseline;
+        gap: 9px;
+        padding: 7px 11px;
+        border-radius: 8px;
+        font-size: 11.5px;
+        color: color-mix(in oklab, var(--attention) 82%, var(--fg));
+        background: color-mix(in oklab, var(--attention) 9%, var(--panel-2));
+        border: 1px solid color-mix(in oklab, var(--attention) 28%, transparent);
+      }
+      .pf-drift .settings-link {
+        color: inherit;
+        margin-left: auto;
+      }
+      .pf-disclose {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 11px;
+        border: 1px dashed var(--border);
+        border-radius: 9px;
+        background: none;
+        color: var(--muted);
+        font: inherit;
+        font-size: 11.5px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .pf-disclose:hover {
+        color: var(--fg);
+        border-color: var(--muted);
+      }
+      .pf-disclose:focus-visible {
+        outline: 2px solid var(--working);
+        outline-offset: 1px;
+      }
+      .pf-disclose::before {
+        content: "▸";
+        display: inline-block;
+        color: var(--dim);
+        transition: transform 0.14s ease;
+      }
+      .pf-disclose[aria-expanded="true"]::before {
+        transform: rotate(90deg);
+      }
+      .pf-disclose i {
+        margin-left: auto;
+        font-style: normal;
+        font-family: var(--mono);
+        font-size: 8.5px;
+        font-weight: 640;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .pf-field {
+        gap: 5px;
+      }
+      .pf-field-head {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .pf-flags {
+        margin-left: auto;
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        flex: none;
+      }
+      .pf-cost,
+      .pf-lock {
+        font-family: var(--mono);
+        font-size: 8.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .pf-cost.is-expensive {
+        color: color-mix(in oklab, var(--attention) 75%, var(--muted));
+      }
+      /* Drawn on every field the operator has moved away from the posture. The count above
+         the disclosure is the same list; if the badge and the count ever disagree, the
+         panel is lying about what is in force, which is this option's main failure mode. */
+      .pf-diff {
+        padding: 1px 6px;
+        border-radius: 20px;
+        background: color-mix(in oklab, var(--attention) 16%, transparent);
+        color: var(--attention);
+        font-family: var(--mono);
+        font-size: 8.5px;
+        font-weight: 640;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+      .pf-sub {
+        margin: 4px 0 0;
+        padding-top: 10px;
+        border-top: 1px solid var(--border-soft);
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      /* The read-only grant summary. Not a card, because a card here would read as the
+         fourth thing a posture sets. */
+      .pf-repos {
+        padding: 10px 13px;
+        border: 1px dashed var(--border);
+        border-radius: 10px;
+      }
+      .pf-repos .trust-summary {
+        margin: 0;
+      }
+      .pf-live {
+        display: block;
+        font-family: var(--mono);
+        font-size: 8.5px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-bottom: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mock-head">
+      <div class="mock-nav">
+        <a href="index.html">← all six</a>
+        <a href="option-a-digest.html">A · digest</a>
+        <a href="option-b-tabs.html">B · tabs</a>
+        <a href="option-c-ledger-first.html">C · ledger first</a>
+        <a href="option-d-grid.html">D · grid</a>
+        <a href="option-e-sentence.html">E · sentence</a>
+        <a href="option-f-presets.html" class="is-here">F · presets</a>
+      </div>
+      <div class="mock-tag">Option F · pick a posture, then open the detail</div>
+      <h1>Postures, not fields - one question at rest, fourteen controls behind a disclosure</h1>
+      <p class="mock-thesis">
+        The other five options rearrange fourteen controls. This one asks whether the
+        operator should be answering fourteen questions. Seven of them are model dropdowns
+        that get set once and never touched, and behind all of them sits a single intent:
+        <b>how much rope does Foreman get</b>. So the resting state is a choice between three
+        named postures - <b>Cautious</b>, <b>Balanced</b>, <b>Trusting</b> - and the fields
+        become the detail behind it: still all of them, still with their prose, one
+        disclosure away, and marked wherever they disagree with the posture in force.
+      </p>
+      <div class="mock-metrics">
+        <div class="mock-metric"><span>control column</span> <b id="m-rest">-</b></div>
+        <div class="mock-metric"><span>detail open</span> <b id="m-open">-</b></div>
+        <div class="mock-metric"><span>questions at rest</span> <b>14 controls → 1 choice</b></div>
+        <div class="mock-metric"><span>a posture sets</span> <b id="m-set">-</b></div>
+        <div class="mock-metric is-cost"><span>cost</span> <b>a new persisted concept</b></div>
+      </div>
+      <p class="mock-live">
+        Click a posture card, or focus one and use the arrow keys - the summary lines and all
+        nine prescribed fields really change. Open <b>Show the individual settings</b> and
+        edit one: the heading becomes "Trusting, modified", the count under the cards is the
+        real diff, and <b>reset</b> puts it back. Both measurements above are read off the
+        laid out page after every change, so neither is a claim you have to take on trust.
+      </p>
+    </div>
+
+    <div class="settings-pane">
+      <div class="mock-panel-head">
+        <h2>Foreman</h2>
+        <span class="mock-scope">this machine</span>
+      </div>
+
+      <section class="settings-section sc-section">
+        <p class="settings-hint sc-lede">
+          Foreman's set-once configuration, and the record of what it has decided. Turning it
+          on, its mode, the work queues, and the wrap-up action stay in the topbar Foreman
+          control.
+        </p>
+
+        <div class="sc-split">
+          <div class="sc-controls">
+            <!-- The posture line stays at the top in every state. "Live" and "no worker is
+                 running" are readings, not settings, and no card below may be mistaken for
+                 them: one is what Foreman IS doing, the others are what it MAY do. -->
+            <div id="state-slot"></div>
+
+            <section class="sc-card">
+              <div class="sc-card-head">
+                <h3 class="sc-card-title">Posture</h3>
+                <span class="sc-card-title" id="pf-name" style="margin-left: auto"></span>
+              </div>
+              <div class="sc-card-body">
+                <div class="pf-cards" role="radiogroup" aria-label="Foreman posture" id="pf-cards"></div>
+
+                <div class="pf-drift" id="pf-drift" hidden>
+                  <span id="pf-drift-text"></span>
+                  <button type="button" class="settings-link" id="pf-reset">reset</button>
+                </div>
+
+                <button
+                  class="pf-disclose"
+                  type="button"
+                  aria-expanded="false"
+                  aria-controls="pf-detail"
+                >
+                  <span id="pf-disclose-label">Show the individual settings</span>
+                  <i id="pf-disclose-meta"></i>
+                </button>
+              </div>
+            </section>
+
+            <!-- Collapsed by default, and it holds every field the panel has today, at the
+                 panel's own density. That is deliberate: the claim of this option is that
+                 the fields are rarely needed, not that they can be thrown away. -->
+            <section class="sc-card" id="pf-detail" hidden>
+              <div class="sc-card-head"><h3 class="sc-card-title">What this sets</h3></div>
+              <div class="sc-card-body" id="pf-detail-body"></div>
+            </section>
+
+            <!-- READ ONLY, and not a posture's to move. Foreman does not edit the repo
+                 allowlist; it reports a count and links into the Trust category. -->
+            <div class="pf-repos">
+              <span class="pf-live">Live repositories</span>
+              <div data-live-repos></div>
+            </div>
+
+            <div data-health></div>
+          </div>
+
+          <div data-ledger></div>
+        </div>
+
+        <p class="mock-note">
+          <b>Look at the fourth summary line on all three cards.</b> It is identical on every
+          one: no posture turns a completion safeguard off, because a preset that could would
+          be a preset that quietly widens what Foreman retires without showing you - the same
+          reason no posture touches Live repositories, and the same reason none of them
+          touches the provider. So three of the eleven things in this panel are not on the
+          axis the control is named for, and the honest version of this design has to say so
+          on the screen rather than hope nobody checks. That is either the boundary of the
+          idea or the first crack in it, depending on how many settings arrive next.
+        </p>
+      </section>
+    </div>
+
+    <div class="mock-foot">
+      <div>
+        <h4>Why this one</h4>
+        <ul>
+          <li>
+            <b>It answers the question the operator actually has.</b> Nobody opens this panel
+            wanting to pick a Triage model; they want to decide how much Foreman may do
+            unsupervised. Every other option makes them answer that in seven dropdowns.
+          </li>
+          <li>
+            <b>The seven set-once dropdowns stop being questions.</b> They are still there,
+            still editable, still carrying their blurbs - but they are a consequence of a
+            choice rather than the choice itself.
+          </li>
+          <li>
+            <b>A new operator gets a defensible configuration</b> without knowing what the
+            cheap tier is, and can see what the safe end of the range looks like by clicking
+            one card and reading the fields it wrote.
+          </li>
+          <li>
+            <b>It scales the right way.</b> An eleventh setting joins the three postures
+            instead of adding a row to the column.
+          </li>
+        </ul>
+      </div>
+      <div class="is-con">
+        <h4>What it costs</h4>
+        <ul>
+          <li>
+            <b>It invents a new persisted concept.</b> "Which posture am I on" is state the
+            daemon does not store today. This mockup recovers it from the cheap tier, which
+            works only because the three tiers happen to map one-to-one onto three cards - a
+            fourth posture breaks that and the app needs a real column, a migration, and an
+            answer for what happens when a config edit arrives from the settings search, a
+            deep link, an env default, or another machine.
+          </li>
+          <li>
+            <b>Presets encode opinions about models, and models ship constantly.</b> Every
+            list here is provider-scoped and dated. The day a new model lands, all three
+            postures are subtly wrong until someone re-decides them, and an operator "on
+            Balanced" moves without touching anything.
+          </li>
+          <li>
+            <b>Modified states are a classic source of confusion.</b> "Trusting, modified" is
+            only true if the diff is computed against the RESOLVED value, env fallbacks
+            included; get that wrong and the panel reports a posture that is not in force.
+            And the storage question is unanswered: does a modified Trusting persist as a
+            posture plus a patch, or as nine values that stop tracking the preset entirely?
+          </li>
+          <li>
+            <b>Switching postures silently discards edits.</b> Tapping a card here overwrites
+            all nine fields, including the one you just changed. The real thing needs either
+            a confirm or an undo, and both make the simplest screen less simple.
+          </li>
+          <li>
+            <b>It is the largest behavioural change of the six</b> while looking like the
+            smallest screen. The others move controls; this one changes what the panel means.
+            The disclosure still has to hold the entire field list at the panel's real
+            density, so open it and compare the two measurements: expanded, this column is
+            taller than the one the exercise set out to shorten. It is the old column plus a
+            posture card, and it only reads as short because it starts shut.
+          </li>
+          <li>
+            <b>Deep links land inside a collapsed region</b> onto a field a posture may
+            overwrite on the next tap, so <code>foreman/skip-scout-wrapup</code> has to open
+            the disclosure, flash the row, and somehow say "this is preset territory".
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <script src="mock-data.js"></script>
+    <script src="mock.js"></script>
+    <script>
+      const F = FOREMAN;
+      const esc = Mock.esc;
+
+      document.getElementById("state-slot").innerHTML = Mock.stateHtml();
+
+      /* ---- the three postures --------------------------------------------------------
+         Invented for this proposal, but not out of thin air: every value below is looked
+         up in the option list the panel actually offers for that field, so a posture can
+         never prescribe a model this provider does not list. Trusting is the snapshot
+         verbatim, field for field, which is why the page can open on it with nothing
+         modified. Nothing here hardcodes a model name, a blurb, or a count. */
+      const pick = (list, needle) => list.find((o) => o.toLowerCase().includes(needle)) ?? list[0];
+      const short = (v) => String(v).split(" - ")[0];
+      const tierOf = (id) => F.cheapTier.options.find((o) => o.id === id);
+
+      // The nine settings a posture prescribes: four Foreman roles, three backlog launch
+      // models, two safeguards. Not the provider, and not Live repositories.
+      const fieldsFor = (roleModel, launchModel) => {
+        const out = {};
+        for (const r of F.roles) out["role-" + r.id] = roleModel(r);
+        for (const r of F.backlogLaunch.rows) out["launch-" + r.id] = launchModel(r);
+        // Every posture leaves both safeguards on. A preset must not be able to widen what
+        // Foreman retires automatically, so this is not a knob any card owns.
+        for (const s of F.safeguards.rows) out["safe-" + s.id] = true;
+        return out;
+      };
+
+      const POSTURES = [
+        {
+          id: "cautious",
+          name: "Cautious",
+          tier: "off",
+          desc: "No cheap tier. Every ask gets the full Review, on the most capable model this provider lists, and Foreman leaves your backlog tasks on their harness default.",
+          fields: fieldsFor(
+            // The router never runs with the tier Off, so this posture does not pin a model
+            // for it - the field falls back to the resolved default and the card says so.
+            (r) => (r.cost === "expensive" ? pick(r.options, "most capable") : r.fallback),
+            (r) => pick(r.options, "default -"),
+          ),
+        },
+        {
+          id: "balanced",
+          name: "Balanced",
+          tier: "shadow",
+          desc: "The cheap tier runs alongside the full Review and is measured, never trusted. Cheap models on Triage and Backlog. The one to start on.",
+          fields: fieldsFor(
+            (r) => (r.cost === "expensive" ? pick(r.options, "balanced") : pick(r.options, "fastest")),
+            (r) => pick(r.options, "default -"),
+          ),
+        },
+        {
+          id: "trusting",
+          name: "Trusting",
+          tier: "on",
+          desc: "The cheap tier answers the easy ones and Foreman picks the model for the tasks it starts. Fastest and cheapest per decision, and the one that can be wrong on your behalf.",
+          fields: fieldsFor(
+            (r) => r.value,
+            (r) => r.value,
+          ),
+        },
+      ];
+
+      /* ---- the detail list ----------------------------------------------------------
+         The current fields, at the current density, with the blurbs verbatim. */
+      const fieldHtml = ({ key, label, value, options, fallback, blurb, cost, locked }) => {
+        const select = Mock.selectHtml({ label, value, options, fallback }).replace(
+          "<select",
+          `<select id="f-${key}"${locked ? "" : ` data-field="${key}"`}`,
+        );
+        return `<div class="pf-field sc-field" data-key="${key}">
+          <div class="pf-field-head">
+            <label class="sc-field-label" for="f-${key}">${esc(label)}</label>
+            <span class="pf-flags">
+              ${cost ? `<span class="pf-cost is-${cost}">${cost}</span>` : ""}
+              ${
+                locked
+                  ? `<span class="pf-lock">no posture sets this</span>`
+                  : `<span class="pf-diff" hidden>differs</span>`
+              }
+            </span>
+          </div>
+          ${select}
+          <p class="settings-hint">${esc(blurb)}</p>
+        </div>`;
+      };
+
+      const safeguardHtml = (s) => `<div class="kb-row" data-key="safe-${s.id}">
+        <div class="kb-row-text">
+          <span class="kb-row-label">${esc(s.label)}</span>
+          <span class="kb-row-desc">${esc(s.desc)}</span>
+        </div>
+        <div class="kb-row-controls">
+          <span class="pf-diff" hidden>differs</span>
+          <label class="skill-switch"><input type="checkbox" data-field="safe-${s.id}" ${s.on ? "checked" : ""} aria-label="${esc(s.label)}" /></label>
+        </div>
+      </div>`;
+
+      document.getElementById("pf-detail-body").innerHTML =
+        `<p class="settings-hint">Everything a posture prescribes, in the fields the panel
+         has today. Change one and the posture stays, marked modified - the posture is a
+         starting point, not a lock.</p>` +
+        `<p class="pf-sub">Provider</p>` +
+        // Not prescribed by anything. Switching the provider clears all four role overrides,
+        // so a preset that flipped it would silently rewrite four settings on this screen.
+        fieldHtml({
+          key: "provider",
+          label: "Provider",
+          value: F.provider.value,
+          options: F.provider.options,
+          blurb: F.provider.blurb,
+          locked: true,
+        }) +
+        `<p class="pf-sub">Foreman's own calls</p>` +
+        F.roles
+          .map((r) =>
+            fieldHtml({
+              key: "role-" + r.id,
+              label: r.label,
+              value: r.value,
+              options: r.options,
+              fallback: r.fallback,
+              blurb: r.blurb,
+              cost: r.cost,
+            }),
+          )
+          .join("") +
+        `<p class="pf-sub">Backlog launches</p>` +
+        `<p class="settings-hint">${esc(F.backlogLaunch.blurb)}</p>` +
+        F.backlogLaunch.rows
+          .map((r) =>
+            fieldHtml({
+              key: "launch-" + r.id,
+              label: r.label,
+              value: r.value,
+              options: r.options,
+              blurb: r.blurb,
+            }),
+          )
+          .join("") +
+        `<p class="pf-sub">Completion safeguards</p>` +
+        `<p class="settings-hint">${esc(F.safeguards.blurb)}</p>` +
+        F.safeguards.rows.map(safeguardHtml).join("");
+
+      /* ---- state --------------------------------------------------------------------
+         `values` starts as the SNAPSHOT, not as a preset, so if the stored config matched
+         no posture the page would open modified and say so.
+
+         `active` is recovered from the cheap tier because the daemon does not persist
+         "which posture am I on" - there is no such column. That recovery works here only
+         because three tiers happen to map onto three cards, and it is exactly the missing
+         concept the footer complains about. */
+      const values = {};
+      for (const r of F.roles) values["role-" + r.id] = r.value;
+      for (const r of F.backlogLaunch.rows) values["launch-" + r.id] = r.value;
+      for (const s of F.safeguards.rows) values["safe-" + s.id] = s.on;
+
+      let active = POSTURES.find((p) => p.tier === F.cheapTier.value) ?? POSTURES[0];
+
+      const KEYS = Object.keys(active.fields);
+      const controls = () => [...document.querySelectorAll("#pf-detail [data-field]")];
+
+      const linesFor = (p, live) => {
+        const v = live ? values : p.fields;
+        const on = F.safeguards.rows.filter((s) => v["safe-" + s.id]).length;
+        return [
+          ["Cheap tier", tierOf(p.tier).short],
+          ["Review", short(v["role-review"])],
+          ["Triage", p.tier === "off" ? "not consulted" : short(v["role-triage"])],
+          ["Safeguards", `${on} of ${F.safeguards.rows.length} kept back`],
+        ];
+      };
+
+      document.getElementById("pf-cards").innerHTML = POSTURES.map(
+        (p) => `<div class="pf-card" role="radio" aria-checked="false" tabindex="-1" data-posture="${p.id}">
+          <div class="pf-head">
+            <span class="pf-radio"></span>
+            <span class="pf-name">${esc(p.name)}</span>
+            <span class="pf-mark" hidden>in force</span>
+          </div>
+          <p class="pf-desc">${esc(p.desc)}</p>
+          <ul class="pf-sum"></ul>
+        </div>`,
+      ).join("");
+
+      const cards = [...document.querySelectorAll(".pf-card")];
+
+      function paint() {
+        // The selected card reports what is actually in force, including edits; the other
+        // two report their own prescription. A card that showed a preset's values while a
+        // different value was in force would be the worst thing this design could do.
+        cards.forEach((el, i) => {
+          const p = POSTURES[i];
+          const on = p === active;
+          el.setAttribute("aria-checked", String(on));
+          el.tabIndex = on ? 0 : -1;
+          el.querySelector(".pf-mark").hidden = !on;
+          el.querySelector(".pf-sum").innerHTML = linesFor(p, on)
+            .map(([k, v]) => `<li><span>${esc(k)}</span><b>${esc(v)}</b></li>`)
+            .join("");
+        });
+
+        const diff = KEYS.filter((k) => values[k] !== active.fields[k]);
+        for (const k of KEYS) {
+          const badge = document.querySelector(`#pf-detail [data-key="${k}"] .pf-diff`);
+          if (badge) badge.hidden = !diff.includes(k);
+        }
+
+        document.getElementById("pf-name").textContent =
+          active.name + (diff.length ? ", modified" : "");
+        const drift = document.getElementById("pf-drift");
+        drift.hidden = diff.length === 0;
+        document.getElementById("pf-drift-text").textContent =
+          `${diff.length} setting${diff.length === 1 ? "" : "s"} ${diff.length === 1 ? "differs" : "differ"} from ${active.name}`;
+        measure();
+      }
+
+      function apply(p) {
+        // Switching overwrites all nine, edits included. Named in the footer as a cost.
+        active = p;
+        for (const k of KEYS) values[k] = p.fields[k];
+        for (const el of controls()) {
+          const v = values[el.dataset.field];
+          if (el.type === "checkbox") el.checked = Boolean(v);
+          else el.value = v;
+        }
+        paint();
+      }
+
+      // Radio-group semantics: arrows move and select, Home/End jump, Space and Enter
+      // activate, and only the selected card is in the tab order.
+      cards.forEach((el, i) => {
+        el.addEventListener("click", () => apply(POSTURES[i]));
+        el.addEventListener("keydown", (e) => {
+          if (e.key === " " || e.key === "Enter") {
+            e.preventDefault();
+            apply(POSTURES[i]);
+            return;
+          }
+          const map = {
+            ArrowRight: i + 1,
+            ArrowDown: i + 1,
+            ArrowLeft: i - 1,
+            ArrowUp: i - 1,
+            Home: 0,
+            End: cards.length - 1,
+          };
+          if (!(e.key in map)) return;
+          e.preventDefault();
+          const j = (map[e.key] + cards.length) % cards.length;
+          apply(POSTURES[j]);
+          cards[j].focus();
+        });
+      });
+
+      document.getElementById("pf-detail").addEventListener("change", (e) => {
+        if (!e.target.dataset.field) return;
+        for (const el of controls()) {
+          values[el.dataset.field] = el.type === "checkbox" ? el.checked : el.value;
+        }
+        paint();
+      });
+
+      document.getElementById("pf-reset").addEventListener("click", () => apply(active));
+
+      // The disclosure label counts the fields it actually reveals rather than repeating the
+      // pane's headline "14 controls" - three of those fourteen are the cheap tier's radios,
+      // which are the cards, and one is the Trust link, which is not a setting. A button that
+      // promised more than it opened would be the first thing a reviewer caught.
+      const detailFields = document.querySelectorAll("#pf-detail .pf-field, #pf-detail .kb-row").length;
+      const label = document.getElementById("pf-disclose-label");
+      label.textContent = `Show the ${detailFields} individual settings`;
+      document.getElementById("pf-disclose-meta").textContent = `${KEYS.length} prescribed`;
+      document.getElementById("m-set").textContent = `${KEYS.length} of ${detailFields} fields`;
+
+      Mock.wireToggle(document, ".pf-disclose", "#pf-detail", {
+        onOpen: () => {
+          label.textContent = `Hide the ${detailFields} individual settings`;
+          measure();
+        },
+        onClose: () => {
+          label.textContent = `Show the ${detailFields} individual settings`;
+          measure();
+        },
+      });
+
+      Mock.boot();
+
+      /* Both heights are read off the laid-out page after every change, collapsed and
+         expanded, so the header cannot drift from what the mockup renders. The expanded
+         figure is the interesting one: the field list did not get shorter, it got optional. */
+      function measure() {
+        const col = document.querySelector(".sc-controls");
+        const detail = document.getElementById("pf-detail");
+        const was = detail.hidden;
+        detail.hidden = true;
+        const closed = Math.round(col.getBoundingClientRect().height);
+        detail.hidden = false;
+        const open = Math.round(col.getBoundingClientRect().height);
+        detail.hidden = was;
+        document.getElementById("m-rest").textContent = `1988px → ${closed}px`;
+        document.getElementById("m-open").textContent = `${open}px`;
+      }
+
+      paint();
+    </script>
+  </body>
+</html>

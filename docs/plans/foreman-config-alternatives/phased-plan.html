@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phased implementation - Foreman settings, grouped tabs</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1b1f24;
+        --muted: #5a6472;
+        --dim: #6e7781;
+        --border: #d8dee4;
+        --border-soft: #eaeef2;
+        --panel: #f6f8fa;
+        --panel-2: #eef1f4;
+        --accent: #0969da;
+        --danger: #cf222e;
+        --good: #1a7f37;
+        --warn: #9a6700;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d1117;
+          --fg: #e6edf3;
+          --muted: #9198a1;
+          --dim: #7d8590;
+          --border: #30363d;
+          --border-soft: #21262d;
+          --panel: #161b22;
+          --panel-2: #1c2128;
+          --accent: #4493f8;
+          --danger: #f85149;
+          --good: #3fb950;
+          --warn: #d29922;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+        font-size: 16px;
+        line-height: 1.62;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 900px; margin: 0 auto; padding: 48px 24px 120px; }
+      h1 {
+        font-size: 30px;
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+        margin: 0 0 6px;
+      }
+      .lede { color: var(--muted); font-size: 15px; margin: 0 0 34px; }
+      h2 {
+        font-size: 21px;
+        letter-spacing: -0.01em;
+        margin: 44px 0 12px;
+        padding-bottom: 7px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      h3 { font-size: 16.5px; margin: 28px 0 8px; }
+      p { margin: 0 0 14px; }
+      ul, ol { margin: 0 0 14px; padding-left: 24px; }
+      li { margin: 5px 0; }
+      code {
+        font-family: var(--mono);
+        font-size: 0.87em;
+        background: var(--panel-2);
+        border: 1px solid var(--border-soft);
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        margin: 0 0 16px;
+      }
+      pre code {
+        background: none;
+        border: 0;
+        padding: 0;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .scroll { overflow-x: auto; margin: 0 0 18px; }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+        min-width: 560px;
+      }
+      th, td {
+        text-align: left;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th { background: var(--panel); font-weight: 620; }
+      td code { font-size: 0.85em; white-space: nowrap; }
+      blockquote {
+        margin: 0 0 16px;
+        padding: 2px 0 2px 16px;
+        border-left: 3px solid var(--border);
+        color: var(--muted);
+      }
+      .callout {
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 9px 9px 0;
+        background: var(--panel);
+        padding: 13px 16px;
+        margin: 0 0 18px;
+        font-size: 14.5px;
+      }
+      .callout.bad { border-left-color: var(--danger); }
+      .callout.good { border-left-color: var(--good); }
+      .callout.warn { border-left-color: var(--warn); }
+      .callout p:last-child { margin-bottom: 0; }
+      .phase-tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 9px;
+        color: var(--muted);
+        vertical-align: 3px;
+        margin-left: 9px;
+      }
+      figure { margin: 0 0 22px; }
+      figcaption {
+        font-size: 13px;
+        color: var(--dim);
+        margin-top: 8px;
+        text-align: center;
+      }
+      svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+      .svg-box { fill: var(--panel); stroke: var(--border); }
+      .svg-box-new { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+      .svg-t { fill: var(--fg); font-family: var(--sans); font-size: 13px; }
+      .svg-t-sm { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+      .svg-t-new { fill: var(--accent); font-family: var(--mono); font-size: 10.5px; font-weight: 600; }
+      .svg-hd { fill: var(--dim); font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; }
+      .svg-line { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+      .svg-line-new { stroke: var(--accent); stroke-width: 2; fill: none; }
+      .svg-head-new { fill: var(--accent); }
+      .footer {
+        margin-top: 56px;
+        padding-top: 18px;
+        border-top: 1px solid var(--border-soft);
+        font-size: 13px;
+        color: var(--dim);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Phased implementation - Foreman settings, grouped tabs</h1>
+      <p class="lede">
+        Source plan: <code>plan.md</code> (<a href="plan.html">rendered</a>) &middot; mockups:
+        <a href="index.html">index.html</a> (all six options) and
+        <a href="option-b-tabs.html">option-b-tabs.html</a> (the adopted design, interactive)
+      </p>
+
+      <h2>Incorporated human decisions</h2>
+      <p>These are requirements, not open questions.</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Decision</th><th>Answer</th><th>Owned by</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Which of the six mocked options to build</td>
+              <td><strong>Option B, grouped tabs.</strong> Four groups - Posture, Models, Launches, Safety - behind a tab strip, with the posture line and the read-only cards outside it.</td>
+              <td>Phase 1</td>
+            </tr>
+            <tr>
+              <td>Whether Foreman gets a Trust group</td>
+              <td><strong>No.</strong> Foreman cannot edit the repo allowlist; it shows a read-only count and links into the Trust category. No tab may contain a repository editor.</td>
+              <td>Phase 1</td>
+            </tr>
+            <tr>
+              <td>After the plan</td>
+              <td>Create the phased implementation plan and schedule dependency-linked tasks.</td>
+              <td>this document</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>What the repository confirmed</h2>
+      <p>
+        Read against the working tree before the phases were drawn. Two findings changed the
+        design; the rest changed the size of the work.
+      </p>
+      <div class="callout bad">
+        <p>
+          <strong>Inactive tab panels cannot unmount.</strong> Two node tests require every
+          Foreman anchor to be present in a single <code>renderToStaticMarkup</code> call with
+          no interaction possible: <code>test/foreman-console.test.ts:190-209</code> asserts
+          eleven literal anchors and a count of seven model anchors, and
+          <code>test/settings-search.test.ts:106-114</code> asserts every indexed control's
+          anchor is one the default render produces. Four of the five indexed Foreman anchors
+          live in three different groups, so no single paint can show them all if inactive
+          panels unmount. Both tests protect something real, so the design satisfies them:
+          <strong>all four panels render and the inactive ones carry <code>hidden</code></strong>,
+          which keeps them in the document and out of layout.
+        </p>
+      </div>
+      <div class="callout bad">
+        <p>
+          <strong><code>hidden</code> alone breaks every deep link, silently.</strong>
+          <code>SettingsPage.tsx:292-293</code> finds an anchor with a document-wide
+          <code>querySelector</code>, so it would find the hidden element and call
+          <code>scrollIntoView</code> on a <code>display: none</code> node - a no-op with an
+          invisible flash. Its <code>MutationObserver</code> fallback (<code>:310-325</code>)
+          waits 5s and then gives up with no error, by design (<code>:299-309</code>). The fix
+          is ordering, not new machinery: React commits a child's render before running a
+          parent's effect, so the panel selects the owning tab <strong>during render</strong>
+          and the element is visible by the time the flash effect runs. An e2e case proves it
+          rather than trusting it.
+        </p>
+      </div>
+      <ul>
+        <li>
+          <strong>The blurb is already in a tooltip, and rendered twice.</strong>
+          <code>ModelField.tsx:91-107</code> wraps every model select in
+          <code>&lt;Tooltip label={spec.blurb}&gt;</code> <em>and</em> prints
+          <code>&lt;p className="settings-hint foreman-model-blurb"&gt;{spec.blurb}&lt;/p&gt;</code>.
+          Seven of the eleven Foreman settings are <code>ModelField</code>s, so most of the
+          prose work is deleting a duplicate rather than building a hover.
+        </li>
+        <li>
+          <strong><code>Tooltip</code> already covers focus and screen readers.</strong>
+          <code>Tooltip.tsx:154-190</code> merges <code>onFocus</code> and <code>onBlur</code>
+          as well as the pointer handlers, and <code>:32-40</code> always renders the label into
+          a visually-hidden portal that <code>aria-describedby</code> points at - explicitly so
+          a hover-only label remains assertable in a repository with no jsdom.
+        </li>
+        <li>
+          <strong><code>ModelField</code> is shared by four panels</strong>
+          (<code>ForemanSettingsPanel</code>, <code>InspectorSettingsPanel</code>,
+          <code>LlmSettingsPanel</code>, <code>workflows/PersonaEditor</code>), so suppressing
+          the visible blurb must be opt-in with today's behaviour as the default.
+        </li>
+        <li>
+          <strong>Everything in <code>settings-console.tsx</code> has three or more
+          consumers.</strong> The tab strip is a new leaf beside them and
+          <code>ConsoleCard</code> gains no tab awareness.
+        </li>
+        <li>
+          <strong>The tab pattern to copy already exists.</strong>
+          <code>SettingsPage.tsx:507-553</code> plus <code>onTablistKey</code> at
+          <code>:380-408</code> is the repository's only full roving-tabindex implementation and
+          is already pinned by <code>test/settings-sidebar-render.test.ts:349-395</code>.
+          <code>src/web/lib/detailTabs.ts:19-52</code> is the precedent for keeping the tab
+          table as a pure exported value, testable without a DOM.
+        </li>
+        <li>
+          <strong><code>.sc-seg</code> is not a tab strip.</strong> It is a radio group in a
+          <code>&lt;fieldset&gt;</code>, pinned as such by
+          <code>test/settings-console.test.ts:269-277</code>. The cheap-tier control keeps it;
+          the tab strip needs its own class.
+        </li>
+        <li>
+          <strong>Two e2e specs assume a click-free pane.</strong>
+          <code>e2e/specs/dispatch-and-converse.spec.ts:472-503</code> must select the Safety
+          tab first. <code>e2e/specs/foreman-decision-ledger.spec.ts:175-181</code> expects the
+          ledger, which stays outside the strip and should keep passing untouched.
+        </li>
+        <li>
+          <strong>No Electron geometry test touches this pane.</strong> The only laid-out height
+          budget is <code>e2e/specs/foreman-decision-ledger.spec.ts:320-323</code>
+          (<code>scrollHeight - innerHeight &lt; 2000</code>), which this change can only
+          improve.
+        </li>
+      </ul>
+
+      <h3>Discrepancies recorded against the source plan</h3>
+      <ol>
+        <li>
+          <strong>The plan implies building a focus-reveal for the blurbs.</strong> The
+          repository disproves the need: <code>Tooltip</code> already fires on focus and already
+          renders a hidden portal copy. Phase 2 removes a duplicate instead of adding a
+          mechanism. The user-visible outcome is what the plan asked for.
+        </li>
+        <li>
+          <strong>The plan's requirement 6 is not a property of the tab strip.</strong> Stating
+          each tab's settings count is presentation of the prose work, so it is owned by Phase 2.
+          Phase 1's audit record notes the deferral explicitly.
+        </li>
+        <li>
+          <strong>The mockup's "Safety" tab carries a status dot.</strong> Nothing in the data
+          model backs a safeguard status, so the dot is dropped; the count takes its place.
+        </li>
+      </ol>
+
+      <h2>Phases</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>The tab strip, the group table, and the deep-link contract</td>
+              <td><code>phase-1-tab-strip-and-anchors.md</code></td>
+              <td>-</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>The prose stops being printed twice</td>
+              <td><code>phase-2-blurbs-on-demand.md</code></td>
+              <td>Phase 1</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Dependency graph</h3>
+      <figure>
+        <svg viewBox="0 0 620 90" role="img" aria-label="Phase 1 precedes Phase 2">
+          <rect class="svg-box-new" x="10" y="18" width="230" height="54" rx="9" />
+          <text class="svg-t" x="125" y="42" text-anchor="middle">Phase 1</text>
+          <text class="svg-t-sm" x="125" y="60" text-anchor="middle">tab strip &middot; anchors &middot; a11y</text>
+          <path class="svg-line" d="M244 45 H 356" />
+          <path class="svg-line" d="M350 40 l 9 5 l -9 5 z" fill="currentColor" />
+          <rect class="svg-box" x="362" y="18" width="248" height="54" rx="9" />
+          <text class="svg-t" x="486" y="42" text-anchor="middle">Phase 2</text>
+          <text class="svg-t-sm" x="486" y="60" text-anchor="middle">blurbs on demand &middot; tab counts</text>
+        </svg>
+        <figcaption>Sequential. Nothing runs concurrently.</figcaption>
+      </figure>
+      <p>
+        Phase 1 &rarr; Phase 2. <strong>Nothing runs concurrently.</strong> Phase 2 edits the
+        same JSX Phase 1 regroups and adds a count to the tab labels Phase 1 creates; splitting
+        them to run in parallel would mean two agents rewriting one component.
+      </p>
+      <p><strong>Merge order:</strong> Phase 1, then Phase 2.</p>
+      <div class="callout">
+        <p>
+          Phase 1 is deliberately the larger and riskier unit. It carries the anchor contract,
+          the accessibility semantics, and both e2e updates, because those are what a reviewer
+          needs to see together. Phase 2 is small, low-risk, and independently valuable - if it
+          never merged, the panel would still be short and correct, just as wordy as it is
+          today.
+        </p>
+      </div>
+
+      <h2>Cross-phase contracts</h2>
+      <p>Phase 1 establishes these; Phase 2 consumes them and must not change their shape.</p>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Contract</th><th>Shape</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>FOREMAN_SETTINGS_TABS</code></td>
+              <td>ordered <code>as const</code> array of <code>{ id, label, anchors }</code> in <code>src/web/lib/foreman-settings-tabs.ts</code></td>
+              <td>The one group table. Phase 2 adds the settings count off it. Ids and order are append-only; no anchor moves between groups.</td>
+            </tr>
+            <tr>
+              <td><code>foremanTabForAnchor(anchor)</code></td>
+              <td><code>(anchor: string) =&gt; ForemanSettingsTabId | null</code></td>
+              <td>The single answer to "which tab owns this anchor". <code>null</code> for the three deliberate outsiders: <code>foreman/live-repos</code>, <code>foreman/health</code>, <code>foreman/episodes</code>.</td>
+            </tr>
+            <tr>
+              <td><code>jumpAnchor</code> on <code>ForemanSettingsPanel</code></td>
+              <td><code>string | null</code>, from <code>SettingsPage</code>'s existing <code>pending</code> state, resolved to a tab <strong>during render</strong></td>
+              <td>The deep-link contract. Converting it to an effect reintroduces the silent-flash bug.</td>
+            </tr>
+            <tr>
+              <td>Tab panel mounting</td>
+              <td>all four rendered, inactive carry <code>hidden</code></td>
+              <td>Load-bearing for two node tests and for every deep link. Not an optimisation to revisit.</td>
+            </tr>
+            <tr>
+              <td>Outside the strip</td>
+              <td>the posture line, Live repositories, Right now, the ledger</td>
+              <td>The posture line because a dead worker must never be a click away; Live repositories because Foreman cannot edit it.</td>
+            </tr>
+            <tr>
+              <td><code>ModelField.blurb</code></td>
+              <td><code>"block" | "hover"</code>, default <code>"block"</code></td>
+              <td>Introduced in Phase 2. The default preserves Inspector, the LLM panel and the persona editor unchanged.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Final verification</h2>
+      <p>
+        Each phase runs its own verification. Across both, the definition of done is the
+        repository's:
+      </p>
+      <pre><code>npm run typecheck
+npm run lint
+npm test
+npm run build &amp;&amp; npm run smoke
+npm run test:e2e</code></pre>
+      <p>
+        <code>npm run test:e2e</code> needs <code>npm run build</code> first and
+        <code>npx playwright install chromium</code> once per machine. README and this plan
+        directory must match the implementation when Phase 2 merges.
+      </p>
+      <div class="callout warn">
+        <p>
+          The one verification neither phase may waive: <strong>a deep link into a tab that is
+          not selected must open that tab, scroll to the control, and flash it.</strong> That is
+          the single behaviour this refactor can silently destroy, and <code>SettingsPage</code>
+          gives up on a missing anchor without an error.
+        </p>
+      </div>
+
+      <h2>Cross-phase audit record</h2>
+      <ul>
+        <li>
+          <strong>After Phase 1 was written.</strong> Confirmed Phase 1 leaves the repository
+          valid on its own: the column is short, the strip is keyboard operable, every anchor
+          still renders, and every deep link resolves. Confirmed the two static-render anchor
+          tests pass unchanged rather than being rewritten, and that both e2e updates live
+          inside Phase 1 rather than being deferred. Confirmed the phase touches no export of
+          <code>settings-console.tsx</code> and no CSS rule shared by three or more panels.
+        </li>
+        <li>
+          <strong>After Phase 2 was written.</strong> Re-read the source plan and Phase 1.
+          Confirmed Phase 2 adds no anchor, moves none between groups, and does not touch the
+          mounting strategy or <code>jumpAnchor</code>. Confirmed the <code>ModelField</code>
+          change is opt-in so its three other consumers are unaffected, and that the two group
+          intro paragraphs Phase 2 keeps are exactly the two the existing tests assert by name -
+          so no test needs rewriting in either phase. Moved requirement 6 into Phase 2 and
+          recorded the deferral in Phase 1's audit record.
+        </li>
+        <li>
+          <strong>Final pass over both.</strong> Every source-plan requirement is owned by
+          exactly one phase: requirements 1-5 and 8-10 by Phase 1, requirements 6 and 7 by
+          Phase 2. Both recorded human decisions are owned by Phase 1. The dependency direction
+          is single and forward, there are no concurrency claims to check, and no phase depends
+          on a later phase to repair a knowingly broken intermediate state.
+        </li>
+      </ul>
+
+      <div class="footer">
+        Rendered from <code>docs/plans/foreman-config-alternatives/phased-plan.md</code>. The
+        markdown is the source of truth; this page is a rendering of it.
+      </div>
+    </div>
+  </body>
+</html>

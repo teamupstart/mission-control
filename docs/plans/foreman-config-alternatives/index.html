@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Foreman configuration pane - six alternatives</title>
+    <link rel="stylesheet" href="console.css" />
+    <link rel="stylesheet" href="mock.css" />
+    <style>
+      .ix {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 34px 26px 80px;
+      }
+      .ix h2 {
+        margin: 42px 0 12px;
+        font-size: 16px;
+        font-weight: 620;
+      }
+      .ix p {
+        max-width: 92ch;
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--muted);
+      }
+      .ix p b {
+        color: var(--fg);
+      }
+      .ix code {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--fg);
+      }
+
+      /* ---- the diagnosis ---- */
+      .diag {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        margin: 16px 0 4px;
+        max-width: 800px;
+      }
+      .diag-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12px;
+      }
+      .diag-name {
+        width: 190px;
+        text-align: right;
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      .diag-bar {
+        height: 20px;
+        border-radius: 4px;
+        background: color-mix(in oklab, var(--purple) 45%, var(--panel));
+        border: 1px solid color-mix(in oklab, var(--purple) 60%, var(--border));
+      }
+      .diag-bar.is-ledger {
+        background: color-mix(in oklab, var(--idle) 34%, var(--panel));
+        border-color: color-mix(in oklab, var(--idle) 55%, var(--border));
+      }
+      .diag-val {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--dim);
+      }
+      /* The whole column on the same scale as the cards above it, with the fold drawn where
+         849px actually falls inside it. A dash floating beside the bars said nothing; a dash
+         at 43% of the bar says "everything right of this needs scrolling to reach". */
+      .diag-total {
+        position: relative;
+        height: 26px;
+        border-radius: 4px;
+        background: color-mix(in oklab, var(--purple) 24%, var(--panel));
+        border: 1px solid color-mix(in oklab, var(--purple) 45%, var(--border));
+      }
+      .diag-total::after {
+        content: "";
+        position: absolute;
+        top: -5px;
+        bottom: -5px;
+        left: 42.7%;
+        border-left: 2px dashed var(--attention);
+      }
+      .diag-fold-label {
+        position: absolute;
+        left: calc(42.7% + 7px);
+        top: 50%;
+        transform: translateY(-50%);
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--attention);
+        white-space: nowrap;
+      }
+
+      /* ---- the six ---- */
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 14px;
+        margin-top: 16px;
+      }
+      .opt {
+        display: flex;
+        flex-direction: column;
+        padding: 16px 16px 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--panel);
+        text-decoration: none;
+        color: inherit;
+      }
+      .opt:hover {
+        border-color: color-mix(in oklab, var(--purple) 55%, var(--border));
+        background: var(--panel-2);
+      }
+      .opt .mock-tag {
+        margin-bottom: 5px;
+      }
+      .opt h3 {
+        margin: 0 0 8px;
+        font-size: 14.5px;
+        font-weight: 620;
+      }
+      .opt p {
+        margin: 0 0 12px;
+        font-size: 12px;
+        line-height: 1.55;
+        color: var(--muted);
+      }
+      .opt .go {
+        margin-top: auto;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--purple);
+      }
+      /* The idea each option is actually testing, so six cards do not read as six skins. */
+      .opt .kind {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 11px;
+        color: var(--dim);
+        font-style: italic;
+      }
+
+      /* ---- comparison ---- */
+      .cmp-wrap {
+        overflow-x: auto;
+      }
+      .cmp {
+        width: 100%;
+        min-width: 900px;
+        border-collapse: collapse;
+        margin-top: 14px;
+        font-size: 12px;
+      }
+      .cmp th,
+      .cmp td {
+        text-align: left;
+        padding: 9px 11px;
+        border-bottom: 1px solid var(--border-soft);
+        vertical-align: top;
+      }
+      .cmp thead th {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        font-weight: 640;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--muted);
+        border-bottom: 1px solid var(--border);
+      }
+      .cmp tbody th {
+        font-weight: 560;
+        color: var(--muted);
+        width: 170px;
+      }
+      .cmp td b {
+        color: var(--fg);
+      }
+      .cmp .best {
+        color: var(--idle);
+      }
+      .cmp .worst {
+        color: var(--attention);
+      }
+
+      .fix {
+        margin: 16px 0 0;
+        padding: 14px 16px;
+        border-left: 2px solid color-mix(in oklab, var(--idle) 60%, var(--border));
+        background: color-mix(in oklab, var(--idle) 7%, transparent);
+        border-radius: 0 9px 9px 0;
+        max-width: 92ch;
+      }
+      .fix h4 {
+        margin: 0 0 7px;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        font-weight: 640;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--idle);
+      }
+      .fix p {
+        margin: 0 0 8px;
+      }
+      .fix p:last-child {
+        margin-bottom: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="ix">
+      <div class="mock-tag">Mission Control · Settings · Foreman</div>
+      <h1 style="margin: 0 0 10px; font-size: 26px; font-weight: 630">
+        Six ways to stop the configuration column running the page
+      </h1>
+      <p>
+        Six alternatives to the left control column in the Foreman settings pane, each drawn
+        with the app's real stylesheet and real values read off the running daemon.
+        <b>All six are interactive</b> - tabs switch, rows expand, the sheet opens, presets
+        apply - and every pixel figure in a header chip is measured off the laid-out page
+        rather than asserted in prose, so a claim cannot drift from what the mockup renders.
+      </p>
+
+      <h2>The measurement</h2>
+      <p>
+        Taken from the live pane at an 849px viewport. The control column is
+        <b>1988px tall</b> - 2.3 screens - and carries <b>14 interactive controls</b>,
+        roughly one every 142px. Beside it the ledger is <b>597px</b> and scrolls inside
+        itself, so it never grows. Everything past the first screen of scroll is form on the
+        left and dead space on the right.
+      </p>
+      <div class="diag">
+        <div class="diag-row">
+          <span class="diag-name">Foreman card</span>
+          <span class="diag-bar" style="width: 260px"></span>
+          <span class="diag-val">743px · 8 controls</span>
+        </div>
+        <div class="diag-row">
+          <span class="diag-name">Backlog launch models</span>
+          <span class="diag-bar" style="width: 183px"></span>
+          <span class="diag-val">523px · 3 controls</span>
+        </div>
+        <div class="diag-row">
+          <span class="diag-name">Completion safeguards</span>
+          <span class="diag-bar" style="width: 129px"></span>
+          <span class="diag-val">369px · 2 controls</span>
+        </div>
+        <div class="diag-row">
+          <span class="diag-name">Live repositories</span>
+          <span class="diag-bar" style="width: 55px"></span>
+          <span class="diag-val">157px · read-only summary</span>
+        </div>
+        <div class="diag-row">
+          <span class="diag-name">Right now</span>
+          <span class="diag-bar" style="width: 52px"></span>
+          <span class="diag-val">148px · readout</span>
+        </div>
+        <div class="diag-row" style="margin-top: 6px">
+          <span class="diag-name">ledger, beside all of it</span>
+          <span class="diag-bar is-ledger" style="width: 209px"></span>
+          <span class="diag-val">597px, self-scrolling</span>
+        </div>
+        <div class="diag-row" style="margin-top: 10px">
+          <span class="diag-name">the column, end to end</span>
+          <span class="diag-total" style="width: 696px"
+            ><span class="diag-fold-label">the fold - 849px</span></span
+          >
+        </div>
+        <div class="diag-row">
+          <span class="diag-name"></span>
+          <span class="diag-val" style="padding-left: 2px">1988px · 14 controls</span>
+        </div>
+      </div>
+      <p style="margin-top: 14px">
+        Two things follow. <b>Seven of the fourteen controls are model dropdowns</b> -
+        provider, four Foreman roles, three backlog harnesses - which are set once and then
+        never touched; they occupy about 900px, or 45% of the column. And <b>most of the
+        pixels are prose</b>: every field carries a two-to-three line blurb that is load
+        bearing the first time and noise every time after.
+      </p>
+
+      <div class="fix">
+        <h4>Corrected in this revision</h4>
+        <p>
+          <b>Foreman has no Trust setting.</b> The first draft gave it a "Trust" group, which
+          invented a control the panel does not have. Foreman cannot edit the repo allowlist:
+          it renders a read-only count and a "Manage in Trust" deep link into the separate
+          Trust category, and that is all it may ever do here. Five of the six now render
+          that line through one shared helper that can only produce a sentence and a link;
+          E has to inline it, and it is the one value in that paragraph with no picker
+          behind it.
+        </p>
+        <p>
+          Two related facts the mockups now get right. <b>The model lists are
+          provider-scoped</b> - this snapshot runs Codex, so every Foreman role lists Codex
+          models and changing the provider clears all four role overrides. And <b>there is no
+          Cheap-tier column on the ledger</b>: that column is keyed on the Shadow posture
+          only, and this snapshot is On, so drawing it would show a permanently empty track.
+          Every value now comes from one verified file, <code>mock-data.js</code>, rather
+          than being retyped into six pages.
+        </p>
+      </div>
+
+      <h2>The six</h2>
+      <p>
+        Each one tests a different idea about what the problem actually is. They are not six
+        skins of the same layout.
+      </p>
+      <div class="cards">
+        <a class="opt" href="option-a-digest.html">
+          <div class="mock-tag">Option A</div>
+          <h3>Digest column</h3>
+          <span class="kind">Change the resting state</span>
+          <p>
+            The column becomes a readout - one line per setting,
+            <code>name … value</code> - and expands into the real editor when clicked. Config
+            doubles as the answer to "what is Foreman set to".
+          </p>
+          <span class="go">553px at rest · 944px with a row open · open →</span>
+        </a>
+        <a class="opt" href="option-b-tabs.html">
+          <div class="mock-tag">Option B</div>
+          <h3>Grouped tabs</h3>
+          <span class="kind">Paginate it</span>
+          <p>
+            Four tabbed groups, so the column is as tall as the tallest group rather than
+            their sum. Nothing collapses, nothing takes a second click, and the blurbs move
+            to a hover.
+          </p>
+          <span class="go">557px to 729px by tab · open →</span>
+        </a>
+        <a class="opt" href="option-c-ledger-first.html">
+          <div class="mock-tag">Option C</div>
+          <h3>Ledger first</h3>
+          <span class="kind">Take the width back</span>
+          <p>
+            The column goes away. A 56px posture bar keeps the live readings and the cheap
+            tier; everything set-once moves behind a Configure sheet, and the ledger takes
+            the full width.
+          </p>
+          <span class="go">0px column · ledger +46% · open →</span>
+        </a>
+        <a class="opt" href="option-d-grid.html">
+          <div class="mock-tag">Option D</div>
+          <h3>Card grid</h3>
+          <span class="kind">Turn the page 90 degrees</span>
+          <p>
+            Ledger full width on top, the six cards below as a responsive grid. Nothing is
+            hidden and nothing takes an extra click; the settings spend horizontal space
+            instead of vertical.
+          </p>
+          <span class="go">808px comfortable · 489px compact · open →</span>
+        </a>
+        <a class="opt" href="option-e-sentence.html">
+          <div class="mock-tag">Option E</div>
+          <h3>The config as a sentence</h3>
+          <span class="kind">Re-express it entirely</span>
+          <p>
+            The configuration stated as readable English, where every value is an inline
+            token you click to change. No labels, no blurbs, no form - the sentence is the
+            documentation.
+          </p>
+          <span class="go">325px · the most compact of the six · open →</span>
+        </a>
+        <a class="opt" href="option-f-presets.html">
+          <div class="mock-tag">Option F</div>
+          <h3>Postures, not fields</h3>
+          <span class="kind">Ask a smaller question</span>
+          <p>
+            Three named postures - Cautious, Balanced, Trusting - as the resting state, with
+            the fourteen fields as the detail behind a disclosure. Questions whether the
+            operator should answer 14 questions at all.
+          </p>
+          <span class="go">one question at rest, but 985px of cards · open →</span>
+        </a>
+      </div>
+
+      <h2>Side by side</h2>
+      <div class="cmp-wrap">
+        <table class="cmp">
+          <thead>
+            <tr>
+              <th></th>
+              <th>A · digest</th>
+              <th>B · tabs</th>
+              <th>C · ledger first</th>
+              <th>D · grid</th>
+              <th>E · sentence</th>
+              <th>F · presets</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Config height at rest</th>
+              <td class="best"><b>553px</b></td>
+              <td>557-729px by tab</td>
+              <td class="best"><b>0</b> (56px bar)</td>
+              <td>808px, or 489px compact</td>
+              <td class="best"><b>325px</b></td>
+              <td class="worst">985px, 2519px open</td>
+            </tr>
+            <tr>
+              <th>Ledger width</th>
+              <td>unchanged</td>
+              <td>unchanged</td>
+              <td class="best"><b>+46%</b></td>
+              <td class="best"><b>+35%</b></td>
+              <td>unchanged</td>
+              <td>unchanged</td>
+            </tr>
+            <tr>
+              <th>Anything hidden?</th>
+              <td>editors, behind a row</td>
+              <td class="worst">three groups of four</td>
+              <td class="worst">all of it, behind a sheet</td>
+              <td class="best">nothing</td>
+              <td>blurbs, behind a token</td>
+              <td class="worst">all 14, behind a disclosure</td>
+            </tr>
+            <tr>
+              <th>See a decision and the setting behind it together</th>
+              <td class="best">yes</td>
+              <td class="best">yes</td>
+              <td class="best">yes, that is the point</td>
+              <td class="worst">no - you scroll past one</td>
+              <td class="best">yes</td>
+              <td class="best">yes</td>
+            </tr>
+            <tr>
+              <th>Deep links (<code>data-anchor</code>)</th>
+              <td>expand + flash</td>
+              <td>switch tab + flash</td>
+              <td class="worst">open sheet + scroll + flash</td>
+              <td class="best">scroll + flash, as today</td>
+              <td class="worst">open a token popover</td>
+              <td class="worst">expand the disclosure</td>
+            </tr>
+            <tr>
+              <th>Effect on Inspector / Shipping</th>
+              <td class="best">none - same <code>sc-split</code></td>
+              <td class="best">none - same <code>sc-split</code></td>
+              <td class="worst">they follow, or it forks</td>
+              <td class="worst">they follow, or it forks</td>
+              <td class="best">none</td>
+              <td class="best">none</td>
+            </tr>
+            <tr>
+              <th>New persisted state</th>
+              <td class="best">none</td>
+              <td>which tab</td>
+              <td>sheet open</td>
+              <td class="best">none</td>
+              <td class="best">none</td>
+              <td class="worst">which preset, plus "modified"</td>
+            </tr>
+            <tr>
+              <th>Build size</th>
+              <td>medium</td>
+              <td class="best">small</td>
+              <td class="worst">large</td>
+              <td class="best">small</td>
+              <td class="worst">large</td>
+              <td class="worst">largest - it changes behaviour</td>
+            </tr>
+            <tr>
+              <th>Holds up at 20 settings</th>
+              <td class="best">yes - +30px each</td>
+              <td class="worst">no - a fifth tab unlabels the strip</td>
+              <td class="best">yes - the sheet absorbs it</td>
+              <td class="best">yes - the grid re-flows</td>
+              <td class="worst">no - prose does not append</td>
+              <td class="best">yes - the disclosure absorbs it</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>If you want a recommendation</h2>
+      <p>
+        <b>A, then C.</b> A is the one that fixes the stated problem without betting the
+        console pattern on it: the column stops being long, the panel gains a status readout
+        it does not currently have anywhere, Inspector and Shipping are untouched, and it
+        adds no persisted state. C is the better end state and the argument for it is the
+        width rather than the height - the Asked column is being cut in half by a form nobody
+        reads twice - but it forks the shared console layout, which is worth doing
+        deliberately rather than as a side effect of shortening a column. The two compose:
+        A's digest rows are the natural contents of C's sheet later.
+      </p>
+      <p>
+        <b>D is the sleeper.</b> It is nearly as cheap to build as B, hides nothing at all,
+        and is the only option where every control stays one click from edited. Its real cost
+        is not pixels, it is that you can no longer see a decision and the setting that
+        produced it at the same time - which on this particular panel is most of the value.
+      </p>
+      <p>
+        <b>E and F are the interesting ones to argue about, not to ship first.</b> E is the
+        most compact of the six by a wide margin - 325px, a sixth of today - and the least
+        extensible: a fifteenth setting has to be written into a clause by a person. F is the
+        only option that questions the premise, asking whether an operator should be choosing
+        seven model ids at all, and it is also the only one that invents new persisted state
+        and bakes in model opinions that go stale every time a model ships.
+      </p>
+      <p>
+        <b>One result worth noticing before anyone falls for F.</b> It is the option that
+        asks the fewest questions and it is also the <b>tallest at rest of all six</b>:
+        985px, against 553px for A and 325px for E. Three posture cards that each have to
+        explain themselves cost more vertical space than the fourteen fields they replaced,
+        and opening the detail takes it to 2519px - taller than the 1988px column this whole
+        exercise set out to shorten. Fewer decisions is a real improvement and it is not the
+        same improvement as less panel. If F is attractive, it is attractive for the first
+        reason, and it should be built knowing it makes the second one worse.
+      </p>
+    </div>
+  </body>
+</html>

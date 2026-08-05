@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Session } from "../src/shared/types.ts";
+import type { WorkflowRunStatus, WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { boardColumnModes, groupByTone, TONE_GROUPS } from "../src/web/lib/tone.ts";
 import type { Tone } from "../src/web/lib/format.ts";
 import { canAcceptTask } from "../src/web/components/layouts/BacklogColumn.tsx";
@@ -143,4 +144,46 @@ test("only hook-instrumented sessions in the Idle column accept drops", () => {
   // A review already parked on it: the agent is idle precisely BECAUSE it is waiting
   // on the human. Shows under Needs you.
   assert.equal(canAcceptTask(session({ pendingReviews: 1 }), "/repo"), false);
+});
+
+/** A run summary in the given status, everything else at rest. Only `status` decides here. */
+function run(status: WorkflowRunStatus): WorkflowRunSummary {
+  return {
+    id: "run",
+    bindingId: "binding",
+    workflowId: "workflow",
+    workflowName: "No-Mistakes Review",
+    workflowVersion: 4,
+    sessionId: "s1",
+    noteKey: "note",
+    status,
+    phase: "repair_wait",
+    round: 2,
+    maxRepairRounds: 5,
+    activePersonaNames: [],
+    failedPersonaCount: 1,
+    bypassedPersonaReview: false,
+    gate: "none",
+    gatePrNumber: null,
+    gateHeadShort: null,
+    reviewPosture: null,
+    uncertainDeliveryCount: 0,
+    refusedDeliveryCount: 0,
+    updatedAt: 10,
+  };
+}
+
+test("a session an open workflow run holds refuses the drop", () => {
+  // Idle, instrumented, and in the right repo - droppable in every way except that a run
+  // owns its next turn. The drop is a reset (`dropTaskOnSession` assigns with reset), and
+  // the reset would yank the agent out from under the run the board just marked "held".
+  assert.equal(canAcceptTask(session(), "/repo", run("waiting_for_session")), false);
+  assert.equal(canAcceptTask(session(), "/repo", run("running")), false);
+  assert.equal(canAcceptTask(session(), "/repo", run("blocked")), false);
+  // A finished run releases the drop target the same instant it releases the section rule.
+  assert.equal(canAcceptTask(session(), "/repo", run("completed")), true);
+  assert.equal(canAcceptTask(session(), "/repo", run("cancelled")), true);
+  assert.equal(canAcceptTask(session(), "/repo", run("failed")), true);
+  // No run bound at all reads exactly as it did before runs existed.
+  assert.equal(canAcceptTask(session(), "/repo", null), true);
 });

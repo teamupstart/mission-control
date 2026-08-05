@@ -2,7 +2,14 @@ import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes } from "../../lib/tone.ts";
-import { clusterFallbackLabel, fleetBlocks, orderSessions } from "../../lib/fleet-order.ts";
+import {
+  clusterFallbackLabel,
+  fleetRows,
+  orderSessions,
+  type FleetBlock,
+  type FleetToneGroup,
+} from "../../lib/fleet-order.ts";
+import { heldSessionIds } from "../../lib/held.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
@@ -14,6 +21,7 @@ import {
   ColumnWidthToggle,
   EnsembleClusterHead,
   EnsembleRailGroup,
+  FleetSectionHead,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 
@@ -86,7 +94,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // than threaded down - `orderSessions` is idempotent, so re-running it on the list App
   // already ordered returns that order, and both sides stay one fact. (This is exactly the
   // `groupByTone` arrangement it replaces, now with the cluster spans the frames need.)
-  const groups = orderSessions(props.sessions).groups;
+  const groups = orderSessions(props.sessions, heldSessionIds(props.workflowRunBySession)).groups;
   // The dialog's target, resolved fresh every render: `null` here retires a confirm whose
   // agent has since disappeared, rather than leaving a dialog up over a session that is
   // no longer on the board.
@@ -132,6 +140,23 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       ensembleSummary={ensembleSummaryFor(props, s)}
     />
   );
+  /**
+   * One column's rows - section rules included - rendered by whichever row component this
+   * surface uses. The rule placement itself lives in `fleetRows`, so the board and the rail it
+   * morphs into cannot draw it in different places.
+   */
+  const sectioned = (
+    g: FleetToneGroup,
+    render: (block: FleetBlock) => React.JSX.Element,
+  ): React.ReactNode[] =>
+    fleetRows(g).map((row) =>
+      row.kind === "section" ? (
+        <FleetSectionHead key={`section-${row.section}`} kind={row.section} count={row.count} />
+      ) : (
+        render(row)
+      ),
+    );
+
   const railRow = (s: Session): React.JSX.Element => (
     <RailRow
       key={s.id}
@@ -228,7 +253,33 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     onToggle={() => toggleWide(g.tone)}
                   />
                 )}
-                <span className="board-col-n">{g.sessions.length}</span>
+                {/* One number when the column is one kind of thing, two when it is not. A
+                    column holding three agents an open run owns and two that are genuinely free
+                    has no honest single count: "5" is the number a dispatch decision reads, and
+                    only two of those five can take work.
+
+                    The free pill is dropped when there are no free agents, matching `fleetRows`
+                    dropping the free RULE in the same case. "0 free · 1 held" counts a side of
+                    the split that is not there, and the pair then disagreed with the single
+                    rule below it about whether this column had two halves at all. */}
+                {g.heldFrom === null ? (
+                  <span className="board-col-n">{g.sessions.length}</span>
+                ) : (
+                  <>
+                    {g.heldFrom > 0 && (
+                      <Tooltip
+                        label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}
+                      >
+                        <span className="board-col-n n-free">{g.heldFrom} free</span>
+                      </Tooltip>
+                    )}
+                    <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                      <span className="board-col-n n-held">
+                        {g.sessions.length - g.heldFrom} held
+                      </span>
+                    </Tooltip>
+                  </>
+                )}
                 {/* A revealed column can be put back where it came from. Only offered
                     on empty ones - a column with sessions in it is not stashable. */}
                 {modes.get(g.tone) === "revealed" && revealed.has(g.tone) && (
@@ -264,11 +315,13 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   // The clicked column, now a console rail: the same RailRow (and the same
                   // cluster header) the console uses, so opening a column and switching to
                   // the console read alike.
-                  fleetBlocks(g).map((block) =>
+                  sectioned(g, (block) =>
                     block.kind === "session" ? (
                       railRow(block.session)
                     ) : (
-                      <div className="rail-cluster" key={`cluster-${block.runId}`}>
+                      // `block.key`, not the runId: a run split across the free/held boundary
+                      // frames once per side, and two frames keyed by one run collide.
+                      <div className="rail-cluster" key={block.key}>
                         <EnsembleRailGroup
                           summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
                           fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
@@ -284,7 +337,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   // arrow keys walk (`orderSessions` decided both). The frame is presentational
                   // only: it carries no drag handlers, so a dragover started on a tile inside it
                   // bubbles exactly as it did when the tiles were loose children.
-                  fleetBlocks(g).map((block) =>
+                  sectioned(g, (block) =>
                     block.kind === "session" ? (
                       tile(block.session)
                     ) : (
@@ -292,7 +345,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                         className={`board-cluster${
                           blockedMembersIn(block.sessions) > 0 ? " needs-you" : ""
                         }`}
-                        key={`cluster-${block.runId}`}
+                        // `block.key`, not the runId - see the rail cluster above.
+                        key={block.key}
                       >
                         <EnsembleClusterHead
                           summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}

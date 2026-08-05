@@ -1,8 +1,10 @@
 import type { Session } from "@shared/types.ts";
-import { clusterFallbackLabel, fleetBlocks, orderSessions } from "../../lib/fleet-order.ts";
+import { clusterFallbackLabel, fleetRows, orderSessions } from "../../lib/fleet-order.ts";
+import { heldSessionIds } from "../../lib/held.ts";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
-import { blockedMembersIn, EnsembleRailGroup } from "../session-bits.tsx";
+import { blockedMembersIn, EnsembleRailGroup, FleetSectionHead } from "../session-bits.tsx";
+import { Tooltip } from "../Tooltip.tsx";
 import { ensembleSummaryFor, type SessionViewProps } from "./types.ts";
 
 /**
@@ -26,9 +28,10 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   // an ensemble's siblings sit together under one header. Empty groups are dropped here (and
   // only here - the contract is that `orderSessions` returns them all, because App's board
   // column arrays depend on the indices lining up whether or not a column is on screen).
-  const groups = orderSessions(props.sessions).groups.filter(
-    (g) => g.sessions.length > 0,
-  );
+  const groups = orderSessions(
+    props.sessions,
+    heldSessionIds(props.workflowRunBySession),
+  ).groups.filter((g) => g.sessions.length > 0);
 
   // The zone only reads on screen once a session is open beside the rail; with an empty
   // pane there is no reader to hand focus to, so it always presents as the rail.
@@ -61,23 +64,52 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
           <div key={g.tone}>
             <div className={`rail-group tone-${g.tone}`}>
               {g.label}
-              <span className="rail-group-n">{g.sessions.length}</span>
+              {/* The same split the board head draws, in the rail's register: "idle 5" over
+                  three held agents reads as five free ones, and the rail is the surface a
+                  dispatch glance actually scans. One number when the group is one kind of
+                  thing, two when it is not; the free side drops at zero exactly as the
+                  board's pill and `fleetRows`' free rule do. */}
+              {g.heldFrom === null ? (
+                <span className="rail-group-n">{g.sessions.length}</span>
+              ) : (
+                <span className="rail-group-n rail-group-split">
+                  {g.heldFrom > 0 && (
+                    <Tooltip label={`${g.heldFrom} of ${g.sessions.length} idle agents can take work`}>
+                      <span className="n-free">{g.heldFrom} free</span>
+                    </Tooltip>
+                  )}
+                  <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
+                    <span className="n-held">{g.sessions.length - g.heldFrom} held</span>
+                  </Tooltip>
+                </span>
+              )}
             </div>
             {/* Sibling members of one run sit under a header row of their own, inside the
                 tone section they belong to. The header is NOT a session row: rail navigation
                 walks session ids, so an arrow key steps over it (`layoutNav.ts`). */}
-            {fleetBlocks(g).map((block) =>
-              block.kind === "session" ? (
-                railRow(block.session)
+            {/* The same free/held rule the board draws. `orderSessions` sorts held sessions
+                last within `idle` for every layout, so without this the rail would reorder
+                with nothing on screen saying why. */}
+            {fleetRows(g).map((row) =>
+              row.kind === "section" ? (
+                <FleetSectionHead
+                  key={`section-${row.section}`}
+                  kind={row.section}
+                  count={row.count}
+                />
+              ) : row.kind === "session" ? (
+                railRow(row.session)
               ) : (
-                <div className="rail-cluster" key={`cluster-${block.runId}`}>
+                // `row.key`, not the runId: a run split across the free/held boundary
+                // frames once per side, and two frames keyed by one run collide.
+                <div className="rail-cluster" key={row.key}>
                   <EnsembleRailGroup
-                    summary={props.ensembleSummaryByRun?.get(block.runId) ?? null}
-                    fallbackLabel={clusterFallbackLabel(block.sessions[0]!)}
-                    blockedHere={blockedMembersIn(block.sessions)}
-                    onOpen={() => props.onOpenEnsemble?.(block.runId)}
+                    summary={props.ensembleSummaryByRun?.get(row.runId) ?? null}
+                    fallbackLabel={clusterFallbackLabel(row.sessions[0]!)}
+                    blockedHere={blockedMembersIn(row.sessions)}
+                    onOpen={() => props.onOpenEnsemble?.(row.runId)}
                   />
-                  {block.sessions.map(railRow)}
+                  {row.sessions.map(railRow)}
                 </div>
               ),
             )}

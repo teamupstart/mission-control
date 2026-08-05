@@ -6,6 +6,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ConsoleView } from "../src/web/components/layouts/ConsoleView.tsx";
 import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
+import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 
@@ -92,6 +93,55 @@ test("the rail hands its focus zone to the console via a data attribute", () => 
   // The reader body is the focusable target - Tab lands on the conversation pane, not the
   // whole section, so its ring frames what is read and a stray Tab does not hit the header.
   assert.match(detailFocused, /class="detail-body" tabindex="-1"/);
+});
+
+test("the rail group count splits into free and held, like the board head", () => {
+  // "idle 5" over three held agents reads as five free ones - the rail is the surface a
+  // dispatch glance scans, so its count has to make the same distinction the board's does.
+  const free = mkSession({ id: "free-1", name: "free", state: "idle", activity: null });
+  const held = mkSession({ id: "held-1", name: "held", state: "idle", activity: null });
+  const run: WorkflowRunSummary = {
+    id: "run",
+    bindingId: "binding",
+    workflowId: "workflow",
+    workflowName: "Review",
+    workflowVersion: 1,
+    sessionId: held.id,
+    noteKey: "note",
+    status: "running",
+    phase: "persona_feedback",
+    round: 1,
+    maxRepairRounds: 5,
+    activePersonaNames: [],
+    failedPersonaCount: 0,
+    bypassedPersonaReview: false,
+    gate: "none",
+    gatePrNumber: null,
+    gateHeadShort: null,
+    reviewPosture: null,
+    updatedAt: 1,
+  };
+  const html = renderToStaticMarkup(
+    createElement(
+      ConsoleView,
+      props({
+        sessions: [free, held],
+        workflowRunBySession: new Map([[held.id, run]]),
+      }),
+    ),
+  );
+  assert.match(html, /class="rail-group-n rail-group-split"/);
+  assert.match(html, /class="n-free"[^>]*>1 free</);
+  assert.match(html, /class="n-held"[^>]*>1 held</);
+  // And the held row itself is marked, so the split survives the header scrolling away.
+  assert.match(html, /class="rail-row [^"]*is-held/);
+
+  // A group with nothing held keeps its single number - no split to announce.
+  const plain = renderToStaticMarkup(
+    createElement(ConsoleView, props({ sessions: [free] })),
+  );
+  assert.match(plain, /class="rail-group-n">1</);
+  assert.doesNotMatch(plain, /rail-group-split/);
 });
 
 test("with nothing open the zone is the rail, whatever App last held", () => {

@@ -1,0 +1,1369 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mission Control · Idle, but held by a running workflow (4 treatments)</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      /*
+       * IDLE, BUT HELD BY A RUNNING WORKFLOW - four treatments.
+       *
+       * WHAT IS ACTUALLY WRONG (this is not what it first looks like)
+       *
+       * The TILE is already fine. `SessionTile` mounts `WorkflowLadderPanel`, so a board
+       * tile bound to a run already draws the peek reproduced below verbatim: the
+       * workflow name, its version, the run state ("Reviewing"), the round counter, the
+       * consequential rung, that rung's members, and a sentence. It even has a disclosure
+       * that expands the full Stage Ladder in place. Nothing about "show the workflow on
+       * the tile" is missing - it shipped.
+       *
+       * What lies is the BOARD around it:
+       *
+       *   1. THE COLUMN. `stateDisplay(session)` reads a Session and nothing else, so it
+       *      says `idle` - correctly, the agent did finish its turn. The board files it
+       *      under `idle` beside agents that are genuinely free.
+       *   2. THE COUNT. "5" in the idle column header, and "idle" in the topbar. Two of
+       *      those five can take work. That is the number every dispatch decision reads.
+       *   3. THE DROP TARGET - and this one is not cosmetic. `canAcceptTask`
+       *      (BacklogColumn.tsx:409) is:
+       *
+       *          if (!repoRoot) return false;
+       *          if (!session.instrumented) return false;
+       *          if (stateDisplay(session).tone !== "idle") return false;
+       *          return session.repoRoot != null && session.repoRoot === repoRoot;
+       *
+       *      It knows nothing about workflow runs. So a session held mid-run LIGHTS UP as
+       *      a drop target during a backlog drag, and the drop calls
+       *      `api.assignTask(id, session.id, true)` - reset true. You can hand a backlog
+       *      task to an agent a No-Mistakes run is in the middle of, and reset it.
+       *      "Nothing can be done" understates it: the one thing the board actively
+       *      invites you to do is the one thing that breaks the run.
+       *
+       * Turn on "Simulate a backlog drag" below to see which treatments fix #3. Only one
+       * does, and it is worth knowing which - see the note under treatment D.
+       *
+       * WHAT ALL FOUR NEED
+       * Held-ness is a JOIN: a `WorkflowRunSummary` whose `sessionId` is this session and
+       * whose `status` passes `workflowRunIsOpen()`. `App.tsx` already builds exactly that
+       * map (`workflowRunBySession`) and hands it to the tile. The work is threading it
+       * into the board's GROUPING and into `canAcceptTask` - not new plumbing.
+       *
+       * Markup and class names below are the shipping ones (`.board-col`, `.tile`,
+       * `.wf-tile-peek`, `.tile-drop-hint`), and the CSS is lifted from styles.css, so
+       * the only new thing in each treatment is what that treatment adds.
+       */
+
+      :root {
+        /* styles.css moved --dim to #7c8798; theme.css has drifted. Overridden locally
+           rather than fixed in theme.css, which would restyle sibling mockups. */
+        --dim: #7c8798;
+        --select: #35c08a;
+        --purple: #a371f7;
+        /* The held tone. Not --working blue: that is the RUN's colour and already means a
+           running workflow (`.workflow-running`). Not --idle green: that is the "free,
+           take me" colour this page exists to protect. Not a cyan: ~28 degrees off
+           --idle green is illegible at 7px, and idle-vs-held is the exact distinction
+           that has to survive a glance. Purple is far from both, and is NOT a new token -
+           styles.css ships --purple. Its honest cost: it already means --foreman,
+           --pr-merged and --cost. All three are small footer marks; --tone-color (spine,
+           swatch, column head) has no purple member today. */
+        --held: var(--purple);
+      }
+      .tone-held {
+        --tone-color: var(--held);
+      }
+
+      /* ---- lab chrome (not part of the product) ---- */
+      .lab {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 20px;
+        border-bottom: 1px solid var(--border-soft);
+        background: color-mix(in oklab, var(--bg-2) 70%, transparent);
+      }
+      .lab b {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 1.1px;
+        text-transform: uppercase;
+        color: var(--dim);
+        margin-right: 2px;
+      }
+      .lab button {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 11px;
+        font: inherit;
+        font-size: 11.5px;
+        color: var(--muted);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        cursor: pointer;
+      }
+      .lab button:hover {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--held) 40%, var(--border));
+      }
+      .lab button.on {
+        color: var(--bg);
+        font-weight: 650;
+        background: var(--held);
+        border-color: var(--held);
+      }
+      .lab button.drag.on {
+        background: var(--select);
+        border-color: var(--select);
+      }
+      .lab button .k {
+        font-size: 9.5px;
+        font-weight: 800;
+        opacity: 0.72;
+      }
+      .lab .spacer {
+        flex: 1;
+      }
+      .lab .hint {
+        font-size: 11px;
+        color: var(--dim);
+      }
+
+      .caption {
+        display: grid;
+        grid-template-columns: 40px minmax(0, 74ch) minmax(0, 1fr);
+        gap: 6px 16px;
+        align-items: start;
+        padding: 12px 20px 2px;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .caption .k {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.7px;
+        color: var(--held);
+        padding-top: 3px;
+      }
+      .caption p {
+        margin: 0;
+      }
+      .caption b {
+        color: var(--fg);
+        font-weight: 620;
+      }
+      .caption code {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--idle);
+      }
+      .tradeoffs {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+      .t {
+        display: flex;
+        gap: 7px;
+        color: var(--muted);
+      }
+      .t .g {
+        flex: none;
+        width: 11px;
+        font-weight: 800;
+      }
+      .t.up .g {
+        color: var(--idle);
+      }
+      .t.down .g {
+        color: var(--attention);
+      }
+      .t.fix .g {
+        color: var(--select);
+      }
+      .t b {
+        color: var(--fg);
+      }
+
+      /* ---- board (styles.css) ---- */
+      .board {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        align-items: stretch;
+        gap: 14px;
+        padding: 14px 20px 20px;
+        overflow-x: auto;
+      }
+      .board-col {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        flex: 1 1 0;
+        min-width: 258px;
+        overflow: hidden;
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius);
+        background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+      }
+      .board-col-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border-soft);
+        white-space: nowrap;
+      }
+      .board-swatch {
+        flex: none;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--tone-color, var(--neutral));
+      }
+      .board-col.tone-attention .board-swatch {
+        box-shadow: 0 0 10px var(--attention);
+      }
+      .board-col-head h2 {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: var(--tone-color, var(--muted));
+      }
+      .board-col-n {
+        margin-left: auto;
+        font-size: 11.5px;
+        font-weight: 680;
+        font-variant-numeric: tabular-nums;
+        color: var(--dim);
+        padding: 1px 7px;
+        border: 1px solid var(--border-soft);
+        border-radius: 999px;
+        background: var(--panel);
+      }
+      /* Treatment A's split count. Two pills where the shipping head has one. */
+      .board-col-n.n-free {
+        color: var(--idle);
+        border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+        background: color-mix(in oklab, var(--idle) 10%, var(--panel));
+      }
+      .board-col-n.n-held {
+        margin-left: 0;
+        color: var(--held);
+        border-color: color-mix(in oklab, var(--held) 42%, var(--border));
+        background: color-mix(in oklab, var(--held) 12%, var(--panel));
+      }
+      .board-col-body {
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        padding: 9px;
+        overflow-y: auto;
+      }
+      .board-col.is-calm {
+        flex: 0 1 250px;
+        min-width: 218px;
+      }
+      .board-allclear {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        flex: 1;
+        margin: 0;
+        padding: 22px 10px;
+        text-align: center;
+      }
+      .board-allclear-tick {
+        font-size: 17px;
+        color: var(--idle);
+      }
+      .board-allclear b {
+        font-size: 12px;
+        font-weight: 640;
+        color: var(--muted);
+      }
+      .board-allclear span:last-child {
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .board-col.col-held {
+        border-color: color-mix(in oklab, var(--held) 30%, var(--border));
+        background: color-mix(in oklab, var(--held) 5%, transparent);
+      }
+      .board-col-note {
+        margin: 0;
+        padding: 0 3px 2px;
+        font-size: 10.5px;
+        line-height: 1.45;
+        color: var(--dim);
+      }
+
+      /* The stash rail for empty columns. */
+      .board-stash {
+        flex: 0 0 36px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 0;
+        border: 1px dashed var(--border-soft);
+        border-radius: var(--radius);
+        background: color-mix(in oklab, var(--bg-2) 35%, transparent);
+      }
+      .board-stash-label {
+        writing-mode: vertical-rl;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .board-stash-chip {
+        writing-mode: vertical-rl;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 3px;
+        font: inherit;
+        font-size: 10px;
+        color: var(--muted);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        cursor: pointer;
+      }
+
+      /* ---- backlog column (the drag source - it is why the drop target matters) ---- */
+      .board-backlog {
+        flex: 0 1 226px;
+        min-width: 206px;
+      }
+      .bl-card {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: linear-gradient(var(--panel), var(--panel-2));
+        cursor: grab;
+      }
+      .bl-card.lifted {
+        border-color: var(--select);
+        box-shadow: 0 0 0 1px var(--select);
+        transform: rotate(-1.2deg);
+      }
+      .bl-title {
+        font-size: 11.5px;
+        font-weight: 620;
+        line-height: 1.35;
+      }
+      .bl-meta {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 9.5px;
+        color: var(--dim);
+      }
+      .bl-repo {
+        font-family: var(--mono);
+        color: var(--idle);
+      }
+
+      /* ---- tile (styles.css) ---- */
+      .tile {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        width: 100%;
+        padding: 10px 11px 9px 13px;
+        text-align: left;
+        font: inherit;
+        color: var(--fg);
+        background: linear-gradient(var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+        cursor: pointer;
+      }
+      .tile::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        border-radius: 10px 0 0 10px;
+        background: var(--tone-color, var(--neutral));
+      }
+      .tile.attention {
+        border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+      }
+      .tile.tone-exited {
+        opacity: 0.62;
+      }
+      .tile.can-drop {
+        border-color: color-mix(in oklab, var(--select) 55%, var(--border));
+      }
+      .tile-drop-hint {
+        font-size: 10.5px;
+        font-weight: 650;
+        color: var(--select);
+      }
+      .tile-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .tile-name {
+        flex: 1;
+        min-width: 0;
+        font-size: 12.5px;
+        font-weight: 640;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .agent-dot {
+        background: var(--agent-accent, var(--neutral));
+        box-shadow: 0 0 8px color-mix(in oklab, var(--agent-accent, var(--neutral)) 60%, transparent);
+      }
+      .tile-goal {
+        font-size: 11.5px;
+        line-height: 1.4;
+        color: var(--muted);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .tile-marks {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: wrap;
+      }
+      .tile-marks:empty {
+        display: none;
+      }
+      .tile-flag {
+        padding: 1px 6px;
+        font-size: 10px;
+        font-weight: 650;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        background: var(--bg-2);
+      }
+      .tile-flag.tf-queue {
+        border-color: color-mix(in oklab, var(--working) 35%, var(--border));
+        color: var(--working);
+      }
+      .tile-flag.pr-open {
+        border-color: color-mix(in oklab, var(--pr-open) 45%, var(--border));
+        color: var(--pr-open);
+      }
+      .tile-runtime-line {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+      }
+      .tile-activity {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .tile-activity .ta-glyph {
+        flex: none;
+        font-size: 10px;
+        color: var(--working);
+        animation: tile-activity-spin 1.6s linear infinite;
+      }
+      .tile-activity .ta-txt {
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      @keyframes tile-activity-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .tile-foot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .tile-branch {
+        flex: 1;
+        min-width: 3.5em;
+        font-family: var(--mono);
+        color: var(--idle);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tile-seen {
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .mode {
+        padding: 1px 6px;
+        font-size: 10px;
+        font-weight: 650;
+        border-radius: 999px;
+        border: 1px solid color-mix(in oklab, var(--idle) 42%, var(--border));
+        background: color-mix(in oklab, var(--idle) 10%, transparent);
+        color: var(--idle);
+      }
+      .cost-chip {
+        padding: 1px 6px;
+        font-size: 10px;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+        border-radius: 999px;
+        border: 1px solid color-mix(in oklab, var(--cost, var(--purple)) 40%, var(--border));
+        color: var(--purple);
+      }
+
+      /* ---- the workflow peek, verbatim from styles.css. THIS ALREADY SHIPS. ---- */
+      .wf-tile-peek {
+        --wf-tile-peek-tone: var(--dim);
+        min-width: 0;
+        padding: 8px 9px 8px 31px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--panel-2) 88%, var(--bg));
+      }
+      .wf-tile-peek.workflow-running {
+        --wf-tile-peek-tone: var(--working);
+      }
+      .wf-tile-peek.workflow-waiting {
+        --wf-tile-peek-tone: var(--attention);
+      }
+      .wf-tile-peek.workflow-passed {
+        --wf-tile-peek-tone: var(--idle);
+      }
+      .wf-tile-peek-head {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        min-width: 0;
+      }
+      .wf-tile-peek-name {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--working);
+        font-size: 10.5px;
+        font-weight: 700;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wf-tile-peek-version,
+      .wf-tile-peek-round {
+        flex: none;
+        color: var(--dim);
+        font-family: var(--mono);
+        font-size: 9.5px;
+        font-variant-numeric: tabular-nums;
+      }
+      .wf-tile-peek-runstate {
+        min-width: 0;
+        overflow: hidden;
+        font-size: 9.5px;
+        font-weight: 700;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wf-tile-peek-runstate.workflow-running {
+        color: var(--working);
+      }
+      .wf-tile-peek-runstate.workflow-waiting {
+        color: var(--attention);
+      }
+      .wf-tile-peek-round {
+        margin-left: auto;
+      }
+      .wf-tile-peek-rung {
+        position: relative;
+        min-width: 0;
+        margin-top: 6px;
+      }
+      .wf-tile-peek-rung::before {
+        content: "";
+        position: absolute;
+        top: -31px;
+        bottom: -8px;
+        left: -16px;
+        width: 1px;
+        background: color-mix(in oklab, var(--wf-tile-peek-tone) 50%, var(--border));
+      }
+      .wf-tile-peek-rung::after {
+        content: "";
+        position: absolute;
+        top: 4px;
+        left: -21px;
+        width: 10px;
+        height: 10px;
+        box-sizing: border-box;
+        border: 2px solid var(--wf-tile-peek-tone);
+        border-radius: 50%;
+        background: color-mix(in oklab, var(--wf-tile-peek-tone) 36%, var(--panel-2));
+        box-shadow: 0 0 0 3px color-mix(in oklab, var(--wf-tile-peek-tone) 12%, transparent);
+      }
+      .wf-tile-peek-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+      }
+      .wf-tile-peek-title {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        min-width: 0;
+      }
+      .wf-tile-peek-title strong {
+        flex: none;
+        font-size: 11px;
+        font-weight: 650;
+      }
+      .wf-tile-peek-title > span {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--dim);
+        font-size: 9.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wf-tile-peek-state {
+        flex: none;
+        margin-left: auto;
+        color: var(--wf-tile-peek-tone);
+        font-size: 9.5px;
+        font-weight: 700;
+      }
+      .wf-tile-peek-members {
+        display: flex;
+        gap: 4px 9px;
+        flex-wrap: wrap;
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 9.5px;
+      }
+      .wf-tile-peek-members > span {
+        display: inline-flex;
+        gap: 3px;
+        min-width: 0;
+      }
+      .wf-tile-peek-members > .workflow-passed {
+        color: var(--idle);
+      }
+      .wf-tile-peek-members > .workflow-running {
+        color: var(--working);
+      }
+      .tile-workflow-disclosure-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .tile-workflow-disclosure-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex: none;
+        padding: 3px 7px;
+        font: inherit;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-2);
+        cursor: pointer;
+        font-size: 10px;
+      }
+      .tile-workflow-chevron {
+        display: inline-block;
+        color: var(--working);
+      }
+      .tile-workflow-disclosure-hint {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--dim);
+        font-size: 9.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ================= what each treatment ADDS ================= */
+
+      /* A - the tile stays put, and reads as parked. */
+      .tile.is-held::before {
+        background: var(--held);
+      }
+      .tile.is-held {
+        border-color: color-mix(in oklab, var(--held) 30%, var(--border));
+        background: linear-gradient(color-mix(in oklab, var(--held) 7%, var(--panel)), var(--panel-2));
+      }
+      .held-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex: none;
+        padding: 1px 7px;
+        font-size: 9.5px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+        border-radius: 999px;
+        border: 1px solid color-mix(in oklab, var(--held) 45%, var(--border));
+        background: color-mix(in oklab, var(--held) 13%, transparent);
+        color: var(--held);
+      }
+
+      /* B - sections inside the idle column. */
+      .col-sect {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 3px 3px 1px;
+      }
+      .col-sect::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--border-soft);
+      }
+      .col-sect b {
+        font-size: 9.5px;
+        font-weight: 800;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .col-sect .cnt {
+        font-size: 9.5px;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        color: var(--dim);
+      }
+      .col-sect.s-free b,
+      .col-sect.s-free .cnt {
+        color: var(--idle);
+      }
+      .col-sect.s-held b,
+      .col-sect.s-held .cnt {
+        color: var(--held);
+      }
+      .col-sect.s-held::after {
+        background: color-mix(in oklab, var(--held) 30%, var(--border-soft));
+      }
+      .held-why {
+        margin: 0;
+        padding: 0 3px;
+        font-size: 10px;
+        line-height: 1.45;
+        color: var(--dim);
+      }
+
+      /* C - the refusal. The tile does not light up, and says why where the
+         drop hint would have been. */
+      .tile.is-refused {
+        border-color: color-mix(in oklab, var(--held) 34%, var(--border));
+        opacity: 0.72;
+      }
+      .tile-drop-refused {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 10.5px;
+        font-weight: 650;
+        color: var(--held);
+      }
+      .peek-held-line {
+        margin: 6px 0 0;
+        font-size: 9.5px;
+        line-height: 1.45;
+        color: var(--held);
+      }
+
+      body.dragging .board-backlog {
+        border-color: color-mix(in oklab, var(--select) 40%, var(--border));
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mockbar">
+      <b>MOCKUP</b>
+      <span>Idle, but held by a running workflow</span>
+      <span class="sep"></span>
+      <a href="index.html">← all mockups</a>
+      <a href="board-columns.html">board columns</a>
+      <a href="workflow-bind-affordance.html">workflow bind</a>
+    </div>
+
+    <div id="app">
+      <div class="topbar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <h1>Mission Control</h1>
+          <span class="layout-tag">Board</span>
+        </div>
+        <div class="filter-box">
+          <span class="filter-icon">⌕</span>
+          <input class="filter-input" placeholder="Filter sessions" />
+        </div>
+        <div class="summary">
+          <span class="stat"><span class="stat-n">9</span><span class="stat-label">sessions</span></span>
+          <span class="stat stat-attention"><span class="stat-n">1</span><span class="stat-label">needs you</span></span>
+          <span class="stat stat-working"><span class="stat-n">2</span><span class="stat-label">working</span></span>
+          <span class="stat" id="capacity-stat"></span>
+        </div>
+        <span style="flex: 1"></span>
+        <button class="ghost-btn">Roundup <span class="ghost-badge">3</span></button>
+        <button class="dispatch-btn">Dispatch</button>
+        <span class="link"><span class="link-dot"></span>live</span>
+      </div>
+
+      <div class="lab">
+        <b>Treatment</b>
+        <button data-t="count"><span class="k">A</span>Honest column count</button>
+        <button data-t="split"><span class="k">B</span>Section the idle column</button>
+        <button data-t="refuse"><span class="k">C</span>Refuse the drop</button>
+        <button data-t="column"><span class="k">D</span>New “held” column</button>
+        <span class="spacer"></span>
+        <button class="drag" id="drag-toggle">◇ Simulate a backlog drag</button>
+      </div>
+
+      <div class="caption">
+        <span class="k" id="cap-k">A</span>
+        <p id="cap-body"></p>
+        <div class="tradeoffs" id="cap-tradeoffs"></div>
+      </div>
+
+      <div class="board" id="board"></div>
+    </div>
+
+    <script>
+      // Agent accents, verbatim from AGENT_IDENTITY (src/shared/agent.ts). styles.css
+      // deliberately contains no per-agent colour; it arrives as inline --agent-accent.
+      const ACCENT = { claude: "#d97757", codex: "#10a37f", pi: "#4d7cfe" };
+
+      // The peek content is what `workflowLadderPeekView` would project for these runs:
+      // the consequential rung, its members, and the run header.
+      const FLEET = [
+        {
+          id: "s1",
+          name: "Codex sandbox escape prompt",
+          agent: "claude",
+          tone: "attention",
+          goal: "Decide whether the seatbelt profile should allow the tmux control socket",
+          branch: "harness/sandbox-prompt",
+          seen: "2m",
+          model: "Opus 4.6",
+          ctx: 31,
+          mode: "accept edits",
+          cost: "≈$0.41",
+          marks: [{ cls: "tf-review", text: "review" }],
+        },
+        {
+          id: "s2",
+          name: "Migrate Electron shell to 43",
+          agent: "claude",
+          tone: "working",
+          goal: "Port the BrowserWindow geometry tests off the removed remote module",
+          branch: "harness/electron-43",
+          seen: "just now",
+          model: "Sonnet 4.6",
+          ctx: 62,
+          mode: "accept edits",
+          cost: "≈$1.12",
+          activity: "Editing src/electron/window.ts",
+        },
+        {
+          id: "s3",
+          name: "Backlog autopilot retry budget",
+          agent: "codex",
+          tone: "working",
+          goal: "Cap repair retries per task rather than per run, so one bad task cannot starve the queue",
+          branch: "harness/retry-budget",
+          seen: "just now",
+          model: "GPT-5.6",
+          ctx: 18,
+          mode: "approve",
+          cost: "≈$0.63",
+          activity: "Running npm test",
+        },
+
+        // ---- idle, and held by an open run ----
+        {
+          id: "s4",
+          name: "Fix workflow graph view sizing",
+          agent: "codex",
+          runtime: "sdk",
+          tone: "idle",
+          goal: "The run graph clips its last rung below 1280px and the ladder overflows its card",
+          branch: "harness/graph-sizing",
+          seen: "28m",
+          model: "GPT-5.6 Sol",
+          ctx: 45,
+          mode: "approve",
+          cost: "≈$2.55",
+          marks: [{ cls: "pr-open", text: "#241" }],
+          run: {
+            name: "No-Mistakes Review",
+            v: 8,
+            state: "Reviewing",
+            tone: "running",
+            round: 1,
+            max: 5,
+            rung: "Stage 1",
+            sub: "2 checks · all must pass",
+            rungState: "Running",
+            members: [
+              { tone: "passed", glyph: "✓", name: "Check · typecheck" },
+              { tone: "running", glyph: "●", name: "Check · test" },
+            ],
+          },
+        },
+        {
+          id: "s5",
+          name: "Board drill-in keyboard nav",
+          agent: "claude",
+          tone: "idle",
+          goal: "Arrow keys skip the stashed columns, so ← from working lands nowhere",
+          branch: "harness/board-drillin-keys",
+          seen: "6m",
+          model: "Sonnet 4.6",
+          ctx: 71,
+          mode: "accept edits",
+          cost: "≈$3.10",
+          run: {
+            name: "No-Mistakes Review",
+            v: 8,
+            state: "Reviewing",
+            tone: "running",
+            round: 2,
+            max: 5,
+            rung: "Stage 3",
+            sub: "3 reviewers · all must pass",
+            rungState: "Running",
+            members: [
+              { tone: "passed", glyph: "✓", name: "Code Risk Reviewer" },
+              { tone: "running", glyph: "●", name: "Test Evidence Auditor" },
+              { tone: "running", glyph: "●", name: "Documentation Steward" },
+            ],
+          },
+        },
+        {
+          id: "s6",
+          name: "Task source dedupe by external id",
+          agent: "codex",
+          tone: "idle",
+          goal: "A re-swept issue files a second task because the seen row is keyed on the URL",
+          branch: "harness/source-dedupe",
+          seen: "12m",
+          model: "GPT-5.6",
+          ctx: 22,
+          mode: "approve",
+          cost: "≈$0.88",
+          run: {
+            name: "No-Mistakes Review",
+            v: 8,
+            state: "Waiting for PR",
+            tone: "waiting",
+            round: 1,
+            max: 5,
+            rung: "Pull Request",
+            sub: "1 session action",
+            rungState: "Awaiting push",
+            members: [],
+          },
+        },
+
+        // ---- idle, and genuinely free ----
+        {
+          id: "s7",
+          name: "Persona versioning docs",
+          agent: "claude",
+          tone: "idle",
+          goal: "Document how a persona revision reaches an in-flight run",
+          branch: "harness/persona-docs",
+          seen: "3h",
+          model: "Sonnet 4.6",
+          ctx: 12,
+          mode: "accept edits",
+          cost: "≈$0.09",
+        },
+        {
+          id: "s8",
+          name: "Ensemble decision typography",
+          agent: "codex",
+          tone: "idle",
+          goal: null,
+          branch: "harness/ensemble-type",
+          seen: "41m",
+          model: "GPT-5.6",
+          ctx: 8,
+          mode: "approve",
+          cost: "≈$0.04",
+        },
+
+        {
+          id: "s9",
+          name: "Cost telemetry rollup",
+          agent: "claude",
+          tone: "exited",
+          goal: "Roll per-call cost into the daily total",
+          branch: "harness/cost-rollup",
+          seen: "1h",
+          model: "Sonnet 4.6",
+          ctx: 55,
+          mode: "accept edits",
+          cost: "≈$0.72",
+        },
+      ];
+
+      const BACKLOG = [
+        { title: "Stash rail loses its tooltip after a reveal", repo: "ai-harness", prio: "med" },
+        { title: "Codex rollout scan cap at 400 files", repo: "ai-harness", prio: "high" },
+      ];
+
+      const COLUMNS = [
+        { tone: "attention", label: "needs you" },
+        { tone: "working", label: "working" },
+        { tone: "idle", label: "idle" },
+        { tone: "neutral", label: "unconfirmed" },
+        { tone: "exited", label: "gone" },
+      ];
+
+      const CAPTIONS = {
+        count: {
+          k: "A",
+          body:
+            "<b>The column stops lying about its count.</b> Nothing moves and nothing is added to the "
+            + "tile - the peek already says which run holds it. The idle head reports <b>2 free</b> and "
+            + "<b>3 held</b> instead of one number that means neither, the topbar stat follows, and a "
+            + "held tile carries the purple spine and a <b>held</b> tag so the two kinds of idle are "
+            + "separable at a glance. Cheapest of the four by a wide margin.",
+          up: [
+            "Restores the capacity read with no reordering and no new tile content",
+            "Nothing about keyboard nav, clustering or column modes changes",
+          ],
+          down: [
+            "Held and free tiles still interleave, so you read every tile to find a free one",
+            "The drag still lands: <code>canAcceptTask</code> is untouched",
+          ],
+        },
+        split: {
+          k: "B",
+          body:
+            "<b>The idle column sorts free to the top.</b> A <i>free</i> rule and a <i>held by a "
+            + "workflow</i> rule split the column, so the agents you can actually dispatch to are "
+            + "contiguous and first. The held group carries the explanation once for all of them rather "
+            + "than repeating it per tile. Builds on A - it keeps the split count.",
+          up: [
+            "Free agents are contiguous and first; you stop scanning past held ones",
+            "Explains once per group, not once per tile",
+          ],
+          down: [
+            "A second grouping axis inside a column that is already a group",
+            "Arrow-key nav and <code>fleetBlocks</code> clustering both have to learn the boundary",
+          ],
+        },
+        refuse: {
+          k: "C",
+          body:
+            "<b>Fix the affordance, not the label.</b> <code>canAcceptTask</code> learns about open "
+            + "runs, so a held tile stops lighting up as a drop target and says <b>⊘ held by the run</b> "
+            + "where <code>↳ drop to hand this over</code> would have been. The peek gains one line "
+            + "saying the run sends the next round on its own. This is the only treatment that changes "
+            + "what the board <i>lets you do</i> rather than what it says.",
+          up: [
+            "<b>Closes the footgun</b> - the drop resets an agent mid-run today",
+            "The refusal is stated where the invitation was, so it answers the question you asked",
+          ],
+          down: [
+            "Alone it does not fix the count: the header still reads 5",
+            "A refusal has to survive the drag; the reason must come from the run, not a guess",
+          ],
+        },
+        column: {
+          k: "D",
+          body:
+            "<b>A sixth column, between <i>working</i> and <i>idle</i>.</b> Held sessions leave the "
+            + "idle column entirely, so <code>idle</code> means <i>free, take me</i> again - which is "
+            + "what the topbar stat and Foreman's <code>agentIsFree</code> already assume. It sits after "
+            + "<i>working</i> because the fleet <i>is</i> busy on this work; only the agent is not.",
+          up: [
+            "<code>idle</code> means free again - one column, one meaning",
+            "Held work gets a place beside the other work in flight",
+          ],
+          down: [
+            "A sixth column on a board that already scrolls horizontally at five",
+            "<code>held</code> is not a <code>SessionState</code> - no daemon reports it",
+            "<b>Does not close the footgun.</b> <code>canAcceptTask</code> reads the session's TONE, "
+              + "not its column - the tile moves and stays droppable. D needs C.",
+          ],
+        },
+      };
+
+      const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+
+      let treatment = "count";
+      let dragging = false;
+
+      const isHeld = (s) => Boolean(s.run);
+
+      /**
+       * `canAcceptTask` (BacklogColumn.tsx:409), plus whatever the treatment changes.
+       * Only C teaches it about runs; A, B and D leave it exactly as it ships, which is
+       * the whole point of the drag simulation.
+       */
+      function canAcceptTask(s) {
+        if (!dragging) return false;
+        if (s.tone !== "idle") return false;
+        if (treatment === "refuse" && isHeld(s)) return false;
+        return true;
+      }
+
+      function peek(s) {
+        const r = s.run;
+        return `<section class="wf-tile-peek workflow-${r.tone}">
+          <header class="wf-tile-peek-head">
+            <span class="wf-tile-peek-name">⌁ ${esc(r.name)}</span>
+            <span class="wf-tile-peek-version">v${r.v}</span>
+            <span class="wf-tile-peek-runstate workflow-${r.tone}">${esc(r.state)}</span>
+            <span class="wf-tile-peek-round">R${r.round} / ${r.max}</span>
+          </header>
+          <div class="wf-tile-peek-rung">
+            <div class="wf-tile-peek-row">
+              <span class="wf-tile-peek-title"><strong>${esc(r.rung)}</strong><span>${esc(r.sub)}</span></span>
+              <span class="wf-tile-peek-state">${esc(r.rungState)}</span>
+            </div>
+            ${r.members.length
+              ? `<div class="wf-tile-peek-members">${r.members
+                  .map((m) => `<span class="workflow-${m.tone}"><span>${m.glyph}</span> ${esc(m.name)}</span>`)
+                  .join("")}</div>`
+              : ""}
+            ${treatment === "refuse"
+              ? `<p class="peek-held-line">The run owns this session's next turn. It sends round ${r.round + 1} on its own when ${esc(r.rung)} reports.</p>`
+              : ""}
+          </div>
+        </section>`;
+      }
+
+      function tile(s) {
+        const held = isHeld(s);
+        // In D the COLUMN says held, so the tag on the tile would be saying it twice.
+        const showTag = held && treatment !== "column";
+        const droppable = canAcceptTask(s);
+        const refused = dragging && treatment === "refuse" && held;
+        const cls = [
+          "tile",
+          `tone-${s.tone}`,
+          s.tone === "attention" ? "attention" : "",
+          held ? "is-held" : "",
+          droppable ? "can-drop" : "",
+          refused ? "is-refused" : "",
+        ].filter(Boolean).join(" ");
+        const warn = s.ctx >= 70 ? "var(--attention)" : "var(--idle)";
+        return `<div class="${cls}">
+          <span class="tile-head">
+            <span class="agent-dot" style="--agent-accent: ${ACCENT[s.agent]}"></span>
+            <span class="tile-name">${esc(s.name)}</span>
+            ${showTag ? '<span class="held-tag">held</span>' : ""}
+          </span>
+          ${s.goal ? `<span class="tile-goal">${esc(s.goal)}</span>` : ""}
+          ${s.activity ? `<span class="tile-activity"><span class="ta-glyph">⟳</span><span class="ta-txt">${esc(s.activity)}</span></span>` : ""}
+          ${held ? peek(s) : ""}
+          ${held
+            ? `<div class="tile-workflow-disclosure-row">
+                 <button class="tile-workflow-disclosure-btn"><span class="tile-workflow-chevron">⌄</span> Show workflow</button>
+                 <span class="tile-workflow-disclosure-hint">The active rung stays in context</span>
+               </div>`
+            : ""}
+          <span class="tile-marks">
+            ${s.runtime === "sdk" ? '<span class="tile-flag runtime-flag">◈ Agent SDK</span>' : ""}
+            ${(s.marks ?? []).map((m) => `<span class="tile-flag ${m.cls}">${esc(m.text)}</span>`).join("")}
+          </span>
+          ${droppable ? '<span class="tile-drop-hint">↳ drop to hand this over</span>' : ""}
+          ${refused ? `<span class="tile-drop-refused">⊘ held by ${esc(s.run.name)} · R${s.run.round}/${s.run.max}</span>` : ""}
+          <span class="tile-runtime-line">
+            <span class="rt-pill">${esc(s.model)}</span>
+            <span class="rt-ctx"><span class="rt-meter"><span class="rt-meter-fill" style="width:${s.ctx}%;background:${warn}"></span></span>${s.ctx}%</span>
+            <span class="mode">${esc(s.mode)}</span>
+            <span class="cost-chip">${esc(s.cost)}</span>
+          </span>
+          <span class="tile-foot">
+            <span class="tile-branch">${esc(s.branch)}</span>
+            <span class="tile-seen">${esc(s.seen)}</span>
+          </span>
+        </div>`;
+      }
+
+      function backlogCol() {
+        return `<section class="board-col board-backlog">
+          <header class="board-col-head">
+            <h2 style="color: var(--muted)">Backlog</h2>
+            <span class="board-col-n">${BACKLOG.length}</span>
+          </header>
+          <div class="board-col-body">
+            ${BACKLOG.map((t, i) => `<div class="bl-card${dragging && i === 0 ? " lifted" : ""}">
+              <span class="bl-title">${esc(t.title)}</span>
+              <span class="bl-meta"><span class="bl-repo">${esc(t.repo)}</span>·<span>${esc(t.prio)}</span></span>
+            </div>`).join("")}
+            ${dragging ? '<p class="board-col-note">Card in the air - the board is showing its drop targets.</p>' : ""}
+          </div>
+        </section>`;
+      }
+
+      function head(tone, label, pills) {
+        return `<header class="board-col-head">
+          <span class="board-swatch"></span><h2>${esc(label)}</h2>
+          ${pills.map((p) => `<span class="board-col-n ${p.cls || ""}"${p.title ? ` title="${esc(p.title)}"` : ""}>${esc(p.text)}</span>`).join("")}
+        </header>`;
+      }
+
+      function render() {
+        document.body.classList.toggle("dragging", dragging);
+        const held = FLEET.filter(isHeld);
+        const out = [backlogCol()];
+
+        for (const col of COLUMNS) {
+          let list = FLEET.filter((s) => s.tone === col.tone);
+          if (treatment === "column" && col.tone === "idle") list = list.filter((s) => !isHeld(s));
+
+          if (list.length === 0 && col.tone === "attention") {
+            out.push(`<section class="board-col tone-attention is-calm">
+              ${head("attention", col.label, [{ text: "0" }])}
+              <div class="board-col-body"><p class="board-allclear"><span class="board-allclear-tick">✓</span><b>All clear</b><span>Nothing is waiting on you</span></p></div>
+            </section>`);
+            continue;
+          }
+          if (list.length === 0) continue; // stashed
+
+          if (col.tone === "idle" && treatment === "split") {
+            const free = list.filter((s) => !isHeld(s));
+            const blocked = list.filter(isHeld);
+            out.push(`<section class="board-col tone-idle">
+              ${head("idle", col.label, [
+                { text: `${free.length} free`, cls: "n-free", title: `${free.length} of ${list.length} idle agents can take work` },
+                { text: `${blocked.length} held`, cls: "n-held", title: "Bound to a workflow run that is still open" },
+              ])}
+              <div class="board-col-body">
+                <span class="col-sect s-free"><b>free</b><span class="cnt">${free.length}</span></span>
+                ${free.map(tile).join("")}
+                <span class="col-sect s-held"><b>held by a workflow</b><span class="cnt">${blocked.length}</span></span>
+                <p class="held-why">Each finished its turn and is waiting on a run that is still open. The run sends the next round on its own.</p>
+                ${blocked.map(tile).join("")}
+              </div>
+            </section>`);
+            continue;
+          }
+
+          let pills = [{ text: `${list.length}` }];
+          if (col.tone === "idle" && treatment === "count") {
+            const free = list.filter((s) => !isHeld(s)).length;
+            pills = [
+              { text: `${free} free`, cls: "n-free", title: `${free} of ${list.length} idle agents can take work` },
+              { text: `${list.length - free} held`, cls: "n-held", title: "Bound to a workflow run that is still open" },
+            ];
+          }
+          if (col.tone === "idle" && treatment === "column") {
+            pills = [{ text: `${list.length}`, cls: "n-free", title: "Free to take work" }];
+          }
+
+          out.push(`<section class="board-col tone-${col.tone}">
+            ${head(col.tone, col.label, pills)}
+            <div class="board-col-body">
+              ${col.tone === "idle" && treatment === "column" ? '<p class="board-col-note">Free to take work.</p>' : ""}
+              ${list.map(tile).join("")}
+            </div>
+          </section>`);
+
+          if (treatment === "column" && col.tone === "working") {
+            out.push(`<section class="board-col tone-held col-held">
+              ${head("held", "held", [{ text: `${held.length}`, cls: "n-held", title: "Bound to a workflow run that is still open" }])}
+              <div class="board-col-body">
+                <p class="board-col-note">Idle, but a running workflow owns the next turn.</p>
+                ${held.map(tile).join("")}
+              </div>
+            </section>`);
+          }
+        }
+
+        out.push(`<div class="board-stash">
+          <span class="board-stash-label">empty</span>
+          <button class="board-stash-chip tone-neutral"><span class="board-swatch"></span>unconfirmed</button>
+        </div>`);
+
+        document.getElementById("board").innerHTML = out.join("");
+
+        const freeCount = FLEET.filter((s) => s.tone === "idle" && !isHeld(s)).length;
+        document.getElementById("capacity-stat").innerHTML =
+          treatment === "refuse"
+            ? `<span class="stat-n">5</span><span class="stat-label">idle</span>`
+            : `<span class="stat-n" style="color: var(--idle)">${freeCount}</span><span class="stat-label">free</span>`
+              + `<span class="stat-n" style="color: var(--held); margin-left: 4px">${held.length}</span><span class="stat-label">held</span>`;
+
+        const c = CAPTIONS[treatment];
+        document.getElementById("cap-k").textContent = c.k;
+        document.getElementById("cap-body").innerHTML = c.body;
+        document.getElementById("cap-tradeoffs").innerHTML =
+          c.up.map((x) => `<span class="t up"><span class="g">+</span><span>${x}</span></span>`).join("")
+          + c.down.map((x) => `<span class="t down"><span class="g">−</span><span>${x}</span></span>`).join("");
+
+        for (const b of document.querySelectorAll(".lab button[data-t]")) {
+          b.classList.toggle("on", b.dataset.t === treatment);
+        }
+        const dt = document.getElementById("drag-toggle");
+        dt.classList.toggle("on", dragging);
+        dt.textContent = dragging ? "◆ Drag in progress - click to drop it" : "◇ Simulate a backlog drag";
+      }
+
+      const ORDER = ["count", "split", "refuse", "column"];
+      for (const b of document.querySelectorAll(".lab button[data-t]")) {
+        b.addEventListener("click", () => {
+          treatment = b.dataset.t;
+          render();
+        });
+      }
+      document.getElementById("drag-toggle").addEventListener("click", () => {
+        dragging = !dragging;
+        render();
+      });
+      addEventListener("keydown", (e) => {
+        const i = Number(e.key) - 1;
+        if (ORDER[i] && !e.metaKey && !e.ctrlKey) {
+          treatment = ORDER[i];
+          render();
+        }
+        if (e.key.toLowerCase() === "d") {
+          dragging = !dragging;
+          render();
+        }
+      });
+      render();
+    </script>
+  </body>
+</html>

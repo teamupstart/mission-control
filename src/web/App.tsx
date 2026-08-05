@@ -58,6 +58,7 @@ import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
+import { heldSessionIds } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
 import {
   useKeybindingHints,
@@ -980,11 +981,16 @@ export function App(): React.JSX.Element {
   // applied first or the surviving siblings would sit at a position decided by a row nobody can
   // see. Keyboard nav and all three layouts read the result, so they stay in lockstep with
   // what's on screen.
+  // Which sessions an open workflow run owns, folded once here off the same map the tile reads.
+  // It reaches `orderSessions` as an argument rather than being looked up inside it because
+  // held-ness is a join, not a property of a Session - see `heldSessionIds`.
+  const heldIds = useMemo(() => heldSessionIds(workflowRunBySession), [workflowRunBySession]);
+
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesFilter(s, q)) : sessions;
-    return orderSessions(matched);
-  }, [sessions, filter]);
+    return orderSessions(matched, heldIds);
+  }, [sessions, filter, heldIds]);
   const visible = fleet.sessions;
 
   // The same filter over the board's Backlog column. A backlog item is a card the

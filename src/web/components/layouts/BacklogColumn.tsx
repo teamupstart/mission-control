@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { BacklogBlocker } from "@shared/backlog.ts";
 import type { AssignResetConfirm, BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { backlogIndex, blockersIn, deadBlockersFor, nextUpTaskId } from "@shared/backlog.ts";
+import { workflowRunIsOpen } from "@shared/workflow.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 // The words and the tone rule for a blocked item, shared with the Line's Backlog drawer so
@@ -381,15 +383,26 @@ function BacklogCard({
  * place a Codex session in the Idle column, but cannot confirm the reset and prompt
  * delivery that assigning work performs.
  *
+ * A session an OPEN workflow run holds refuses the drop outright. The drop is a reset -
+ * `dropTaskOnSession` assigns with `reset: true` - and resetting an agent whose next turn
+ * belongs to a run would yank it out from under that run the moment the board has started
+ * calling it "held". The caller passes the run it already renders (the tile's `workflowRun`)
+ * rather than this predicate doing a second lookup, for the same reason the held tag reads
+ * off it: the rule, the tag and the drop must agree about one session, and one source is how.
+ * `workflowRunIsOpen` decides, so a terminal run releases the drop target the same instant
+ * it releases the section rule.
+ *
  * The server re-checks in `TaskManager.assign` regardless, because a session can go
  * busy between the hover and the drop.
  */
 export function canAcceptTask(
   session: Session,
   repoRoot: string | null,
+  workflowRun?: WorkflowRunSummary | null,
 ): boolean {
   if (!repoRoot) return false;
   if (!session.instrumented) return false;
+  if (workflowRun != null && workflowRunIsOpen(workflowRun.status)) return false;
   if (stateDisplay(session).tone !== "idle") return false;
   return session.repoRoot != null && session.repoRoot === repoRoot;
 }

@@ -1,3 +1,8 @@
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import type { Locator, Page } from "@playwright/test";
+
 import { expect, test } from "../fixtures/test.ts";
 
 /**
@@ -21,6 +26,49 @@ import { expect, test } from "../fixtures/test.ts";
  *
  * No model tokens: nothing here dispatches an agent.
  */
+
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/inspector-brief-location/", import.meta.url));
+
+/**
+ * Photograph the paragraph this spec has just asserted on.
+ *
+ * Behind `MC_E2E_EVIDENCE`, like the settings ledger's and the palette's: an ordinary run
+ * would rewrite the binaries for no added signal. Inside the regression test rather than in a
+ * staged capture spec, because the point of the picture is that the assertions around it
+ * passed on the same run.
+ *
+ * Both frames, not just the fixed one. A screenshot of correct text is a weak artifact - a
+ * reviewer cannot tell it apart from the state before the change without holding the two side
+ * by side. So the defect frame is reproduced HERE, by putting the old `word-break: break-all`
+ * back on the chips as an inline style and shooting the same clip, rather than kept as a
+ * one-off photograph of a reverted build that no command can regenerate. The declaration is
+ * removed again immediately, so the assertions above still describe what shipped.
+ */
+async function shoot(page: Page, lede: Locator, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control, pointer AND focus: `Tooltip` shows on either, and a stray bubble over
+  // the panel would be the one thing in the frame that is not what this spec is about.
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  // The sentence at reading scale, which is the frame the request is actually about.
+  await lede.screenshot({ path: `${EVIDENCE}${name}-lede.png` });
+  // And the same sentence where an operator meets it, so the crop above is placeable.
+  await page.screenshot({ path: `${EVIDENCE}${name}-panel.png` });
+
+  // The defect, regenerated: `break-all` breaks between any two characters, so the path
+  // renders as `personas/INSPE` + `CTOR.md`.
+  const chips = lede.locator("code");
+  await chips.evaluateAll((els) => {
+    for (const el of els) (el as HTMLElement).style.wordBreak = "break-all";
+  });
+  await lede.screenshot({ path: `${EVIDENCE}${name}-lede-before-word-break-all.png` });
+  await chips.evaluateAll((els) => {
+    for (const el of els) (el as HTMLElement).style.wordBreak = "";
+  });
+}
+
 test("the Inspector panel names both places a repo may keep its brief", async ({ page, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/inspector`);
 
@@ -56,6 +104,8 @@ test("the Inspector panel names both places a repo may keep its brief", async ({
     const boxes = await chip.evaluate((el) => el.getClientRects().length);
     assertOneLine(name, boxes);
   }
+
+  await shoot(page, lede, "inspector-settings");
 });
 
 /** Fails with the filename in the message, since "expected 1, got 2" would not name it. */

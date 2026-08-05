@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A git-worktree fallback provider for Workflow check leases</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1a1a18;
+    --ink-soft: #5c5c56;
+    --rule: #e3e2dd;
+    --accent: #7c5cff;
+    --accent-soft: #f0ecff;
+    --bad: #b3261e;
+    --bad-soft: #fdf0ef;
+    --good: #1a6b45;
+    --good-soft: #eef7f2;
+    --code-bg: #f5f4f1;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a;
+      --panel: #1d1d22;
+      --ink: #ececea;
+      --ink-soft: #a2a2a0;
+      --rule: #32323a;
+      --accent: #a898ff;
+      --accent-soft: #26233a;
+      --bad: #ff938a;
+      --bad-soft: #33211f;
+      --good: #7fd6a6;
+      --good-soft: #1b2a22;
+      --code-bg: #23232a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    padding: 3rem 1.25rem 6rem;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow-wrap: break-word;
+  }
+  main { max-width: 60rem; margin: 0 auto; }
+  h1 {
+    font-size: clamp(1.55rem, 3.6vw, 2.2rem);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    margin: 0 0 1.75rem;
+  }
+  h2 {
+    font-size: 1.3rem;
+    letter-spacing: -0.01em;
+    margin: 3rem 0 1rem;
+    padding-bottom: 0.45rem;
+    border-bottom: 2px solid var(--rule);
+  }
+  h3 { font-size: 1.06rem; margin: 2rem 0 0.6rem; }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); }
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--code-bg);
+    padding: 0.14em 0.38em;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.83rem;
+    line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .scroll { overflow-x: auto; margin: 1.1rem 0; border-radius: 8px; border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; font-size: 0.92rem; background: var(--panel); }
+  th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft); background: var(--bg); }
+  tbody tr:last-child td { border-bottom: none; }
+  blockquote {
+    margin: 1.1rem 0;
+    padding: 0.1rem 0 0.1rem 1rem;
+    border-left: 3px solid var(--accent);
+    color: var(--ink-soft);
+  }
+  .lede { font-size: 1.05rem; color: var(--ink-soft); margin-top: -1rem; margin-bottom: 2rem; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 1rem 1.15rem; margin: 1.1rem 0; }
+  .card.bad { border-left: 3px solid var(--bad); background: var(--bad-soft); }
+  .card.good { border-left: 3px solid var(--good); background: var(--good-soft); }
+  .card.note { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+  .card > :first-child { margin-top: 0; }
+  .card > :last-child { margin-bottom: 0; }
+  .tag { display: inline-block; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 0.16em 0.5em; border-radius: 4px; vertical-align: 0.12em; }
+  .tag.bad { background: var(--bad); color: #fff; }
+  .tag.good { background: var(--good); color: #fff; }
+  figure { margin: 1.5rem 0; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption { font-size: 0.84rem; color: var(--ink-soft); margin-top: 0.55rem; }
+  .path { font-family: var(--mono); font-size: 0.8rem; color: var(--ink-soft); }
+  footer { margin-top: 4rem; padding-top: 1.2rem; border-top: 1px solid var(--rule); font-size: 0.84rem; color: var(--ink-soft); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>A git-worktree fallback provider for Workflow check leases</h1>
+<p class="lede">Dispatch degrades gracefully without <code>treehouse</code>; a Workflow check cannot run at all. This closes that gap behind one shared gate and two providers.</p>
+
+<h2>The defect</h2>
+
+<p><code>provisionWorktree</code> treats the treehouse pool as a <strong>fast path over an invariant it keeps either way</strong> - an agent never shares a working tree. On a machine with no <code>treehouse</code> binary it falls through to a throwaway <code>git worktree</code> and the dispatch succeeds (<code>dispatcher.ts:773</code>, the <code>hasBin(TREEHOUSE_BIN) &amp;&amp; isTreehouseRepo(repoRoot)</code> gate).</p>
+
+<p>A Workflow check reaches the pool through <code>CheckLeaseManager.acquireForAttempt</code>, and <strong>no such gate exists anywhere upstream of it</strong>. <code>dispatcher.ts:773</code> is the only <code>hasBin(TREEHOUSE_BIN)</code> in the codebase, and neither <code>hasBin</code> nor <code>isTreehouseRepo</code> appears anywhere under <code>src/server/workflows/</code>.</p>
+
+<div class="card bad">
+<p>So a configured, authorized check gate cannot run at all on a machine without treehouse, and it spends a bounded retry budget discovering that.</p>
+</div>
+
+<h3>Measured, not assumed</h3>
+
+<p><code>test/workflow-check-degradation.test.ts</code> pins this. One machine, one opted-in repository, PATH stripped of only the <code>treehouse</code> binary (<code>git</code> and <code>node</code> left reachable):</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Path</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td><code>provisionWorktree</code></td><td><span class="tag good">degrades</span> <code>provider: "git"</code> - isolation intact</td></tr>
+<tr><td>A check whose command <strong>would have exited 0</strong></td><td><span class="tag bad">cannot run</span> <code>kind: "infrastructure"</code></td></tr>
+<tr><td>An unsupported platform, by contrast</td><td><code>kind: "unavailable"</code> - recorded and <strong>passes</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The third row is what makes this a defect rather than a preference. The runtime already has a "cannot run here, record it and pass" outcome and an unsupported platform uses it (<code>check-runtime.ts:167-168</code>). The treehouse-absent path does not.</p>
+
+<p>The operator-facing string today:</p>
+
+<pre><code>a worktree for the test check could not be prepared: the treehouse pool in &lt;repo&gt;
+could not hand over a worktree for this check: treehouse get exited 1
+ - treehouse said: spawn treehouse ENOENT</code></pre>
+
+<h3>What it costs</h3>
+
+<p><code>MAX_INFRA_ATTEMPTS = 3</code> (<code>engine.ts:49</code>). Three attempts, 1s + 4s of backoff, then <code>engine.ts:1133-1145</code>: the submission goes <code>failed</code>, the run goes <code>blocked</code> in phase <code>infrastructure_error</code>, event <code>persona_infrastructure_exhausted</code>, and <strong>no receipts are written</strong>. The run then stalls indefinitely - <code>manager.ts:2481</code> makes the Inspector refuse to touch a blocked run. Only a manual retry or a resubmit revives it.</p>
+
+<blockquote>A permanent environmental fact is being fed through a ladder built for transient failure. Nothing about a missing binary changes between attempt 1 and attempt 3.</blockquote>
+
+<h3>Scope correction</h3>
+
+<div class="card note">
+<p><code>treehouse get</code> <strong>succeeds in a repository with no <code>treehouse.toml</code></strong>, creating a pool from defaults - verified directly against treehouse v2.1.1. So a missing <code>treehouse.toml</code> does not trigger this; only the <strong>absent binary</strong> does.</p>
+<p>That the two halves disagree about what opting in means is a real inconsistency, but it is a design question and is filed separately.</p>
+</div>
+
+<h2>The decision</h2>
+
+<div class="card good">
+<p><strong>Fall back to a plain <code>git worktree</code>, do not decline the gate.</strong></p>
+</div>
+
+<p>A check gate that stops gating is worse than one that stalls loudly: a silent pass tells the operator their build is green when it never ran. Dispatch already proves the invariant is holdable without treehouse. A check does not need a <em>pooled</em> tree - it needs an <strong>isolated tree pinned to a commit</strong>, which <code>git worktree add --detach &lt;path&gt; &lt;sha&gt;</code> produces directly.</p>
+
+<p><strong>Rejected:</strong> a pre-flight that returns <code>unavailable</code>. It ships a silent-pass window on purpose. <strong>Rejected:</strong> shipping the pre-flight first and the fallback later, for the same reason.</p>
+
+<h2>Flow</h2>
+
+<figure>
+<svg viewBox="0 0 900 400" role="img" aria-labelledby="flow-title flow-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="flow-title">Before and after: one shared pool gate with two check tree providers</title>
+  <desc id="flow-desc">Before, dispatch consults a pool-availability gate and falls back to a git worktree, while the check path reaches the treehouse pool with no gate and fails as an infrastructure error. After, both callers consult predicates in one pool module: dispatch asks the full gate, a check asks the binary half only. Either answer selects a check tree provider, treehouse or git, and the gate runs either way.</desc>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arbad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--bad)"/>
+    </marker>
+  </defs>
+  <style>
+    .bx { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; }
+    .bx-a { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .bx-b { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 1.5; }
+    .bx-g { fill: var(--good-soft); stroke: var(--good); stroke-width: 1.5; }
+    .t { fill: var(--ink); font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .ts { fill: var(--ink-soft); font: 400 10.5px ui-monospace, Menlo, monospace; }
+    .lbl { fill: var(--ink-soft); font: 400 10px -apple-system, BlinkMacSystemFont, sans-serif; }
+    .hd { fill: var(--ink-soft); font: 600 10.5px -apple-system, sans-serif; letter-spacing: 0.07em; }
+    .ln { stroke: var(--ink-soft); stroke-width: 1.4; fill: none; color: var(--ink-soft); }
+    .ln-b { stroke: var(--bad); stroke-width: 1.6; fill: none; }
+    .sep { stroke: var(--rule); stroke-width: 1.5; stroke-dasharray: 5 5; }
+  </style>
+
+  <!-- BEFORE -->
+  <text class="hd" x="0" y="14">BEFORE — ONLY DISPATCH HAS A GATE</text>
+
+  <rect class="bx" x="0" y="30" width="132" height="40" rx="7"/>
+  <text class="t" x="12" y="47">dispatch</text>
+  <text class="ts" x="12" y="61">provisionWorktree</text>
+
+  <rect class="bx-a" x="182" y="28" width="126" height="44" rx="7"/>
+  <text class="t" x="196" y="46">pool usable?</text>
+  <text class="ts" x="196" y="60">hasBin &amp;&amp; isRepo</text>
+
+  <rect class="bx" x="368" y="10" width="150" height="38" rx="7"/>
+  <text class="t" x="380" y="33">treehouse pool</text>
+
+  <rect class="bx-g" x="368" y="62" width="150" height="44" rx="7"/>
+  <text class="t" x="380" y="80">git worktree</text>
+  <text class="ts" x="380" y="94">dispatch succeeds</text>
+
+  <rect class="bx" x="0" y="118" width="132" height="40" rx="7"/>
+  <text class="t" x="12" y="135">check</text>
+  <text class="ts" x="12" y="149">acquireForAttempt</text>
+
+  <rect class="bx-b" x="596" y="8" width="176" height="52" rx="7"/>
+  <text class="t" x="608" y="27">infrastructure</text>
+  <text class="ts" x="608" y="41">3 attempts, backoff,</text>
+  <text class="ts" x="608" y="53">run blocked forever</text>
+
+  <path class="ln" d="M 132 50 L 176 50" marker-end="url(#ar)"/>
+  <path class="ln" d="M 308 44 L 362 23" marker-end="url(#ar)"/>
+  <text class="lbl" x="318" y="26">yes</text>
+  <path class="ln" d="M 308 58 L 362 78" marker-end="url(#ar)"/>
+  <text class="lbl" x="316" y="80">no</text>
+  <!-- Routed left of the git-worktree box and up: this arrow must land on the POOL, which is
+       the whole finding. Ending it on the git box would draw the opposite of the defect. -->
+  <path class="ln-b" d="M 132 136 C 250 136 344 122 344 42 L 361 42" marker-end="url(#arbad)"/>
+  <text class="lbl" x="164" y="152">no gate at all</text>
+  <path class="ln-b" d="M 518 26 L 590 30" marker-end="url(#arbad)"/>
+  <text class="lbl" x="524" y="18">binary absent</text>
+
+  <line class="sep" x1="0" y1="196" x2="900" y2="196"/>
+
+  <!-- AFTER -->
+  <text class="hd" x="0" y="228">AFTER — ONE MODULE, TWO PROVIDERS</text>
+
+  <rect class="bx" x="0" y="248" width="132" height="40" rx="7"/>
+  <text class="t" x="12" y="265">dispatch</text>
+  <text class="ts" x="12" y="279">provisionWorktree</text>
+
+  <rect class="bx" x="0" y="318" width="132" height="40" rx="7"/>
+  <text class="t" x="12" y="335">check</text>
+  <text class="ts" x="12" y="349">acquireForAttempt</text>
+
+  <rect class="bx-a" x="176" y="272" width="182" height="62" rx="7"/>
+  <text class="t" x="189" y="292">pool.ts</text>
+  <text class="ts" x="189" y="308">poolAvailableFor</text>
+  <text class="ts" x="189" y="323">treehouseInstalled</text>
+
+  <rect class="bx" x="398" y="252" width="178" height="44" rx="7"/>
+  <text class="t" x="410" y="270">CheckTreeProvider</text>
+  <text class="ts" x="410" y="284">treehouse</text>
+
+  <rect class="bx" x="398" y="312" width="178" height="44" rx="7"/>
+  <text class="t" x="410" y="330">CheckTreeProvider</text>
+  <text class="ts" x="410" y="344">git</text>
+
+  <rect class="bx-g" x="644" y="282" width="176" height="44" rx="7"/>
+  <text class="t" x="656" y="300">check runs</text>
+  <text class="ts" x="656" y="314">the gate gates</text>
+
+  <path class="ln" d="M 132 268 C 152 268 154 292 170 296" marker-end="url(#ar)"/>
+  <text class="lbl" x="137" y="264">full</text>
+  <path class="ln" d="M 132 338 C 152 338 154 316 170 312" marker-end="url(#ar)"/>
+  <text class="lbl" x="137" y="354">binary</text>
+  <path class="ln" d="M 358 296 C 376 296 378 274 392 274" marker-end="url(#ar)"/>
+  <text class="lbl" x="360" y="268">yes</text>
+  <path class="ln" d="M 358 312 C 376 312 378 334 392 334" marker-end="url(#ar)"/>
+  <text class="lbl" x="360" y="348">no</text>
+  <path class="ln" d="M 576 274 C 612 274 616 298 638 300" marker-end="url(#ar)"/>
+  <path class="ln" d="M 576 334 C 612 334 616 312 638 308" marker-end="url(#ar)"/>
+</svg>
+<figcaption>Both predicates live in one module, and the callers ask different ones by design: dispatch the <strong>full</strong> gate, a check the <strong>binary</strong> half only, so a repository with no <code>treehouse.toml</code> keeps today's behaviour. The check then acquires through whichever provider it named, records that provider on the row, and releases through the recorded one - never a re-probe of the current machine.</figcaption>
+</figure>
+
+<h2>Design</h2>
+
+<h3>One gate, shared</h3>
+
+<p>The root cause is that two call sites answered "is the pool usable here?" and only one of them existed. Both halves of that question move into the module that already owns <code>isTreehouseRepo</code>, and they are <strong>named separately</strong> rather than only as their conjunction:</p>
+
+<pre><code>// src/server/pool.ts
+/**
+ * Whether the pool binary is resolvable at all. This is the half that was missing on the check
+ * path, and it is the ONLY half a check asks - see below.
+ */
+export async function treehouseInstalled(): Promise&lt;boolean&gt;;
+
+/** The full dispatch gate: the binary is there AND this repository opted in. */
+export async function poolAvailableFor(repoRoot: string): Promise&lt;boolean&gt;;</code></pre>
+
+<p><code>dispatcher.ts:773</code> becomes <code>if (await poolAvailableFor(repoRoot))</code>; the check path asks <code>treehouseInstalled()</code>. Keeping both in one module is the anti-drift change - without it the next subsystem to want a worktree makes the same mistake a third time.</p>
+
+<div class="card good">
+<p><strong>Decided: the check path asks the binary half only.</strong></p>
+<p>The gate has two halves - <code>hasBin(TREEHOUSE_BIN)</code> and <code>isTreehouseRepo(repoRoot)</code> - and only the first is the defect. Had checks adopted the whole predicate, every repository with no <code>treehouse.toml</code> would have stopped getting a pooled tree for its checks: a real behaviour change, and one that silently answers the opt-in question filed separately below.</p>
+<p>So this change fixes exactly the defect and nothing else. The cost is honest and small: "one gate" is one <em>module</em> exposing two named predicates, and the reason a check asks only one of them must be written down at both call sites, or a later reader will "tidy" them into the conjunction and ship the deferred decision by accident.</p>
+<p>The rejected alternative - both halves, so the two paths cannot drift by construction - is probably where the opt-in question lands eventually. That is an argument for deciding it deliberately, in its own change, not inside a bug fix.</p>
+</div>
+
+<p><code>hasBin</code> is module-private in <code>dispatcher.ts</code> today. Move it to <code>src/server/util/exec.ts</code> beside <code>onPath</code>, which is already documented as the other half of the same question. Do <strong>not</strong> merge the two: <code>onPath</code> walks the filesystem, <code>hasBin</code> spawns <code>which</code>, and that file explains why both exist.</p>
+
+<h3>A provider seam, not a second copy</h3>
+
+<p><code>CheckLeaseManager</code> keeps its whole state machine. Only the four treehouse-specific operations move behind an interface, resolved once per acquisition:</p>
+
+<pre><code>interface CheckTreeProvider {
+  readonly kind: WorktreeProvider;                    // the EXISTING union, src/shared/types.ts:1386
+  acquire(input: { repoRoot: string; attemptId: string; baseSha: string }):
+    Promise&lt;{ path: string; holderToken: string }&gt;;
+  /** Who holds this path now, read from the provider's own bookkeeping. */
+  ownership(row: CheckLeaseRow): Promise&lt;
+    | { state: "unreadable"; reason: string }   // we failed to LOOK -&gt; retryLater, no authorisation change
+    | { state: "gone" }                         // already returned / not ours -&gt; settle "returned"
+    | { state: "held"; holder: string }         // compared against row.holderToken by the manager
+  &gt;;
+  handBack(row: CheckLeaseRow): Promise&lt;RunResult&gt;;
+  withLock&lt;T&gt;(repoRoot: string, fn: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt;;
+}</code></pre>
+
+<p><code>resolveLocked</code> keeps its exact shape and its three-way distinction - "could not look" versus "already returned" versus "held by someone else" - and asks the provider instead of reaching for <code>cli</code> directly. That distinction is load-bearing and documented at length in <code>check-lease.ts</code>; this change must not blur it.</p>
+
+<p>The manager keeps every state write (<code>settle</code>, <code>failedReturn</code>, <code>retryLater</code>). A provider that could write <code>cleanup_state</code> would be a second source of truth for the lifecycle.</p>
+
+<h3>The two implementations</h3>
+
+<div class="scroll">
+<table>
+<thead><tr><th></th><th><code>treehouse</code></th><th><code>git</code></th></tr></thead>
+<tbody>
+<tr><td><code>acquire</code></td><td><code>acquireLease</code> + <code>pin</code> (lease, then reset to the commit)</td><td><code>git worktree add --detach &lt;dir&gt;/&lt;attemptId&gt; &lt;sha&gt;</code>, then <code>verifyHeadIs</code></td></tr>
+<tr><td><code>ownership</code></td><td><code>treehouse status</code>, parsed, holder token compared</td><td><code>git worktree list --porcelain</code>; <strong>presence is ownership</strong></td></tr>
+<tr><td><code>handBack</code></td><td><code>treehouse return --force</code></td><td><code>git worktree remove --force</code></td></tr>
+<tr><td><code>withLock</code></td><td><code>withPoolLock(repoRoot)</code></td><td>pass-through</td></tr>
+<tr><td>Branch to clean up</td><td>none (pool trees are detached/reset)</td><td>none (<code>--detach</code>)</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="card note">
+<p><strong>Why presence is ownership for git, and a token is needed for the pool.</strong> A pool <em>slot</em> is handed out again and again, so a path alone says nothing about who holds it - hence <code>holder_token</code>. A check git tree lives at a path derived from an <code>attemptId</code>, which is unique forever and never reused, so if the path is a registered worktree it is ours by construction. This asymmetry is the reason <code>ownership</code> returns a shape rather than a boolean, and it belongs in a comment.</p>
+</div>
+
+<p><code>withLock</code> is a pass-through for git because there is no cross-process pool to serialize against and <code>git</code> takes its own index lock; the in-process single-flight the <code>busy</code> set already provides is sufficient. <span class="path">Verified: every current <code>withPoolLock</code> caller is a genuine pool operation.</span></p>
+
+<p>Trees live under a new <code>CHECK_WORKTREES_DIR = join(STATE_DIR, "check-worktrees")</code>, deliberately separate from <code>WORKTREES_DIR</code>, so no dispatch-side sweep can mistake a check tree for a task tree.</p>
+
+<h3>Schema</h3>
+
+<pre><code>addColumn(d, "workflow_check_leases", "provider", "TEXT NOT NULL DEFAULT 'treehouse'");</code></pre>
+
+<p>The default is not a guess. Every row that can exist before this migration was written by the treehouse-only path, so <code>'treehouse'</code> is the historically accurate value. That is what keeps this clear of the trap the table's own comment warns about - a nullable column whose NULL is indistinguishable from a row written by a build that did not set it.</p>
+
+<div class="card">
+<p><strong>The recorded provider is authoritative on release, always</strong> - never re-probed from the current machine. This is the entire reason the column exists: a row taken while treehouse was installed must still be handed back to the pool after the operator uninstalls it, and a git row must not be handed to <code>treehouse return</code> because the binary reappeared.</p>
+</div>
+
+<h3>Recovery, and one edge case worth stating</h3>
+
+<p><code>reconcileOnStartup</code>, <code>resolveRecovered</code>, and <code>reclaimLeaked</code> need no logic change - they all route through <code>releaseForAttempt</code>, which now selects the provider from <code>row.provider</code>.</p>
+
+<p>A <code>treehouse</code> row on a machine where the binary has since vanished resolves <code>ownership</code> → <code>unreadable</code> → <code>retryLater</code>: the row stays live, the pin stays, nothing is destroyed. That is correct and is the existing fail-closed reading - we failed to look, so we have proven nothing, and the tree may well still exist. It leaks one row until the binary returns. <strong>This is a deliberate outcome, not an oversight.</strong></p>
+
+<p>Pinning stays <strong>unconditional</strong> for both providers. A pin is only ever a spare-list for the reaper, and a git check path simply never appears in a pool status, so there is nothing to gain from making the pin conditional and one more branch to get wrong.</p>
+
+<h2>Tests</h2>
+
+<p><code>test/workflow-check-degradation.test.ts</code> already exists and currently proves the bug. <strong>Flip its central assertion</strong>: with no treehouse installed, the check must now run and pass. It becomes the regression test.</p>
+
+<p>Added cases:</p>
+<ul>
+<li>A git-provider tree is pinned to the captured commit, verified by the real <code>verifyPinnedBase</code> - the same standard the pool arm is already held to.</li>
+<li>A git-provider tree is removed after the check and its row reaches a terminal state; the suite's existing per-case leak assertion covers the rest.</li>
+<li>A <code>treehouse</code> row is released through treehouse even when the current machine would now choose git. The provider column is authoritative.</li>
+<li>A <code>treehouse</code> row with the binary gone resolves <code>retry</code>, keeps the row live, and keeps the pin.</li>
+<li>With the binary absent, dispatch and a check <strong>both</strong> fall back to git - the defect, closed.</li>
+<li>With the binary present and no <code>treehouse.toml</code>, dispatch takes a git worktree and a check still takes a pooled tree. This asserts the adopted split <em>deliberately</em>, so the deferred opt-in decision cannot be made by accident later; the case names why it is that way.</li>
+<li>An existing database with <code>workflow_check_leases</code> rows opens after the migration and backfills <code>provider = 'treehouse'</code>.</li>
+</ul>
+
+<p>No <code>e2e/</code> spec: this change has no UI surface. (The mislabelling fix below does, and carries its own.)</p>
+
+<h2>Documentation</h2>
+<ul>
+<li><code>README.md:2922</code> says the repository's pool sets <code>max_trees</code> 16; <code>treehouse.toml:23</code> sets 32. Fix the number.</li>
+<li><code>README.md:2920-2925</code> ("Checks share the treehouse pool with dispatch") gains what happens when treehouse is absent.</li>
+</ul>
+
+<h2>Filed separately, deliberately not in this change</h2>
+
+<div class="card">
+<p><strong>The "provider call" mislabelling.</strong> A check attempt records a null runner and model on purpose - <em>"a check is not a model call, and stamping it with a provider it never used would put a fiction in front of whoever reads the run"</em> (<code>engine.ts:1000-1002</code>). Yet the operator sees <strong>"Retry provider call"</strong> (<code>WorkflowRuns.tsx:679</code>) and <strong>"provider call failed"</strong> (<code>run-model.ts:667</code>). Someone whose <code>npm test</code> gate could not get a worktree is told an LLM provider failed. This is a UI change and needs its own Playwright spec, so it does not ride along inside a bug fix.</p>
+</div>
+
+<div class="card">
+<p><strong>The silent opt-in.</strong> Checks create a treehouse pool for repositories with no <code>treehouse.toml</code>, where dispatch would use a plain worktree. Deciding what counts as opting in is a design call in its own right.</p>
+</div>
+
+<h2>Risks</h2>
+<ul>
+<li><strong>The reaper.</strong> <code>reapPool</code> early-returns for a non-treehouse repo (<code>pool.ts:608</code>) - <span class="path">verified</span>. Confirm during implementation that a pin holding a non-pool path is inert.</li>
+<li><strong>Mid-run provider change.</strong> Installing or removing treehouse between a check's acquire and its release is exactly what the provider column absorbs; the release path must never re-probe.</li>
+<li><strong><code>withPoolLock</code> pass-through.</strong> Every current caller is a genuine pool operation (<span class="path">verified</span>), so a provider-specific lock is safe.</li>
+</ul>
+
+<footer>
+Source of truth: <span class="path">docs/plans/check-worktree-fallback/plan.md</span>. This page is a rendering of it, never a fork.
+</footer>
+
+</main>
+</body>
+</html>

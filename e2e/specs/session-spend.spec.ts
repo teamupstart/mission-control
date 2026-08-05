@@ -1,7 +1,8 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -29,9 +30,36 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const TASK = "write a haiku about flexbox";
 
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/session-spend/", import.meta.url));
+
 /** The daemon's loopback token, for the routes that require it. */
 function token(daemon: DaemonHandle): string {
   return readFileSync(join(daemon.home, "token"), "utf8").trim();
+}
+
+/**
+ * Photograph a surface for the evidence packet, when asked.
+ *
+ * Gated on `MC_E2E_EVIDENCE` exactly as `dispatch-and-converse.spec.ts` gates its own captures:
+ * the assertions above each call are what run in CI, and the screenshot is a by-product for a
+ * reviewer who cannot run the suite. A capture is never the assertion - a PNG proves a pixel
+ * existed, not that a figure was correct - so the file is only ever written beside an
+ * expectation that already checked the number.
+ */
+async function capture(target: Locator | Page, name: string, observed: string): Promise<void> {
+  if (process.env.MC_E2E_EVIDENCE !== "1") return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Park the pointer in the corner first. Clicking the chip leaves the cursor on it, and
+  // `Tooltip` portals its bubble to the body at a high z-index - so a capture taken straight
+  // after the click photographs a tooltip clipped across the popover's own heading, which
+  // obscures the very figure the image exists to show. Unhovering is not cosmetic here: the
+  // reviewer is meant to read `Fleet today`, not a half-rendered bubble on top of it.
+  const page = "mouse" in target ? target : target.page();
+  await page.mouse.move(0, 0);
+  await expect(page.locator(".tooltip")).toHaveCount(0);
+  console.log(`OBSERVED ${observed}`);
+  await target.screenshot({ path: join(EVIDENCE, name) });
+  console.log(`CAPTURED docs/evidence/session-spend/${name}`);
 }
 
 /**
@@ -76,6 +104,15 @@ test("a dispatched session's turn puts real money in the topbar", async ({
   await expect(chip).toBeVisible();
   await expect(chip).toContainText("≈$2.50");
 
+  // The bar at rest, photographed BEFORE the click. Taken afterwards it catches a sliver of the
+  // open popover along its bottom edge, because the popover is anchored inside the header's own
+  // box - which makes a capture meant to show the chip alone look like a rendering fault.
+  await capture(
+    dashboard.locator("header.topbar"),
+    "topbar-chip-session.png",
+    "the topbar chip carries ≈$2.50 from a driven session, with no OTel exporter involved",
+  );
+
   await chip.click();
   const popover = dashboard.getByRole("dialog", { name: "Spend today" });
   await expect(popover).toBeVisible();
@@ -91,6 +128,12 @@ test("a dispatched session's turn puts real money in the topbar", async ({
   // And it is SESSION spend, not the automation line. The distinction is the whole complaint:
   // automation was the only thing being counted.
   await expect(popover.locator(".spend-row.is-automation")).toHaveCount(0);
+
+  await capture(
+    popover,
+    "spend-popover-session.png",
+    "Fleet today reads ≈$2.50 and Tokens today 25k, earned by one dispatched turn, with no Automation line",
+  );
 });
 
 test("the session's own card carries what that session cost", async ({ dashboard, daemon }) => {
@@ -103,6 +146,12 @@ test("the session's own card carries what that session cost", async ({ dashboard
   await expect(card).toBeVisible();
   await expect(card).toContainText("Agent SDK");
   await expect(card.getByText(/\$2\.50/)).toBeVisible();
+
+  await capture(
+    card,
+    "session-card-cost.png",
+    "the dispatched session's own card carries ≈$2.50, so the row reached the card that earned it",
+  );
 });
 
 test("Cost settings names the sessions telemetry is not covering", async ({
@@ -144,4 +193,10 @@ test("Cost settings names the sessions telemetry is not covering", async ({
 
   // And NOT the first-run hint, which would be a contradiction: spend has plainly reported.
   await expect(dashboard.getByText(/No Claude telemetry has reported yet/)).toHaveCount(0);
+
+  await capture(
+    dashboard.locator("section.settings-section").first(),
+    "cost-settings-warning.png",
+    "Cost settings names the uncounted sessions while the toggle is on and spend is landing",
+  );
 });

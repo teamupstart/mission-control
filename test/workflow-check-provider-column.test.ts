@@ -13,9 +13,8 @@
  *   1. An existing database gains the column, and its rows read back as `treehouse` - which is
  *      what they factually are, since the pool was the only way a check could get a tree.
  *   2. A new lease records the provider that actually took it.
- *   3. A release routes on the RECORDED value, proven by the one case where routing and
- *      probing differ: a row naming a provider this build cannot reach is refused, and the
- *      refusal keeps the tree rather than guessing at it.
+ *   3. A release routes on the RECORDED value, proven when current acquisition would choose
+ *      a different provider and when a row names a provider this build cannot reach.
  *
  * The pool is faked throughout, the way every other check suite fakes it. This file is about
  * the bookkeeping, not about treehouse.
@@ -77,6 +76,7 @@ type TreehouseCli = import("../src/server/pool-lease.ts").TreehouseCli;
 const db = openDb();
 const store = new CheckLeaseStore(db);
 const SHA = "b".repeat(40);
+const TREEHOUSE_PRESENT = async () => true;
 
 const providerOf = (attemptId: string): unknown =>
   (
@@ -129,6 +129,7 @@ function mkManager() {
     cli: pool.cli,
     pin: async () => {},
     verifyBase: async (_repoRoot, sha) => sha,
+    treehouseInstalled: TREEHOUSE_PRESENT,
   });
   return { ...pool, manager, repoRoot: dir };
 }
@@ -241,7 +242,7 @@ test("a release routes on the recorded provider, not on what this machine has", 
   );
 });
 
-test("the recorded provider survives a restart, because it is only ever read", async () => {
+test("a treehouse row is released through treehouse when the current machine would choose git", async () => {
   // A second manager over the same table is what a restart looks like. The point is that
   // nothing re-derives the column: the row that a treehouse build wrote still says treehouse,
   // and that is the value the next release will route on.
@@ -254,14 +255,64 @@ test("the recorded provider survives a restart, because it is only ever read", a
     headSha: SHA,
   });
 
+  let probes = 0;
   const restarted = new CheckLeaseManager(db, {
     cli: m.cli,
     pin: async () => {},
     verifyBase: async (_r, s) => s,
+    treehouseInstalled: async () => {
+      probes++;
+      return false;
+    },
   });
   assert.equal(store.get("att-restart")?.provider, "treehouse");
   assert.deepEqual(await restarted.releaseForAttempt("att-restart"), { outcome: "returned" });
   assert.equal(providerOf("att-restart"), "treehouse", "a release must never rewrite it");
   assert.equal(m.slot.state, "available");
   assert.ok(m.calls.includes("return"), "the recorded provider is the one that acted");
+  assert.equal(probes, 0, "release re-probed the machine instead of reading the row");
+});
+
+test("a treehouse row fails closed when the binary vanishes", async () => {
+  const m = mkManager();
+  const path = await m.manager.acquireForAttempt({
+    attemptId: "att-vanished",
+    submissionId: "sub-vanished",
+    nodeId: "gate",
+    repoRoot: m.repoRoot,
+    headSha: SHA,
+  });
+
+  let statusReads = 0;
+  let probes = 0;
+  const missingBinary: TreehouseCli = {
+    ...m.cli,
+    status: async () => {
+      statusReads++;
+      return stubRun({ stdout: "", stderr: "spawn treehouse ENOENT", code: 1 });
+    },
+  };
+  const restarted = new CheckLeaseManager(db, {
+    cli: missingBinary,
+    pin: async () => {},
+    verifyBase: async (_r, s) => s,
+    treehouseInstalled: async () => {
+      probes++;
+      return false;
+    },
+  });
+
+  const outcome = await restarted.releaseForAttempt("att-vanished");
+  assert.equal(outcome.outcome, "retry");
+  assert.match(outcome.outcome === "retry" ? outcome.reason : "", /treehouse status exited 1/);
+  assert.equal(statusReads, 1, "the recorded treehouse provider was not asked about ownership");
+  assert.equal(probes, 0, "release re-probed the machine instead of reading the row");
+  assert.equal(store.get("att-vanished")?.cleanupState, "held");
+  assert.equal(store.get("att-vanished")?.provider, "treehouse");
+  assert.ok(restarted.pinnedPaths().includes(path), "an unreadable treehouse row lost its pin");
+  assert.equal(m.calls.filter((call) => call === "return").length, 0, "an unreadable row was returned");
+
+  // Restore the provider only for test cleanup. The asserted state above is the product's
+  // deliberate outcome until the real binary becomes available again.
+  assert.deepEqual(await m.manager.releaseForAttempt("att-vanished"), { outcome: "returned" });
 });

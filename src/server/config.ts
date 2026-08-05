@@ -22,6 +22,8 @@ export const DB_PATH = join(STATE_DIR, "harness.db");
 export const TOKEN_PATH = tokenPath();
 /** Isolated worktrees the daemon creates for dispatched tasks (git-worktree fallback). */
 export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
+/** Isolated worktrees the daemon creates for Workflow checks when treehouse is unavailable. */
+export const CHECK_WORKTREES_DIR = join(STATE_DIR, "check-worktrees");
 
 /**
  * The skills catalog (`skills/<id>/SKILL.md`), baked into the repo and shipped with
@@ -145,4 +147,3 @@ export function pollIntervalMs(raw = envVar("POLL_MS")): number | null {
  * runs far slower to keep `gh` calls negligible.
  */
 export const PR_POLL_MS = Number(envVar("PR_POLL_MS") ?? 20_000);
-

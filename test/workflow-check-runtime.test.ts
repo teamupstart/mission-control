@@ -43,6 +43,7 @@ type CheckSpawnOutcome = import("../src/server/workflows/check-supervisor.ts").C
 
 const db = openDb();
 const leaseRows = new CheckLeaseStore(db);
+const TREEHOUSE_PRESENT = async () => true;
 
 /**
  * Every case here starts a real process, and a platform that cannot read a process start
@@ -201,6 +202,7 @@ function fixture(over: { slots?: number } = {}): Fixture {
     // captured commit" a property of the test rather than a claim in a comment.
     pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
+    treehouseInstalled: TREEHOUSE_PRESENT,
   });
   const runtime = new CheckRuntime(leases, { leaseStore: leaseRows, teardown: TEARDOWN, timeoutMs: 30_000 });
   return { repoRoot, headSha, pool, leases, runtime };
@@ -573,7 +575,12 @@ function fixedSupervisor(outcome: CheckSpawnOutcome): typeof import("../src/serv
 test("an infrastructure result is not returned until the lease is resolved", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 2);
-  const leases = new CheckLeaseManager(db, { cli: pool.cli, pin: pinLeasedWorktree, verifyBase: verifyPinnedBase });
+  const leases = new CheckLeaseManager(db, {
+    cli: pool.cli,
+    pin: pinLeasedWorktree,
+    verifyBase: verifyPinnedBase,
+    treehouseInstalled: TREEHOUSE_PRESENT,
+  });
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,
     supervise: fixedSupervisor({
@@ -611,7 +618,12 @@ test("an infrastructure result is not returned until the lease is resolved", asy
 test("a group that cannot be proven empty withholds the verdict and keeps its lease", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 2);
-  const leases = new CheckLeaseManager(db, { cli: pool.cli, pin: pinLeasedWorktree, verifyBase: verifyPinnedBase });
+  const leases = new CheckLeaseManager(db, {
+    cli: pool.cli,
+    pin: pinLeasedWorktree,
+    verifyBase: verifyPinnedBase,
+    treehouseInstalled: TREEHOUSE_PRESENT,
+  });
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,
     supervise: fixedSupervisor({
@@ -668,6 +680,7 @@ test("a worktree that could not be handed back withholds the verdict too", async
     cli: pool.cli,
     pin: pinLeasedWorktree,
     verifyBase: verifyPinnedBase,
+    treehouseInstalled: TREEHOUSE_PRESENT,
     now: () => clock.now,
   });
   const runtime = new CheckRuntime(leases, {
@@ -890,7 +903,12 @@ async function waitFor(check: () => boolean, message: string, timeoutMs = 10_000
 test("an unresolved lease blocks the retry instead of taking a second tree", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 3);
-  const leases = new CheckLeaseManager(db, { cli: pool.cli, pin: pinLeasedWorktree, verifyBase: verifyPinnedBase });
+  const leases = new CheckLeaseManager(db, {
+    cli: pool.cli,
+    pin: pinLeasedWorktree,
+    verifyBase: verifyPinnedBase,
+    treehouseInstalled: TREEHOUSE_PRESENT,
+  });
   const runtime = new CheckRuntime(leases, {
     leaseStore: leaseRows,
     supervise: fixedSupervisor({

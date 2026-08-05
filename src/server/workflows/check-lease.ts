@@ -1,7 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import type { WorktreeProvider } from "@shared/types.ts";
+import { CHECK_WORKTREES_DIR } from "../config.ts";
 import { openDb } from "../db.ts";
 import { pinLeasedWorktree, verifyPinnedBase } from "../dispatcher.ts";
+import { verifyHeadIs } from "../git/ensemble-snapshot.ts";
 import {
   acquireLease,
   canonicalPath,
@@ -11,8 +15,8 @@ import {
   withPoolLock,
   type TreehouseCli,
 } from "../pool-lease.ts";
-import { parsePoolStatus } from "../pool.ts";
-import type { RunResult } from "../util/exec.ts";
+import { parsePoolStatus, treehouseInstalled } from "../pool.ts";
+import { run, type RunResult } from "../util/exec.ts";
 
 /**
  * Who owns a pooled worktree while a Workflow check runs in it, and who hands it back.
@@ -438,6 +442,121 @@ export class TreehouseCheckTreeProvider implements CheckTreeProvider {
   }
 }
 
+/** Long enough for git to take its shared repository locks on a busy developer machine. */
+const GIT_WORKTREE_ADD_TIMEOUT_MS = 60_000;
+const GIT_WORKTREE_REMOVE_TIMEOUT_MS = 30_000;
+
+/**
+ * A one-attempt detached git worktree, used when the treehouse binary is not resolvable.
+ *
+ * Unlike a pool slot, this path is derived from an attempt id that is unique forever and is
+ * never reused. That difference is what lets `ownership` treat registration at the path as
+ * proof that this is still our tree without an external holder ledger.
+ */
+export class GitCheckTreeProvider implements CheckTreeProvider {
+  readonly kind: WorktreeProvider = "git";
+
+  async acquire(input: {
+    repoRoot: string;
+    attemptId: string;
+    baseSha: string;
+  }): Promise<{ path: string; holderToken: string }> {
+    mkdirSync(CHECK_WORKTREES_DIR, { recursive: true });
+    const path = join(CHECK_WORKTREES_DIR, input.attemptId);
+    if (existsSync(path)) {
+      throw new Error(
+        `the check worktree path ${path} already exists for attempt ${input.attemptId} - ` +
+          "refusing to reuse it",
+      );
+    }
+
+    const added = await run(
+      "git",
+      ["-C", input.repoRoot, "worktree", "add", "--detach", path, input.baseSha],
+      { timeoutMs: GIT_WORKTREE_ADD_TIMEOUT_MS },
+    );
+    if (added.code !== 0) {
+      throw new Error(`git worktree add failed: ${added.stderr.trim() || `exit ${added.code}`}`);
+    }
+
+    try {
+      return {
+        path: realpathSync(path),
+        // Git has no holder label. The manager still records its normal per-attempt token so
+        // the lifecycle row keeps one shape across providers; `ownership` returns that same
+        // token only after proving the unique attempt path is still registered.
+        holderToken: checkHolderToken(input.attemptId),
+      };
+    } catch (err) {
+      // The add succeeded but no row can name this tree yet. Remove it here, before the
+      // manager sees an acquisition, so a failed canonicalisation cannot leak an untracked
+      // worktree.
+      const removed = await this.remove(input.repoRoot, path);
+      const cause = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        removed.code === 0
+          ? cause
+          : `${cause} - and the git worktree could not be removed: ` +
+              (removed.stderr.trim() || `exit ${removed.code}`),
+      );
+    }
+  }
+
+  /** The detached add chose the commit; this re-read proves git actually landed there. */
+  async pin(input: { repoRoot: string; path: string; baseSha: string }): Promise<void> {
+    await verifyHeadIs(input.path, input.baseSha);
+  }
+
+  async ownership(ref: CheckTreeRef): Promise<CheckTreeOwnership> {
+    const listed = await run(
+      "git",
+      ["-C", ref.repoRoot, "worktree", "list", "--porcelain"],
+      { timeoutMs: GIT_WORKTREE_REMOVE_TIMEOUT_MS },
+    );
+    if (listed.code !== 0 || listed.outcomeUnknown) {
+      return {
+        state: "unreadable",
+        reason:
+          `git worktree list ${listed.outcomeUnknown ? "did not complete" : `exited ${listed.code}`}` +
+          (listed.stderr.trim() ? `: ${listed.stderr.trim()}` : ""),
+      };
+    }
+
+    const wanted = canonicalPath(ref.leasePath);
+    const present = listed.stdout
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("worktree "))
+      .some((line) => canonicalPath(line.slice("worktree ".length)) === wanted);
+    if (!present) return { state: "gone" };
+
+    // A pool slot is reused, so its path cannot identify its current holder. A git check
+    // tree is different: its path contains an attempt id that is unique forever and never
+    // reused. Presence in git's own worktree ledger is therefore ownership by construction.
+    return { state: "held", holder: ref.holderToken };
+  }
+
+  handBack(ref: CheckTreeRef): Promise<RunResult> {
+    return this.remove(ref.repoRoot, ref.leasePath);
+  }
+
+  /**
+   * There is no cross-process pool to serialise against. Git takes its own repository locks,
+   * and the manager's `busy` set provides the in-process single-flight this lifecycle needs.
+   */
+  withLock<T>(_repoRoot: string, fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+
+  private remove(repoRoot: string, path: string): Promise<RunResult> {
+    // Keep this argv identical to dispatch teardown's git-provider arm.
+    return run(
+      "git",
+      ["-C", repoRoot, "worktree", "remove", "--force", path],
+      { timeoutMs: GIT_WORKTREE_REMOVE_TIMEOUT_MS },
+    );
+  }
+}
+
 // ---- the manager -----------------------------------------------------------
 
 export interface CheckLeaseDeps {
@@ -446,6 +565,8 @@ export interface CheckLeaseDeps {
   pin?: (repoRoot: string, leasePath: string, baseSha: string) => Promise<void>;
   /** `verifyPinnedBase` - the existing full-40-hex check, never a second regex. */
   verifyBase?: (repoRoot: string, baseSha: string) => Promise<string>;
+  /** The acquire-time provider probe. Tests inject it alongside a fake treehouse CLI. */
+  treehouseInstalled?: () => Promise<boolean>;
   now?: () => number;
   /** How many leaked rows one reclamation pass may work through. */
   maxReclaimPerPass?: number;
@@ -459,6 +580,7 @@ const RECLAIM_BACKOFF_MAX_MS = 3_600_000;
 export class CheckLeaseManager {
   private readonly store: CheckLeaseStore;
   private readonly verifyBase: (repoRoot: string, baseSha: string) => Promise<string>;
+  private readonly treehouseInstalled: () => Promise<boolean>;
   private readonly now: () => number;
   private readonly maxReclaimPerPass: number;
 
@@ -467,10 +589,11 @@ export class CheckLeaseManager {
    * removed only once the tree is confirmed no longer ours.
    *
    * The durable query already covers everything persisted, so this set exists for exactly
-   * one window: between `treehouse get` returning and the INSERT committing. That window
-   * contains an `await`, and a reaper tick landing inside it would see a leased tree with no
-   * row, no session, no task and no processes. The union of the two sources is what makes
-   * the pin true from acquisition rather than from persistence.
+   * one window: between a provider returning a tree and the INSERT committing. That window
+   * contains an `await`, and a reaper tick landing inside it could otherwise see a tree with
+   * no row, no session, no task and no processes. The union of the two sources is what makes
+   * the pin true from acquisition rather than from persistence. For git the pin is inert to
+   * the pool reaper, but keeping it unconditional preserves one lifecycle across providers.
    */
   private readonly justAcquired = new Set<string>();
 
@@ -483,11 +606,10 @@ export class CheckLeaseManager {
   /** Consecutive failed returns per attempt, and when the next one may be tried. */
   private readonly backoff = new Map<string, { failures: number; nextAt: number }>();
 
-  /**
-   * The pool, as a provider. Held on its own as well as in the map below because it is what
-   * a NEW acquisition takes its tree from.
-   */
+  /** The pool fast path, held separately because acquire-time selection names it directly. */
   private readonly treehouse: CheckTreeProvider;
+  /** The cold, isolated fallback used only when the treehouse binary is unavailable. */
+  private readonly git: CheckTreeProvider;
 
   /**
    * Every provider this build can reach, keyed by the value a row records.
@@ -503,6 +625,7 @@ export class CheckLeaseManager {
   constructor(db: DatabaseSync = openDb(), deps: CheckLeaseDeps = {}) {
     this.store = new CheckLeaseStore(db);
     this.verifyBase = deps.verifyBase ?? verifyPinnedBase;
+    this.treehouseInstalled = deps.treehouseInstalled ?? treehouseInstalled;
     this.now = deps.now ?? Date.now;
     this.maxReclaimPerPass = deps.maxReclaimPerPass ?? 8;
     // Built from the same injected seams this manager has always exposed, so every existing
@@ -517,7 +640,11 @@ export class CheckLeaseManager {
       deps.cli ?? defaultTreehouseCli,
       deps.pin ?? pinLeasedWorktree,
     );
-    this.providers = new Map([[this.treehouse.kind, this.treehouse]]);
+    this.git = new GitCheckTreeProvider();
+    this.providers = new Map([
+      [this.treehouse.kind, this.treehouse],
+      [this.git.kind, this.git],
+    ]);
   }
 
   /**
@@ -594,13 +721,13 @@ export class CheckLeaseManager {
   }
 
   /**
-   * Take a pooled worktree for one check attempt and pin it to the captured commit.
+   * Take an isolated worktree for one check attempt and pin it to the captured commit.
    *
-   * There is deliberately NO fallback to `git worktree add`. The pool is what carries the
-   * warm ignored dependencies that `clean -fd` preserves, so a cold tree would turn a
-   * three-minute check into a twelve-minute one; a dry pool is infrastructure, not a reason
-   * to build a slower checkout. (`provisionWorktree` does fall back, and the asymmetry is
-   * intended: a dispatched session can afford a cold tree.)
+   * Treehouse remains the fast path whenever its binary is resolvable. A machine without
+   * that binary uses a detached git worktree instead, preserving the isolation and exact-
+   * commit invariants so the check still produces a real verdict. A present but dry or
+   * broken pool remains infrastructure; provider selection is not a fallback after an
+   * acquisition failure.
    *
    * Every failure here is infrastructure and never a verdict.
    */
@@ -643,9 +770,10 @@ export class CheckLeaseManager {
         );
       }
       // Resolved ONCE per acquisition and recorded on the row below, because the row is what
-      // the release path reads. Phase 2 turns this expression into a choice; today there is
-      // one provider, and the point of naming it here is that the choice has a single home.
-      const provider = this.treehouse;
+      // the release path reads. A check deliberately asks about the BINARY only. It must not
+      // consult `isTreehouseRepo`: repositories without `treehouse.toml` already take pooled
+      // trees for checks, and changing that opt-in rule is a separately filed decision.
+      const provider = (await this.treehouseInstalled()) ? this.treehouse : this.git;
       return await provider.withLock(repoRoot, async () => {
         const taken = await provider.acquire({ repoRoot, attemptId, baseSha });
         const path = taken.path;
@@ -702,8 +830,9 @@ export class CheckLeaseManager {
             throw new Error(cause);
           }
           if (inserted) this.store.setState(attemptId, "returning", this.now());
+          const mechanism = provider.kind === "treehouse" ? "pool lease" : "git worktree";
           throw new Error(
-            `${cause} - and the pool lease could not be returned: ` +
+            `${cause} - and the ${mechanism} could not be returned: ` +
               `${returned.stderr.trim() || `exit ${returned.code}`} (${path} is still held` +
               // A tree we could neither record nor return. Naming it is all we can do: there
               // is no row to reclaim it from, so a human has to hand it back.

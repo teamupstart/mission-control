@@ -52,6 +52,25 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### Sibling links in the HTML preview
+
+[`evidence/preview-sibling-link.png`](evidence/preview-sibling-link.png) is captured after
+the sibling-link regression clicks `<a href="b.html">` inside the sandboxed preview of
+`docs/a.html`: the sibling document is rendered in the preview pane and the file list's
+selection has followed it. Before the fix this exact click left a white pane - the srcdoc
+iframe navigated against the dashboard's own URL and the SPA fallback answered with a
+shell the sandbox could not load.
+
+Regenerate it with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/preview-sibling-links.spec.ts \
+  -g 'opens that file in the preview' \
+  --reporter=list
+```
+
 ### Foreman PR follow-through
 
 [`docs/evidence/foreman-pr-follow-through/`](../docs/evidence/foreman-pr-follow-through/)

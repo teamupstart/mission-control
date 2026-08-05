@@ -1,10 +1,33 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+
+const EVIDENCE = fileURLToPath(new URL("../evidence/", import.meta.url));
+
+/**
+ * Photograph the state the fix bought, on the same run whose assertions proved it.
+ * Behind `MC_E2E_EVIDENCE` like every other capture: an ordinary run would rewrite a
+ * binary for no added signal. Same `OBSERVED` / `CAPTURED` vocabulary as the rest.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/evidence/${name}.png`);
+}
+
+function observed(what: string): void {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  // eslint-disable-next-line no-console
+  console.log(`OBSERVED ${what}`);
+}
 
 /**
  * Links between checkout HTML files, followed INSIDE the preview.
@@ -141,6 +164,8 @@ test("a sibling link inside the HTML preview opens that file in the preview", as
       .getByRole("listbox", { name: "Session files" })
       .getByRole("option", { name: "docs/b.html" }),
   ).toHaveAttribute("aria-selected", "true");
+  observed('clicking "Continue to beta" inside the sandboxed preview rendered docs/b.html, and the file list selection followed');
+  await shoot(dashboard, "preview-sibling-link");
 
   // And back, because a one-way bridge would strand every mockup's "all six" index link.
   await dashboard

@@ -1,5 +1,6 @@
 import type { Session } from "@shared/types.ts";
 import { stateDisplay } from "./format.ts";
+import { NO_HELD_SESSIONS } from "./held.ts";
 import { groupByTone, TONE_ORDER, type ToneGroup } from "./tone.ts";
 
 /**
@@ -19,6 +20,18 @@ export interface EnsembleClusterSpan {
 /** A tone group plus where its ensemble clusters are. */
 export interface FleetToneGroup extends ToneGroup {
   clusters: EnsembleClusterSpan[];
+  /**
+   * Index into `sessions` where the sessions held by an open workflow run begin, or null when
+   * this group has none.
+   *
+   * A BOUNDARY rather than a set, for the same reason `clusters` is a span: the held members are
+   * contiguous and last, so a view slices at one index and draws its section rule there, and the
+   * arrow keys walk the identical sequence. `heldFrom === 0` is a real value - it means every
+   * session in the group is held - and is why this is `number | null` rather than a falsy count.
+   *
+   * Only the `idle` group ever sets it. See `orderSessions`.
+   */
+  heldFrom: number | null;
 }
 
 export interface FleetOrder {
@@ -58,19 +71,36 @@ export type FleetBlock =
  * with agents nobody has to do anything about is a column that stops being read. The header's
  * own rollup line is what ties the halves back together.
  *
+ * HELD SESSIONS SORT LAST WITHIN `idle`, AND ONLY WITHIN `idle`. A session an open workflow run
+ * owns (`heldSessionIds`) is idle in the only sense the runtime can see, and free in no sense at
+ * all: the run sends its next round on its own, and until it does there is nothing an operator
+ * can hand that agent. Sorting them below the genuinely free ones makes the agents you can
+ * actually dispatch to contiguous and first, which is the order the column is read in.
+ *
+ * It is confined to `idle` because in every other tone, being held is not the most important
+ * thing true about the session. A held session that has stopped to ask a question is in
+ * "needs you" and demoting it there would bury the one row on the board that wants a human.
+ *
  * Idempotent, and deliberately so: `App` orders the visible fleet once, and `BoardView` /
  * `ConsoleView` call this again on the list they were handed rather than being passed a
  * pre-split structure. Re-running it on its own output returns the same order, so the two
- * cannot disagree even though each computes it.
+ * cannot disagree even though each computes it. That extends to `held`: it is an argument
+ * rather than something read off the session precisely so both sides pass the same set.
+ *
+ * `held` defaults to empty, which reproduces the pre-workflow ordering exactly - so a caller
+ * that has no run map (and every test that predates one) is unaffected.
  */
-export function orderSessions(sessions: readonly Session[]): FleetOrder {
+export function orderSessions(
+  sessions: readonly Session[],
+  held: ReadonlySet<string> = NO_HELD_SESSIONS,
+): FleetOrder {
   const baseline = [...sessions].sort((a, b) => {
     const ta = TONE_ORDER[stateDisplay(a).tone];
     const tb = TONE_ORDER[stateDisplay(b).tone];
     return ta - tb || a.name.localeCompare(b.name) || a.pid - b.pid;
   });
 
-  const groups = groupByTone(baseline).map(clusterGroup);
+  const groups = groupByTone(baseline).map((group) => clusterGroup(group, held));
   return { sessions: groups.flatMap((g) => g.sessions), groups };
 }
 
@@ -91,10 +121,43 @@ function runIdOf(session: Session): string | null {
  * run's own vocabulary and the only order the header's counts can be read against - falling
  * back to the baseline tiebreak when two members claim the same ordinal.
  */
-function clusterGroup(group: ToneGroup): FleetToneGroup {
+function clusterGroup(group: ToneGroup, held: ReadonlySet<string>): FleetToneGroup {
+  // The free/held split happens BEFORE clustering, and each side is then clustered on its own.
+  // Clustering the group as a whole and splitting after would not work: the buckets are keyed by
+  // run id across everything handed to them, so a run with one free member and one held member
+  // would collect both into a single span anchored at the free member - a cluster straddling the
+  // boundary, which is exactly the shape `fleetBlocks` and the section rule cannot express.
+  //
+  // The consequence is the same one the tone-boundary rule already has: such a run is drawn as
+  // two frames, one per side, and its header's own rollup is what ties the halves together.
+  const partitions = group.tone === "idle" && group.sessions.some((s) => held.has(s.id))
+    ? [
+        group.sessions.filter((s) => !held.has(s.id)),
+        group.sessions.filter((s) => held.has(s.id)),
+      ]
+    : [group.sessions];
+
+  const sessions: Session[] = [];
+  const clusters: EnsembleClusterSpan[] = [];
+  let heldFrom: number | null = null;
+  for (const [index, partition] of partitions.entries()) {
+    if (index === 1) heldFrom = sessions.length;
+    const run = clusterPartition(partition);
+    for (const cluster of run.clusters) {
+      clusters.push({ ...cluster, startIndex: cluster.startIndex + sessions.length });
+    }
+    sessions.push(...run.sessions);
+  }
+  return { ...group, sessions, clusters, heldFrom };
+}
+
+/** One contiguous run of sessions, with its ensemble siblings pulled together. */
+function clusterPartition(
+  input: readonly Session[],
+): { sessions: Session[]; clusters: EnsembleClusterSpan[] } {
   const buckets = new Map<string, Session[]>();
   const slots: (Session | Session[])[] = [];
-  for (const session of group.sessions) {
+  for (const session of input) {
     const runId = runIdOf(session);
     if (runId === null) {
       slots.push(session);
@@ -126,7 +189,7 @@ function clusterGroup(group: ToneGroup): FleetToneGroup {
     clusters.push({ runId: runIdOf(slot[0]!)!, startIndex: sessions.length, length: slot.length });
     sessions.push(...slot);
   }
-  return { ...group, sessions, clusters };
+  return { sessions, clusters };
 }
 
 /**
@@ -165,4 +228,45 @@ export function fleetBlocks(group: FleetToneGroup): FleetBlock[] {
     i += 1;
   }
   return blocks;
+}
+
+/** A rendered row of a tone group: a section rule, a loose session, or a framed cluster. */
+export type FleetRow =
+  | { kind: "section"; section: "free" | "held"; count: number }
+  | FleetBlock;
+
+/**
+ * `fleetBlocks` with the free/held section rules laid in at the boundary.
+ *
+ * The single expansion of `(sessions, clusters, heldFrom)` into rows, so the board column and
+ * the console rail cannot draw the rule in different places - they sit either side of the
+ * board's drill-in morph, where a disagreement would read as the fleet regrouping when only the
+ * layout moved.
+ *
+ * Counts SESSIONS while walking blocks, because `heldFrom` indexes `sessions` and a cluster
+ * occupies several of them. The walk can only ever land exactly ON the boundary rather than
+ * stepping past it, and that is a property of `orderSessions` partitioning BEFORE it clusters:
+ * a cluster straddling the boundary would swallow the rule entirely. Pinned by test.
+ *
+ * A group with no held sessions returns its blocks unchanged and gains no rules - a "free"
+ * heading over a column where nothing is held would be labelling the absence of a distinction.
+ */
+export function fleetRows(group: FleetToneGroup): FleetRow[] {
+  const blocks = fleetBlocks(group);
+  const heldFrom = group.heldFrom;
+  if (heldFrom === null) return blocks;
+
+  const rows: FleetRow[] = [];
+  let index = 0;
+  for (const block of blocks) {
+    if (index === 0 && heldFrom > 0) {
+      rows.push({ kind: "section", section: "free", count: heldFrom });
+    }
+    if (index === heldFrom) {
+      rows.push({ kind: "section", section: "held", count: group.sessions.length - heldFrom });
+    }
+    rows.push(block);
+    index += block.kind === "session" ? 1 : block.sessions.length;
+  }
+  return rows;
 }

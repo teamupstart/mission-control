@@ -4865,6 +4865,21 @@ earns two surfaces a card has nowhere to put:
   **needs you** with the run's header repeated there, rather than dragging its working siblings
   out of the column that describes what they are. Dragging a backlog card onto a clustered tile
   works exactly as it does anywhere else - the frame is a drawing, not a drop target.
+- **The idle column separates free agents from ones a workflow is holding.** A session bound
+  to a live [Workflow](#workflows) run sits at `idle` for most of that run's life: it finished
+  its turn, and the run is off working checks, judges and reviewers before it sends the next
+  round. The runtime reading is right - the agent really is doing nothing - but it is not
+  *free*, and the column used to count it as capacity. It now sorts below a **held by a
+  workflow** rule, under its own count: the head reads **N free · M held** instead of one
+  number that means neither, and each held tile wears a purple spine and a **held** tag so it
+  stays legible once the rule has scrolled away. The tile's
+  [active-rung preview](#watching-a-run) already says *which* run and *where
+  it is*; the rule answers the question that preview cannot, which is whether you may give this
+  agent anything. Held-ness is a join, not a session state - a run whose status has reached
+  `completed`, `cancelled` or `failed` releases its session back to free immediately, and a
+  held session that stops to ask a question moves to **needs you** like any other, because
+  there the operator is the one who has to act. The **Console** rail draws the same rule, since
+  it renders the same ordering.
 - **Killing a session closes its detail** once shutdown is accepted, without waiting for an
   Agent SDK subprocess and event stream to finish draining. The board goes straight back to
   its columns, the console empties its pane, and Cards leaves focus mode with the card still

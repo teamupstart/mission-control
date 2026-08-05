@@ -49,6 +49,19 @@
      the agent talking. One colour everywhere is the honest version of that. */
   --foreman: var(--purple);
 
+  /* A session idle only because an open workflow run owns its next turn.
+     Three colours were eliminated before this one. `--working` blue is the RUN's colour
+     and already means a running workflow (`.workflow-running` below), so a held agent
+     would read as one burning tokens. `--idle` green is the "free, take me" colour the
+     whole distinction exists to protect. A cyan sits about 28 degrees off `--idle` and
+     is not separable from it at the 7px a swatch gets - and idle-vs-held is precisely
+     the read that has to survive a glance across the room. Purple is far from both.
+     Its cost, stated plainly: purple already carries Foreman, a merged PR and cost.
+     All three are small marks inside a card; this is the first thing to wear it as a
+     STATE, and `--tone-color` - the spine, the swatch, the column head - had no purple
+     member before it. */
+  --held: var(--purple);
+
   /* The syntax palette's one hue that is not a state tone - types, classes, class
      selectors. It read `--claude` only because both happened to be this terracotta;
      which agent is running has nothing to do with highlighting a code block. */
@@ -17418,6 +17431,87 @@ span.line-run-prov {
   border-radius: 999px;
   background: var(--panel);
 }
+/* The split count. Only the FIRST pill takes the auto margin that pushes the pair right; both
+   taking it would split the free space between them and open a header-wide gap down the middle.
+
+   `~` and not `+`: each pill is wrapped in `Tooltip`, which emits a visually-hidden `.tt-desc`
+   span as its NEXT SIBLING. The adjacent combinator therefore never matched, and the reset
+   silently did nothing. */
+.board-col-n.n-free ~ .board-col-n {
+  margin-left: 0;
+}
+.board-col-n.n-free {
+  color: var(--idle);
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+  background: color-mix(in oklab, var(--idle) 10%, var(--panel));
+}
+.board-col-n.n-held {
+  color: var(--held);
+  border-color: color-mix(in oklab, var(--held) 42%, var(--border));
+  background: color-mix(in oklab, var(--held) 12%, var(--panel));
+}
+/* ---- free / held section rule ----
+   Drawn by `FleetSectionHead` in a board column AND in the console rail, so it is styled
+   once here rather than twice under each surface's prefix. It is a rule with a label, not a
+   heading: it must read as quieter than the column head above it and than the tiles below,
+   or a column acquires a second visual hierarchy competing with the one that matters. */
+.fleet-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 3px 1px;
+}
+.fleet-section-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fleet-section-line::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+.fleet-section-line b {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.fleet-section-n {
+  font-size: 9.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+.fleet-section-free .fleet-section-line b,
+.fleet-section-free .fleet-section-n {
+  color: var(--idle);
+}
+.fleet-section-held .fleet-section-line b,
+.fleet-section-held .fleet-section-n {
+  color: var(--held);
+}
+.fleet-section-held .fleet-section-line::after {
+  background: color-mix(in oklab, var(--held) 30%, var(--border-soft));
+}
+/* The sentence the held side carries. Said once per section rather than on every tile
+   below it, which is the whole reason the sections exist. */
+.fleet-section-why {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+/* The rail is denser than a board column and its rows are already tight, so the rule
+   loses the sentence there and keeps only the label. */
+.console-rail .fleet-section {
+  padding: 6px 10px 2px;
+}
+.console-rail .fleet-section-why {
+  display: none;
+}
+
 .board-col-body {
   display: flex;
   flex-direction: column;
@@ -18191,6 +18285,43 @@ span.line-run-prov {
 }
 .tile.tone-exited {
   opacity: 0.62;
+}
+/* A tile an open workflow run holds. It takes the held tone on its spine even though it sits
+   in the idle column, and that disagreement is deliberate: the column says where the runtime
+   put it, the spine says who owns its next turn.
+   Deliberately NOT dimmed the way `.tone-exited` is. Dimming says "deprioritise me", and a run
+   mid-flight is among the most consequential things on the board - it is not yours to drive,
+   which is a different statement from not worth reading. A tint, not a fade. */
+.tile.is-held {
+  --tone-color: var(--held);
+  border-color: color-mix(in oklab, var(--held) 30%, var(--border));
+  background: linear-gradient(color-mix(in oklab, var(--held) 7%, var(--panel)), var(--panel-2));
+}
+/* A held tile that is ALSO a live drop target keeps the drop highlight.
+   `.tile.can-drop` is declared earlier in this file at equal specificity, so the held tint
+   above silently won and the tile stopped lighting up during a backlog drag - while still
+   accepting the drop, because `canAcceptTask` (BacklogColumn.tsx) reads only tone, repo and
+   `instrumented` and knows nothing about workflow runs. An affordance that is live but
+   invisible is worse than one that is merely wrong, so the highlight is restored here rather
+   than left to the cascade.
+   The deeper issue is that this combination should not arise: handing a backlog task to a
+   held agent resets it mid-run. Teaching `canAcceptTask` about open runs is the fix, and is
+   deliberately NOT done here - it changes what a drop DOES, not how the board reads. */
+.tile.is-held.can-drop {
+  border-color: color-mix(in oklab, var(--select) 55%, var(--border));
+}
+.tile-held {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--held) 45%, var(--border));
+  background: color-mix(in oklab, var(--held) 13%, transparent);
+  color: var(--held);
+  cursor: help;
 }
 .tile-head {
   display: flex;

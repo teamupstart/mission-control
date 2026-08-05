@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
-import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import { workflowRunIsOpen, type WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import {
@@ -85,6 +85,11 @@ export function SessionTile({
   const st = stateDisplay(session);
   const isRunning = session.state === "working" || session.state === "starting";
   const workflowRunId = workflowRun?.id ?? null;
+  // Held reads off the run this tile was already handed, not a second lookup: the section rule
+  // above it and this tag have to agree about the same session, and one source is how they do.
+  // Scoped to the idle tone to match `orderSessions` - a held session parked on a question
+  // belongs to "needs you", and tagging it here would argue with the column it sits in.
+  const held = workflowRun != null && workflowRunIsOpen(workflowRun.status) && st.tone === "idle";
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
   const toggleWorkflowExpanded = useCallback(
@@ -109,7 +114,7 @@ export function SessionTile({
       ref={setTileRef}
       className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}${
         selected ? " selected" : ""
-      }${
+      }${held ? " is-held" : ""}${
         droppable ? " can-drop" : ""
       }${over ? " drop-over" : ""}${workflowExpanded ? " workflow-expanded" : ""}`}
       onDragOver={(e) => {
@@ -169,6 +174,16 @@ export function SessionTile({
         <Tooltip label={`Open ${session.name || "unnamed session"}`}>
           <span className="tile-name">{session.name || "(unnamed)"}</span>
         </Tooltip>
+        {/* Says the same thing as the section rule this tile sits under, and is not redundant
+            with it: the rule scrolls off the top of a full column, and a tile dragged into view
+            by the arrow keys has to carry its own answer to "why can I not use this one". */}
+        {held && (
+          <Tooltip
+            label={`Held by ${workflowRun!.workflowName} - the run owns this session's next turn`}
+          >
+            <span className="tile-held">held</span>
+          </Tooltip>
+        )}
       </span>
 
       {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}

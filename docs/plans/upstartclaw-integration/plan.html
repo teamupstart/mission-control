@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UpstartClaw x Mission Control: comparison and integration plan</title>
+<style>
+  :root {
+    --bg: #fbfbfd;
+    --fg: #1c1e21;
+    --muted: #5b6572;
+    --accent: #0b66c3;
+    --border: #d8dde4;
+    --card: #ffffff;
+    --code-bg: #f0f2f5;
+    --verdict: #0a7d4f;
+    --warn: #a15c00;
+    --box: #eef3fa;
+    --box-border: #9db8d6;
+    --box2: #f3eefa;
+    --box2-border: #b39dd6;
+    --box3: #eefaf1;
+    --box3-border: #8fc9a5;
+    --arrow: #5b6572;
+    --th-bg: #f0f2f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e4e7eb;
+      --muted: #9aa4b2;
+      --accent: #5aa3e8;
+      --border: #333a44;
+      --card: #1b1e24;
+      --code-bg: #22262e;
+      --verdict: #52c88f;
+      --warn: #e0a350;
+      --box: #1d2b3d;
+      --box-border: #3d5a80;
+      --box2: #2a2338;
+      --box2-border: #5d4a85;
+      --box3: #1c2f24;
+      --box3-border: #3d6b4f;
+      --arrow: #9aa4b2;
+      --th-bg: #22262e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    max-width: 62rem;
+    padding: 2.5rem 1.5rem 5rem;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 .4rem; }
+  h2 { font-size: 1.35rem; margin: 2.6rem 0 .8rem; padding-top: .8rem; border-top: 1px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.8rem 0 .5rem; }
+  p, li { max-width: 58rem; }
+  a { color: var(--accent); }
+  .meta { color: var(--muted); font-size: .92rem; margin-bottom: 1.6rem; }
+  code {
+    font: .875em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    padding: .1em .35em;
+    border-radius: 4px;
+  }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 54rem; font-size: .93rem; }
+  th, td { text-align: left; vertical-align: top; padding: .55rem .7rem; border-bottom: 1px solid var(--border); }
+  th { background: var(--th-bg); position: sticky; top: 0; }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { white-space: nowrap; font-weight: 600; }
+  .verdict { color: var(--verdict); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .pill {
+    display: inline-block; font-size: .78rem; font-weight: 700; letter-spacing: .02em;
+    padding: .1rem .55rem; border-radius: 99px; border: 1px solid var(--border);
+    color: var(--muted); margin-left: .5rem; vertical-align: middle;
+  }
+  figure { margin: 1.4rem 0; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: .88rem; margin-top: .4rem; text-align: center; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem 1.2rem; margin: 1rem 0;
+  }
+  ul { padding-left: 1.3rem; }
+  li { margin: .3rem 0; }
+  .svgbox { fill: var(--box); stroke: var(--box-border); stroke-width: 1.2; rx: 8; }
+  .svgbox2 { fill: var(--box2); stroke: var(--box2-border); stroke-width: 1.2; rx: 8; }
+  .svgbox3 { fill: var(--box3); stroke: var(--box3-border); stroke-width: 1.2; rx: 8; }
+  .svglabel { fill: var(--fg); font: 600 13px -apple-system, "Segoe UI", sans-serif; }
+  .svgsub { fill: var(--muted); font: 11.5px -apple-system, "Segoe UI", sans-serif; }
+  .svggroup { fill: none; stroke: var(--border); stroke-dasharray: 5 4; stroke-width: 1.2; rx: 12; }
+  .svggrouplabel { fill: var(--muted); font: 700 11px -apple-system, "Segoe UI", sans-serif; letter-spacing: .06em; }
+  .svgedge { stroke: var(--arrow); stroke-width: 1.4; fill: none; }
+  .svgedgelabel { fill: var(--muted); font: 11px -apple-system, "Segoe UI", sans-serif; }
+</style>
+</head>
+<body>
+
+<h1>UpstartClaw x Mission Control</h1>
+<p class="meta">Comparison and integration plan &middot; source of truth:
+<code>docs/plans/upstartclaw-integration/plan.md</code> &middot; based on a full exploration of
+<code>~/workspace/upstart/claude-code-extensions</code> (main, 2026-08-04) and this repository.</p>
+
+<p>This plan answers: what UpstartClaw actually is, where it overlaps with Mission Control,
+where one of the two should win, what to integrate, and what does not fit.</p>
+
+<h2>1. What UpstartClaw is (and is not)</h2>
+<p>UpstartClaw is <strong>not a harness in the runtime sense</strong>. It is a
+<strong>Claude Code plugin marketplace</strong>: one private repo
+(<code>teamupstart/claude-code-extensions</code>) that is both the marketplace manifest
+(<code>.claude-plugin/marketplace.json</code>, 64 entries) and the monorepo of 63 first-party
+plugins. It distributes, through Claude Code's native <code>/plugin</code> mechanism:</p>
+<ul>
+  <li><strong>194 skills</strong> across the plugins (Jira/Confluence/Glean/Slack workflows, on-call playbooks, standups, deploy tooling, domain SOPs).</li>
+  <li><strong>~20 MCP server configs</strong> in 11 <code>.mcp.json</code> files (Glean, Guru, Atlassian, Slack, Datadog, PagerDuty, AWS API, Databricks, Alation, SonarQube, internal Upstart service MCPs). One plugin (<code>databricks-explorer</code>) bundles its own first-party Python MCP server.</li>
+  <li><strong>~17 hooks</strong> in 11 <code>hooks.json</code> files, almost all <code>PreToolUse</code> <strong>guard rails</strong>: setup gates, domain allowlists, no-send/no-delete enforcement, a fail-closed feature-flag publish gate, read-only Databricks enforcement.</li>
+  <li><strong>8 subagent definitions</strong>, 1 LSP server config (<code>kotlin-lsp</code>), 29 slash commands, zsh helpers, and a Codex avatar. Zero output styles despite the README advertising them.</li>
+  <li><strong>No daemon, no server, no UI, no session management, no control plane.</strong> The only background processes any plugin starts are a localhost Sniffly cost dashboard and a weekly launchd/cron scan job.</li>
+</ul>
+<p>Its engineering center of gravity is <strong>distribution discipline</strong>: CI auto-bumps
+plugin versions from a PR-body field, tags releases per plugin
+(<code>{name}--v{X.Y.Z}</code>, prerelease suffixes stripped because Claude Code's semver
+resolution cannot match prerelease tags), validates every manifest/hook file against JSON
+Schemas in pre-commit, and enforces TypeScript-only shipped logic. Ownership is per-plugin via
+CODEOWNERS (72 contributors, ~10 months old, active daily).</p>
+<p>The foundational plugin is <code>upstartclaw-core</code> (v1.1.7): the four core MCP servers
+(Glean, Guru, Atlassian, Slack), a first-time <code>setup</code> skill (Palo Alto VPN CA cert
+into <code>NODE_EXTRA_CA_CERTS</code>, then sequential OAuth flows), and a
+<code>PreToolUse</code> gate that blocks core MCP calls until a setup state file reads
+<code>completed</code>. Roughly a third of the catalog declares a dependency on it.</p>
+<p class="card">So: <em>"is it just a Claude Code extension/plugin with shared skills?"</em> -
+<strong>essentially yes</strong>, plus MCP wiring, guard hooks, and unusually mature
+versioning/release machinery. Everything it ships loads <strong>inside</strong> each individual
+Claude Code session.</p>
+
+<h2>2. What Mission Control is, in one contrast</h2>
+<p>Mission Control is the <strong>layer above the session</strong>: a local daemon + dashboard
+that discovers, dispatches, supervises, reviews, compares, and ships the work of many
+Claude/Codex/Pi sessions. It owns things no plugin can own - durable tasks and worktrees,
+SSE-live fleet state, the review channel, ensembles with immutable artifacts and human gates,
+the Inspector's PR provenance, fleet cost telemetry, and alerting.</p>
+<p><strong>The relationship: UpstartClaw equips a session; Mission Control commands a fleet.</strong>
+They meet in exactly one place - the operator's <code>~/.claude</code> config - and they already
+compose there:</p>
+<ul>
+  <li>Terminal dispatches inherit the operator's environment, so installed Claw plugins load.</li>
+  <li>SDK dispatches load <code>settingSources: ["user", "project", "local"]</code> (<code>src/server/harness/claude/sdk.ts</code>), so user-level plugin config reaches embedded sessions too.</li>
+  <li>Mission Control's statusline integration is a <strong>wrapper that delegates to the user's pre-existing statusline</strong> (<code>hooks/install.mjs</code> records the inner command in a sidecar), so Claw's <code>statusline</code> plugin keeps rendering while MC reads model/context/cost off it.</li>
+  <li>Both install hooks into <code>~/.claude/settings.json</code> surgically and idempotently, with markers, and neither touches the other's entries.</li>
+</ul>
+
+<figure role="img" aria-label="Diagram: Mission Control daemon, dashboard, Foreman and Inspector sit above sessions. UpstartClaw plugins load into each Claude Code session from ~/.claude. Sessions call external MCP servers and report hook events and reviews back to the daemon.">
+<svg viewBox="0 0 920 430" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--arrow)"/>
+    </marker>
+  </defs>
+  <!-- Mission Control group -->
+  <rect x="20" y="20" width="880" height="120" class="svggroup"/>
+  <text x="36" y="42" class="svggrouplabel">MISSION CONTROL - CONTROL PLANE (above the session)</text>
+  <rect x="50" y="58" width="180" height="60" class="svgbox"/>
+  <text x="140" y="84" text-anchor="middle" class="svglabel">Daemon :7317</text>
+  <text x="140" y="102" text-anchor="middle" class="svgsub">only SQLite writer, SSE</text>
+  <rect x="270" y="58" width="180" height="60" class="svgbox"/>
+  <text x="360" y="84" text-anchor="middle" class="svglabel">Dashboard / Electron</text>
+  <text x="360" y="102" text-anchor="middle" class="svgsub">cards, reviews, ensembles</text>
+  <rect x="490" y="58" width="170" height="60" class="svgbox"/>
+  <text x="575" y="84" text-anchor="middle" class="svglabel">Foreman</text>
+  <text x="575" y="102" text-anchor="middle" class="svgsub">auto-responder</text>
+  <rect x="700" y="58" width="170" height="60" class="svgbox"/>
+  <text x="785" y="84" text-anchor="middle" class="svglabel">Inspector</text>
+  <text x="785" y="102" text-anchor="middle" class="svgsub">PR review + provenance</text>
+
+  <!-- Sessions -->
+  <rect x="250" y="220" width="420" height="80" class="svgbox3"/>
+  <text x="460" y="252" text-anchor="middle" class="svglabel">Claude Code sessions (terminal panes + Agent SDK)</text>
+  <text x="460" y="272" text-anchor="middle" class="svgsub">each in its own worktree when dispatched</text>
+
+  <!-- Claw group -->
+  <rect x="20" y="340" width="500" height="70" class="svggroup"/>
+  <text x="36" y="362" class="svggrouplabel">UPSTARTCLAW - CAPABILITY LAYER (inside the session)</text>
+  <rect x="40" y="370" width="460" height="30" class="svgbox2"/>
+  <text x="270" y="390" text-anchor="middle" class="svgsub">63 plugins: 194 skills &middot; ~20 MCP configs &middot; PreToolUse guard hooks &middot; 8 agents</text>
+
+  <!-- External MCPs -->
+  <rect x="600" y="345" width="300" height="60" class="svgbox"/>
+  <text x="750" y="370" text-anchor="middle" class="svglabel">External MCP servers</text>
+  <text x="750" y="388" text-anchor="middle" class="svgsub">Glean &middot; Atlassian &middot; Slack &middot; Datadog &middot; Databricks</text>
+
+  <!-- Edges -->
+  <path d="M 340 140 L 400 218" class="svgedge" marker-end="url(#arr)"/>
+  <text x="290" y="182" class="svgedgelabel">dispatch, observe, review, kill</text>
+  <path d="M 520 218 L 560 142" class="svgedge" marker-end="url(#arr)"/>
+  <text x="548" y="185" class="svgedgelabel">hook events + reviews</text>
+  <path d="M 270 368 L 380 302" class="svgedge" marker-end="url(#arr)"/>
+  <text x="150" y="330" class="svgedgelabel">loads from ~/.claude at launch</text>
+  <path d="M 560 302 L 700 348" class="svgedge" marker-end="url(#arr)"/>
+  <text x="600" y="322" class="svgedgelabel">MCP calls</text>
+</svg>
+<figcaption>The two layers compose at <code>~/.claude</code>: Claw equips each session; Mission Control commands the fleet.</figcaption>
+</figure>
+
+<h2>3. Overlap map: where to pick one</h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Area</th><th>UpstartClaw has</th><th>Mission Control has</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Cost tracking</td>
+      <td><code>cost-dashboard</code> (Sniffly web UI over local transcripts), <code>cost-analysis</code> (codeburn CLI), statusline cost</td>
+      <td>Live fleet cost telemetry via OTEL export to the daemon: per-session badges, cost per PR, rate-limit runway, automation spend by role</td>
+      <td><span class="verdict">Pick MC</span> for anything fleet- or live-facing. Claw's tools are retrospective, per-machine, and Sniffly's Share button uploads conversation content to sniffly.dev (its own README warns). Keep Sniffly only as a personal historical view.</td>
+    </tr>
+    <tr>
+      <td>Needs-you notifications</td>
+      <td><code>notify</code> plugin: <code>Notification</code> hook &rarr; macOS notification + focus-terminal-tab script</td>
+      <td>Full alert engine: notification + sound, stuck detection, Away mode with digest, delivery with window closed (Electron)</td>
+      <td><span class="verdict">Pick MC.</span> Running both double-fires on every needs-input. Document "disable <code>notify</code> when MC is running". MC's Focus action already covers the tab-focusing trick.</td>
+    </tr>
+    <tr>
+      <td>Multi-agent orchestration</td>
+      <td><code>agent-team</code>: in-session manager + background agents via experimental <code>CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS</code> flag, shared task list, worktrees, 11 themed role personas</td>
+      <td>Ensembles (Best of N / Consensus / Panel vote) with pinned base commits, immutable artifacts, human decision gates, recovery; plus Workflows and dispatch</td>
+      <td><span class="verdict">Pick MC.</span> MC's orchestration is durable, recoverable, and human-gated; agent-team rides an experimental flag with no persistence. But <strong>mine agent-team's 11 role definitions</strong> (DO/DON'T/REPORT format) as MC Personas - see track C. Never nest agent-team inside MC-dispatched sessions.</td>
+    </tr>
+    <tr>
+      <td>Ticket &rarr; PR pipeline</td>
+      <td><code>jira-to-pr</code> skill: 9-phase in-session pipeline, plan-reviewer subagent pinned to Opus</td>
+      <td>Dispatch + worktrees + Inspector review + YOLO merge, with GitHub-issues task source</td>
+      <td><span class="verdict">Pick MC for the pipeline, Claw for the Jira knowledge.</span> Orchestration (branching, review, CI iteration, merge) is MC's job with real provenance; the Jira-domain skills are what the dispatched session should load. Track B closes the loop.</td>
+    </tr>
+    <tr>
+      <td>Diff review</td>
+      <td><code>dev-tools/viewing-diffs</code> (difit browser viewer)</td>
+      <td>Review channel: agent pushes diff/plan/question to dashboard, decision flows back</td>
+      <td><span class="verdict">Pick MC</span> for dispatched/supervised work; difit stays fine for ad hoc human use outside MC.</td>
+    </tr>
+    <tr>
+      <td>Standup / digest</td>
+      <td><code>standup</code>, <code>del-ops/stand-up</code>, <code>team-highlights</code>: summarize <em>your</em> GitHub/Jira/Confluence/Slack activity</td>
+      <td>Roundup: summarize <em>your fleet</em> (who needs you, outcomes, backlog) as panel/JSON/markdown</td>
+      <td><span class="verdict">Mostly complementary, keep both.</span> Different subjects. Small integration: MC's markdown roundup is a ready-made input for the standup skill.</td>
+    </tr>
+    <tr>
+      <td>Statusline</td>
+      <td><code>statusline</code> plugin writes <code>.statusLine</code> in settings</td>
+      <td>Wrapper that delegates to whatever statusline exists and forwards data to the daemon</td>
+      <td><span class="verdict">Keep both - expected to compose</span> (Claw renders, MC wraps and reads), but this is the one spot to <span class="warn">verify by hand</span> against an installed Claw statusline, not assert.</td>
+    </tr>
+    <tr>
+      <td>Skills distribution</td>
+      <td>Marketplace + native plugin loading, versioned, org-wide</td>
+      <td>Repo-baked <code>skills/</code> catalog symlinked into <code>~/.claude/skills</code> and <code>~/.agents/skills</code>, toggled per machine</td>
+      <td><span class="verdict">Both, different scopes.</span> Claw is the org channel for <em>domain</em> skills; MC's catalog is app-owned skills that make sessions cooperate with MC. <strong>Never duplicate Claw's catalog inside <code>skills/</code></strong>; if MC needs to surface Claw skills, it goes through the existing catalog/reconcile path as one mechanism, never a second parallel one. Track D distributes MC's own integration <em>through</em> Claw.</td>
+    </tr>
+    <tr>
+      <td>Security review</td>
+      <td><code>security-review</code>, <code>security-threat-model</code> skills</td>
+      <td>Workflow Persona stages, Inspector</td>
+      <td><span class="verdict">Compose:</span> wrap Claw's security-review methodology as a Persona / workflow stage rather than writing a competing one.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>4. Integration tracks (ranked)</h2>
+
+<h3>Track A - Document and harden the zero-code baseline <span class="pill">small</span></h3>
+<p>It already works: install Claw plugins on the operator machine and every MC-dispatched
+session (terminal and SDK) gets Glean/Jira/Confluence/Slack skills, MCP servers, and - importantly
+for unattended fleets - Claw's <strong>fail-closed guard hooks</strong> (gws no-send/no-delete,
+Databricks read-only, GrowthBook publish gate, browser navigation allowlists). Work:</p>
+<ul>
+  <li>A README section: "Running Mission Control at Upstart" - install <code>upstartclaw-core</code>, run its setup interactively <strong>once</strong> (OAuth flows cannot complete in a headless dispatched session), confirm <code>NODE_EXTRA_CA_CERTS</code> is present in the daemon's environment so SDK sessions trust VPN-inspected TLS.</li>
+  <li><span class="warn">Known failure mode</span> to document (or detect): Claw core's <code>PreToolUse</code> setup gate exits 2 with "invoke /upstartclaw-core:setup immediately" when setup is incomplete. An unattended dispatched agent hitting that will burn a turn or stall. A cheap dispatch-time preflight could read <code>~/.claude/upstartclaw-core-setup</code> and surface a warning chip.</li>
+</ul>
+
+<h3>Track B - Jira task source <span class="pill">medium &middot; highest product value</span></h3>
+<p>MC's task-source registry (<code>src/server/task-sources/</code>) has one kind,
+<code>github-issues</code>, and was built to be extended. Add a <code>jira</code> kind: sweep a
+JQL filter on a schedule, file backlog rows (never dispatch - same contract as the GitHub
+source). At Upstart, work lives in Jira; this makes the full loop native, re-basing
+<code>jira-to-pr</code> onto a durable, supervised pipeline:</p>
+
+<figure role="img" aria-label="Diagram: Jira JQL filter is swept by the Mission Control task source into the backlog, which dispatch turns into a worktree session loaded with Claw Jira skills, producing a pull request that the Inspector reviews and the YOLO gate merges.">
+<svg viewBox="0 0 920 150" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--arrow)"/>
+    </marker>
+  </defs>
+  <rect x="10" y="45" width="120" height="56" class="svgbox2"/>
+  <text x="70" y="70" text-anchor="middle" class="svglabel">Jira</text>
+  <text x="70" y="88" text-anchor="middle" class="svgsub">JQL filter</text>
+
+  <rect x="170" y="45" width="120" height="56" class="svgbox"/>
+  <text x="230" y="70" text-anchor="middle" class="svglabel">MC backlog</text>
+  <text x="230" y="88" text-anchor="middle" class="svgsub">rows only, no dispatch</text>
+
+  <rect x="330" y="45" width="130" height="56" class="svgbox"/>
+  <text x="395" y="70" text-anchor="middle" class="svglabel">Dispatch</text>
+  <text x="395" y="88" text-anchor="middle" class="svgsub">worktree + branch</text>
+
+  <rect x="500" y="45" width="140" height="56" class="svgbox3"/>
+  <text x="570" y="70" text-anchor="middle" class="svglabel">Session</text>
+  <text x="570" y="88" text-anchor="middle" class="svgsub">+ Claw Jira skills</text>
+
+  <rect x="680" y="45" width="100" height="56" class="svgbox"/>
+  <text x="730" y="70" text-anchor="middle" class="svglabel">PR</text>
+  <text x="730" y="88" text-anchor="middle" class="svgsub">Inspector review</text>
+
+  <rect x="815" y="45" width="95" height="56" class="svgbox"/>
+  <text x="862" y="70" text-anchor="middle" class="svglabel">YOLO</text>
+  <text x="862" y="88" text-anchor="middle" class="svgsub">merge gate</text>
+
+  <path d="M 130 73 L 168 73" class="svgedge" marker-end="url(#arr2)"/>
+  <text x="132" y="35" class="svgedgelabel">scheduled sweep</text>
+  <path d="M 290 73 L 328 73" class="svgedge" marker-end="url(#arr2)"/>
+  <path d="M 460 73 L 498 73" class="svgedge" marker-end="url(#arr2)"/>
+  <path d="M 640 73 L 678 73" class="svgedge" marker-end="url(#arr2)"/>
+  <path d="M 780 73 L 813 73" class="svgedge" marker-end="url(#arr2)"/>
+</svg>
+<figcaption>Track B: <code>jira-to-pr</code> re-based onto Mission Control's supervised pipeline.</figcaption>
+</figure>
+
+<p>Auth (decided): the sweeper follows Upstart's standardized Jira CLI convention rather than
+storing a token in MC. <code>ankitpokhrel/jira-cli</code> is the brew-recommended standard in
+Upstart's onboarding docs, and it authenticates through the same <code>JIRA_API_TOKEN</code>
+(+ <code>JIRA_EMAIL</code>, site defaulting to <code>upstartnetwork.atlassian.net</code>)
+convention Claw's own <code>zsh/atlassian.zsh</code> helpers use. The source shells out to
+<code>jira</code> when available (as the GitHub source uses <code>gh</code>), falling back to
+direct REST with those env vars, and its <code>preflight</code> - the hook the task-source
+registry already defines per kind - reports a settings-panel warning when neither the CLI nor
+the env convention is configured.</p>
+
+<h3>Track C - Import Claw's agent-team roles as Personas, with drift detection <span class="pill">small</span></h3>
+<p><code>plugins/agent-team/references/roles/*.md</code> contains 11 well-structured role
+definitions (Manager, Implementer, Tester, Reviewer, PR Orchestrator, Communications
+Gatekeeper, etc.) each with persona, responsibilities, and DO/DON'T/REPORT contracts. Convert
+the review-shaped ones (Reviewer, Tester, security-review's methodology) into MC
+<strong>Personas</strong> for workflow stages and Panel-vote judges.</p>
+<p>A blind copy would drift as the Claw repo evolves, so the import follows the pattern Claw
+itself uses to vendor upstream content (the <code>gws</code> plugin's pinned sync from
+<code>googleworkspace/cli</code>): <strong>import + provenance + drift badge</strong>, adapted
+to MC's existing persona lifecycle.</p>
+<ul>
+  <li>An imported persona records its provenance: source repo, path, plugin version, and a content hash of the file it was adapted from.</li>
+  <li>A cheap check (Workflows panel load or startup reconcile) hashes the currently installed plugin's copy of that file and badges the persona when it differs - "upstream updated: agent-team 0.1.1 &rarr; 0.2.0" - with a diff view.</li>
+  <li>Re-import creates a <strong>new draft revision</strong>. Published workflow and ensemble snapshots stay immutable, exactly as today: upstream drift becomes a visible diff a human reviews and republishes, never a silent change to what judges score with.</li>
+  <li><span class="warn">Live reference is rejected</span>: reading role files at run time breaks the publish-snapshot invariant and would let an upstream edit silently change review behavior.</li>
+</ul>
+<p>Source of truth starts <strong>MC-side</strong>, importing from the installed
+<code>agent-team</code> plugin cache or a checkout. When Track D's plugin lands, the adapted
+persona files migrate into it and the plugin becomes the import source - same mechanism,
+different upstream.</p>
+
+<h3>Track D - Publish a <code>mission-control</code> plugin in the Claw marketplace <span class="pill">medium &middot; strategic</span></h3>
+<p>Today MC's Upstart adoption path is "clone this repo, run make init". A Claw plugin flips
+that to the channel Upstart engineers already use:</p>
+<ul>
+  <li>Skills: a <code>mission-control</code> skill (what MC is, how to talk to the daemon), plus MC's own catalog skills where they make sense org-wide.</li>
+  <li>A <code>setup</code> skill that wires the status hooks and MCP review server against an installed MC daemon (the same edits <code>hooks/install.mjs</code> and the Electron tray installer make).</li>
+  <li>Claw's CI then versions and ships MC's integration surface like any other plugin.</li>
+  <li>Once it exists, it also carries the adapted persona files from Track C, becoming their import source - persona updates then flow through the marketplace channel and surface in MC as drift badges.</li>
+</ul>
+<p>This lives in <em>their</em> repo, not this one - the work here is defining what the plugin
+wraps and keeping <code>hooks/install.mjs</code> the single source of the settings edit.</p>
+
+<h3>Track E - Steal the engineering lessons <span class="pill">ongoing &middot; free</span></h3>
+<ul>
+  <li><strong>Fail-closed hook gates</strong>: GrowthBook's write gate treats <em>any</em> unexpected exit as deny. MC's own hook bridges and future guard surfaces should hold that standard.</li>
+  <li><strong>Protocol-level read-only MCP</strong> (<code>databricks-explorer/ARCHITECTURE.md</code>): destructive tools simply do not exist in <code>tools/list</code> - "no allowlist to misconfigure, no prompt injection surface". A good check against MC's MCP server tool inventory as it grows.</li>
+  <li><strong><code>userConfig</code> for sensitive values</strong>, with the documented <code>sensitive</code>-not-<code>secret</code> footgun; relevant if MC ever takes per-user tokens (Track B).</li>
+  <li><strong>Prerelease semver trap</strong> (<code>docs/plugin-dependency-semver.md</code>): Claude Code resolves plugin deps with <code>includePrerelease</code> off, so perpetual <code>-beta</code> versions can never satisfy ranges; Claw strips suffixes at tag time. Directly relevant to Track D versioning.</li>
+  <li><strong>Schema-validated hooks and manifests in pre-commit</strong> - MC validates protocol at runtime; validating authored hook JSON at commit time is a cheap addition.</li>
+</ul>
+
+<h2>5. What does not fit</h2>
+<ul>
+  <li><strong>agent-team inside MC sessions.</strong> Two orchestrators fight: nested worktrees, MC ensemble members are forbidden to push/PR while agent-team's PR Orchestrator opens drafts, and the experimental flag changes session behavior MC does not model. Choose per task, never nest.</li>
+  <li><strong>No service-level integration exists.</strong> Claw has no API, daemon, or event stream; every integration is file/config-level (<code>~/.claude</code>) or content-level (skills, personas). Do not design MC features that assume a Claw runtime to call.</li>
+  <li><strong>Upstart-specific logic hard-coded in MC core.</strong> MC is a generic product (claude/codex/pi, registries everywhere). Upstart specifics enter through the existing extension points - task-source kinds, Personas, skills catalog, or a Claw-side plugin - never as <code>if (upstart)</code> branches.</li>
+  <li><span class="warn">Two Claw behaviors to treat as flagged, not built upon</span>: <code>slack-advanced</code> deliberately scrapes a live browser Slack session token rather than using the sanctioned OAuth MCP - do not route any MC automation through it; <code>cost-dashboard</code>'s bundled Sniffly UI has a Share button that uploads conversation content to an external site, warned about but not technically blocked. Claw also commits two OAuth <em>public client</em> identifiers by design (a Slack client ID; a security-approved Google installed-app client) - fine where they are, but do not copy them into MC.</li>
+  <li><strong>MC's skills catalog staying repo-baked.</strong> Claw might suggest MC should grow a plugin marketplace of its own. It should not: the catalog is deliberately versioned-with-the-app, and org-wide distribution is exactly the job Claw already does well. The boundary stands.</li>
+</ul>
+
+<h2>6. Decisions recorded (2026-08-05)</h2>
+<p>The plan review resolved the open choices as follows:</p>
+<ol>
+  <li><strong>Composition over absorption.</strong> Mission Control stays the control plane (daemon, dispatch, dashboard, telemetry, alerts) and consumes UpstartClaw as an ordinary user-level plugin set through the <code>settingSources</code> path that already exists. The factual mapping above is accepted as-is.</li>
+  <li><strong>One owner per concern.</strong> Where the two collide: MC keeps cost telemetry, alerts, ensembles, and dispatch/review; Claw keeps its 194 domain skills, MCP auth/VPN setup, and PreToolUse guard rails.</li>
+  <li><strong>No skill-catalog duplication.</strong> Claw's catalog is never copied into MC's repo-baked <code>skills/</code>. If MC needs to surface Claw skills, it happens through the existing catalog/reconcile mechanism, not a parallel one.</li>
+  <li><strong>Statusline composition is verified by hand</strong>, not asserted: test MC's wrapper delegating to Claw's installed statusline before claiming the row in section 3.</li>
+  <li><strong>Track B is the first concrete build</strong>: a Jira-backed task source registered through the existing task-sources registry alongside <code>github-issues</code> - one interface, per-source detail behind it.</li>
+  <li><strong>Implementation bar</strong> (restating the project contract for whoever picks this up): README updated in the same change for any new capability or env var; behavior changes get <code>node:test</code> + <code>node:assert/strict</code> tests in <code>test/</code>; any new card affordance or compose box lands on every surface the project rules say move together (a <code>SessionCard</code> edit alone reaches one layout of three; compose boxes register through <code>onReplyBox</code>); new UI behavior gets a Playwright spec in <code>e2e/</code>.</li>
+  <li><strong>No phased implementation plan was requested</strong> in the decision response. Phasing stays available later via the phased-plan skill against this document.</li>
+</ol>
+<p>A second review (same day) scoped the implementation:</p>
+<ol start="8">
+  <li><strong>Implementation scope is Tracks A and B only.</strong> Track A includes both the README section and the dispatch-time warning when Claw core setup is incomplete (a UI change, so it carries a Playwright spec). Tracks C, D, and E are explicitly out of scope for this round.</li>
+  <li><strong>Jira sweeper credential</strong>: the stored-token-in-MC-settings recommendation was declined. The sweeper defaults to the standardized Jira CLI (<code>ankitpokhrel/jira-cli</code>, the brew-recommended standard in Upstart onboarding docs), whose <code>JIRA_API_TOKEN</code> + <code>JIRA_EMAIL</code> convention matches Claw's <code>zsh/atlassian.zsh</code> REST helpers, with direct REST on those env vars as the fallback. A misconfigured or absent credential surfaces as a task-source <code>preflight</code> warning in settings, never a silent empty sweep.</li>
+  <li><strong>Follow-up decision (superseded by 13): stop after this plan.</strong> Confirmed twice at the time (dashboard submission, then direct question).</li>
+</ol>
+<p>A third review (same day) resolved Tracks C and D:</p>
+<ol start="11">
+  <li><strong>Track C rejoins the scope, with drift detection.</strong> Sync model: import + provenance (source repo, path, plugin version, content hash) + a drift badge when the installed plugin's file changes; re-import creates a new draft revision; published snapshots stay immutable. Live reference was rejected as breaking the publish-snapshot invariant.</li>
+  <li><strong>Persona source of truth starts MC-side, migrates to the Claw plugin later.</strong> Track C imports from the installed <code>agent-team</code> plugin now; when Track D's <code>mission-control</code> plugin lands in the Claw marketplace, the adapted persona files move there and become the import source. Track D itself stays out of this round's phases as the recorded migration target.</li>
+  <li><strong>Proceed to phased implementation</strong> (explicit user request following the C/D discussion), covering Tracks A, B, and C.</li>
+</ol>
+
+</body>
+</html>

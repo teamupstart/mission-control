@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UpstartClaw integration: phased implementation plan</title>
+<style>
+  :root {
+    --bg: #fbfbfd; --fg: #1c1e21; --muted: #5b6572; --accent: #0b66c3;
+    --border: #d8dde4; --card: #ffffff; --code-bg: #f0f2f5; --th-bg: #f0f2f5;
+    --box: #eef3fa; --box-border: #9db8d6; --box2: #eefaf1; --box2-border: #8fc9a5;
+    --arrow: #5b6572;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e4e7eb; --muted: #9aa4b2; --accent: #5aa3e8;
+      --border: #333a44; --card: #1b1e24; --code-bg: #22262e; --th-bg: #22262e;
+      --box: #1d2b3d; --box-border: #3d5a80; --box2: #1c2f24; --box2-border: #3d6b4f;
+      --arrow: #9aa4b2;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; max-width: 60rem; padding: 2.5rem 1.5rem 5rem;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  h1 { font-size: 1.8rem; line-height: 1.25; margin: 0 0 .4rem; }
+  h2 { font-size: 1.3rem; margin: 2.4rem 0 .8rem; padding-top: .8rem; border-top: 1px solid var(--border); }
+  a { color: var(--accent); }
+  .meta { color: var(--muted); font-size: .92rem; margin-bottom: 1.4rem; }
+  code { font: .875em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 44rem; font-size: .93rem; }
+  th, td { text-align: left; vertical-align: top; padding: .55rem .7rem; border-bottom: 1px solid var(--border); }
+  th { background: var(--th-bg); }
+  tr:last-child td { border-bottom: none; }
+  ul, ol { padding-left: 1.3rem; }
+  li { margin: .3rem 0; }
+  figure { margin: 1.4rem 0; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: .88rem; margin-top: .4rem; text-align: center; }
+  .svgbox { fill: var(--box); stroke: var(--box-border); stroke-width: 1.2; rx: 8; }
+  .svgroot { fill: var(--box2); stroke: var(--box2-border); stroke-width: 1.2; rx: 8; }
+  .svglabel { fill: var(--fg); font: 600 13px -apple-system, "Segoe UI", sans-serif; }
+  .svgsub { fill: var(--muted); font: 11.5px -apple-system, "Segoe UI", sans-serif; }
+  .svgedge { stroke: var(--arrow); stroke-width: 1.4; fill: none; }
+</style>
+</head>
+<body>
+
+<h1>UpstartClaw integration: phased implementation plan</h1>
+<p class="meta">Source plan: <a href="plan.html">plan.html</a> (<code>plan.md</code> is authoritative) &middot;
+index source: <code>docs/plans/upstartclaw-integration/phased-plan.md</code></p>
+
+<h2>Incorporated decisions</h2>
+<ul>
+  <li><strong>Scope</strong>: Tracks A, B, C. Tracks D and E are out of scope (D is the recorded future migration target for persona distribution; E's lessons are review criteria, not tasks).</li>
+  <li><strong>Track B auth</strong> (decision 9): default to the <code>jira</code> CLI (<code>ankitpokhrel/jira-cli</code>, <code>JIRA_API_TOKEN</code> + <code>JIRA_EMAIL</code>, site default <code>upstartnetwork.atlassian.net</code>), REST fallback on the same env vars; no token stored in MC; misconfiguration surfaces as a preflight sentence, never a silent empty sweep.</li>
+  <li><strong>Track A</strong> includes both the README section and the non-blocking dispatch-time warning.</li>
+  <li><strong>Track C</strong> (decisions 11-12): import + provenance + drift badge; re-import is a new revision through CAS; published snapshots immutable; live reference rejected; source of truth starts MC-side.</li>
+  <li><strong>Boundaries</strong>: composition over absorption; no Claw content duplicated into <code>skills/</code>; no <code>if (upstart)</code> branches outside registry entries.</li>
+</ul>
+
+<h2>Investigated findings that changed the plan's assumptions</h2>
+<ol>
+  <li><strong>Track C is not "no code".</strong> The <code>personas</code> table has no metadata column (<code>src/server/db.ts:351-367</code>), so provenance requires a migration with a pre-feature-seeded upgrade test.</li>
+  <li><strong>Track A has no existing surface to extend.</strong> No dispatch preflight route, no doctor surface; the correct shape is a small registry modeled on open-targets (<code>unavailable: string | null</code>), read from disk per request, with a non-blocking warning in the dispatch modal. <code>SettingsStatus</code> and <code>ui-config</code> are explicitly wrong homes.</li>
+  <li><strong>Track B is exactly the extension the registry was built for.</strong> Two <code>Record&lt;TaskSourceKind, ...&gt;</code> maps enforce completeness at typecheck; no migration, no new routes; the panel derives the add control from the server's kinds list; the contract test iterates all kinds automatically.</li>
+  <li><strong>Persona drift has an in-repo precedent</strong>: <code>personaSnapshotIsOutdated</code> and the <code>&middot; outdated</code> rendering in <code>WorkflowVersionHistory.tsx:64-81</code>. Phase 3's badge is the live-catalog sibling of that affordance.</li>
+</ol>
+
+<h2>Phases</h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Phase</th><th>File</th><th>Track</th><th>Size</th><th>Direct prerequisites</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><a href="phase-1-jira-task-source.md"><code>phase-1-jira-task-source.md</code></a></td><td>B - Jira task source</td><td>medium</td><td>planning session PR</td></tr>
+    <tr><td>2</td><td><a href="phase-2-environment-checks-dispatch-warning.md"><code>phase-2-environment-checks-dispatch-warning.md</code></a></td><td>A - env checks + dispatch warning + Upstart README</td><td>small-medium</td><td>planning session PR</td></tr>
+    <tr><td>3</td><td><a href="phase-3-persona-import-provenance.md"><code>phase-3-persona-import-provenance.md</code></a></td><td>C - persona import + provenance + drift</td><td>medium</td><td>planning session PR</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Dependency graph and concurrency</h2>
+<figure role="img" aria-label="Diagram: the planning session's merged PR releases three parallel phases - Jira task source, environment checks with dispatch warning, and persona import with provenance. No phase depends on another.">
+<svg viewBox="0 0 900 210" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--arrow)"/>
+    </marker>
+  </defs>
+  <rect x="330" y="20" width="240" height="56" class="svgroot"/>
+  <text x="450" y="44" text-anchor="middle" class="svglabel">Planning session PR</text>
+  <text x="450" y="62" text-anchor="middle" class="svgsub">these artifacts, merged to main</text>
+
+  <rect x="20" y="140" width="260" height="56" class="svgbox"/>
+  <text x="150" y="164" text-anchor="middle" class="svglabel">Phase 1: Jira task source</text>
+  <text x="150" y="182" text-anchor="middle" class="svgsub">Track B &middot; medium</text>
+
+  <rect x="320" y="140" width="260" height="56" class="svgbox"/>
+  <text x="450" y="164" text-anchor="middle" class="svglabel">Phase 2: Env checks + warning</text>
+  <text x="450" y="182" text-anchor="middle" class="svgsub">Track A &middot; small-medium</text>
+
+  <rect x="620" y="140" width="260" height="56" class="svgbox"/>
+  <text x="750" y="164" text-anchor="middle" class="svglabel">Phase 3: Persona import + drift</text>
+  <text x="750" y="182" text-anchor="middle" class="svgsub">Track C &middot; medium</text>
+
+  <path d="M 390 76 L 170 138" class="svgedge" marker-end="url(#arr)"/>
+  <path d="M 450 76 L 450 138" class="svgedge" marker-end="url(#arr)"/>
+  <path d="M 510 76 L 730 138" class="svgedge" marker-end="url(#arr)"/>
+</svg>
+<figcaption>One concurrency group: any subset may run in parallel and merge in any order.</figcaption>
+</figure>
+
+<p>All three phases depend <strong>only</strong> on the planning session's PR reaching the
+default branch. No phase consumes another's files, schemas, routes, ids, or decisions. The
+one shared file is <code>README.md</code>, edited in disjoint regions (Phase 1: Task sources
+~1832-1908; Phase 2: Dispatch ~1350-1408 plus a new section between treehouse ~5459 and
+Configuration ~5697; Phase 3: Workflows and Personas ~2522+), with merge-order-free
+cross-references.</p>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+  <li><strong>Phase 1 exports</strong>: the <code>jira</code> kind id (append-only), <code>JiraConfigSchema</code> field names (persisted in operator config), the env-var convention.</li>
+  <li><strong>Phase 2 exports</strong>: <code>ENVIRONMENT_CHECK_IDS</code> (append-only), <code>GET /api/environment/checks</code> with per-check <code>warning: string | null</code>, the "Running Mission Control at Upstart" README anchor.</li>
+  <li><strong>Phase 3 exports</strong>: <code>personas.import_provenance_json</code> (nullable TEXT JSON), <code>PersonaProvenance</code> field names (persisted), the import/reimport/drift route shapes.</li>
+  <li>Nothing imports across phases in this round; the exports bind future work (notably Track D, which would change only where imported persona files come from).</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<p>Each phase runs the project's full bar independently (typecheck, lint, <code>npm test</code>,
+build + smoke, <code>npm run test:e2e</code> with its new spec). After all three merge:</p>
+<ol>
+  <li>On an Upstart machine with UpstartClaw installed: add a Jira source against a real JQL filter, confirm the dispatch warning tracks <code>/upstartclaw-core:setup</code> state, and import one <code>agent-team</code> role file, edit the upstream, confirm the drift badge and re-import.</li>
+  <li>The statusline composition claim (plan decision 4) is verified <strong>by hand</strong> before Phase 2's README states it: with Claw's statusline installed, MC's wrapper install leaves Claw's line rendering while MC receives model/context/cost.</li>
+</ol>
+
+<h2>Task schedule</h2>
+<p>One Mission Control task per phase, created after these artifacts are committed and pushed
+on this session's branch. Each task depends on the planning session (released when its PR
+merges) and on no other task. The task text points at this index and the phase file; the
+phase file is the implementation guide.</p>
+
+</body>
+</html>

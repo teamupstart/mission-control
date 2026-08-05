@@ -17,12 +17,31 @@ import { Tooltip } from "./Tooltip.tsx";
 const PREVIEW_SCROLL_MESSAGE = "mission:file-preview-scroll";
 const PREVIEW_SCROLL_SCRIPT = `addEventListener("message",event=>{if(event.source===parent&&event.data?.type==="${PREVIEW_SCROLL_MESSAGE}"&&typeof event.data.top==="number")scrollBy({top:event.data.top})})`;
 const PREVIEW_SCROLL_SCRIPT_HASH = "boIuepZJzJEM7sUoJjNJy7i6nq6MHE3t38Bfnj4GnvM=";
+/**
+ * Every anchor click leaves the document through the parent, or not at all.
+ *
+ * A srcdoc document resolves relative hrefs against the DASHBOARD's URL, so letting one
+ * navigate turns `<a href="b.html">` into a request the daemon answers with the SPA
+ * fallback - a second dashboard shell inside the sandbox, whose assets the opaque origin
+ * then CORS-blocks into a white pane. The `navigate-to` CSP directive that was meant to
+ * stop this never shipped in any browser. So navigation is claimed here instead: every
+ * non-fragment click is cancelled and its href posted up, and the parent decides whether
+ * it names a checkout file worth selecting. Fragment links stay native - same-document
+ * scrolling is the one navigation the sandbox does correctly.
+ *
+ * `composedPath` rather than `target.closest`, because a click inside an open shadow root
+ * retargets to the host and a missed anchor here is not a dead link - it is the default
+ * navigation going through, which is the white pane again.
+ */
+const PREVIEW_LINK_MESSAGE = "mission:file-preview-link";
+const PREVIEW_LINK_SCRIPT = `document.addEventListener("click",event=>{const origin=event.composedPath()[0];const anchor=origin instanceof Element?origin.closest("a[href]"):null;if(!anchor)return;const href=anchor.getAttribute("href");if(!href||href.startsWith("#"))return;event.preventDefault();parent.postMessage({type:"${PREVIEW_LINK_MESSAGE}",href},"*")},true)`;
+const PREVIEW_LINK_SCRIPT_HASH = "ADNimZ0/NOY6W/JTdVdn5R5DYWseUUp14To0zvMfzF4=";
 const PREVIEW_CSP =
-  `default-src 'none'; connect-src 'none'; script-src 'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; ` +
+  `default-src 'none'; connect-src 'none'; script-src 'sha256-${PREVIEW_SCROLL_SCRIPT_HASH}' 'sha256-${PREVIEW_LINK_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data: blob:; ` +
   "font-src data:; form-action 'none'; navigate-to 'none'";
 
 export function htmlPreviewSource(source: string): string {
-  const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><script>${PREVIEW_SCROLL_SCRIPT}</script>`;
+  const headContent = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><script>${PREVIEW_SCROLL_SCRIPT}</script><script>${PREVIEW_LINK_SCRIPT}</script>`;
   // This prefix must be parsed before a single checkout-controlled byte. Searching
   // for <head> is unsafe: a match inside an HTML comment can absorb the CSP and bridge,
   // after which `allow-scripts` would run the document's own JavaScript unrestricted.
@@ -206,6 +225,38 @@ export function FileWorkspace({
       clearTimeout(timer);
     };
   }, [buffer?.document.kind, buffer?.document.path, buffer?.text, session.id]);
+  /**
+   * The receiving half of PREVIEW_LINK_SCRIPT: a click inside the sandbox arrives here
+   * as an href, and either names a checkout file - which gets selected, exactly as a
+   * Markdown preview link would - or it does not, and nothing happens. There is no
+   * "let the browser have it" branch on purpose: the iframe has already cancelled the
+   * navigation by the time this runs, because it cannot know what the parent will claim,
+   * and un-cancelling is not a thing. An unclaimed link being inert IS the designed
+   * outcome - the alternative was the SPA fallback rendering a white pane.
+   *
+   * `event.source` is matched against THIS workspace's iframe, so a fleet of open
+   * previews (the extracted files window renders a second FileWorkspace) cannot act on
+   * each other's clicks, and nothing else that posts messages can act on this one.
+   */
+  const previewPath = buffer?.document.kind === "html" ? buffer.document.path : null;
+  useEffect(() => {
+    if (!previewPath) return;
+    const onMessage = (event: MessageEvent): void => {
+      const data = event.data as { type?: unknown; href?: unknown } | null;
+      if (data?.type !== PREVIEW_LINK_MESSAGE || typeof data.href !== "string") return;
+      const frame = workspaceRef.current?.querySelector<HTMLIFrameElement>(
+        ".file-content .html-preview",
+      );
+      if (!frame || event.source !== frame.contentWindow) return;
+      const path = workspaceAssetPath(data.href, previewPath);
+      if (!path) return;
+      void controller.probe(session.id, path).then((exists) => {
+        if (exists) controller.select(session.id, path);
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [controller.probe, controller.select, previewPath, session.id]);
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return q ? files.filter((file) => file.path.toLowerCase().includes(q)) : files;

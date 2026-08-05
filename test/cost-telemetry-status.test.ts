@@ -21,9 +21,18 @@ import { join } from "node:path";
 //   - rows are pruned at 180 days and an unbounded "has one ever existed" test never returns to
 //     false, so an exporter that worked and then stopped would read healthy for months.
 //
-// And the flag pairs arrival with recent session spend, because silence on an idle machine is
-// not a fault. A panel that warns about a quiet weekend is one an operator learns to scroll
-// past, which is how a silent failure becomes invisible a second time.
+// And the flag requires recent CLAUDE session spend before it fires, scoped to `agent = 'claude'`
+// - Codex's rollout reader writes `spend_kind = 'session'` rows too, and counting those would
+// accuse Claude's exporter of silence on a machine it had nothing to report on. Silence on an
+// idle machine is not a fault either way; a panel that warns about a quiet weekend is one an
+// operator learns to scroll past, which is how a silent failure becomes invisible a second time.
+//
+// A third condition, added after this file's own tests below caught the gap: the GRACE PERIOD
+// since telemetry was last enabled. `test/cost-telemetry-enable.test.ts` covers that in isolation,
+// including the self-healing backfill for an installation `setCostConfig` never touched. Here,
+// every `setCostConfig` call passes an explicit `now` so this file's timeline stays independent
+// of when it happens to run, and every timestamp advances the shared narrative forward - the
+// tests are sequential and share one ledger and one settings file on purpose.
 //
 // `CLAUDE_SETTINGS_PATH` is redirected at a temp file for the same reason `MISSION_HOME` is:
 // `costTelemetryStatus` READS the operator's real settings file to report what is actually
@@ -49,8 +58,9 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 openDb();
 
-const DAY = 24 * 60 * 60 * 1000;
-const NOW = 1_800_000_000_000;
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+const T0 = 1_800_000_000_000;
 
 /** One model's worth of driver usage, valued. */
 const MODELS = [
@@ -77,12 +87,12 @@ function driverTurn(id: string, ts: number): void {
   });
 }
 
-test("a fresh install reports installed, not receiving, and warns about nothing", () => {
+test("enabling at T0 starts installed, not receiving, warning about nothing", () => {
   // Writing the env block is what `installed` reflects, and it is deliberately not enough to
   // claim anything is working: the block only reaches sessions started AFTER it was written.
   // Nor is it enough to warn - there is no spend yet, so nothing is going uncounted.
-  setCostConfig({ enabled: true });
-  const status = costTelemetryStatus(NOW);
+  setCostConfig({ enabled: true }, T0);
+  const status = costTelemetryStatus(T0);
   assert.equal(status.installed, true, "the env block is in the file");
   assert.equal(status.receiving, false, "and nothing has reported through it yet");
   assert.equal(status.exporterSilent, false, "silence with no work to report is not a fault");
@@ -97,7 +107,7 @@ test("automation spend alone claims nothing about session telemetry", () => {
     role: "foreman:review",
     agent: "claude",
     runId: "status-run-1",
-    ts: NOW - 1_000,
+    ts: T0 + 1 * HOUR,
     models: [
       {
         modelId: "claude-opus-5",
@@ -112,20 +122,39 @@ test("automation spend alone claims nothing about session telemetry", () => {
       },
     ],
   });
-  const status = costTelemetryStatus(NOW);
+  const status = costTelemetryStatus(T0 + 1 * HOUR);
   assert.equal(status.receiving, false, "the app's own spend is not a session reporting");
 });
 
-test("a driven fleet with a silent exporter is the state that gets the warning", () => {
-  // Session spend is landing and the topbar has numbers on it, so every older signal reads
-  // healthy - while a terminal `claude` contributes nothing and nobody has been told.
-  driverTurn("a", NOW - 1_000);
-  const status = costTelemetryStatus(NOW);
+test("a driven turn minutes after enabling does not accuse the exporter yet", () => {
+  // THE REGRESSION THIS TEST PINS. `hasClaudeSessionUsageSince` is satisfied by the DRIVER's own
+  // rows, so the moment someone enables telemetry and dispatches one session - the single most
+  // common action in the app - session spend starts landing seconds later. Without a grace
+  // period tied to when telemetry was enabled, that alone made the panel accuse an exporter that
+  // had not had ONE export interval yet, let alone the week its wording claimed.
+  driverTurn("early", T0 + 2 * HOUR);
+  const status = costTelemetryStatus(T0 + 2 * HOUR);
+  assert.equal(status.receiving, true, "the driver's own report reaches the ledger immediately");
+  assert.equal(
+    status.exporterSilent,
+    false,
+    "but the grace period since enabling has not elapsed, so there is nothing to accuse yet",
+  );
+});
+
+test("once the grace period elapses, a silent exporter on an active fleet is the warning", () => {
+  // Now past the grace period (8 days since T0), with the fleet still active and the exporter
+  // having never delivered a single datapoint. Session spend is landing and the topbar has
+  // numbers on it, so every OTHER signal reads healthy - while a terminal `claude` contributes
+  // nothing and nobody has been told.
+  const t = T0 + 8 * DAY;
+  driverTurn("active", t - 1 * HOUR);
+  const status = costTelemetryStatus(t);
   assert.equal(status.receiving, true, "session spend is reaching the ledger");
   assert.equal(
     status.exporterSilent,
     true,
-    "and the exporter has said nothing while it did, which is what the warning names",
+    "the grace period has elapsed and the exporter has said nothing the whole time",
   );
 });
 
@@ -134,25 +163,24 @@ test("an export ARRIVING clears the warning, even though its rows were all dropp
   // discarded by `sdkOwnedNoteKey`, so no `otel` row is ever written - and yet the exporter
   // plainly ran. Reading rows here would report a healthy exporter as a dead one and put a
   // false warning in front of every operator whose fleet is embedded.
-  noteOtelExportSeen(NOW - 60_000);
-  const status = costTelemetryStatus(NOW);
+  const t = T0 + 8 * DAY;
+  noteOtelExportSeen(t - 60_000);
+  const status = costTelemetryStatus(t);
   assert.equal(status.exporterSilent, false, "arrival is the signal, not the surviving rows");
 });
 
 test("an exporter that worked and then stopped goes back to warning", () => {
-  // THE REGRESSION THIS FILE EXISTS FOR, and the one the first implementation got wrong. It
-  // asked whether an `otel` row had EVER been written, with no time bound, against a ledger
-  // that keeps rows for 180 days. So an operator whose exporter worked once and then silently
-  // stopped - the exact failure this change is about - kept reading healthy for up to six
-  // months while every terminal session was uncounted the whole time.
+  // The regression the FIRST implementation of the arrival signal got wrong. It asked whether
+  // an `otel` row had EVER been written, with no time bound, against a ledger that keeps rows
+  // for 180 days. So an operator whose exporter worked once and then silently stopped - the
+  // exact failure this change is about - kept reading healthy for up to six months while every
+  // terminal session was uncounted the whole time.
   //
-  // Driven forwards in time rather than by back-dating the stamp, because `noteOtelExportSeen`
-  // refuses to move backwards on purpose and a test that fought that would be testing a
-  // scenario production cannot produce. The real arrival above is the last one there was; here
-  // it is eight days old, and the fleet worked yesterday.
-  const later = NOW + 8 * DAY;
-  driverTurn("b", later - 1 * DAY);
-  const status = costTelemetryStatus(later);
+  // The arrival above (T0 + 8 days) is the last one there was. Here it is 8 more days stale, and
+  // the fleet worked yesterday - well past both the grace period and the arrival's own staleness.
+  const t = T0 + 16 * DAY;
+  driverTurn("later", t - 1 * DAY);
+  const status = costTelemetryStatus(t);
   assert.equal(status.receiving, true, "spend is still landing, so nothing else looks wrong");
   assert.equal(
     status.exporterSilent,
@@ -160,8 +188,8 @@ test("an exporter that worked and then stopped goes back to warning", () => {
     "a working exporter that stops must return to warning, not stay healthy until retention",
   );
 
-  // A real `otel` row from the working period is still sitting in the ledger, well inside
-  // retention - which is exactly what the first implementation found and trusted.
+  // A real `otel` row from the earlier working period is still sitting in the ledger, well
+  // inside retention - which is exactly what the first implementation found and trusted.
   upsertUsageCell(
     {
       noteKey: "discovered-session-old",
@@ -170,23 +198,24 @@ test("an exporter that worked and then stopped goes back to warning", () => {
       modelId: "claude-opus-5",
       querySource: "main",
       windowEndNs: "1000000000000000777",
-      ts: NOW,
+      ts: T0 + 8 * DAY,
     },
     "costUsd",
     0.4,
   );
   assert.equal(
-    costTelemetryStatus(later).exporterSilent,
+    costTelemetryStatus(t).exporterSilent,
     true,
     "an old row is history, not evidence the exporter is running now",
   );
 });
 
 test("an idle stretch is not a fault, however long the exporter has been quiet", () => {
-  // The false positive the pairing prevents. The exporter has now been silent for weeks, but the
-  // fleet has done nothing recently either - so there is no work going uncounted and nothing to
-  // say. Warning here would be noise, and noise is what makes the real warning ignorable.
-  const quiet = NOW + 60 * DAY;
+  // The false positive the activity half prevents. The exporter has now been silent for weeks,
+  // but the fleet has done nothing recently either - so there is no work going uncounted and
+  // nothing to say. Warning here would be noise, and noise is what makes the real warning
+  // ignorable.
+  const quiet = T0 + 76 * DAY;
   assert.equal(
     costTelemetryStatus(quiet).exporterSilent,
     false,
@@ -201,9 +230,7 @@ test("a Codex-only week does not accuse Claude Code's exporter", () => {
   // arrived either. The panel would then announce that Claude Code's exporter is broken on a
   // machine where it simply had nothing to report, which is the exact noise the pairing exists to
   // prevent. Activity has to be measured for the same harness whose exporter is being judged.
-  //
-  // Far in the future so the earlier Claude spend and the earlier arrival are both long stale.
-  const codexOnly = NOW + 200 * DAY;
+  const codexOnly = T0 + 200 * DAY;
   commitUsageRead({
     sourceKey: "codex-source-1",
     noteKey: "codex-conversation-1",
@@ -239,8 +266,9 @@ test("a Codex-only week does not accuse Claude Code's exporter", () => {
 test("switching the toggle off uninstalls the block without rewriting history", () => {
   // `installed` is about the operator's file right now; `receiving` is about what the ledger has
   // recorded. Turning telemetry off does not un-spend anything.
-  setCostConfig({ enabled: false });
-  const status = costTelemetryStatus(NOW);
+  const t = T0 + 200 * DAY;
+  setCostConfig({ enabled: false }, t);
+  const status = costTelemetryStatus(t);
   assert.equal(status.installed, false, "the env block is gone from the file");
   assert.equal(status.receiving, true, "the rows it already wrote are still there");
 });

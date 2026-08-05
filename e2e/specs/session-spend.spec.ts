@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -154,6 +155,30 @@ test("the session's own card carries what that session cost", async ({ dashboard
   );
 });
 
+/**
+ * Age the telemetry-enabled stamp `setCostConfig` wrote, so this daemon reads as having been
+ * enabled for a while rather than moments ago.
+ *
+ * A grace period exists precisely so enabling the toggle and dispatching one session - which is
+ * the very next thing this test does - does NOT trigger the warning: `hasClaudeSessionUsageSince`
+ * is satisfied by the driver's own rows within seconds, well before the exporter has had one
+ * export interval, let alone the week the warning names. Reaching the state this test is actually
+ * about therefore needs simulated elapsed time, and there is no server route for that - `app_config`
+ * is a small internal KV with no route of its own, by design; direct SQLite access to the
+ * daemon's own database is the established pattern other specs already use for exactly this kind
+ * of setup (see `settings-ledger-pagination.spec.ts`).
+ */
+function backdateTelemetryEnabledAt(daemon: DaemonHandle, daysAgo: number): void {
+  const db = new DatabaseSync(join(daemon.home, "harness.db"));
+  try {
+    db.prepare(`UPDATE app_config SET value = ? WHERE key = 'costTelemetryEnabledAt'`).run(
+      JSON.stringify(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+    );
+  } finally {
+    db.close();
+  }
+}
+
 test("Cost settings names the sessions telemetry is not covering", async ({
   dashboard,
   daemon,
@@ -165,16 +190,20 @@ test("Cost settings names the sessions telemetry is not covering", async ({
   // drives, and anything a human started in a terminal is missing from a total that looks
   // complete. Before this, nothing on screen said so.
   //
-  // The dispatched turn below is what makes the fleet count as ACTIVE, which is half the
-  // warning's condition: silence on an idle machine is not a fault and must stay quiet. The
-  // other half is that no export has arrived, which is true here because this daemon has never
-  // received one - nothing in this spec posts to `/v1/metrics`.
+  // The dispatched turn below is what makes the fleet count as ACTIVE, which is one of three
+  // conditions the warning needs: silence on an idle machine is not a fault and must stay quiet.
+  // The second is that no export has arrived, true here because this daemon has never received
+  // one - nothing in this spec posts to `/v1/metrics`. The third is the grace period since
+  // enabling, backdated below - without it, enabling the toggle and dispatching one session
+  // would trigger the warning within seconds, which is a distinct regression this suite pins in
+  // `test/cost-telemetry-enable.test.ts` and must NOT happen here either.
   const res = await fetch(`${daemon.baseURL}/api/cost/config`, {
     method: "PUT",
     headers: { "content-type": "application/json", "x-harness-token": token(daemon) },
     body: JSON.stringify({ enabled: true }),
   });
   expect(res.ok, `enabling cost telemetry answered ${res.status}`).toBe(true);
+  backdateTelemetryEnabledAt(daemon, 8);
 
   await dispatch(dashboard, daemon);
 

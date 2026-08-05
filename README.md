@@ -5864,6 +5864,10 @@ task from the dashboard and watch a convincing session play out - paced assistan
 `Edit`/`Write`/`Bash`/`TodoWrite` tool chips, real file edits you can see in Diff and Files, a
 waiting-on-you question, then completion - all driven by a scenario script, not a model API.
 
+`npm run demo -- --fresh` goes further: it rebuilds the state root and **seeds a lived-in
+fleet** first, so the dashboard opens onto work already in progress rather than an empty
+board. See [The seeded fleet](#the-seeded-fleet) below.
+
 State lives at `~/.mission-control-demo` (separate from `~/.mission-control`), used as both
 `MISSION_HOME` and `HOME` for the demo daemon, on its own port (7417 by default, distinct
 from the dev daemon's 7317 and the smoke test's 7519). It persists across runs - seeded
@@ -5872,12 +5876,21 @@ delete and rebuild it.
 
 Flags:
 
-- `--fresh` - delete the state root and rebuild it before booting.
+- `--fresh` - delete the state root, rebuild it, and seed a lived-in fleet before booting.
+  **Takes a few minutes**, because it is not writing fixtures: it replays real work through
+  the real routes and waits for it. Without this flag an existing state root boots exactly
+  as you left it, which is the point of a persistent demo.
+- `--no-seed` - with `--fresh`, rebuild the state root but skip the seeder. An empty fleet in
+  seconds instead of a populated one in minutes.
 - `--no-foreman` - skip starting the real Foreman worker.
+- `--no-open` - do not open a browser. For a remote machine, or for inspecting the seeded
+  fleet from a script without stealing focus.
 - `--port <n>` - override the default port.
-- `--check` - boot, run the identity and isolation assertions, shut down, exit 0 (no
-  browser, no Foreman) - the CI-shaped smoke test for the launcher itself, in the spirit of
-  `npm run smoke`.
+- `--check` - boot, run the identity and isolation assertions, run a **reduced seed** (one
+  dispatched session, one review, one ledger day), reboot over it, assert the residue, then
+  shut down and exit 0 (no browser, no Foreman). The CI-shaped smoke test for the launcher
+  and its seeder, in the spirit of `npm run smoke`. It uses its own throwaway root
+  (`~/.mission-control-demo-check`, removed afterwards) so it never bulldozes a curated demo.
 
 **The one deliberate exception to "spends no tokens" is Foreman.** Unless `--no-foreman` is
 passed, the launcher starts the real `src/server/foreman/worker.ts` against the demo daemon
@@ -5893,6 +5906,58 @@ every process on the machine and adopt the operator's real sessions, Kill/Reset 
 included, or reap a shared treehouse worktree pool it does not own. With discovery off, the
 demo fleet is SDK-runtime sessions only: the launcher flips `claude`/`codex` to `sdk` through
 `PUT /api/harnesses/config`, the same route the Settings panel uses.
+
+### The seeded fleet
+
+`--fresh` runs `scripts/demo/seed.mjs`, and what it leaves behind is the first paint:
+
+- **Four session cards**, each restored from suspension with its whole conversation intact -
+  paced assistant turns, tool chips, `TodoWrite` narration - and a **dirty worktree** behind
+  it, so Diff and Files are full the moment you click a card. One of them is **waiting on a
+  question you can answer**.
+- **Nine tasks across every state a board really shows**: `done`, three `running`, `cancelled`,
+  and four in `backlog` - one of them blocked on another, one parked (`enabled: false`). Note
+  that "blocked" and "parked" are not statuses; there are only six of those, and neither is
+  among them.
+- **Reviews**: one pending `plan-decisions` prompt with selectable options, plus an approved
+  plan and an answered question in a session's resolved history.
+- **A completed Workflow run** on the Runs page, with its binding and version behind it.
+- **Two Recurring Missions** on the schedule spine, in your own timezone.
+- **A nonzero cost chip**: today's spend attributed to the live cards (so the per-card figures
+  and the topbar agree), several days of history behind it, and the automation line the
+  Foreman and Inspector loops populate.
+
+**It is all replay, not fabrication.** The seeder boots the daemon quietly, drives the same
+public routes the dashboard and the e2e specs drive (`POST /api/tasks`, `/dispatch`,
+`/mcp/reviews`, `/api/reviews/:id/resolve`, `/api/workflows` → `/publish` →
+`/api/workflow-bindings` → `/submit`, `/api/schedules`, `/api/personas`), and then stops.
+Every row was written by the real daemon; the transcripts were written by the scenario
+players; the worktrees are real `git worktree` checkouts with real uncommitted edits.
+**Nothing writes to SQLite behind the daemon's back**, including the cost ledger - `/v1/metrics`
+stamps each row from the datapoint's own `timeUnixNano` rather than from `Date.now()`, and
+`/api/usage/automation` takes an arbitrary `ts`, so backdating is a property of the ingest
+routes themselves.
+
+The suspended cards are the same story. An embedded session whose daemon shuts down cleanly is
+recorded `suspended`, and the next daemon relaunches it as a resumable card - so the seeder
+gets its cards by dispatching real sessions and then stopping the daemon over them. A session
+that was still mid-question at that shutdown keeps its `turnInProgress` bit, and the restore
+sends it a continuation turn asking it to raise anything it still needs; that is how the fleet
+has a genuinely waiting-on-you card at first paint rather than only a durable review row.
+
+Three gaps, all deliberate, and all for the same underlying reason where it applies - a seed
+can only contain what the daemon durably stores:
+
+- **No origin chips on seeded turns.** Turn attribution (the foreman/workflow badges on a
+  conversation) is in-memory only, keyed by a hash of the turn text (`src/server/injections.ts`),
+  so it exists for live deliveries and cannot survive a restart. Seeded history carries none.
+- **No quota runway on the cost chip.** The rate-limit windows a session reports through
+  `/statusline` live in a private in-memory field on the registry that nothing persists, so
+  seeding one would simply be undone by the seeder's own shutdown. The chip still appears and
+  still opens - it has the money and token rows, just no forward-looking one until a live
+  session reports its windows.
+- **No pull-request or Inspector history.** Out of scope for demo mode - both act outside the
+  machine against real repositories.
 
 ### Scenarios
 
@@ -5926,9 +5991,29 @@ set); `editFile` steps write real content into the session's cwd - the actual gi
 the dispatch cut - so Diff and Files fill in for real (the path must stay inside the cwd);
 `ask` steps raise an `AskUserQuestion` card and block until the dashboard answers it through
 `/api/sessions/:id/submit-options`; a scenario ends on its own `"result"` step or simply when
-it runs out of steps. Three starter scenarios ship: a bug fix (edits two files, runs a Bash
-"test", completes), a rate-limit design question that blocks mid-turn on you, and a longer
-multi-step migration so the fleet shows mixed states at a glance. Codex sessions play the same
+it runs out of steps.
+
+Eight scenarios ship, in two groups. **Three are for live dispatch** from the dashboard, paced
+theatrically so there is something to watch: a bug fix (edits two files, runs a Bash "test",
+completes), a rate-limit design question that blocks mid-turn on you, and a longer multi-step
+migration. **Four are the seeded fleet's** (`seed-*.json`), paced fast because their output is
+history rather than a performance - nobody watches a seed run. **One is the restart
+continuation** (`resume-continuation.json`), which matches the prompt the daemon sends a
+session that was mid-turn when it shut down and re-raises the question that session was
+blocked on. A seeded intent must reach its own scenario and never fall through to the default;
+`test/demo-seed.test.ts` pins that routing, because a `match` list that shadows another
+produces a card whose conversation is plausibly about the wrong task and nothing errors.
+
+**A resumed player continues its session rather than starting a new one.** Given
+`--resume=<id>` it adopts that id, appends to the transcript already at that path instead of
+truncating it, and carries on its record numbering. All three matter: the driver re-binds the
+card on any new `session_id`, so a fresh one would repoint it at a transcript this process had
+just created empty - the card would come back with its whole conversation gone. A resumed
+session that is owed no continuation turn also emits a `result` shortly after `init`, because
+that frame is the only thing that moves a card off `starting`, and a restored card claiming to
+be starting up for the rest of the demo is both ugly and untrue.
+
+Codex sessions play the same
 schema over the `codex app-server` protocol, with one gap: Codex's real "waiting on you"
 moment is an approval request, not `AskUserQuestion`, and this phase does not implement it -
 an `ask` step on a Codex session narrates the question as prose instead of blocking, so a

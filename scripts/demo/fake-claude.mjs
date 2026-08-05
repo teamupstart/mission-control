@@ -18,6 +18,12 @@
  * this file to an extension-less path and chmods it so the `#!/usr/bin/env node` shebang
  * picks the interpreter, exactly like `e2e/fixtures/fake-agents.ts` does for its fake.
  *
+ * RESUME (`--resume=<id>`) IS A CONTINUATION, NOT A NEW SESSION
+ * The daemon relaunches every `suspended` session at boot, and the seeded fleet is built out
+ * of exactly those. So this player adopts the resumed id as its own, appends to the
+ * transcript already at that path instead of truncating it, and continues its record
+ * numbering - see `resumedSessionId()` for what breaks otherwise.
+ *
  * WHAT THE DRIVER ACTUALLY READS off the control wire (`ClaudeSdkSession.consume`):
  *   - `system`/`init`      -> binds the model
  *   - a frame with a new `session_id` -> emits `bound`
@@ -48,18 +54,45 @@
  * dashboard answers it. A scenario with no explicit trailing `"result"` step still ends
  * the turn once its steps run out.
  */
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
-const SESSION_ID = process.env.MC_DEMO_SESSION_ID ?? randomUUID();
-
 function argvValue(flag) {
   const index = process.argv.indexOf(flag);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
+
+/**
+ * The session id a `--resume` asks this process to CONTINUE, or null for a fresh session.
+ *
+ * Load-bearing for the seeded fleet, and the reason this is not just `randomUUID()`.
+ * `SdkSupervisor.resume()` relaunches every `suspended` row on boot with the harness-native
+ * id the driver last reported, and the vendored SDK renders that as a single `--resume=<id>`
+ * argv element (never `--resume <id>` - but both are read here, because which one the SDK
+ * emits is its choice, not a contract). Minting a fresh id instead would make the driver
+ * re-bind the card to it (`ClaudeSdkSession.consume` re-binds on ANY new `session_id`), and
+ * `resolveTranscriptPath` would then derive `<the new id>.jsonl` - an empty file this
+ * process had just created. The card would come back with its whole conversation gone.
+ */
+function resumedSessionId() {
+  for (const arg of process.argv) {
+    if (arg.startsWith("--resume=")) return arg.slice("--resume=".length) || null;
+  }
+  return argvValue("--resume") ?? null;
+}
+
+const RESUMED_SESSION_ID = resumedSessionId();
+const SESSION_ID = process.env.MC_DEMO_SESSION_ID ?? RESUMED_SESSION_ID ?? randomUUID();
 
 const MODEL = argvValue("--model") ?? "claude-demo-mock";
 
@@ -77,9 +110,8 @@ const FALLBACK_SCENARIOS = [
   },
 ];
 
-/** Every scenario in `MISSION_DEMO_SCENARIO_DIR`, or the built-in fallback if none load. */
-function loadScenarios() {
-  const dir = process.env.MISSION_DEMO_SCENARIO_DIR;
+/** Every scenario in `dir` (default `MISSION_DEMO_SCENARIO_DIR`), or the built-in fallback. */
+export function loadScenarios(dir = process.env.MISSION_DEMO_SCENARIO_DIR) {
   if (!dir) return FALLBACK_SCENARIOS;
   let files;
   try {
@@ -99,18 +131,31 @@ function loadScenarios() {
   return scenarios.length > 0 ? scenarios : FALLBACK_SCENARIOS;
 }
 
-const SCENARIOS = loadScenarios();
-
-/** The scenario whose `match` substrings hit the prompt, else the flagged default, else the first. */
-function selectScenario(prompt) {
-  const lower = prompt.toLowerCase();
-  for (const scenario of SCENARIOS) {
+/**
+ * The scenario whose `match` substrings hit the prompt, else the flagged default, else the
+ * first.
+ *
+ * Takes its scenarios as an argument rather than reading the module's own, so the routing can
+ * be asserted directly - `test/demo-seed.test.ts` pins every seeded intent against the
+ * shipped table, because a scenario that silently shadows another shows up only as a demo
+ * whose conversation is about the wrong task.
+ */
+export function selectScenario(scenarios, prompt) {
+  const lower = String(prompt ?? "").toLowerCase();
+  for (const scenario of scenarios) {
     const patterns = Array.isArray(scenario.match) ? scenario.match : [];
     if (patterns.some((p) => typeof p === "string" && p && lower.includes(p.toLowerCase()))) {
       return scenario;
     }
   }
-  return SCENARIOS.find((s) => s.default) ?? SCENARIOS[0];
+  return scenarios.find((s) => s.default) ?? scenarios[0];
+}
+
+const SCENARIOS = loadScenarios();
+
+/** `selectScenario` bound to this process's own loaded table. */
+function pick(prompt) {
+  return selectScenario(SCENARIOS, prompt);
 }
 
 // --- headless one-shot mode (`claude -p`) -----------------------------------------------
@@ -121,16 +166,23 @@ function selectScenario(prompt) {
 // Foreman child the real `claude` bin in its own environment. One shot: prompt on stdin, a
 // single JSON object on stdout, exit.
 
-if (process.argv.includes("-p")) {
-  const chunks = [];
-  process.stdin.on("data", (c) => chunks.push(c));
-  process.stdin.on("end", () => {
-    const prompt = Buffer.concat(chunks).toString("utf8");
-    process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
-    process.exit(0);
-  });
-} else {
-  runSession();
+// Guarded so a test can import the scenario matcher without this file trying to BE a
+// session - importing a script must not run it. The same guard `launch.mjs` uses, and true
+// under every way this file is actually launched: the SDK execs the extension-less copy
+// through its shebang (`process.argv[1]` is that path), and `claude-cli.ts` spawns it the
+// same way.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  if (process.argv.includes("-p")) {
+    const chunks = [];
+    process.stdin.on("data", (c) => chunks.push(c));
+    process.stdin.on("end", () => {
+      const prompt = Buffer.concat(chunks).toString("utf8");
+      process.stdout.write(JSON.stringify({ result: headlessAnswer(prompt) }));
+      process.exit(0);
+    });
+  } else {
+    runSession();
+  }
 }
 
 /**
@@ -168,10 +220,10 @@ function headlessAnswer(prompt) {
   // patterns on every dispatch regardless of what was actually typed.
   if (prompt.includes("You name coding tasks for a dispatch board")) {
     const intent = prompt.match(/## The task text\n([\s\S]*?)\n\nNow output the title/)?.[1]?.trim() || prompt;
-    const scenario = selectScenario(intent);
+    const scenario = pick(intent);
     return JSON.stringify({ title: scenario.title || "Demo session" });
   }
-  return selectScenario(prompt).title || "Demo session";
+  return pick(prompt).title || "Demo session";
 }
 
 function runSession() {
@@ -181,11 +233,20 @@ function runSession() {
 const projectDir = join(homedir(), ".claude", "projects", process.cwd().replace(/[/.]/g, "-"));
 mkdirSync(projectDir, { recursive: true });
 const transcriptPath = join(projectDir, `${SESSION_ID}.jsonl`);
-// Created eagerly: `resolveTranscriptPath` returns null for a path that does not exist
-// yet, and the `bound` event that carries it fires as soon as the first frame lands.
-writeFileSync(transcriptPath, "");
+// Created eagerly, but NEVER truncated: `resolveTranscriptPath` returns null for a path
+// that does not exist yet, and the `bound` event that carries it fires as soon as the first
+// frame lands - so the file has to be there. A resumed session's file already holds the
+// conversation the card is about to show, and an unconditional truncate here would erase
+// exactly the seeded history this whole mode exists to display.
+if (!existsSync(transcriptPath)) writeFileSync(transcriptPath, "");
 
-let turn = 0;
+// Continue the record numbering where the existing transcript left off, rather than
+// restarting at 1 and minting `assistant-1` a second time. `parseTranscript` keys each turn
+// on `uuid` and `TranscriptPanel` renders those as React keys, so a resumed session that
+// reused them would collide with its own history.
+let turn = existsSync(transcriptPath)
+  ? readFileSync(transcriptPath, "utf8").split("\n").filter((l) => l.trim()).length
+  : 0;
 function appendTurn(role, content) {
   turn += 1;
   appendFileSync(
@@ -238,8 +299,30 @@ let turnOpen = false;
 
 function finishTurn() {
   turnOpen = false;
+  clearTimeout(idleAfterResume);
   emit({ type: "result", subtype: "success", session_id: SESSION_ID });
 }
+
+/**
+ * Say "idle" after a resume that nobody asked anything of.
+ *
+ * `ClaudeSdkSession.consume` moves a card off `starting` on exactly two frames: `assistant`
+ * (working) and `result` (turn_done -> idle). A restored session whose previous turn had
+ * already finished gets NEITHER - `SdkSupervisor.resume` launches it with `prompt: ""` and
+ * only sends a continuation turn when `turnInProgress` was set - so without this the card
+ * would sit at `starting` for the rest of the demo, which is both ugly and untrue.
+ *
+ * Deliberately on a timer rather than fired straight after `init`: a session that DOES owe a
+ * continuation turn receives it immediately after adoption, and that turn should open the
+ * card rather than race a result that says the opposite. Whichever happens first wins, and
+ * `finishTurn` cancels this if a real turn got there first.
+ */
+const RESUME_IDLE_GRACE_MS = 750;
+const idleAfterResume = RESUMED_SESSION_ID
+  ? setTimeout(() => {
+      if (!turnOpen) emit({ type: "result", subtype: "success", session_id: SESSION_ID });
+    }, RESUME_IDLE_GRACE_MS)
+  : null;
 
 /** Play a scenario's remaining steps, one at a time, each after its own `delayMs`. */
 function runSteps(steps) {
@@ -346,7 +429,7 @@ rl.on("line", (line) => {
     if (turnOpen) return;
 
     turnOpen = true;
-    runSteps(selectScenario(prompt).steps);
+    runSteps(pick(prompt).steps);
   }
 });
 

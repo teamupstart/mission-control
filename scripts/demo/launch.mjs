@@ -12,11 +12,18 @@
  * comments, which this mirrors.
  *
  * Flags:
- *   --fresh        delete the state root and rebuild it before booting
+ *   --fresh        delete the state root, rebuild it, and SEED a lived-in fleet before
+ *                  booting (see `seed.mjs`); without it an existing root boots as-is,
+ *                  which is the point of a persistent demo
+ *   --no-seed      with --fresh, rebuild the root but skip the seeder - an empty fleet in
+ *                  seconds instead of a populated one in minutes
  *   --no-foreman   skip starting the real Foreman worker
+ *   --no-open      do not open a browser (a remote machine, or a scripted inspection of the
+ *                  seeded fleet that should not steal the operator's focus)
  *   --port <n>     override the fixed default port
- *   --check        boot, assert identity and isolation, shut down, exit 0 (no browser,
- *                  no Foreman) - the CI-shaped smoke test for this launcher
+ *   --check        boot, assert identity and isolation, run a REDUCED seed and assert its
+ *                  residue, shut down, exit 0 (no browser, no Foreman) - the CI-shaped
+ *                  smoke test for this launcher and its seeder
  */
 import { execFileSync, spawn } from "node:child_process";
 import {
@@ -35,10 +42,20 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const DEMO_DIR = fileURLToPath(new URL(".", import.meta.url));
-const DEFAULT_PORT = 7417; // distinct from the dev daemon (7317) and the smoke port (7519)
+export const DEFAULT_PORT = 7417; // distinct from the dev daemon (7317) and the smoke port (7519)
 const BOOT_TIMEOUT_MS = 30_000;
 const FOREMAN_TIMEOUT_MS = 30_000;
 const POLL_MS = 100;
+/**
+ * How long a SIGTERM'd daemon gets to shut down on its own before it is killed.
+ *
+ * Generous, and load-bearing rather than merely polite: the daemon's own SIGTERM handler
+ * drains every embedded session's driver (`SdkSupervisor.stopAll`, itself a 5s budget) and
+ * only then records each one `suspended`, which is the status `restore()` picks back up at
+ * the next boot. A short kill here would take the seeded fleet's session cards with it, and
+ * would cut SQLite off mid-write besides.
+ */
+const SHUTDOWN_GRACE_MS = 15_000;
 
 /**
  * Guarantees a cleanup runs exactly once, no matter how many of `stop`'s callers race to
@@ -68,12 +85,21 @@ export function createShutdownGate(onStop) {
   };
 }
 
-function parseArgs(argv) {
-  const args = { fresh: false, noForeman: false, check: false, port: DEFAULT_PORT };
+export function parseArgs(argv) {
+  const args = {
+    fresh: false,
+    noForeman: false,
+    noSeed: false,
+    noOpen: false,
+    check: false,
+    port: DEFAULT_PORT,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--fresh") args.fresh = true;
     else if (arg === "--no-foreman") args.noForeman = true;
+    else if (arg === "--no-seed") args.noSeed = true;
+    else if (arg === "--no-open") args.noOpen = true;
     else if (arg === "--check") args.check = true;
     else if (arg === "--port") args.port = Number(argv[++i]);
     else {
@@ -88,7 +114,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function ensureBuilt() {
+export function ensureBuilt() {
   const server = join(REPO_ROOT, "dist/server/index.mjs");
   const web = join(REPO_ROOT, "dist/web");
   if (!existsSync(server) || !existsSync(web)) {
@@ -242,9 +268,24 @@ function installScenarios(root) {
   return destDir;
 }
 
+/** The one name for the demo state root, so no caller can invent a second one. */
+export const DEMO_ROOT_NAME = ".mission-control-demo";
+/**
+ * `--check`'s own throwaway root, beside the real one rather than inside it.
+ *
+ * `--check` now runs a reduced seed, which writes tasks, sessions and worktrees - so it must
+ * not run against `~/.mission-control-demo`, or a CI-shaped assertion would quietly bulldoze
+ * a curated demo an operator had spent an afternoon arranging. Rebuilt on every `--check`
+ * and removed afterwards.
+ */
+export const DEMO_CHECK_ROOT_NAME = ".mission-control-demo-check";
+
+/** The roots anything under `scripts/demo/` is allowed to create, write, and delete. */
+const WRITABLE_ROOT_NAMES = [DEMO_ROOT_NAME, DEMO_CHECK_ROOT_NAME];
+
 /** Resolve (and, on `--fresh`, rebuild) the persistent demo state root. */
-function resolveRoot(fresh) {
-  const root = join(homedir(), ".mission-control-demo");
+function resolveRoot(fresh, name = DEMO_ROOT_NAME) {
+  const root = join(homedir(), name);
   if (fresh && existsSync(root)) {
     console.log(`[demo] --fresh: removing ${root}`);
     rmSync(root, { recursive: true, force: true });
@@ -256,10 +297,51 @@ function resolveRoot(fresh) {
   return realpathSync(root);
 }
 
+/**
+ * Refuse to treat anything but the demo state root as one.
+ *
+ * The guard the plan asks for, hoisted here so the launcher and the seeder share ONE
+ * definition of "this is the demo's own state, not the operator's". `~/.mission-control` is
+ * live operator state whose schema is append-only; nothing in `scripts/demo/` may write to
+ * it, and a path typo is the realistic way that would otherwise happen.
+ */
+export function assertDemoRoot(root) {
+  const resolved = realpathSync(root);
+  const allowed = WRITABLE_ROOT_NAMES.filter((name) => existsSync(join(homedir(), name))).map(
+    (name) => realpathSync(join(homedir(), name)),
+  );
+  if (!allowed.includes(resolved)) {
+    throw new Error(
+      `[demo] refusing to act on ${root}: only ${WRITABLE_ROOT_NAMES.map((n) => join(homedir(), n)).join(" or ")} ` +
+        "may be written by the demo tooling, which must never touch the operator's own " +
+        "Mission Control state.",
+    );
+  }
+  return resolved;
+}
+
+/**
+ * Everything the state root needs before a daemon can boot into it: the seeded workspace
+ * repos, the installed players, and the scenario tables.
+ *
+ * One function rather than four calls at the top of `main`, because the seeder boots into
+ * the same root and has to know that this has already happened. Idempotent - `seedRepo`
+ * returns an existing repo untouched, and the copies simply overwrite - so an ordinary
+ * `npm run demo` refreshes the players against the checkout on every launch.
+ */
+export function prepareStateRoot(root) {
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace, { recursive: true });
+  const repos = [seedRepo(workspace, "demo-api"), seedRepo(workspace, "demo-web")];
+  const bins = installPlayers(root);
+  const scenarios = installScenarios(root);
+  return { workspace, repos, bins, scenarios };
+}
+
 // --- daemon boot (factored apart from opening the dashboard, so Phase 2's seeder can
 // drive this quietly, per the cross-phase contract) ----------------------------------------
 
-function buildDaemonEnv(root, port, bins) {
+export function buildDaemonEnv(root, port, bins) {
   return {
     ...process.env,
     HOME: root,
@@ -297,7 +379,7 @@ async function fetchHealth(baseURL) {
  * answers the spawned child's own pid, and `harness.db` lands under the state root rather
  * than the operator's real one.
  */
-async function bootDaemon(root, port, env) {
+export async function bootDaemon(root, port, env) {
   const child = spawn(process.execPath, [join(REPO_ROOT, "dist/server/index.mjs")], {
     cwd: REPO_ROOT,
     env,
@@ -311,11 +393,24 @@ async function bootDaemon(root, port, env) {
   child.on("exit", (code, signal) => (exited = { code, signal }));
 
   const baseURL = `http://127.0.0.1:${port}`;
-  const stop = async () => {
+  /**
+   * Stop the daemon and WAIT for it to actually be gone.
+   *
+   * Waiting is the point. The seeder's whole mechanism is "let real sessions run, then let a
+   * clean shutdown suspend them", and `SHUTDOWN_GRACE_MS` explains why that needs more than
+   * a token pause. It also means the next boot cannot race this one for the port.
+   */
+  const stop = async (graceMs = SHUTDOWN_GRACE_MS) => {
     if (exited) return;
     child.kill("SIGTERM");
-    await new Promise((r) => setTimeout(r, 200));
-    if (!exited) child.kill("SIGKILL");
+    const deadline = Date.now() + graceMs;
+    while (!exited && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    if (exited) return;
+    child.kill("SIGKILL");
+    // A second, short window: SIGKILL cannot be caught, so this only covers the kernel
+    // getting round to it. Bounded anyway - a stop that cannot finish must still return.
+    const killDeadline = Date.now() + 2_000;
+    while (!exited && Date.now() < killDeadline) await new Promise((r) => setTimeout(r, 50));
   };
 
   const deadline = Date.now() + BOOT_TIMEOUT_MS;
@@ -438,11 +533,81 @@ async function waitForForemanLease(foreman) {
   }
 }
 
-function openDashboard(baseURL) {
+function openDashboard(baseURL, open = true) {
   console.log(`[demo] dashboard: ${baseURL}`);
-  if (process.platform === "darwin") {
+  if (open && process.platform === "darwin") {
     spawn("open", [baseURL], { stdio: "ignore", detached: true }).unref();
   }
+}
+
+// --- --check ---------------------------------------------------------------------------------
+
+/**
+ * The CI-shaped proof, end to end: prepare a throwaway root, run a REDUCED seed through the
+ * real routes, then boot a second daemon over what the first one left and assert the residue
+ * the way the dashboard reads it.
+ *
+ * The reboot is the part that could not be faked. Every other assertion here could be made
+ * against the seeder's own live daemon; "a suspended session comes back as a card" is a claim
+ * about a DIFFERENT process reading rows the previous one wrote, and only a real second boot
+ * tests it. That path is exactly what an operator's `npm run demo -- --fresh` then does.
+ */
+async function runCheck(port) {
+  const root = resolveRoot(true, DEMO_CHECK_ROOT_NAME);
+  console.log(`[demo] --check: throwaway state root ${root}`);
+  const { seedDemoFleet, readSnapshot, waitFor } = await import("./seed.mjs");
+  try {
+    const { bins } = prepareStateRoot(root);
+    const summary = await seedDemoFleet({ root, port, reduced: true });
+    console.log("[demo] --check: reduced seed complete, rebooting over it");
+
+    const daemon = await bootDaemon(root, port, buildDaemonEnv(root, port, bins));
+    try {
+      // Poll rather than read once: `SdkSupervisor.restore()` relaunches suspended sessions
+      // after the server is already answering /api/health, so the first snapshot on a cold
+      // boot legitimately has no cards in it yet.
+      const snap = await waitFor(
+        "the seeded fleet to be restored",
+        async () => {
+          const s = await readSnapshot(daemon.baseURL);
+          return s.sessions.length > 0 ? s : null;
+        },
+        { timeoutMs: 60_000 },
+      );
+
+      const checks = [
+        [`tasks were seeded (${snap.tasks.length})`, snap.tasks.length > 0],
+        [
+          `a suspended session came back as a card (${snap.sessions.length})`,
+          snap.sessions.length > 0,
+        ],
+        [
+          "a pending review survived the restart",
+          snap.reviews.some((r) => r.status === "pending"),
+        ],
+        [
+          `the cost ledger has priced rows (${snap.fleetCost?.estimatedCostToday ?? "none"})`,
+          (snap.fleetCost?.estimatedCostToday ?? 0) > 0,
+        ],
+      ];
+      for (const [what, ok] of checks) {
+        console.log(`[demo] --check: ${ok ? "ok  " : "FAIL"} ${what}`);
+      }
+      const failed = checks.filter(([, ok]) => !ok).map(([what]) => what);
+      if (failed.length > 0) {
+        throw new Error(`[demo] --check: the seeded fleet is missing: ${failed.join("; ")}`);
+      }
+      console.log(`[demo] --check: identity, isolation and seed assertions passed`);
+      console.log(`[demo] --check: seeded ${summary.headline}`);
+    } finally {
+      await daemon.stop();
+    }
+  } finally {
+    // Always, including on a failed assertion: a leftover check root would make the next
+    // run's `--fresh` rebuild look like it had passed when it had merely reused this one.
+    rmSync(root, { recursive: true, force: true });
+  }
+  console.log("[demo] --check: ok");
 }
 
 // --- main -----------------------------------------------------------------------------------
@@ -452,26 +617,33 @@ async function main() {
   const realHome = process.env.HOME ?? homedir();
 
   ensureBuilt();
+
+  // `--check` is its own program: a disposable root, a reduced seed, assertions, exit. It
+  // shares this file's boot and preparation rather than the rest of its lifecycle.
+  if (args.check) {
+    await runCheck(args.port);
+    return;
+  }
+
   const root = resolveRoot(args.fresh);
-  const workspace = join(root, "workspace");
-  mkdirSync(workspace, { recursive: true });
-  seedRepo(workspace, "demo-api");
-  seedRepo(workspace, "demo-web");
-  const bins = installPlayers(root);
-  installScenarios(root);
+  const { bins } = prepareStateRoot(root);
+  console.log(`[demo] state root: ${root}`);
+
+  // The Phase 2 hook, deliberately BEFORE the boot below: the seeder needs the port to
+  // itself (it boots, drives real routes, and stops so its sessions suspend), and what it
+  // leaves behind is what the daemon we are about to start restores.
+  if (args.fresh && !args.noSeed) {
+    const { seedDemoFleet, printSeedSummary } = await import("./seed.mjs");
+    console.log("[demo] --fresh: seeding a lived-in fleet (this replays real work - a few minutes)");
+    printSeedSummary(await seedDemoFleet({ root, port: args.port }));
+  } else if (args.fresh) {
+    console.log("[demo] --no-seed: rebuilt the state root without seeding it");
+  }
 
   const daemonEnv = buildDaemonEnv(root, args.port, bins);
-  console.log(`[demo] state root: ${root}`);
   console.log(`[demo] booting the daemon on port ${args.port}...`);
   const daemon = await bootDaemon(root, args.port, daemonEnv);
   console.log(`[demo] daemon is up (pid ${daemon.child.pid}), isolated under ${root}`);
-
-  if (args.check) {
-    console.log("[demo] --check: identity and isolation assertions passed");
-    await daemon.stop();
-    console.log("[demo] --check: ok");
-    return;
-  }
 
   // From here on, the daemon (and, once spawned, Foreman) must be stopped on EVERY exit
   // path - a thrown error, a signal, or a clean shutdown - or the next `npm run demo`
@@ -515,7 +687,7 @@ async function main() {
     console.log("[demo] --no-foreman: skipping the Foreman worker");
   }
 
-  openDashboard(daemon.baseURL);
+  openDashboard(daemon.baseURL, !args.noOpen);
 }
 
 // Guarded so a test can `import { createShutdownGate } from "./launch.mjs"` without

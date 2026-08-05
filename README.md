@@ -2980,12 +2980,18 @@ double dagger on every Workflows cell while the check switch is on, names those 
 and offers **Turn checks off** in place. A grant with checks off is not flagged: no command
 can run, and amber on an inert grant is how a matrix teaches you to stop reading it.
 
-**Checks share the treehouse pool with dispatch.** Two check commands run at once, and each one
-holds a pooled worktree for as long as it runs - drawn from the same `max_trees` a dispatched
-session draws from (`treehouse.toml` in the repository; this one sets 16). On a repository with
-a small pool, a long test suite gating a review is a slot a dispatch is waiting for. Raise
-`max_trees` there if dispatch starts queuing behind checks. Checks also run through their own
-small attempt budget, separate from the review budget, so a build never spends a Persona's slot.
+**Checks use the treehouse pool whenever the binary is installed.** Unlike dispatch, a check does
+not consult `treehouse.toml`; it keeps using the pool for a repository that has no such file. Two
+check commands run at once, and each one holds a pooled worktree for as long as it runs - drawn
+from the same `max_trees` a dispatched session draws from (`treehouse.toml` in the repository;
+this one sets 32). On a repository with a small pool, a long test suite gating a review is a slot
+a dispatch is waiting for. Raise `max_trees` there if dispatch starts queuing behind checks.
+
+When `treehouse` is not installed, a check instead uses a throwaway detached `git worktree` pinned
+to the captured commit. The configured command still runs and its real result still gates the
+workflow; the fallback does not record the check as passed without running it. Checks also run
+through their own small attempt budget, separate from the review budget, so a build never spends
+a Persona's slot.
 
 Run detail draws a check as its own card: the slot, the configured argv, the exit code, and the
 last few kilobytes of output with a count of anything dropped - or, for a gate that did not run,
@@ -5674,10 +5680,16 @@ that looks perfectly healthy would help nobody.
 
 ### Check leases
 
-A [Workflow check](#workflows-and-personas) runs a build in a pooled worktree of its
-own, pinned to the exact commit the run captured. That tree is leased like any other,
-with one difference you will see in `treehouse status`: it is held by
-**`mission-control-check-<attemptId>`**, not by plain `mission-control`.
+A [Workflow check](#workflows-and-personas) runs a build in an isolated worktree of its
+own, pinned to the exact commit the run captured. When the `treehouse` binary is installed,
+the check uses a pooled tree even if the repository has no `treehouse.toml`; unlike dispatch,
+checks gate on binary availability alone. When the binary is absent, the check uses a
+throwaway detached `git worktree`, still runs the configured command, and removes the tree
+afterwards. The gate never passes merely because treehouse is unavailable.
+
+A pooled check tree is leased like any other, with one difference you will see in
+`treehouse status`: it is held by **`mission-control-check-<attemptId>`**, not by plain
+`mission-control`.
 
 The distinct holder is the point, not decoration. A check has no session standing in
 it and no task recording it, and between the lease and the build starting it has no
@@ -5713,7 +5725,7 @@ treehouse records and never checks, so this is a rule the harness imposes on its
 in the worst case two of a repository's `max_trees` are held by builds rather than by sessions,
 and a dispatch that finds the pool dry waits. If that starts happening, raise `max_trees` in
 that repository's `treehouse.toml` - the number is per repository, and the one in this
-repository is 16.
+repository is 32.
 
 If you ever see an idle `mission-control-check-…` lease that outlives its daemon, it is
 safe to hand back by hand: `treehouse return <path>`.

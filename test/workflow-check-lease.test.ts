@@ -30,6 +30,7 @@ type CheckGroupRecovery = import("../src/server/workflows/check-lease.ts").Check
 const db = openDb();
 const store = new CheckLeaseStore(db);
 const SHA = "a".repeat(40);
+const TREEHOUSE_PRESENT = async () => true;
 
 const liveRows = (): unknown[] =>
   db
@@ -158,6 +159,7 @@ function mkManager(
     // so it is stubbed unless the case is specifically about a pin failing.
     pin: opts.pin ?? (async () => {}),
     verifyBase: async (_repoRoot, sha) => sha,
+    treehouseInstalled: TREEHOUSE_PRESENT,
   });
   return { ...pool, manager, repoRoot: dir };
 }
@@ -343,6 +345,7 @@ test("a primary-key clash from another manager leaves the winner's row alone", a
     cli: m.cli,
     pin: async () => {},
     verifyBase: async (_r, s) => s,
+    treehouseInstalled: TREEHOUSE_PRESENT,
   });
   const ask = (mgr: InstanceType<typeof CheckLeaseManager>) =>
     mgr.acquireForAttempt({
@@ -382,6 +385,7 @@ test("a loser whose unwind cannot return its tree still leaves the winner's row 
     cli: { ...m.cli, return: async () => stubRun({ stdout: "", stderr: "tree is busy", code: 1 }) },
     pin: async () => {},
     verifyBase: async (_r, s) => s,
+    treehouseInstalled: TREEHOUSE_PRESENT,
   });
   const ask = (mgr: InstanceType<typeof CheckLeaseManager>) =>
     mgr.acquireForAttempt({
@@ -422,6 +426,7 @@ test("a failed insert never deletes or re-states a row this acquire did not writ
     },
     pin: async () => {},
     verifyBase: async (_r, s) => s,
+    treehouseInstalled: TREEHOUSE_PRESENT,
   });
 
   await assert.rejects(

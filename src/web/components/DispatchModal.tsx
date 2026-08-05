@@ -180,6 +180,7 @@ export function DispatchLayer({
   personas = [],
   workflowSummaries = [],
   foremanEnabled = false,
+  harnessesRevision = 0,
   launchIntent = null,
   onClose,
   onOpenSchedule,
@@ -196,6 +197,12 @@ export function DispatchLayer({
   workflowSummaries?: WorkflowSummary[];
   /** Whether the completion detector needed by an after-work Workflow is running. */
   foremanEnabled?: boolean;
+  /**
+   * `MissionState.harnessesRevision`. Forwarded to the modal so a change to the per-harness
+   * defaults re-reads them WHILE THE MODAL IS OPEN - the read used to happen only on open,
+   * so a modal left open kept naming a model that was no longer the default.
+   */
+  harnessesRevision?: number;
   /**
    * What the caller wants this opening to be, when it is not an ordinary Dispatch.
    *
@@ -423,6 +430,7 @@ export function DispatchLayer({
         onOpenSchedule={onOpenSchedule}
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
+        harnessesRevision={harnessesRevision}
       />
     );
   }
@@ -446,6 +454,7 @@ export function DispatchLayer({
       personas={personas}
       workflowSummaries={workflowSummaries}
       foremanEnabled={foremanEnabled}
+      harnessesRevision={harnessesRevision}
     />
   );
 }
@@ -485,6 +494,7 @@ function DispatchModal({
   personas = [],
   workflowSummaries = [],
   foremanEnabled = false,
+  harnessesRevision = 0,
 }: {
   mode: DispatchMode;
   tasks: Task[];
@@ -512,6 +522,11 @@ function DispatchModal({
   personas?: PersonaView[];
   workflowSummaries?: WorkflowSummary[];
   foremanEnabled?: boolean;
+  /**
+   * `MissionState.harnessesRevision`. Watched so the "Default - …" labels re-read when the
+   * defaults change under an open modal, rather than only when the modal is reopened.
+   */
+  harnessesRevision?: number;
 }): React.JSX.Element {
   const editing = mode.kind === "edit" ? mode.task : null;
   // Ensemble mode is a new-dispatch-only concern, and only when the layer wired the state up.
@@ -700,19 +715,30 @@ function DispatchModal({
     intentRef.current?.focus();
   }, []);
 
-  // Index the workspace's repos so the base can be searched/picked, and read the
-  // harness defaults so the model and effort pickers can show what "Default" means.
-  // Re-fetched on every open so a freshly-cloned repo - or a default just changed in
-  // Settings - shows up without a full app reload.
+  // Read the harness defaults so the model and effort pickers can name what "Default"
+  // means. Keyed on `harnessesRevision` as well as the mount, so a default changed in
+  // Settings is renamed here WHILE THIS MODAL IS OPEN. Previously this rode the mount-only
+  // effect below, and a modal left open went on offering "Default - Opus 5" after the
+  // operator had moved the default to something else - the dispatch used the new value, so
+  // the label was the only thing that lied, which is the worse failure of the two.
+  useEffect(() => {
+    let alive = true;
+    void fetchHarnessesConfig().then((cfg) => {
+      if (alive && cfg) setDefaults(cfg);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [harnessesRevision]);
+
+  // Index the workspace's repos so the base can be searched/picked.
+  // Re-fetched on every open so a freshly-cloned repo shows up without a full app reload.
   useEffect(() => {
     let alive = true;
     void fetchRepos().then((list) => {
       if (!alive) return;
       setRepos(list);
       setReposLoading(false);
-    });
-    void fetchHarnessesConfig().then((cfg) => {
-      if (alive && cfg) setDefaults(cfg);
     });
     void workflowRequest<WorkflowConfig>("/api/workflows/config")
       .then((config) => {

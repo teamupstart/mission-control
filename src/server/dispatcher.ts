@@ -190,7 +190,11 @@ export class Dispatcher {
       // Resolved here, not at task creation: a backlogged task launches on the defaults
       // in force NOW. Both CLIs spell the model flag `--model <id>`; effort syntax comes
       // from the harness registry. Null means let the harness's own configuration decide.
-      const model = resolveDispatchModel(task.agent, task.model);
+      //
+      // `options.defaultModel` is Foreman's per-harness backlog model, ranked between the
+      // task's own pin and the panel default - see `resolveDispatchModel` for the tiers and
+      // for why it is passed here rather than written onto the task row.
+      const model = resolveDispatchModel(task.agent, task.model, options.defaultModel ?? null);
       const effort = resolveDispatchEffort(task.agent, task.effort);
       // Which of the two runtimes this launch takes, resolved here for the same reason the
       // model and effort are: a toggle flipped mid-batch reaches the next session rather

@@ -39,7 +39,20 @@ const LOOPBACK = { host: "127.0.0.1:7317" };
 const authed = { ...LOOPBACK, "content-type": "application/json", "x-harness-token": TOKEN };
 
 /** A discovered claude session on tmux pane %3 - the join key the hook binds to. */
-function seedSession(): void {
+/**
+ * A pane id no tmux server can resolve, for the cases that need a capture to FAIL.
+ *
+ * `%3` - what this fixture seeds by default - is an ordinary pane id, and pane ids are
+ * global to a tmux server, so on any machine with tmux running it is very likely to name a
+ * real pane belonging to a real shell. A test that assumed `%3` was absent therefore read
+ * back a developer's actual terminal contents instead of the "no screen" it asserted, and
+ * failed for reasons having nothing to do with the code under test. Non-numeric is the
+ * robust choice rather than a big number: tmux's pane ids are `%<digits>`, so this one is
+ * refused by the target parser itself ("can't find pane") and cannot come to exist.
+ */
+const UNRESOLVABLE_PANE = "%deadpane";
+
+function seedSession(paneId = "%3"): void {
   const d: DiscoveredSession = {
     syntheticId: "sess-1",
     agent: "claude",
@@ -51,7 +64,7 @@ function seedSession(): void {
     repoRoot: null,
     pid: 4242,
     tty: "ttys003",
-    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%3" })],
+    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId })],
     startedAt: 0,
   };
   registry.applyDiscovery([d]);
@@ -1587,7 +1600,10 @@ test("/api/sessions/:id/pane serves the child's screen, and 404s an unknown sess
   // The route Foreman's reviewer reads the pending ask from (see `ReviewInput.pane`): an ask
   // that is BLOCKING on the user is not in the transcript until it returns, so this is the only
   // place it exists.
-  seedSession();
+  // Seeded with a pane id tmux REFUSES rather than the fixture's ordinary `%3`, which on a
+  // machine with tmux running names a real pane and made this capture return a developer's
+  // shell instead of failing. See `UNRESOLVABLE_PANE`.
+  seedSession(UNRESOLVABLE_PANE);
 
   const miss = await app.request("/api/sessions/nope/pane", { headers: LOOPBACK });
   assert.equal(miss.status, 404, "an unknown session is not a null pane - say so");

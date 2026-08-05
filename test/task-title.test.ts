@@ -200,7 +200,14 @@ test("dispatching a task removed during titling is refused rather than resurrect
   assert.deepEqual(await gone, { ok: false, error: "no such task" }, "the post-wait re-read must see the removal");
 });
 
-test("a Foreman backlog launch pins its default only when the task has no model of its own", async () => {
+test("a Foreman backlog launch leaves the task's own model alone, pinned or not", async () => {
+  // This used to assert the OPPOSITE for the unpinned case: `dispatch` wrote Foreman's
+  // per-harness backlog model onto the task row so the card would name the command line.
+  // That pinned the task permanently - a task's own model outranks the Harnesses default and
+  // `reschedule` does not clear it - so a task Foreman had launched once could never follow a
+  // changed default again, and nothing in the UI had asked for the model it was stuck on.
+  // The launch-only value now travels with the launch; see `resolveDispatchModel`'s tiers and
+  // `harness-defaults-propagation.test.ts` for the resolution it feeds.
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
@@ -210,14 +217,18 @@ test("a Foreman backlog launch pins its default only when the task has no model 
     repoRoot: "/repo", intent: "do the first task", title: "First", kind: "ship", agent: "claude", backlog: true,
   });
   await tasks.dispatch(unpinned.id, { defaultModel: "claude-sonnet-5" });
-  assert.equal(registry.getTask(unpinned.id)?.model, "claude-sonnet-5");
+  assert.equal(
+    registry.getTask(unpinned.id)?.model,
+    null,
+    "an unpinned task stays unpinned - the launch model is not an operator choice",
+  );
 
   const explicit = tasks.create({
     repoRoot: "/repo", intent: "do the second task", title: "Second", kind: "ship", agent: "claude",
     model: "claude-opus-4-8", backlog: true,
   });
   await tasks.dispatch(explicit.id, { defaultModel: "claude-haiku-4-5" });
-  assert.equal(registry.getTask(explicit.id)?.model, "claude-opus-4-8");
+  assert.equal(registry.getTask(explicit.id)?.model, "claude-opus-4-8", "a real pin is untouched");
 });
 
 test("a long model title is clamped at a word boundary, not rejected", async () => {

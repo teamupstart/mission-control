@@ -1766,6 +1766,26 @@ changes what a task already sitting in the backlog will run on. Like every setti
 this section it applies **only to sessions Mission Control dispatched** - a session you
 started yourself and the app merely discovered is never touched.
 
+**A change takes effect on the next dispatch, with no restart.** The daemon re-reads this
+config on every launch, and saving it publishes a `harnesses_config_changed` event, so a
+second dashboard tab and an already-open dispatch form both re-read the defaults at once
+rather than going on naming a model you have moved away from. A session **already running**
+keeps the model it launched with - that is deliberate, so a restart cannot change a model
+mid-conversation; only the next dispatch picks up the new value.
+
+**Which model wins.** Three tiers, narrowest first:
+
+1. **The task's own model**, chosen in the dispatch form. An explicit choice, so it always wins.
+2. **Foreman's per-harness backlog model** (*Settings → Foreman → "&lt;harness&gt; backlog
+   tasks"*), which applies **only** to a launch Foreman starts from the backlog. Leaving it on
+   the harnesses default is what makes this card govern Foreman's launches too.
+3. **This card's default model**, else no `--model` flag at all.
+
+Tier 2 applies to **one launch** and is never written onto the task, so a task Foreman
+launched still follows this card the next time it runs - and a rescheduled task carries no
+model it was never explicitly pinned with. If a Foreman-launched agent is not using the model
+set here, check tier 2 first - that is the setting overriding it.
+
 All three model lists are maintained in `src/shared/model.ts`; a model released after your
 build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT` to
 `/api/harnesses/config`) still shows and still applies rather than being silently
@@ -4041,6 +4061,17 @@ The first of those three is also in the footer of the Line's
 [Backlog drawer](#the-autopilot-planner), beside a live readout of what it is doing. It is the
 same switch on the same config field, not a second copy of it - flip it in either place and
 both surfaces say so.
+
+### What model an autopilot launch runs on
+
+**Settings → Foreman → "&lt;harness&gt; backlog tasks"** sets a per-harness model used **only**
+when the autopilot launches an unpinned task from the backlog. It ships on *the Harnesses
+default*, so most fleets never need to touch it.
+
+Set it, and it outranks the Harnesses default for autopilot launches only. It is one tier of
+the dispatch model order, which [Settings → Harnesses](#default-model) owns and states in
+full - including what this field does and does not persist. If an autopilot-launched agent
+isn't on the model you expected, that list is where to start.
 
 **Max agents counts every live agent on the machine**, not just the ones Mission launched -
 it's a statement about your machine's load, and a count that ignored the six sessions you

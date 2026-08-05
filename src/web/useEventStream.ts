@@ -70,6 +70,17 @@ export interface MissionState {
    * NOT "all off": a null renders no gear dot rather than a green all-clear.
    */
   settingsStatus: SettingsStatus | null;
+  /**
+   * How many times the per-harness dispatch defaults have changed since this stream opened,
+   * plus one per (re)connect. A COUNTER, not the config: `harnesses_config_changed` carries
+   * no body, so surfaces that name those defaults - the Harnesses panel and the dispatch
+   * modal's "Default - …" labels - watch this number and re-read the route when it moves.
+   *
+   * Bumped on connect as well as on the event so a change that happened while the stream was
+   * down is picked up at once: this config rides no snapshot, so a reconnect is otherwise
+   * indistinguishable from nothing having happened.
+   */
+  harnessesRevision: number;
   connected: boolean;
   /** True once the initial `snapshot` has populated state (distinct from the SSE
    * connection opening). Alerting keys off this so opening the dashboard doesn't
@@ -96,6 +107,7 @@ export function useEventStream(): MissionState {
   const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [lineSummary, setLineSummary] = useState<LineSummary | null>(null);
   const [settingsStatus, setSettingsStatus] = useState<SettingsStatus | null>(null);
+  const [harnessesRevision, setHarnessesRevision] = useState(0);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const esRef = useRef<EventSource | null>(null);
@@ -104,7 +116,12 @@ export function useEventStream(): MissionState {
     const es = new EventSource("/events");
     esRef.current = es;
 
-    es.onopen = () => setConnected(true);
+    es.onopen = () => {
+      setConnected(true);
+      // A change announced while the channel was down reached nobody, and this config is not
+      // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
+      setHarnessesRevision((n) => n + 1);
+    };
     es.onerror = () => {
       setConnected(false);
       // A reconnect re-sends a full snapshot; drop the flag so alerting re-baselines
@@ -263,6 +280,11 @@ export function useEventStream(): MissionState {
         case "settings_status":
           setSettingsStatus(msg.status);
           break;
+        // Counted, not stored: the event carries no config (see its declaration), so the
+        // number is the whole signal - it tells the harness pickers to re-read the route.
+        case "harnesses_config_changed":
+          setHarnessesRevision((n) => n + 1);
+          break;
         default: {
           // Exhaustiveness: this assignment fails to compile the moment `ServerEvent`
           // grows a variant this switch doesn't handle. Without it the new variant
@@ -302,6 +324,7 @@ export function useEventStream(): MissionState {
     fleetCost,
     lineSummary,
     settingsStatus,
+    harnessesRevision,
     connected,
     hasSnapshot,
   };

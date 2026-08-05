@@ -290,6 +290,18 @@ export class ReviewManager {
     const updated: ReviewItem = { ...cur, status, response, resolvedAt, resolvedBy, selections };
     this.registry.upsertReview(updated);
 
+    // You decided this yourself, so Foreman's pinned note about the same review is spent.
+    //
+    // Gated on the HUMAN, and the two excluded actors are excluded for different reasons.
+    // `foreman` is Foreman delivering its own approved answer, whose `applyVerdict` writes
+    // the note itself - retiring it here would race that write and file the decision as one
+    // nobody delivered. A null actor is the daemon orphaning reviews for a session that went
+    // away: no decision was made, so there is no answer of yours to credit, and the note
+    // rightly stays until the session's own teardown clears it.
+    if (resolvedBy === "human") {
+      this.registry.retireNoteAnsweredByYou(cur.sessionId, `review:${cur.id}`);
+    }
+
     const set = this.waiters.get(cur.id);
     if (set) {
       for (const w of [...set]) w(updated);

@@ -409,7 +409,12 @@ export function episodeFromPlan(p: {
     // for a review is a screen that happens to be behind the ask, not the ask.
     pane: pending.surface === "terminal" ? pane : null,
     menu: ctx.menu ?? null,
-    reviewId: pending.inputReviewId,
+    // Provenance, so `reviewId` reads as "the ask arrived as this review". It used to read
+    // `inputReviewId`, which is a DELIVERY CHANNEL and is null for every kind but `input` -
+    // so a plan or a diff filed a row whose `review_id` was null while its own marker said
+    // `review:<id>`, and the column could not be joined on for the one kind of ask that is
+    // durably recorded elsewhere.
+    reviewId: pending.reviewId,
     purpose: verdict.purpose,
     // The brief comes from the VERDICT, the recommendation from the PLAN, and the
     // asymmetry is the point.

@@ -28,6 +28,7 @@ function pend(over: Partial<Pending> = {}): Pending {
     surface: "terminal",
     question: "Can I run the test suite?",
     inputReviewId: null,
+    reviewId: null,
     canSend: true,
     marker: "await:1",
     ...over,

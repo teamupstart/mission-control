@@ -114,6 +114,7 @@ import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { activePaneDialog } from "@shared/session.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
@@ -133,6 +134,7 @@ import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
+import { dialogMarker } from "./foreman/pending.ts";
 import { answeredQuestion } from "./sdk/answered-question.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
@@ -391,6 +393,30 @@ async function answerDriverRequest(
     );
   }
   return { ok: true };
+}
+
+/**
+ * You just answered the ask on this session's screen, so retire Foreman's note about it.
+ *
+ * Called from the two option routes rather than from inside `answerDriverRequest`, because
+ * the staleness has nothing to do with the runtime: a driver request resolved over a
+ * callback and a pane menu answered with arrow keys are the same event to the note, and
+ * only the routes see both branches. `retireNoteAnsweredByYou` checks the marker, so this
+ * is a no-op for every session that has no note or whose note is about something else.
+ *
+ * The dialog is the snapshot the caller was SHOWN, passed in rather than re-read: answering
+ * clears it off the session, and the marker has to be the one Foreman minted from the ask
+ * that was on screen. Foreman's own sends are excluded - it writes its own note when its
+ * verdict is applied, and crediting them to you would put your name on its decision.
+ */
+function retireForemanNoteForDialog(
+  registry: Registry,
+  session: Session,
+  dialog: Session["paneDialog"],
+  by: ReviewActor,
+): void {
+  if (by !== "human" || !dialog) return;
+  registry.retireNoteAnsweredByYou(session.id, dialogMarker(dialog));
 }
 
 function noPermissionModes(session: Session): string | null {
@@ -1973,6 +1999,9 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
+    // Held before either branch delivers, because both clear the ask they answered - see
+    // `retireForemanNoteForDialog`.
+    const asked = activePaneDialog(session);
     // One route, two runtimes, one refusal code. A driver request is answered by resolving
     // the callback the agent is blocked on rather than by walking a cursor, but everything
     // the CALLER sees is the same - `{number, label}` in, 409 and "nothing was selected"
@@ -1985,9 +2014,11 @@ export function buildApp(
         (dialog) => driverOptionAnswer(dialog, parsed.data),
         { reviews, by: parsed.data.by },
       );
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
       return c.json(r, r.ok ? 200 : 409);
     }
     const r = await selectPaneOption(session, parsed.data);
+    if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -2003,6 +2034,8 @@ export function buildApp(
     const parsed = await parseBody(c, SubmitOptionsSchema);
     if (!parsed.ok) return parsed.res;
     const { options, answers } = parsed.data;
+    // See the same line in `/select-option`: the ask is gone once it has been answered.
+    const asked = activePaneDialog(session);
     // The two bodies are not interchangeable, and each runtime takes exactly one. A pane
     // form is a list of checkbox ROWS on one screen; a driver form is an answers map across
     // several questions, each numbering its own options from 1. Sending the wrong one is a
@@ -2021,6 +2054,7 @@ export function buildApp(
         (dialog) => driverFormAnswer(dialog, answers),
         { reviews, by: parsed.data.by },
       );
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
       return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
     }
     if (!options) {
@@ -2030,6 +2064,7 @@ export function buildApp(
       );
     }
     const r = await submitPaneForm(session, options);
+    if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
     return c.json(r, r.ok ? 200 : 409);
   });
 

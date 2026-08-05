@@ -4272,23 +4272,42 @@ export function recordDriverSessionUsage(input: {
  *      driver binds, on the `init` frame, long before a turn completes. Matches `id` as well
  *      as `agent_session_id` because `noteKeyFor` falls back to the session id until the
  *      binding lands, so an early turn's rows are keyed to `sdk:<uuid>`.
- *   2. The ledger already holds a driver row for the key. This needs no second table to be
- *      current, so it still holds when clause 1 cannot answer - after a `/clear` rotation
- *      retires an `agent_session_id`, or once the session row has been pruned out from under
- *      rows the retention window still keeps.
+ *   2. The ledger already holds a driver row for the key. This covers the other end - a
+ *      datapoint that lands after the session went quiet, or after a `/clear` rotation retired
+ *      an `agent_session_id`.
  *
- * The pair means the exporter yields whenever a driver either owns the session or has already
- * written for it, which is every case where both could report the same turn.
+ * BOTH ARE BOUNDED IN TIME, and that bound is not tidiness - without it this guard silently
+ * becomes the very bug it was added to prevent. A conversation driven through the Agent SDK can
+ * later be continued as a plain terminal `claude --resume <id>`: a DISCOVERED session, with no
+ * driver, whose note key is that same id. Neither table forgets - `sdk_sessions` rows are never
+ * deleted and driver rows live for the ledger's 180 days - so an unbounded test would keep
+ * dropping that session's datapoints for months, and the exporter is the ONLY party that can
+ * ever report a discovered session's cost. Its spend would vanish permanently and silently,
+ * which is exactly the failure this change exists to close, relocated one workflow sideways.
+ *
+ * The window only has to outlast the gap between a turn happening and its export arriving.
+ * Exports are pushed on `exportIntervalMs`, capped at 60s by `COST_EXPORT_INTERVAL_MAX_MS`, and
+ * stop entirely once the subprocess exits - so an hour is generous by orders of magnitude while
+ * bounding the wrong-way cost to "a hand-off to a terminal in the same hour may lose up to an
+ * hour of that session's export", instead of losing all of it forever.
+ *
+ * A turn STARTING refreshes `sdk_sessions.updated_at` (`setSdkSessionTurnInProgress`), which is
+ * what keeps clause 1 true through a long turn whose own driver row does not exist yet.
  */
-export function sdkOwnedNoteKey(noteKey: string): boolean {
+const DRIVER_OWNERSHIP_WINDOW_MS = 60 * 60 * 1000;
+
+export function sdkOwnedNoteKey(noteKey: string, now = Date.now()): boolean {
+  const since = now - DRIVER_OWNERSHIP_WINDOW_MS;
   const r = openDb()
     .prepare(
-      `SELECT 1 AS x FROM sdk_sessions WHERE agent_session_id = ? OR id = ?
+      `SELECT 1 AS x FROM sdk_sessions
+         WHERE (agent_session_id = ? OR id = ?) AND updated_at >= ?
        UNION ALL
-       SELECT 1 AS x FROM usage_ledger WHERE note_key = ? AND writer = 'driver'
+       SELECT 1 AS x FROM usage_ledger
+         WHERE note_key = ? AND writer = 'driver' AND ts >= ?
        LIMIT 1`,
     )
-    .get(noteKey, noteKey, noteKey) as { x: number } | undefined;
+    .get(noteKey, noteKey, since, noteKey, since) as { x: number } | undefined;
   return Boolean(r);
 }
 

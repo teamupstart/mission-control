@@ -1125,7 +1125,15 @@ is decided by how the session runs rather than by which harness it is:
 | Codex, either way | the rollout-file reader | it sees request-level usage the driver never receives |
 
 The exporter yields for a key a driven session owns, so a turn is recorded once whichever
-transport is healthy. This replaced a rule that gave Claude a single writer - the exporter -
+transport is healthy. That ownership **expires after an hour of no driver activity**, which
+matters because the same conversation can change hands: a session driven through the Agent SDK
+may later be continued as a plain `claude --resume` in a terminal, where nothing drives it and
+the exporter is the only party that can report its cost. Neither the session table nor the
+ledger forgets on its own, so without an expiry the guard would go on silencing that session's
+only reporter for months. An hour is far longer than the gap between a turn and its export
+(capped at 60s), so it costs nothing in the case it exists for.
+
+This replaced a rule that gave Claude a single writer - the exporter -
 for every session. That rule had one failure mode and no error path for it: an exporter that
 stops producing takes every Claude session's cost to zero, and because the ledger cannot tell
 *nothing was spent* from *nobody wrote it down*, the dashboard reads `$0.00` with nothing

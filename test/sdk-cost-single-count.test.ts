@@ -35,6 +35,7 @@ const {
   fleetEstimatedCostSince,
   openDb,
   recordAutomationUsage,
+  sdkOwnedNoteKey,
   sessionCostFor,
   usageLedgerHasRows,
 } = await import("../src/server/db.ts");
@@ -317,6 +318,57 @@ test("an export that beats the driver's first report is dropped, not banked", ()
   const cost = sessionCostFor(noteKey);
   assert.ok(cost, "the driver's report is what the card reads");
   assert.equal(cost.costUsd, 0.42, "and it is the only figure counted for that turn");
+});
+
+test("a once-driven conversation resumed in a terminal is counted again", () => {
+  // The hand-off neither table forgets. A conversation driven through the Agent SDK can later be
+  // continued as a plain `claude --resume <id>` in a terminal - a DISCOVERED session, no driver,
+  // whose note key is that same id. `sdk_sessions` rows are never deleted and driver rows live
+  // for the ledger's 180 days, so an unbounded ownership test keeps dropping that session's
+  // datapoints for months. The exporter is the only party that can ever report a discovered
+  // session's cost, so its spend would vanish permanently and silently - the failure this whole
+  // change exists to close, moved one workflow sideways.
+  //
+  // Driven forwards rather than back-dated so the durable rows are real ones this test made.
+  const registry = new Registry();
+  const id = `${SDK_SESSION_ID_PREFIX}aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`;
+  const noteKey = "agent-cost-handoff";
+  registry.registerSdkSession({ id, agent: "claude", name: "embedded", cwd: "/repo" });
+  upsertSdkSession({
+    id,
+    agent: "claude",
+    agentSessionId: null,
+    cwd: "/repo",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  recordSdkSessionBinding(id, noteKey, "claude-opus-4-8[1m]");
+  registry.applyDriverEvent(id, {
+    kind: "bound",
+    agentSessionId: noteKey,
+    transcriptPath: null,
+    modelId: "claude-opus-4-8[1m]",
+    pid: null,
+  });
+  registry.applyDriverEvent(id, {
+    ...TURN_DONE,
+    usage: { ...TURN_DONE.usage!, turnId: "55555555-5555-4555-8555-555555555555" },
+  });
+
+  // While it is driven, the exporter must still yield - that is the guard doing its job.
+  assert.equal(sdkOwnedNoteKey(noteKey), true, "a live driven key is owned");
+
+  // A day later the human resumes the same conversation in a terminal. Nothing drives it now.
+  const tomorrow = Date.now() + 24 * 60 * 60 * 1000;
+  assert.equal(
+    sdkOwnedNoteKey(noteKey, tomorrow),
+    false,
+    "ownership has to expire, or a discovered session's only reporter is silenced for good",
+  );
 });
 
 test("OTel remains the writer for a session no driver owns", () => {

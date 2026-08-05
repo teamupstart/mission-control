@@ -4360,16 +4360,30 @@ export function lastOtelExportSeenAt(): number | null {
 }
 
 /**
- * Whether any SESSION spend was recorded on or after `tsMs`.
+ * Whether any CLAUDE session spend was recorded on or after `tsMs`.
  *
  * Pairs with the stamp above to answer "is the exporter silent while there is work to report".
  * Silence on its own proves nothing - a machine nobody has used since Friday has no exports
  * because it has no sessions, and warning about that would be noise that teaches an operator
  * to ignore the panel.
+ *
+ * `agent = 'claude'` is the whole point of the name, and leaving it out defeats the pairing it
+ * exists to serve. Codex's rollout reader writes `spend_kind = 'session'` rows too, so an
+ * unscoped test counts a fleet whose only recent work was CODEX as "active" - and since no
+ * Claude session ran, no Claude export arrived either, so the panel would announce that Claude
+ * Code's exporter is broken on a machine where it simply had nothing to report. That is the
+ * exact false alarm the activity half was added to prevent, so the activity has to be measured
+ * for the same harness whose exporter is being judged.
+ *
+ * The column is trustworthy for this: the OTel ingest writes `'claude'`, the driver writes the
+ * session's own agent, and the rollout reader writes the source session's.
  */
-export function hasSessionUsageSince(tsMs: number): boolean {
+export function hasClaudeSessionUsageSince(tsMs: number): boolean {
   const r = openDb()
-    .prepare(`SELECT 1 AS x FROM usage_ledger WHERE ${SESSION_SPEND_ONLY} AND ts >= ? LIMIT 1`)
+    .prepare(
+      `SELECT 1 AS x FROM usage_ledger
+        WHERE ${SESSION_SPEND_ONLY} AND agent = 'claude' AND ts >= ? LIMIT 1`,
+    )
     .get(tsMs) as { x: number } | undefined;
   return Boolean(r);
 }

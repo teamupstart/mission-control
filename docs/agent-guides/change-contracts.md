@@ -54,7 +54,7 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   predates the column; nothing writes it.
 
   Note what does NOT read this column: whether Claude Code's exporter is working. That is judged
-  on export ARRIVAL (`lastOtelExportSeenAt` and `hasSessionUsageSince`, combined in
+  on export ARRIVAL (`lastOtelExportSeenAt` and `hasClaudeSessionUsageSince`, combined in
   `exporterSilentWhileActive` in `src/server/cost.ts`), because rows are the wrong evidence in
   both directions - a driven session's datapoints are deliberately dropped, so a healthy exporter
   may write none, and rows outlive an exporter that stopped by up to the 180-day retention

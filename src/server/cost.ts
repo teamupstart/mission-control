@@ -2,7 +2,7 @@ import { CostConfigSchema } from "@shared/protocol.ts";
 import type { CostConfig, CostConfigPatch, CostTelemetryStatus } from "@shared/protocol.ts";
 import {
   getAppConfig,
-  hasSessionUsageSince,
+  hasClaudeSessionUsageSince,
   lastOtelExportSeenAt,
   reportedUsageLedgerHasRows,
   setAppConfig,
@@ -88,7 +88,7 @@ const OTEL_SILENCE_MS = 7 * 24 * 60 * 60 * 1000;
  * which is how the two would eventually disagree.
  */
 function exporterSilentWhileActive(now: number): boolean {
-  if (!hasSessionUsageSince(now - OTEL_SILENCE_MS)) return false;
+  if (!hasClaudeSessionUsageSince(now - OTEL_SILENCE_MS)) return false;
   const seen = lastOtelExportSeenAt();
   return seen === null || now - seen > OTEL_SILENCE_MS;
 }

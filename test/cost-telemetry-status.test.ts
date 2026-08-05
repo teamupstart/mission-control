@@ -36,6 +36,7 @@ process.env.CLAUDE_SETTINGS_PATH = settingsPath;
 writeFileSync(settingsPath, "{}\n");
 
 const {
+  commitUsageRead,
   noteOtelExportSeen,
   openDb,
   recordAutomationUsage,
@@ -190,6 +191,48 @@ test("an idle stretch is not a fault, however long the exporter has been quiet",
     costTelemetryStatus(quiet).exporterSilent,
     false,
     "no recent session spend means no shortfall to report",
+  );
+});
+
+test("a Codex-only week does not accuse Claude Code's exporter", () => {
+  // The false alarm the activity half has to be SCOPED to avoid, not merely paired. Codex's
+  // rollout reader writes `spend_kind = 'session'` rows too, so an unscoped activity test counts
+  // a fleet whose only recent work was Codex - and since no Claude session ran, no Claude export
+  // arrived either. The panel would then announce that Claude Code's exporter is broken on a
+  // machine where it simply had nothing to report, which is the exact noise the pairing exists to
+  // prevent. Activity has to be measured for the same harness whose exporter is being judged.
+  //
+  // Far in the future so the earlier Claude spend and the earlier arrival are both long stale.
+  const codexOnly = NOW + 200 * DAY;
+  commitUsageRead({
+    sourceKey: "codex-source-1",
+    noteKey: "codex-conversation-1",
+    sessionId: null,
+    agent: "codex",
+    cursor: { offset: 10, modelId: "gpt-5.5", discardPartial: false, fileId: "f1" },
+    updatedAt: codexOnly - 1_000,
+    events: [
+      {
+        identity: "codex-req-1",
+        querySource: "",
+        modelId: "gpt-5.5",
+        ts: codexOnly - 1_000,
+        costUsd: 0.3,
+        pricingVersion: "openai-standard-test",
+        input: 100,
+        output: 20,
+        reasoningOutput: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+    ],
+  });
+
+  const status = costTelemetryStatus(codexOnly);
+  assert.equal(
+    status.exporterSilent,
+    false,
+    "Codex activity is not evidence that Claude's exporter should have spoken",
   );
 });
 

@@ -52,6 +52,24 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### Per-harness dispatch defaults propagating
+
+[`docs/evidence/harness-defaults-propagate/`](../docs/evidence/harness-defaults-propagate/)
+holds two captures from the run that asserts a saved per-harness model takes effect without a
+restart. `harnesses-card-saved.png` is the Claude Code card after the edit, with its own
+sentence naming the flag the next launch carries (`--model claude-sonnet-5`).
+`dispatch-modal-names-new-default.png` is the dispatch form reading `Default - Sonnet 5` -
+the label that used to keep advertising a retired model until the modal was reopened.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/harness-defaults-propagate.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Foreman PR follow-through
 
 [`docs/evidence/foreman-pr-follow-through/`](../docs/evidence/foreman-pr-follow-through/)

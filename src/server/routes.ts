@@ -2957,7 +2957,13 @@ export function buildApp(
   app.put("/api/harnesses/config", async (c) => {
     const parsed = await parseBody(c, HarnessesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    return c.json(setHarnessesConfig(parsed.data));
+    const next = setHarnessesConfig(parsed.data);
+    // Announced like every sibling settings route publishes its own change. Without this the
+    // settings panel learned of another tab's edit only on its next poll, and an already-open
+    // dispatch modal - which reads these defaults once, when it opens - never learned at all
+    // and went on naming a model that was no longer the default.
+    registry.emitHarnessesConfigChanged();
+    return c.json(next);
   });
 
   // --- Task sources: pulling work INTO the backlog from systems that already hold it ---

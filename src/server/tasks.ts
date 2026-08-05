@@ -1200,17 +1200,17 @@ export class TaskManager {
           task: t,
         };
       }
-      // A task-specific model is an explicit operator choice and must always win. Foreman
-      // supplies this only for a fresh backlog launch; persisting it before the async
-      // dispatcher starts makes the task card's model match the command line it will use.
-      if (t.status === "backlog" && t.model === null && options.defaultModel) {
-        const selected = { ...t, model: options.defaultModel, updatedAt: Date.now() };
-        this.registry.upsertTask(selected);
-      }
       // Forwarded whole: `TaskDispatchOptions` describes the launch, and the Dispatcher is
-      // the layer that acts on it. The one field this method consumed above is harmless to
-      // pass along - the model a launch runs on is resolved from the stored task, never
-      // from an options object.
+      // the layer that acts on it - including `defaultModel`, which it ranks between the
+      // task's own pin and the Harnesses panel default (see `Dispatcher.dispatch`).
+      //
+      // This method used to WRITE `options.defaultModel` onto the task row first, so the
+      // card's model would match the command line. That pinned the task: `t.model` outranks
+      // the Harnesses default, `reschedule` does not clear it, and nothing in the UI had
+      // asked for it - so a task Foreman launched once could never follow a changed default
+      // again. The launch-only value now travels with the launch, and an unpinned task stays
+      // unpinned; the model a session actually ran on is recorded on the SESSION, which is
+      // where it belongs and where the card reads it from.
       void this.dispatcher.dispatch(id, options);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };

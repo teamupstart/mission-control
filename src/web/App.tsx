@@ -184,6 +184,7 @@ export function App(): React.JSX.Element {
     fleetCost,
     lineSummary,
     settingsStatus,
+    harnessesRevision,
     schedules,
     connected,
     hasSnapshot,
@@ -2238,6 +2239,7 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              harnessesRevision={harnessesRevision}
               workflowSummaries={workflowSummaries}
               onOpenPalette={() => setPaletteOpen(true)}
               jump={settingsJump}
@@ -2527,6 +2529,7 @@ export function App(): React.JSX.Element {
                 personas={personas}
                 workflowSummaries={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
+                harnessesRevision={harnessesRevision}
                 launchIntent={dispatchIntent}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}

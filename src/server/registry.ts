@@ -341,6 +341,9 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "cost_fleet",
   // Moves the Intake stage's tone: `taskSources.failing` and this tuple are the same read.
   "settings_status",
+  // Changes which model/effort/runtime the NEXT dispatch uses, so the pickers naming those
+  // defaults have to re-read rather than wait out a poll.
+  "harnesses_config_changed",
 ]);
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
@@ -642,6 +645,18 @@ export class Registry extends EventEmitter {
     this.lastSettingsStatus = status;
     if (same) return;
     this.emitEvent({ type: "settings_status", status });
+  }
+
+  /**
+   * Announce that the per-harness dispatch defaults were rewritten.
+   *
+   * No no-change suppression, unlike `emitSettingsStatus`: this frame carries no body to
+   * compare (see the event's declaration), and it is emitted only from the one route that
+   * writes the config, so there is no recompute-driven caller to debounce. A write that
+   * happens to store an identical config costs one re-read in each open dashboard.
+   */
+  emitHarnessesConfigChanged(): void {
+    this.emitEvent({ type: "harnesses_config_changed" });
   }
 
   getSession(id: string): Session | undefined {

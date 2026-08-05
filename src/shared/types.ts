@@ -2178,7 +2178,23 @@ export type ServerEvent =
    * changed it. Reduced into `MissionState.settingsStatus`, which is the ONE client-side
    * source of these facts: the rail dots and the topbar gear read it, never a re-poll.
    */
-  | { type: "settings_status"; status: SettingsStatus };
+  | { type: "settings_status"; status: SettingsStatus }
+  /**
+   * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
+   * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.
+   *
+   * CONTENT-FREE ON PURPOSE, unlike `settings_status` above. The config's type and its
+   * validation both live on `HarnessesConfigSchema` in `protocol.ts`, and `protocol.ts`
+   * imports THIS module - so carrying the config here would either invert that dependency
+   * or require restating the shape, which would be a second source of truth for a schema
+   * that already has one. The route stays the only thing that can describe this config.
+   *
+   * Why it exists at all: the daemon re-reads the config on every dispatch, so a launch was
+   * always correct, but nothing told the BROWSER. The settings panel found out on its next
+   * poll and an already-open dispatch modal never did, so both could name a model that had
+   * been retired - which reads as a saved change being ignored.
+   */
+  | { type: "harnesses_config_changed" };
 
 // ---- session transcript (expanded card) ----
 

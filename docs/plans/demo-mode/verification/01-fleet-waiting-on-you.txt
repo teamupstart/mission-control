@@ -1,0 +1,152 @@
+▦
+Fleet
+f
+⌗
+Library
+w
+▷
+Runs
+r
+⌕
+live
+1
+session
+1
+need you
+1
+to answer
+◷
+Missions
+Foreman
+1
++
+Dispatch
+⚙
+🔕
+⇊
+INTAKE
+0
+no sources or missions
+☰
+BACKLOG
+0
+nothing waiting
+▶
+WORKING
+1
+1 needs you
+⌁
+REVIEW
+0
+no runs live
+⧉
+DECIDE
+0
+no ensembles live
+⚑
+SHIPPED
+0
+nothing this week
+Surface rate limits on the dashboard
+◈
+Agent SDK
+＋ workflow
+needs an answer
+d
+diff
+⌃
+PATH
+~/.mission-control-demo/worktrees/68ae917b-b3f4-4c43-b701-a89203fd79b8
+BRANCH
+harness/surface-rate-limits-on-the-dashb-68ae91
+Claude Demo Mock
+SHIP
+Surface rate limits on the dashboard
+
+There are two reasonable designs here and I don't want to guess wrong on the one that's user-facing.
+
+Claude Code
+auto
+⌄
+·
+pid 0
+15s ago
+s
+Send
+⇧T
+Continue in terminal
+⇧F
+Files
+q
+Queue
+⌃R
+Reset
+c
+Complete
+k
+Kill
+WAITING ON YOU
+answer each, then submit
+
+Claude has some questions.
+
+Rate limit UX
+How should a rate limit show up in the summary?
+
+1
+Inline suffix
+append "- rate limited (retry in Ns)" to the existing summary line
+2
+Separate banner
+a distinct warning line above the summary
+
+Countdown
+Should the retry countdown be shown?
+
+1
+Yes
+show the seconds remaining until retry
+2
+No
+just say it's rate limited
+Submit answers
+The fleet of running sessions, their tasks and their reviews (f)
+The Library - workflows, Personas, actions, ensemble strategies and intake (w)
+Workflow Runs - live and finished workflow reviews (r)
+Live - these figures are streaming from the daemon
+1 session on the fleet
+Recurring missions - schedule tasks on a cadence, preview, and audit run history
+Foreman - the auto-responder (dry-run)
+Dispatch a new agent (+)
+Settings (⌘,)
+Alerts & away mode - muted
+Where work comes from: task sources that sweep, and Recurring Missions that fire. Now: no sources or missions
+Filed and not started. The next one up is what autopilot would take. Now: nothing waiting
+Sessions open right now, and how many of them are stuck on you. Now: 1 needs you
+Workflow runs still in flight over the work their sessions did. Now: no runs live
+Ensemble runs racing; the amber ones have stopped for your answer. Now: no ensembles live
+Pull requests your agents opened and adopted, and what they cost. Now: nothing this week
+1 session is waiting on you
+1 thing is waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox
+Surface rate limits on the dashboard
+This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.
+Bind a published workflow version
+View changes vs source branch
+Show conversation (Enter)
+/Users/jordan.mance/.mission-control-demo/worktrees/68ae917b-b3f4-4c43-b701-a89203fd79b8
+Model: claude-demo-mock
+ship task
+Surface rate limits on the dashboard
+Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)
+Type into this session's prompt (s)
+Stop the embedded driver and reopen this exact conversation in a terminal. One way - the terminal session takes over from here. (⇧T)
+Browse and edit checkout files (⇧F)
+Show the work queued for this session (q)
+Reset checkout to origin's default branch and clear context (⌃R)
+Record an outcome for "Surface rate limits on the dashboard" and close this session (c)
+Terminates the agent process - confirms first (k)
+append "- rate limited (retry in Ns)" to the existing summary line
+a distinct warning line above the summary
+show the seconds remaining until retry
+just say it's rate limited
+Every question needs an answer before this can be sent

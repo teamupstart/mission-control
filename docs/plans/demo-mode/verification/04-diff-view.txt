@@ -1,0 +1,152 @@
+Mission Control
+▦
+Fleet
+f
+⌗
+Library
+w
+▷
+Runs
+r
+⌕
+live
+1
+session
+◷
+Missions
+Foreman
++
+Dispatch
+⚙
+🔕
+⇊
+INTAKE
+0
+no sources or missions
+☰
+BACKLOG
+0
+nothing waiting
+▶
+WORKING
+1
+1 idle
+⌁
+REVIEW
+0
+no runs live
+⧉
+DECIDE
+0
+no ensembles live
+⚑
+SHIPPED
+0
+nothing this week
+Surface rate limits on the dashboard
+◈
+Agent SDK
+＋ workflow
+idle
+d
+diff
+⌃
+PATH
+~/.mission-control-demo/worktrees/68ae917b-b3f4-4c43-b701-a89203fd79b8
+BRANCH
+harness/surface-rate-limits-on-the-dashb-68ae91
+Claude Demo Mock
+SHIP
+Surface rate limits on the dashboard
+Claude Code
+auto
+⌄
+·
+pid 0
+just now
+s
+Send
+⇧T
+Continue in terminal
+⇧F
+Files
+q
+Queue
+⌃R
+Reset
+c
+Complete
+k
+Kill
+Surface rate limits on the dashboard
+harness/surface-rate-limits-on-the-dashb-68ae91 vs main
+1 file +11 −3
+✕
+M
+dashboard.ts
+src
++11
+−3
+MODIFIED
+src/dashboard.ts
++11
+−3
+Open in Files
+↗
+			@@ -4,7 +4,15 @@ export interface FleetCounts {
+4	4		  idle: number;
+5	5		}
+6	6		 
+7		−	/** A one-line summary of the fleet's current state. */
+8		−	export function summarize(counts: FleetCounts): string {
+9		−	  return `${counts.active} active, ${counts.waiting} waiting, ${counts.idle} idle`;
+	7	+	export interface RateLimitState {
+	8	+	  limited: boolean;
+	9	+	  retryAfterMs: number | null;
+	10	+	}
+	11	+	 
+	12	+	/** A one-line summary of the fleet's current state, including rate-limit backpressure. */
+	13	+	export function summarize(counts: FleetCounts, rateLimit?: RateLimitState): string {
+	14	+	  const base = `${counts.active} active, ${counts.waiting} waiting, ${counts.idle} idle`;
+	15	+	  if (!rateLimit?.limited) return base;
+	16	+	  const wait = rateLimit.retryAfterMs != null ? ` (retry in ${Math.ceil(rateLimit.retryAfterMs / 1000)}s)` : "";
+	17	+	  return `${base} - rate limited${wait}`;
+10	18		}
+The fleet of running sessions, their tasks and their reviews (f)
+The Library - workflows, Personas, actions, ensemble strategies and intake (w)
+Workflow Runs - live and finished workflow reviews (r)
+Live - these figures are streaming from the daemon
+1 session on the fleet
+Recurring missions - schedule tasks on a cadence, preview, and audit run history
+Foreman - the auto-responder (dry-run)
+Dispatch a new agent (+)
+Settings (⌘,)
+Alerts & away mode - muted
+Where work comes from: task sources that sweep, and Recurring Missions that fire. Now: no sources or missions
+Filed and not started. The next one up is what autopilot would take. Now: nothing waiting
+Sessions open right now, and how many of them are stuck on you. Now: 1 idle
+Workflow runs still in flight over the work their sessions did. Now: no runs live
+Ensemble runs racing; the amber ones have stopped for your answer. Now: no ensembles live
+Pull requests your agents opened and adopted, and what they cost. Now: nothing this week
+Surface rate limits on the dashboard
+This session runs on the Agent SDK, inside Mission Control - there is no terminal pane to focus. Continue in terminal hands it to one.
+Bind a published workflow version
+View changes vs source branch
+Show conversation (Enter)
+/Users/jordan.mance/.mission-control-demo/worktrees/68ae917b-b3f4-4c43-b701-a89203fd79b8
+Model: claude-demo-mock
+ship task
+Surface rate limits on the dashboard
+Auto - the agent proceeds autonomously - click to change (or Shift+Tab in the terminal)
+Type into this session's prompt (s)
+Stop the embedded driver and reopen this exact conversation in a terminal. One way - the terminal session takes over from here. (⇧T)
+Browse and edit checkout files (⇧F)
+Show the work queued for this session (q)
+Reset checkout to origin's default branch and clear context (⌃R)
+Record an outcome for "Surface rate limits on the dashboard" and close this session (c)
+Terminates the agent process - confirms first (k)
+Surface rate limits on the dashboard
+Close the diff (Escape)
+modified · src/dashboard.ts
+src/dashboard.ts
+Open src/dashboard.ts in the Files tab

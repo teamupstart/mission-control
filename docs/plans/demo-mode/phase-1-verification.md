@@ -1,24 +1,20 @@
 # Phase 1 verification evidence
 
 Committed alongside the plan (the same pattern `plan.html`/`phased-plan.html` already use)
-so the review process can see actual output and actual screenshots as part of the diff,
-rather than narration referencing them. Every command below was re-run fresh against the
-PR's final state to produce the output quoted here.
+so the review process can see actual output and actual rendered content as part of the diff,
+not narration referencing it. Every command below was re-run fresh, live, immediately before
+this file was written, and every screenshot has a matching `.txt` file next to it under
+`verification/` - the real text `page.locator("body").innerText()` returned at that exact
+moment, so the rendered content is inspectable as plain text, not only as an opaque PNG.
 
 ## 1. `npm run demo -- --check`
 
-The phase file's own CI-shaped launcher smoke test: boot, assert identity and isolation,
-shut down, exit 0.
-
 ```
-$ npm run build
-[... esbuild output omitted, exit 0 ...]
-
 $ node scripts/demo/launch.mjs --check --fresh
 [demo] --fresh: removing /Users/jordan.mance/.mission-control-demo
 [demo] state root: /Users/jordan.mance/.mission-control-demo
 [demo] booting the daemon on port 7417...
-[demo] daemon is up (pid 51731), isolated under /Users/jordan.mance/.mission-control-demo
+[demo] daemon is up (pid 5116), isolated under /Users/jordan.mance/.mission-control-demo
 [demo] --check: identity and isolation assertions passed
 [demo] --check: ok
 $ echo $?
@@ -27,15 +23,9 @@ $ echo $?
 
 ## 2. `fake-pi.mjs` standalone, verified against pi's own product parser
 
-`pi` has no control wire, so the transcript file it writes is the only thing to check. Ran
-the player directly with a real `--session-id` and prompt against a throwaway repo
-checkout, then imported `piToMessage`/`computePiSessionActivity` read-only from
-`src/server/harness/pi/{transcript,meta}.ts` (unmodified - this only reads them) to parse
-the result the same way the daemon would.
-
 ```
 $ MISSION_DEMO_SCENARIO_DIR=scripts/demo/scenarios \
-    node scripts/demo/fake-pi.mjs --session-id 99999999-8888-7777-6666-555555555555 \
+    node scripts/demo/fake-pi.mjs --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
     "Fix the flaky retry test - it seems to race with abort"
 $ echo $?
 0
@@ -78,14 +68,8 @@ The real edit it made, diffed against the original file:
  }
 ```
 
-And the resulting transcript, parsed by the actual product code (`tsx` script that imports
-`piToMessage`/`computePiSessionActivity` directly, run once for this check and not
-committed - the import lines are quoted below so the check is reproducible):
-
-```js
-import { piToMessage } from "./src/server/harness/pi/transcript.ts";
-import { computePiSessionActivity } from "./src/server/harness/pi/meta.ts";
-```
+Parsed by pi's own real product code (`piToMessage`, `computePiSessionActivity`, imported
+read-only from `src/server/harness/pi/{transcript,meta}.ts`):
 
 ```
 === piToMessage (conversation renderer) ===
@@ -99,25 +83,19 @@ assistant |  | Bash
 assistant | Both tests pass now. The retry loop no longer fire |
 assistant |  | TodoWrite
 === computePiSessionActivity (idle/working signal) ===
-{ state: 'idle', lastActivity: 1785877965674 }
+{ state: 'idle', lastActivity: 1785880309245 }
 ```
 
-Full conversation with tool chips, and a correct `idle` report once the scenario finished -
-parsed by pi's own real product code, not this player's own idea of what it wrote.
+## 3. The Foreman orphan-process fix
 
-## 3. The Foreman orphan-process fix: a committed regression test
-
-`scripts/demo/launch.test.mjs` unit-tests `createShutdownGate` - the exact site of both the
-original leak (cleanup that only ran on one of several exit paths) and the race in that
-fix's own first attempt (a losing caller's `process.exit` could still beat the winner's own
-in-flight cleanup). Run with `node --test scripts/demo/launch.test.mjs`:
+Committed regression test:
 
 ```
 $ node --test scripts/demo/launch.test.mjs
-✔ stop runs the cleanup (1.13375ms)
-✔ two concurrent callers race for the SAME stop: exactly one runs cleanup, exactly one is told it lost (21.419542ms)
-✔ a stop claimed after cleanup already finished is told it lost, and does not re-run cleanup (0.355084ms)
-✔ a caller that loses the race never sees onStop's return value or throws on its behalf (31.562458ms)
+✔ stop runs the cleanup (0.676834ms)
+✔ two concurrent callers race for the SAME stop: exactly one runs cleanup, exactly one is told it lost (22.216625ms)
+✔ a stop claimed after cleanup already finished is told it lost, and does not re-run cleanup (0.145208ms)
+✔ a caller that loses the race never sees onStop's return value or throws on its behalf (32.972875ms)
 ℹ tests 4
 ℹ suites 0
 ℹ pass 4
@@ -125,19 +103,22 @@ $ node --test scripts/demo/launch.test.mjs
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 112.185875
+ℹ duration_ms 114.784375
 ```
 
-That test exercises the coordination logic in isolation. The two real failure modes it was
-extracted from were also re-verified end to end against the actual launcher (a throwaway
+Both real failure modes, re-verified end to end against the actual launcher (a throwaway
 copy with Foreman's spawn replaced by a command that fails immediately, or after an 8s
-delay so a signal can be sent mid-wait - not committed, reproducible from the description):
+delay so a signal can land mid-wait):
 
 ```
 === Foreman crashes on start ===
-[demo] daemon is up (pid 47363), isolated under /Users/jordan.mance/.mission-control-demo
+[demo] --fresh: removing /Users/jordan.mance/.mission-control-demo
+[demo] state root: /Users/jordan.mance/.mission-control-demo
+[demo] booting the daemon on port 7417...
+[demo] daemon is up (pid 15328), isolated under /Users/jordan.mance/.mission-control-demo
 [demo] starting the real Foreman against the demo daemon...
 [demo] Foreman exited before acquiring its lease (code 1, signal null):
+
 [demo] foreman-failed: stopping (state root kept at /Users/jordan.mance/.mission-control-demo)
 $ echo $?
 1
@@ -145,51 +126,158 @@ $ lsof -i :7417
 port 7417 is free - no leak
 
 === SIGINT sent mid-lease-wait ===
-[demo] daemon is up (pid 49410), isolated under /Users/jordan.mance/.mission-control-demo
+[demo] state root: /Users/jordan.mance/.mission-control-demo
+[demo] booting the daemon on port 7417...
+[demo] daemon is up (pid 16778), isolated under /Users/jordan.mance/.mission-control-demo
 [demo] starting the real Foreman against the demo daemon...
-(SIGINT sent here)
+(SIGINT sent to the launcher here)
 [demo] SIGINT: stopping (state root kept at /Users/jordan.mance/.mission-control-demo)
 [demo] Foreman exited before acquiring its lease (code null, signal SIGTERM):
+
 $ lsof -i :7417
 port 7417 is free - no leak
-$ echo $? # of the launcher process itself, after `wait`
+$ wait $LAUNCH_PID; echo $?
 0
 ```
 
-## 4. The dashboard, driven live and screenshotted
+## 4. The dashboard, driven live - screenshot AND the real text content next to it
 
-Captured with a throwaway Playwright script (Chromium was already installed locally; not
+Captured with a throwaway Playwright script (Chromium already installed locally; not
 committed, not under `e2e/`) against the real built dashboard and daemon at
-`127.0.0.1:7417`, dispatching the `waiting-on-you` scenario end to end.
+`127.0.0.1:7417`, dispatching the `waiting-on-you` scenario end to end. Every step below has
+a `.png` under `verification/` for a human to look at, and a `.txt` right next to it - the
+exact `page.locator("body").innerText()` at that moment - so the actual rendered content is
+plain, diffable text, not only pixels in a binary file.
 
-### Dispatch lands, and the question is already waiting
+### Step 1 - dispatch lands, the question is already waiting
 
-Seconds after `POST /api/tasks`, the Fleet board shows the card `WORKING`, flagged
-**needs an answer**, titled `Surface rate limits on the dashboard` - the scenario player's
-answer to the real task-titler call, not the fallback heuristic.
+[`verification/01-fleet-waiting-on-you.png`](verification/01-fleet-waiting-on-you.png) /
+[`.txt`](verification/01-fleet-waiting-on-you.txt) - relevant excerpt of the real text
+content:
 
-![Fleet board with a card working and flagged needs an answer](verification/01-fleet-waiting-on-you.png)
+```
+WORKING
+1
+1 needs you
+Surface rate limits on the dashboard
+◈
+Agent SDK
+＋ workflow
+needs an answer
+...
+There are two reasonable designs here and I don't want to guess wrong on the one that's user-facing.
+...
+WAITING ON YOU
+answer each, then submit
 
-### Both scripted questions, rendered as a real form
+Claude has some questions.
 
-The `ask` step raised a genuine `AskUserQuestion` control request; the dashboard renders it
-as an actual selectable form with a Submit button, not a static description.
+Rate limit UX
+How should a rate limit show up in the summary?
 
-![The waiting-on-you form with both scripted questions](verification/02-waiting-on-you-form.png)
+1
+Inline suffix
+append "- rate limited (retry in Ns)" to the existing summary line
+2
+Separate banner
+a distinct warning line above the summary
 
-### Submitting the form resumes the turn for real
+Countdown
+Should the retry countdown be shown?
 
-Clicking through the real options and pressing **Submit answers** sent a real
-`POST /api/sessions/:id/submit-options`. The card flips back to working with a genuine
-`Edit` tool chip - the scenario continuing exactly where the question paused it.
+1
+Yes
+show the seconds remaining until retry
+2
+No
+just say it's rate limited
+Submit answers
+```
 
-![The card working again after submitting answers, with an Edit tool chip](verification/03-answered-resumed.png)
+The card's title (`Surface rate limits on the dashboard`) is the scenario player's answer
+to the real task-titler call, not the fallback heuristic; both scripted questions and their
+options render as real, literal page text.
 
-### The Diff view shows the actual edit
+### Step 2 - answering through the real form resumes the turn
 
-Once the scenario's remaining steps finished, the Diff view shows a real,
-syntax-highlighted `+11 -3` against `src/dashboard.ts` - the exact content the scenario
-script wrote into the cut git worktree, rendered by the product's own diff view against a
-real merge base.
+[`verification/02-answered-resumed.png`](verification/02-answered-resumed.png) /
+[`.txt`](verification/02-answered-resumed.txt) - captured immediately after clicking
+"Inline suffix", "Yes", and the real **Submit answers** button:
 
-![Diff view showing a real +11 -3 change to src/dashboard.ts](verification/04-diff-view.png)
+```
+WORKING
+1
+1 working
+Surface rate limits on the dashboard
+◈
+Agent SDK
+＋ workflow
+working
+...
+Got it - an inline suffix with the countdown. Wiring that up now.
+```
+
+The "needs an answer"/"WAITING ON YOU" text from step 1 is gone; the card is `working`
+again with the scenario's next line of narration - a real `POST
+/api/sessions/:id/submit-options` resumed the turn.
+
+### Step 3 - idle once the scenario finishes
+
+[`verification/03-idle-after-scenario.png`](verification/03-idle-after-scenario.png) /
+[`.txt`](verification/03-idle-after-scenario.txt):
+
+```
+WORKING
+1
+1 idle
+Surface rate limits on the dashboard
+◈
+Agent SDK
+＋ workflow
+idle
+```
+
+### Step 4 - the Diff view shows the actual edit
+
+[`verification/04-diff-view.png`](verification/04-diff-view.png) /
+[`.txt`](verification/04-diff-view.txt) - the real text content of the opened diff modal:
+
+```
+Surface rate limits on the dashboard
+harness/surface-rate-limits-on-the-dashb-68ae91 vs main
+1 file +11 −3
+✕
+M
+dashboard.ts
+src
++11
+−3
+MODIFIED
+src/dashboard.ts
++11
+−3
+Open in Files
+↗
+			@@ -4,7 +4,15 @@ export interface FleetCounts {
+4	4		  idle: number;
+5	5		}
+6	6		 
+7		−	/** A one-line summary of the fleet's current state. */
+8		−	export function summarize(counts: FleetCounts): string {
+9		−	  return `${counts.active} active, ${counts.waiting} waiting, ${counts.idle} idle`;
+	7	+	export interface RateLimitState {
+	8	+	  limited: boolean;
+	9	+	  retryAfterMs: number | null;
+	10	+	}
+	11	+	 
+	12	+	/** A one-line summary of the fleet's current state, including rate-limit backpressure. */
+	13	+	export function summarize(counts: FleetCounts, rateLimit?: RateLimitState): string {
+	14	+	  const base = `${counts.active} active, ${counts.waiting} waiting, ${counts.idle} idle`;
+	15	+	  if (!rateLimit?.limited) return base;
+	16	+	  const wait = rateLimit.retryAfterMs != null ? ` (retry in ${Math.ceil(rateLimit.retryAfterMs / 1000)}s)` : "";
+	17	+	  return `${base} - rate limited${wait}`;
+10	18		}
+```
+
+`+11 −3` against `src/dashboard.ts`, rendered by the product's own diff view against a real
+merge base - this is the literal text the browser had on screen, not a description of it.

@@ -93,10 +93,26 @@ function runner(verdict: () => "pass" | "fail"): LlmRunner {
   };
 }
 
+/**
+ * Poll until `check` holds, or give up.
+ *
+ * OBSERVED FLAKING at the old 5s ceiling: "two actions run in order in one repair round and
+ * spend no repair budget" failed after 5,052 ms with "the second action never captured its own
+ * segment", once in eight full-suite runs on a busy machine. Fifty milliseconds past the
+ * deadline is not a broken condition, it is a scheduler that was elsewhere - and this file
+ * drives two sequential action runs through a repair round, so it is one of the slowest waits
+ * in the suite and the first to lose that race.
+ *
+ * Generous rather than tuned, on the asymmetry `foreman-spend-delivery.test.ts` spells out
+ * beside its own spawn ceiling: the loop returns the instant the condition holds, so a healthy
+ * run pays nothing for a larger number, while a tight one buys nothing and reddens a suite that
+ * was going to pass. It cannot mask a hang either - a condition that never becomes true still
+ * fails, just later.
+ */
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > 5_000) assert.fail(message);
+    if (Date.now() - started > 30_000) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }

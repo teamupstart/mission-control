@@ -29,10 +29,19 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { setForemanConfig } = await import("../src/server/foreman/config.ts");
 const { setWorkflowConfig } = await import("../src/server/workflows/config.ts");
 
+/**
+ * Poll until `check` holds, or give up.
+ *
+ * 30s rather than 5s for the reason written out in `session-action-runtime.test.ts`, whose
+ * identical helper was OBSERVED failing 52 ms past the old ceiling on a busy machine. These
+ * async workflow waits are the slowest in the suite; a tight ceiling can only change the
+ * outcome of a run that was already contending, and there it turns a slow pass into a red
+ * suite. The loop still exits the instant the condition holds, so nothing healthy pays for it.
+ */
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > 5_000) assert.fail(message);
+    if (Date.now() - started > 30_000) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }

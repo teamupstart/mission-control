@@ -114,6 +114,7 @@ import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { activePaneDialog } from "@shared/session.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
@@ -133,10 +134,12 @@ import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { PendingTurnManager } from "./pending-turns.ts";
 import { driverFormAnswer, driverOptionAnswer, type DriverAnswer } from "./sdk/answer.ts";
+import { dialogMarker } from "./foreman/pending.ts";
 import { answeredQuestion } from "./sdk/answered-question.ts";
 import { handOffToTerminal, type HandoffDeps } from "./sdk/handoff.ts";
 import { clearSdkSessionTask } from "./sdk/store.ts";
 import { deliverToDriver, injectPromptForRuntime } from "./sdk/deliver.ts";
+import { renameDriverSession } from "./sdk/rename.ts";
 import { requestSessionStop } from "./sdk/control.ts";
 import { spawnUniquely } from "./dispatcher.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
@@ -185,6 +188,8 @@ import {
   setSessionEffort,
   driverEffortTargetResult,
   defaultPaneDeps,
+  formDelivered,
+  type PaneDeps,
   submitPaneForm,
   validateSessionName,
   validateSessionNameAgainstTasks,
@@ -392,6 +397,42 @@ async function answerDriverRequest(
   return { ok: true };
 }
 
+/**
+ * You just answered the ask on this session's screen, so retire Foreman's note about it.
+ *
+ * Called from the two option routes rather than from inside `answerDriverRequest`, because
+ * the staleness has nothing to do with the runtime: a driver request resolved over a
+ * callback and a pane menu answered with arrow keys are the same event to the note, and
+ * only the routes see both branches. `retireNoteAnsweredByYou` checks the marker, so this
+ * is a no-op for every session that has no note or whose note is about something else.
+ *
+ * The dialog is the snapshot the caller was SHOWN, passed in rather than re-read: answering
+ * clears it off the session, and the marker has to be the one Foreman minted from the ask
+ * that was on screen. Foreman's own sends are excluded - it writes its own note when its
+ * verdict is applied, and crediting them to you would put your name on its decision.
+ *
+ * CALL THIS ONLY ONCE THE ANSWER HAS REACHED THE CHILD, which is not the same as `ok`. A
+ * pane form reports `ok` for two states that delivered nothing: `next-question`, where the
+ * ticks stand and the walk moved to the following question - and a form's answers reach the
+ * agent only when its Submit tab is confirmed, so nothing has been sent yet - and
+ * `unanswered`, where Claude's review tab reported a gap and the walk bounced back to the
+ * same question. Both leave the agent blocked on the ask the note names, so retiring there
+ * drops a decision that is still owed. That is the failure this function's marker check
+ * exists to prevent, arriving through the outcome instead of through the marker.
+ *
+ * The driver branch needs no such gate: resolving the `canUseTool` callback answers the whole
+ * request at once, so it has no partial state to report.
+ */
+function retireForemanNoteForDialog(
+  registry: Registry,
+  session: Session,
+  dialog: Session["paneDialog"],
+  by: ReviewActor,
+): void {
+  if (by !== "human" || !dialog) return;
+  registry.retireNoteAnsweredByYou(session.id, dialogMarker(dialog));
+}
+
 function noPermissionModes(session: Session): string | null {
   if (harnessFor(session.agent).permissionModes) return null;
   return `${AGENT_IDENTITY[session.agent].label} has no permission modes`;
@@ -514,9 +555,23 @@ export function buildApp(
   sessionActions?: SessionActionManager,
   /** Durable editable outbox. Optional only for legacy route-unit construction. */
   pendingTurns?: PendingTurnManager,
+  /**
+   * How the pane-answering routes reach a terminal. The `HandoffDeps` seam above, for the
+   * two routes that drive a menu with bare keystrokes.
+   *
+   * Injected for one reason the default cannot serve: a pane form reports `ok` on states that
+   * delivered nothing (`formDelivered`), and whether those retire the operator's Foreman note
+   * is a property of THIS wiring, not of the predicate. Reaching it needs a screen that
+   * advances mid-walk, which no real tmux on a test machine will produce on demand - so
+   * without a seam the only coverage possible is of the predicate in isolation, and a
+   * regression in the gating here would ship undetected. Production passes nothing and gets
+   * `defaultPaneDeps`.
+   */
+  paneDeps?: PaneDeps,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
+  const panes = paneDeps ?? defaultPaneDeps;
   // A successful exited-session resume keeps its claim for the life of this lingering
   // session id. Otherwise a double-click before `session_remove` can start two agents on
   // the same conversation. A confirmed failure releases it for retry.
@@ -1972,6 +2027,9 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
+    // Held before either branch delivers, because both clear the ask they answered - see
+    // `retireForemanNoteForDialog`.
+    const asked = activePaneDialog(session);
     // One route, two runtimes, one refusal code. A driver request is answered by resolving
     // the callback the agent is blocked on rather than by walking a cursor, but everything
     // the CALLER sees is the same - `{number, label}` in, 409 and "nothing was selected"
@@ -1984,9 +2042,11 @@ export function buildApp(
         (dialog) => driverOptionAnswer(dialog, parsed.data),
         { reviews, by: parsed.data.by },
       );
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
       return c.json(r, r.ok ? 200 : 409);
     }
-    const r = await selectPaneOption(session, parsed.data);
+    const r = await selectPaneOption(session, parsed.data, panes);
+    if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -2002,6 +2062,8 @@ export function buildApp(
     const parsed = await parseBody(c, SubmitOptionsSchema);
     if (!parsed.ok) return parsed.res;
     const { options, answers } = parsed.data;
+    // See the same line in `/select-option`: the ask is gone once it has been answered.
+    const asked = activePaneDialog(session);
     // The two bodies are not interchangeable, and each runtime takes exactly one. A pane
     // form is a list of checkbox ROWS on one screen; a driver form is an answers map across
     // several questions, each numbering its own options from 1. Sending the wrong one is a
@@ -2020,6 +2082,7 @@ export function buildApp(
         (dialog) => driverFormAnswer(dialog, answers),
         { reviews, by: parsed.data.by },
       );
+      if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
       return c.json(r.ok ? { ...r, outcome: "submitted" as const } : r, r.ok ? 200 : 409);
     }
     if (!options) {
@@ -2028,7 +2091,10 @@ export function buildApp(
         409,
       );
     }
-    const r = await submitPaneForm(session, options);
+    const r = await submitPaneForm(session, options, panes);
+    // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
+    // nothing, and retiring on either drops a decision that is still owed.
+    if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -2047,10 +2113,16 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  // Rename the session's terminal handle; discovery reads the new name
-  // back onto the card, and the registry echoes it immediately so it doesn't lag a
-  // poll. A name the backing handle can't accept, or one a task's teardown still
-  // aims at, is a 400 the editor can show; a shelled-out failure a 500.
+  // Rename the session. On the terminal runtime that means the session's handle - discovery
+  // reads the new name back onto the card - and on the embedded one it means the durable row,
+  // which is the only place an SDK session's name can live. Either way the registry echoes it
+  // immediately so the card doesn't lag a poll. A name the backing handle can't accept, or one
+  // a task's teardown still aims at, is a 400 the editor can show; a failure to land it a 500.
+  //
+  // ONE route for both runtimes rather than a second endpoint: everything the caller sees is
+  // the same - `{name}` in, the card renamed out - which is what keeps the title click, the
+  // command bar's keycap and Shift+R on one code path instead of branching per runtime in the
+  // browser, where the runtime is the least interesting thing about the session being named.
   app.post("/api/sessions/:id/rename", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -2060,7 +2132,7 @@ export function buildApp(
     if (!valid.ok) return c.json({ ok: false, error: valid.error }, 400);
     const free = validateSessionNameAgainstTasks(session, valid.name, registry.listTasks());
     if (!free.ok) return c.json({ ok: false, error: free.error }, 400);
-    const r = await rename(session, valid.name);
+    const r = await rename(session, valid.name, undefined, renameDriverSession);
     if (r.ok) registry.renameSession(session.id, valid.name);
     return c.json(r, r.ok ? 200 : 500);
   });

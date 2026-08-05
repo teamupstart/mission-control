@@ -7,6 +7,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
+import { settled } from "../fixtures/settle.ts";
 
 /**
  * The path this suite exists to cover: a person dispatches an agent from the dashboard and
@@ -102,30 +103,6 @@ async function captureForemanEvidence(
 `;
   writeFileSync(join(FOREMAN_EVIDENCE, "foreman-settings.html"), renderedHtml);
   console.log("CAPTURED docs/evidence/foreman-pr-follow-through/foreman-settings.html");
-}
-
-/**
- * Wait for a locator to stop moving before acting on it.
- *
- * A freshly dispatched session settles for a second or so - the titler renames it, the driver
- * reports its model, the branch line arrives - and every one of those re-lays-out the card.
- * Playwright requires a stable box before it will click, and under a loaded machine (the full
- * suite runs several daemons at once) that churn can outlast the whole 60s retry budget: the
- * observed failure is `element is not stable` followed by `element was detached from the DOM`.
- *
- * Two consecutive identical reads is the cheapest honest definition of "settled" - the same
- * one `line-drawers.spec.ts` uses for the same reason. It is a barrier, never a mask: the
- * assertions that the control EXISTS still run before this, so a genuinely missing button
- * fails exactly as loudly as it did.
- */
-async function settled(locator: ReturnType<Page["locator"]>): Promise<void> {
-  let last = JSON.stringify(await locator.boundingBox());
-  await expect.poll(async () => {
-    const next = JSON.stringify(await locator.boundingBox());
-    const same = next === last;
-    last = next;
-    return same;
-  }, { timeout: 30_000 }).toBe(true);
 }
 
 async function api<T>(

@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Foreman config - Option A: digest column</title>
+    <link rel="stylesheet" href="console.css" />
+    <link rel="stylesheet" href="mock.css" />
+    <style>
+      /* ---- the digest column ----
+         The column stops being a stack of forms and becomes a READOUT: one line per
+         setting, name on the left, the value in force on the right. That is the question
+         an operator opens this panel with - "what is Foreman set to" - and the current
+         column can only answer it by being scrolled. The editor is still here; it is one
+         click inside the row that names the thing you want to change.
+
+         Live repositories is deliberately NOT one of these rows. Foreman does not edit the
+         repo allowlist - that lives in the Trust category - so it sits below the list as a
+         sentence that navigates. A digest row implies "click to change it here", and for
+         that one line it would be a lie. */
+      .dg-body {
+        gap: 0;
+        padding: 0;
+      }
+      .dg-body > .sc-state {
+        margin: 12px 13px;
+        width: calc(100% - 26px);
+      }
+      .dg-group {
+        display: block;
+        padding: 9px 13px 4px;
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+        border-top: 1px solid var(--border-soft);
+      }
+      .dg-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 7px 13px;
+        background: none;
+        border: 0;
+        border-radius: 0;
+        color: var(--fg);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .dg-row:hover {
+        background: color-mix(in oklab, var(--fg) 4%, transparent);
+      }
+      .dg-row:focus-visible {
+        outline: 2px solid var(--working);
+        outline-offset: -2px;
+      }
+      .dg-row.is-open {
+        background: var(--panel-2);
+      }
+      .dg-name {
+        font-size: 12.5px;
+        white-space: nowrap;
+      }
+      /* The dotted leader. It is what makes a column of pairs scannable as a table without
+         drawing one, and it is why the value can sit hard right at every width. */
+      .dg-lead {
+        flex: 1;
+        min-width: 8px;
+        height: 1px;
+        border-bottom: 1px dotted color-mix(in oklab, var(--muted) 40%, transparent);
+      }
+      .dg-value {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      /* The one value that is a POSTURE and not a preference gets the tone, because
+         "cheap tier: on" is the line that decides whether a wrong answer gets sent. */
+      .dg-value.is-live {
+        color: var(--idle);
+      }
+      .dg-value.is-held {
+        color: var(--attention);
+      }
+      .dg-chev {
+        color: var(--dim);
+        font-size: 10px;
+        transition: transform 0.14s ease;
+      }
+      .dg-row.is-open .dg-chev {
+        transform: rotate(90deg);
+      }
+      /* The editor: the current card body verbatim - same fields, same prose, same anchors.
+         Nothing is lost; it is spent only when asked for. Capped and scrollable, because on
+         a short window an expanded editor would otherwise push the ledger off the screen. */
+      .dg-edit {
+        padding: 4px 13px 14px;
+        background: var(--panel-2);
+        border-bottom: 1px solid var(--border-soft);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-height: 46vh;
+        overflow-y: auto;
+      }
+      .dg-edit[hidden] {
+        display: none;
+      }
+      .dg-edit .settings-hint {
+        margin: 0;
+      }
+      .dg-edit .sc-field {
+        gap: 5px;
+      }
+      .dg-edit .kb-row {
+        padding: 8px 0;
+      }
+      /* The read-only grant summary, below the digest and outside it. */
+      .dg-repos {
+        padding: 10px 13px 12px;
+        border-top: 1px solid var(--border-soft);
+      }
+      .dg-repos .trust-summary {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mock-head">
+      <div class="mock-nav">
+        <a href="index.html">← all six</a>
+        <a href="option-a-digest.html" class="is-here">A · digest</a>
+        <a href="option-b-tabs.html">B · tabs</a>
+        <a href="option-c-ledger-first.html">C · ledger first</a>
+        <a href="option-d-grid.html">D · grid</a>
+        <a href="option-e-sentence.html">E · sentence</a>
+        <a href="option-f-presets.html">F · presets</a>
+      </div>
+      <div class="mock-tag">Option A · click any row to edit it</div>
+      <h1>Digest column - the config reads as a status line, and opens to edit</h1>
+      <p class="mock-thesis">
+        Every control keeps its exact current form and prose. What changes is that the form
+        is not the resting state: at rest each setting is one line, <b>name … value</b>, and
+        the column answers "what is Foreman set to" in six lines instead of two and a half
+        screens. Clicking a line expands the real editor in place, with its blurb, its
+        tooltip and its deep-link anchor intact.
+      </p>
+      <div class="mock-metrics">
+        <div class="mock-metric"><span>control column</span> <b id="m-rest">-</b></div>
+        <div class="mock-metric"><span>right now</span> <b id="m-now">-</b></div>
+        <div class="mock-metric"><span>controls kept</span> <b>14 / 14</b></div>
+        <div class="mock-metric is-cost"><span>cost</span> <b>one click to edit</b></div>
+      </div>
+      <p class="mock-live">
+        Click any row to open its editor, and click it again to close. One opens at a time.
+        The measurement above updates as you go, so the resting height is not a claim you
+        have to take on trust.
+      </p>
+    </div>
+
+    <div class="settings-pane">
+      <div class="mock-panel-head">
+        <h2>Foreman</h2>
+        <span class="mock-scope">this machine</span>
+      </div>
+
+      <section class="settings-section sc-section">
+        <p class="settings-hint sc-lede">
+          Foreman's set-once configuration, and the record of what it has decided. Turning it
+          on, its mode, the work queues, and the wrap-up action stay in the topbar Foreman
+          control.
+        </p>
+
+        <div class="sc-split">
+          <div class="sc-controls">
+            <section class="sc-card">
+              <div class="sc-card-head"><h3 class="sc-card-title">Foreman</h3></div>
+              <div class="sc-card-body dg-body" id="digest"></div>
+            </section>
+            <div data-health></div>
+          </div>
+
+          <div data-ledger></div>
+        </div>
+
+        <p class="mock-note">
+          <b>The row is the value, so nothing is hidden that was visible before.</b> The
+          current column shows you a select box whose selected option you have to read; this
+          shows the same answer as a value you can scan. A deep link from the settings search
+          (<code>foreman/model-review</code>) lands by expanding its row and flashing it, so
+          the anchors do not move. The one line that is not a row is
+          <b>Live repositories</b>: Foreman reports that count and links into Trust to change
+          it, and a digest row would have implied you could edit it here.
+        </p>
+      </section>
+    </div>
+
+    <div class="mock-foot">
+      <div>
+        <h4>Why this one</h4>
+        <ul>
+          <li><b>Shortest at rest</b> without deleting a single control or sentence.</li>
+          <li>
+            <b>Config doubles as status.</b> Six lines answer "what is Foreman set to", which
+            is the actual reason this panel gets opened.
+          </li>
+          <li>
+            <b>No new page, no new route.</b> Every <code>data-anchor</code> deep link and
+            every settings-search hit still resolves.
+          </li>
+          <li><b>Scales.</b> A tenth setting adds 30px, not 300px.</li>
+        </ul>
+      </div>
+      <div class="is-con">
+        <h4>What it costs</h4>
+        <ul>
+          <li>
+            <b>One click to edit.</b> Fine for set-once config; mildly annoying if you are
+            tuning the cheap tier repeatedly.
+          </li>
+          <li>
+            <b>Expanding shifts layout.</b> The editor is capped at 46vh and scrolls, which
+            is a fix for the symptom - on a short window the ledger still moves under you.
+          </li>
+          <li>
+            <b>A digest line must not lie.</b> Each row needs a formatter that reports the
+            RESOLVED value, including when the field is empty and an env var or the provider
+            default is what is actually in force. That is real work, and getting it wrong is
+            worse than the long column.
+          </li>
+          <li>
+            <b>Two rows summarise four and three fields.</b> "Terra ×2 · Luna ×2" is honest
+            but it is a compression, and someone will eventually want the roles named.
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <script src="mock-data.js"></script>
+    <script src="mock.js"></script>
+    <script>
+      const F = FOREMAN;
+      const E = Mock.esc;
+
+      // A digest value is a COMPRESSION of the fields behind it, so it is derived here
+      // rather than written down. Two roles on Terra and two on Luna reads "Terra x2 ·
+      // Luna x2"; change a role and the summary follows, which is the property that keeps
+      // the line from going stale.
+      const shorten = (v) => v.replace(/^GPT-5\.6\s+/, "").replace(/\s+-\s+.*$/, "");
+      const summarise = (values) => {
+        const counts = new Map();
+        for (const v of values) counts.set(shorten(v), (counts.get(shorten(v)) ?? 0) + 1);
+        return [...counts]
+          .map(([name, n]) => (n > 1 ? `${name} ×${n}` : name))
+          .join(" · ");
+      };
+
+      const field = (f) => `<div class="sc-field">
+        <label class="sc-field-label" for="d-${f.id}">${E(f.label)}</label>
+        ${Mock.selectHtml(f).replace("<select", `<select id="d-${f.id}" data-role="${f.id}"`)}
+        <p class="settings-hint">${E(f.blurb)}</p>
+      </div>`;
+
+      const row = (id, name, value, tone) => `<button class="dg-row" type="button"
+          data-expands="edit-${id}" aria-expanded="false" aria-controls="edit-${id}">
+          <span class="dg-name">${E(name)}</span>
+          <span class="dg-lead"></span>
+          <span class="dg-value${tone ? " " + tone : ""}" id="val-${id}">${E(value)}</span>
+          <span class="dg-chev" aria-hidden="true">›</span>
+        </button>`;
+
+      const edit = (id, inner) => `<div class="dg-edit" id="edit-${id}" hidden>${inner}</div>`;
+
+      const tierLabel = F.cheapTier.options.find((o) => o.id === F.cheapTier.value).short;
+
+      document.getElementById("digest").innerHTML = [
+        Mock.stateHtml(),
+
+        `<span class="dg-group">Posture</span>`,
+        row("tier", "Cheap tier", tierLabel, "is-live"),
+        edit("tier", Mock.tierSegHtml()),
+
+        row("provider", "Provider", F.provider.value),
+        edit(
+          "provider",
+          field({
+            id: "provider",
+            label: "Provider",
+            value: F.provider.value,
+            options: F.provider.options,
+            blurb: F.provider.blurb,
+          }),
+        ),
+
+        row("roles", "Model roles", summarise(F.roles.map((r) => r.value))),
+        edit(
+          "roles",
+          `<p class="settings-hint">Foreman spawns a fresh, isolated call for each role.
+            Review and Verify are the expensive ones; Triage and Backlog are deliberately
+            cheaper.</p>` + F.roles.map(field).join(""),
+        ),
+
+        `<span class="dg-group">Completion safeguards</span>`,
+        ...F.safeguards.rows.flatMap((s) => [
+          // The row name is the safeguard's SUBJECT, not its full sentence: every one of
+          // these labels starts "Skip automatic completion for", and repeating that on
+          // every line is the padding this whole option exists to remove. The group heading
+          // above already says which verb applies.
+          row(
+            s.id,
+            ((t) => t.charAt(0).toUpperCase() + t.slice(1))(
+              s.label.replace(/^Skip automatic completion for /, ""),
+            ),
+            s.on ? "kept back" : "retired",
+            "is-held",
+          ),
+          edit(
+            s.id,
+            `<p class="settings-hint">${E(F.safeguards.blurb)}</p>
+             <div class="kb-row">
+               <div class="kb-row-text">
+                 <span class="kb-row-label">${E(s.label)}</span>
+                 <span class="kb-row-desc">${E(s.desc)}</span>
+               </div>
+               <div class="kb-row-controls">
+                 <label class="skill-switch"><input type="checkbox" ${s.on ? "checked" : ""} aria-label="${E(s.label)}" /></label>
+               </div>
+             </div>`,
+          ),
+        ]),
+
+        `<span class="dg-group">Backlog launches</span>`,
+        row("launch", "Launch models", summarise(F.backlogLaunch.rows.map((r) => r.value))),
+        edit(
+          "launch",
+          `<p class="settings-hint">${E(F.backlogLaunch.blurb)}</p>` +
+            F.backlogLaunch.rows.map(field).join(""),
+        ),
+
+        // NOT a row. Foreman reports this and links out; it does not edit it.
+        `<div class="dg-repos"><div data-live-repos></div></div>`,
+      ].join("");
+
+      Mock.boot();
+
+      // A changed role re-derives the digest line above it, which is the whole argument for
+      // deriving rather than storing that string.
+      document.getElementById("edit-roles").addEventListener("change", () => {
+        const vals = [...document.querySelectorAll('#edit-roles select')].map((s) => s.value);
+        document.getElementById("val-roles").textContent = summarise(vals);
+      });
+      document.getElementById("edit-launch").addEventListener("change", () => {
+        const vals = [...document.querySelectorAll("#edit-launch select")].map((s) => s.value);
+        document.getElementById("val-launch").textContent = summarise(vals);
+      });
+
+      const measure = () => {
+        const col = document.querySelector(".sc-controls").getBoundingClientRect().height;
+        const open = document.querySelector(".dg-row.is-open");
+        document.getElementById("m-now").textContent =
+          Math.round(col) + "px" + (open ? " (" + open.querySelector(".dg-name").textContent + " open)" : " at rest");
+      };
+      // The resting figure is captured once, before anything is opened, so the header can
+      // state it while the second chip tracks what is on screen.
+      document.getElementById("m-rest").textContent =
+        "1988px → " + Math.round(document.querySelector(".sc-controls").getBoundingClientRect().height) + "px";
+      measure();
+      document.getElementById("digest").addEventListener("click", () => requestAnimationFrame(measure));
+    </script>
+  </body>
+</html>

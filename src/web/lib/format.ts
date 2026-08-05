@@ -1,7 +1,7 @@
 import { activePaneDialog } from "@shared/session.ts";
 import type { AgentType, PermissionMode, Session, SessionState } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { canWriteTo, type PaneHandles } from "@shared/pane.ts";
+import { canRename, type PaneHandles } from "@shared/pane.ts";
 
 export function relativeTime(ms: number | null, now = Date.now()): string {
   if (!ms) return "";
@@ -308,11 +308,18 @@ export function pickableModes(agent: AgentType): readonly PermissionMode[] {
 }
 
 /**
- * True when a session can be renamed: renaming drives the terminal a session lives in, so
- * it needs a handle on one, and a dead session has nothing to rename. Shared by the
- * clickable card title, the command bar's keycap, and the hotkey gate so the rule can't
- * drift between them.
+ * True when a session can be renamed: it needs somewhere a name can live (`canRename` - a
+ * terminal handle, or the durable row behind an SDK session), and a session on its way out
+ * has nothing left to name. Shared by the clickable card title, the command bar's keycap,
+ * and the hotkey gate so the rule can't drift between them.
+ *
+ * The liveness half stays HERE rather than in `canRename` because it is a question about the
+ * affordance, not about the name: the server refuses a rename it cannot land either way, and
+ * offering a text box on a card that is already leaving is the part only the UI can be wrong
+ * about.
  */
-export function canRenameSession(s: PaneHandles & Pick<Session, "state">): boolean {
-  return s.state !== "exited" && s.state !== "stopping" && canWriteTo(s);
+export function canRenameSession(
+  s: PaneHandles & Pick<Session, "state" | "runtime">,
+): boolean {
+  return s.state !== "exited" && s.state !== "stopping" && canRename(s);
 }

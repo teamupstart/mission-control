@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Foreman config - Option E: the configuration as a sentence</title>
+    <link rel="stylesheet" href="console.css" />
+    <link rel="stylesheet" href="mock.css" />
+    <style>
+      /* ---- the configuration as a sentence ----
+         The column is 1988px because each of 14 controls carries a label, a widget and a
+         two-to-three line blurb: about 140px of panel to state one word. E throws the form
+         away. The configuration is one paragraph of English, and every value in it is the
+         control - click the word and a picker opens under it, carrying that field's own
+         blurb. The blurbs are not deleted, they are spent on demand.
+
+         The paragraph also states something no stack of dropdowns can: the ORDER. "Triage
+         answers the easy asks and only the rest reach Review" is the pipeline; four labelled
+         selects never say which runs first.
+
+         TRUST IS NOT A FOREMAN SETTING. The repo allowlist is edited in the separate Trust
+         category, so the repository count in the last clause is NOT a token: it is a link
+         that navigates. Every other underlined value opens a popover and edits in place;
+         this one leaves. Making it a picker would invent a control this panel does not have,
+         which is the single most important correctness fix in this revision.
+
+         Posture is the other non-token. "Live" is a READING - enabling Foreman and its mode
+         belong to the topbar control (FOREMAN.posture.ownedByTopbar) - so it is stated in
+         the sentence, dot and all, and is deliberately not clickable here. */
+
+      /* .sc-card clips, and a popover under the last line of the paragraph hangs past the
+         card's bottom edge. This is the one app rule the mockup has to relax. */
+      .sn-card {
+        overflow: visible;
+      }
+      /* Prose has a measure, so the sentence card is capped at one rather than stretched to
+         the pane - a 1100px card holding a 660px paragraph is mostly empty card. The readout
+         takes the width that frees up, and the ledger below still gets the whole pane. */
+      .sn-top {
+        display: grid;
+        grid-template-columns: minmax(0, 764px) minmax(250px, 1fr);
+        gap: 18px;
+        align-items: start;
+      }
+      [data-health] .sc-card-body {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+        gap: 9px 22px;
+      }
+      @media (max-width: 1080px) {
+        .sn-top {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      .sn-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      /* Popovers are positioned against this box rather than nested in the paragraph, so a
+         token near the right edge can be clamped instead of running off the card. */
+      .sn-stage {
+        position: relative;
+      }
+      .sn-sentence {
+        margin: 0;
+        max-width: 70ch;
+        font-size: 15px;
+        /* Loose enough that a dashed underline never touches the line below it. Prose with
+           interactive words in it needs more leading than prose without. */
+        line-height: 2.05;
+        color: var(--muted);
+      }
+      .sn-role {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      /* "(GPT-5.6 Terra)" is one word to a reader, so it must not break after the bracket. */
+      .sn-paren {
+        white-space: nowrap;
+      }
+      .sn-state {
+        color: var(--fg);
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      /* .sc-dot is sized by a flex parent everywhere else in the app. Inline in a paragraph
+         it has no layout at all and collapses to its box-shadow, so it needs a box here. */
+      .sn-state .sc-dot {
+        display: inline-block;
+        vertical-align: middle;
+        position: relative;
+        top: -1px;
+        margin-right: 6px;
+      }
+      /* A value you can change. Mono, because these are ids and settings rather than words,
+         and a dashed underline, because a solid one reads as a link that navigates. No fill
+         at rest: a tinted box inside "(GPT-5.6 Luna)" pushes the brackets off the word and
+         turns the paragraph into a row of chips. The fill is for hover and open. */
+      .sn-tok {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        font-weight: 560;
+        color: var(--fg);
+        background: none;
+        border: 0;
+        border-bottom: 1px dashed color-mix(in oklab, var(--purple) 70%, var(--border));
+        border-radius: 4px 4px 0 0;
+        padding: 2px 3px 1px;
+        margin: 0;
+        vertical-align: baseline;
+        cursor: pointer;
+      }
+      .sn-tok:hover {
+        background: color-mix(in oklab, var(--purple) 18%, transparent);
+        border-bottom-style: solid;
+      }
+      .sn-tok.is-open {
+        background: color-mix(in oklab, var(--purple) 26%, transparent);
+        border-bottom-style: solid;
+      }
+      .sn-tok:focus-visible {
+        outline: 2px solid var(--working);
+        outline-offset: 1px;
+      }
+      /* Switching the provider clears every role override in the real panel. The sentence
+         cannot know that, so the mockup marks the words that just stopped being true. */
+      .sn-tok.is-stale {
+        color: color-mix(in oklab, var(--attention) 70%, var(--fg));
+        border-bottom-color: var(--attention);
+        background: color-mix(in oklab, var(--attention) 10%, transparent);
+      }
+      /* The link out. Solid underline and an arrow, because it leaves this panel. */
+      .sn-sentence .settings-link {
+        font-family: var(--mono);
+        font-size: 0.86em;
+      }
+      .sn-out::after {
+        content: " ↗";
+        font-size: 0.9em;
+      }
+
+      .sn-pop {
+        position: absolute;
+        z-index: 30;
+        width: 320px;
+        max-width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        padding: 12px 13px;
+        border: 1px solid color-mix(in oklab, var(--purple) 32%, var(--border));
+        border-radius: 11px;
+        background: var(--panel-2);
+        box-shadow: var(--shadow);
+      }
+      .sn-pop[hidden] {
+        display: none;
+      }
+      /* The notch tracks the middle of the word that opened it, which is the only thing
+         tying a floating box back to a point inside running text. */
+      .sn-pop::before {
+        content: "";
+        position: absolute;
+        top: -5px;
+        left: calc(var(--notch, 26px) - 4px);
+        width: 8px;
+        height: 8px;
+        transform: rotate(45deg);
+        background: var(--panel-2);
+        border-left: 1px solid color-mix(in oklab, var(--purple) 32%, var(--border));
+        border-top: 1px solid color-mix(in oklab, var(--purple) 32%, var(--border));
+      }
+      .sn-pop-label {
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .sn-pop .settings-hint {
+        margin: 0;
+      }
+      .sn-pop .kb-row {
+        padding: 6px 7px;
+        gap: 10px;
+      }
+      .sn-pop .sc-field-label {
+        font-size: 11px;
+      }
+
+      /* The setting the paragraph has no clause for. It is not hidden and it is not styled
+         to look resolved: it sits outside the prose because prose is where it does not fit. */
+      .sn-leftover {
+        margin: 18px 0 0;
+        padding: 10px 13px;
+        border: 1px dashed var(--border);
+        border-radius: 9px;
+        max-width: 70ch;
+        font-size: 12.5px;
+        line-height: 1.95;
+        color: var(--dim);
+      }
+      .sn-leftover b {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mock-head">
+      <div class="mock-nav">
+        <a href="index.html">← all six</a>
+        <a href="option-a-digest.html">A · digest</a>
+        <a href="option-b-tabs.html">B · tabs</a>
+        <a href="option-c-ledger-first.html">C · ledger first</a>
+        <a href="option-d-grid.html">D · grid</a>
+        <a href="option-e-sentence.html" class="is-here">E · sentence</a>
+        <a href="option-f-presets.html">F · presets</a>
+      </div>
+      <div class="mock-tag">Option E · every underlined value is clickable</div>
+      <h1>The configuration as a sentence - the value you read is the control you click</h1>
+      <p class="mock-thesis">
+        Fourteen controls, each with a label, a widget and a blurb, spend about 140px of panel
+        to state one word. This option deletes the form. The configuration is written out as
+        one paragraph, and every value in it is its own control: click <b>Codex</b>, or
+        <b>On</b>, or a model name, and a picker opens under the word carrying that field's
+        blurb. Nothing is behind a disclosure because there is no disclosure - and the
+        paragraph states the one thing four labelled dropdowns never could, which is the order
+        the roles actually run in.
+      </p>
+      <div class="mock-metrics">
+        <div class="mock-metric"><span>configuration</span> <b id="m-col">-</b></div>
+        <div class="mock-metric"><span>the sentence</span> <b id="m-words">-</b></div>
+        <div class="mock-metric"><span>controls</span> <b id="m-controls">-</b></div>
+        <div class="mock-metric"><span>clicks to edit</span> <b>1, on the word itself</b></div>
+        <div class="mock-metric is-cost"><span>cost</span> <b>prose does not scale</b></div>
+      </div>
+      <p class="mock-live">
+        Click any dashed value - the provider, the tier, a model name, <i>leaves alone</i>. The
+        picker opens under the word, Escape or a click outside closes it, and the sentence
+        rewrites itself around whatever you chose. Two things in it are not pickers:
+        <b>Live</b> is a reading the topbar owns, and the repository count is a link that
+        leaves for Trust.
+      </p>
+    </div>
+
+    <div class="settings-pane">
+      <div class="mock-panel-head">
+        <h2>Foreman</h2>
+        <span class="mock-scope">this machine</span>
+      </div>
+
+      <section class="settings-section sc-section">
+        <p class="settings-hint sc-lede">
+          Foreman's set-once configuration, and the record of what it has decided. Turning it
+          on, its mode, the work queues, and the wrap-up action stay in the topbar Foreman
+          control.
+        </p>
+
+        <div class="sn-stack">
+          <div class="sn-top">
+            <section class="sc-card sn-card" id="sn-config">
+              <div class="sc-card-head"><h3 class="sc-card-title">Configuration</h3></div>
+              <div class="sc-card-body">
+                <div class="sn-stage">
+                  <div class="sn-sentence" id="sn-sentence"></div>
+                  <p class="sn-leftover" id="sn-leftover"></p>
+                  <!-- Popovers live here, not inside the paragraph: a floating box nested in
+                       running text inherits the paragraph's clipping and its line box, and
+                       neither is any use to it. -->
+                  <div id="sn-pops"></div>
+                </div>
+              </div>
+            </section>
+
+            <div data-health></div>
+          </div>
+
+          <div data-ledger></div>
+        </div>
+
+        <p class="mock-note">
+          <b>Change the provider, then read the three model names again.</b> The real panel
+          clears every role override when the provider changes; the sentence has no way to know
+          that, so it keeps naming Codex models until something reloads it - the mockup flags
+          them amber, and the shipped version would have to do the same. The cheap-tier clause
+          is the same fault from the other side: set the tier to Off and the words between
+          Triage and Review have to be rewritten, because the paragraph asserts a relationship
+          that the settings store does not hold. A form can be wrong about one field. A
+          sentence can be wrong about the connection between two, and that is a harder class of
+          bug to notice.
+        </p>
+      </section>
+    </div>
+
+    <div class="mock-foot">
+      <div>
+        <h4>Why this one</h4>
+        <ul>
+          <li>
+            <b>The reading and the control are the same word.</b> "What is Foreman set to" and
+            "change it" stop being two different surfaces, so there is no digest to keep in
+            sync with an editor.
+          </li>
+          <li>
+            <b>It states the pipeline.</b> Triage answers first, the rest reach Review, Verify
+            checks finished work. Four dropdowns in a column never say which order they run in;
+            this cannot avoid saying it.
+          </li>
+          <li>
+            <b>The blurbs survive, unspent.</b> Every field's prose is still there, verbatim,
+            in the popover for that field - it just is not printed 14 times at rest, which is
+            what made the column 1988px.
+          </li>
+          <li>
+            <b>No labels at all.</b> A label is a word that names a value you are already
+            looking at; in a sentence the grammar does that job for free.
+          </li>
+        </ul>
+      </div>
+      <div class="is-con">
+        <h4>What it costs</h4>
+        <ul>
+          <li>
+            <b>Prose does not scale.</b> A 15th setting cannot be appended - somebody has to
+            write it into a clause, get the clause reviewed as copy, and re-read the whole
+            paragraph to check it still flows. The other five options take a new row.
+          </li>
+          <li>
+            <b>Hardest of the six to keep true.</b> The sentence encodes relationships between
+            settings that nothing in the code enforces. Two are live in this mockup: the
+            provider clearing role overrides, and the tier verb between Triage and Review.
+          </li>
+          <li>
+            <b>Translation becomes structural.</b> A form translates as a bag of strings. A
+            sentence translates as word order, so every locale needs its own arrangement of
+            tokens, and a translator can silently break a clause's meaning.
+          </li>
+          <li>
+            <b>Screen readers need real work.</b> Ten buttons inside one running paragraph is
+            ten interruptions in browse mode, and a dialog anchored to a word has no natural
+            reading position. <code>aria-haspopup</code> and moving focus are the floor, not
+            the answer.
+          </li>
+          <li>
+            <b>Nowhere to put a setting with no narrative role.</b> The Backlog role model is
+            already outside the paragraph, in the dashed box, because no clause wanted it.
+          </li>
+          <li>
+            <b>Compression drops axes.</b> The launch clause names three models and never says
+            which harness gets which; the form said it in three labels. Deep links have the
+            same problem - <code>foreman/skip-scout-wrapup</code> has to land on a word inside
+            a paragraph and open its popover.
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <script src="mock-data.js"></script>
+    <script src="mock.js"></script>
+    <script>
+      const F = FOREMAN;
+
+      // Mock.esc is called through the namespace rather than aliased to a local `esc`, the
+      // same as option B. Classic scripts share one top-level lexical scope, and a page that
+      // declares its own `esc` is one mock.js edit away from a SyntaxError that renders the
+      // panel blank rather than as an error anyone would notice.
+
+      /** "GPT-5.6 Luna - fastest" -> "GPT-5.6 Luna". A sentence wants the name, not the gloss. */
+      const head = (s) => String(s).split(" - ")[0];
+      const hint = (t) => `<p class="settings-hint">${Mock.esc(t)}</p>`;
+      const role = (id) => F.roles.find((r) => r.id === id);
+      const launch = (id) => F.backlogLaunch.rows.find((r) => r.id === id);
+
+      // Every token pushes its popover here while the sentence is being composed, so the
+      // markup order is the reading order and the DOM order is not.
+      const pops = [];
+
+      function tok(o) {
+        pops.push(`<div class="sn-pop" id="pop-${o.id}" role="dialog" aria-label="${Mock.esc(o.label)}" hidden>
+            <span class="sn-pop-label">${Mock.esc(o.label)}</span>${o.body}</div>`);
+        return `<button class="sn-tok" type="button" id="tok-${o.id}" data-pop="pop-${o.id}"
+            aria-haspopup="dialog" aria-controls="pop-${o.id}" aria-expanded="false"
+            ${o.attrs ?? ""}>${Mock.esc(o.text)}</button>`;
+      }
+
+      /** A Foreman role's model. Tagged, because these are the ones the provider invalidates. */
+      const roleTok = (id) => {
+        const r = role(id);
+        return tok({
+          id: "role-" + r.id,
+          text: head(r.value),
+          label: `${r.label} model${r.cost ? " - " + r.cost : ""}`,
+          body: Mock.selectHtml(r) + hint(r.blurb),
+          attrs: 'data-role-model="1"',
+        });
+      };
+
+      /** A backlog launch model. NOT tagged: these follow the task's harness, not the provider. */
+      const launchTok = (id) => {
+        const r = launch(id);
+        return tok({
+          id: "launch-" + r.id,
+          text: head(r.value),
+          label: r.label,
+          body: Mock.selectHtml(r) + hint(r.blurb),
+        });
+      };
+
+      // The verb that joins Triage to Review is a function of the tier, so the clause stays
+      // true when the tier token changes. This is the relationship the settings store does
+      // not hold and the sentence has to carry by hand.
+      const TIER_VERB = {
+        off: "never runs, so every ask goes straight to",
+        shadow: "runs alongside and is only measured, so every ask still reaches",
+        on: "answers the easy asks and only the rest reach",
+      };
+
+      const safeguardName = (s) => s.label.replace(/^Skip automatic completion for /, "");
+      /** The exception clause, rebuilt from whichever safeguards are on. */
+      const exemptCopy = (names) =>
+        names.length
+          ? { lead: ", except ", list: names.join(", "), tail: ", which it ", token: "leaves alone" }
+          : { lead: " and ", list: "", tail: "", token: "holds nothing back" };
+
+      const tierOpt = F.cheapTier.options.find((o) => o.id === F.cheapTier.value);
+      const exempt0 = exemptCopy(F.safeguards.rows.filter((s) => s.on).map(safeguardName));
+
+      const safeguardRows = F.safeguards.rows
+        .map(
+          (s) => `<div class="kb-row">
+            <div class="kb-row-text">
+              <span class="kb-row-label">${Mock.esc(s.label)}</span>
+              <span class="kb-row-desc">${Mock.esc(s.desc)}</span>
+            </div>
+            <div class="kb-row-controls">
+              <label class="skill-switch"><input type="checkbox" ${s.on ? "checked" : ""} aria-label="${Mock.esc(s.label)}" /></label>
+            </div>
+          </div>`,
+        )
+        .join("");
+
+      const sentence = `Foreman is <span class="sn-state" title="${Mock.esc(F.posture.line)}"><span class="sc-dot sc-dot-${F.posture.tone}"></span>${Mock.esc(head(F.posture.line))}</span>,
+        running every call through ${tok({
+          id: "provider",
+          text: F.provider.value,
+          label: "Provider",
+          body:
+            Mock.selectHtml({
+              label: "Provider",
+              value: F.provider.value,
+              options: F.provider.options,
+            }) + hint(F.provider.blurb),
+        })}.
+        The cheap tier is ${tok({
+          id: "tier",
+          text: tierOpt.short,
+          label: "Cheap tier",
+          body: Mock.tierSegHtml(),
+        })},
+        so <b class="sn-role">${Mock.esc(role("triage").label)}</b> <span class="sn-paren">(${roleTok("triage")})</span>
+        <span id="sn-tier-verb">${Mock.esc(TIER_VERB[F.cheapTier.value])}</span>
+        <b class="sn-role">${Mock.esc(role("review").label)}</b> <span class="sn-paren">(${roleTok("review")})</span>.
+        <b class="sn-role">${Mock.esc(role("verify").label)}</b> <span class="sn-paren">(${roleTok("verify")})</span> checks finished
+        work<span id="sn-ex-lead">${Mock.esc(exempt0.lead)}</span><span id="sn-ex-list">${Mock.esc(exempt0.list)}</span><span id="sn-ex-tail">${Mock.esc(exempt0.tail)}</span>${tok(
+          {
+            id: "safeguards",
+            text: exempt0.token,
+            label: "Completion safeguards",
+            body: hint(F.safeguards.blurb) + safeguardRows,
+          },
+        )}.
+        New backlog work launches on ${launchTok("claude")}, ${launchTok("codex")} or
+        ${launchTok("pi")}, depending on the task's harness.
+        It may send live in
+        <!-- NOT a token. Foreman cannot edit the repo allowlist - it is granted in the Trust
+             category - so this navigates and never opens a picker. -->
+        <button class="settings-link sn-out" type="button" title="${Mock.esc(F.liveRepos.blurb)}">${F.liveRepos.count} repositories</button>
+        - <button class="settings-link" type="button">${Mock.esc(F.liveRepos.link)}</button>.`;
+
+      // The role the paragraph found no room for. Rendered anyway, because a mockup that
+      // quietly drops a control is worse than one that admits prose has an edge.
+      const leftover = `Not in the sentence: <b>${Mock.esc(role("backlog").label)}</b>
+        <span class="sn-paren">(${roleTok("backlog")})</span> - ${Mock.esc(role("backlog").blurb)}
+        It has no narrative role, so there is no clause that wants it and it sits outside the
+        paragraph instead of being wedged into one.`;
+
+      document.getElementById("sn-sentence").innerHTML = sentence;
+      document.getElementById("sn-leftover").innerHTML = leftover;
+      document.getElementById("sn-pops").innerHTML = pops.join("");
+
+      Mock.boot();
+
+      /* ---------------------------------------------------------- the popovers ---- */
+
+      const stage = document.querySelector(".sn-stage");
+      const toks = [...stage.querySelectorAll(".sn-tok")];
+      const popOf = (btn) => document.getElementById(btn.dataset.pop);
+
+      /** Anchor the box under the word, clamped to the stage, notch on the word's middle. */
+      function place(btn, pop) {
+        const s = stage.getBoundingClientRect();
+        const b = btn.getBoundingClientRect();
+        pop.style.left = "0px";
+        const left = Math.max(0, Math.min(b.left - s.left - 10, stage.clientWidth - pop.offsetWidth));
+        pop.style.left = left + "px";
+        pop.style.top = b.bottom - s.top + 8 + "px";
+        pop.style.setProperty("--notch", b.left - s.left - left + b.width / 2 + "px");
+      }
+
+      function setOpen(btn, open) {
+        const pop = popOf(btn);
+        pop.hidden = !open;
+        btn.classList.toggle("is-open", open);
+        btn.setAttribute("aria-expanded", String(open));
+        if (open) {
+          place(btn, pop);
+          pop.querySelector("select, input")?.focus();
+        }
+      }
+
+      const openTok = () => toks.find((t) => !popOf(t).hidden);
+      const closeAll = () => toks.forEach((t) => setOpen(t, false));
+
+      for (const btn of toks) {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const wasOpen = !popOf(btn).hidden;
+          closeAll();
+          if (!wasOpen) setOpen(btn, true);
+        });
+      }
+
+      // One open at a time; outside click and Escape close, and Escape puts focus back on the
+      // word, which is the only thing a keyboard user has to return to.
+      document.addEventListener("click", (e) => {
+        if (!e.target.closest(".sn-pop")) closeAll();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        const btn = openTok();
+        if (!btn) return;
+        setOpen(btn, false);
+        btn.focus();
+      });
+      window.addEventListener("resize", () => {
+        const btn = openTok();
+        if (btn) place(btn, popOf(btn));
+        measure();
+      });
+
+      /* ------------------------------------------------ values write themselves ---- */
+
+      // A plain select token: the word becomes whatever was chosen.
+      for (const btn of toks) {
+        const sel = popOf(btn).querySelector("select");
+        if (!sel) continue;
+        sel.addEventListener("change", () => {
+          btn.textContent = head(sel.value);
+          place(btn, popOf(btn));
+          measure();
+        });
+      }
+
+      // The tier. Its token is one word and its consequence is a verb four words later.
+      const tierBtn = document.getElementById("tok-tier");
+      const tierPop = document.getElementById("pop-tier");
+      const tierLabels = [...tierPop.querySelectorAll(".sc-seg-opt")];
+      tierPop.querySelectorAll('input[name="tier"]').forEach((input, i) => {
+        input.addEventListener("change", () => {
+          const opt = F.cheapTier.options[i];
+          tierBtn.textContent = opt.short;
+          document.getElementById("sn-tier-verb").textContent = TIER_VERB[opt.id];
+          tierLabels.forEach((l, j) => l.classList.toggle("is-on", i === j));
+          tierPop.querySelector(".settings-hint").textContent = opt.label + ".";
+          place(tierBtn, tierPop);
+          measure();
+        });
+      });
+
+      // The safeguards. Two switches behind two words, so the exception list is rebuilt from
+      // whatever is checked rather than being a phrase somebody has to remember to update.
+      const sgBtn = document.getElementById("tok-safeguards");
+      const sgBoxes = [...document.getElementById("pop-safeguards").querySelectorAll("input")];
+      for (const box of sgBoxes) {
+        box.addEventListener("change", () => {
+          const names = F.safeguards.rows
+            .filter((_, i) => sgBoxes[i].checked)
+            .map(safeguardName);
+          const c = exemptCopy(names);
+          document.getElementById("sn-ex-lead").textContent = c.lead;
+          document.getElementById("sn-ex-list").textContent = c.list;
+          document.getElementById("sn-ex-tail").textContent = c.tail;
+          sgBtn.textContent = c.token;
+          place(sgBtn, popOf(sgBtn));
+          measure();
+        });
+      }
+
+      // The provider invalidates the four role models and nothing else - a backlog launch runs
+      // the TASK's harness, so those three are untouched. The real panel drops the overrides;
+      // the sentence cannot, so it says so.
+      const providerSel = document.getElementById("pop-provider").querySelector("select");
+      providerSel.addEventListener("change", () => {
+        const drifted = providerSel.value !== F.provider.value;
+        for (const t of stage.querySelectorAll("[data-role-model]")) {
+          t.classList.toggle("is-stale", drifted);
+          if (drifted) {
+            t.title = `Changing the provider clears every role override. This word still names the ${F.provider.value} model it had a moment ago.`;
+          } else {
+            t.removeAttribute("title");
+          }
+        }
+      });
+
+      /* ------------------------------------------------------- the measurements ---- */
+
+      // Read off the laid-out page after every edit, so nothing in the copy above can claim a
+      // height the mockup does not actually render.
+      const config = document.getElementById("sn-config");
+      const sentenceEl = document.getElementById("sn-sentence");
+      function measure() {
+        document.getElementById("m-col").textContent =
+          "1988px → " + Math.round(config.getBoundingClientRect().height) + "px";
+        document.getElementById("m-words").textContent =
+          sentenceEl.textContent.trim().split(/\s+/).length + " words";
+        const controls = document.querySelectorAll(
+          '#sn-pops select, #sn-pops .sc-seg, #sn-pops input[type="checkbox"]',
+        ).length;
+        document.getElementById("m-controls").textContent =
+          controls + " behind " + toks.length + " words";
+      }
+      measure();
+    </script>
+  </body>
+</html>

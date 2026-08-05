@@ -43,6 +43,7 @@ function terminalPending(over: Partial<Pending> = {}): Pending {
     surface: "terminal",
     question: "Claude needs your permission to run the tests",
     inputReviewId: null,
+    reviewId: null,
     canSend: true,
     marker: "await:1700",
     ...over,

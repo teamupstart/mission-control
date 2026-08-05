@@ -89,7 +89,7 @@ export function paneToken(s: PaneHandles): string | null {
  * True when this session has a terminal pane we can drive - the one question ~20 call sites
  * were asking as `Boolean(s.tmux || s.wezterm)`.
  *
- * They spanned both processes and every layout: the Send box, the mode picker, Rename, the
+ * They spanned both processes and every layout: the Send box, the mode picker, the
  * work-queue's delivery check, Foreman's `canSend`, the reset preview's "will this clear
  * context". None of them was about tmux or wezterm; each was about whether there is a
  * composer to type into, and each restated the handle list to ask it - so a third backend
@@ -117,17 +117,45 @@ export function canWriteTo(s: PaneHandles): boolean {
  *  - `canMessage` is about a CONVERSATION: may the Send box be enabled, may the work queue
  *    hand this session an item, will a reset be able to clear its context, may Foreman
  *    reply. None of those care how the bytes land.
- *  - `canWriteTo` is about a PANE: focus and raise it, rename the multiplexer session that
- *    holds it, take the write lock on it, press Shift+Tab in it, tolerate a capture miss
- *    on it. Every one of those is meaningless without a pane, and an SDK session must NOT
- *    be admitted to any of them - so the literal predicate keeps its literal meaning
- *    rather than being widened underneath its callers.
+ *  - `canWriteTo` is about a PANE: focus and raise it, take the write lock on it, press
+ *    Shift+Tab in it, tolerate a capture miss on it. Every one of those is meaningless
+ *    without a pane, and an SDK session must NOT be admitted to any of them - so the
+ *    literal predicate keeps its literal meaning rather than being widened underneath its
+ *    callers.
  *
  * Takes `runtime` as well as the handles because a `DiscoveredSession` has no runtime to
  * ask about: discovery only ever produces pane-backed sessions, so its consumers stay on
  * `canWriteTo` by construction rather than by remembering to.
  */
 export function canMessage(s: PaneHandles & { runtime: SessionRuntime }): boolean {
+  return canWriteTo(s) || s.runtime === "sdk";
+}
+
+/**
+ * True when this session has somewhere a NAME can live that Mission Control can move.
+ *
+ * The third question that used to be spelled `canWriteTo`, and the one that was wrong for
+ * longest. Rename reads as a pane mechanic because of HOW it is implemented on the terminal
+ * axis - there is no name field on a session, so moving a name means moving the multiplexer
+ * session's name (or an emulator tab's title) and letting the next discovery sweep read it
+ * back onto the card. That makes a pane genuinely necessary THERE. It is not what the
+ * question is:
+ *
+ *  - a terminal session's name is its home's name, so no handle means no name to move; but
+ *  - an SDK session's name is a column on the row the supervisor already keeps for it, and
+ *    that row outlives the process. Nothing about it needs a pane.
+ *
+ * Left on `canWriteTo`, the title on every dispatched card silently stopped being a click
+ * target the moment dispatch started producing SDK sessions - the affordance was still
+ * built, still styled and still tested, and simply never rendered. So this is its own
+ * predicate rather than a widened `canWriteTo`: focus and Shift+Tab still mean the pane.
+ *
+ * Deliberately NOT `canMessage`, which today has the same body. They agree by coincidence
+ * of the two runtimes that exist, not by construction - naming a session and delivering a
+ * turn to it are different capabilities, and a third runtime is free to have one without
+ * the other. Sharing the predicate would make the next author's rename gate a guess.
+ */
+export function canRename(s: PaneHandles & { runtime: SessionRuntime }): boolean {
   return canWriteTo(s) || s.runtime === "sdk";
 }
 

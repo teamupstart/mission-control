@@ -72,6 +72,7 @@ const {
   listSdkSessions,
   recordSdkSessionBinding,
   sdkSessionIsLive,
+  setSdkSessionDisplayName,
   setSdkSessionStatus,
   upsertSdkSession,
 } = await import("../src/server/sdk/store.ts");
@@ -101,6 +102,7 @@ test("the table reaches a database that already had rows", () => {
       "updated_at",
       // ALTER TABLE appends on an upgraded database; store reads name columns explicitly.
       "turn_in_progress",
+      "display_name",
     ],
   );
   // The id is the registry's map key as well as this primary key, which is what lets a
@@ -117,6 +119,10 @@ test("the table reaches a database that already had rows", () => {
     1,
   );
   assert.equal(getSdkSession("sdk:pre-continuation")?.turnInProgress, false);
+  // Null, not "": a row written before the column existed was named by derivation, and that is
+  // exactly what null means here - so an upgraded database keeps deriving rather than coming
+  // back with every card blank-titled.
+  assert.equal(getSdkSession("sdk:pre-continuation")?.displayName, null);
 });
 
 test("a row round-trips, and the id is upserted rather than duplicated", () => {
@@ -168,6 +174,61 @@ test("a row round-trips, and the id is upserted rather than duplicated", () => {
   );
   assert.equal(listSdkSessions().filter((r) => r.id === "sdk:aaa").length, 1);
   assert.equal(getSdkSession("sdk:aaa")?.createdAt, 5_000, "created_at is not rewritten");
+});
+
+test("an operator's rename is written down, and a relaunch upsert does not erase it", () => {
+  upsertSdkSession(
+    {
+      id: "sdk:named",
+      agent: "claude",
+      agentSessionId: null,
+      cwd: "/wt/named",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "starting",
+      turnInProgress: false,
+    },
+    1_000,
+  );
+  assert.equal(getSdkSession("sdk:named")?.displayName, null, "a launch names nothing");
+
+  assert.equal(setSdkSessionDisplayName("sdk:named", "  by hand  ", 2_000), true);
+  assert.equal(getSdkSession("sdk:named")?.displayName, "by hand", "trimmed by the store");
+
+  // THE restart case. `upsertSdkSession` is the launch/relaunch statement and an adopt on
+  // startup runs it again, so a name carried inside it would have to be re-supplied by every
+  // restore path - and forgetting once is a rename silently reverting to the task title. The
+  // column is owned by its own writer precisely so this upsert cannot touch it.
+  upsertSdkSession(
+    {
+      id: "sdk:named",
+      agent: "claude",
+      agentSessionId: "agent-named",
+      cwd: "/wt/named",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+      turnInProgress: false,
+    },
+    3_000,
+  );
+  assert.equal(getSdkSession("sdk:named")?.displayName, "by hand");
+});
+
+test("a blank rename is refused rather than persisted as an empty heading", () => {
+  assert.equal(setSdkSessionDisplayName("sdk:named", "   ", 4_000), false);
+  assert.equal(getSdkSession("sdk:named")?.displayName, "by hand", "the old name still stands");
+});
+
+test("renaming a session with no row reports that it wrote nothing", () => {
+  // The route echoes the new name onto the card only when this is true, so "no such row" has
+  // to be distinguishable from success - otherwise a rename appears to land and a restart
+  // silently undoes it.
+  assert.equal(setSdkSessionDisplayName("sdk:missing", "whatever", 5_000), false);
 });
 
 test("a status this build cannot read is null, never the nearest known one", () => {
@@ -243,4 +304,59 @@ test("restore fails a row nothing can resume, and leaves an unreadable one alone
   assert.equal(getSdkSession("sdk:future")?.statusRaw, "hibernating");
   // And an already-settled row is not rewritten.
   assert.equal(getSdkSession("sdk:st-exited")?.status, "exited");
+});
+
+test("a restored card comes back under the name a person gave it", async () => {
+  // The durable half of the rename fix. An SDK session's name is otherwise DERIVED on every
+  // restore - the bound task's title, else the cwd basename - which is the right default and
+  // the wrong answer for a session someone has deliberately named: a rename a restart reverts
+  // is not a rename. No binding, so `restore` takes the register-then-evict path, which is
+  // exactly the path that has to name the card it briefly shows.
+  upsertSdkSession(
+    {
+      id: "sdk:restored-name",
+      agent: "claude",
+      agentSessionId: null,
+      cwd: "/wt/some-checkout",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+      turnInProgress: false,
+    },
+    9_000,
+  );
+  setSdkSessionDisplayName("sdk:restored-name", "the name I typed", 9_100);
+
+  const registry = new Registry();
+  await new SdkSupervisor(registry).restore();
+
+  assert.equal(registry.getSession("sdk:restored-name")?.name, "the name I typed");
+});
+
+test("a restored card with no rename still derives its name from the checkout", async () => {
+  // The other side of the same branch, so the fix cannot be mistaken for "always persist the
+  // launch name". A dispatch refines its heuristic title with an async model call moments after
+  // launching, and deriving is what lets that refinement reach the card across a restart.
+  upsertSdkSession(
+    {
+      id: "sdk:derived-name",
+      agent: "claude",
+      agentSessionId: null,
+      cwd: "/wt/other-checkout",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "running",
+      turnInProgress: false,
+    },
+    9_200,
+  );
+
+  const registry = new Registry();
+  await new SdkSupervisor(registry).restore();
+
+  assert.equal(registry.getSession("sdk:derived-name")?.name, "other-checkout");
 });

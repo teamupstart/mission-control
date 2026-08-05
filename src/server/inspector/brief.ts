@@ -2,13 +2,23 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { readRepoDoc, realpathOr } from "../util/repo-doc.ts";
 
-// The reviewer's brief: what INSPECTOR.md says, or a built-in default when the repo
-// hasn't written one.
+// The reviewer's brief: what the reviewed repo's INSPECTOR.md says, or a built-in default
+// when the repo hasn't written one.
 
 /** Cap on the brief, so an enormous INSPECTOR.md can't crowd the diff out of the prompt. */
 const MAX_BRIEF_BYTES = 24 * 1024;
 
-export const BRIEF_FILENAME = "INSPECTOR.md";
+/**
+ * Where a repo may keep its brief, in the order they are consulted. First non-empty wins.
+ *
+ * Two locations rather than one because this path resolves against the REVIEWED repository,
+ * not this one. Mission Control keeps its own brief in `personas/` beside the rest of its
+ * persona documents, and that is the tidier convention to lead with - but a root
+ * `INSPECTOR.md` is what every repo configured before that move has, and demoting them to
+ * the default brief would be a silent downgrade of their reviews. So the root name stays a
+ * supported location, not a deprecated one. A repo with both gets `personas/INSPECTOR.md`.
+ */
+export const BRIEF_PATHS = ["personas/INSPECTOR.md", "INSPECTOR.md"] as const;
 
 export interface Brief {
   text: string;
@@ -18,7 +28,7 @@ export interface Brief {
 }
 
 /**
- * The default brief, used when a repo ships no INSPECTOR.md.
+ * The default brief, used when a repo ships no INSPECTOR.md in either location.
  *
  * Kept deliberately short. Its job is to be a defensible reviewer on a repo nobody has
  * configured, and the biggest risk there is not missing an issue - it is a bot that
@@ -27,8 +37,8 @@ export interface Brief {
  */
 export const DEFAULT_BRIEF = `# Inspector
 
-You are reviewing a pull request. No INSPECTOR.md was found in this repository, so
-apply general engineering judgement.
+You are reviewing a pull request. No INSPECTOR.md was found in this repository, at
+personas/INSPECTOR.md or at the root, so apply general engineering judgement.
 
 ## Care about
 
@@ -61,22 +71,35 @@ wrong, say so plainly or leave it out - a confident wrong comment costs more tha
 missed one.`;
 
 /**
- * Read a repo's INSPECTOR.md, falling back to the default.
+ * Read a repo's INSPECTOR.md from the first `BRIEF_PATHS` entry that has one, falling back
+ * to the default.
  *
- * Goes through the same reader `standards.ts` uses, which resolves symlinks BEFORE
- * checking containment. That ordering matters more here than almost anywhere: a repo
+ * A candidate that is missing, unreadable, or blank is not a brief, so the search continues
+ * past it: an empty `personas/INSPECTOR.md` left behind by a half-finished move must not
+ * shadow a root file that still says something. Only a repo with nothing at either name is
+ * reviewed against the default.
+ *
+ * Every candidate goes through the same reader `standards.ts` uses, which resolves symlinks
+ * BEFORE checking containment. That ordering matters more here than almost anywhere: a repo
  * shipping INSPECTOR.md as a symlink to `~/.ssh/id_rsa` would otherwise have that file
  * read by the daemon (full user access) and pasted into a prompt whose output is a
- * PUBLIC pull request comment.
+ * PUBLIC pull request comment. Adding a candidate in a subdirectory does not weaken that -
+ * `realpathSync` resolves the whole path, so a `personas` symlink pointing out of the repo
+ * is caught by the same containment check as a linked file.
  */
 export function readBrief(repoRoot: string | null): Brief {
   if (!repoRoot || !existsSync(repoRoot)) {
     return { text: DEFAULT_BRIEF, source: "default", truncated: false };
   }
   const root = resolve(repoRoot);
-  const doc = readRepoDoc(root, realpathOr(root), join(root, BRIEF_FILENAME), MAX_BRIEF_BYTES);
-  if (!doc || !doc.text.trim()) {
-    return { text: DEFAULT_BRIEF, source: "default", truncated: false };
+  // Resolved once for the whole search rather than per candidate: containment is judged
+  // against the repo's own real path, which cannot differ between two names inside it.
+  const realRoot = realpathOr(root);
+  for (const candidate of BRIEF_PATHS) {
+    const doc = readRepoDoc(root, realRoot, join(root, candidate), MAX_BRIEF_BYTES);
+    if (doc && doc.text.trim()) {
+      return { text: doc.text, source: "repo", truncated: doc.truncated };
+    }
   }
-  return { text: doc.text, source: "repo", truncated: doc.truncated };
+  return { text: DEFAULT_BRIEF, source: "default", truncated: false };
 }

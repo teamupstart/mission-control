@@ -333,8 +333,8 @@ Exhaustive `Record<Id, Value>` registries are intentional compiler enforcement.
 
 "That word is a file path" is two questions, both answered in `src/web/lib/workspaceLinks.ts`, and which one you get depends on whether you hold a list of real files:
 
-- `matchCheckoutPaths(text, paths)` — the transcript's. Membership decides, so every listed file is reachable with no excluded extension, shape, or length; longest match wins; candidates go through the same `normalizeRelative` a written href does, and absolute candidates are refused because normalization would otherwise read `/a` as the listed `a`.
-- `detectPathTokens(text)` — the fallback for a caller that cannot ask, which is the ensemble scorecard rendering a rationale before any file union is fetched. It guesses from shape and therefore misses every extensionless name, dotfile, and spaced path.
+- `matchCheckoutPaths(text, paths)` - the transcript's. Membership decides, so every listed file is reachable with no excluded extension, shape, or length; longest match wins; candidates go through the same `normalizeRelative` a written href does, and absolute candidates are refused because normalization would otherwise read `/a` as the listed `a`.
+- `detectPathTokens(text)` - the fallback for a caller that cannot ask, which is the ensemble scorecard rendering a rationale before any file union is fetched. It guesses from shape and therefore misses every extensionless name, dotfile, and spaced path.
 
 Do not reach for the shape matcher while holding a listing, and do not add a third: they already share the word-boundary and `:line[:column]` rules, and the copies that preceded them had drifted.
 
@@ -373,10 +373,18 @@ Update README in the same change:
 - New command: Commands
 - New shortcut: Keyboard table
 
-Built-in personas are generated from `docs/personas/*.md`, and built-in session actions from
+Built-in personas are generated from `personas/*.md`, and built-in session actions from
 `docs/session-actions/*.md`. Edit the Markdown and run the generator (`npm run personas`,
 `npm run session-actions`) instead of editing the `.generated.ts` module. Both share the
 reader and renderer in `scripts/builtin-markdown.ts`, and both have a drift test that
 imports the generator rather than re-implementing it.
+
+`personas/` also holds the two operator briefs the daemon reads as files at runtime -
+`FOREMAN.md` (the seed for Foreman's standing instructions) and `INSPECTOR.md` (this repo's
+brief for the Inspector) - plus a `README.md`. The generator globs the whole directory, so
+those three are excluded by name in `NON_PERSONA_DOCUMENTS`; anything else added there becomes
+a built-in Persona. A persona filename is the durable `builtin:<slug>` id that published
+workflow versions reference, so adding and removing documents is safe and renaming one is a
+migration.
 
 Plans live at `docs/plans/<name>/plan.md` with a self-contained HTML companion when the planning workflow requires it.

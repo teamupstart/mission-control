@@ -22,17 +22,38 @@ const render = (state: Parameters<typeof ladderDetail>[0]): string => {
   }));
 };
 
-test("the reviewing ladder expands the running stage and collapses passed stages", () => {
+test("the reviewing ladder names every member of every stage, passed ones included", () => {
   const html = render("reviewing");
   assert.match(html, /Stage 3/);
   assert.match(html, /Test Evidence Auditor/);
   assert.match(html, /Documentation Steward/);
   assert.match(html, /Running/);
-  // Stage 1 is still named and counted, but its passed member rows do not consume height.
+  // A stage that folded to a pass still names who passed it. "All passed" beside `2 checks`
+  // identifies neither check, and a reader who wants to know which reviewers approved the work
+  // is asking the one question the ladder exists to answer.
   assert.match(html, /Stage 1/);
   assert.match(html, /2 checks · all must pass/);
-  assert.doesNotMatch(html, /Check · typecheck/);
-  assert.doesNotMatch(html, /Check · test/);
+  assert.match(html, /Check · typecheck/);
+  assert.match(html, /Check · test/);
+  // Including the stage whose single reviewer IS its name: one member row, not zero.
+  assert.match(html, /1 reviewer/);
+  const members = html.match(/<li class="wf-ladder-member[\s\S]*?<\/li>/g) ?? [];
+  assert.deepEqual(
+    members.map((row) => row.match(/wf-ladder-member-name">([^<]+)</)?.[1]),
+    [
+      "Check · typecheck",
+      "Check · test",
+      "Intent Conformance Judge",
+      "Code Risk Reviewer",
+      "Test Evidence Auditor",
+      "Documentation Steward",
+    ],
+  );
+  // Each row keeps its OWN tone, so the ones that earned green are still legible as green
+  // inside a stage that is still running.
+  const risk = members.find((row) => row.includes("Code Risk Reviewer")) ?? "";
+  assert.match(risk, /wf-ladder-member workflow-passed/);
+  assert.match(risk, />Passed</);
 });
 
 test("the failed stage opens the reviewer's objection in place", () => {

@@ -25,6 +25,7 @@ process.env.MISSION_HOME = home;
 
 const { answeredQuestion } = await import("../src/server/sdk/answered-question.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
+const { dialogMarker } = await import("../src/server/foreman/pending.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -494,4 +495,167 @@ test("a refused answer records nothing, because nothing was answered", async () 
   });
   assert.equal(res.status, 409);
   assert.deepEqual(loadHumanResolvedReviews(id), []);
+});
+
+// ---- and the Foreman note the answer makes spent -------------------------------------
+//
+// The same route, asked a second question: what happens to the "needs your decision" banner
+// Foreman pinned on the ask you just answered? It used to stay, with a live Approve on it,
+// until someone clicked Dismiss - and on this surface the marker is a `dialog:` digest rather
+// than a `review:` id, so the dashboard could not even tell the note had gone stale. It drew
+// a working Approve & send whose click would have injected Foreman's prose into a session
+// that already had its answer.
+
+/** Pin an escalated Foreman note on the ask this session is showing, the way the worker does. */
+function escalate(registry: Registry_, id: string): string {
+  const marker = dialogMarker(dialogFor(FORM));
+  registry.recordEpisode(
+    id,
+    {
+      marker,
+      situation: "structured-request",
+      surface: "terminal",
+      question: "running AskUserQuestion",
+      recommendation: "Choose biome - it is already in the toolchain.",
+      disposition: "escalated",
+    },
+    1000,
+  );
+  registry.upsertNote(
+    id,
+    {
+      purpose: "Which linter this repo should adopt.",
+      recommendation: "Choose biome - it is already in the toolchain.",
+      disposition: "escalated",
+      lastAction: "escalated for your decision",
+      handledMarker: marker,
+    },
+    1000,
+  );
+  return marker;
+}
+
+test("submitting the form retires the Foreman note pinned on that ask", async () => {
+  const { app, registry, id } = seed(FORM);
+  escalate(registry, id);
+
+  const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/submit-options`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({
+      // Deliberately not what Foreman recommended: the note is retired because the question
+      // is closed, not because the human happened to agree with it.
+      answers: [
+        { question: "Which linter?", labels: ["eslint"] },
+        { question: "Which checks?", labels: ["types"] },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200, await res.clone().text());
+
+  const note = registry.getNote(id)!;
+  assert.equal(note.disposition, "skipped", "so the strip unmounts on `noteAwaitsYou`");
+  assert.equal(note.lastAction, "you answered this yourself");
+  assert.equal(note.recommendation, null, "there is nothing left for Approve to send");
+});
+
+test("a refused answer leaves the note alone - the question is still open", async () => {
+  // The mirror of the case above it. Nothing was delivered and the agent is still blocked, so
+  // the decision Foreman escalated is still owed. Retiring on the attempt rather than on the
+  // outcome would clear the banner for a question that is still on the card.
+  const { app, registry, id } = seed(FORM);
+  escalate(registry, id);
+
+  const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/submit-options`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({ answers: [{ question: "Which linter?", labels: ["biome"] }] }),
+  });
+  assert.equal(res.status, 409);
+
+  assert.equal(registry.getNote(id)!.disposition, "escalated");
+});
+
+test("Foreman answering the form itself is not recorded as your decision", async () => {
+  // Foreman's own send. `applyVerdict` writes the note after this returns, so retiring it
+  // here would race that write and file a delivered answer as one the human threw away.
+  const { app, registry, id } = seed(FORM);
+  escalate(registry, id);
+
+  const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/submit-options`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({
+      by: "foreman",
+      answers: [
+        { question: "Which linter?", labels: ["eslint"] },
+        { question: "Which checks?", labels: ["types"] },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200, await res.clone().text());
+
+  const note = registry.getNote(id)!;
+  assert.equal(note.disposition, "escalated", "left for Foreman's own write to settle");
+  assert.equal(note.lastAction, "escalated for your decision");
+});
+
+test("selecting a row retires it too, not only submitting a form", async () => {
+  // The other answer route. Both are ways of closing the ask on screen, and a fix that only
+  // covered the multi-question form would leave every single-question ask stranded.
+  const { app, registry, id } = seed(SINGLE);
+  const marker = dialogMarker(dialogFor(SINGLE));
+  registry.upsertNote(
+    id,
+    {
+      recommendation: "Postgres - the fixtures already assume it.",
+      disposition: "escalated",
+      lastAction: "escalated for your decision",
+      handledMarker: marker,
+    },
+    1000,
+  );
+
+  const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/select-option`, {
+    method: "POST",
+    headers: HEADERS,
+    // Row 2 - the projection verifies the label against the number, so they have to agree.
+    body: JSON.stringify({ number: 2, label: "eslint" }),
+  });
+  assert.equal(res.status, 200, await res.clone().text());
+
+  assert.equal(registry.getNote(id)!.disposition, "skipped");
+});
+
+test("a note about a different ask survives answering this one", async () => {
+  // The safety half, at the route. This escalation is about something other than the question
+  // on screen - Foreman raised it with no reply channel - and it is a decision the human still
+  // owes. Answering the form must not silently throw it away.
+  const { app, registry, id } = seed(FORM);
+  registry.upsertNote(
+    id,
+    {
+      recommendation: "Stop this session - it has been retrying for an hour.",
+      disposition: "escalated",
+      lastAction: "escalated for your decision",
+      handledMarker: "state:awaiting_input:41",
+    },
+    1000,
+  );
+
+  const res = await app.request(`/api/sessions/${encodeURIComponent(id)}/submit-options`, {
+    method: "POST",
+    headers: HEADERS,
+    body: JSON.stringify({
+      answers: [
+        { question: "Which linter?", labels: ["eslint"] },
+        { question: "Which checks?", labels: ["types"] },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200, await res.clone().text());
+
+  const note = registry.getNote(id)!;
+  assert.equal(note.disposition, "escalated", "still yours to decide");
+  assert.equal(note.recommendation, "Stop this session - it has been retrying for an hour.");
 });

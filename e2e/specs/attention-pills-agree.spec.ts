@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { settled } from "../fixtures/settle.ts";
 import type { Locator, Page } from "@playwright/test";
 
 /**
@@ -142,6 +143,11 @@ test("a session parked on a permission prompt is counted AND answerable", async 
   await shoot(dashboard, "pulse-both-segments", dashboard.locator(".pulse"));
 
   // And the click has to land somewhere. It used to open a modal reading "Nothing needs you".
+  //
+  // Settled first: a segment appearing re-flows every one beside it, so the pill can still be
+  // moving when the assertions above have already passed. Under the full suite's parallel load
+  // that raced the click and failed with `element was detached from the DOM`.
+  await settled(toAnswer);
   await toAnswer.click();
   const inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
   await expect(inbox).toBeVisible();

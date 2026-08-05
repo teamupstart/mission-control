@@ -163,18 +163,24 @@ function seedVersion(
 }
 
 /**
- * Poll until `check` holds, or give up.
+ * The budget for an in-process wait, matching `IN_PROCESS_WAIT_MS` in
+ * `test/session-action-runtime.test.ts` and `test/foreman-spend-delivery.test.ts`.
  *
- * 30s rather than 5s for the reason written out in `session-action-runtime.test.ts`, whose
- * identical helper was OBSERVED failing 52 ms past the old ceiling on a busy machine. These
- * async workflow waits are the slowest in the suite; a tight ceiling can only change the
- * outcome of a run that was already contending, and there it turns a slow pass into a red
- * suite. The loop still exits the instant the condition holds, so nothing healthy pays for it.
+ * Both of those raised this same 5s ceiling after watching it fail under `npm test`, where
+ * `--test-concurrency=2` puts another file's servers and spawned children on the same CPU, so a
+ * wall-clock budget measures the machine's load rather than the code's progress. This file
+ * carries a byte-identical helper and the same exposure. It has NOT been observed failing, so
+ * this is pre-emptive alignment on one house number rather than a second bug being reported.
+ *
+ * Generous costs nothing when the condition is already true - the loop returns on the first poll
+ * that sees it - and a condition that never holds still fails, just later.
  */
+const IN_PROCESS_WAIT_MS = 10_000;
+
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > 30_000) assert.fail(message);
+    if (Date.now() - started > IN_PROCESS_WAIT_MS) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }

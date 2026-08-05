@@ -41,6 +41,16 @@ export interface Pending {
   question: string;
   /** Set only for an `input` review, the one surface Foreman resolves via the API. */
   inputReviewId: string | null;
+  /**
+   * The review this ask ARRIVED as, whatever its kind - provenance, not a channel.
+   *
+   * Deliberately separate from `inputReviewId`, which answers a different question:
+   * "where may Foreman deliver a reply?". Only an `input` review is resolvable, so that
+   * field is null for a plan or a diff - and the episode record was reading it as the
+   * review id, which is why every `non-input-review` row on a real ledger stores
+   * `review_id: null` while its own marker names the review perfectly well.
+   */
+  reviewId: string | null;
   /** Whether a terminal reply can be typed (a pane exists and the ask is terminal). */
   canSend: boolean;
   /** Stable id of this waiting episode, stamped as the note's handledMarker. */
@@ -52,15 +62,22 @@ export interface Pending {
 }
 
 /**
- * A stable digest of the menu on the child's screen - the marker for a dialog episode.
+ * The marker for the ask a child is showing on screen - a stable digest of the menu.
  *
  * Digested rather than carried whole because a marker is only ever compared for equality
  * (the worker's idempotency check), and `dialogIdentity` is a JSON blob of every row's
  * number and label. Same reason, same shape, and the same 12 hex chars as
  * the other compact episode markers in this module.
+ *
+ * Exported because two callers now have to arrive at the SAME string from opposite ends.
+ * `classifyPending` mints it when Foreman first faces the ask; the answer routes rebuild it
+ * to find the note that was pinned on the ask a human has just answered themselves
+ * (`retireNoteAnsweredByYou`). A second spelling of the digest would silently retire
+ * nothing - the note would still be there, and the miss would look like the original bug.
  */
-function dialogDigest(dialog: PaneDialog): string {
-  return createHash("sha1").update(dialogIdentity(dialog)).digest("hex").slice(0, 12);
+export function dialogMarker(dialog: PaneDialog): string {
+  const digest = createHash("sha1").update(dialogIdentity(dialog)).digest("hex").slice(0, 12);
+  return `dialog:${digest}`;
 }
 
 /**
@@ -134,6 +151,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       surface: "input-review",
       question: withOfferedOptions(inputReview),
       inputReviewId: inputReview.id,
+      reviewId: inputReview.id,
       canSend: false,
       marker: `review:${inputReview.id}`,
     };
@@ -147,6 +165,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
         `The child posted a ${other.kind} titled "${other.title}" for review. You cannot ` +
         `auto-approve a ${other.kind}; write the purpose and escalate if it needs the human.`,
       inputReviewId: null,
+      reviewId: other.id,
       canSend: false,
       marker: `review:${other.id}`,
       reviewKind: other.kind,
@@ -191,6 +210,8 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       // time here would be a second copy of the menu for the model to reconcile.
       question: s.activity ?? "",
       inputReviewId: null,
+      // A screen ask is not a review, however it got onto the screen.
+      reviewId: null,
       canSend,
       // The DIALOG wins the marker whenever there is one, and this is the half that keeps the
       // fix from costing a second review per ask. `lastActivity` moves when the Notification
@@ -200,7 +221,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       // `highlighted` and `checked` on purpose, so a cursor moving in the terminal is the same
       // ask being read again - and hashing it holds the marker still for exactly as long as
       // the rows do.
-      marker: dialog ? `dialog:${dialogDigest(dialog)}` : `await:${s.lastActivity ?? s.firstSeen}`,
+      marker: dialog ? dialogMarker(dialog) : `await:${s.lastActivity ?? s.firstSeen}`,
     };
   }
   return {
@@ -208,6 +229,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
     surface: "terminal",
     question: s.activity ?? NO_QUESTION_PLACEHOLDER,
     inputReviewId: null,
+    reviewId: null,
     canSend: false,
     marker: `state:${s.state}:${s.lastActivity ?? s.firstSeen}`,
   };

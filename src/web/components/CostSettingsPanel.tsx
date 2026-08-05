@@ -27,10 +27,13 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
   return (
     <section className="settings-section">
       <p className="settings-hint settings-blurb">
-        Claude Code calculates an estimated API cost from its request usage and reports it
-        over OpenTelemetry. Mission Control applies versioned OpenAI Standard API rates to
-        Codex rollout usage. Both feed one <strong>API-equivalent estimate</strong>:
-        it is not Pro, Max, or ChatGPT plan spend, credits consumed, or an invoice.
+        Claude Code calculates an estimated API cost from its request usage. Sessions Mission
+        Control runs report it directly on their own stream; sessions it merely discovered -
+        a <code>claude</code> you started in a terminal - report it over OpenTelemetry, which
+        is what this section configures. Mission Control applies versioned OpenAI Standard API
+        rates to Codex rollout usage. All of it feeds one{" "}
+        <strong>API-equivalent estimate</strong>: it is not Pro, Max, or ChatGPT plan spend,
+        credits consumed, or an invoice.
       </p>
 
       {error && <p className="settings-error">{error}</p>}
@@ -43,6 +46,29 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         <p className="settings-hint">
           No Claude telemetry has reported yet. The <code>env</code> block only applies to
           sessions started after it was written. Codex estimates do not depend on this toggle.
+        </p>
+      )}
+
+      {status?.config.enabled && status.installed && status.exporterSilent && (
+        // The state that has no other symptom. Session spend is landing, so every signal a
+        // person would think to check reads healthy - the switch is on, the env block is in
+        // the file, the dashboard has numbers - and yet the exporter has said nothing all
+        // week, so the numbers are ONLY the sessions Mission Control drives. Anything a human
+        // started in a terminal is missing from a total that looks complete. Naming the
+        // shortfall is the whole point: the cause is usually outside this app (a Claude Code
+        // build whose metrics pipeline emits nothing, an enterprise policy, a version
+        // regression), so the useful thing the panel can do is say what is not being counted.
+        //
+        // The condition is one flag rather than the pair behind it because deciding WHEN
+        // silence is a fault needs the ledger, which is the daemon's to read. See
+        // `exporterSilentWhileActive`.
+        <p className="settings-error">
+          Claude Code has not exported telemetry to this daemon in the past week, so the
+          estimate covers only sessions Mission Control runs. Sessions you started yourself in
+          a terminal are not counted. The <code>env</code> block is present in{" "}
+          <code>{status.settingsPath}</code> and the daemon is listening, so this is Claude Code
+          declining to export - check that <code>claude</code> is current and that no managed
+          policy disables telemetry.
         </p>
       )}
 

@@ -18,9 +18,12 @@ import type {
   SdkSessionHandle,
   SdkSpec,
   SdkTurn,
+  SdkUsage,
   SessionRequest,
   SessionRequestAnswer,
 } from "../types.ts";
+import type { LlmSpendModelUsage } from "@shared/llm-spend.ts";
+import { claudeEnvelopeModels, claudeEnvelopeTurnId } from "./envelope.ts";
 import type {
   ClaudeSdkDeps,
   ClaudeSdkQuery,
@@ -840,7 +843,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     }
     if (message.type === "result") {
       this.turnActive = false;
-      this.out.emit({ kind: "turn_done", usage: null });
+      this.out.emit({ kind: "turn_done", usage: claudeTurnUsage(message, this.modelId) });
       this.refreshRateLimits();
       return;
     }
@@ -862,6 +865,57 @@ class ClaudeSdkSession implements SdkSessionHandle {
       ...(cleared ? { cleared: true as const } : {}),
     });
   }
+}
+
+/**
+ * A `result` frame's usage, in both the display shape and the ledger shape.
+ *
+ * This function is why Claude session spend exists at all. The frame has always carried
+ * `total_cost_usd`, `modelUsage` and a per-turn `uuid`; the driver used to emit
+ * `turn_done` with `usage: null` and drop all of it, on the premise that OpenTelemetry was
+ * Claude's one ledger writer and would record the same turn independently. That premise is
+ * what broke: a CLI whose metrics pipeline is inert - an export the daemon never receives,
+ * for any reason, including reasons outside this repo - takes session spend to zero with no
+ * error anywhere, because the only writer had silently stopped. Reading the figure off the
+ * stream the driver already owns removes the dependency instead of monitoring it.
+ *
+ * `modelId` on the flat view is the BOUND model, not a model from the breakdown, and the two
+ * genuinely differ: a turn that spent opus tokens and a haiku summarization is one card
+ * showing one model, so the flat view names the conversation's model while `models` keeps
+ * every id that actually served a request. The ledger reads `models`; the chip reads the rest.
+ *
+ * Returns null when the frame identifies no turn or reports no usage, which the registry
+ * treats as "nothing to write" rather than a zero-cost turn.
+ */
+export function claudeTurnUsage(
+  message: ClaudeSdkMessage,
+  boundModelId: string | null,
+): SdkUsage | null {
+  const envelope = message as unknown as Record<string, unknown>;
+  const models = claudeEnvelopeModels(envelope, boundModelId ?? "");
+  if (models.length === 0) return null;
+  const turnId = claudeEnvelopeTurnId(envelope);
+  const total = (key: keyof LlmSpendModelUsage): number =>
+    models.reduce((sum, m) => sum + (typeof m[key] === "number" ? (m[key] as number) : 0), 0);
+  // The turn's cost is the envelope's own total when it reports one. Summing the per-model
+  // figures is the fallback and not the default, because a model whose `costUSD` came back
+  // null would silently make the sum read as a complete total that is short by one model.
+  const reported = envelope.total_cost_usd;
+  const costUsd =
+    typeof reported === "number"
+      ? reported
+      : models.every((m) => m.reportedCostUsd !== null)
+        ? models.reduce((sum, m) => sum + (m.reportedCostUsd ?? 0), 0)
+        : null;
+  return {
+    input: total("input"),
+    output: total("output"),
+    cacheRead: total("cacheRead"),
+    cacheWrite: total("cacheWrite"),
+    modelId: boundModelId ?? models[0]?.modelId ?? null,
+    costUsd,
+    ...(turnId ? { turnId, models } : {}),
+  };
 }
 
 /**

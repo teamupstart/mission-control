@@ -3,8 +3,9 @@ import { unwrapEnvelope } from "./structured.ts";
 import { headlessTranscriptDir } from "../goal/prune.ts";
 import { grantRefusal } from "@shared/llm.ts";
 import { reportLlmSpend, spendReportIsRecordable } from "./spend.ts";
+import { claudeEnvelopeModels } from "../harness/claude/envelope.ts";
 import type { LlmRunOptions, LlmRunner, LlmToolGrant } from "@shared/llm.ts";
-import type { LlmSpendModelUsage, LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
+import type { LlmSpendReport, LlmSpendRole } from "@shared/llm-spend.ts";
 
 // The `claude -p` implementation of `LlmRunner`, with today's exact behaviour.
 //
@@ -63,10 +64,6 @@ export function claudeGrantSettings(grant: LlmToolGrant): string {
  */
 export { HEADLESS_CWD };
 
-function number(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-}
-
 /**
  * Turn a `claude -p --output-format json` envelope into a spend report.
  *
@@ -80,16 +77,10 @@ function number(value: unknown): number {
  * `--session-id`, which is precisely the flag that would give these runs a resumable
  * conversation and cost the context isolation the whole subsystem depends on.
  *
- * `modelUsage` is preferred over the flat `usage` block because it names the model that
- * ACTUALLY served each request. A run that asked for one model and was served by another -
- * a fallback, an alias resolving differently - would otherwise be filed under the id we
- * asked for, and the ledger's `model_id` would quietly stop meaning what it says. The flat
- * block is the fallback for an envelope that carries no per-model breakdown, and only then
- * is the requested id used.
- *
- * Note the tier convention differs from Codex's and needs no subtraction: Anthropic reports
- * `input_tokens` EXCLUSIVE of the two cache tiers, which is already what the ledger stores.
- * See `codexTokenSplit` for the other half of that story.
+ * The token reading itself lives in `claudeEnvelopeModels`, not here, because the Agent SDK
+ * driver reads the SAME payload off its `result` frame - the CLI serializes one struct for
+ * both transports. What stays here is the part that is genuinely this caller's: unwrapping
+ * stdout, and the `role`/`runId` framing a headless run needs and a driven session does not.
  */
 export function claudeSpendReport(
   raw: string,
@@ -105,40 +96,8 @@ export function claudeSpendReport(
   }
   if (!envelope || typeof envelope !== "object") return null;
   const runId = typeof envelope.session_id === "string" ? envelope.session_id : "";
-  const perModel = envelope.modelUsage;
-  const models: LlmSpendModelUsage[] = [];
-  if (perModel && typeof perModel === "object") {
-    for (const [modelId, value] of Object.entries(perModel as Record<string, unknown>)) {
-      if (!value || typeof value !== "object") continue;
-      const u = value as Record<string, unknown>;
-      models.push({
-        modelId,
-        input: number(u.inputTokens),
-        output: number(u.outputTokens),
-        // Claude reports no reasoning tier of its own; the ledger column stays 0 rather
-        // than borrowing output, which would double-count it against the token total.
-        reasoningOutput: 0,
-        cacheRead: number(u.cacheReadInputTokens),
-        cacheWrite: number(u.cacheCreationInputTokens),
-        reportedCostUsd: typeof u.costUSD === "number" ? u.costUSD : null,
-      });
-    }
-  }
-  if (models.length === 0) {
-    const usage = envelope.usage;
-    if (!usage || typeof usage !== "object") return null;
-    const u = usage as Record<string, unknown>;
-    models.push({
-      modelId: requestedModel,
-      input: number(u.input_tokens),
-      output: number(u.output_tokens),
-      reasoningOutput: 0,
-      cacheRead: number(u.cache_read_input_tokens),
-      cacheWrite: number(u.cache_creation_input_tokens),
-      reportedCostUsd:
-        typeof envelope.total_cost_usd === "number" ? envelope.total_cost_usd : null,
-    });
-  }
+  const models = claudeEnvelopeModels(envelope, requestedModel);
+  if (models.length === 0) return null;
   const report: LlmSpendReport = { role, runner: "claude", runId, ts, models };
   return spendReportIsRecordable(report) ? report : null;
 }

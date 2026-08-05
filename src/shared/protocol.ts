@@ -1811,6 +1811,27 @@ export interface CostTelemetryStatus {
    */
   receiving: boolean;
   /**
+   * True when Claude Code's exporter has been silent for a week WHILE the fleet was working.
+   *
+   * The state this describes has no other symptom. Spend for a session the daemon RUNS comes
+   * off the driver's own stream, so `receiving` is satisfied, the topbar has numbers on it and
+   * the `env` block is in the file - every signal reads healthy. But a session the daemon
+   * merely DISCOVERED, a human's terminal `claude`, has no driver, and the export is the only
+   * way its cost is ever counted. So the total looks complete while an entire category of
+   * session is missing from it.
+   *
+   * All of that is the server's to judge, which is why this arrives as one derived boolean
+   * rather than as the timestamps behind it. Silence alone is not a fault - an idle machine
+   * exports nothing because it runs nothing - session spend alone is not either, and neither
+   * is a fleet that enabled telemetry moments ago: `hasClaudeSessionUsageSince` is satisfied by
+   * a DRIVER's own rows, so it goes true seconds after the toggle is flipped, well before the
+   * exporter has had one export interval. This is false throughout that grace period, whether
+   * it started at the toggle or was backfilled for an installation that reached `installed` a
+   * different way (`npm run install-telemetry`, a hand-edited settings file, an upgrade). See
+   * `exporterSilentWhileActive`.
+   */
+  exporterSilent: boolean;
+  /**
    * Set when `OTEL_METRICS_INCLUDE_SESSION_ID` reads false anywhere we can see it. That
    * value silently destroys per-session attribution - every datapoint arrives
    * unattributable and is dropped - so it is surfaced rather than diagnosed later.

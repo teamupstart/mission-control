@@ -45,6 +45,19 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - LLM job IDs
 - LLM spend roles (`LLM_SPEND_ROLES`) - these are written into `usage_ledger.note_key` and
   queried back by exact value, so a rename orphans every historical row it wrote
+- Usage ledger writer names (`usage_ledger.writer`: `otel`, `driver`, `rollout`, `report`) -
+  which ingest produced a row, and the only thing that tells Claude's two session writers apart,
+  since both are `spend_kind = 'session'` with `cost_basis = 'reported'`. One place queries it by
+  exact value and must not be allowed to drift: `sdkOwnedNoteKey` in `src/server/db.ts`, whose
+  `writer = 'driver'` clause is what makes the OTel ingest yield for a key a driver already
+  reported. A miss there double-counts a driven session's turn. Empty string means the row
+  predates the column; nothing writes it.
+
+  Note what does NOT read this column: whether Claude Code's exporter is working. That is judged
+  on export ARRIVAL (`lastOtelExportSeenAt` and `hasClaudeSessionUsageSince`, combined in
+  `exporterSilentWhileActive` in `src/server/cost.ts`), because rows are the wrong evidence in
+  both directions - a driven session's datapoints are deliberately dropped, so a healthy exporter
+  may write none, and rows outlive an exporter that stopped by up to the 180-day retention
 - Schedule enum values
 - Ensemble strategy, driver, artifact, source, run, and member values
 - Inspector marker versions

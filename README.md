@@ -450,8 +450,9 @@ and the differences all fall the same way:
   completion channel - so it never has to wait to have reported a hook before it can hold a
   queue;
 - **Reset** clears the conversation through the driver, and the wrap-up skill and the
-  skills-reload broadcast reach it the same way. Cost is still read from the same OpenTelemetry
-  stream the interactive CLI emits, counted once.
+  skills-reload broadcast reach it the same way. Cost comes off the driver's own `result`
+  frame rather than the exporter an interactive session uses, and is counted once either way -
+  see [one writer per session](#one-writer-per-session-chosen-by-runtime).
 
 (The full design and its tradeoffs are in `docs/plans/agent-sdk-sessions/plan.md`.)
 
@@ -1064,8 +1065,12 @@ only agents whose harness can never read turns get an unsupported sentence.
 ### Cost telemetry
 
 You run a fleet; this values its usage consistently without pretending a subscription has
-a per-request dollar bill. Codex session estimates are automatic. Claude session telemetry
-is off by default; switch that on in **Settings → Cost**, or from the CLI:
+a per-request dollar bill. Codex session estimates are automatic, and so are Claude sessions
+Mission Control **runs** - an embedded session's cost is read off the driver's own message
+stream, which no setting can switch off. What the telemetry toggle below buys you is the
+sessions Mission Control merely **discovered**: a `claude` you started yourself in a terminal
+has no driver, so its cost reaches the ledger over OpenTelemetry or not at all. It is off by
+default; switch it on in **Settings → Cost**, or from the CLI:
 
 ```sh
 npm run install-telemetry     # adds an env block to ~/.claude/settings.json
@@ -1105,15 +1110,53 @@ a chip wired to them would be red by lunchtime every day. A fleet with no usage 
 reading at all renders no chip, rather than a confident `$0.00`. `Esc` or a click outside
 closes the popover; `Cost settings →` in its footer opens **Settings · Cost**.
 
-Five transports feed these figures, each kept to the facts it actually reports:
+Six transports feed these figures, each kept to the facts it actually reports:
 
 | Source | Provides |
 |---|---|
-| **OpenTelemetry** | Claude Code's locally calculated `claude_code.cost.usage` estimate and `claude_code.token.usage` by tier, per session, model, and `query_source` |
+| **Claude Agent SDK `result` frame** | what each turn of a session Mission Control runs cost, from the frame's own `total_cost_usd` and per-model `modelUsage`, keyed to the turn's `uuid` so a replayed frame cannot double-count. Read off the stream the driver already holds, so it needs no exporter, no endpoint and no setting |
+| **OpenTelemetry** | the same figures for sessions Mission Control did NOT start: Claude Code's locally calculated `claude_code.cost.usage` and `claude_code.token.usage` by tier, per session, model, and `query_source` |
 | **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows for terminal sessions; OTel has no quota metric |
 | **Claude Agent SDK usage** | the same account windows for embedded SDK sessions, refreshed when the session resumes after a daemon restart and after each completed turn |
 | **Codex rollout file** | quota windows plus request-level `last_token_usage`, including model, cached input, cache writes, output, and reasoning output. A durable byte cursor and event identity make restarts/replays idempotent |
 | **Headless run envelopes** | the app's OWN model calls: `claude -p --output-format json` reports its cost and per-model tokens, `codex exec --json` reports tokens on `turn.completed`. Read straight from the process the run already returns, so no exporter or endpoint is involved |
+
+#### One writer per session, chosen by runtime
+
+A driven session's subprocess is ordinary Claude Code, so when its exporter is working, both
+it and the driver can report the same turn. Exactly one of them is allowed to, and which one
+is decided by how the session runs rather than by which harness it is:
+
+| Session | Written by | Because |
+|---|---|---|
+| Mission Control **runs** it (Agent SDK) | the driver's `result` frame | it cannot be switched off from outside the app, and it needs no export interval to arrive |
+| Mission Control **discovered** it (terminal) | OpenTelemetry | nothing drives it, so its own export is the only report that exists |
+| Codex, either way | the rollout-file reader | it sees request-level usage the driver never receives |
+
+The exporter yields for a key a driven session owns, so a turn is recorded once whichever
+transport is healthy. That ownership **expires after an hour of no driver activity**, which
+matters because the same conversation can change hands: a session driven through the Agent SDK
+may later be continued as a plain `claude --resume` in a terminal, where nothing drives it and
+the exporter is the only party that can report its cost. Neither the session table nor the
+ledger forgets on its own, so without an expiry the guard would go on silencing that session's
+only reporter for months. An hour is far longer than the gap between a turn and its export
+(capped at 60s), so it costs nothing in the case it exists for.
+
+This replaced a rule that gave Claude a single writer - the exporter -
+for every session. That rule had one failure mode and no error path for it: an exporter that
+stops producing takes every Claude session's cost to zero, and because the ledger cannot tell
+*nothing was spent* from *nobody wrote it down*, the dashboard reads `$0.00` with nothing
+amiss anywhere. If that happens now, only discovered sessions are affected, and **Settings →
+Cost** says so in as many words instead of leaving the gap to be inferred from a total that
+looks complete.
+
+That warning is judged on the export ARRIVING, recorded as each one lands rather than inferred
+from the rows it produced. Both alternatives are unsound: a driven session's datapoints are
+deliberately discarded, so a healthy exporter on an embedded fleet writes no row at all, and rows
+live for 180 days, so "has one ever existed" would keep reporting healthy for months after the
+exporter fell silent - the very regression the warning is for. It also has to see recent session
+spend before it fires, because silence on a machine nobody is using reports nothing missing, and a
+panel that warns about a quiet weekend is one you learn to scroll past.
 
 #### What the app spends on itself
 
@@ -1176,8 +1219,9 @@ many sessions without one conversation's context bleeding into the next.
 Terminal Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
 (`npm run install-statusline`); embedded Claude SDK sessions repopulate them automatically.
 That SDK lookup is optional live enrichment: a failure neither interrupts the session nor
-clears the last valid account gauge, and it never writes cost - OpenTelemetry remains the cost
-source for Claude sessions. The estimated-cost figures don't need the wrapper, and Codex's windows need
+clears the last valid account gauge, and it never writes cost - a driven session's cost comes
+from its `result` frames and a discovered one's from OpenTelemetry, never from this lookup.
+The estimated-cost figures don't need the wrapper, and Codex's windows need
 neither - they ride in the exact rollout file reported by app-server and read by the same
 runtime metadata poller that supplies model and context figures. Telemetry and the terminal
 wrapper remain separate opt-ins because they are two different asks of your config - one adds

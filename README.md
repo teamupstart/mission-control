@@ -5774,6 +5774,7 @@ npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Se
 npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
 npx playwright install chromium # one-time setup for test:e2e (npm install does not fetch it)
 npm run smoke          # boot the built bundles and check they actually run (after build)
+npm run demo           # token-free demo daemon + dashboard on ~/.mission-control-demo (after build)
 npm run typecheck      # tsc --noEmit
 npm run lint           # oxlint over src, hooks, test, scripts, e2e (also: make lint)
 npm run install-hooks  # wire Claude hooks
@@ -5822,6 +5823,119 @@ run fails with `browserType.launch: Executable doesn't exist`.
 for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in
 bytes rather than asserted. It reads the older source out of git and never touches the
 working tree, so it is safe to run on dirty state.
+
+## Demo mode
+
+`npm run build && npm run demo` boots a second, fully isolated Mission Control - real daemon,
+real dashboard, real git, real Foreman - where every agent binary is a scripted scenario
+player instead of the real `claude`/`codex` CLI. Nothing it does spends a token: dispatch a
+task from the dashboard and watch a convincing session play out - paced assistant turns,
+`Edit`/`Write`/`Bash`/`TodoWrite` tool chips, real file edits you can see in Diff and Files, a
+waiting-on-you question, then completion - all driven by a scenario script, not a model API.
+
+State lives at `~/.mission-control-demo` (separate from `~/.mission-control`), used as both
+`MISSION_HOME` and `HOME` for the demo daemon, on its own port (7417 by default, distinct
+from the dev daemon's 7317 and the smoke test's 7519). It persists across runs - seeded
+repos, worktree edits, and all - so a curated demo survives a restart; pass `--fresh` to
+delete and rebuild it.
+
+Flags:
+
+- `--fresh` - delete the state root and rebuild it before booting.
+- `--no-foreman` - skip starting the real Foreman worker.
+- `--port <n>` - override the default port.
+- `--check` - boot, run the identity and isolation assertions, shut down, exit 0 (no
+  browser, no Foreman) - the CI-shaped smoke test for the launcher itself, in the spirit of
+  `npm run smoke`.
+
+**The one deliberate exception to "spends no tokens" is Foreman.** Unless `--no-foreman` is
+passed, the launcher starts the real `src/server/foreman/worker.ts` against the demo daemon
+with the real `claude` CLI resolution and the operator's own `HOME` (where its login lives),
+so Foreman genuinely reasons about the fake fleet and its own token spend is real. The daemon
+itself never reaches a model: `MISSION_CLAUDE_BIN`/`MISSION_CODEX_BIN`/`MISSION_PI_BIN` point
+at the scenario players installed under `~/.mission-control-demo/bin/`, and
+`ANTHROPIC_API_KEY` is blanked in the daemon's env as a second line of defense.
+
+Two sweeps that are not scoped to `MISSION_HOME` are switched off unconditionally
+(`MISSION_POLL_MS=0`, `MISSION_POOL_REAP_MS=0`) - without them the demo daemon would walk
+every process on the machine and adopt the operator's real sessions, Kill/Reset buttons
+included, or reap a shared treehouse worktree pool it does not own. With discovery off, the
+demo fleet is SDK-runtime sessions only: the launcher flips `claude`/`codex` to `sdk` through
+`PUT /api/harnesses/config`, the same route the Settings panel uses.
+
+### Scenarios
+
+Each `*.json` file under `scripts/demo/scenarios/` (installed into `<state root>/scenarios/`
+on every launch, read by the players via `MISSION_DEMO_SCENARIO_DIR`) is one scripted
+session:
+
+```json
+{
+  "title": "Fix the retry/abort race",
+  "match": ["flaky", "retry", "bug", "fix", "race"],
+  "default": true,
+  "steps": [
+    { "kind": "assistant", "text": "...", "delayMs": 700 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "npm test -- retry" }, "delayMs": 900 },
+    { "kind": "editFile", "path": "src/retry.ts", "content": "...", "delayMs": 200 },
+    { "kind": "ask", "questions": [ { "question": "...", "header": "...", "options": [{ "label": "...", "description": "..." }] } ] },
+    { "kind": "result" }
+  ]
+}
+```
+
+The player matches the dispatched intent against every scenario's `match` substrings
+(case-insensitive, checked against the task text only - never the surrounding prompt
+boilerplate, which would otherwise self-match on a RULES block's own worked examples); the
+scenario flagged `"default": true` runs when nothing matches. Steps play in order, each after
+its own `delayMs`, with the turn held open the whole time so the card stays "working."
+`assistant` steps update the activity line; `tool` steps append a tool-use chip (`name` is any
+string - `Edit`, `Write`, `Bash`, and `TodoWrite` render specially, but nothing enforces the
+set); `editFile` steps write real content into the session's cwd - the actual git worktree
+the dispatch cut - so Diff and Files fill in for real (the path must stay inside the cwd);
+`ask` steps raise an `AskUserQuestion` card and block until the dashboard answers it through
+`/api/sessions/:id/submit-options`; a scenario ends on its own `"result"` step or simply when
+it runs out of steps. Three starter scenarios ship: a bug fix (edits two files, runs a Bash
+"test", completes), a rate-limit design question that blocks mid-turn on you, and a longer
+multi-step migration so the fleet shows mixed states at a glance. Codex sessions play the same
+schema over the `codex app-server` protocol, with one gap: Codex's real "waiting on you"
+moment is an approval request, not `AskUserQuestion`, and this phase does not implement it -
+an `ask` step on a Codex session narrates the question as prose instead of blocking, so a
+scenario written for Claude does not stall a Codex run.
+
+**`pi` plays scenarios too** (`fake-pi.mjs`), writing pi's own real transcript shape - one
+JSON `message` record per line under `~/.pi/agent/sessions/--<encoded cwd>--/`, exactly the
+path and record shape `src/server/harness/pi/transcript.ts` reads back (verified directly
+against that module's own `piToMessage` and `computePiSessionActivity`, not assumed). pi has
+no control wire at all (`hooks: null`, `sdk: null`), so there is nothing to speak on stdio -
+the transcript file is the *entire* channel, and this player writes real turns, real tool
+calls, and real file edits into it, the same scenario schema as its Claude and Codex siblings.
+An `ask` step degrades to narration for the same reason it does on Codex: pi has no
+`AskUserQuestion`-equivalent channel to block a turn on.
+
+**What playing a scenario cannot do anything about: getting the resulting session adopted
+onto the dashboard.** This is a hard architectural floor, confirmed against the actual code
+rather than assumed, and it is orthogonal to whether the player itself works (it does):
+
+1. `pi`'s harness registry entry sets `sdk: null` (`src/server/harness/index.ts`), whose own
+   comment says plainly: "Phase 6 fills this with pi's `--mode rpc` adapter." That adapter
+   does not exist yet, for `pi` in any mode, real dispatch or demo - building one belongs
+   under `src/server/harness/pi/`, an unrelated, unscoped harness-roadmap feature this task's
+   "do not modify `src/`" rule puts out of reach.
+2. `pi`'s only real path is a terminal pane a person types into. But `Dispatcher`'s terminal
+   branch (`src/server/dispatcher.ts`) waits for a dispatched pane via
+   `registry.waitForSessionAtCwd`, fed by the same passive discovery sweep this plan calls a
+   *non-negotiable* isolation guard (`MISSION_POLL_MS=0`) - turned back on, the demo daemon
+   would walk every process on the machine and adopt the operator's real sessions, Kill/Reset
+   buttons included, for every agent in the demo, not only `pi`.
+
+So a `pi` task dispatched from the demo dashboard today will not appear as a live card, even
+though `fake-pi.mjs` genuinely executes the scenario behind it (confirmed by running it
+standalone and parsing its output with pi's own product parser). This was investigated across
+three review rounds; the last two insisted on a literal player regardless of the adoption
+gap, so this final round built one - but closing the adoption gap itself would mean either
+building the unbuilt RPC adapter above or reopening the isolation hazard `MISSION_POLL_MS=0`
+exists to close, neither of which this phase should do unilaterally.
 
 ## Security
 

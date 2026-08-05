@@ -1,0 +1,18 @@
+{
+  "title": "Fix the retry/abort race",
+  "match": ["flaky", "retry", "bug", "fix", "race"],
+  "default": true,
+  "steps": [
+    { "kind": "assistant", "text": "Let's look at the retry helper first - that's the usual suspect for a flaky test.", "delayMs": 700 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "npm test -- retry" }, "delayMs": 900 },
+    { "kind": "assistant", "text": "Found it: the backoff timer keeps running after the AbortSignal fires, so a retry can land after the caller gave up. Patching retry.ts and its test.", "delayMs": 900 },
+    { "kind": "tool", "name": "Edit", "input": { "file_path": "src/retry.ts", "description": "clear the backoff timer and check the signal before and during the wait" }, "delayMs": 700 },
+    { "kind": "editFile", "path": "src/retry.ts", "content": "export interface RetryOptions {\n  retries: number;\n  delayMs: number;\n  signal?: AbortSignal;\n}\n\n/** Retry an async operation with a fixed delay between attempts, honoring `signal`. */\nexport async function retry<T>(fn: () => Promise<T>, opts: RetryOptions): Promise<T> {\n  let attempt = 0;\n  for (;;) {\n    if (opts.signal?.aborted) throw new Error(\"retry aborted\");\n    try {\n      return await fn();\n    } catch (err) {\n      attempt += 1;\n      if (attempt >= opts.retries) throw err;\n      await new Promise<void>((resolve, reject) => {\n        const timer = setTimeout(resolve, opts.delayMs);\n        opts.signal?.addEventListener(\n          \"abort\",\n          () => {\n            clearTimeout(timer);\n            reject(new Error(\"retry aborted\"));\n          },\n          { once: true },\n        );\n      });\n    }\n  }\n}\n", "delayMs": 200 },
+    { "kind": "tool", "name": "Edit", "input": { "file_path": "src/retry.test.ts", "description": "add a regression test for abort during backoff" }, "delayMs": 700 },
+    { "kind": "editFile", "path": "src/retry.test.ts", "content": "import assert from \"node:assert/strict\";\nimport test from \"node:test\";\nimport { retry } from \"./retry.ts\";\n\ntest(\"retries until success\", async () => {\n  let calls = 0;\n  const result = await retry(\n    async () => {\n      calls += 1;\n      if (calls < 3) throw new Error(\"not yet\");\n      return \"ok\";\n    },\n    { retries: 5, delayMs: 1 },\n  );\n  assert.equal(result, \"ok\");\n  assert.equal(calls, 3);\n});\n\ntest(\"stops retrying once the signal is aborted\", async () => {\n  const controller = new AbortController();\n  const attempt = retry(\n    async () => {\n      throw new Error(\"still failing\");\n    },\n    { retries: 10, delayMs: 50, signal: controller.signal },\n  );\n  controller.abort();\n  await assert.rejects(attempt, /retry aborted/);\n});\n", "delayMs": 200 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "npm test -- retry" }, "delayMs": 1200 },
+    { "kind": "assistant", "text": "Both tests pass now. The retry loop no longer fires after an abort.", "delayMs": 500 },
+    { "kind": "tool", "name": "TodoWrite", "input": { "todos": [ { "content": "Fix the retry/abort race", "activeForm": "Fixing the retry/abort race", "status": "completed" } ] }, "delayMs": 0 },
+    { "kind": "result" }
+  ]
+}

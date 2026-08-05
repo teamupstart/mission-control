@@ -107,7 +107,10 @@ export function SessionTile({
     return () => registerWorkflowDisclosure(session.id, null);
   }, [registerWorkflowDisclosure, session.id, toggleWorkflowExpanded, workflowRunId]);
 
-  const droppable = canAcceptTask(session, draggingRepo);
+  // The run rides along so a held tile refuses the drop: handing work over resets the agent,
+  // and the run owns its next turn. Same source as the `held` flag above, so the tag and the
+  // refusal cannot disagree about one tile.
+  const droppable = canAcceptTask(session, draggingRepo, workflowRun);
 
   return (
     <div

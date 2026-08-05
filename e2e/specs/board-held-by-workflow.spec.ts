@@ -216,6 +216,49 @@ test("the idle column separates the agents you can dispatch to from the ones a r
   await shoot(dashboard, "idle-column-split");
 });
 
+test("a held tile refuses the backlog drop a free tile still offers", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The drop is a reset: `dropTaskOnSession` hands the card over with `reset: true`, which
+  // would yank a held agent out from under its run. `canAcceptTask` takes the tile's run for
+  // exactly this reason, so the held tile must not light up, must not hint, and must not
+  // accept - while its free neighbour keeps the whole affordance.
+  await dispatchIdleAgent(dashboard, daemon, "stay free for the drop");
+  const held = await dispatchIdleAgent(dashboard, daemon, "get held before the drop");
+  await openRunOn(daemon, held, "drop");
+  await api(daemon, "/api/tasks", {
+    repoRoot: daemon.repo,
+    title: "Hand me to someone",
+    intent: "A card to drag at the idle column.",
+    backlog: true,
+  });
+
+  await useBoardLayout(dashboard, daemon);
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  await expect(idle.locator(".fleet-section-held")).toBeVisible();
+  const card = dashboard.locator(".bl-card", { hasText: "Hand me to someone" });
+  await expect(card).toBeVisible();
+
+  // A real HTML5 dragstart with a real DataTransfer, so the drag runs exactly the handler a
+  // person's drag runs - which tiles may accept is board STATE, and stubbing it would test
+  // the stub.
+  const dataTransfer = await dashboard.evaluateHandle(() => new DataTransfer());
+  await card.dispatchEvent("dragstart", { dataTransfer });
+
+  const tiles = idle.locator(".tile");
+  await expect(tiles).toHaveCount(2);
+  await expect(tiles.nth(0)).toHaveClass(/can-drop/);
+  await expect(tiles.nth(0).locator(".tile-drop-hint")).toHaveText("↳ drop to hand this over");
+  await expect(tiles.nth(1)).toHaveClass(/is-held/);
+  await expect(tiles.nth(1)).not.toHaveClass(/can-drop/);
+  await expect(tiles.nth(1).locator(".tile-drop-hint")).toHaveCount(0);
+
+  // Ending the drag clears the one affordance that was offered.
+  await card.dispatchEvent("dragend", { dataTransfer });
+  await expect(idle.locator(".tile.can-drop")).toHaveCount(0);
+});
+
 test("the console rail draws the same rule, since the ordering it renders is shared", async ({
   dashboard,
   daemon,
@@ -242,6 +285,20 @@ test("the console rail draws the same rule, since the ordering it renders is sha
   await expect(rail.locator(".fleet-section-held")).toContainText("held by a workflow");
   // The rail is denser than a board column, so it keeps the label and drops the sentence.
   await expect(rail.locator(".fleet-section-why")).toBeHidden();
+
+  // The board's drilled-in column is the SAME RailRow rendering at the same width, so it must
+  // read the same way: label kept, sentence dropped. Reached by actually drilling in, because
+  // the claim is about a surface a person arrives at, not about a selector.
+  await useBoardLayout(dashboard, daemon);
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  await expect(idle.locator(".fleet-section-why")).toBeVisible();
+  // The click lands on the tile ROOT: the labelled `.tile-open` button is the keyboard half
+  // of the open gesture and deliberately takes no pointer events.
+  await idle.locator(".tile").first().click();
+  const drilled = dashboard.locator("section.board-col.is-rail");
+  await expect(drilled).toBeVisible();
+  await expect(drilled.locator(".fleet-section-held")).toContainText("held by a workflow");
+  await expect(drilled.locator(".fleet-section-why")).toBeHidden();
 });
 
 test("a run that reaches a terminal status releases its session back to free", async ({

@@ -17503,12 +17503,16 @@ span.line-run-prov {
   line-height: 1.45;
   color: var(--dim);
 }
-/* The rail is denser than a board column and its rows are already tight, so the rule
-   loses the sentence there and keeps only the label. */
-.console-rail .fleet-section {
+/* A rail is denser than a board column and its rows are already tight, so the rule loses
+   the sentence there and keeps only the label. BOTH rails: the console's, and the board
+   column a drill-in pins to the left - they render the same RailRow at the same widths,
+   and the whole point of sharing that rendering is that the two read alike. */
+.console-rail .fleet-section,
+.board-col.is-rail .fleet-section {
   padding: 6px 10px 2px;
 }
-.console-rail .fleet-section-why {
+.console-rail .fleet-section-why,
+.board-col.is-rail .fleet-section-why {
   display: none;
 }
 
@@ -18297,19 +18301,10 @@ span.line-run-prov {
   border-color: color-mix(in oklab, var(--held) 30%, var(--border));
   background: linear-gradient(color-mix(in oklab, var(--held) 7%, var(--panel)), var(--panel-2));
 }
-/* A held tile that is ALSO a live drop target keeps the drop highlight.
-   `.tile.can-drop` is declared earlier in this file at equal specificity, so the held tint
-   above silently won and the tile stopped lighting up during a backlog drag - while still
-   accepting the drop, because `canAcceptTask` (BacklogColumn.tsx) reads only tone, repo and
-   `instrumented` and knows nothing about workflow runs. An affordance that is live but
-   invisible is worse than one that is merely wrong, so the highlight is restored here rather
-   than left to the cascade.
-   The deeper issue is that this combination should not arise: handing a backlog task to a
-   held agent resets it mid-run. Teaching `canAcceptTask` about open runs is the fix, and is
-   deliberately NOT done here - it changes what a drop DOES, not how the board reads. */
-.tile.is-held.can-drop {
-  border-color: color-mix(in oklab, var(--select) 55%, var(--border));
-}
+/* `.is-held.can-drop` has no rule because the combination cannot arise: `canAcceptTask`
+   (BacklogColumn.tsx) takes the tile's workflow run and refuses a session an open run holds,
+   so a held tile never lights up, never hints, and never accepts a backlog drop. The drop is
+   a reset, and resetting an agent mid-run is exactly what the held marking exists to stop. */
 .tile-held {
   flex: none;
   padding: 1px 7px;

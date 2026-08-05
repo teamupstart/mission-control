@@ -44,7 +44,7 @@ directory, keeping filenames byte-identical.
 | --- | --- | --- |
 | `foremanInstructionsPath()` resolves `../../personas/FOREMAN.md` | `src/server/config.ts:64` | The `../../` prefix is the one expression that reaches the repo root in dev and the app root when packaged; the file moves one directory deeper on both sides at once |
 | Ship `personas/FOREMAN.md` | `electron-builder.yml:38` (`files:` allowlist) | The packaged app reads the seed at the app root; the allowlist entry must follow the file |
-| Inspector brief looks for `personas/INSPECTOR.md` first, then falls back to root `INSPECTOR.md` | `src/server/inspector/brief.ts` (`BRIEF_FILENAME`, `loadBrief`) | The brief resolves against the *reviewed repo's* root. Without a code change, moving this repo's copy silently downgrades its own reviews to `DEFAULT_BRIEF` with no failing test. The fallback keeps every other repo's existing convention working |
+| Inspector brief looks for `personas/INSPECTOR.md` first, then falls back to root `INSPECTOR.md` | `src/server/inspector/brief.ts` (`BRIEF_FILENAME`, `readBrief`) | The brief resolves against the *reviewed repo's* root. Without a code change, moving this repo's copy silently downgrades its own reviews to `DEFAULT_BRIEF` with no failing test. The fallback keeps every other repo's existing convention working |
 | Generator source dir and glob | `scripts/builtin-personas.ts:22,27` | `sourceGlob` is baked into the generated header, so regenerate in the same commit or the drift test fails |
 | Regenerate | `src/server/workflows/builtin-personas.generated.ts` | Never hand-edited |
 | Test path constants | `test/builtin-personas.test.ts:32`, `test/seed-personas.test.ts:28` | Both pin `docs/personas` |

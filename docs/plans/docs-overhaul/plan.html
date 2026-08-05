@@ -104,7 +104,7 @@ directory, keeping filenames byte-identical.</p>
   <tr>
     <td>Inspector brief looks for <code>personas/INSPECTOR.md</code> first, then falls back to root
     <code>INSPECTOR.md</code></td>
-    <td><code>src/server/inspector/brief.ts</code> (<code>BRIEF_FILENAME</code>, <code>loadBrief</code>)</td>
+    <td><code>src/server/inspector/brief.ts</code> (<code>BRIEF_FILENAME</code>, <code>readBrief</code>)</td>
     <td>The brief resolves against the <em>reviewed repo's</em> root. Without a code change, moving this
     repo's copy silently downgrades its own reviews to <code>DEFAULT_BRIEF</code> with no failing test.
     The fallback keeps every other repo's existing convention working</td>

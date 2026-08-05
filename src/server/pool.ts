@@ -11,12 +11,13 @@ import {
   leaseGeneration,
   leasedSince,
   leasePendingRegistration,
+  TREEHOUSE_BIN,
   withPoolLock,
   type PoolDeps,
 } from "./pool-lease.ts";
 import type { Registry } from "./registry.ts";
 import { listRepos } from "./repos.ts";
-import { run, type RunResult } from "./util/exec.ts";
+import { hasBin, run, type RunResult } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
 import { unref } from "./util/timers.ts";
 
@@ -165,6 +166,39 @@ export function reapIntervalMs(): number | null {
 /** A repo opts into the pool by committing a `treehouse.toml` at its root. */
 export function isTreehouseRepo(repoRoot: string): boolean {
   return existsSync(join(repoRoot, "treehouse.toml"));
+}
+
+/**
+ * Whether the pool binary is resolvable at all.
+ *
+ * **The half that was missing on the check path, and the only half a check asks.** It takes
+ * no repository argument, and that is the point rather than an omission: a check must keep
+ * working in a repository that never committed a `treehouse.toml`. `treehouse get` succeeds
+ * there today, creating a pool from its own defaults, so folding `isTreehouseRepo` in here
+ * would stop every such repository getting a pooled tree for its checks - a real behaviour
+ * change wearing a bug fix's clothes, and one that silently answers a design question
+ * (what counts as opting in?) that is deliberately filed separately.
+ *
+ * So this is named on its own rather than existing only inside the conjunction below. If a
+ * later reader "tidies" the check call site into `poolAvailableFor`, they ship that deferred
+ * decision by accident - which is the reason both predicates are spelled out here, together,
+ * where the difference between them is readable in one screen.
+ */
+export async function treehouseInstalled(): Promise<boolean> {
+  return hasBin(TREEHOUSE_BIN);
+}
+
+/**
+ * The full dispatch gate: the binary is there AND this repository opted in.
+ *
+ * `provisionWorktree`'s question, and it used to be spelled inline at its one call site -
+ * which is how the check path came to have no gate at all. Both halves live in this module
+ * now, beside the opt-in predicate they are built from, so the next subsystem that wants a
+ * worktree finds the question already answered instead of making the same omission a third
+ * time.
+ */
+export async function poolAvailableFor(repoRoot: string): Promise<boolean> {
+  return (await treehouseInstalled()) && isTreehouseRepo(repoRoot);
 }
 
 /**

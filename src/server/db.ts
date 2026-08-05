@@ -708,6 +708,16 @@ export function openDb(): DatabaseSync {
       cleanup_state          TEXT    NOT NULL,
       supervisor_pid         INTEGER NOT NULL,
       supervisor_start_ticks TEXT    NOT NULL,
+      -- WHICH provider handed this tree over, and therefore which one must take it back.
+      -- Read from the row on every release and NEVER re-probed from the current machine:
+      -- that is the entire reason the column exists. A tree taken from the pool has to go
+      -- back to the pool after the operator uninstalls treehouse, and a plain git worktree
+      -- must never be handed to "treehouse return" because the binary reappeared.
+      --
+      -- NOT NULL DEFAULT 'treehouse', which is historically ACCURATE rather than merely
+      -- convenient - see the migration in migrate(), and the warning about nullable columns
+      -- a few lines above, which this default is what keeps clear of.
+      provider               TEXT    NOT NULL DEFAULT 'treehouse',
       created_at             INTEGER NOT NULL,
       updated_at             INTEGER NOT NULL
     );
@@ -1828,6 +1838,22 @@ function migrate(d: DatabaseSync): void {
   // never selects on this column.
   addColumn(d, "workflow_definitions", "resumption_policy", "TEXT");
   addColumn(d, "workflow_versions", "resumption_policy", "TEXT");
+
+  // Which provider handed a check its worktree. Editing the CREATE TABLE block above is not
+  // enough - it is IF NOT EXISTS, so an operator upgrading into this build keeps the table
+  // they already have and every lease write would fail on a column that never appeared.
+  //
+  // NOT NULL DEFAULT 'treehouse' is a FACT rather than a fallback, and that distinction is
+  // the whole migration. Every row that can exist before this column did was written by a
+  // build in which the pool was the only way a check could get a tree, so 'treehouse' is
+  // what those rows genuinely are - which is what keeps this clear of the trap the table's
+  // own comment warns about, where a NULL is indistinguishable from a row written by a build
+  // that did not set the column. Here the release path would have to guess, and a wrong
+  // guess hands a git worktree to `treehouse return` or abandons a pool slot for good.
+  //
+  // No backfill statement and no index: the default IS the backfill, and the only reader
+  // selects the row it already has by primary key.
+  addColumn(d, "workflow_check_leases", "provider", "TEXT NOT NULL DEFAULT 'treehouse'");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather

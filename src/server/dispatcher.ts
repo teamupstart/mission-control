@@ -23,12 +23,11 @@ import {
 } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
-import { isTreehouseRepo, poolPins, reapPool, type PoolPins } from "./pool.ts";
+import { poolAvailableFor, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import {
   acquireLease,
   defaultTreehouseCli,
   settleLease,
-  TREEHOUSE_BIN,
   withPoolLock,
   type TreehouseCli,
 } from "./pool-lease.ts";
@@ -36,7 +35,7 @@ import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from ".
 import type { Registry } from "./registry.ts";
 import { resetWorktreeToCommit, verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import { missionMcpDescriptor, type MissionMcpRequirement } from "./mission-mcp.ts";
-import { run, type RunResult } from "./util/exec.ts";
+import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
@@ -770,7 +769,12 @@ export async function provisionWorktree(
     throw new Error(`${repoRoot} is not a git repository`);
   }
 
-  if ((await hasBin(TREEHOUSE_BIN)) && isTreehouseRepo(repoRoot)) {
+  // The gate is no longer spelled here. Both halves live in `pool.ts` beside
+  // `isTreehouseRepo`, because this used to be the ONLY place in the codebase that asked
+  // whether the pool is usable - and the Workflow check path, which needs the same answer,
+  // therefore never asked it at all. A check asks the binary half alone
+  // (`treehouseInstalled`); this is the full gate, opt-in included.
+  if (await poolAvailableFor(repoRoot)) {
     // Each acquisition takes the pool lock on its own rather than one held across the
     // whole arm: `reapPool` below takes the same lock per candidate, and this lock is
     // deliberately not reentrant, so holding it here would deadlock against the reap that
@@ -1079,17 +1083,6 @@ async function currentBranch(dir: string): Promise<string | null> {
   const r = await run("git", ["-C", dir, "rev-parse", "--abbrev-ref", "HEAD"]);
   const b = r.stdout.trim();
   return r.code === 0 && b && b !== "HEAD" ? b : null;
-}
-
-async function resolveBinPath(bin: string): Promise<string | null> {
-  if (bin.includes("/")) return existsSync(bin) ? bin : null;
-  const r = await run("which", [bin]);
-  const p = r.stdout.trim().split("\n")[0];
-  return r.code === 0 && p ? p : null;
-}
-
-async function hasBin(bin: string): Promise<boolean> {
-  return (await resolveBinPath(bin)) !== null;
 }
 
 /**

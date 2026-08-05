@@ -194,11 +194,10 @@ function spoolRunIds(path: string): string[] {
 /**
  * The budget for a wait whose condition depends on a SPAWNED reporter reaching the server.
  *
- * Two seconds is right for the in-process waits below - a flush is a tick away - and wrong
- * for this one by an order of magnitude. The condition here needs a `node --import tsx`
- * child to boot, compile TypeScript and complete an HTTP POST, which is around a second on
- * an idle machine and several under `npm test`, where two test files run concurrently and
- * every other one is spawning something too.
+ * The condition here needs a `node --import tsx` child to boot, compile TypeScript and
+ * complete an HTTP POST, which is around a second on an idle machine and several under
+ * `npm test`, where two test files run concurrently and every other one is spawning
+ * something too.
  *
  * It flaked for exactly that reason, and the flake was expensive out of proportion to
  * itself: the case that timed out here left `delayedRunId` set and a child parked on a
@@ -213,7 +212,23 @@ function spoolRunIds(path: string): string[] {
  */
 const SPAWN_WAIT_MS = 30_000;
 
-async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+/**
+ * The default budget for an in-process wait - no spawn, no compile, nothing off-box.
+ *
+ * Two seconds was the original default on the theory that a flush here is a tick away, and
+ * on an idle machine it is. It is not on a shared CI runner: `test-concurrency=2` keeps
+ * another file's HTTP servers, retries and spawned children busy on the same event loop and
+ * the same CPU, and this file's own drained-queue assertions mean one slow poll fails not
+ * just its own case but every case after it, cascading down the file. `eventually` at
+ * `test/foreman-spend-delivery.test.ts:645` timed out at exactly this default under CI load
+ * with nothing wrong in the code it was testing - the delivery landed, `received` just took
+ * longer than 2 seconds to say so. Same reasoning as `SPAWN_WAIT_MS` above: generous costs
+ * nothing when the condition is already true, and 2 seconds bought nothing here but a false
+ * failure.
+ */
+const IN_PROCESS_WAIT_MS = 10_000;
+
+async function eventually(check: () => boolean, timeoutMs = IN_PROCESS_WAIT_MS): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if (check()) return;
@@ -714,7 +729,7 @@ test("an acknowledged report is removed by identity, not by position", async () 
   delayedRunId = null;
   delayedResponse?.writeHead(204).end();
   delayedResponse = null;
-  await eventually(() => pendingSpendReports() === 0, 4_000);
+  await eventually(() => pendingSpendReports() === 0);
   // Asserted on POST ATTEMPTS rather than on `received`, because the harness parks the
   // delayed request before recording it - so `attempted` is the only place the in-flight
   // send appears at all.

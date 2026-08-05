@@ -3042,8 +3042,9 @@ whole run, so their query count does not grow with the number of submissions.
 ### Watching a run
 
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
-ladder in the **Workflows** tab (<kbd>y</kbd>). Passed stages collapse, the active or failed stage names its
-members, and an objection, Inspector wait, session-action wait, or uncertain delivery opens in
+ladder in the **Workflows** tab (<kbd>y</kbd>). Every stage names its members and each member's own
+status, so a stage that folded to `All passed` still says which reviewers and checks passed it,
+and an objection, Inspector wait, session-action wait, or uncertain delivery opens in
 place. A workflow whose final gate is Inspector ends the ladder with a fixed `Inspector` rung
 *after* the End outcome, marked `Fixed`, reading `Not reached` until the run gets there.
 Preview feedback can be copied there. The failing rung also reports a member that has failed consecutive

@@ -263,14 +263,43 @@ processes that were live throughout and are not the demo:
 ```
 $ npm run typecheck          # clean
 $ npm run lint               # exit 0
-$ npm test                   # tests 5998 | pass 5998 | fail 0
+$ npm test                   # tests 6000 | pass 6000 | fail 0
 $ npm run build              # ok
 $ npm run smoke              # [smoke] ok
+$ npm run test:e2e           # 125 passed, 2 skipped
 $ npm run demo -- --check    # [demo] --check: ok
 ```
 
-`test/demo-seed.test.ts` adds 17 cases over the seeder's pure half - scenario routing for
-every seeded intent, and every request body parsed with the daemon's OWN Zod schema
-(`DispatchSchema`, `CreateScheduleSchema`, `CreatePersonaSchema`, `CreateWorkflowSchema`,
-`SpendReportSchema`) so a tightened schema fails here rather than as a wall of 400s during
-someone's demo.
+CI agrees on a clean machine: `check (node 24)` and `check (node 26)` both pass on this
+branch's head.
+
+One note on the local suite, because a reader looking at intermediate output would otherwise
+be misled. An earlier local run reported three failures, two of them with durations around
+**16 minutes** for tests that normally take seconds. That was self-inflicted contention: two
+`npm test` invocations and a `npm run demo -- --check` were running on the same machine at
+once. Re-run alone, the suite is green and the worst offender
+("a Manual binding blocks Straight to PR and a failed card write stays retryable") takes
+**11s** rather than 938s. Nothing in this PR touches those code paths - it adds no `src/`
+changes at all.
+
+`test/demo-seed.test.ts` adds 19 cases over the seeder's pure half:
+
+- **Scenario routing** for every seeded intent, including that none may fall through to the
+  default. This caught a real bug during development - the health-probe task fell through and
+  narrated a retry/abort fix - which is why a fourth seed scenario exists.
+- **Every request body parsed with the daemon's OWN Zod schema** (`DispatchSchema`,
+  `CreateScheduleSchema`, `CreatePersonaSchema`, `CreateWorkflowSchema`, `SpendReportSchema`),
+  so a tightened schema fails here rather than as a wall of 400s during someone's demo. Plus
+  the `timeUnixNano`-must-be-a-digit-string trap (a float there is silently dropped by
+  `nanoString`, giving an empty cost chip) and the unique-`runId` requirement (the automation
+  insert is `ON CONFLICT DO NOTHING`, so a duplicate silently drops a row).
+- **`holdSignals` ordering**, pinned as ordering rather than by racing a real daemon - the same
+  approach `scripts/demo/launch.test.mjs` takes with `createShutdownGate`. The leak it guards is
+  the stale listener: the seed wires signals to its daemon for minutes, `main` then boots a
+  second one, and a release that missed a handler would leave a signal stopping the daemon the
+  operator is no longer looking at.
+
+An interactive Ctrl-C reaches the seeder's daemon through the foreground process group anyway
+(verified: interrupting a `--check` mid-flight left nothing listening on its port). `holdSignals`
+makes that cleanup explicit and ordered, and covers the case the process group does not - a
+signal sent to the launcher alone.

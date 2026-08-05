@@ -188,6 +188,7 @@ import {
   setSessionEffort,
   driverEffortTargetResult,
   defaultPaneDeps,
+  formDelivered,
   submitPaneForm,
   validateSessionName,
   validateSessionNameAgainstTasks,
@@ -408,6 +409,18 @@ async function answerDriverRequest(
  * clears it off the session, and the marker has to be the one Foreman minted from the ask
  * that was on screen. Foreman's own sends are excluded - it writes its own note when its
  * verdict is applied, and crediting them to you would put your name on its decision.
+ *
+ * CALL THIS ONLY ONCE THE ANSWER HAS REACHED THE CHILD, which is not the same as `ok`. A
+ * pane form reports `ok` for two states that delivered nothing: `next-question`, where the
+ * ticks stand and the walk moved to the following question - and a form's answers reach the
+ * agent only when its Submit tab is confirmed, so nothing has been sent yet - and
+ * `unanswered`, where Claude's review tab reported a gap and the walk bounced back to the
+ * same question. Both leave the agent blocked on the ask the note names, so retiring there
+ * drops a decision that is still owed. That is the failure this function's marker check
+ * exists to prevent, arriving through the outcome instead of through the marker.
+ *
+ * The driver branch needs no such gate: resolving the `canUseTool` callback answers the whole
+ * request at once, so it has no partial state to report.
  */
 function retireForemanNoteForDialog(
   registry: Registry,
@@ -2064,7 +2077,9 @@ export function buildApp(
       );
     }
     const r = await submitPaneForm(session, options);
-    if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
+    // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
+    // nothing, and retiring on either drops a decision that is still owed.
+    if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
     return c.json(r, r.ok ? 200 : 409);
   });
 

@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { episodeOutcome } from "../src/shared/foreman.ts";
+import { formDelivered } from "../src/server/actions.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { FormOutcome } from "../src/shared/protocol.ts";
 
 // Retiring a Foreman note when the human answered the ask themselves.
 //
@@ -170,6 +172,37 @@ test("a drafted reply awaiting your OK is retired too", () => {
 
   assert.equal(registry.retireNoteAnsweredByYou(sessionId, MARKER, 2000), true);
   assert.equal(registry.getNote(sessionId)!.disposition, "skipped");
+});
+
+// ---- what counts as an answer on a pane form -----------------------------------------
+//
+// The retire has a second precondition beyond the marker, and missing it was a real defect
+// caught in review: `/submit-options` gated on `ok`, and a pane form reports `ok` for two
+// states that delivered nothing. On the first screen of a multi-question `AskUserQuestion`
+// the ticks stand and the walk advances - but a form's answers reach the agent only when its
+// Submit tab is confirmed - so the note was retired while the agent was still blocked on the
+// very ask it named. That is the same class of failure the marker check exists to prevent,
+// arriving through the outcome instead.
+
+test("only a submitted form counts as delivered", () => {
+  assert.equal(formDelivered({ ok: true, outcome: "submitted" }), true);
+});
+
+test("every other form outcome is undelivered, so nothing may be retired on it", () => {
+  // Enumerated from the type's own vocabulary rather than spot-checked, so a NEW partial
+  // outcome is covered the day it is added: `formDelivered` allowlists `submitted` alone, and
+  // this asserts the complement stays false without needing to be told about each new member.
+  const partial: Exclude<FormOutcome, "submitted">[] = ["next-question", "unanswered"];
+  for (const outcome of partial) {
+    assert.equal(formDelivered({ ok: true, outcome }), false, `${outcome} sent the child nothing`);
+  }
+});
+
+test("an ok with no outcome at all is not delivery either", () => {
+  // The safe default. A caller that grows a new `ok` path without saying what happened must
+  // not have it read as an answer.
+  assert.equal(formDelivered({ ok: true }), false);
+  assert.equal(formDelivered({ ok: false, error: "no menu on screen" }), false);
 });
 
 test("a session with no note, and an unknown session, are quiet no-ops", () => {

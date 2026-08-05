@@ -2571,7 +2571,7 @@ historical - a Persona you imported from these documents before they shipped bui
 the name it already reserved, and the built-in it shadows stays hidden behind your copy.
 Archive or rename your copy to see the built-in.
 
-The authored Markdown is in this repository under `docs/personas/`, one document per role,
+The authored Markdown is in this repository under [`personas/`](personas/), one document per role,
 and it is compiled into the build - run `npm run personas` after editing one, and commit the
 generated module. Each document's first level-one heading is the Persona's name and the
 paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
@@ -3681,8 +3681,9 @@ want these calls made. They are read into every review, every work-item verifica
 permission asks on its own and never escalates them, so instructions it couldn't see would be
 silently skipped on the highest-volume path in the system.
 
-The defaults ship as [`FOREMAN.md`](FOREMAN.md) at the app root - ordinary markdown you can read
-and edit. Write what you would say if you were looking over its shoulder:
+The defaults ship as [`personas/FOREMAN.md`](personas/FOREMAN.md), under the app root beside the
+rest of the [persona documents](personas/) - ordinary markdown you can read and edit. Write what
+you would say if you were looking over its shoulder:
 
 ```markdown
 ## What I care about, in order
@@ -3714,7 +3715,7 @@ With no instructions the section renders as nothing at all, and a test pins that
 changes only that block, leaving the rest of every prompt byte-for-byte identical.
 
 > **Next:** these move into a dashboard setting, stored in the database and editable from
-> **Settings → Foreman**. `FOREMAN.md` stays the seed a fresh install starts from; once you save
+> **Settings → Foreman**. `personas/FOREMAN.md` stays the seed a fresh install starts from; once you save
 > your own, the file is only what "Reset to default" restores. The plumbing is already in place -
 > `GET`/`PUT /api/foreman/instructions`, stored under `app_config`, with empty and unset kept
 > distinct so clearing the box means "judge on your own policy" rather than silently reinstating
@@ -5127,7 +5128,7 @@ instead. The command bar is unaffected either way: it is nothing but keycaps.
 ## Inspector (automated PR review)
 
 The Inspector reviews the pull requests **Mission Control opened** - and only those -
-against a repo-root `INSPECTOR.md`, leaves inline review comments for what it finds,
+against the reviewed repo's [`INSPECTOR.md`](#inspectormd), leaves inline review comments for what it finds,
 answers replies in its own threads, re-reviews on every push, and resolves its own
 threads once a push fixes what they were about. When a live review finds nothing further
 and every earlier Inspector finding is resolved, it leaves one top-level comment for that
@@ -5208,12 +5209,20 @@ resolution - it surfaces issues and resolves what later pushes fix.
 
 ### INSPECTOR.md
 
-Put one at the repo root. It tells the Inspector what the project cares about and, as
-importantly, what not to comment on - an automated reviewer that pattern-matches style
-nits is worse than none. This repo's own is [`INSPECTOR.md`](INSPECTOR.md). A repo without
-one is reviewed against a built-in default brief instead - general engineering judgement,
-with the same insistence on a low noise floor - so the Inspector still works on a repo
-nobody has configured. It's read fresh each round, so editing it changes the next review.
+Put one in the repository being reviewed, at `personas/INSPECTOR.md` or at the root. It tells
+the Inspector what the project cares about and, as importantly, what not to comment on - an
+automated reviewer that pattern-matches style nits is worse than none. This repo's own is
+[`personas/INSPECTOR.md`](personas/INSPECTOR.md).
+
+Both locations are supported and `personas/` wins when a repo has both: it keeps the brief
+beside the [rest of the persona documents](personas/), while the root name is what repos
+configured before that convention already carry, and demoting those to the default brief would
+weaken their reviews without anything failing. A blank file at the preferred path falls through
+to the root rather than shadowing it.
+
+A repo with neither is reviewed against a built-in default brief instead - general engineering
+judgement, with the same insistence on a low noise floor - so the Inspector still works on a
+repo nobody has configured. It's read fresh each round, so editing it changes the next review.
 
 The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the Inspector judges a PR
 against the contract the repo actually asserts. Both names are consulted, at the repo root
@@ -5713,7 +5722,7 @@ cleanup broke" from "the build passed and then cleanup broke".
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |
-| `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
+| `MISSION_FOREMAN_INSTRUCTIONS` | app's `personas/FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
 | `MISSION_TASK_SOURCE_TICK_MS` | `30000` | [Task sources](#task-sources-pulling-work-into-the-backlog): how often the sweeper wakes to ask which sources are due. Not the sweep interval - that is per source, and clamped to 1 minute - 24 hours. Floored at `5000` |
 | `MISSION_TASK_SOURCE_TIMEOUT_MS` | `60000` | Task sources: hard cap on one sweep, so a hung source cannot wedge its own schedule. Floored at `5000` |
@@ -5822,7 +5831,7 @@ npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (terminal model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
-npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
+npm run personas       # recompile the built-in Personas from personas/*.md (commit the result)
 npm run session-actions # recompile the built-in session actions from docs/session-actions/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout

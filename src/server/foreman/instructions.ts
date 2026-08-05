@@ -13,7 +13,7 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 //
 // Stored exactly like `ForemanConfig`, `AwayConfig` and `SkillsConfig`: a value in the
 // `app_config` KV, so the settings panel that will edit it needs no migration and no new
-// table. `FOREMAN.md` at the app root is the SEED, not the storage - once the human edits
+// table. `personas/FOREMAN.md` under the app root is the SEED, not the storage - once the human edits
 // this, the file is only what a fresh install starts from.
 
 const CONFIG_KEY = "foreman.instructions";

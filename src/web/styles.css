@@ -12628,7 +12628,16 @@ select.ensemble-judge-persona {
   opacity: 0.7;
 }
 /* Paths and env-var names in the blurbs are identifiers you may have to go and look at,
-   so they read as code rather than as prose. */
+   so they read as code rather than as prose.
+
+   `overflow-wrap: anywhere` rather than `word-break: break-all`, which is what this was.
+   Both stop a long path overflowing the pane, and that guarantee is why the rule exists -
+   but `break-all` takes the break at whatever character the line ends on even when the
+   token would have fitted whole on the next line, so `personas/INSPECTOR.md` in the
+   Inspector's lede rendered as `personas/INSPE` + `CTOR.md`. A path chopped mid-word reads
+   as a typo in the one place the text is telling you a filename to go and create.
+   `anywhere` breaks only as a last resort, when the token cannot fit a line by itself, and
+   still reduces min-content so a narrow pane cannot be widened by one long identifier. */
 .settings-section code {
   font-family: var(--mono);
   font-size: 11px;
@@ -12636,7 +12645,7 @@ select.ensemble-judge-persona {
   border-radius: 4px;
   background: var(--panel-2);
   color: var(--fg);
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 /* ---- Foreman (auto-responder) ---- */

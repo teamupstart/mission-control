@@ -32,10 +32,16 @@ files:
   - skills/**/*
   - build/trayTemplate.png
   - build/trayTemplate@2x.png
-  # The SEED for Foreman's instructions setting, read at the app root by
+  # The SEED for Foreman's instructions setting, read under the app root by
   # `foremanInstructionsPath()`. Shipped as plain markdown rather than baked into the
   # bundle so it stays the one editable copy - see `src/server/foreman/instructions.ts`.
-  - FOREMAN.md
+  #
+  # This ONE file, not `personas/**/*`: the four workflow persona documents beside it are
+  # compiled into the server bundle by `npm run personas` (see the header of
+  # `scripts/builtin-markdown.ts`), so shipping the directory would put a second, ignored
+  # copy of them in the app - and `personas/INSPECTOR.md` is a brief the Inspector reads
+  # from the repository under review, never from the install.
+  - personas/FOREMAN.md
   - package.json
   - "!node_modules/**/*"
 

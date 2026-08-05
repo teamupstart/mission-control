@@ -50,19 +50,22 @@ export function skillsDir(): string {
 }
 
 /**
- * The SEED for Foreman's instructions setting: `FOREMAN.md` at the app root.
+ * The SEED for Foreman's instructions setting: `personas/FOREMAN.md` under the app root.
  *
- * `../../FOREMAN.md` for exactly the reason `skillsDir` documents above, and it has to live
- * in THIS file for the same reason: esbuild collapses the whole server into one bundle, so
- * `import.meta.url` becomes that bundle's, and only a module already two levels down in the
- * source tree resolves the same before and after bundling.
+ * `../../personas/FOREMAN.md` for exactly the reason `skillsDir` documents above, and it has
+ * to live in THIS file for the same reason: esbuild collapses the whole server into one
+ * bundle, so `import.meta.url` becomes that bundle's, and only a module already two levels
+ * down in the source tree resolves the same before and after bundling. The `../../` is what
+ * reaches the repo root in dev and the app root when packaged; the directory below it is
+ * shipped by name in `electron-builder.yml`, so the two have to move together.
  *
  * A file rather than a string baked into the bundle, because the point of it being markdown
  * is that it can be read and edited without a rebuild - and because there must be exactly one
  * copy of this text, not one in a `.md` for humans and another in a `.ts` for the daemon.
  */
 export function foremanInstructionsPath(): string {
-  return envVar("FOREMAN_INSTRUCTIONS") ?? fileURLToPath(new URL("../../FOREMAN.md", import.meta.url));
+  return envVar("FOREMAN_INSTRUCTIONS")
+    ?? fileURLToPath(new URL("../../personas/FOREMAN.md", import.meta.url));
 }
 
 /**

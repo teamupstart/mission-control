@@ -101,7 +101,8 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
   lines.push("## The brief");
   if (input.brief.source === "default") {
     lines.push(
-      "(This repository ships no INSPECTOR.md, so these are general defaults.)",
+      "(This repository ships no INSPECTOR.md, at personas/INSPECTOR.md or at its root, so"
+        + " these are general defaults.)",
       "",
     );
   }

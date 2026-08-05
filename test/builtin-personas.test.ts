@@ -1,6 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
@@ -25,11 +25,11 @@ const { BUILTIN_PERSONAS, builtinPersonaId } = await import("../src/server/workf
 const { BUILTIN_PERSONA_SOURCES } = await import("../src/server/workflows/builtin-personas.generated.ts");
 // The generator itself, not a second implementation of it: a drift check that re-rendered the
 // module its own way would agree with itself and say nothing about `npm run personas`.
-const { builtinPersonaSources, renderBuiltinPersonaModule } = await import("../scripts/builtin-personas.ts");
+const { NON_PERSONA_DOCUMENTS, builtinPersonaSources, renderBuiltinPersonaModule } = await import("../scripts/builtin-personas.ts");
 const { normalizePersonaName, personasForDisplay } = await import("../src/shared/workflow.ts");
 
 const root = resolve(import.meta.dirname, "..");
-const docsDir = join(root, "docs", "personas");
+const personasDir = join(root, "personas");
 const generatedPath = join(root, "src", "server", "workflows", "builtin-personas.generated.ts");
 
 const db = openDb();
@@ -54,16 +54,41 @@ function insert(id: string, name: string, guidanceMarkdown = "# Judge\n\nA role.
 test("the generated module is exactly what the authored Markdown regenerates", () => {
   assert.equal(
     readFileSync(generatedPath, "utf8"),
-    renderBuiltinPersonaModule(builtinPersonaSources(docsDir)),
+    renderBuiltinPersonaModule(builtinPersonaSources(personasDir)),
     "run `npm run personas` and commit the result",
   );
-  const documents = readdirSync(docsDir).filter((entry) => entry.endsWith(".md"));
+  // The same exclusion the generator applies, from the generator, so this count cannot
+  // drift into agreeing with a second copy of the rule instead of with the module.
+  const excluded = new Set<string>(NON_PERSONA_DOCUMENTS);
+  const documents = readdirSync(personasDir)
+    .filter((entry) => entry.endsWith(".md") && !excluded.has(entry));
   assert.equal(BUILTIN_PERSONA_SOURCES.length, documents.length);
   for (const source of BUILTIN_PERSONA_SOURCES) {
     assert.equal(
       source.guidanceMarkdown,
-      readFileSync(join(docsDir, `${source.slug}.md`), "utf8"),
+      readFileSync(join(personasDir, `${source.slug}.md`), "utf8"),
       `${source.slug} is not byte-identical to its document`,
+    );
+  }
+});
+
+// `personas/` holds prose that is not a review role - the two operator briefs the daemon
+// reads as files at runtime, and the directory's own README - and the generator globs the
+// whole directory. Both directions of that exclusion are failure modes worth a name. A
+// listed document that is gone means the list has gone stale and no longer describes the
+// directory; a listed document that compiled in anyway means the Persona catalog is
+// offering `builtin:FOREMAN` as a review role nobody wrote and no operator can archive.
+test("the operator briefs and the README are in personas/ and are not Personas", () => {
+  const slugs = new Set<string>(BUILTIN_PERSONA_SOURCES.map((source) => source.slug));
+  for (const document of NON_PERSONA_DOCUMENTS) {
+    assert.ok(
+      existsSync(join(personasDir, document)),
+      `${document} is excluded from the generator but is not in personas/ - update NON_PERSONA_DOCUMENTS`,
+    );
+    assert.equal(
+      slugs.has(document.slice(0, -".md".length)),
+      false,
+      `${document} compiled in as a built-in Persona`,
     );
   }
 });

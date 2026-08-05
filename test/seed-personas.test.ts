@@ -25,7 +25,7 @@ const SEEDS = [
 const EM_DASH = String.fromCharCode(0x2014);
 
 function seedText(file: string): string {
-  const bytes = readFileSync(fileURLToPath(new URL(`../docs/personas/${file}`, import.meta.url)));
+  const bytes = readFileSync(fileURLToPath(new URL(`../personas/${file}`, import.meta.url)));
   // Fatal decoding is the actual UTF-8 assertion. readFileSync("utf8") substitutes U+FFFD for
   // invalid bytes, so a corrupt seed would import as mojibake instead of failing here.
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);

@@ -26,14 +26,26 @@ export interface BuiltinMarkdownSource {
 }
 
 /**
- * The documents in a directory, in filename order.
+ * The documents in a directory, in filename order, minus `exclude`.
  *
  * The slug is the filename, and it is the durable half of each built-in's id, so the sort
  * is explicit and locale-pinned rather than left to whatever order the filesystem returns.
+ *
+ * `exclude` exists because a source directory holds prose that is not a built-in: the
+ * directory's own `README.md`, and - in `personas/` - the two operator briefs that the
+ * daemon reads as files at runtime. Without it, `personas/FOREMAN.md` would compile into
+ * the catalog as a review role called `builtin:FOREMAN`. An explicit list of filenames
+ * rather than a naming heuristic, because a heuristic ("uppercase names are briefs") gets
+ * a new document's classification wrong silently, while a name that is not on the list
+ * shows up in the generated module and in its caller's drift test.
  */
-export function builtinMarkdownSources(dir: string): BuiltinMarkdownSource[] {
+export function builtinMarkdownSources(
+  dir: string,
+  exclude: readonly string[] = [],
+): BuiltinMarkdownSource[] {
+  const excluded = new Set(exclude);
   return readdirSync(dir)
-    .filter((entry) => entry.endsWith(".md"))
+    .filter((entry) => entry.endsWith(".md") && !excluded.has(entry))
     .sort((a, b) => a.localeCompare(b, "en-US"))
     .map((entry) => ({
       slug: entry.slice(0, -".md".length),
@@ -44,7 +56,7 @@ export function builtinMarkdownSources(dir: string): BuiltinMarkdownSource[] {
 export interface BuiltinModuleSpec {
   /** The script a reader should run, e.g. `scripts/builtin-personas.ts`. */
   script: string;
-  /** The authored source, e.g. `docs/personas/*.md`. */
+  /** The authored source, e.g. `personas/*.md`. */
   sourceGlob: string;
   /** The package script that regenerates this module, e.g. `npm run personas`. */
   command: string;

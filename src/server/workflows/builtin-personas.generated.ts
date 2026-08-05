@@ -1,6 +1,6 @@
 // GENERATED FILE - do not edit by hand.
 //
-// Written by `scripts/builtin-personas.ts` from `docs/personas/*.md`, which are the
+// Written by `scripts/builtin-personas.ts` from `personas/*.md`, which are the
 // authored source. Edit the Markdown there and run `npm run personas`.
 
 /** The exact bytes of each shipped Persona document, in filename order. */

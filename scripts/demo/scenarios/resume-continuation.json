@@ -1,0 +1,33 @@
+{
+  "title": "Continuing after a restart",
+  "match": ["mission control restarted while your previous turn"],
+  "default": false,
+  "steps": [
+    { "kind": "assistant", "text": "Picking this back up. The checkout still has the edits from before the restart, and the one thing I was actually blocked on never got answered - so I am asking again rather than guessing at it.", "delayMs": 400 },
+    {
+      "kind": "ask",
+      "questions": [
+        {
+          "question": "What should a caller get when it sends a cursor this build cannot decode?",
+          "header": "Bad cursor",
+          "options": [
+            { "label": "400 with an error", "description": "refuse it loudly, so a client bug surfaces at the call site instead of looking like an empty result" },
+            { "label": "Restart from the first page", "description": "treat an undecodable cursor as absent - forgiving, but a paging bug then reads as an infinite list" }
+          ]
+        },
+        {
+          "question": "Should the page size stay caller-controlled?",
+          "header": "Page size",
+          "options": [
+            { "label": "Caller-controlled, capped at 100", "description": "keep the existing limit parameter and clamp it" },
+            { "label": "Fixed at 50", "description": "drop the parameter, so every page is the same size and cursors stay comparable" }
+          ]
+        }
+      ]
+    },
+    { "kind": "assistant", "text": "Thanks - that unblocks the last two call sites. Applying it and re-running the suite before I hand this back.", "delayMs": 700 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "npm test" }, "delayMs": 1400 },
+    { "kind": "assistant", "text": "Green. Every call site is on the cursor now, and an undecodable one is refused rather than silently restarting the list.", "delayMs": 600 },
+    { "kind": "result" }
+  ]
+}

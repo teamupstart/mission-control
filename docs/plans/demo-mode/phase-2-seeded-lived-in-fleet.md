@@ -146,3 +146,44 @@ Nothing else is promised; this is the final scheduled phase.
   audit record and handoff), because the seeder needs a quiet boot; confirmed the
   scenario schema needs no extension for seeding (residue comes from ordinary steps),
   so the schema contract in `phased-plan.md` is unchanged.
+- 2026-08-04, as implemented. Evidence in
+  [phase-2-verification.md](phase-2-verification.md). Deviations from the route above, each
+  because the repository disagreed with it:
+  - **No direct SQLite writes at all.** Section 4's finding that "no public route feeds
+    arbitrary ledger history" does not hold. `Registry.applyOtelMetrics` stamps each row from
+    the datapoint's own `timeUnixNano` (via `epochMsFromNanos`), not from `Date.now()`, and
+    `SpendReportSchema` takes an arbitrary `ts`. Backdating is therefore a property of
+    `POST /v1/metrics` and `POST /api/usage/automation` themselves, so the ledger is seeded
+    like everything else and the daemon-is-only-writer boundary holds at every moment, not
+    merely at runtime. Step 2's `node:sqlite` fallback is unused.
+  - **The player needed two fixes the plan did not anticipate**, both required by the
+    suspend/restore mechanism section 4 relies on. `SdkSupervisor.resume` relaunches each
+    suspended session with `--resume=<id>`, and `ClaudeSdkSession.consume` re-binds the card
+    on any new `session_id` - so a player that minted a fresh uuid repointed the card at an
+    empty transcript and lost the conversation the seed exists to show. Separately, a card
+    only leaves `starting` on an `assistant` or `result` frame, and a resume owed no
+    continuation turn emits neither.
+  - **A waiting-on-you CARD, not just a review row.** Section 5 expected the pending prompt
+    to survive as a review. It does, and is seeded - but a session's held question survives
+    too, by a route the plan did not name: a session suspended mid-`ask` keeps
+    `turnInProgress`, and the restore sends `RESTART_CONTINUATION_PROMPT`, which
+    `resume-continuation.json` answers by asking again.
+  - **`--check` uses its own throwaway root.** Section 7 asked `--check` to run a reduced
+    seed; against `~/.mission-control-demo` that would bulldoze a curated demo, since seeding
+    writes tasks, sessions and worktrees. It uses `~/.mission-control-demo-check`, removed
+    afterwards.
+  - **Two flags added** (contracts widened, none changed): `--no-seed` for a fast empty
+    rebuild, `--no-open` for a scripted or remote run. `bootDaemon`'s stop also now waits for
+    the daemon to actually exit - the previous 200ms-then-SIGKILL cut off the shutdown that
+    writes `suspended`, which is the mechanism this whole phase stands on.
+  - **Tests live in `test/`, not only in `scripts/demo/`.** Phase 1's `launch.test.mjs` is
+    not run by `npm test` (which globs `test/**/*.test.ts`). The seeder's pure half is covered
+    by `test/demo-seed.test.ts` so it runs in CI, which meant exporting the scenario matcher
+    from the player behind an `isMain` guard and adding `.d.mts` declarations beside both
+    `.mjs` files - the convention `scripts/db-shell.d.mts` already set.
+  - **A fourth seed scenario.** Four session-backed tasks need four scenarios; the health-probe
+    task initially fell through to the default and narrated the wrong work. `test/demo-seed.test.ts`
+    now pins that no seeded intent can fall through.
+  - **Quota runway is not seeded**, and cannot be: `Registry.latestRateLimits` is a private
+    in-memory field nothing persists. Documented in the README alongside the origin-chip gap
+    rather than faked.

@@ -1,0 +1,28 @@
+{
+  "title": "Stop the token refresh double-fetch",
+  "match": ["token refresh"],
+  "default": false,
+  "steps": [
+    { "kind": "assistant", "text": "Two concurrent callers on an expired token both refresh it, and the second one wins - so the first caller's request goes out with a token that was already replaced.", "delayMs": 60 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "grep -rn \"refresh(\" src" }, "delayMs": 80 },
+    { "kind": "assistant", "text": "The refresh has no in-flight guard at all. Collapsing concurrent refreshes onto one promise is the smallest fix that actually closes it.", "delayMs": 60 },
+    { "kind": "tool", "name": "Edit", "input": { "file_path": "src/retry.ts", "description": "share one in-flight promise across concurrent callers" }, "delayMs": 60 },
+    { "kind": "editFile", "path": "src/retry.ts", "content": "export interface RetryOptions {\n  retries: number;\n  delayMs: number;\n  signal?: AbortSignal;\n}\n\n/** Retry an async operation with a fixed delay between attempts. */\nexport async function retry<T>(fn: () => Promise<T>, opts: RetryOptions): Promise<T> {\n  let attempt = 0;\n  for (;;) {\n    try {\n      return await fn();\n    } catch (err) {\n      attempt += 1;\n      if (attempt >= opts.retries) throw err;\n      await new Promise((resolve) => setTimeout(resolve, opts.delayMs));\n    }\n  }\n}\n\n/**\n * Collapse concurrent calls onto one in-flight promise.\n *\n * The double-fetch this fixes was not a retry bug: two callers arriving on an expired token\n * each started their own refresh, and whichever landed second replaced the token the first\n * one was about to use. Sharing the promise makes the second caller await the first's\n * result instead of racing it.\n */\nexport function single<T>(fn: () => Promise<T>): () => Promise<T> {\n  let inFlight: Promise<T> | null = null;\n  return () => {\n    if (inFlight) return inFlight;\n    inFlight = fn().finally(() => {\n      inFlight = null;\n    });\n    return inFlight;\n  };\n}\n", "delayMs": 40 },
+    { "kind": "tool", "name": "Edit", "input": { "file_path": "src/retry.test.ts", "description": "add a regression test for the collapsed refresh" }, "delayMs": 60 },
+    { "kind": "editFile", "path": "src/retry.test.ts", "content": "import assert from \"node:assert/strict\";\nimport test from \"node:test\";\nimport { retry, single } from \"./retry.ts\";\n\ntest(\"retries until success\", async () => {\n  let calls = 0;\n  const result = await retry(\n    async () => {\n      calls += 1;\n      if (calls < 3) throw new Error(\"not yet\");\n      return \"ok\";\n    },\n    { retries: 5, delayMs: 1 },\n  );\n  assert.equal(result, \"ok\");\n  assert.equal(calls, 3);\n});\n\ntest(\"two concurrent callers share one refresh\", async () => {\n  let calls = 0;\n  const refresh = single(async () => {\n    calls += 1;\n    await new Promise((resolve) => setTimeout(resolve, 5));\n    return `token-${calls}`;\n  });\n  const [a, b] = await Promise.all([refresh(), refresh()]);\n  assert.equal(calls, 1, \"the second caller must not start its own refresh\");\n  assert.equal(a, b);\n});\n\ntest(\"a later caller refreshes again once the first settled\", async () => {\n  let calls = 0;\n  const refresh = single(async () => {\n    calls += 1;\n    return `token-${calls}`;\n  });\n  assert.equal(await refresh(), \"token-1\");\n  assert.equal(await refresh(), \"token-2\");\n});\n", "delayMs": 40 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "npm test -- retry" }, "delayMs": 140 },
+    { "kind": "assistant", "text": "All three pass. Concurrent callers now share one refresh, and a caller arriving after it settles still gets a fresh one.", "delayMs": 60 },
+    {
+      "kind": "tool",
+      "name": "TodoWrite",
+      "input": {
+        "todos": [
+          { "content": "Collapse concurrent refreshes onto one promise", "activeForm": "Collapsing concurrent refreshes onto one promise", "status": "completed" },
+          { "content": "Cover the race with a regression test", "activeForm": "Covering the race with a regression test", "status": "completed" }
+        ]
+      },
+      "delayMs": 40
+    },
+    { "kind": "result" }
+  ]
+}

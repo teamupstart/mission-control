@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentation overhaul and asset reorganization</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0;
+    --accent: #0969da; --code-bg: #f6f8fa; --th-bg: #f6f8fa;
+    --box: #f6f8fa; --box-border: #d1d9e0; --arrow: #59636e;
+    --good: #1a7f37; --warn: #9a6700;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
+      --accent: #4493f8; --code-bg: #161b22; --th-bg: #161b22;
+      --box: #161b22; --box-border: #3d444d; --arrow: #9198a1;
+      --good: #3fb950; --warn: #d29922;
+    }
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 860px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+  }
+  h1 { font-size: 1.8rem; line-height: 1.25; border-bottom: 1px solid var(--border); padding-bottom: .4em; }
+  h2 { font-size: 1.35rem; margin-top: 2.2em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  h3 { font-size: 1.1rem; margin-top: 1.6em; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font: .875em ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--code-bg); border-radius: 5px; padding: .15em .35em;
+  }
+  .tablewrap { overflow-x: auto; margin: 1em 0; }
+  table { border-collapse: collapse; min-width: 100%; font-size: .92em; }
+  th, td { border: 1px solid var(--border); padding: .45em .7em; text-align: left; vertical-align: top; }
+  th { background: var(--th-bg); }
+  ul { padding-left: 1.4em; }
+  li { margin: .3em 0; }
+  .muted { color: var(--muted); }
+  .figure { overflow-x: auto; margin: 1.4em 0; border: 1px solid var(--border); border-radius: 8px; padding: .75rem; }
+  .figure svg { display: block; margin: 0 auto; }
+  .figcap { text-align: center; font-size: .85em; color: var(--muted); margin-top: .5rem; }
+</style>
+</head>
+<body>
+
+<h1>Documentation overhaul and asset reorganization</h1>
+
+<h2 id="goal">Goal</h2>
+<p>Make this repository legible to a person who has never opened it: a concise README that
+advertises what Mission Control is and shows it, discoverable human-readable docs under
+<code>docs/</code>, real contributor onboarding, and a tidy repo layout where agent-facing assets
+(personas, session actions) live in obvious root directories and committed PR evidence is
+gone for good.</p>
+
+<h2 id="problems-today">Problems today</h2>
+<ul>
+  <li><code>README.md</code> is ~6,000 lines (425KB) with zero images. It is a complete behavioral
+  reference, not an overview. Nothing advertises the product; everything documents it.</li>
+  <li>Agent-facing assets are scattered: <code>FOREMAN.md</code> and <code>INSPECTOR.md</code> sit at the repo root,
+  four workflow personas live under <code>docs/personas/</code>, and session actions under
+  <code>docs/session-actions/</code>.</li>
+  <li><code>docs/evidence/</code> holds 23MB across 152 files of committed PR screenshot evidence.
+  Sixteen e2e specs and three scripts write into it, so deleting it without changing them
+  silently recreates it.</li>
+  <li>No <code>CONTRIBUTING.md</code>, no <code>SECURITY.md</code>, no LICENSE, no PR or issue templates.
+  <code>.github/</code> contains only <code>workflows/ci.yml</code>.</li>
+  <li><code>docs/</code> mixes durable documentation with historical plans, mockups, and backups, so the
+  durable pages are hard to discover.</li>
+</ul>
+
+<h2 id="not-changing">What is not changing</h2>
+<ul>
+  <li>HTTP namespaces (<code>/api/personas/...</code>, <code>/api/session-actions/...</code>) and hash routes.</li>
+  <li>Builtin IDs. The filename slug is the durable <code>builtin:&lt;slug&gt;</code> id that reaches published
+  workflow versions and operator drafts, so every persona and action filename stays
+  byte-identical through the moves.</li>
+  <li><code>skills/</code> stays where it is; <code>electron-builder.yml</code> ships it as source and <code>asar</code> stays off.</li>
+  <li><code>docs/plans/</code> remains the home for plans (this plan included).</li>
+  <li>The generated modules stay generated. Sources move; <code>npm run personas</code> and
+  <code>npm run session-actions</code> regenerate outputs in the same commit.</li>
+</ul>
+
+<h2 id="ws1">Workstream 1: consolidate personas under root <code>personas/</code></h2>
+<p>Move <code>FOREMAN.md</code>, <code>INSPECTOR.md</code>, and <code>docs/personas/*.md</code> into a new root <code>personas/</code>
+directory, keeping filenames byte-identical.</p>
+<div class="tablewrap">
+<table>
+  <tr><th>Change</th><th>Where</th><th>Why</th></tr>
+  <tr>
+    <td><code>foremanInstructionsPath()</code> resolves <code>../../personas/FOREMAN.md</code></td>
+    <td><code>src/server/config.ts:64</code></td>
+    <td>The <code>../../</code> prefix is the one expression that reaches the repo root in dev and the app
+    root when packaged; the file moves one directory deeper on both sides at once</td>
+  </tr>
+  <tr>
+    <td>Ship <code>personas/FOREMAN.md</code></td>
+    <td><code>electron-builder.yml:38</code> (<code>files:</code> allowlist)</td>
+    <td>The packaged app reads the seed at the app root; the allowlist entry must follow the file</td>
+  </tr>
+  <tr>
+    <td>Inspector brief looks for <code>personas/INSPECTOR.md</code> first, then falls back to root
+    <code>INSPECTOR.md</code></td>
+    <td><code>src/server/inspector/brief.ts</code> (<code>BRIEF_FILENAME</code>, <code>readBrief</code>)</td>
+    <td>The brief resolves against the <em>reviewed repo's</em> root. Without a code change, moving this
+    repo's copy silently downgrades its own reviews to <code>DEFAULT_BRIEF</code> with no failing test.
+    The fallback keeps every other repo's existing convention working</td>
+  </tr>
+  <tr>
+    <td>Generator source dir and glob</td>
+    <td><code>scripts/builtin-personas.ts:22,27</code></td>
+    <td><code>sourceGlob</code> is baked into the generated header, so regenerate in the same commit or the
+    drift test fails</td>
+  </tr>
+  <tr>
+    <td>Regenerate</td>
+    <td><code>src/server/workflows/builtin-personas.generated.ts</code></td>
+    <td>Never hand-edited</td>
+  </tr>
+  <tr>
+    <td>Test path constants</td>
+    <td><code>test/builtin-personas.test.ts:32</code>, <code>test/seed-personas.test.ts:28</code></td>
+    <td>Both pin <code>docs/personas</code></td>
+  </tr>
+  <tr>
+    <td>Prose references</td>
+    <td><code>README.md:2564,5815</code>, <code>docs/agent-guides/change-contracts.md:370</code>, README
+    Foreman/Inspector sections and the <code>MISSION_FOREMAN_INSTRUCTIONS</code> row</td>
+    <td>Keep links and anchors working</td>
+  </tr>
+  <tr>
+    <td>Default-brief copy</td>
+    <td><code>src/server/inspector/brief.ts:30</code>, <code>src/server/inspector/prompt.ts:104</code>,
+    <code>src/server/inspector/github.ts:870</code>, <code>src/web/components/InspectorSettingsPanel.tsx:237</code></td>
+    <td>User-facing text that names <code>INSPECTOR.md</code> should describe the new lookup</td>
+  </tr>
+</table>
+</div>
+<p>Historical plans and <code>docs/backups/AGENTS.old</code> keep their old paths; they describe the past.
+The Inspector settings panel copy change is user-visible, so it needs an e2e assertion per the
+UI rule.</p>
+
+<h2 id="ws2">Workstream 2: move <code>docs/session-actions/</code> to root <code>actions/</code></h2>
+<p>Exact structural sibling of workstream 1, smaller:</p>
+<ul>
+  <li><code>scripts/builtin-session-actions.ts:2-3,22,27</code> (source dir, glob, header comment).</li>
+  <li>Regenerate <code>src/server/workflows/builtin-session-actions.generated.ts</code>.</li>
+  <li><code>test/builtin-session-actions.test.ts:22</code>.</li>
+  <li><code>README.md:5816</code>, <code>docs/agent-guides/change-contracts.md:371-372</code>.</li>
+  <li><code>pull-request.md</code> keeps its filename: the slug keys the enforced contract table and
+  <code>PULL_REQUEST_SESSION_ACTION_ID</code>.</li>
+</ul>
+<p class="muted">Note: a root <code>actions/</code> can read as GitHub Actions at first glance
+(<code>.github/workflows/</code> already exists). Proceeding as directed; the directory gets a short
+<code>README.md</code> stating what it is to remove the ambiguity.</p>
+
+<h2 id="ws3">Workstream 3: remove <code>docs/evidence/</code> and fix the evidence policy</h2>
+<p>Delete <code>docs/evidence/</code> (all 23MB) and make the deletion stick:</p>
+<ul>
+  <li>Redirect the sixteen e2e specs that write evidence into <code>docs/evidence/...</code> to a
+  gitignored <code>e2e/.artifacts/</code> directory, and update their <code>CAPTURED ...</code> log lines.</li>
+  <li>Redirect the three capture scripts (<code>scripts/review-answer-evidence.cjs</code>,
+  <code>scripts/conversation-timestamp-evidence.cjs</code>, <code>scripts/workflow-skipped-status-evidence.cjs</code>)
+  to the same gitignored location.</li>
+  <li>Update <code>e2e/README.md</code> (about 16 links plus copy-paste <code>tee docs/evidence/...</code> commands)
+  to the new location and the attach-to-PR policy.</li>
+  <li>Fix the six <code>README.md</code> links into <code>docs/evidence/</code>.</li>
+  <li>Relocate <code>docs/evidence/inspector-prompt-bytes.md</code> to
+  <code>docs/agent-guides/inspector-prompt-bytes.md</code> - it is the recorded baseline that
+  <code>test/standards.test.ts</code> and <code>test/standards-prompt-bytes.test.ts</code> reason about - and
+  update the four comments that point at it (<code>src/server/standards.ts:137</code>,
+  <code>src/server/util/repo-doc.ts:60</code>, plus the two tests).</li>
+  <li>Preserve <code>docs/plans/workflow-card-progress/evidence/</code> - it is plans-scoped, written by
+  different scripts, and out of scope for this deletion.</li>
+</ul>
+<p>Policy changes in the same workstream:</p>
+<ul>
+  <li><code>skills/pull-request/SKILL.md</code>: change "attach or link screenshots" to attach-only.
+  Evidence is uploaded to the pull request itself; never a link to a committed file.</li>
+  <li>The <code>pull-request</code> session action source gains the same rule, regenerated.</li>
+  <li><code>AGENTS.md</code> boundary: never commit evidence artifacts. Proof-of-work screenshots and
+  transcripts attach to the pull request; evidence produced for or submitted to workflow
+  personas is also never committed - produce it in a gitignored location and attach it.
+  Committed documentation imagery (for example <code>docs/images/</code> produced by the docs
+  screenshot script) is documentation, not evidence.</li>
+</ul>
+
+<h2 id="ws4">Workstream 4: split the README into <code>docs/</code></h2>
+<p>Carve the ~6,000-line reference into organized pages under <code>docs/</code>, one page per feature
+area, with a <code>docs/README.md</code> index. Candidate grouping, derived from the current heading
+structure: sessions and terminals; dispatch, tasks and the backlog; task sources and
+recurring missions; ensembles; workflows, personas and session actions; Foreman;
+Inspector and shipping; the Library and the Line; attention, alerts and away mode; UI
+(layout, palette, shortcuts, formatting); worktrees and checks; configuration reference;
+demo mode; security. Content moves, it is not rewritten - accuracy is already there, the
+problem is the container. Every anchor that other files link to gets a forwarding link or
+an updated referrer.</p>
+<p>In the same workstream, <code>docs/mockups/</code> and <code>docs/backups/</code> move under
+<code>docs/archive/</code> (adopted decision) so the <code>docs/</code> top level holds only durable
+documentation. <code>docs/plans/</code> stays put as the live plans home; old PR links into it keep
+working.</p>
+
+<h2 id="ws5">Workstream 5: new README with screenshots</h2>
+<ul>
+  <li>A deterministic capture script (<code>scripts/docs-screenshots.mjs</code>) drives the built
+  dashboard in demo mode with Playwright and writes curated screenshots to <code>docs/images/</code>.
+  Demo mode is faked data, so captures spend no model tokens and are reproducible when the
+  UI changes.</li>
+  <li>A new <code>README.md</code>: what Mission Control is, who it is for, a screenshot-led feature
+  tour, quick start (leaning on <code>make init</code> / <code>make setup</code>), and links into <code>docs/</code> for
+  everything deep. Target well under 300 lines.</li>
+</ul>
+
+<h2 id="ws6">Workstream 6: architecture and technical docs</h2>
+<ul>
+  <li><code>docs/architecture.md</code>: a human-readable component overview - daemon, web dashboard,
+  Electron shell, MCP server, Foreman worker, Inspector, SDK supervisor, terminal registry,
+  hook bridges - with a component diagram and links into per-subsystem pages.</li>
+  <li>Per-subsystem technical pages under <code>docs/</code> expanding on <code>docs/agent-guides/</code>
+  (which stays, as the agent-facing contract): session lifecycle and eviction, dispatch and
+  runtimes, harness capabilities, workflows/personas/ensembles, tasks/backlog/scheduler,
+  database and migrations, event stream, packaging.</li>
+</ul>
+
+<h2 id="ws7">Workstream 7: CONTRIBUTING and core repo docs</h2>
+<ul>
+  <li><code>CONTRIBUTING.md</code>: prerequisites (Node 24+, Playwright Chromium), the command table,
+  the four test layers and when each applies, the e2e-spec-for-UI-changes rule, working
+  rules, and the PR bar (typecheck, lint, tests, build, smoke).</li>
+  <li><code>docs/setup.md</code> plus small hardening of <code>scripts/init.mjs</code> / <code>make init</code> so first-run
+  bootstrap verifies its own prerequisites (Node version, Playwright browser) instead of
+  failing downstream.</li>
+  <li><code>.github/PULL_REQUEST_TEMPLATE.md</code> and issue templates aligned with the pull-request
+  skill's Goal / Design decisions / Proof of work shape.</li>
+  <li>No LICENSE file (adopted decision): the repository is internal, and the new README states
+  that plainly.</li>
+</ul>
+
+<h2 id="ws8">Workstream 8: optional docs (adopted)</h2>
+<ul>
+  <li><code>docs/troubleshooting.md</code>: common failure modes - daemon port conflicts, hooks not
+  firing, missing Playwright browser, stale worktree leases - each with the observed symptom
+  and the fix.</li>
+  <li><code>docs/glossary.md</code>: the product vocabulary a newcomer hits first - Foreman, Inspector,
+  the Line, the Library, ensembles, missions, shipping, harness, dispatch - one paragraph each,
+  linking into the feature pages from workstream 4.</li>
+  <li><code>SECURITY.md</code>: reporting guidance plus the security posture currently at the bottom of
+  the README.</li>
+</ul>
+<p class="muted">Deferred, deliberately: a daemon API reference (drifts unless generated from the
+Zod schemas - revisit as generated-or-not-at-all) and a release/packaging runbook (Makefile help
+output covers the commands today).</p>
+
+<h2 id="asset-flow">Asset flow, before and after</h2>
+<div class="figure">
+<svg width="800" height="470" viewBox="0 0 800 470" role="img" aria-label="Asset flow before and after the reorganization">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--arrow)"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: var(--box); stroke: var(--box-border); rx: 6; }
+    .lbl { fill: var(--fg); font: 12px -apple-system, "Segoe UI", sans-serif; }
+    .sub { fill: var(--muted); font: 11px -apple-system, "Segoe UI", sans-serif; }
+    .hdr { fill: var(--fg); font: 600 13px -apple-system, "Segoe UI", sans-serif; }
+    .edge { stroke: var(--arrow); stroke-width: 1.4; fill: none; marker-end: url(#arr); }
+    .edge-dash { stroke-dasharray: 5 4; }
+    .lane { fill: none; stroke: var(--border); stroke-dasharray: 3 4; rx: 10; }
+    .bad { stroke: var(--warn); }
+    .goodbox { stroke: var(--good); }
+  </style>
+
+  <rect class="lane" x="10" y="10" width="380" height="450"/>
+  <text class="hdr" x="24" y="34">Before</text>
+  <rect class="lane" x="410" y="10" width="380" height="450"/>
+  <text class="hdr" x="424" y="34">After</text>
+
+  <!-- Before: persona sources -->
+  <rect class="box" x="24" y="56" width="160" height="40"/>
+  <text class="lbl" x="34" y="80">docs/personas/*.md</text>
+  <rect class="box" x="230" y="56" width="140" height="52"/>
+  <text class="lbl" x="240" y="78">builtin-personas</text>
+  <text class="sub" x="240" y="96">generated module</text>
+  <path class="edge" d="M184 76 L 228 78"/>
+
+  <rect class="box" x="24" y="120" width="160" height="40"/>
+  <text class="lbl" x="34" y="138">docs/session-</text>
+  <text class="lbl" x="34" y="153">actions/*.md</text>
+  <rect class="box" x="230" y="126" width="140" height="52"/>
+  <text class="lbl" x="240" y="148">builtin-actions</text>
+  <text class="sub" x="240" y="166">generated module</text>
+  <path class="edge" d="M184 142 L 228 148"/>
+
+  <rect class="box" x="24" y="192" width="160" height="40"/>
+  <text class="lbl" x="34" y="216">FOREMAN.md (root)</text>
+  <rect class="box" x="230" y="192" width="140" height="40"/>
+  <text class="lbl" x="240" y="210">foreman</text>
+  <text class="sub" x="240" y="226">InstructionsPath()</text>
+  <path class="edge" d="M184 212 L 228 212"/>
+
+  <rect class="box" x="24" y="256" width="160" height="52"/>
+  <text class="lbl" x="34" y="276">INSPECTOR.md at</text>
+  <text class="lbl" x="34" y="292">reviewed repo root</text>
+  <rect class="box" x="230" y="262" width="140" height="40"/>
+  <text class="lbl" x="240" y="286">Inspector brief</text>
+  <path class="edge" d="M184 282 L 228 282"/>
+
+  <rect class="box" x="24" y="336" width="160" height="52"/>
+  <text class="lbl" x="34" y="356">e2e specs +</text>
+  <text class="lbl" x="34" y="372">evidence scripts</text>
+  <rect class="box bad" x="230" y="336" width="140" height="52"/>
+  <text class="lbl" x="240" y="356">docs/evidence/</text>
+  <text class="sub" x="240" y="372">23MB, committed</text>
+  <path class="edge" d="M184 362 L 228 362"/>
+
+  <!-- After: persona sources -->
+  <rect class="box goodbox" x="424" y="56" width="160" height="40"/>
+  <text class="lbl" x="434" y="80">personas/*.md</text>
+  <rect class="box" x="630" y="56" width="140" height="52"/>
+  <text class="lbl" x="640" y="78">builtin-personas</text>
+  <text class="sub" x="640" y="96">generated module</text>
+  <path class="edge" d="M584 76 L 628 78"/>
+
+  <rect class="box goodbox" x="424" y="120" width="160" height="40"/>
+  <text class="lbl" x="434" y="144">actions/*.md</text>
+  <rect class="box" x="630" y="126" width="140" height="52"/>
+  <text class="lbl" x="640" y="148">builtin-actions</text>
+  <text class="sub" x="640" y="166">generated module</text>
+  <path class="edge" d="M584 142 L 628 148"/>
+
+  <rect class="box goodbox" x="424" y="192" width="160" height="40"/>
+  <text class="lbl" x="434" y="216">personas/FOREMAN.md</text>
+  <rect class="box" x="630" y="192" width="140" height="40"/>
+  <text class="lbl" x="640" y="210">foreman</text>
+  <text class="sub" x="640" y="226">InstructionsPath()</text>
+  <path class="edge" d="M584 212 L 628 212"/>
+
+  <rect class="box goodbox" x="424" y="256" width="160" height="52"/>
+  <text class="lbl" x="434" y="276">personas/INSPECTOR.md</text>
+  <text class="sub" x="434" y="292">fallback: root file</text>
+  <rect class="box" x="630" y="262" width="140" height="40"/>
+  <text class="lbl" x="640" y="286">Inspector brief</text>
+  <path class="edge" d="M584 282 L 628 282"/>
+
+  <rect class="box" x="424" y="336" width="160" height="52"/>
+  <text class="lbl" x="434" y="356">e2e specs +</text>
+  <text class="lbl" x="434" y="372">evidence scripts</text>
+  <rect class="box goodbox" x="630" y="336" width="140" height="52"/>
+  <text class="lbl" x="640" y="356">e2e/.artifacts/</text>
+  <text class="sub" x="640" y="372">gitignored</text>
+  <path class="edge" d="M584 362 L 628 362"/>
+
+  <rect class="box" x="630" y="412" width="140" height="40"/>
+  <text class="lbl" x="640" y="436">Pull request</text>
+  <path class="edge edge-dash" d="M700 388 L 700 410"/>
+  <text class="sub" x="708" y="404">attach</text>
+</svg>
+<div class="figcap">Where agent-facing sources live and where evidence goes, before and after.</div>
+</div>
+
+<h2 id="sequencing">Sequencing</h2>
+<p>Workstreams 1-3 are the mechanical moves and land first, serialized, because they all touch
+<code>README.md</code>, <code>AGENTS.md</code>, and <code>docs/agent-guides/change-contracts.md</code> and would conflict in
+parallel. Workstream 4 (README split) depends on 1-3 so extracted pages are written against
+final paths. Workstreams 5-8 depend on 4.</p>
+
+<h2 id="verification">Verification bar</h2>
+<p>Every workstream lands with <code>npm run typecheck</code>, <code>npm run lint</code>, and <code>npm test</code> green;
+build-affecting workstreams (1, 2) additionally run <code>npm run build</code> and <code>npm run smoke</code>;
+workstreams touching e2e or UI-visible copy (1, 3) run <code>npm run test:e2e</code> with specs covering
+the change. Doc workstreams verify every intra-repo link resolves. Every workstream that
+changes behavior lands with tests and the matching README/docs update in the same change.</p>
+
+<h2 id="non-negotiables">Non-negotiables (operator-confirmed)</h2>
+<ol>
+  <li>The <code>INSPECTOR.md</code> move teaches the brief loader to prefer <code>personas/INSPECTOR.md</code>
+  with a root fallback; no test currently fails if this is missed and the Inspector silently
+  degrades to the default brief.</li>
+  <li>Deleting <code>docs/evidence/</code> redirects the sixteen e2e specs and three scripts to a
+  gitignored artifacts directory in the same change, and relocates
+  <code>inspector-prompt-bytes.md</code> rather than dropping it - two tests reason about that
+  baseline.</li>
+  <li>The persona move updates the generator <code>sourceDir</code>/<code>sourceGlob</code>, regenerates
+  <code>builtin-personas.generated.ts</code>, fixes the two path-pinning tests, and keeps filenames
+  byte-identical so <code>builtin:&lt;slug&gt;</code> IDs survive.</li>
+  <li><code>FOREMAN.md</code>'s move changes both <code>foremanInstructionsPath()</code> in
+  <code>src/server/config.ts</code> and <code>electron-builder.yml</code>.</li>
+  <li>Every phase that changes behavior lands with tests and a README/docs update in the same
+  change.</li>
+</ol>
+
+<h2 id="decisions">Adopted decisions</h2>
+<ol>
+  <li>Optional docs: troubleshooting/FAQ, glossary, and <code>SECURITY.md</code> are in (workstream 8).
+  The daemon API reference and release runbook are deferred.</li>
+  <li>No LICENSE file; the README states the repository is internal.</li>
+  <li><code>docs/mockups/</code> and <code>docs/backups/</code> move under <code>docs/archive/</code>;
+  <code>docs/plans/</code> stays.</li>
+  <li>Follow-up: phased implementation with dependency-linked Mission Control tasks.</li>
+</ol>
+
+</body>
+</html>

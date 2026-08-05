@@ -4291,8 +4291,9 @@ export function recordDriverSessionUsage(input: {
  * bounding the wrong-way cost to "a hand-off to a terminal in the same hour may lose up to an
  * hour of that session's export", instead of losing all of it forever.
  *
- * A turn STARTING refreshes `sdk_sessions.updated_at` (`setSdkSessionTurnInProgress`), which is
- * what keeps clause 1 true through a long turn whose own driver row does not exist yet.
+ * A turn STARTING refreshes `sdk_sessions.updated_at` - `setSdkSessionTurnInProgress` in
+ * `src/server/sdk/store.ts`, called by the supervisor as it accepts the turn - which is what
+ * keeps clause 1 true through a long turn whose own driver row does not exist yet.
  */
 const DRIVER_OWNERSHIP_WINDOW_MS = 60 * 60 * 1000;
 

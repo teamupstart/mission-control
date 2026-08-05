@@ -71,6 +71,34 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --reporter=list
 ```
 
+### A spent Foreman note retiring itself
+
+[`docs/evidence/foreman-note-retires-on-your-answer/`](../docs/evidence/foreman-note-retires-on-your-answer/)
+holds two before/after pairs from the run that asserts answering an ask retires the Foreman
+note pinned on it - one pair for the driver form, one for the MCP review channel. The bug was
+reported as a screenshot of a stale `SUGGESTED ANSWER` banner, so the frames answer it in the
+same terms: route and registry assertions can prove the row changed, but only a capture shows
+a reader that the banner went. The directory README records the regeneration command, and is
+explicit about the two pre-existing warts the frames also happen to show.
+
+### Per-harness dispatch defaults propagating
+
+[`docs/evidence/harness-defaults-propagate/`](../docs/evidence/harness-defaults-propagate/)
+holds two captures from the run that asserts a saved per-harness model takes effect without a
+restart. `harnesses-card-saved.png` is the Claude Code card after the edit, with its own
+sentence naming the flag the next launch carries (`--model claude-sonnet-5`).
+`dispatch-modal-names-new-default.png` is the dispatch form reading `Default - Sonnet 5` -
+the label that used to keep advertising a retired model until the modal was reopened.
+
+Regenerate them with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/harness-defaults-propagate.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Foreman PR follow-through
 
 [`docs/evidence/foreman-pr-follow-through/`](../docs/evidence/foreman-pr-follow-through/)
@@ -457,6 +485,35 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 `--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
 that produces `transcript.txt`.
+
+### Where the Inspector's brief lives
+
+[`docs/evidence/inspector-brief-location/`](../docs/evidence/inspector-brief-location/) carries
+three frames from `specs/inspector-brief-location.spec.ts`, which asserts that the Inspector
+panel names both places a repo may keep its brief - `personas/INSPECTOR.md` first, a root
+`INSPECTOR.md` as the fallback - and that neither filename is split across lines.
+
+`inspector-settings-lede.png` is the sentence at reading scale and
+`inspector-settings-panel.png` places it where an operator meets it, above the switch that
+turns the Inspector on. The third frame is the one that makes the other two mean anything.
+`inspector-settings-lede-before-word-break-all.png` is the same clip with the
+`word-break: break-all` that settings blurbs used to style inline code with, which breaks
+between any two characters and rendered the path as `personas/INSPE` + `CTOR.md` - a filename
+chopped mid-word in the one sentence whose job is telling you which file to create.
+
+Unlike the topbar's pair, both states come from ONE run against the current commit: the spec
+puts the old declaration back on the chips as an inline style, shoots, and removes it again.
+A screenshot of correct text is a weak artifact on its own - a reviewer cannot tell it from
+the state before the change - and a defect frame that only a reverted build can produce is one
+no command regenerates. The assertions still describe what shipped, because the inline style
+is gone before they are read.
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/inspector-brief-location.spec.ts \
+  --workers=1 --reporter=list
+```
 
 ## Steering a workflow reviewer
 

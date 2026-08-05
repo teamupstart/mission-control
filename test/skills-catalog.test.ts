@@ -305,8 +305,30 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   assert.match(skill.description, /opening.*pull request/i);
 
   const text = readFileSync(new URL("../skills/pull-request/SKILL.md", import.meta.url), "utf8");
-  assert.match(text, /PR's goal/i);
-  assert.match(text, /design decisions/i);
-  assert.match(text, /proof of work/i);
+
+  // The description is split by audience, and each section is a literal heading rather than a
+  // described convention, so the order is part of the contract: the approver's section first,
+  // the implementation detail second. Asserted in sequence so dropping one is a failure even
+  // though every heading below would still be found somewhere in the file.
+  let at = -1;
+  for (const heading of [
+    "## For Humans",
+    "### Why",
+    "### What changed",
+    "### Tradeoffs",
+    "### Known gaps",
+    "### Evidence",
+    "### Follow-up work",
+    "## For Agents",
+  ]) {
+    const found = text.indexOf(`\n${heading}\n`, at + 1);
+    assert.ok(found > at, `the PR description contract needs '${heading}', in this order`);
+    at = found;
+  }
+
+  // What each side of the split owes a reader. Screenshots are human evidence, and the design
+  // and implementation reasoning is what the agent section exists to carry.
   assert.match(text, /screenshots/i);
+  assert.match(text, /design decisions/i);
+  assert.match(text, /implementation detail/i);
 });

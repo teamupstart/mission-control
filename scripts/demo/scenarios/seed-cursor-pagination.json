@@ -1,0 +1,52 @@
+{
+  "title": "Move the ledger to cursor pagination",
+  "match": ["cursor pagination"],
+  "default": false,
+  "steps": [
+    { "kind": "assistant", "text": "The ledger pages with OFFSET, so a row written mid-scroll shifts every page after it and the operator sees the same entry twice. A keyed cursor fixes that properly.", "delayMs": 60 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "grep -rn \"LIMIT\" src" }, "delayMs": 80 },
+    { "kind": "assistant", "text": "Four call sites, all `LIMIT ? OFFSET ?`. Starting with the cursor codec, since every one of them needs it.", "delayMs": 60 },
+    { "kind": "tool", "name": "Write", "input": { "file_path": "src/cursor.ts" }, "delayMs": 60 },
+    { "kind": "editFile", "path": "src/cursor.ts", "content": "export interface Cursor {\n  ts: number;\n  id: string;\n}\n\n/**\n * Encode a page boundary as an opaque string.\n *\n * `ts` alone is not enough: two rows can share a millisecond, and a cursor that cannot\n * break that tie either repeats one of them or skips it. The id is the tiebreak.\n */\nexport function encodeCursor(cursor: Cursor): string {\n  return Buffer.from(`${cursor.ts}:${cursor.id}`, \"utf8\").toString(\"base64url\");\n}\n\n/** Decode a cursor, or null for anything this build did not write. */\nexport function decodeCursor(raw: string): Cursor | null {\n  let decoded: string;\n  try {\n    decoded = Buffer.from(raw, \"base64url\").toString(\"utf8\");\n  } catch {\n    return null;\n  }\n  const split = decoded.indexOf(\":\");\n  if (split <= 0) return null;\n  const ts = Number(decoded.slice(0, split));\n  const id = decoded.slice(split + 1);\n  if (!Number.isSafeInteger(ts) || !id) return null;\n  return { ts, id };\n}\n", "delayMs": 40 },
+    {
+      "kind": "tool",
+      "name": "TodoWrite",
+      "input": {
+        "todos": [
+          { "content": "Add an opaque cursor codec", "activeForm": "Adding an opaque cursor codec", "status": "completed" },
+          { "content": "Convert the four LIMIT/OFFSET call sites", "activeForm": "Converting the four LIMIT/OFFSET call sites", "status": "in_progress" },
+          { "content": "Decide the page-size contract", "activeForm": "Deciding the page-size contract", "status": "pending" }
+        ]
+      },
+      "delayMs": 60
+    },
+    { "kind": "tool", "name": "Edit", "input": { "file_path": "src/dashboard.ts", "description": "page the summary's history from a cursor" }, "delayMs": 60 },
+    { "kind": "editFile", "path": "src/dashboard.ts", "content": "import { type Cursor, encodeCursor } from \"./cursor.ts\";\n\nexport interface FleetCounts {\n  active: number;\n  waiting: number;\n  idle: number;\n}\n\nexport interface HistoryPage {\n  counts: FleetCounts[];\n  nextCursor: string | null;\n}\n\n/** A one-line summary of the fleet's current state. */\nexport function summarize(counts: FleetCounts): string {\n  return `${counts.active} active, ${counts.waiting} waiting, ${counts.idle} idle`;\n}\n\n/**\n * One page of summary history, bounded by a keyed cursor rather than an offset.\n *\n * `nextCursor` is null on the last page, which is what lets a caller stop without a second\n * round trip that returns nothing.\n */\nexport function historyPage(rows: Array<FleetCounts & Cursor>, limit: number): HistoryPage {\n  const page = rows.slice(0, limit);\n  const last = page.at(-1);\n  return {\n    counts: page.map(({ active, waiting, idle }) => ({ active, waiting, idle })),\n    nextCursor: rows.length > limit && last ? encodeCursor({ ts: last.ts, id: last.id }) : null,\n  };\n}\n", "delayMs": 40 },
+    { "kind": "assistant", "text": "Two of the four are converted. Before I do the remaining pair, there are two contract calls here I should not make on my own - both are visible to anyone using the API.", "delayMs": 60 },
+    {
+      "kind": "ask",
+      "questions": [
+        {
+          "question": "What should a caller get when it sends a cursor this build cannot decode?",
+          "header": "Bad cursor",
+          "options": [
+            { "label": "400 with an error", "description": "refuse it loudly, so a client bug surfaces at the call site instead of looking like an empty result" },
+            { "label": "Restart from the first page", "description": "treat an undecodable cursor as absent - forgiving, but a paging bug then reads as an infinite list" }
+          ]
+        },
+        {
+          "question": "Should the page size stay caller-controlled?",
+          "header": "Page size",
+          "options": [
+            { "label": "Caller-controlled, capped at 100", "description": "keep the existing limit parameter and clamp it" },
+            { "label": "Fixed at 50", "description": "drop the parameter, so every page is the same size and cursors stay comparable" }
+          ]
+        }
+      ]
+    },
+    { "kind": "assistant", "text": "Got it. Refusing an undecodable cursor with a 400, and keeping the limit caller-controlled with a cap. Converting the last two call sites now.", "delayMs": 60 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "npm test -- cursor" }, "delayMs": 120 },
+    { "kind": "assistant", "text": "All four call sites are on the cursor and the suite is green.", "delayMs": 60 },
+    { "kind": "result" }
+  ]
+}

@@ -75,7 +75,7 @@ export {
  * Persona snapshots are taken from `BUILTIN_PERSONAS` at module load, so a shipped version
  * always carries the guidance THIS build was made from and `personaSnapshotIsOutdated` never
  * reports the shipped workflow as stale against the shipped Personas. The other half of that
- * rule lives in the plan: a change to a `docs/personas/*.md` document a shipped built-in
+ * rule lives in the plan: a change to a `personas/*.md` document a shipped built-in
  * references appends a new built-in workflow version in the same commit.
  */
 export interface BuiltinWorkflow {

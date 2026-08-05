@@ -48,6 +48,7 @@ import type {
   StatusLineIngest,
 } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
+import { noteAwaitsYou } from "@shared/foreman.ts";
 import { goalLine } from "@shared/goal.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
@@ -341,6 +342,9 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "cost_fleet",
   // Moves the Intake stage's tone: `taskSources.failing` and this tuple are the same read.
   "settings_status",
+  // Changes which model/effort/runtime the NEXT dispatch uses, so the pickers naming those
+  // defaults have to re-read rather than wait out a poll.
+  "harnesses_config_changed",
 ]);
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
@@ -642,6 +646,18 @@ export class Registry extends EventEmitter {
     this.lastSettingsStatus = status;
     if (same) return;
     this.emitEvent({ type: "settings_status", status });
+  }
+
+  /**
+   * Announce that the per-harness dispatch defaults were rewritten.
+   *
+   * No no-change suppression, unlike `emitSettingsStatus`: this frame carries no body to
+   * compare (see the event's declaration), and it is emitted only from the one route that
+   * writes the config, so there is no recompute-driven caller to debounce. A write that
+   * happens to store an identical config costs one re-read in each open dashboard.
+   */
+  emitHarnessesConfigChanged(): void {
+    this.emitEvent({ type: "harnesses_config_changed" });
   }
 
   getSession(id: string): Session | undefined {
@@ -4669,6 +4685,64 @@ export class Registry extends EventEmitter {
       resolvedBy: "you",
       resolvedAt: now,
     });
+    return true;
+  }
+
+  /**
+   * You answered the ask yourself, so retire the note Foreman pinned about that same ask.
+   *
+   * Foreman's note is a claim on your attention: "needs your decision", with a suggested
+   * answer and an Approve button. Answering the question through any other channel spends
+   * that claim - the decision is made, the child is unblocked, and the recommendation is
+   * about a question that is closed. Nothing used to say so, so the note stayed pinned with
+   * a live Approve on it until someone clicked Dismiss, and on the driver surface that
+   * button would have injected Foreman's prose into a session that already had its answer.
+   *
+   * Keyed on the MARKER rather than on "this session has a note", and that is the whole
+   * safety argument. A note whose marker names a DIFFERENT ask - a `no-question`
+   * escalation, a `terminal-no-pane` one - is a decision you still owe, raised about
+   * something other than the question just answered. Retiring it because an unrelated
+   * permission prompt got answered would silently drop it, which is strictly worse than the
+   * stale note this method exists to clear. Marker equality is the only evidence that the
+   * thing you answered is the thing Foreman was waiting on.
+   *
+   * Episode first, then the note, because `upsertNote` nulls the recommendation and the
+   * record must be stamped while the evidence is still there - the ordering rule
+   * `closeForemanNote` documents for the dashboard's own Approve and Dismiss.
+   *
+   * The note write is what reaches the browser: `upsertNote` re-denormalizes onto every
+   * live session sharing the key and emits `session_upsert`, so the strip unmounts on
+   * `noteAwaitsYou` with no reload and no poll.
+   *
+   * Returns whether anything was retired, which is what lets a caller stay quiet: every
+   * answer route calls this, and almost none of them have a note to clear.
+   */
+  retireNoteAnsweredByYou(sessionId: string, marker: string, now = Date.now()): boolean {
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    const note = this.notes.get(noteKeyFor(s));
+    // `answered` and `skipped` are terminal and own no pin, so there is nothing to retire -
+    // and rewriting one would overwrite a decision that was already reached.
+    if (!note || !noteAwaitsYou(note.disposition)) return false;
+    if (note.handledMarker !== marker) return false;
+    // `skipped` + the "you" author `resolveEpisode` stamps is what `episodeOutcome` reads as
+    // `dismissed`: the escalation was closed without Foreman's answer being used. Identical
+    // in the ledger to the Dismiss a human used to have to click, which is the point - the
+    // outcome was always this, and all that changes is who had to do the clicking.
+    this.resolveEpisode(sessionId, { marker, disposition: "skipped", sentText: null }, now);
+    this.upsertNote(
+      sessionId,
+      {
+        disposition: "skipped",
+        lastAction: "you answered this yourself",
+        // The question is closed, so neither the suggestion nor the reasoning behind it is
+        // live any more. Both survive on the episode, which is where a finished decision
+        // belongs; leaving them on the note would keep offering an answer to nothing.
+        recommendation: null,
+        brief: null,
+      },
+      now,
+    );
     return true;
   }
 

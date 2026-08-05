@@ -234,9 +234,9 @@ export function InspectorSettingsPanel({
     <section className="settings-section sc-section">
       <p className="settings-hint sc-lede">
         Reviews the pull requests Mission Control opened - and only those - against the
-        repository's <code>INSPECTOR.md</code>. It comments on what it finds, answers replies in
-        its own threads, re-reviews on every push, and closes its own threads once a push
-        fixes them.
+        repository's <code>personas/INSPECTOR.md</code>, or its root <code>INSPECTOR.md</code>.
+        It comments on what it finds, answers replies in its own threads, re-reviews on every
+        push, and closes its own threads once a push fixes them.
       </p>
 
       <div className="sc-split">

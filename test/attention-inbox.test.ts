@@ -83,7 +83,7 @@ test("the sections are fixed in order: decisions, questions, parked menus, then 
     [
       "ensemble_decision",
       "session_reviews",
-      "member_dialog",
+      "session_dialog",
       "parked_finalization",
     ],
   );
@@ -231,15 +231,17 @@ test("every item id is unique, so no review can be drawn into the document twice
   assert.deepEqual(reviewIds, ["r-1", "r-2"]);
 });
 
-test("only ensemble members are listed for a pane dialog, and a dead session's menu is not", () => {
-  // 5.1(c): a pane dialog is a transient TUI fact answered on the card, so it earns a row only
-  // where the run view would otherwise show that member as merrily "Active". An ordinary
-  // session parked on a menu is already amber on the fleet and is not duplicated here.
+test("EVERY session parked on a pane dialog is listed, and a dead session's menu is not", () => {
+  // Reverses phase-4 5.1(c), which listed only ensemble members on the reasoning that an
+  // ordinary session parked on a menu "is already amber on the fleet and is not duplicated
+  // here". That left the most definitively blocked thing the board can show - a session
+  // sitting on a permission prompt - counted by `need you` and absent from the list `to
+  // answer` opens, so the header said one thing was stuck and the inbox said nothing was.
   const dialog = { options: [], highlighted: 0, prompt: "Allow?" } as Session["paneDialog"];
   const result = fold({
     sessions: [
       mkMemberSession({ id: "s-member", paneDialog: dialog }),
-      mkSession({ id: "s-plain", paneDialog: dialog }),
+      mkSession({ id: "s-plain", name: "App Bugfixes", paneDialog: dialog }),
       // `paneDialog` outlives the pane: an exited session carries its last menu for the whole
       // linger window, and nothing can be typed at it.
       mkMemberSession({ id: "s-exited", state: "exited", paneDialog: dialog }),
@@ -247,8 +249,76 @@ test("only ensemble members are listed for a pane dialog, and a dead session's m
   });
   assert.deepEqual(
     result.items.map((item) => item.id),
-    ["dialog:s-member"],
+    ["dialog:s-plain", "dialog:s-member"],
+    "ordered by name then id, and the exited session's stale menu is dropped",
   );
+  const plain = result.items[0];
+  assert.equal(
+    plain?.kind === "session_dialog" && plain.context,
+    null,
+    "an ordinary session gets no run clause invented for it",
+  );
+  const member = result.items[1];
+  assert.equal(
+    member?.kind === "session_dialog" && member.context,
+    // No summary was folded in, so the clause reads off the link alone - which is what it must
+    // do in the seconds after a restart, before the run's SSE summary lands.
+    "Best of N - candidate 1 of 3",
+    "a member still carries the run context that answering it needs",
+  );
+});
+
+test("a session amber for a bare lifecycle state gets a row, so the inbox is never empty under a count", () => {
+  // The gap that motivated `session_blocked`. `awaiting_input` has exactly two writers - the
+  // Claude `Notification` and Codex `PermissionRequest` hook translators - and NEITHER files a
+  // review, so these sessions counted in `need you` and produced nothing to open.
+  const waiting = mkSession({
+    id: "s-wait",
+    state: "awaiting_input",
+    activity: "Needs approval: Bash",
+  });
+  const result = fold({ sessions: [waiting] });
+  assert.deepEqual(
+    result.items.map((item) => item.id),
+    ["blocked:s-wait"],
+  );
+  assert.equal(result.total, 1);
+  const item = result.items[0];
+  assert.equal(item?.kind === "session_blocked" && item.activity, "Needs approval: Bash");
+});
+
+test("the backstop never double-counts a session another section already claimed", () => {
+  // `session_blocked` is derived from what sections 2 and 3 did NOT claim. A session that is
+  // awaiting_input AND holding a review must be one row, not two, or the inbox inflates.
+  const both = mkSession({ id: "s-both", state: "awaiting_input", pendingReviews: 1 });
+  const result = fold({ sessions: [both], reviews: [review({ id: "r-1", sessionId: "s-both" })] });
+  assert.deepEqual(
+    result.items.map((item) => item.kind),
+    ["session_reviews"],
+  );
+  assert.equal(result.total, 1);
+});
+
+test("an unconfirmed state is not amber, so it earns no row", () => {
+  // `stateDisplay` returns a neutral "running" for a session whose lifecycle reading is not
+  // trusted. The fold reads the same predicate, so the two cannot disagree about it.
+  const unsure = mkSession({ id: "s-unsure", state: "awaiting_input", stateConfirmed: false });
+  assert.deepEqual(fold({ sessions: [unsure] }).items, []);
+});
+
+test("a settling session's questions are dropped - nobody is there to hear the answer", () => {
+  // `stateDisplay` returns on exited/stopping ABOVE its pendingReviews check, so these were
+  // counted by `to answer` and not by `need you`. An exited session holds its reviews for the
+  // whole 8s eviction linger, and a `stopping` session whose driver hangs holds them forever.
+  for (const state of ["exited", "stopping"] as const) {
+    const dying = mkSession({ id: "s-dying", state, pendingReviews: 1 });
+    const result = fold({
+      sessions: [dying],
+      reviews: [review({ id: "r-1", sessionId: "s-dying" })],
+    });
+    assert.deepEqual(result.items, [], `a ${state} session's reviews are not answerable`);
+    assert.equal(result.total, 0);
+  }
 });
 
 test("a finalization is parked only when it FAILED, not merely because it is promoting", () => {
@@ -278,6 +348,23 @@ const inbox = readFileSync(
   "utf8",
 );
 
+test("the inbox announces itself as a dialog, like every other overlay", () => {
+  // `Overlay` leaves `role` undefined unless a caller sets it, and an `aria-label` on a
+  // role-less div is dropped by most screen readers. This one carried the label without the
+  // role - alone among the modals - so it announced as nothing.
+  assert.match(inbox, /role="dialog"/);
+  assert.match(inbox, /ariaLabel="Attention inbox"/);
+});
+
+test("the two-tone inbox line is actually two tones", () => {
+  // The rows end with a `.dim` aside inside `.inbox-line`. When that line was itself --dim the
+  // span was a no-op and the sentence rendered as one flat run-on.
+  const css = readFileSync(new URL("../src/web/styles.css", import.meta.url), "utf8");
+  const rule = css.slice(css.indexOf(".inbox-line {"), css.indexOf("}", css.indexOf(".inbox-line {")));
+  assert.match(rule, /color: var\(--muted\)/);
+  assert.doesNotMatch(rule, /color: var\(--dim\)/, "the aside inside it is --dim; they must differ");
+});
+
 test("the inbox is a registered overlay and draws the shared review card", () => {
   assert.ok(OVERLAY_IDS.attention, "the inbox needs its own id, or onlyOpen() cannot match it");
   assert.match(inbox, /<Overlay\s*\n?\s*id=\{OVERLAY_IDS\.attention\}/);
@@ -296,11 +383,24 @@ test("the inbox renders every item kind the fold can produce", () => {
   for (const kind of [
     "ensemble_decision",
     "session_reviews",
-    "member_dialog",
+    "session_dialog",
+    "session_blocked",
     "parked_finalization",
   ]) {
     assert.match(inbox, new RegExp(`case "${kind}":`), `${kind} has no arm in the inbox`);
   }
+});
+
+test("the inbox heads with the same words as the segment that opens it", () => {
+  // It read "N need you" - the OTHER pulse segment's label - so clicking `3 to answer` landed
+  // on a panel headed `3 need you` and the operator had to reconcile two labels for one figure
+  // at the moment they were trying to drain it.
+  // Scoped to the rendered heading, not the file: the comment above it explains what it is
+  // deliberately NOT saying, and has to be free to say the words to do that.
+  const heading = inbox.slice(inbox.indexOf("<strong>{fold.total"), inbox.indexOf("</strong>"));
+  assert.match(heading, /\$\{fold\.total\} to answer/);
+  assert.match(heading, /"Nothing to answer"/);
+  assert.doesNotMatch(heading, /need you/);
 });
 
 test("a deep link closes the inbox; answering in place does not", () => {
@@ -308,7 +408,7 @@ test("a deep link closes the inbox; answering in place does not", () => {
   // for. A review is answered right here, so the modal must NOT close under the operator.
   assert.match(inbox, /const leave = \(go: \(\) => void\) => \(\) => \{\s*onClose\(\);/);
   assert.match(inbox, /onOpenEnsemble=\{\(runId\) => leave\(\(\) => onOpenEnsemble\(runId\)\)\(\)\}/);
-  const reviews = inbox.slice(inbox.indexOf('case "session_reviews":'), inbox.indexOf('case "member_dialog":'));
+  const reviews = inbox.slice(inbox.indexOf('case "session_reviews":'), inbox.indexOf('case "session_dialog":'));
   assert.doesNotMatch(reviews, /onClose/);
 });
 
@@ -323,6 +423,7 @@ test("every class the inbox renders has a rule in the stylesheet", () => {
     "inbox-decision",
     "inbox-reviews",
     "inbox-dialog",
+    "inbox-blocked",
     "inbox-parked",
     "inbox-gate",
     "inbox-head",

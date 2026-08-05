@@ -16,7 +16,7 @@ import {
 } from "./discovery/pane-dialog.ts";
 import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
-import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
+import { canRename, emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
 import { EMULATOR_IDS } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
 import { sessionEffortLevels, supportsSessionEffort, type EffortSpec } from "@shared/harness-capabilities.ts";
@@ -66,6 +66,15 @@ const NO_HANDLE = "session has no terminal pane to send to";
 
 /** Shared error when another write already owns this pane. */
 const PANE_BUSY = "another write is already in flight for this session's pane";
+
+/**
+ * Shared error when an embedded session's name could not be written down.
+ *
+ * One sentence for both ways it fails - no supervisor in this build, and no row for this id -
+ * because they are the same fact to the person reading it: the name did not persist, so do not
+ * believe the card. The distinction lives in the log, not in a dialog.
+ */
+const NO_DRIVER_RENAME = "this session's name could not be saved - no embedded session record";
 
 export type PaneLockToken = symbol;
 
@@ -1559,6 +1568,28 @@ export interface FormResult extends ActionResult {
 }
 
 /**
+ * Whether a form submission actually reached the child.
+ *
+ * `ok` does not answer this, and the gap is the whole reason this predicate is named rather
+ * than left as an inline `r.ok` at each caller. A pane form reports `ok` for two states that
+ * delivered NOTHING:
+ *
+ * - `next-question` - the ticks stand and the walk moved to the following question. A form's
+ *   answers reach the agent only when its Submit tab is confirmed (`submitFormLocked`), so at
+ *   this point the child has received nothing at all.
+ * - `unanswered` - Claude's review tab reported a gap, so the walk stepped back to the same
+ *   question. Same screen, same ask, nothing sent.
+ *
+ * Both leave the agent blocked on the ask it started on, so anything that treats them as an
+ * answer acts on a decision that has not been made. `retireForemanNoteForDialog` read `ok`
+ * and retired the operator's pinned Foreman note on the first screen of a multi-question
+ * form; an absent outcome is read as undelivered here for the same reason.
+ */
+export function formDelivered(r: FormResult): boolean {
+  return r.ok && r.outcome === "submitted";
+}
+
+/**
  * Fill in and SEND a multi-select `AskUserQuestion` - the form half of answering a dialog.
  *
  * A form is not a menu, and the difference is the whole reason this exists. On a menu,
@@ -1798,15 +1829,22 @@ export function nameRulesFor(
  * had already drifted by one character class. What no display name can hold - a newline
  * submits, splits or truncates depending on which surface reads it first - is the shared
  * half every backend's rules are built on (`plainValidate`), not a check restated here.
+ *
+ * "Somewhere for a name to live" is `canRename`, not the handle list, and the difference is a
+ * whole runtime: an embedded session keeps its name on the durable row the supervisor holds
+ * for it, so refusing it here for having no pane refused the only sessions a dispatch now
+ * produces. Its grammar is `PLAIN_NAMES` - `nameRulesFor` already answers that for a
+ * handleless session, because a name with no target to be parsed as has no target grammar,
+ * only the rules no display text can break.
  */
 export function validateSessionName(
-  session: PaneHandles,
+  session: PaneHandles & Pick<Session, "runtime">,
   rawName: string,
   deps: TerminalDeps = defaultTerminalDeps,
 ): { ok: true; name: string } | { ok: false; error: string } {
   const name = rawName.trim();
   if (!name) return { ok: false, error: "name can't be empty" };
-  if (!muxHandle(session) && !emulatorHandle(session)) {
+  if (!canRename(session)) {
     return { ok: false, error: "this session has no terminal pane to rename" };
   }
   const why = nameRulesFor(session, deps).validate(name);
@@ -1927,12 +1965,29 @@ async function hostTabs(
  *
  * Assumes `name` was already validated - the route calls `validateSessionName` first, so a
  * bad name is a 400 rather than a shelled-out failure.
+ *
+ * An EMBEDDED session takes the `driverRename` seam instead and never touches a backend: it
+ * has no home, and its name is a column rather than something read back off a terminal. The
+ * branch is here rather than at the callers for the reason the same branch sits inside
+ * `clearContext`: the Rename route and the assign auto-titler both need this answer, and a
+ * second copy is a second set of degradations to keep in step - the shape of bug where the
+ * button works and handing the session a new task leaves the old task's name on the card.
  */
 export async function rename(
   session: Session,
   name: string,
   deps: TerminalDeps = defaultTerminalDeps,
+  driverRename?: DriverRename,
 ): Promise<ActionResult> {
+  if (session.runtime === "sdk") {
+    // Refused rather than reported ok: with no supervisor there is no row to write, so the
+    // registry's optimistic echo would show the new name on a card that comes back under the
+    // old one at the next restart - a rename that only appears to have happened.
+    if (!driverRename) return { ok: false, error: NO_DRIVER_RENAME };
+    return (await driverRename(session, name))
+      ? { ok: true }
+      : { ok: false, error: NO_DRIVER_RENAME };
+  }
   const inside = muxHandle(session);
   if (inside) {
     const mux = deps.multiplexers[inside.backend];
@@ -2448,6 +2503,20 @@ export async function resetToOrigin(
  * uncleared reset rather than a failed one - the git half has already landed by then.
  */
 export type DriverClear = (session: Session) => Promise<boolean>;
+
+/**
+ * How an EMBEDDED session's name is moved: writing it to the row that outlives the process.
+ *
+ * A seam for the same reason `DriverClear` is one - `actions.ts` is the pane layer and must
+ * not acquire an opinion about drivers - and boolean for the same reason too: `false` is
+ * "there is no such row", the one outcome the caller has to tell apart from success, because
+ * the registry is about to echo this name onto the card either way.
+ *
+ * Unlike a context clear, this never reaches the running driver at all. A display name is not
+ * something the agent knows about; it is what the operator calls the conversation. That is
+ * exactly why it can be renamed while the driver is mid-turn, or suspended, or not yet bound.
+ */
+export type DriverRename = (session: Session, name: string) => Promise<boolean>;
 
 /**
  * Wipe the agent's context, whichever way this session can be reached - or null when its

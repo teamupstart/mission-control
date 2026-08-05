@@ -81,6 +81,15 @@ export interface SdkSessionRow {
    * enough or whether the interrupted work needs a continuation turn.
    */
   turnInProgress: boolean;
+  /**
+   * The name a person gave this session, or null when nobody has renamed it.
+   *
+   * Null is load-bearing and must not be collapsed to the derived name: it is what makes a
+   * card keep following its task's title (which a dispatch refines asynchronously) until an
+   * operator overrides it, and what makes that override outrank the title forever after. See
+   * `restoredName`, the one reader that resolves the two.
+   */
+  displayName: string | null;
   /** The raw status as stored, so a refusal can say what it could not read. */
   statusRaw: string;
   createdAt: number;
@@ -112,6 +121,7 @@ interface Row {
   permission_mode: string | null;
   status: string;
   turn_in_progress: number;
+  display_name: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -128,6 +138,11 @@ function mapRow(r: Row): SdkSessionRow {
     permissionMode: readPersistedEnum(PERMISSION_MODES, r.permission_mode),
     status: readPersistedEnum(SDK_SESSION_STATUSES, r.status),
     turnInProgress: r.turn_in_progress === 1,
+    // Trimmed to null, not passed through: a row whose name is blank (or whitespace an older
+    // build let through) has nothing to display, and the derived name is a better answer than
+    // an empty heading. `setSdkSessionDisplayName` refuses to write one, so this only ever
+    // catches a row this build did not author.
+    displayName: r.display_name?.trim() || null,
     statusRaw: r.status,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -151,7 +166,7 @@ export function listSdkSessions(): SdkSessionRow[] {
   return openDb()
     .prepare(
       `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
-              status, turn_in_progress, created_at, updated_at
+              status, turn_in_progress, display_name, created_at, updated_at
          FROM sdk_sessions ORDER BY created_at ASC`,
     )
     .all()
@@ -162,7 +177,7 @@ export function getSdkSession(id: string): SdkSessionRow | null {
   const row = openDb()
     .prepare(
       `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
-              status, turn_in_progress, created_at, updated_at
+              status, turn_in_progress, display_name, created_at, updated_at
          FROM sdk_sessions WHERE id = ?`,
     )
     .get(id) as unknown as Row | undefined;
@@ -234,6 +249,34 @@ export function setSdkSessionStatus(
   openDb()
     .prepare(`UPDATE sdk_sessions SET status = ?, updated_at = ? WHERE id = ?`)
     .run(status, now, id);
+}
+
+/**
+ * Record the name a person gave this session, so a restart brings the card back under it.
+ *
+ * Deliberately NOT part of `upsertSdkSession`: that write is the launch/relaunch statement,
+ * and an adopt on startup runs it again. Carrying the name through it would mean every
+ * restore had to remember to re-supply a value it does not own, and forgetting once is a
+ * rename silently reverting to the task title. A separate one-column UPDATE cannot make that
+ * mistake, which is the same reason `status` and `turn_in_progress` have their own writers.
+ *
+ * Returns whether a row was actually updated, so a caller can tell "renamed" from "there is
+ * no such embedded session" rather than reporting success for a write that hit nothing.
+ */
+export function setSdkSessionDisplayName(
+  id: string,
+  name: string,
+  now = Date.now(),
+): boolean {
+  // The trim is the store's own, not the caller's, because this is the value that outlives
+  // the process: a name that only LOOKS right because some route trimmed it on the way past
+  // is one a different route can persist untrimmed.
+  const display = name.trim();
+  if (!display) return false;
+  const r = openDb()
+    .prepare(`UPDATE sdk_sessions SET display_name = ?, updated_at = ? WHERE id = ?`)
+    .run(display, now, id);
+  return r.changes > 0;
 }
 
 /** Record whether startup owes this conversation an automatic continuation turn. */

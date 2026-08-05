@@ -21,6 +21,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { normTty } = await import("../src/server/discovery/tty.ts");
+const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session, Task, WorkItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
@@ -39,7 +40,20 @@ const LOOPBACK = { host: "127.0.0.1:7317" };
 const authed = { ...LOOPBACK, "content-type": "application/json", "x-harness-token": TOKEN };
 
 /** A discovered claude session on tmux pane %3 - the join key the hook binds to. */
-function seedSession(): void {
+/**
+ * A pane id no tmux server can resolve, for the cases that need a capture to FAIL.
+ *
+ * `%3` - what this fixture seeds by default - is an ordinary pane id, and pane ids are
+ * global to a tmux server, so on any machine with tmux running it is very likely to name a
+ * real pane belonging to a real shell. A test that assumed `%3` was absent therefore read
+ * back a developer's actual terminal contents instead of the "no screen" it asserted, and
+ * failed for reasons having nothing to do with the code under test. Non-numeric is the
+ * robust choice rather than a big number: tmux's pane ids are `%<digits>`, so this one is
+ * refused by the target parser itself ("can't find pane") and cannot come to exist.
+ */
+const UNRESOLVABLE_PANE = "%deadpane";
+
+function seedSession(paneId = "%3"): void {
   const d: DiscoveredSession = {
     syntheticId: "sess-1",
     agent: "claude",
@@ -51,7 +65,7 @@ function seedSession(): void {
     repoRoot: null,
     pid: 4242,
     tty: "ttys003",
-    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%3" })],
+    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId })],
     startedAt: 0,
   };
   registry.applyDiscovery([d]);
@@ -472,6 +486,97 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
   assert.equal(ok.status, 500);
   const okBody = (await ok.json()) as { ok: boolean; error: string };
   assert.equal(okBody.ok, false);
+});
+
+test("rename: an embedded session renames through the same route, with no pane at all", async () => {
+  // The regression this covers end to end at the route layer: an SDK session has
+  // `terminals: []` by construction, so the old pane gate answered 400 "this session has no
+  // terminal pane to rename" for every dispatched card on the fleet. There is nothing to shell
+  // to here, which is why this arm can assert the SUCCESS path the tmux one above cannot.
+  //
+  // BOTH halves are seeded, in the order the supervisor writes them: the durable row is where
+  // the name actually goes, and the card is what the route looks the session up in. A card with
+  // no row is a real state (a build with no supervisor) and it is a refusal, asserted below.
+  upsertSdkSession({
+    id: "sdk:ren-http",
+    agent: "claude",
+    agentSessionId: null,
+    cwd: "/repo/app",
+    taskId: null,
+    model: null,
+    effort: null,
+    permissionMode: null,
+    status: "running",
+    turnInProgress: false,
+  });
+  registry.registerSdkSession({
+    id: "sdk:ren-http",
+    agent: "claude",
+    name: "derived from its task",
+    cwd: "/repo/app",
+  });
+
+  const renamed = await app.request("/api/sessions/sdk%3Aren-http/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "named by hand" }),
+  });
+  assert.equal(renamed.status, 200);
+  assert.deepEqual(await renamed.json(), { ok: true });
+  assert.equal(
+    (await sessions()).find((s) => s.id === "sdk:ren-http")!.name,
+    "named by hand",
+    "the registry echoed it onto the card rather than waiting for a poll",
+  );
+
+  // A blank name is still a 400, and the characters tmux reserves as separators are ordinary
+  // display text here - there is no target spec for them to break.
+  const blank = await app.request("/api/sessions/sdk%3Aren-http/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "   " }),
+  });
+  assert.equal(blank.status, 400);
+
+  const punctuated = await app.request("/api/sessions/sdk%3Aren-http/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "fix: the a.b parser" }),
+  });
+  assert.equal(punctuated.status, 200);
+  assert.equal(
+    (await sessions()).find((s) => s.id === "sdk:ren-http")!.name,
+    "fix: the a.b parser",
+  );
+
+  // The name is on the ROW, which is the whole reason this works: it is what a daemon restart
+  // reads back, so the rename outlives the process rather than living in the registry's memory.
+  assert.equal(getSdkSession("sdk:ren-http")?.displayName, "fix: the a.b parser");
+});
+
+test("rename: an embedded card with no durable row is a 500, not a rename that vanishes", async () => {
+  // A card the registry knows and the store does not. The optimistic echo would happily show
+  // the new name, so the route has to refuse instead of reporting a rename the next restart
+  // silently undoes.
+  registry.registerSdkSession({
+    id: "sdk:ren-rowless",
+    agent: "claude",
+    name: "no row behind me",
+    cwd: "/repo/app",
+  });
+
+  const r = await app.request("/api/sessions/sdk%3Aren-rowless/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "wishful" }),
+  });
+  assert.equal(r.status, 500);
+  assert.equal((await r.json() as { ok: boolean }).ok, false);
+  assert.equal(
+    (await sessions()).find((s) => s.id === "sdk:ren-rowless")!.name,
+    "no row behind me",
+    "a refused rename leaves the card alone",
+  );
 });
 
 // ---- Foreman session work queues ----
@@ -1587,7 +1692,10 @@ test("/api/sessions/:id/pane serves the child's screen, and 404s an unknown sess
   // The route Foreman's reviewer reads the pending ask from (see `ReviewInput.pane`): an ask
   // that is BLOCKING on the user is not in the transcript until it returns, so this is the only
   // place it exists.
-  seedSession();
+  // Seeded with a pane id tmux REFUSES rather than the fixture's ordinary `%3`, which on a
+  // machine with tmux running names a real pane and made this capture return a developer's
+  // shell instead of failing. See `UNRESOLVABLE_PANE`.
+  seedSession(UNRESOLVABLE_PANE);
 
   const miss = await app.request("/api/sessions/nope/pane", { headers: LOOPBACK });
   assert.equal(miss.status, 404, "an unknown session is not a null pane - say so");

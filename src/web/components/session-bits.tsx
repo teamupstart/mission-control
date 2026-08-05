@@ -652,6 +652,49 @@ export function EnsembleRailGroup({
 }
 
 /**
+ * The rule that splits a tone group's genuinely-free sessions from the ones an open workflow
+ * run is holding.
+ *
+ * ONE component for the board column and the console rail, because the two sit either side of
+ * the board's drill-in morph: the idle column becomes the rail, and a section rule that read
+ * differently across that transition would look like the fleet had regrouped when only the
+ * layout moved.
+ *
+ * Not a heading element and not focusable. Rail and board navigation both walk session ids
+ * (`layoutNav.ts`), so an arrow key has to step over this without landing on it - the same
+ * contract the cluster header row already has.
+ *
+ * `held` carries the sentence because the two sides are not symmetric: "free" needs no
+ * explanation, while "held by a workflow" is a state the fleet has no other words for, and
+ * saying it once per section beats repeating it on every tile below.
+ */
+export function FleetSectionHead({
+  kind,
+  count,
+}: {
+  kind: "free" | "held";
+  count: number;
+}): React.JSX.Element {
+  return (
+    <div className={`fleet-section fleet-section-${kind}`} role="presentation">
+      <span className="fleet-section-line">
+        <b>{kind === "free" ? "free" : "held by a workflow"}</b>
+        <span className="fleet-section-n">{count}</span>
+      </span>
+      {kind === "held" && (
+        // Count-agnostic on purpose. "Each finished its turn and is waiting..." was written for
+        // the plural and reads as a grammar error over a section of one, which is the common
+        // case. It is also the shorter of the two, and this wraps to three lines at the 250px a
+        // board column gets by default.
+        <span className="fleet-section-why">
+          Waiting on a run that is still open - it sends the next round on its own.
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
  * The header the board's cluster frame wears: the run, where it is, and what it wants.
  *
  * The board has room the rail does not, so this is the one surface that spells the attention

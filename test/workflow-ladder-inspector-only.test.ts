@@ -34,8 +34,12 @@ test("an Inspector-only round keeps every authored stage before the gate", () =>
   assert.equal(html.match(/wf-ladder-rung /g)?.length, 6);
   assert.equal(html.match(/workflow-passed is-passed/g)?.length, 4);
   assert.equal(html.match(/wf-ladder-state wf-status-explained/g)?.length, 3);
+  // Three stage headlines, and the six members they name: the ladder lists every member, so
+  // each skipped reviewer and check carries the same explanation its stage does rather than
+  // hiding behind a folded chip.
+  assert.equal(html.match(/wf-ladder-member-state wf-status-explained/g)?.length, 6);
   assert.equal(
     tooltipLabels(html).filter((label) => label === inspectorOnlySkipStatus().tooltip).length,
-    3,
+    9,
   );
 });

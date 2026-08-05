@@ -49,6 +49,7 @@ import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
+import { renameDriverSession } from "./sdk/rename.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { resolveTaskWorkflowId } from "./workflows/config.ts";
 
@@ -1200,17 +1201,17 @@ export class TaskManager {
           task: t,
         };
       }
-      // A task-specific model is an explicit operator choice and must always win. Foreman
-      // supplies this only for a fresh backlog launch; persisting it before the async
-      // dispatcher starts makes the task card's model match the command line it will use.
-      if (t.status === "backlog" && t.model === null && options.defaultModel) {
-        const selected = { ...t, model: options.defaultModel, updatedAt: Date.now() };
-        this.registry.upsertTask(selected);
-      }
       // Forwarded whole: `TaskDispatchOptions` describes the launch, and the Dispatcher is
-      // the layer that acts on it. The one field this method consumed above is harmless to
-      // pass along - the model a launch runs on is resolved from the stored task, never
-      // from an options object.
+      // the layer that acts on it - including `defaultModel`, which it ranks between the
+      // task's own pin and the Harnesses panel default (see `Dispatcher.dispatch`).
+      //
+      // This method used to WRITE `options.defaultModel` onto the task row first, so the
+      // card's model would match the command line. That pinned the task: `t.model` outranks
+      // the Harnesses default, `reschedule` does not clear it, and nothing in the UI had
+      // asked for it - so a task Foreman launched once could never follow a changed default
+      // again. The launch-only value now travels with the launch, and an unpinned task stays
+      // unpinned; the model a session actually ran on is recorded on the SESSION, which is
+      // where it belongs and where the card reads it from.
       void this.dispatcher.dispatch(id, options);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
@@ -1448,7 +1449,13 @@ export class TaskManager {
           driverClearFor(this.supervisor),
           this.pendingTurns,
         ));
-    const doRename = opts.rename ?? rename;
+    // The driver arm is supplied here rather than left to `rename`'s default for the same
+    // reason `driverClearFor` is above: an embedded session handed a new task has to stop
+    // advertising the old one, and its name lives in a row rather than on a handle. Without
+    // this the auto-titler would run, find no pane, and silently leave the previous task's
+    // title on the card - the exact state `renameForTask` exists to prevent.
+    const doRename: NonNullable<AssignOptions["rename"]> =
+      opts.rename ?? ((session, name) => rename(session, name, undefined, renameDriverSession));
 
     if (s.state !== "idle") {
       return {
@@ -1696,8 +1703,8 @@ export class TaskManager {
     if (s.name === label) return;
     for (const candidate of [label, `${label}-${t.id.slice(0, 6)}`]) {
       // `sanitize` already strips what this backend's names cannot hold, so this normally
-      // only refuses a session with no terminal handle at all - one where there is nothing
-      // to rename, whose card is named after its process.
+      // only refuses a session with nowhere for a name to live at all - a terminal session
+      // with no handle, whose card is named after its process.
       const valid = validateSessionName(s, candidate);
       if (!valid.ok) continue;
       if (!validateSessionNameAgainstTasks(s, valid.name, this.list()).ok) continue;

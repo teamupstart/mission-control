@@ -31,6 +31,7 @@ function terminalPending(over: Partial<Pending> = {}): Pending {
     surface: "terminal",
     question: "Claude needs your permission to use AskUserQuestion",
     inputReviewId: null,
+    reviewId: null,
     canSend: true,
     marker: "await:1700",
     ...over,
@@ -96,6 +97,7 @@ test("an input review records its id and NO pane", () => {
     surface: "input-review",
     question: "Should I backfill the existing rows?",
     inputReviewId: "r-441",
+    reviewId: "r-441",
     canSend: false,
     marker: "review:r-441",
   });
@@ -107,6 +109,32 @@ test("an input review records its id and NO pane", () => {
   assert.equal(ep.reviewId, "r-441");
   assert.equal(ep.pane, null, "a review's question is not a screen capture");
   assert.equal(ep.question, "Should I backfill the existing rows?");
+});
+
+test("a plan review records its id too, though Foreman cannot answer it", () => {
+  // The record's `reviewId` is PROVENANCE - "the ask arrived as this review" - and used to
+  // be read off `inputReviewId`, which is a delivery CHANNEL and is null for every kind but
+  // `input`. So a plan, a diff and a plan-decisions ask each filed a row whose `review_id`
+  // was null while its own marker read `review:<id>`, and on a real 30-day ledger that was
+  // every non-input review episode in the table - the column could not be joined on for the
+  // one surface whose question is durably recorded somewhere else.
+  const pending = terminalPending({
+    situation: "non-input-review",
+    surface: "input-review",
+    question: 'The child posted a plan titled "Demo mode" for review.',
+    // Null, and that is the point: nothing about this review is resolvable by Foreman.
+    inputReviewId: null,
+    reviewId: "r-903",
+    canSend: false,
+    marker: "review:r-903",
+  });
+  const ctx = ctxFor(pending, null);
+  const v = verdict();
+  const plan = planFromVerdict(v, ctx, false);
+  const ep = episodeFromPlan({ pending, ctx, pane: PANE, verdict: v, tier: 2, plan });
+
+  assert.equal(ep.reviewId, "r-903", "the row names the review even with no reply channel");
+  assert.equal(ep.pane, null, "still not a screen capture");
 });
 
 test("an escalation records no send and no author", () => {

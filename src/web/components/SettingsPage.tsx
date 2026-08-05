@@ -161,6 +161,7 @@ export function SettingsPage({
   layout,
   onLayoutChange,
   settingsStatus,
+  harnessesRevision = 0,
   workflowSummaries = [],
   onOpenPalette,
   jump = null,
@@ -209,6 +210,12 @@ export function SettingsPage({
    * NOT come from here: it derives from the App-owned `foreman` prop above.
    */
   settingsStatus: SettingsStatus | null;
+  /**
+   * `MissionState.harnessesRevision` - bumped whenever the daemon announces a change to the
+   * per-harness dispatch defaults. Handed to `useHarnesses` so this page reflects an edit
+   * made in another tab at once instead of at the end of its backstop poll.
+   */
+  harnessesRevision?: number;
   /** Published Workflow catalog used by the dispatch-default picker. */
   workflowSummaries?: WorkflowSummary[];
   /**
@@ -231,7 +238,7 @@ export function SettingsPage({
   const skills = useSkills();
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
   // harnesses config, so it polls only while the page is open.
-  const harnesses = useHarnesses();
+  const harnesses = useHarnesses(harnessesRevision);
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // page reads the Inspector config, so it polls only while the page is open.
   const inspector = useInspector();

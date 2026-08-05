@@ -13,13 +13,19 @@ and get your decision back.
   controlling TTY → terminal pane, and registers the embedded sessions it dispatches.
   No per-session setup is required for terminal discovery.
 - **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
-  card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying
-  terminal home, which the next sweep reads straight back onto the card. Only a live session
-  with a terminal pane can be renamed - a session found in no backend at all, or one that
-  has exited, has nothing to rename, so its title isn't clickable. A Ghostty tab is named
-  and still cannot be renamed, for a different reason: its titles are read-only, so that
-  backend declares no retitle at all. See
+  card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it. Where that name lands depends
+  on the runtime, and both are durable: a **terminal** session's name IS its terminal home, so
+  the rename moves the multiplexer session (and retitles the tabs hosting it) and the next
+  sweep reads it straight back onto the card; an **Agent SDK** session has no home, so the name
+  is written to the row the daemon already keeps for it and comes back under that name after a
+  restart. Any live session can be renamed except a terminal one found in no backend at all -
+  that has nowhere to put a name, so its title isn't clickable - and one that has exited or is
+  stopping. A Ghostty tab is named and still cannot be renamed, for a different reason: its
+  titles are read-only, so that backend declares no retitle at all. See
   [Which terminal you use is declared](#which-terminal-you-use-is-declared-not-assumed).
+  - A renamed Agent SDK session **stays** renamed. Left alone, its card follows the title of
+    the task it is running, which a dispatch refines with a headless model call moments after
+    launching; typing a name overrides that for good.
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
@@ -251,7 +257,7 @@ declares what it genuinely cannot do rather than stubbing it.
 
 A session therefore carries a **list** of the panes it is reachable through, one per
 backend, rather than a field per vendor - so a backend the dashboard has never heard of
-is drawn, typed into and torn down like any other. Pane mechanics such as Rename ask one
+is drawn, typed into and torn down like any other. Pane mechanics such as Focus ask one
 predicate over that list instead of naming particular terminals. Delivery features such as
 the Send box, mode picker, work queue and Foreman ask the runtime-aware predicate described
 below; for today's terminal sessions the two answers are identical.
@@ -278,9 +284,12 @@ opened on the multiplexer's own attach command. A machine with a multiplexer and
 scriptable terminal still lands the first half and says plainly that it could not do the
 second.
 
-Rename and Kill split the same way. Renaming a multiplexer-hosted session moves the
-session name *and* retitles every tab attached to it; renaming an emulator-hosted one sets
-a tab title. Kill always signals the agent, and additionally tears down the whole group
+Rename and Kill split the same way *on the terminal runtime*. Renaming a multiplexer-hosted
+session moves the session name *and* retitles every tab attached to it; renaming an
+emulator-hosted one sets a tab title. An Agent SDK session sits outside this split entirely -
+it has no home to move, so its name is a durable field of its own and no backend is consulted,
+which is also why the characters tmux reserves are ordinary text in its title. Kill always
+signals the agent, and additionally tears down the whole group
 when the backend says it has one - a multiplexer session is a group, a terminal tab is
 not, and that is declared rather than inferred from which vendor answered. If a Mission
 Control task was running in that session, killing it also settles the task - see
@@ -1525,8 +1534,9 @@ landed commit has a different SHA and never appears on `origin/main`).
 its session is cut - so a recycled agent's card is titled by its work rather than by
 the pooled worktree it was handed out as, or by the task it finished ten minutes ago. The
 name is cut to the rules of the backend *this* session lives in, which is not necessarily
-the one a fresh dispatch would land on. This happens after the task has been typed, and
-never fails the assign: if the terminal can't be renamed (no terminal handle at all, or
+the one a fresh dispatch would land on, and an Agent SDK session is renamed the same way it
+is from the card - by writing its own durable name. This happens after the task has been
+typed, and never fails the assign: if the session can't be renamed (nowhere to put a name, or
 the name is already spoken for) the old name simply stands. It applies to [the backlog
 autopilot's](#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
@@ -1765,6 +1775,26 @@ The default is read **when a task launches**, not when it's created, so changing
 changes what a task already sitting in the backlog will run on. Like every setting in
 this section it applies **only to sessions Mission Control dispatched** - a session you
 started yourself and the app merely discovered is never touched.
+
+**A change takes effect on the next dispatch, with no restart.** The daemon re-reads this
+config on every launch, and saving it publishes a `harnesses_config_changed` event, so a
+second dashboard tab and an already-open dispatch form both re-read the defaults at once
+rather than going on naming a model you have moved away from. A session **already running**
+keeps the model it launched with - that is deliberate, so a restart cannot change a model
+mid-conversation; only the next dispatch picks up the new value.
+
+**Which model wins.** Three tiers, narrowest first:
+
+1. **The task's own model**, chosen in the dispatch form. An explicit choice, so it always wins.
+2. **Foreman's per-harness backlog model** (*Settings → Foreman → "&lt;harness&gt; backlog
+   tasks"*), which applies **only** to a launch Foreman starts from the backlog. Leaving it on
+   the harnesses default is what makes this card govern Foreman's launches too.
+3. **This card's default model**, else no `--model` flag at all.
+
+Tier 2 applies to **one launch** and is never written onto the task, so a task Foreman
+launched still follows this card the next time it runs - and a rescheduled task carries no
+model it was never explicitly pinned with. If a Foreman-launched agent is not using the model
+set here, check tier 2 first - that is the setting overriding it.
 
 All three model lists are maintained in `src/shared/model.ts`; a model released after your
 build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT` to
@@ -2541,7 +2571,7 @@ historical - a Persona you imported from these documents before they shipped bui
 the name it already reserved, and the built-in it shadows stays hidden behind your copy.
 Archive or rename your copy to see the built-in.
 
-The authored Markdown is in this repository under `docs/personas/`, one document per role,
+The authored Markdown is in this repository under [`personas/`](personas/), one document per role,
 and it is compiled into the build - run `npm run personas` after editing one, and commit the
 generated module. Each document's first level-one heading is the Persona's name and the
 paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
@@ -3012,8 +3042,9 @@ whole run, so their query count does not grow with the number of submissions.
 ### Watching a run
 
 When a session has a bound run, its Console and Board detail pane shows a vertical stage
-ladder in the **Workflows** tab (<kbd>y</kbd>). Passed stages collapse, the active or failed stage names its
-members, and an objection, Inspector wait, session-action wait, or uncertain delivery opens in
+ladder in the **Workflows** tab (<kbd>y</kbd>). Every stage names its members and each member's own
+status, so a stage that folded to `All passed` still says which reviewers and checks passed it,
+and an objection, Inspector wait, session-action wait, or uncertain delivery opens in
 place. A workflow whose final gate is Inspector ends the ladder with a fixed `Inspector` rung
 *after* the End outcome, marked `Fixed`, reading `Not reached` until the run gets there.
 Preview feedback can be copied there. The failing rung also reports a member that has failed consecutive
@@ -3612,10 +3643,20 @@ send** - that expands for the recommendation and **Dismiss**. It can't cover the
 because the prose isn't in it. The strip unmounts once the note is answered or dismissed;
 the inline entry stays.
 
-**Approve & send** appears only where there is somewhere to send it. A note whose question
-has since been resolved elsewhere, or one Foreman escalated *because* it had no reply channel,
-offers **Dismiss** and says which of the two it is - the alternative was a button that
-silently closed the note, which reads as having sent something. Foreman also re-checks the
+**Answering the question yourself retires the note.** A pinned decision is a claim on your
+attention, and answering the ask spends it: the agent is unblocked and the suggestion answers
+a closed question. So submitting the agent's own form, picking a row on its menu, or
+answering, approving or dismissing its review clears the note as part of the same action -
+no second click on **Dismiss**. It is matched to the *ask*, not to the session, so an
+escalation raised about something else - a session stuck with no reply channel - stays put
+and stays yours. The decision is kept in the **Foreman · N** history as one you closed
+without using Foreman's answer, exactly as pressing **Dismiss** always recorded it.
+
+**Approve & send** appears only where there is somewhere to send it. A note Foreman escalated
+*because* it had no reply channel offers **Dismiss** and says so - the alternative was a button
+that silently closed the note, which reads as having sent something. The same sentence covers a
+question resolved somewhere the daemon cannot see it, such as a reply typed straight into a
+tmux pane; a resolution that goes through the dashboard retires the note outright. Foreman also re-checks the
 session before pinning a decision at all: a review takes up to a few minutes, and if the
 session moved on in that time the decision is filed in the **Foreman · N** history instead of
 waiting for a click on a question that has already closed. Those decisions are recorded as
@@ -3651,8 +3692,9 @@ want these calls made. They are read into every review, every work-item verifica
 permission asks on its own and never escalates them, so instructions it couldn't see would be
 silently skipped on the highest-volume path in the system.
 
-The defaults ship as [`FOREMAN.md`](FOREMAN.md) at the app root - ordinary markdown you can read
-and edit. Write what you would say if you were looking over its shoulder:
+The defaults ship as [`personas/FOREMAN.md`](personas/FOREMAN.md), under the app root beside the
+rest of the [persona documents](personas/) - ordinary markdown you can read and edit. Write what
+you would say if you were looking over its shoulder:
 
 ```markdown
 ## What I care about, in order
@@ -3684,7 +3726,7 @@ With no instructions the section renders as nothing at all, and a test pins that
 changes only that block, leaving the rest of every prompt byte-for-byte identical.
 
 > **Next:** these move into a dashboard setting, stored in the database and editable from
-> **Settings → Foreman**. `FOREMAN.md` stays the seed a fresh install starts from; once you save
+> **Settings → Foreman**. `personas/FOREMAN.md` stays the seed a fresh install starts from; once you save
 > your own, the file is only what "Reset to default" restores. The plumbing is already in place -
 > `GET`/`PUT /api/foreman/instructions`, stored under `app_config`, with empty and unset kept
 > distinct so clearing the box means "judge on your own policy" rather than silently reinstating
@@ -4042,6 +4084,17 @@ The first of those three is also in the footer of the Line's
 same switch on the same config field, not a second copy of it - flip it in either place and
 both surfaces say so.
 
+### What model an autopilot launch runs on
+
+**Settings → Foreman → "&lt;harness&gt; backlog tasks"** sets a per-harness model used **only**
+when the autopilot launches an unpinned task from the backlog. It ships on *the Harnesses
+default*, so most fleets never need to touch it.
+
+Set it, and it outranks the Harnesses default for autopilot launches only. It is one tier of
+the dispatch model order, which [Settings → Harnesses](#default-model) owns and states in
+full - including what this field does and does not persist. If an autopilot-launched agent
+isn't on the model you expected, that list is where to start.
+
 **Max agents counts every live agent on the machine**, not just the ones Mission launched -
 it's a statement about your machine's load, and a count that ignored the six sessions you
 started by hand wouldn't be one. It bounds *autopilot* only: it never refuses a dispatch
@@ -4214,7 +4267,10 @@ agent's own loading path; the harness never reimplements it.
 The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
 PR. Inspector-gated workflows also require it for **Prepare PR in session** and invoke it
 through the bound harness's native skill syntax, so that final handoff is enforced rather
-than left to model selection. Its reviewer-ready description contract lives in
+than left to model selection. Its reviewer-ready description contract - two sections, **For
+Humans** for the why, the concise feature description, the tradeoffs, the known gaps, the
+evidence and the recommended follow-ups, and **For Agents** for the design decisions and
+implementation detail - lives in
 [`skills/pull-request/SKILL.md`](skills/pull-request/SKILL.md).
 
 The opt-in **Phased Plan** row investigates an approved plan against the repository, writes
@@ -4809,6 +4865,25 @@ earns two surfaces a card has nowhere to put:
   **needs you** with the run's header repeated there, rather than dragging its working siblings
   out of the column that describes what they are. Dragging a backlog card onto a clustered tile
   works exactly as it does anywhere else - the frame is a drawing, not a drop target.
+- **The idle column separates free agents from ones a workflow is holding.** A session bound
+  to a live [Workflow](#workflows) run sits at `idle` for most of that run's life: it finished
+  its turn, and the run is off working checks, judges and reviewers before it sends the next
+  round. The runtime reading is right - the agent really is doing nothing - but it is not
+  *free*, and the column used to count it as capacity. It now sorts below a **held by a
+  workflow** rule, under its own count: the head reads **N free · M held** instead of one
+  number that means neither, and each held tile wears a purple spine and a **held** tag so it
+  stays legible once the rule has scrolled away. The tile's
+  [active-rung preview](#watching-a-run) already says *which* run and *where
+  it is*; the rule answers the question that preview cannot, which is whether you may give this
+  agent anything. Held-ness is a join, not a session state - a run whose status has reached
+  `completed`, `cancelled` or `failed` releases its session back to free immediately, and a
+  held session that stops to ask a question moves to **needs you** like any other, because
+  there the operator is the one who has to act. The **Console** rail draws the same rule, since
+  it renders the same ordering, and **Cards** wears the same spine and tag on its cards - that
+  layout draws no section rule, so the mark is its whole answer. A held tile also refuses the
+  backlog drag: dropping a card
+  hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
+  during a drag the card lights up only over agents that are genuinely free.
 - **Killing a session closes its detail** once shutdown is accepted, without waiting for an
   Agent SDK subprocess and event stream to finish draining. The board goes straight back to
   its columns, the console empties its pane, and Cards leaves focus mode with the card still
@@ -5051,7 +5126,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>⇧</kbd><kbd>T</kbd> | **Continue in terminal**: hand the selected Agent SDK session to a terminal, continuing the same conversation. One way, and does nothing on a session that already has a pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | In the reader (Console or board drill-in) walk one tab left, and from the conversation hand focus back to the rail. On the rail it cycles the permission mode (Claude only), as everywhere; on the **Board** overview it cycles the selected tile's mode in place without opening its detail | Selected session |
-| <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session's terminal home | Selected session |
+| <kbd>⇧</kbd><kbd>R</kbd> | Rename the selected session - its terminal home, or an Agent SDK session's own durable name | Selected session |
 | <kbd>c</kbd> | Complete the selected session's task, optionally add an outcome note (blank records `completed`), then request session shutdown; press <kbd>Enter</kbd> to confirm. The detail closes once shutdown is accepted while an Agent SDK session drains in the background. Offers to unblock the tasks declared to wait on it, which is otherwise only possible by merging a PR | Selected session |
 | <kbd>k</kbd> | Request shutdown of the selected session and close its detail once accepted (press <kbd>Enter</kbd> to confirm) | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
@@ -5093,7 +5168,7 @@ instead. The command bar is unaffected either way: it is nothing but keycaps.
 ## Inspector (automated PR review)
 
 The Inspector reviews the pull requests **Mission Control opened** - and only those -
-against a repo-root `INSPECTOR.md`, leaves inline review comments for what it finds,
+against the reviewed repo's [`INSPECTOR.md`](#inspectormd), leaves inline review comments for what it finds,
 answers replies in its own threads, re-reviews on every push, and resolves its own
 threads once a push fixes what they were about. When a live review finds nothing further
 and every earlier Inspector finding is resolved, it leaves one top-level comment for that
@@ -5174,12 +5249,20 @@ resolution - it surfaces issues and resolves what later pushes fix.
 
 ### INSPECTOR.md
 
-Put one at the repo root. It tells the Inspector what the project cares about and, as
-importantly, what not to comment on - an automated reviewer that pattern-matches style
-nits is worse than none. This repo's own is [`INSPECTOR.md`](INSPECTOR.md). A repo without
-one is reviewed against a built-in default brief instead - general engineering judgement,
-with the same insistence on a low noise floor - so the Inspector still works on a repo
-nobody has configured. It's read fresh each round, so editing it changes the next review.
+Put one in the repository being reviewed, at `personas/INSPECTOR.md` or at the root. It tells
+the Inspector what the project cares about and, as importantly, what not to comment on - an
+automated reviewer that pattern-matches style nits is worse than none. This repo's own is
+[`personas/INSPECTOR.md`](personas/INSPECTOR.md).
+
+Both locations are supported and `personas/` wins when a repo has both: it keeps the brief
+beside the [rest of the persona documents](personas/), while the root name is what repos
+configured before that convention already carry, and demoting those to the default brief would
+weaken their reviews without anything failing. A blank file at the preferred path falls through
+to the root rather than shadowing it.
+
+A repo with neither is reviewed against a built-in default brief instead - general engineering
+judgement, with the same insistence on a low noise floor - so the Inspector still works on a
+repo nobody has configured. It's read fresh each round, so editing it changes the next review.
 
 The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the Inspector judges a PR
 against the contract the repo actually asserts. Both names are consulted, at the repo root
@@ -5679,7 +5762,7 @@ cleanup broke" from "the build passed and then cleanup broke".
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-mixed-reload-behavior) catalog dir (the symlinks' target) |
-| `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
+| `MISSION_FOREMAN_INSTRUCTIONS` | app's `personas/FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
 | `MISSION_TASK_SOURCE_TICK_MS` | `30000` | [Task sources](#task-sources-pulling-work-into-the-backlog): how often the sweeper wakes to ask which sources are due. Not the sweep interval - that is per source, and clamped to 1 minute - 24 hours. Floored at `5000` |
 | `MISSION_TASK_SOURCE_TIMEOUT_MS` | `60000` | Task sources: hard cap on one sweep, so a hung source cannot wedge its own schedule. Floored at `5000` |
@@ -5781,13 +5864,14 @@ npm run test:electron  # focused Electron GUI checks (see AGENTS.md for macOS Se
 npm run test:e2e       # Playwright: drive the real dashboard against a real daemon (after build)
 npx playwright install chromium # one-time setup for test:e2e (npm install does not fetch it)
 npm run smoke          # boot the built bundles and check they actually run (after build)
+npm run demo           # token-free demo daemon + dashboard on ~/.mission-control-demo (after build)
 npm run typecheck      # tsc --noEmit
 npm run lint           # oxlint over src, hooks, test, scripts, e2e (also: make lint)
 npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (terminal model / thinking / context %, plan meters)
 npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
-npm run personas       # recompile the built-in Personas from docs/personas/*.md (commit the result)
+npm run personas       # recompile the built-in Personas from personas/*.md (commit the result)
 npm run session-actions # recompile the built-in session actions from docs/session-actions/*.md (commit the result)
 node scripts/codex-app-server-bindings.mjs  # regenerate app-server types from the installed Codex
 npx tsx scripts/measure-inspector-prompt.ts # size the Inspector review prompt on this checkout
@@ -5829,6 +5913,204 @@ run fails with `browserType.launch: Executable doesn't exist`.
 for a pre-fix revision beside it, so a change to what the Inspector carries can be shown in
 bytes rather than asserted. It reads the older source out of git and never touches the
 working tree, so it is safe to run on dirty state.
+
+## Demo mode
+
+`npm run build && npm run demo` boots a second, fully isolated Mission Control - real daemon,
+real dashboard, real git, real Foreman - where every agent binary is a scripted scenario
+player instead of the real `claude`/`codex` CLI. Nothing it does spends a token: dispatch a
+task from the dashboard and watch a convincing session play out - paced assistant turns,
+`Edit`/`Write`/`Bash`/`TodoWrite` tool chips, real file edits you can see in Diff and Files, a
+waiting-on-you question, then completion - all driven by a scenario script, not a model API.
+
+`npm run demo -- --fresh` goes further: it rebuilds the state root and **seeds a lived-in
+fleet** first, so the dashboard opens onto work already in progress rather than an empty
+board. See [The seeded fleet](#the-seeded-fleet) below.
+
+State lives at `~/.mission-control-demo` (separate from `~/.mission-control`), used as both
+`MISSION_HOME` and `HOME` for the demo daemon, on its own port (7417 by default, distinct
+from the dev daemon's 7317 and the smoke test's 7519). It persists across runs - seeded
+repos, worktree edits, and all - so a curated demo survives a restart; pass `--fresh` to
+delete and rebuild it.
+
+Flags:
+
+- `--fresh` - delete the state root, rebuild it, and seed a lived-in fleet before booting.
+  **Takes a few minutes**, because it is not writing fixtures: it replays real work through
+  the real routes and waits for it. Without this flag an existing state root boots exactly
+  as you left it, which is the point of a persistent demo.
+- `--no-seed` - with `--fresh`, rebuild the state root but skip the seeder. An empty fleet in
+  seconds instead of a populated one in minutes.
+- `--no-foreman` - skip starting the real Foreman worker.
+- `--no-open` - do not open a browser. For a remote machine, or for inspecting the seeded
+  fleet from a script without stealing focus.
+- `--port <n>` - override the default port.
+- `--check` - boot, run the identity and isolation assertions, run a **reduced seed** (one
+  dispatched session, one review, one ledger day), reboot over it, assert the residue, then
+  shut down and exit 0 (no browser, no Foreman). The CI-shaped smoke test for the launcher
+  and its seeder, in the spirit of `npm run smoke`. It uses its own throwaway root
+  (`~/.mission-control-demo-check`, removed afterwards) so it never bulldozes a curated demo.
+
+**The one deliberate exception to "spends no tokens" is Foreman.** Unless `--no-foreman` is
+passed, the launcher starts the real `src/server/foreman/worker.ts` against the demo daemon
+with the real `claude` CLI resolution and the operator's own `HOME` (where its login lives),
+so Foreman genuinely reasons about the fake fleet and its own token spend is real. The daemon
+itself never reaches a model: `MISSION_CLAUDE_BIN`/`MISSION_CODEX_BIN`/`MISSION_PI_BIN` point
+at the scenario players installed under `~/.mission-control-demo/bin/`, and
+`ANTHROPIC_API_KEY` is blanked in the daemon's env as a second line of defense.
+
+Two sweeps that are not scoped to `MISSION_HOME` are switched off unconditionally
+(`MISSION_POLL_MS=0`, `MISSION_POOL_REAP_MS=0`) - without them the demo daemon would walk
+every process on the machine and adopt the operator's real sessions, Kill/Reset buttons
+included, or reap a shared treehouse worktree pool it does not own. With discovery off, the
+demo fleet is SDK-runtime sessions only: the launcher flips `claude`/`codex` to `sdk` through
+`PUT /api/harnesses/config`, the same route the Settings panel uses.
+
+### The seeded fleet
+
+`--fresh` runs `scripts/demo/seed.mjs`, and what it leaves behind is the first paint:
+
+- **Four session cards**, each restored from suspension with its whole conversation intact -
+  paced assistant turns, tool chips, `TodoWrite` narration - and a **dirty worktree** behind
+  it, so Diff and Files are full the moment you click a card. One of them is **waiting on a
+  question you can answer**.
+- **Nine tasks across every state a board really shows**: `done`, three `running`, `cancelled`,
+  and four in `backlog` - one of them blocked on another, one parked (`enabled: false`). Note
+  that "blocked" and "parked" are not statuses; there are only six of those, and neither is
+  among them.
+- **Reviews**: one pending `plan-decisions` prompt with selectable options, plus an approved
+  plan and an answered question in a session's resolved history.
+- **A completed Workflow run** on the Runs page, with its binding and version behind it.
+- **Two Recurring Missions** on the schedule spine, in your own timezone.
+- **A nonzero cost chip**: today's spend attributed to the live cards (so the per-card figures
+  and the topbar agree), several days of history behind it, and the automation line the
+  Foreman and Inspector loops populate.
+
+**It is all replay, not fabrication.** The seeder boots the daemon quietly, drives the same
+public routes the dashboard and the e2e specs drive (`POST /api/tasks`, `/dispatch`,
+`/mcp/reviews`, `/api/reviews/:id/resolve`, `/api/workflows` → `/publish` →
+`/api/workflow-bindings` → `/submit`, `/api/schedules`, `/api/personas`), and then stops.
+Every row was written by the real daemon; the transcripts were written by the scenario
+players; the worktrees are real `git worktree` checkouts with real uncommitted edits.
+**Nothing writes to SQLite behind the daemon's back**, including the cost ledger - `/v1/metrics`
+stamps each row from the datapoint's own `timeUnixNano` rather than from `Date.now()`, and
+`/api/usage/automation` takes an arbitrary `ts`, so backdating is a property of the ingest
+routes themselves.
+
+The suspended cards are the same story. An embedded session whose daemon shuts down cleanly is
+recorded `suspended`, and the next daemon relaunches it as a resumable card - so the seeder
+gets its cards by dispatching real sessions and then stopping the daemon over them. A session
+that was still mid-question at that shutdown keeps its `turnInProgress` bit, and the restore
+sends it a continuation turn asking it to raise anything it still needs; that is how the fleet
+has a genuinely waiting-on-you card at first paint rather than only a durable review row.
+
+Three gaps, all deliberate, and all for the same underlying reason where it applies - a seed
+can only contain what the daemon durably stores:
+
+- **No origin chips on seeded turns.** Turn attribution (the foreman/workflow badges on a
+  conversation) is in-memory only, keyed by a hash of the turn text (`src/server/injections.ts`),
+  so it exists for live deliveries and cannot survive a restart. Seeded history carries none.
+- **No quota runway on the cost chip.** The rate-limit windows a session reports through
+  `/statusline` live in a private in-memory field on the registry that nothing persists, so
+  seeding one would simply be undone by the seeder's own shutdown. The chip still appears and
+  still opens - it has the money and token rows, just no forward-looking one until a live
+  session reports its windows.
+- **No pull-request or Inspector history.** Out of scope for demo mode - both act outside the
+  machine against real repositories.
+
+### Scenarios
+
+Each `*.json` file under `scripts/demo/scenarios/` (installed into `<state root>/scenarios/`
+on every launch, read by the players via `MISSION_DEMO_SCENARIO_DIR`) is one scripted
+session:
+
+```json
+{
+  "title": "Fix the retry/abort race",
+  "match": ["flaky", "retry", "bug", "fix", "race"],
+  "default": true,
+  "steps": [
+    { "kind": "assistant", "text": "...", "delayMs": 700 },
+    { "kind": "tool", "name": "Bash", "input": { "command": "npm test -- retry" }, "delayMs": 900 },
+    { "kind": "editFile", "path": "src/retry.ts", "content": "...", "delayMs": 200 },
+    { "kind": "ask", "questions": [ { "question": "...", "header": "...", "options": [{ "label": "...", "description": "..." }] } ] },
+    { "kind": "result" }
+  ]
+}
+```
+
+The player matches the dispatched intent against every scenario's `match` substrings
+(case-insensitive, checked against the task text only - never the surrounding prompt
+boilerplate, which would otherwise self-match on a RULES block's own worked examples); the
+scenario flagged `"default": true` runs when nothing matches. Steps play in order, each after
+its own `delayMs`, with the turn held open the whole time so the card stays "working."
+`assistant` steps update the activity line; `tool` steps append a tool-use chip (`name` is any
+string - `Edit`, `Write`, `Bash`, and `TodoWrite` render specially, but nothing enforces the
+set); `editFile` steps write real content into the session's cwd - the actual git worktree
+the dispatch cut - so Diff and Files fill in for real (the path must stay inside the cwd);
+`ask` steps raise an `AskUserQuestion` card and block until the dashboard answers it through
+`/api/sessions/:id/submit-options`; a scenario ends on its own `"result"` step or simply when
+it runs out of steps.
+
+Eight scenarios ship, in two groups. **Three are for live dispatch** from the dashboard, paced
+theatrically so there is something to watch: a bug fix (edits two files, runs a Bash "test",
+completes), a rate-limit design question that blocks mid-turn on you, and a longer multi-step
+migration. **Four are the seeded fleet's** (`seed-*.json`), paced fast because their output is
+history rather than a performance - nobody watches a seed run. **One is the restart
+continuation** (`resume-continuation.json`), which matches the prompt the daemon sends a
+session that was mid-turn when it shut down and re-raises the question that session was
+blocked on. A seeded intent must reach its own scenario and never fall through to the default;
+`test/demo-seed.test.ts` pins that routing, because a `match` list that shadows another
+produces a card whose conversation is plausibly about the wrong task and nothing errors.
+
+**A resumed player continues its session rather than starting a new one.** Given
+`--resume=<id>` it adopts that id, appends to the transcript already at that path instead of
+truncating it, and carries on its record numbering. All three matter: the driver re-binds the
+card on any new `session_id`, so a fresh one would repoint it at a transcript this process had
+just created empty - the card would come back with its whole conversation gone. A resumed
+session that is owed no continuation turn also emits a `result` shortly after `init`, because
+that frame is the only thing that moves a card off `starting`, and a restored card claiming to
+be starting up for the rest of the demo is both ugly and untrue.
+
+Codex sessions play the same
+schema over the `codex app-server` protocol, with one gap: Codex's real "waiting on you"
+moment is an approval request, not `AskUserQuestion`, and this phase does not implement it -
+an `ask` step on a Codex session narrates the question as prose instead of blocking, so a
+scenario written for Claude does not stall a Codex run.
+
+**`pi` plays scenarios too** (`fake-pi.mjs`), writing pi's own real transcript shape - one
+JSON `message` record per line under `~/.pi/agent/sessions/--<encoded cwd>--/`, exactly the
+path and record shape `src/server/harness/pi/transcript.ts` reads back (verified directly
+against that module's own `piToMessage` and `computePiSessionActivity`, not assumed). pi has
+no control wire at all (`hooks: null`, `sdk: null`), so there is nothing to speak on stdio -
+the transcript file is the *entire* channel, and this player writes real turns, real tool
+calls, and real file edits into it, the same scenario schema as its Claude and Codex siblings.
+An `ask` step degrades to narration for the same reason it does on Codex: pi has no
+`AskUserQuestion`-equivalent channel to block a turn on.
+
+**What playing a scenario cannot do anything about: getting the resulting session adopted
+onto the dashboard.** This is a hard architectural floor, confirmed against the actual code
+rather than assumed, and it is orthogonal to whether the player itself works (it does):
+
+1. `pi`'s harness registry entry sets `sdk: null` (`src/server/harness/index.ts`), whose own
+   comment says plainly: "Phase 6 fills this with pi's `--mode rpc` adapter." That adapter
+   does not exist yet, for `pi` in any mode, real dispatch or demo - building one belongs
+   under `src/server/harness/pi/`, an unrelated, unscoped harness-roadmap feature this task's
+   "do not modify `src/`" rule puts out of reach.
+2. `pi`'s only real path is a terminal pane a person types into. But `Dispatcher`'s terminal
+   branch (`src/server/dispatcher.ts`) waits for a dispatched pane via
+   `registry.waitForSessionAtCwd`, fed by the same passive discovery sweep this plan calls a
+   *non-negotiable* isolation guard (`MISSION_POLL_MS=0`) - turned back on, the demo daemon
+   would walk every process on the machine and adopt the operator's real sessions, Kill/Reset
+   buttons included, for every agent in the demo, not only `pi`.
+
+So a `pi` task dispatched from the demo dashboard today will not appear as a live card, even
+though `fake-pi.mjs` genuinely executes the scenario behind it (confirmed by running it
+standalone and parsing its output with pi's own product parser). This was investigated across
+three review rounds; the last two insisted on a literal player regardless of the adoption
+gap, so this final round built one - but closing the adoption gap itself would mean either
+building the unbuilt RPC adapter above or reopening the isolation hazard `MISSION_POLL_MS=0`
+exists to close, neither of which this phase should do unilaterally.
 
 ## Security
 

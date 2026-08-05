@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs overhaul: phased implementation</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0;
+    --accent: #0969da; --code-bg: #f6f8fa; --th-bg: #f6f8fa;
+    --box: #f6f8fa; --box-border: #d1d9e0; --arrow: #59636e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
+      --accent: #4493f8; --code-bg: #161b22; --th-bg: #161b22;
+      --box: #161b22; --box-border: #3d444d; --arrow: #9198a1;
+    }
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 860px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+  }
+  h1 { font-size: 1.8rem; line-height: 1.25; border-bottom: 1px solid var(--border); padding-bottom: .4em; }
+  h2 { font-size: 1.35rem; margin-top: 2.2em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font: .875em ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--code-bg); border-radius: 5px; padding: .15em .35em;
+  }
+  .tablewrap { overflow-x: auto; margin: 1em 0; }
+  table { border-collapse: collapse; min-width: 100%; font-size: .92em; }
+  th, td { border: 1px solid var(--border); padding: .45em .7em; text-align: left; vertical-align: top; }
+  th { background: var(--th-bg); }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .3em 0; }
+  .figure { overflow-x: auto; margin: 1.4em 0; border: 1px solid var(--border); border-radius: 8px; padding: .75rem; }
+  .figure svg { display: block; margin: 0 auto; }
+  .figcap { text-align: center; font-size: .85em; color: var(--muted); margin-top: .5rem; }
+</style>
+</head>
+<body>
+
+<h1>Docs overhaul: phased implementation</h1>
+
+<p>Source plan: <a href="plan.md">plan.md</a> (<a href="plan.html">rendered</a>). The operator
+approved the plan's structure and phasing and delegated the scope decisions, which are resolved
+and recorded in the source plan's "Adopted decisions" section. The operator-confirmed
+non-negotiables are recorded there too and are restated in the phase files that own them.</p>
+
+<h2 id="decisions">Incorporated decisions</h2>
+<ol>
+  <li>Optional docs: troubleshooting/FAQ, glossary, <code>SECURITY.md</code>. Daemon API reference
+  and release runbook deferred.</li>
+  <li>No LICENSE file; the README states the repository is internal.</li>
+  <li><code>docs/mockups/</code> and <code>docs/backups/</code> move under <code>docs/archive/</code>;
+  <code>docs/plans/</code> stays.</li>
+  <li>Phased implementation with dependency-linked Mission Control tasks (this document).</li>
+</ol>
+
+<h2 id="findings">Investigated findings that shaped the phases</h2>
+<ol>
+  <li><strong>The generators glob every <code>*.md</code> in their source directory</strong>
+  (<code>scripts/builtin-markdown.ts</code>, <code>builtinMarkdownSources(dir)</code>). Consolidating
+  <code>FOREMAN.md</code> and <code>INSPECTOR.md</code> into <code>personas/</code> - and adding a
+  <code>personas/README.md</code> or <code>actions/README.md</code> - would compile them into builtin
+  workflow personas/actions (<code>builtin:FOREMAN</code>, <code>builtin:README</code>, ...). Phase 1 and
+  Phase 2 therefore add an explicit exclusion list to each generator (operator briefs and
+  <code>README.md</code>), mirrored in the drift tests that <code>readdirSync</code> the source
+  directory.</li>
+  <li><strong>The Inspector brief loader has a single lookup</strong> -
+  <code>join(root, BRIEF_FILENAME)</code> in <code>src/server/inspector/brief.ts:77</code>. Phase 1
+  replaces it with an ordered candidate list (<code>personas/INSPECTOR.md</code>, then root
+  <code>INSPECTOR.md</code>) and adds unit tests for the order, because nothing fails today if the
+  file silently stops resolving (operator non-negotiable 1).</li>
+  <li><strong>The authored session action has the same evidence defect as the skill</strong>:
+  <code>pull-request.md:23</code> says "attach or link screenshots". Phase 3 fixes the skill and the
+  action source and regenerates the module.</li>
+  <li><strong>The README cannot go quiet between the split and the rewrite.</strong> Phase 4 leaves
+  a short interim README (what it is, quick start, link to the docs index) so the repository is
+  never without a front page; Phase 8 replaces it with the final screenshot-led version. No content
+  is duplicated between README and <code>docs/</code> at any point.</li>
+  <li><strong><code>.gitignore</code> already models the artifacts pattern</strong>
+  (<code>e2e/.probe/</code>, <code>test-results/</code>). Phase 3 adds <code>e2e/.artifacts/</code> beside
+  them and introduces one shared fixture helper so sixteen specs do not each restate the
+  location.</li>
+</ol>
+
+<h2 id="phases">Phases</h2>
+<div class="tablewrap">
+<table>
+  <tr><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr>
+  <tr><td>1. Personas under root <code>personas/</code></td><td><a href="phase-1-personas-root.md">phase-1-personas-root.md</a></td><td>none</td></tr>
+  <tr><td>2. Session-action sources under root <code>actions/</code></td><td><a href="phase-2-actions-root.md">phase-2-actions-root.md</a></td><td>1</td></tr>
+  <tr><td>3. Remove <code>docs/evidence/</code>, attach-only evidence policy</td><td><a href="phase-3-evidence-removal.md">phase-3-evidence-removal.md</a></td><td>2</td></tr>
+  <tr><td>4. Split README into <code>docs/</code>, archive historical material</td><td><a href="phase-4-readme-split.md">phase-4-readme-split.md</a></td><td>3</td></tr>
+  <tr><td>5. Architecture and technical docs</td><td><a href="phase-5-architecture-docs.md">phase-5-architecture-docs.md</a></td><td>4</td></tr>
+  <tr><td>6. CONTRIBUTING, setup, core repo docs</td><td><a href="phase-6-contributing-setup.md">phase-6-contributing-setup.md</a></td><td>4</td></tr>
+  <tr><td>7. Troubleshooting, glossary, SECURITY.md</td><td><a href="phase-7-support-docs.md">phase-7-support-docs.md</a></td><td>4</td></tr>
+  <tr><td>8. New README with screenshots</td><td><a href="phase-8-readme-rewrite.md">phase-8-readme-rewrite.md</a></td><td>5, 6, 7</td></tr>
+</table>
+</div>
+
+<h2 id="graph">Dependency graph and concurrency</h2>
+<div class="figure">
+<svg width="780" height="240" viewBox="0 0 780 240" role="img" aria-label="Phase dependency graph">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--arrow)"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: var(--box); stroke: var(--box-border); rx: 6; }
+    .lbl { fill: var(--fg); font: 12px -apple-system, "Segoe UI", sans-serif; }
+    .edge { stroke: var(--arrow); stroke-width: 1.4; fill: none; marker-end: url(#arr); }
+  </style>
+  <rect class="box" x="10" y="100" width="110" height="40"/>
+  <text class="lbl" x="20" y="124">1 personas/</text>
+  <rect class="box" x="150" y="100" width="100" height="40"/>
+  <text class="lbl" x="160" y="124">2 actions/</text>
+  <rect class="box" x="280" y="100" width="100" height="40"/>
+  <text class="lbl" x="290" y="124">3 evidence</text>
+  <rect class="box" x="410" y="100" width="120" height="40"/>
+  <text class="lbl" x="420" y="124">4 README split</text>
+  <rect class="box" x="580" y="20" width="120" height="40"/>
+  <text class="lbl" x="590" y="44">5 architecture</text>
+  <rect class="box" x="580" y="100" width="120" height="40"/>
+  <text class="lbl" x="590" y="118">6 CONTRIBUTING</text>
+  <text class="lbl" x="590" y="133">+ setup</text>
+  <rect class="box" x="580" y="180" width="120" height="40"/>
+  <text class="lbl" x="590" y="204">7 support docs</text>
+  <rect class="box" x="660" y="100" width="0" height="0"/>
+  <rect class="box" x="730" y="100" width="0" height="0"/>
+  <path class="edge" d="M120 120 L 148 120"/>
+  <path class="edge" d="M250 120 L 278 120"/>
+  <path class="edge" d="M380 120 L 408 120"/>
+  <path class="edge" d="M530 110 L 578 46"/>
+  <path class="edge" d="M530 120 L 578 120"/>
+  <path class="edge" d="M530 130 L 578 194"/>
+  <rect class="box" x="580" y="20" width="0" height="0"/>
+  <rect class="box" x="740" y="100" width="0" height="0"/>
+</svg>
+<div class="figcap">Phases 1-4 serial; 5, 6, 7 concurrent; 8 (README rewrite, not shown wider) follows 5-7.</div>
+</div>
+<ul>
+  <li>Phases 1-4 are serial. They share edits to <code>README.md</code>, <code>AGENTS.md</code>, and
+  <code>docs/agent-guides/change-contracts.md</code> (adjacent lines), and Phase 3 edits the action
+  source at the path Phase 2 creates.</li>
+  <li>Phases 5, 6, and 7 are concurrent. Each owns disjoint new files and adds index entries only
+  under its own reserved section of <code>docs/README.md</code>, so they can merge in any order.</li>
+  <li>Phase 8 is last: the README is the hub that links what 5-7 produce.</li>
+</ul>
+
+<h2 id="contracts">Cross-phase contracts</h2>
+<ol>
+  <li><strong>Layout (phases 1-2):</strong> persona sources in <code>personas/</code>,
+  session-action sources in <code>actions/</code>, filenames byte-identical to today's. The slug is
+  the durable <code>builtin:&lt;slug&gt;</code> id. Operator briefs are
+  <code>personas/FOREMAN.md</code> and <code>personas/INSPECTOR.md</code>. Generators exclude
+  <code>README.md</code> and the operator briefs.</li>
+  <li><strong>Evidence policy (phase 3):</strong> PR evidence is produced under gitignored
+  <code>e2e/.artifacts/&lt;topic&gt;/</code> and attached to the pull request. Nothing under it is
+  ever committed. Committed documentation imagery lives in <code>docs/images/</code> only
+  (introduced by phase 8).</li>
+  <li><strong>Docs index ownership (phase 4):</strong> <code>docs/README.md</code> has reserved
+  sections in order: Features (4), Architecture (5), Contributing and setup (6), Support (7).
+  Phases 5-7 add entries only under their own section and do not reorder the file.</li>
+  <li><strong>Interim README (phase 4 → phase 8):</strong> phase 4's README is a placeholder;
+  phase 8 replaces it wholesale. Phases 5-7 do not edit <code>README.md</code>.</li>
+  <li><strong>Historical material keeps its paths</strong> except <code>docs/mockups/</code> and
+  <code>docs/backups/</code> (archived by phase 4). Plans under <code>docs/plans/</code> stay put.</li>
+</ol>
+
+<h2 id="merge-order">Merge order</h2>
+<p>1 → 2 → 3 → 4, then {5, 6, 7} in any order, then 8.</p>
+
+<h2 id="verification">Final verification</h2>
+<p>After phase 8 merges: <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>,
+<code>npm run build</code>, <code>npm run smoke</code>, and <code>npm run test:e2e</code> all green on the
+default branch; <code>README.md</code> under 300 lines with rendering screenshots; every intra-repo
+link in <code>README.md</code>, <code>docs/</code>, and <code>CONTRIBUTING.md</code> resolves;
+<code>git ls-files docs/evidence</code> and the mockups/backups paths are empty;
+<code>npm run personas</code> and <code>npm run session-actions</code> are no-ops against the committed
+generated modules.</p>
+
+</body>
+</html>

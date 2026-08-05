@@ -41,7 +41,8 @@ import {
   mkSession,
   mkTaskSummary,
 } from "./helpers/session-fixture.ts";
-import { containsMarkup } from "./helpers/markup.ts";
+import { containsMarkup, hasTooltip } from "./helpers/markup.ts";
+import { canRenameSession } from "../src/web/lib/format.ts";
 import type { Session, SessionCost } from "../src/shared/types.ts";
 
 /**
@@ -354,6 +355,10 @@ test("the card's title and rename affordance are the shared SessionTitle", () =>
   const cases: { over: Partial<Session>; canRename: boolean }[] = [
     { over: {}, canRename: true },
     { over: { state: "exited", terminals: [] }, canRename: false },
+    // A live EMBEDDED session: no handles at all, by construction, and renameable anyway. Its
+    // name lives on the durable row the supervisor keeps rather than on a pane, and gating the
+    // affordance on a pane is what silently took the click target off every dispatched card.
+    { over: { runtime: "sdk", terminals: [], tty: null }, canRename: true },
   ];
   for (const { over, canRename } of cases) {
     const session = mkSession(over);
@@ -362,6 +367,31 @@ test("the card's title and rename affordance are the shared SessionTitle", () =>
       `card should render the shared SessionTitle (canRename=${canRename})`,
     );
   }
+});
+
+test("a live embedded session's title is a control, not plain text", () => {
+  // The exact markup shape the browser spec asserts through a click, pinned here because this
+  // layer can state it as a shape: a renameable title is a BUTTON inside the heading (with the
+  // pencil), and an unrenameable one is a bare heading. The two were indistinguishable to every
+  // assertion that only checked the title's TEXT, which is how the regression survived.
+  const embedded = mkSession({ runtime: "sdk", terminals: [], tty: null });
+  assert.equal(canRenameSession(embedded), true, "a live embedded session can be renamed");
+
+  const renderable = bit(SessionTitle, { session: embedded, canRename: true, renaming: false });
+  assert.match(renderable, /<button[^>]*class="card-title-edit"/);
+  assert.match(renderable, /rename-pencil/);
+  // The tooltip says what the click DOES, which is the other half of the affordance: an
+  // unrenameable title's tooltip is only the name, so this wording is reachable exactly when
+  // the control is.
+  assert.ok(hasTooltip(renderable, `Rename "${embedded.name}"`), "names the action");
+
+  // And the negative, so the assertions above cannot pass by rendering a button unconditionally.
+  const exited = mkSession({ state: "exited", terminals: [], tty: null });
+  assert.equal(canRenameSession(exited), false);
+  const plain = bit(SessionTitle, { session: exited, canRename: false, renaming: false });
+  assert.doesNotMatch(plain, /<button/);
+  assert.doesNotMatch(plain, /rename-pencil/);
+  assert.ok(hasTooltip(plain, exited.name), "falls back to naming the session");
 });
 
 test("the card's context meter is the shared RuntimeMetaRow", () => {

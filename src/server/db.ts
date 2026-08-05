@@ -708,6 +708,16 @@ export function openDb(): DatabaseSync {
       cleanup_state          TEXT    NOT NULL,
       supervisor_pid         INTEGER NOT NULL,
       supervisor_start_ticks TEXT    NOT NULL,
+      -- WHICH provider handed this tree over, and therefore which one must take it back.
+      -- Read from the row on every release and NEVER re-probed from the current machine:
+      -- that is the entire reason the column exists. A tree taken from the pool has to go
+      -- back to the pool after the operator uninstalls treehouse, and a plain git worktree
+      -- must never be handed to "treehouse return" because the binary reappeared.
+      --
+      -- NOT NULL DEFAULT 'treehouse', which is historically ACCURATE rather than merely
+      -- convenient - see the migration in migrate(), and the warning about nullable columns
+      -- a few lines above, which this default is what keeps clear of.
+      provider               TEXT    NOT NULL DEFAULT 'treehouse',
       created_at             INTEGER NOT NULL,
       updated_at             INTEGER NOT NULL
     );
@@ -869,6 +879,13 @@ export function openDb(): DatabaseSync {
       status            TEXT NOT NULL,
       -- Independent of lifecycle status: a suspended driver may owe a continuation turn.
       turn_in_progress  INTEGER NOT NULL DEFAULT 0,
+      -- The name a PERSON gave this session, and only that. NULL is not "unnamed" - it means
+      -- nobody has renamed this card, so its name is still derived (see restoredName: the
+      -- bound task's title, else the cwd basename, else the id). The distinction is the whole
+      -- point of the column rather than caching the launch name here: a dispatch's title is
+      -- refined by an async model call afterwards, so a persisted launch name would make a
+      -- restart revert every card to its pre-refinement guess. A rename outranks both.
+      display_name      TEXT,
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL
     );
@@ -1427,6 +1444,12 @@ function migrate(d: DatabaseSync): void {
   // default idle: no older build recorded proof that they owe an automatic continuation.
   addColumn(d, "sdk_sessions", "turn_in_progress", "INTEGER NOT NULL DEFAULT 0");
 
+  // The operator's own name for an embedded session. Nullable with NO default, and that is
+  // exact rather than convenient: every row written before this column existed was named by
+  // derivation, which is precisely what NULL means here, so an upgraded database keeps
+  // deriving until someone actually renames a card.
+  addColumn(d, "sdk_sessions", "display_name", "TEXT");
+
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
   // databases can contain table shells but no executable bindings, so empty identity
@@ -1815,6 +1838,22 @@ function migrate(d: DatabaseSync): void {
   // never selects on this column.
   addColumn(d, "workflow_definitions", "resumption_policy", "TEXT");
   addColumn(d, "workflow_versions", "resumption_policy", "TEXT");
+
+  // Which provider handed a check its worktree. Editing the CREATE TABLE block above is not
+  // enough - it is IF NOT EXISTS, so an operator upgrading into this build keeps the table
+  // they already have and every lease write would fail on a column that never appeared.
+  //
+  // NOT NULL DEFAULT 'treehouse' is a FACT rather than a fallback, and that distinction is
+  // the whole migration. Every row that can exist before this column did was written by a
+  // build in which the pool was the only way a check could get a tree, so 'treehouse' is
+  // what those rows genuinely are - which is what keeps this clear of the trap the table's
+  // own comment warns about, where a NULL is indistinguishable from a row written by a build
+  // that did not set the column. Here the release path would have to guess, and a wrong
+  // guess hands a git worktree to `treehouse return` or abandons a pool slot for good.
+  //
+  // No backfill statement and no index: the default IS the backfill, and the only reader
+  // selects the row it already has by primary key.
+  addColumn(d, "workflow_check_leases", "provider", "TEXT NOT NULL DEFAULT 'treehouse'");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather

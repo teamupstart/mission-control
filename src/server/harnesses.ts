@@ -48,10 +48,23 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
  *
  * Read at dispatch time, not at task creation: a task shelved in the backlog before
  * the default changed launches on the new default, which is what "default" has to
- * mean for it to be worth setting. An explicit per-task `model` always wins.
+ * mean for it to be worth setting.
+ *
+ * Three tiers, narrowest first:
+ *  - `taskModel`, the task's own pin. An explicit operator choice in the dispatch modal,
+ *    so it always wins.
+ *  - `launchModel`, a model supplied for THIS LAUNCH ONLY. Foreman's per-harness backlog
+ *    model arrives here. Deliberately not persisted anywhere: it is a property of one
+ *    launch, and writing it onto the task row (which is what `TaskManager.dispatch` used
+ *    to do) pinned the task permanently, since `reschedule` does not clear `model`.
+ *  - the Harnesses panel default for this agent, else null.
  */
-export function resolveDispatchModel(agent: AgentType, taskModel: string | null): string | null {
-  return taskModel ?? getHarnessesConfig().defaultModel[agent];
+export function resolveDispatchModel(
+  agent: AgentType,
+  taskModel: string | null,
+  launchModel: string | null = null,
+): string | null {
+  return taskModel ?? launchModel ?? getHarnessesConfig().defaultModel[agent];
 }
 
 /** The task override, then the launch-time harness default, else no effort override. */

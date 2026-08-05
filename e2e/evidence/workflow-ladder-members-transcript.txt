@@ -1,0 +1,9 @@
+
+Running 1 test using 1 worker
+
+OBSERVED the Workflows tab rendered the ladder for the completed run
+OBSERVED both E2E evidence auditor and E2E docs steward named under the stage, unexpanded
+CAPTURED e2e/evidence/workflow-ladder-members.png
+  ✓  1 [chromium] › e2e/specs/workflow-ladder-members.spec.ts:136:1 › the Workflows tab names the reviewers that approved a passed stage (5.3s)
+
+  1 passed (6.0s)

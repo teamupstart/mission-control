@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan - A git-worktree fallback provider for Workflow check leases</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1a1a18;
+    --ink-soft: #5c5c56;
+    --rule: #e3e2dd;
+    --accent: #7c5cff;
+    --accent-soft: #f0ecff;
+    --bad: #b3261e;
+    --bad-soft: #fdf0ef;
+    --good: #1a6b45;
+    --good-soft: #eef7f2;
+    --code-bg: #f5f4f1;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a;
+      --panel: #1d1d22;
+      --ink: #ececea;
+      --ink-soft: #a2a2a0;
+      --rule: #32323a;
+      --accent: #a898ff;
+      --accent-soft: #26233a;
+      --bad: #ff938a;
+      --bad-soft: #33211f;
+      --good: #7fd6a6;
+      --good-soft: #1b2a22;
+      --code-bg: #23232a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    padding: 3rem 1.25rem 6rem;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow-wrap: break-word;
+  }
+  main { max-width: 60rem; margin: 0 auto; }
+  h1 { font-size: clamp(1.5rem, 3.4vw, 2.1rem); line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 1.75rem; }
+  h2 { font-size: 1.3rem; letter-spacing: -0.01em; margin: 3rem 0 1rem; padding-bottom: 0.45rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.05rem; margin: 2rem 0 0.6rem; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: 0.87em; background: var(--code-bg); padding: 0.14em 0.38em; border-radius: 4px; }
+  pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px; padding: 0.9rem 1rem; overflow-x: auto; font-family: var(--mono); font-size: 0.83rem; line-height: 1.55; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .scroll { overflow-x: auto; margin: 1.1rem 0; border-radius: 8px; border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; min-width: 36rem; font-size: 0.92rem; background: var(--panel); }
+  th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft); background: var(--bg); }
+  tbody tr:last-child td { border-bottom: none; }
+  blockquote { margin: 1.1rem 0; padding: 0.1rem 0 0.1rem 1rem; border-left: 3px solid var(--accent); color: var(--ink-soft); }
+  .lede { font-size: 1.05rem; color: var(--ink-soft); margin-top: -1rem; margin-bottom: 2rem; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 1rem 1.15rem; margin: 1.1rem 0; }
+  .card.bad { border-left: 3px solid var(--bad); background: var(--bad-soft); }
+  .card.good { border-left: 3px solid var(--good); background: var(--good-soft); }
+  .card.note { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+  .card > :first-child { margin-top: 0; }
+  .card > :last-child { margin-bottom: 0; }
+  .tag { display: inline-block; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 0.16em 0.5em; border-radius: 4px; vertical-align: 0.12em; }
+  .tag.bad { background: var(--bad); color: #fff; }
+  .tag.good { background: var(--good); color: #fff; }
+  .tag.none { background: var(--ink-soft); color: var(--panel); }
+  figure { margin: 1.5rem 0; }
+  figure svg { display: block; width: 100%; height: auto; max-width: 44rem; }
+  figcaption { font-size: 0.84rem; color: var(--ink-soft); margin-top: 0.55rem; }
+  .path { font-family: var(--mono); font-size: 0.8rem; color: var(--ink-soft); }
+  footer { margin-top: 4rem; padding-top: 1.2rem; border-top: 1px solid var(--rule); font-size: 0.84rem; color: var(--ink-soft); }
+  ul.files { list-style: none; padding: 0; }
+  ul.files li { padding: 0.4rem 0; border-bottom: 1px solid var(--rule); font-family: var(--mono); font-size: 0.84rem; }
+  ul.files li:last-child { border-bottom: none; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Phased plan - A git-worktree fallback provider for Workflow check leases</h1>
+<p class="lede">Two serial phases. The first changes no behaviour at all; the second makes a check gate run on a machine with no <code>treehouse</code> installed.</p>
+
+<h2>Source</h2>
+<ul class="files">
+<li><a href="plan.md">plan.md</a> - the approved plan (rendered: <a href="plan.html">plan.html</a>)</li>
+<li><a href="phase-1-shared-gate-and-provider-seam.md">phase-1-shared-gate-and-provider-seam.md</a></li>
+<li><a href="phase-2-git-provider-and-degradation.md">phase-2-git-provider-and-degradation.md</a></li>
+</ul>
+
+<h2>Incorporated human decisions</h2>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Selected</th><th>Consequence for the phases</th></tr></thead>
+<tbody>
+<tr><td>Behaviour when treehouse is absent</td><td><strong>Git worktree fallback</strong></td><td>The gate keeps gating. A pre-flight returning <code>unavailable</code> was rejected because it ships a silent-pass window; the phased variant of that was rejected for the same reason.</td></tr>
+<tr><td>Which halves of the gate a check asks</td><td><strong>Binary half only (<code>hasBin</code>)</strong></td><td><code>pool.ts</code> exposes <code>treehouseInstalled()</code> <strong>and</strong> <code>poolAvailableFor()</code>. A check asks the first; dispatch asks the second. A repository with no <code>treehouse.toml</code> keeps today's behaviour.</td></tr>
+<tr><td>Extra scope</td><td><strong>Core fix + the README <code>max_trees</code> drift</strong></td><td>The "provider call" mislabelling and the silent opt-in question are filed separately and are explicit non-goals in <em>both</em> phases.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>What the investigation established</h2>
+
+<p>The defect is measured, not inferred - <code>test/workflow-check-degradation.test.ts</code> already exists in the worktree and currently <strong>passes by proving the bug</strong>:</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Path, on one machine with only <code>treehouse</code> stripped from PATH</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td><code>provisionWorktree</code></td><td><span class="tag good">degrades</span> <code>provider: "git"</code> - isolation intact</td></tr>
+<tr><td>A check whose command would have exited 0</td><td><span class="tag bad">cannot run</span> <code>kind: "infrastructure"</code></td></tr>
+<tr><td>An unsupported platform, by contrast</td><td><code>kind: "unavailable"</code> - recorded and passes</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Findings that shaped the boundaries:</p>
+<ul>
+<li><code>dispatcher.ts:773</code> is the <strong>only</strong> <code>hasBin(TREEHOUSE_BIN)</code> in the codebase, and neither it nor <code>isTreehouseRepo</code> appears anywhere under <code>src/server/workflows/</code>.</li>
+<li><code>MAX_INFRA_ATTEMPTS = 3</code> (<code>engine.ts:49</code>); exhaustion at <code>engine.ts:1133-1145</code> sets the submission <code>failed</code> and the run <code>blocked</code>/<code>infrastructure_error</code> with <strong>no receipts</strong>, and <code>manager.ts:2481</code> makes the Inspector refuse to touch a blocked run. The run stalls until a human intervenes.</li>
+<li><code>WorktreeProvider = "treehouse" | "git"</code> already exists (<code>src/shared/types.ts:1386</code>) and <code>teardownWorktree</code> already branches on it. No new union is introduced.</li>
+<li><code>reapPool</code> early-returns for a non-treehouse repo (<code>pool.ts:608</code>), and every current <code>withPoolLock</code> caller is a genuine pool operation. Both <span class="path">verified</span>, both load-bearing for Phase 2's design.</li>
+</ul>
+
+<div class="card note">
+<p><strong>Scope correction against the source plan's first draft.</strong> <code>treehouse get</code> <em>succeeds</em> in a repository with no <code>treehouse.toml</code>, creating a pool from defaults (verified against v2.1.1). So the missing <code>treehouse.toml</code> case is <strong>not</strong> part of this defect - which is what makes the binary-half-only decision coherent rather than a compromise.</p>
+</div>
+
+<h2>Phases</h2>
+
+<div class="scroll">
+<table>
+<thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Behaviour change</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="phase-1-shared-gate-and-provider-seam.md">Shared gate and provider seam</a></td><td>Two named predicates in <code>pool.ts</code>, <code>hasBin</code> moved to <code>util/exec.ts</code>, the <code>provider</code> column migration, and <code>CheckTreeProvider</code> with the pool as its only implementation</td><td><span class="tag none">none, by design</span></td></tr>
+<tr><td>2</td><td><a href="phase-2-git-provider-and-degradation.md">Git provider and degradation</a></td><td><code>GitCheckTreeProvider</code>, acquire-time selection on <code>treehouseInstalled()</code>, <code>CHECK_WORKTREES_DIR</code>, the flipped regression test, README</td><td><span class="tag good">a check gate runs without treehouse</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Dependency graph</h2>
+
+<figure>
+<svg viewBox="0 0 700 110" role="img" aria-labelledby="dep-title dep-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="dep-title">Phase dependency graph: Phase 1 then Phase 2, strictly serial</title>
+  <desc id="dep-desc">Phase 1, the shared gate and provider seam with no behaviour change, is a direct prerequisite of Phase 2, the git provider and degradation. There are no concurrent phases.</desc>
+  <defs>
+    <marker id="dep-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <style>
+    .pb { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; }
+    .pb1 { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .pb2 { fill: var(--good-soft); stroke: var(--good); stroke-width: 1.5; }
+    .pt { fill: var(--ink); font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .ps { fill: var(--ink-soft); font: 400 10.5px ui-monospace, Menlo, monospace; }
+    .pl { stroke: var(--ink-soft); stroke-width: 1.5; fill: none; color: var(--ink-soft); }
+  </style>
+  <rect class="pb1" x="1" y="24" width="272" height="62" rx="8"/>
+  <text class="pt" x="18" y="47">Phase 1</text>
+  <text class="ps" x="18" y="64">shared gate + provider seam</text>
+  <text class="ps" x="18" y="78">no behaviour change</text>
+
+  <rect class="pb2" x="384" y="24" width="272" height="62" rx="8"/>
+  <text class="pt" x="401" y="47">Phase 2</text>
+  <text class="ps" x="401" y="64">git provider + degradation</text>
+  <text class="ps" x="401" y="78">the gate gates without treehouse</text>
+
+  <path class="pl" d="M 273 55 L 377 55" marker-end="url(#dep-ar)"/>
+  <text class="ps" x="288" y="47">requires</text>
+</svg>
+<figcaption>Direct prerequisites - Phase 1: none. Phase 2: Phase 1.</figcaption>
+</figure>
+
+<h2>Concurrency</h2>
+
+<div class="card">
+<p><strong>None. These phases are strictly serial</strong>, and that is a finding rather than a shortcut. Both edit <code>src/server/workflows/check-lease.ts</code> substantially - Phase 1 restructures it behind an interface and Phase 2 adds a second implementation plus the selection - so running them concurrently would conflict in the one file whose ownership rules this whole subsystem exists to protect.</p>
+<p>Splitting further was considered and rejected: any smaller unit either leaves a dead surface (an interface with no caller) or a temporary second source of truth (a provider column nothing writes).</p>
+</div>
+
+<h2>Merge order</h2>
+<ol><li>Phase 1</li><li>Phase 2</li></ol>
+
+<h2>Cross-phase contracts</h2>
+
+<p>Established by Phase 1, consumed by Phase 2, and <strong>not</strong> to be changed by Phase 2:</p>
+<ul>
+<li><code>treehouseInstalled()</code> and <code>poolAvailableFor(repoRoot)</code> in <code>src/server/pool.ts</code>; <code>hasBin</code> in <code>src/server/util/exec.ts</code>, kept distinct from <code>onPath</code>.</li>
+<li><code>CheckTreeProvider</code> as the only route from <code>CheckLeaseManager</code> to a tree, with <code>acquire</code>, <code>ownership</code>, <code>handBack</code>, <code>withLock</code>.</li>
+<li><code>CheckLeaseRow.provider</code>, <code>NOT NULL DEFAULT 'treehouse'</code>, <strong>authoritative on release and never re-probed</strong> from the current machine.</li>
+<li>The four-way mapping in <code>resolveLocked</code> - unreadable / gone / held-by-another / ours - preserved verbatim along with its comments.</li>
+<li>Unconditional pinning for both providers; <code>LIVE_STATES</code>-scoped partial indexes untouched; <code>reapPool</code>'s early return untouched.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+
+<p>Phase 1 is verified by the <strong>absence</strong> of change: every existing check, pool, and dispatch suite must pass untouched, and <code>test/workflow-check-degradation.test.ts</code> must still assert <code>kind: "infrastructure"</code>. That suite is the phase's own no-op proof.</p>
+
+<p>Phase 2 flips that same suite into the regression test and adds the pinning, no-leak, provider-authoritative, fail-closed, and adopted-split cases. It also runs <code>npm run build &amp;&amp; npm run smoke</code> because it adds a runtime surface.</p>
+
+<p>Neither phase carries an <code>e2e/</code> spec: there is no UI surface in this work. The separately filed mislabelling fix is the one that does, and it carries its own.</p>
+
+<blockquote>Definition of done for the whole plan: with no <code>treehouse</code> installed, a configured check runs its command in a worktree pinned to the captured commit and reports a real verdict; with <code>treehouse</code> installed, nothing about the pool path changed; a repository with no <code>treehouse.toml</code> still takes a pooled tree for its checks; and the README matches, <code>max_trees</code> included.</blockquote>
+
+<h2>Audit over the complete set</h2>
+<ul>
+<li>Every source-plan requirement is owned by exactly one phase. The migration and the seam are Phase 1 only; the git implementation, the selection, the tests, and the documentation are Phase 2 only.</li>
+<li>Every consumer follows its prerequisite: Phase 2's selection reads a column and an interface Phase 1 created.</li>
+<li>Concurrency claims are honest - there are none, and the reason is recorded above rather than implied.</li>
+<li>The final state matches the source plan with no undocumented cleanup. The one deliberate residual - a <code>treehouse</code> row leaking until a vanished binary returns - is documented in the source plan, in Phase 2's scope, and pinned by a test, so it cannot be mistaken for an oversight later.</li>
+<li>Both explicit non-goals appear as non-goals in <strong>both</strong> phase files, because Phase 2 is where the temptation to fold them in is highest.</li>
+</ul>
+
+<footer>
+Source of truth: <span class="path">docs/plans/check-worktree-fallback/phased-plan.md</span>. This page is a rendering of it, never a fork.
+</footer>
+
+</main>
+</body>
+</html>

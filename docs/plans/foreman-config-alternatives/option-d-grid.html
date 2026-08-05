@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Foreman config - Option D: card grid, ledger on top</title>
+    <link rel="stylesheet" href="console.css" />
+    <link rel="stylesheet" href="mock.css" />
+    <style>
+      /* ---- card grid ----
+         A, B and C all try to make the left column shorter. D deletes the column instead,
+         by turning the page 90 degrees. The ledger takes the full width at the top, because
+         it is the reason the panel exists, and the configuration cards fall underneath it
+         into `repeat(auto-fit, minmax(300px, 1fr))`. The same six cards that stacked to
+         1988px of column become two or three rows of roughly 400px cards.
+
+         Nothing is hidden, nothing is behind a tab, nothing takes a second click. The whole
+         change is which axis the cards are laid out on, so every control, every blurb and
+         every `data-anchor` survives untouched.
+
+         Live repositories is a card here, but it is still not an editor. Foreman shows the
+         grant COUNT and links into the Trust category, which owns the allowlist. The card
+         carries a read-only marker so a grid cell full of settings cannot be mistaken for
+         one more thing you can change from this panel. */
+      .gd-state {
+        margin-bottom: 12px;
+      }
+
+      /* The divider between the evidence and the settings. It is also the only place the
+         page admits how much configuration is below it, since the grid itself no longer
+         reads as a list you can count down. */
+      .gd-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 20px 0 10px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border-soft);
+      }
+      .gd-bar h3 {
+        margin: 0;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        font-weight: 640;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .gd-bar .gd-count {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .gd-seg {
+        margin-left: auto;
+        display: inline-flex;
+        padding: 3px;
+        gap: 3px;
+        background: var(--bg-2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+      }
+      .gd-seg button {
+        padding: 5px 13px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: var(--muted);
+        font: inherit;
+        font-size: 11.5px;
+        font-weight: 560;
+        cursor: pointer;
+      }
+      .gd-seg button:hover {
+        color: var(--fg);
+      }
+      .gd-seg button.is-on {
+        background: var(--panel);
+        color: var(--fg);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+      }
+      .gd-seg button:focus-visible {
+        outline: 2px solid var(--working);
+        outline-offset: 1px;
+      }
+
+      /* The whole option, in four declarations. `align-items: start` is deliberate and it
+         is also the flaw: cards keep their natural height rather than stretching to the
+         tallest in the row, which is honest about the content and ragged at the bottom
+         edge. Stretching them would only move the empty space inside the card. */
+      .gd-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 12px;
+        align-items: start;
+      }
+      /* healthHtml() returns its own <section class="sc-card">, so the wrapper steps out of
+         the way and lets the card be the grid item. */
+      .gd-grid > [data-health] {
+        display: contents;
+      }
+
+      /* Compact: a lower minmax floor, so more columns fit and the block loses a row; tighter
+         card padding; and the standing blurbs fold onto the label's tooltip, which is where
+         Option B puts them permanently. The measurement in the header is read off the page
+         after each switch, so the saving is whatever it actually is at your window width. */
+      .gd-grid.is-compact {
+        grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+        gap: 8px;
+      }
+      .gd-grid.is-compact .sc-card-head {
+        padding: 7px 11px;
+      }
+      .gd-grid.is-compact .sc-card-body {
+        padding: 9px 11px;
+        gap: 9px;
+      }
+      .gd-grid.is-compact .gd-hint {
+        display: none;
+      }
+      .gd-grid.is-compact .kb-row {
+        padding: 6px 8px;
+      }
+
+      .gd-field > .sc-field-label {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .gd-field select {
+        padding: 5px 10px;
+      }
+      .gd-cost {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 8.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .gd-cost.is-expensive {
+        color: color-mix(in oklab, var(--attention) 75%, var(--muted));
+      }
+      .gd-sub {
+        margin: 2px 0 0;
+        padding-top: 9px;
+        border-top: 1px solid var(--border-soft);
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      /* The marker on the one card that is a readout rather than a setting. */
+      .gd-ro {
+        margin-left: auto;
+        padding: 2px 7px;
+        border: 1px dashed var(--border);
+        border-radius: 5px;
+        font-family: var(--mono);
+        font-size: 8.5px;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mock-head">
+      <div class="mock-nav">
+        <a href="index.html">← all six</a>
+        <a href="option-a-digest.html">A · digest</a>
+        <a href="option-b-tabs.html">B · tabs</a>
+        <a href="option-c-ledger-first.html">C · ledger first</a>
+        <a href="option-d-grid.html" class="is-here">D · grid</a>
+        <a href="option-e-sentence.html">E · sentence</a>
+        <a href="option-f-presets.html">F · presets</a>
+      </div>
+      <div class="mock-tag">Option D · the density toggle is live</div>
+      <h1>Card grid - turn the page 90 degrees and the column stops existing</h1>
+      <p class="mock-thesis">
+        The other options shorten the left column or hide it. D deletes the idea of a column.
+        The ledger goes <b>full width at the top</b>, because it is the reason anyone opens
+        this panel, and the six configuration cards fall underneath it into
+        <code>repeat(auto-fit, minmax(300px, 1fr))</code>. Nothing is collapsed, nothing is
+        behind a tab, and nothing takes a second click: every control that is on the panel
+        today is on the screen at once. The page simply reads top to bottom - the evidence,
+        then the settings that produced it.
+      </p>
+      <div class="mock-metrics">
+        <div class="mock-metric"><span>config block</span> <b id="m-config">-</b></div>
+        <div class="mock-metric"><span>grid</span> <b id="m-grid">-</b></div>
+        <div class="mock-metric"><span>ledger width</span> <b id="m-ledger">-</b></div>
+        <div class="mock-metric"><span>clicks to edit</span> <b>0 - nothing is hidden</b></div>
+        <div class="mock-metric is-cost"><span>cost</span> <b>most pixels on screen</b></div>
+      </div>
+      <p class="mock-live">
+        Switch <b>Comfortable</b> to <b>Compact</b> under the ledger. The first three
+        measurements above are read off the laid-out page after every switch and every window
+        resize, so the number is whatever the grid actually does at your width, not a claim.
+        The count tiles at the top of the ledger filter it, the same way they do in the app.
+      </p>
+    </div>
+
+    <div class="settings-pane">
+      <div class="mock-panel-head">
+        <h2>Foreman</h2>
+        <span class="mock-scope">this machine</span>
+      </div>
+
+      <section class="settings-section sc-section">
+        <p class="settings-hint sc-lede">
+          Foreman's set-once configuration, and the record of what it has decided. Turning it
+          on, its mode, the work queues, and the wrap-up action stay in the topbar Foreman
+          control.
+        </p>
+
+        <!-- The posture line is above the ledger and outside the grid. It is a reading, not
+             a setting, and it belongs with the evidence it explains: "Live" is why the rows
+             underneath it say "answered" rather than "escalated". -->
+        <div class="gd-state" id="state-slot"></div>
+
+        <!-- The ledger, full width, first. -->
+        <div data-ledger></div>
+
+        <div class="gd-bar">
+          <h3>Configuration</h3>
+          <span class="gd-count" id="gd-count">-</span>
+          <div class="gd-seg" data-segment id="density" role="group" aria-label="Card density">
+            <button type="button" class="is-on" data-value="comfortable" aria-pressed="true">
+              Comfortable
+            </button>
+            <button type="button" data-value="compact" aria-pressed="false">Compact</button>
+          </div>
+        </div>
+
+        <div class="gd-grid" id="config-grid">
+          <section class="sc-card">
+            <div class="sc-card-head"><h3 class="sc-card-title">Posture</h3></div>
+            <div class="sc-card-body" id="posture-body"></div>
+          </section>
+
+          <section class="sc-card">
+            <div class="sc-card-head"><h3 class="sc-card-title">Models</h3></div>
+            <div class="sc-card-body" id="models-body"></div>
+          </section>
+
+          <section class="sc-card">
+            <div class="sc-card-head"><h3 class="sc-card-title">Backlog launches</h3></div>
+            <div class="sc-card-body" id="launch-body"></div>
+          </section>
+
+          <section class="sc-card">
+            <div class="sc-card-head"><h3 class="sc-card-title">Completion safeguards</h3></div>
+            <div class="sc-card-body" id="safety-body"></div>
+          </section>
+
+          <!-- A card, not an editor. Foreman does not own the repo allowlist; it reports the
+               count and links into Trust, which does. -->
+          <section class="sc-card">
+            <div class="sc-card-head">
+              <h3 class="sc-card-title">Live repositories</h3>
+              <span class="gd-ro">read only</span>
+            </div>
+            <div class="sc-card-body" id="repos-body"></div>
+          </section>
+
+          <div data-health></div>
+        </div>
+
+        <p class="mock-note">
+          <b>Nothing here got shorter. It got wider.</b> The same fourteen controls and the
+          same prose are on the page; the grid spends horizontal space instead of vertical,
+          and it only has that space because this section is full width. So the height is a
+          function of your window rather than of the design. Measured in Comfortable, this
+          block is <b>810px</b> at a 1440px window, 1052px at 980px, 1185px at 900px, and
+          <b>1659px</b> once <code>auto-fit</code> drops to a single column below about
+          640px - at which point D is today's panel with the ledger moved above it rather
+          than beside it. Drag the window and watch the chip. It is the one option in this
+          set that no single number can carry.
+        </p>
+      </section>
+    </div>
+
+    <div class="mock-foot">
+      <div>
+        <h4>Why this one</h4>
+        <ul>
+          <li>
+            <b>Nothing is hidden.</b> No tab, no accordion, no sheet. Every control the panel
+            has is visible and one click from edited, which no other option manages.
+          </li>
+          <li>
+            <b>The ledger gets the full width.</b> The Asked column stops being cut in half
+            by a form nobody reads twice, and that column is the part with the sentences in
+            it.
+          </li>
+          <li>
+            <b>Reading order matches the reason you opened the panel.</b> Evidence first,
+            settings second. Today it is the other way round for no stated reason.
+          </li>
+          <li>
+            <b>Cheap and reversible.</b> No control, no copy and no
+            <code>data-anchor</code> changes; the diff is which container the cards sit in.
+          </li>
+        </ul>
+      </div>
+      <div class="is-con">
+        <h4>What it costs</h4>
+        <ul>
+          <li>
+            <b>You can no longer see a decision and the setting that made it at the same
+            time.</b> Side by side, they were both on screen; stacked, you scroll past one to
+            reach the other. That is a real loss and it is the whole point of the split
+            layout D throws away.
+          </li>
+          <li>
+            <b>It keeps the most total pixels of any of the six.</b> A, B, C, E and F all
+            remove or defer something. D removes nothing - it re-flows it. Measured as area,
+            this is the largest panel on the table.
+          </li>
+          <li>
+            <b>Ragged bottom edge.</b> Models is roughly four times the height of Posture, so
+            every row is as tall as Models and the short cards sit over a band of nothing -
+            visible in both densities above. Stretching them only moves the emptiness inside
+            the card; equalising the content is a rewrite of the copy, not a layout fix; and
+            the thing that would actually fix it, masonry, is still not shippable.
+          </li>
+          <li>
+            <b>It forks the console pattern.</b> Inspector and Shipping are the same
+            <code>sc-split</code> two-column layout. Either they follow Foreman into a grid,
+            which is three panels of work nobody asked for, or the three consoles stop
+            looking like each other.
+          </li>
+          <li>
+            <b>The layout moves under you.</b> Card positions depend on window width, so a
+            deep link lands somewhere different on a laptop than on a monitor and there is no
+            stable place to remember Safeguards being.
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <script src="mock-data.js"></script>
+    <script src="mock.js"></script>
+    <script>
+      const F = FOREMAN;
+      document.getElementById("state-slot").innerHTML = Mock.stateHtml();
+
+      // The cheap tier, and nothing else. Enabling Foreman, its mode, the work queues and
+      // the wrap-up action belong to the topbar, and this panel must not claim them.
+      document.getElementById("posture-body").innerHTML =
+        Mock.tierSegHtml() +
+        `<p class="settings-hint gd-hint">Enabling Foreman, its mode, the work queues and
+         the wrap-up action stay in the topbar Foreman control. What lives here is the
+         durable posture - what Foreman considers eligible, not what it does in one
+         moment.</p>`;
+
+      // One field leaf for every dropdown on the panel. The blurb prints under the control
+      // in Comfortable and is carried by the label's tooltip in Compact, so it is never
+      // simply deleted.
+      const field = (f, group) => {
+        const id = `f-${group}-${f.id}`;
+        return `<div class="sc-field gd-field">
+          <label class="sc-field-label" for="${id}" title="${Mock.esc(f.blurb)}">
+            ${Mock.esc(f.label)}
+            ${f.cost ? `<span class="gd-cost is-${f.cost}">${f.cost}</span>` : ""}
+          </label>
+          ${Mock.selectHtml(f).replace("<select", `<select id="${id}"`)}
+          <p class="settings-hint gd-hint">${Mock.esc(f.blurb)}</p>
+        </div>`;
+      };
+
+      document.getElementById("models-body").innerHTML =
+        field(
+          {
+            id: "provider",
+            label: "Provider",
+            value: F.provider.value,
+            options: F.provider.options,
+            blurb: F.provider.blurb,
+          },
+          "models",
+        ) +
+        `<p class="gd-sub">Foreman's own calls</p>` +
+        F.roles.map((r) => field(r, "role")).join("");
+
+      document.getElementById("launch-body").innerHTML =
+        `<p class="settings-hint gd-hint">${Mock.esc(F.backlogLaunch.blurb)}</p>` +
+        F.backlogLaunch.rows.map((r) => field(r, "launch")).join("");
+
+      document.getElementById("safety-body").innerHTML =
+        `<p class="settings-hint gd-hint">${Mock.esc(F.safeguards.blurb)}</p>` +
+        F.safeguards.rows
+          .map(
+            (s) => `<div class="kb-row">
+              <div class="kb-row-text">
+                <span class="kb-row-label">${Mock.esc(s.label)}</span>
+                <span class="kb-row-desc">${Mock.esc(s.desc)}</span>
+              </div>
+              <div class="kb-row-controls">
+                <label class="skill-switch"><input type="checkbox" ${s.on ? "checked" : ""} aria-label="${Mock.esc(s.label)}" /></label>
+              </div>
+            </div>`,
+          )
+          .join("");
+
+      // Read only: the count sentence and the link out, rendered by Mock. No editor here,
+      // in this option or any other - the allowlist is the Trust category's.
+      document.getElementById("repos-body").innerHTML =
+        `<p class="settings-hint gd-hint">${Mock.esc(F.liveRepos.blurb)}</p>` +
+        `<div data-live-repos></div>`;
+
+      Mock.boot();
+
+      const grid = document.getElementById("config-grid");
+      const ledger = document.querySelector(".sc-ledger");
+      const cards = () => [
+        ...grid.querySelectorAll(":scope > .sc-card, :scope > [data-health] > .sc-card"),
+      ];
+
+      // Everything the header claims about size is measured here, after layout, rather than
+      // written into the copy - the point of the density toggle is that you can watch the
+      // number move, and a number typed into a paragraph cannot do that.
+      const measure = () => {
+        const list = cards();
+        const cols = getComputedStyle(grid)
+          .gridTemplateColumns.split(" ")
+          .filter(Boolean).length;
+        const rows = new Set(list.map((c) => Math.round(c.getBoundingClientRect().top))).size;
+        const full = ledger.getBoundingClientRect().width;
+        // What the ledger would have been in the layout D replaces: sc-split is a 332px
+        // control column plus a 20px gap. Only below 1080px, where console.css already
+        // collapses sc-split to one column, so there the comparison is not a gain at all
+        // and the chip says so rather than quoting a number that means nothing.
+        const before = full - 352;
+
+        document.getElementById("m-config").textContent =
+          "1988px → " + Math.round(grid.getBoundingClientRect().height) + "px";
+        document.getElementById("m-grid").textContent =
+          cols + " across · " + rows + (rows === 1 ? " row" : " rows");
+        document.getElementById("m-ledger").textContent =
+          innerWidth >= 1080 && before > 0
+            ? Math.round(full) + "px · +" + Math.round((full / before - 1) * 100) + "%"
+            : Math.round(full) + "px · the split already stacks here";
+        document.getElementById("gd-count").textContent =
+          list.length + " cards · 14 controls · nothing collapsed";
+      };
+      measure();
+
+      document
+        .getElementById("density")
+        .addEventListener("segment", (e) => {
+          grid.classList.toggle("is-compact", e.detail === "compact");
+          requestAnimationFrame(measure);
+        });
+      addEventListener("resize", measure);
+    </script>
+  </body>
+</html>

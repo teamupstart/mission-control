@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyPending } from "../src/server/foreman/pending.ts";
+import { classifyPending, dialogMarker } from "../src/server/foreman/pending.ts";
 import { planFromVerdict, VerdictSchema } from "../src/server/foreman/verdict.ts";
 import { buildTriagePrompt } from "../src/server/foreman/triage-prompt.ts";
 import type { ReviewInput } from "../src/server/foreman/prompt.ts";
@@ -85,7 +85,23 @@ test("a plan/diff review is non-input (human-only) and carries its kind + title"
   assert.equal(p.reviewKind, "plan");
   assert.equal(p.reviewTitle, "Refactor auth");
   assert.equal(p.marker, "review:rev-2");
+  // Provenance is set even though the channel is not: `inputReviewId` answers "may Foreman
+  // reply here?" and this answers "what was the ask?". Reading the first as the second is
+  // what filed every non-input review episode with a null `review_id`.
+  assert.equal(p.reviewId, "rev-2", "the ask still arrived as a review");
 });
+
+test("the two review ids answer different questions and must not be conflated", () => {
+  const input = classifyPending(mkSession(), [mkReview({ id: "rev-9", body: "A or B?" })]);
+  assert.equal(input.inputReviewId, "rev-9", "resolvable, so there is a channel");
+  assert.equal(input.reviewId, "rev-9", "and it is also the provenance");
+
+  // The only shape where they differ, and the one the record used to lose.
+  const plan = classifyPending(mkSession(), [mkReview({ id: "rev-9", kind: "diff" })]);
+  assert.equal(plan.inputReviewId, null);
+  assert.equal(plan.reviewId, "rev-9");
+});
+
 
 test("an input review wins over a plan review posted at the same time", () => {
   const p = classifyPending(mkSession(), [
@@ -281,6 +297,33 @@ test("a cursor moving in the menu is the same question, not a new one", () => {
   const a = classifyPending(mkDialogSession(), []);
   const b = classifyPending(mkDialogSession({ paneDialog: { ...MENU, highlighted: 2 } }), []);
   assert.equal(b.marker, a.marker);
+});
+
+test("a screen ask reports no review provenance, however it reached the screen", () => {
+  // Both dialog sources, because a driver request and a parsed pane menu are the same
+  // situation to the record: an ask on screen, not a row in `reviews`. A non-null here
+  // would make the ledger claim a review that does not exist.
+  assert.equal(classifyPending(mkDialogSession(), []).reviewId, null);
+  const driver = classifyPending(
+    mkDialogSession({ paneDialog: { ...MENU, source: "driver", requestId: "req-1" } }),
+    [],
+  );
+  assert.equal(driver.reviewId, null);
+});
+
+test("dialogMarker is the marker classifyPending mints, so a retire can find the note", () => {
+  // The load-bearing agreement behind `retireNoteAnsweredByYou`: the worker stamps the note
+  // with `classifyPending`'s marker, and the answer routes rebuild it with `dialogMarker` to
+  // find that note. Two spellings of the digest would retire nothing at all, and the miss
+  // would look exactly like the stale-note bug this replaced - a note still pinned after the
+  // human answered, with no error anywhere to say why.
+  const s = mkDialogSession();
+  assert.equal(classifyPending(s, []).marker, dialogMarker(s.paneDialog!));
+
+  // And it still discriminates: a different ask is a different marker, so answering one
+  // question cannot retire a note raised about another.
+  const other = mkDialogSession({ paneDialog: { ...MENU, prompt: "Delete the branch?" } });
+  assert.notEqual(dialogMarker(other.paneDialog!), dialogMarker(s.paneDialog!));
 });
 
 test("a DIFFERENT menu is a different episode", () => {

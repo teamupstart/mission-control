@@ -58,6 +58,7 @@ import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
+import { heldSessionIds } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
 import {
   useKeybindingHints,
@@ -184,6 +185,7 @@ export function App(): React.JSX.Element {
     fleetCost,
     lineSummary,
     settingsStatus,
+    harnessesRevision,
     schedules,
     connected,
     hasSnapshot,
@@ -979,11 +981,16 @@ export function App(): React.JSX.Element {
   // applied first or the surviving siblings would sit at a position decided by a row nobody can
   // see. Keyboard nav and all three layouts read the result, so they stay in lockstep with
   // what's on screen.
+  // Which sessions an open workflow run owns, folded once here off the same map the tile reads.
+  // It reaches `orderSessions` as an argument rather than being looked up inside it because
+  // held-ness is a join, not a property of a Session - see `heldSessionIds`.
+  const heldIds = useMemo(() => heldSessionIds(workflowRunBySession), [workflowRunBySession]);
+
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesFilter(s, q)) : sessions;
-    return orderSessions(matched);
-  }, [sessions, filter]);
+    return orderSessions(matched, heldIds);
+  }, [sessions, filter, heldIds]);
   const visible = fleet.sessions;
 
   // The same filter over the board's Backlog column. A backlog item is a card the
@@ -2238,6 +2245,7 @@ export function App(): React.JSX.Element {
               layout={layout}
               onLayoutChange={setLayout}
               settingsStatus={settingsStatus}
+              harnessesRevision={harnessesRevision}
               workflowSummaries={workflowSummaries}
               onOpenPalette={() => setPaletteOpen(true)}
               jump={settingsJump}
@@ -2527,6 +2535,7 @@ export function App(): React.JSX.Element {
                 personas={personas}
                 workflowSummaries={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
+                harnessesRevision={harnessesRevision}
                 launchIntent={dispatchIntent}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
@@ -2932,10 +2941,17 @@ function FleetPulse({
   /**
    * How many answers the operator owes - the attention fold's total, not a review count.
    *
-   * A separate segment from `attention`, which counts SESSIONS in an attention tone: they
-   * overlap heavily but are different questions, and the one that must match what a click
-   * opens is this one. It reads "to answer" rather than borrowing "need you", because two
-   * segments carrying the same word in one readout is a figure nobody can attribute.
+   * A separate segment from `attention`, which counts SESSIONS in an attention tone. The two
+   * are different UNITS of one set, not different sets: `attention` is how many agents are
+   * blocked, `inbox` is how many replies it takes to unblock them, so one session holding
+   * three questions reads `1 need you` beside `3 to answer`. It reads "to answer" rather than
+   * borrowing "need you" because two segments carrying the same word in one readout is a
+   * figure nobody can attribute.
+   *
+   * `inbox >= attention` always, and `attention-pill-invariant.test.ts` holds the fold to it.
+   * The reverse used to be reachable - a session parked on a permission prompt, or one whose
+   * `awaiting_input` came from a hook that files no review, counted in `attention` and
+   * produced no inbox row - which put `1 need you` next to a click that opened an empty list.
    */
   inbox: number;
   onOpenInbox: () => void;

@@ -189,6 +189,7 @@ import {
   driverEffortTargetResult,
   defaultPaneDeps,
   formDelivered,
+  type PaneDeps,
   submitPaneForm,
   validateSessionName,
   validateSessionNameAgainstTasks,
@@ -554,9 +555,23 @@ export function buildApp(
   sessionActions?: SessionActionManager,
   /** Durable editable outbox. Optional only for legacy route-unit construction. */
   pendingTurns?: PendingTurnManager,
+  /**
+   * How the pane-answering routes reach a terminal. The `HandoffDeps` seam above, for the
+   * two routes that drive a menu with bare keystrokes.
+   *
+   * Injected for one reason the default cannot serve: a pane form reports `ok` on states that
+   * delivered nothing (`formDelivered`), and whether those retire the operator's Foreman note
+   * is a property of THIS wiring, not of the predicate. Reaching it needs a screen that
+   * advances mid-walk, which no real tmux on a test machine will produce on demand - so
+   * without a seam the only coverage possible is of the predicate in isolation, and a
+   * regression in the gating here would ship undetected. Production passes nothing and gets
+   * `defaultPaneDeps`.
+   */
+  paneDeps?: PaneDeps,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
+  const panes = paneDeps ?? defaultPaneDeps;
   // A successful exited-session resume keeps its claim for the life of this lingering
   // session id. Otherwise a double-click before `session_remove` can start two agents on
   // the same conversation. A confirmed failure releases it for retry.
@@ -2030,7 +2045,7 @@ export function buildApp(
       if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
       return c.json(r, r.ok ? 200 : 409);
     }
-    const r = await selectPaneOption(session, parsed.data);
+    const r = await selectPaneOption(session, parsed.data, panes);
     if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
     return c.json(r, r.ok ? 200 : 409);
   });
@@ -2076,7 +2091,7 @@ export function buildApp(
         409,
       );
     }
-    const r = await submitPaneForm(session, options);
+    const r = await submitPaneForm(session, options, panes);
     // `formDelivered`, not `ok`: a pane form reports `ok` for two states that sent the child
     // nothing, and retiring on either drops a decision that is still owed.
     if (formDelivered(r)) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);

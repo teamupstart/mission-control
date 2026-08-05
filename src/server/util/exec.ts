@@ -22,6 +22,44 @@ export function onPath(bin: string, env: NodeJS.ProcessEnv = process.env): boole
   return false;
 }
 
+/**
+ * Where a bare command name resolves to, asked of the system's own resolver (`which`).
+ *
+ * The third member of the family above, and it must NOT be merged into `onPath`. They
+ * answer the same question at different prices and with different authority:
+ *
+ *  - `onPath` walks `PATH` with `existsSync`. No subprocess, so it is cheap enough to ask
+ *    per keystroke - and it tests EXISTENCE, not executability, so a non-executable file
+ *    with the right name satisfies it.
+ *  - This spawns `which`, which is the resolution the shell would actually perform, and it
+ *    yields the resolved path rather than a boolean. It costs a `fork` + `execve`.
+ *
+ * `check-spawn.ts:29-35` documents why a command precheck must not use `onPath`, and that
+ * reasoning only holds while the two stay separately named. Callers pick deliberately:
+ * `agentBinPresent` and `pool.ts`'s `treehouseInstalled` want the resolver's answer because
+ * the very next thing either does is spawn the binary they asked about.
+ *
+ * A path containing a separator is not a PATH lookup at all - it names one file, so it is
+ * answered from the filesystem, and null means "not there".
+ */
+export async function resolveBinPath(bin: string): Promise<string | null> {
+  if (bin.includes("/")) return existsSync(bin) ? bin : null;
+  const r = await run("which", [bin]);
+  const p = r.stdout.trim().split("\n")[0];
+  return r.code === 0 && p ? p : null;
+}
+
+/**
+ * Whether `bin` is resolvable at all - `resolveBinPath` with the path discarded.
+ *
+ * Exported rather than left private to the one subsystem that had it, because "is this
+ * binary installed?" being answerable in only one place is exactly how the check path came
+ * to have no such gate at all. See `pool.ts`'s two named predicates.
+ */
+export async function hasBin(bin: string): Promise<boolean> {
+  return (await resolveBinPath(bin)) !== null;
+}
+
 export interface RunResult {
   stdout: string;
   stderr: string;

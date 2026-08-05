@@ -49,6 +49,7 @@ import { getShippingConfig } from "./shipping/config.ts";
 import { homeAlive } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
+import { renameDriverSession } from "./sdk/rename.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { resolveTaskWorkflowId } from "./workflows/config.ts";
 
@@ -1448,7 +1449,13 @@ export class TaskManager {
           driverClearFor(this.supervisor),
           this.pendingTurns,
         ));
-    const doRename = opts.rename ?? rename;
+    // The driver arm is supplied here rather than left to `rename`'s default for the same
+    // reason `driverClearFor` is above: an embedded session handed a new task has to stop
+    // advertising the old one, and its name lives in a row rather than on a handle. Without
+    // this the auto-titler would run, find no pane, and silently leave the previous task's
+    // title on the card - the exact state `renameForTask` exists to prevent.
+    const doRename: NonNullable<AssignOptions["rename"]> =
+      opts.rename ?? ((session, name) => rename(session, name, undefined, renameDriverSession));
 
     if (s.state !== "idle") {
       return {
@@ -1696,8 +1703,8 @@ export class TaskManager {
     if (s.name === label) return;
     for (const candidate of [label, `${label}-${t.id.slice(0, 6)}`]) {
       // `sanitize` already strips what this backend's names cannot hold, so this normally
-      // only refuses a session with no terminal handle at all - one where there is nothing
-      // to rename, whose card is named after its process.
+      // only refuses a session with nowhere for a name to live at all - a terminal session
+      // with no handle, whose card is named after its process.
       const valid = validateSessionName(s, candidate);
       if (!valid.ok) continue;
       if (!validateSessionNameAgainstTasks(s, valid.name, this.list()).ok) continue;

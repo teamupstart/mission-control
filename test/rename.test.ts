@@ -28,10 +28,17 @@ const { Registry } = await import("../src/server/registry.ts");
 const PANE = mkMuxHandle({ session: "work", windowName: "0", paneId: "%3" });
 const TAB = mkEmuHandle({ paneId: "12", tabId: "4", windowId: "1", tabTitle: "old" });
 
-/** A session on a multiplexer, on an emulator, and on both - the three shapes a rename sees. */
-const onMux = { terminals: [PANE] };
-const onEmu = { terminals: [TAB] };
-const onBoth = { terminals: [PANE, TAB] };
+/**
+ * A session on a multiplexer, on an emulator, and on both - the three shapes a TERMINAL rename
+ * sees. `runtime` is carried because a name's home is a runtime question before it is a handle
+ * question: an embedded session keeps its name on a row and needs no pane at all (`embedded`).
+ */
+const onMux = { terminals: [PANE], runtime: "terminal" as const };
+const onEmu = { terminals: [TAB], runtime: "terminal" as const };
+const onBoth = { terminals: [PANE, TAB], runtime: "terminal" as const };
+
+/** A driver-run session: no handles, by construction, and renameable anyway. */
+const embedded = { terminals: [], runtime: "sdk" as const };
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -123,9 +130,30 @@ test("validateSessionName rejects a leading '$' only for a tmux session", () => 
   });
 });
 
-test("validateSessionName rejects a session with no renameable handle", () => {
-  const r = validateSessionName({ terminals: [] }, "whatever");
+test("validateSessionName rejects a terminal session with no renameable handle", () => {
+  const r = validateSessionName({ terminals: [], runtime: "terminal" }, "whatever");
   assert.equal(r.ok, false);
+});
+
+// An embedded session has `terminals: []` by construction, which is exactly the shape the
+// check above refuses - and refusing it was the bug: every dispatched card lost its rename.
+// Its name lives on the durable row, so having no pane is not having nowhere to put a name.
+test("validateSessionName accepts an embedded session, which has no pane by construction", () => {
+  assert.deepEqual(validateSessionName(embedded, "  a name  "), {
+    ok: true,
+    name: "a name",
+  });
+});
+
+test("validateSessionName holds an embedded session to plain display rules, not tmux's", () => {
+  // No target grammar to satisfy, so the characters tmux reserves as separators are ordinary
+  // text here - and a control character is still refused, because no display name can hold one.
+  assert.deepEqual(validateSessionName(embedded, "a.b:c $0"), {
+    ok: true,
+    name: "a.b:c $0",
+  });
+  assert.equal(validateSessionName(embedded, "a\nb").ok, false);
+  assert.equal(validateSessionName(embedded, "   ").ok, false);
 });
 
 // ---- validateSessionNameAgainstTasks (pure) ----
@@ -388,6 +416,80 @@ test("rename: a handle-less session is an error, not a crash", async () => {
   assert.equal(r.ok, false);
   assert.deepEqual(muxCalls, []);
   assert.deepEqual(retitled, []);
+});
+
+// ---- rename's driver arm (embedded sessions) ----
+
+test("rename: an embedded session writes its name down and drives no backend", async () => {
+  const { deps, muxCalls, retitled } = spyDeps();
+  const wrote: Array<[string, string]> = [];
+  const r = await rename(
+    mkSession({ ...embedded, id: "sdk:1" }),
+    "renamed",
+    deps,
+    async (s, name) => {
+      wrote.push([s.id, name]);
+      return true;
+    },
+  );
+
+  assert.deepEqual(r, { ok: true });
+  assert.deepEqual(wrote, [["sdk:1", "renamed"]]);
+  // The point of the seam: no shelling out, on a session where there is nothing to shell to.
+  assert.deepEqual(muxCalls, []);
+  assert.deepEqual(retitled, []);
+});
+
+test("rename: an embedded session with no durable row is refused, not reported renamed", async () => {
+  // The registry echoes the new name onto the card the moment this returns ok, so a write that
+  // hit nothing has to fail here - otherwise the rename appears to work and the next daemon
+  // restart brings the card back under its derived name with no explanation.
+  const { deps } = spyDeps();
+  const r = await rename(mkSession(embedded), "renamed", deps, async () => false);
+
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /could not be saved/);
+});
+
+test("rename: an embedded session in a build with no driver seam is refused", async () => {
+  const { deps } = spyDeps();
+  const r = await rename(mkSession(embedded), "renamed", deps);
+
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /could not be saved/);
+});
+
+test("rename: a busy embedded session is still renameable", async () => {
+  // A display name is what the OPERATOR calls the conversation - the agent is never told - so
+  // unlike a context clear it does not wait on a turn boundary. Refusing mid-turn would refuse
+  // exactly the sessions someone most wants to label.
+  const { deps } = spyDeps();
+  const r = await rename(
+    mkSession({ ...embedded, state: "working" }),
+    "renamed",
+    deps,
+    async () => true,
+  );
+
+  assert.deepEqual(r, { ok: true });
+});
+
+test("Registry.renameSession echoes an embedded rename with no handles to rewrite", async () => {
+  const registry = new Registry();
+  const session = registry.registerSdkSession({
+    id: "sdk:echo",
+    agent: "claude",
+    name: "derived",
+    cwd: "/repo",
+  });
+  assert.equal(session.name, "derived");
+
+  registry.renameSession("sdk:echo", "by hand");
+
+  const after = registry.getSession("sdk:echo");
+  assert.equal(after?.name, "by hand");
+  assert.deepEqual(after?.terminals, [], "there was never a handle to carry the name");
+  assert.equal(after?.runtime, "sdk");
 });
 
 // ---- Registry.renameSession (optimistic echo) ----

@@ -1811,6 +1811,21 @@ export interface CostTelemetryStatus {
    */
   receiving: boolean;
   /**
+   * True once Claude Code's OTel EXPORTER specifically has delivered something.
+   *
+   * Narrower than `receiving`, which a driven session's own driver now satisfies on its own.
+   * Both are needed because they fail independently and only one of them can be worked
+   * around: spend for a session the daemon RUNS comes off the driver's stream, but a session
+   * it merely DISCOVERED - a human's terminal `claude` - has no driver, and this export is
+   * the only way its cost is ever counted.
+   *
+   * So `installed && receiving && !otelExporting` is a real and otherwise invisible state:
+   * the dashboard shows plausible session spend, and every terminal session is missing from
+   * it. That reads as "working" on every other signal the panel has, which is why it gets
+   * one of its own.
+   */
+  otelExporting: boolean;
+  /**
    * Set when `OTEL_METRICS_INCLUDE_SESSION_ID` reads false anywhere we can see it. That
    * value silently destroys per-session attribution - every datapoint arrives
    * unattributable and is dropped - so it is surfaced rather than diagnosed later.

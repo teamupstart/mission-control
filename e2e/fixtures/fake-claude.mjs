@@ -331,6 +331,49 @@ function answerAsked(requestId, response) {
   answer([prompt]);
 }
 
+/** How many `result` frames this fake has emitted, so each carries a distinct turn uuid. */
+let results = 0;
+
+/**
+ * What one turn cost, in the vendor's exact `result`-frame shape.
+ *
+ * Load-bearing rather than decoration, because this frame IS the accounting path for a driven
+ * session. The daemon reads `uuid`, `modelUsage` and `total_cost_usd` off it and writes the
+ * ledger row a card's spend chip and the fleet total are both read from; a `result` with none
+ * of them - which is what this fake used to emit - exercises the code that decides a turn is
+ * unattributable, and never the code that records one.
+ *
+ * The key names and nesting are copied from a real frame off
+ * `claude -p --output-format stream-json`, not from documentation. `cacheCreationInputTokens`
+ * is the WRITE tier and `cacheReadInputTokens` the read one, and `input_tokens` on the flat
+ * block excludes both - the conventions the ledger's columns assume.
+ *
+ * Costs are round and small so a spec can assert exact rendered strings: $2.50 a turn.
+ */
+function turnUsage() {
+  results += 1;
+  return {
+    uuid: `${SESSION_ID}-result-${results}`,
+    total_cost_usd: 2.5,
+    num_turns: results,
+    modelUsage: {
+      [MODEL]: {
+        inputTokens: 1_000,
+        outputTokens: 500,
+        cacheReadInputTokens: 20_000,
+        cacheCreationInputTokens: 3_000,
+        costUSD: 2.5,
+      },
+    },
+    usage: {
+      input_tokens: 1_000,
+      output_tokens: 500,
+      cache_read_input_tokens: 20_000,
+      cache_creation_input_tokens: 3_000,
+    },
+  };
+}
+
 /**
  * Answer a turn and close it.
  *
@@ -347,7 +390,7 @@ function answer(prompts) {
       message: { role: "assistant", content: [{ type: "text", text }] },
     });
   }
-  emit({ type: "result", subtype: "success", session_id: SESSION_ID });
+  emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
 }
 
 const rl = createInterface({ input: process.stdin });

@@ -65,7 +65,7 @@ import {
   parseContextWindowSize,
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
-import type { RuntimeMetaRead, SdkEvent, SessionActivityRead } from "./harness/types.ts";
+import type { RuntimeMetaRead, SdkEvent, SdkUsage, SessionActivityRead } from "./harness/types.ts";
 // The one projection of a driver request into the dialog shape every surface already
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
@@ -127,7 +127,9 @@ import {
   prsOpenedSince,
   pruneUsageLedger,
   pruneUsageSources,
+  recordDriverSessionUsage,
   reorderQueueItems,
+  sdkOwnedNoteKey,
   sessionCostFor,
   taskIdForSession as dbTaskIdForSession,
   bindTaskWorkEpisode as dbBindTaskWorkEpisode,
@@ -1418,12 +1420,26 @@ export class Registry extends EventEmitter {
         // unless the supervisor still holds an accepted queued turn. The event still comes
         // through in that case so every non-idle projection stays observable; only the
         // transient idle transition is withheld.
-        // `usage` is deliberately NOT applied: the usage ledger has one writer per harness
-        // (OTel for Claude, the rollout reader for Codex) and both still see an SDK
-        // session's own files, so spending this figure here would double-count. It stays on
-        // the event as display enrichment for the phase that verifies that (see the plan's
-        // Automation parity section).
+        //
+        // `usage` IS spent here when the driver attributed it, which reverses the rule this
+        // handler used to state. The old rule - one writer per harness, OTel for Claude -
+        // made the driver's figure redundant, and it was correct only while that writer
+        // worked. It is a single point of failure with no error path: an exporter that stops
+        // producing (an inert metrics pipeline, an org policy, a version regression) takes
+        // every Claude session's spend to zero and reports nothing, because the ledger
+        // cannot tell "nothing was spent" from "nobody wrote it down". The driver reads the
+        // same figure off a stream it already owns, so it cannot be switched off from
+        // outside, and `sdkOwnedNoteKey` makes OTel yield for these keys instead - one
+        // writer per note key still, chosen by runtime rather than fixed to the exporter.
+        //
+        // AFTER the idle transition, and the order is load-bearing rather than stylistic.
+        // `applyDriverState` rebuilds the session from the `s` captured at the top of this
+        // method and writes it back to the map, so anything that re-denormalized a field onto
+        // the session first is silently reverted by it - the ledger row survives, the card's
+        // own figure does not, and the fleet total then disagrees with every chip on it.
+        // Recording last means `applyDurableUsage` re-reads the session it is updating.
         if (!options.deferIdle) this.applyDriverState(s, "idle", null, now);
+        this.recordDriverTurnUsage(s, evt.usage, now);
         return;
       case "rate_limits":
         this.recordRateLimits(evt.rateLimits);
@@ -3540,9 +3556,16 @@ export class Registry extends EventEmitter {
    * and a synthetic bucket would quietly become the fleet's largest "session" the moment
    * `OTEL_METRICS_INCLUDE_SESSION_ID` were ever set false - which is precisely the
    * misconfiguration the daemon warns about at boot.
+   *
+   * A datapoint for a note key a DRIVEN session owns is dropped too, and for a different
+   * reason: not that it cannot be attributed, but that it already has been. This ingest is no
+   * longer Claude's only writer - see the `turn_done` handler - and it is now the FALLBACK of
+   * the two, covering the sessions no driver owns. Those are the ones Mission Control merely
+   * discovered: a human's terminal `claude`, which exports here or is not counted at all.
    */
   applyOtelMetrics(body: OtlpMetrics): void {
     const touched = new Set<string>();
+    const sdkOwned = new Map<string, boolean>();
     for (const rm of body.resourceMetrics ?? []) {
       for (const sm of rm.scopeMetrics ?? []) {
         for (const m of sm.metrics ?? []) {
@@ -3562,6 +3585,18 @@ export class Registry extends EventEmitter {
             const attrs = attrMap(dp.attributes);
             const noteKey = attrs["session.id"];
             if (!noteKey) continue;
+            // A DRIVEN session's subprocess is ordinary Claude Code, so it exports these
+            // datapoints for turns its driver has already written under the same note key.
+            // Whichever of the two wrote it, the spend is recorded once; admitting both
+            // would make every embedded card read roughly double. Resolved per note key and
+            // cached for the export, because one POST carries many datapoints for the same
+            // handful of sessions and this is a database read on the ingest path.
+            let owned = sdkOwned.get(noteKey);
+            if (owned === undefined) {
+              owned = sdkOwnedNoteKey(noteKey);
+              sdkOwned.set(noteKey, owned);
+            }
+            if (owned) continue;
             const col: UsageCol | undefined = isCost
               ? "costUsd"
               : TOKEN_TYPE_COL[attrs["type"] ?? ""];
@@ -3598,6 +3633,29 @@ export class Registry extends EventEmitter {
     if (touched.size === 0) return;
     for (const key of touched) this.syncSessionsForCost(key);
     this.recomputeFleetCost();
+  }
+
+  /**
+   * Spend one driven turn's usage into the ledger.
+   *
+   * Requires BOTH halves of the driver's attribution - a turn identity and a per-model
+   * breakdown - and writes nothing without them. A breakdown with no identity cannot
+   * deduplicate, and an identity with no breakdown has nothing to record; Codex's driver
+   * supplies neither, which is how the rollout reader keeps sole ownership of Codex spend
+   * without this method having to name a harness.
+   */
+  private recordDriverTurnUsage(s: Session, usage: SdkUsage | null, now: number): void {
+    if (!usage?.turnId || !usage.models?.length) return;
+    const noteKey = noteKeyFor(s);
+    recordDriverSessionUsage({
+      noteKey,
+      sessionId: s.id,
+      agent: s.agent,
+      turnId: usage.turnId,
+      ts: now,
+      models: usage.models,
+    });
+    this.applyDurableUsage(noteKey);
   }
 
   /** Which live session currently holds this note key, for the ledger's provenance column. */

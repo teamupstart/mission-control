@@ -803,6 +803,10 @@ export function openDb(): DatabaseSync {
       -- codex's thread_id) rather than an export window, which is what makes a retried
       -- report idempotent and what lets SESSION_SPEND_ONLY find a claude run's OTel twin.
       spend_kind    TEXT NOT NULL DEFAULT 'session',
+      -- Which ingest wrote the row: 'otel' | 'driver' | 'rollout' | 'report'. See the
+      -- addColumn in migrate() for why this cannot be derived from the columns beside it,
+      -- and why '' (the upgrade default) means "predates the column" and nothing else.
+      writer        TEXT NOT NULL DEFAULT '',
       cost_usd      REAL NOT NULL DEFAULT 0,
       cost_basis    TEXT NOT NULL DEFAULT 'reported',
       cost_known    INTEGER NOT NULL DEFAULT 1,
@@ -1593,6 +1597,33 @@ function migrate(d: DatabaseSync): void {
   // small minority of the table, but every fleet read now filters on them - twice, since
   // the session total also has to exclude their OTel twins.
   d.exec("CREATE INDEX IF NOT EXISTS idx_ledger_kind ON usage_ledger(spend_kind, ts)");
+  // WHICH INGEST PRODUCED THE ROW. Not provenance for its own sake: it is the only way to
+  // answer "has Claude Code's OTel export ever delivered anything", and that question has to
+  // be answerable separately from "is session spend landing" now that a second writer can
+  // satisfy the second one. Without it, a driver-written row makes the Cost panel report
+  // healthy telemetry while every passively-discovered terminal session silently reads $0 -
+  // the exact failure mode that made session spend vanish in the first place.
+  //
+  // A column rather than a test on (spend_kind, cost_basis), for the reason spend_kind is a
+  // column: the pair distinguishes three of the four writers and leaves the two that matter
+  // most - Claude's OTel and Claude's driver, both 'session' and both 'reported' - identical.
+  //
+  // DEFAULT '' plus an explicit backfill, rather than a default that names one writer. Every
+  // real writer sets this from now on, so '' can only mean "row predates the column", and
+  // the backfill below is what stops that meaning "unknown" forever.
+  addColumn(d, "usage_ledger", "writer", "TEXT NOT NULL DEFAULT ''");
+  // Idempotent and exact - each arm is decidable from columns the row already had, so this is
+  // a relabelling and not a guess. Ordered narrowest-first: automation rows are the only
+  // ones `recordAutomationUsage` writes, locally-priced rows are the only ones the rollout
+  // reader writes, and what remains is Claude's reported session telemetry, which before this
+  // change had exactly one possible source.
+  d.exec(`
+    UPDATE usage_ledger SET writer = 'report'
+      WHERE writer = '' AND spend_kind = 'automation';
+    UPDATE usage_ledger SET writer = 'rollout'
+      WHERE writer = '' AND cost_basis IN ('api-equivalent', 'unpriced');
+    UPDATE usage_ledger SET writer = 'otel' WHERE writer = '';
+  `);
   addColumn(d, "usage_sources", "discard_partial", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "usage_sources", "file_id", "TEXT NOT NULL DEFAULT ''");
 
@@ -3905,11 +3936,12 @@ export function upsertUsageCell(k: UsageCell, col: UsageCol, value: number): voi
   openDb()
     .prepare(
       `INSERT INTO usage_ledger
-         (note_key, session_id, agent, model_id, query_source, window_end_ns, ts, ${c})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         (note_key, session_id, agent, model_id, query_source, window_end_ns, ts, writer, ${c})
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'otel', ?)
        ON CONFLICT(note_key, model_id, query_source, window_end_ns)
          DO UPDATE SET ${c} = excluded.${c},
                        ts = MAX(usage_ledger.ts, excluded.ts),
+                       writer = excluded.writer,
                        session_id = COALESCE(excluded.session_id, usage_ledger.session_id)`,
     )
     .run(k.noteKey, k.sessionId, k.agent, k.modelId, k.querySource, k.windowEndNs, k.ts, value);
@@ -3978,8 +4010,8 @@ export function commitUsageRead(input: {
     `INSERT INTO usage_ledger
        (note_key, session_id, agent, model_id, query_source, window_end_ns, ts,
         cost_usd, cost_basis, cost_known, pricing_version, input, output,
-        reasoning_output, cache_read, cache_write)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        reasoning_output, cache_read, cache_write, writer)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'rollout')
      ON CONFLICT(note_key, model_id, query_source, window_end_ns)
        DO UPDATE SET session_id = COALESCE(usage_ledger.session_id, excluded.session_id)`,
   );
@@ -4078,8 +4110,8 @@ export function recordAutomationUsage(input: {
     `INSERT INTO usage_ledger
        (note_key, session_id, agent, model_id, query_source, window_end_ns, ts,
         cost_usd, cost_basis, cost_known, pricing_version, input, output,
-        reasoning_output, cache_read, cache_write, spend_kind)
-     VALUES (?, NULL, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'automation')
+        reasoning_output, cache_read, cache_write, spend_kind, writer)
+     VALUES (?, NULL, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'automation', 'report')
      ON CONFLICT(note_key, model_id, query_source, window_end_ns) DO NOTHING`,
   );
   try {
@@ -4107,6 +4139,134 @@ export function recordAutomationUsage(input: {
     try { d.exec("ROLLBACK;"); } catch {}
     throw err;
   }
+}
+
+/**
+ * Record one driven turn's usage: a row per model, keyed to the card that spent it.
+ *
+ * The third ledger writer, and the one that makes Claude session spend not depend on an
+ * exporter. `recordAutomationUsage` reads a headless run's envelope; this reads the SAME
+ * envelope off a supervised session's `result` frame. The difference is only what the row is
+ * keyed to - a role there, a real note key here - so a card's chip and the fleet total both
+ * find it through the queries they already use.
+ *
+ * `window_end_ns` holds the TURN's own uuid, exactly as an automation row holds the run's.
+ * That is what makes ON CONFLICT DO NOTHING correct rather than lossy: a conflict means "this
+ * turn is already recorded", which happens when a driver re-emits a `result` it already
+ * reported - a resumed stream replaying its tail, a supervisor reconnecting. The numbers are
+ * identical and the row is immutable economic history, so keeping the first is the answer.
+ *
+ * `cost_basis` is 'reported' and `pricing_version` is empty because Claude Code priced this
+ * itself, from rates the account has and this repo does not. Same provenance as an OTel row,
+ * because it is the same arithmetic by the same CLI - only the transport differs, and the
+ * transport is what was broken.
+ */
+export function recordDriverSessionUsage(input: {
+  noteKey: string;
+  sessionId: string | null;
+  agent: string;
+  turnId: string;
+  ts: number;
+  models: readonly {
+    modelId: string;
+    input: number;
+    output: number;
+    reasoningOutput: number;
+    cacheRead: number;
+    cacheWrite: number;
+    reportedCostUsd: number | null;
+  }[];
+}): void {
+  if (input.models.length === 0) return;
+  const d = openDb();
+  const insert = d.prepare(
+    `INSERT INTO usage_ledger
+       (note_key, session_id, agent, model_id, query_source, window_end_ns, ts,
+        cost_usd, cost_basis, cost_known, pricing_version, input, output,
+        reasoning_output, cache_read, cache_write, spend_kind, writer)
+     VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'session', 'driver')
+     ON CONFLICT(note_key, model_id, query_source, window_end_ns) DO NOTHING`,
+  );
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    for (const m of input.models) {
+      insert.run(
+        input.noteKey,
+        input.sessionId,
+        input.agent,
+        m.modelId,
+        input.turnId,
+        input.ts,
+        m.reportedCostUsd ?? 0,
+        m.reportedCostUsd === null ? "unpriced" : "reported",
+        m.reportedCostUsd === null ? 0 : 1,
+        m.input,
+        m.output,
+        m.reasoningOutput,
+        m.cacheRead,
+        m.cacheWrite,
+      );
+    }
+    d.exec("COMMIT;");
+  } catch (err) {
+    try { d.exec("ROLLBACK;"); } catch {}
+    throw err;
+  }
+}
+
+/**
+ * Whether this note key's spend is already owned by a session's DRIVER.
+ *
+ * The guard that keeps one writer per note key now that Claude has two candidates. A driven
+ * session's subprocess is ordinary Claude Code, so it exports OTel for the same turns its
+ * driver already reported; without this, both land and the card reads double.
+ *
+ * Durable rather than a walk over live sessions, and that is the load-bearing part: OTel
+ * arrives on an export interval, so a datapoint routinely lands AFTER the session it belongs
+ * to has exited and left the live map. A liveness test would admit exactly those late
+ * datapoints and double-count the end of every driven session.
+ *
+ * TWO clauses, because neither is airtight alone and they fail at opposite ends of a session:
+ *
+ *   1. The key belongs to a driven session (`sdk_sessions`). This is what covers the FIRST
+ *      turn, where no driver row exists yet: the supervisor records the binding when the
+ *      driver binds, on the `init` frame, long before a turn completes. Matches `id` as well
+ *      as `agent_session_id` because `noteKeyFor` falls back to the session id until the
+ *      binding lands, so an early turn's rows are keyed to `sdk:<uuid>`.
+ *   2. The ledger already holds a driver row for the key. This needs no second table to be
+ *      current, so it still holds when clause 1 cannot answer - after a `/clear` rotation
+ *      retires an `agent_session_id`, or once the session row has been pruned out from under
+ *      rows the retention window still keeps.
+ *
+ * The pair means the exporter yields whenever a driver either owns the session or has already
+ * written for it, which is every case where both could report the same turn.
+ */
+export function sdkOwnedNoteKey(noteKey: string): boolean {
+  const r = openDb()
+    .prepare(
+      `SELECT 1 AS x FROM sdk_sessions WHERE agent_session_id = ? OR id = ?
+       UNION ALL
+       SELECT 1 AS x FROM usage_ledger WHERE note_key = ? AND writer = 'driver'
+       LIMIT 1`,
+    )
+    .get(noteKey, noteKey, noteKey) as { x: number } | undefined;
+  return Boolean(r);
+}
+
+/**
+ * True once Claude Code's OTel exporter has delivered anything at all.
+ *
+ * Distinct from `reportedUsageLedgerHasRows`, which now answers the broader "is session spend
+ * landing" and is satisfied by the driver alone. This one is specifically about the exporter,
+ * because that is what a passively-discovered TERMINAL session depends on and nothing else
+ * can substitute for: no driver owns those, so if this is false while telemetry is installed,
+ * every session the daemon did not start is silently reading $0.
+ */
+export function otelUsageHasRows(): boolean {
+  const r = openDb()
+    .prepare(`SELECT 1 AS x FROM usage_ledger WHERE writer = 'otel' LIMIT 1`)
+    .get() as { x: number } | undefined;
+  return Boolean(r);
 }
 
 /**

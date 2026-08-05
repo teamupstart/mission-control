@@ -719,7 +719,20 @@ export type SessionRequestAnswer =
   /** Prose: a deny-with-message, or a free-text reply where the harness admits one. */
   | { kind: "text"; text: string };
 
-/** Per-turn token usage as a driver reports it. Display enrichment, never a ledger writer. */
+/**
+ * Per-turn token usage as a driver reports it.
+ *
+ * The flat fields are the display view: one turn flattened to one model, which is what a
+ * card's chip can show. `models` and `turnId` are the LEDGER view, and a driver populates
+ * them only when it can answer both questions the ledger asks - which model actually served
+ * each request, and what identity makes re-recording this turn a no-op.
+ *
+ * That split is why they are optional rather than required. A driver whose harness owns a
+ * different ledger writer supplies the flat view alone and nothing is written: Codex's spend
+ * comes from the rollout reader, which sees files this driver does not, so a Codex turn
+ * reporting `models` here would double-count against it. Claude's driver supplies both,
+ * because for Claude there is no second reader - see `applyOtelMetrics`.
+ */
 export interface SdkUsage {
   input: number;
   output: number;
@@ -729,6 +742,20 @@ export interface SdkUsage {
   modelId: string | null;
   /** The harness's own cost figure for the turn, when it reports one. */
   costUsd: number | null;
+  /**
+   * This turn's dedup identity, when the harness mints one that survives a restart.
+   *
+   * Written to `usage_ledger.window_end_ns`, so it must be stable for the turn and unique
+   * across them. Absent means "do not write this turn", never "invent a key".
+   */
+  turnId?: string;
+  /**
+   * The per-model breakdown the ledger stores a row each for.
+   *
+   * Present alongside `turnId` or not at all: a breakdown with no identity cannot be
+   * deduplicated, and the registry writes neither half on its own.
+   */
+  models?: readonly import("@shared/llm-spend.ts").LlmSpendModelUsage[];
 }
 
 /**

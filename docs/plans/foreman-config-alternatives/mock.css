@@ -1,0 +1,185 @@
+/* Mockup chrome only. Everything below the annotation header is drawn with the app's own
+   classes from console.css, which is extracted verbatim from src/web/styles.css. */
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 13px;
+}
+* {
+  box-sizing: border-box;
+}
+
+.mock-head {
+  padding: 22px 26px 18px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg));
+}
+.mock-nav {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.mock-nav a {
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-decoration: none;
+}
+.mock-nav a:hover {
+  color: var(--fg);
+  border-color: var(--muted);
+}
+.mock-nav a.is-here {
+  background: color-mix(in oklab, var(--purple) 18%, var(--panel));
+  border-color: color-mix(in oklab, var(--purple) 50%, var(--border));
+  color: var(--fg);
+}
+.mock-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--purple);
+  margin-bottom: 7px;
+}
+.mock-head h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+.mock-thesis {
+  margin: 0 0 14px;
+  max-width: 86ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.mock-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mock-metric {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mock-metric span {
+  color: var(--dim);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 9.5px;
+}
+.mock-metric b {
+  font-weight: 640;
+  color: var(--idle);
+}
+.mock-metric.is-cost b {
+  color: var(--attention);
+}
+
+/* The line that tells a reader this mockup is not a picture. */
+.mock-live {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  position: relative;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--idle);
+  max-width: 90ch;
+}
+.mock-live::before {
+  content: "▸";
+  position: absolute;
+  left: 6px;
+  top: 0;
+}
+
+/* The panel header the real settings page draws above every category. */
+.mock-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+.mock-panel-head h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 620;
+}
+.mock-scope {
+  padding: 3px 8px;
+  border: 1px solid color-mix(in oklab, var(--idle) 45%, var(--border));
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--idle);
+}
+
+/* A note pinned beside a piece of the mockup, so the trade-off is readable in place. */
+.mock-note {
+  margin: 14px 0 0;
+  padding: 10px 13px;
+  border-left: 2px solid color-mix(in oklab, var(--purple) 60%, var(--border));
+  background: color-mix(in oklab, var(--purple) 7%, transparent);
+  border-radius: 0 8px 8px 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  max-width: 90ch;
+}
+.mock-note b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.mock-foot {
+  margin: 26px 26px 60px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+  max-width: 1500px;
+}
+.mock-foot h4 {
+  margin: 0 0 8px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.mock-foot ul {
+  margin: 0;
+  padding-left: 17px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.mock-foot li b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.mock-foot .is-con h4 {
+  color: var(--attention);
+}

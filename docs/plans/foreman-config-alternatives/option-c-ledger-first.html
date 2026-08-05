@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Foreman config - Option C: ledger first</title>
+    <link rel="stylesheet" href="console.css" />
+    <link rel="stylesheet" href="mock.css" />
+    <style>
+      /* ---- ledger first ----
+         This one takes the premise seriously: the column is not just long, it is in the
+         way. The panel exists to answer "what has Foreman been deciding" - that is what the
+         ledger is for, and it is the only cross-session view of it anywhere in the app -
+         and a set-once form is currently taking a third of the width and all of the scroll
+         to sit beside it.
+
+         So the config comes off the page. What stays is a POSTURE BAR: the readings that
+         must never be a click away, and the one knob that is genuinely in-the-moment.
+         Everything set once - provider, seven model ids, two safeguards - moves behind
+         Configure.
+
+         Live repositories does NOT move into the sheet as an editor. Foreman cannot change
+         the repo allowlist; it reports the count and links into the Trust category. The bar
+         carries the count because it is a live fact about blast radius, and the sheet
+         carries the link. */
+      .lf-bar {
+        display: flex;
+        align-items: stretch;
+        gap: 12px;
+        padding: 11px 13px;
+        margin-bottom: 12px;
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        background: var(--panel);
+      }
+      .lf-state {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        padding: 0 14px 0 12px;
+        border-right: 1px solid var(--border-soft);
+        font-size: 12.5px;
+        font-weight: 580;
+        white-space: nowrap;
+        color: color-mix(in oklab, var(--danger) 70%, var(--fg));
+      }
+      .lf-state .sc-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--danger);
+      }
+      /* The reading that outranks the mode. On the bar in every state, for the reason the
+         current panel keeps it on a card: a dead worker and an idle one look identical
+         everywhere else in the app. */
+      .lf-reads {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        padding-right: 14px;
+        border-right: 1px solid var(--border-soft);
+      }
+      .lf-read {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .lf-read span {
+        font-family: var(--mono);
+        font-size: 8.5px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .lf-read b {
+        font-size: 12px;
+        font-weight: 580;
+        color: var(--fg);
+      }
+      .lf-read b.is-ok {
+        color: var(--idle);
+      }
+      .lf-tier {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .lf-tier > span {
+        font-family: var(--mono);
+        font-size: 8.5px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .lf-seg {
+        display: flex;
+        gap: 2px;
+        padding: 3px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel-2);
+      }
+      .lf-seg button {
+        padding: 4px 11px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: var(--muted);
+        font-size: 11.5px;
+        font-weight: 560;
+        cursor: pointer;
+      }
+      .lf-seg button:hover {
+        color: var(--fg);
+      }
+      .lf-seg button.is-on {
+        background: color-mix(in oklab, var(--idle) 20%, var(--panel));
+        color: var(--fg);
+      }
+      .lf-configure {
+        margin-left: auto;
+        align-self: center;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 8px 15px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel-2);
+        color: var(--fg);
+        font-size: 12px;
+        font-weight: 560;
+        cursor: pointer;
+      }
+      .lf-configure:hover {
+        border-color: var(--muted);
+      }
+      .lf-configure[aria-expanded="true"] {
+        border-color: color-mix(in oklab, var(--purple) 60%, var(--border));
+        background: color-mix(in oklab, var(--purple) 16%, var(--panel-2));
+      }
+      .lf-configure em {
+        font-style: normal;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--dim);
+      }
+
+      /* ---- the configuration sheet ----
+         A right-hand sheet rather than a modal: it is edited WHILE reading the ledger - the
+         model you change is usually the model a row three lines down just argued about -
+         and a modal that covers the evidence is the wrong shape for that. */
+      .lf-stage {
+        position: relative;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .lf-scrim {
+        position: absolute;
+        inset: 0;
+        background: rgba(6, 8, 11, 0.55);
+        border-radius: 12px;
+      }
+      .lf-sheet {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 400px;
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid var(--border);
+        border-radius: 12px 0 0 12px;
+        background: var(--bg-2);
+        box-shadow: var(--shadow);
+      }
+      .lf-sheet[hidden],
+      .lf-scrim[hidden] {
+        display: none;
+      }
+      .lf-sheet-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 13px 15px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel-2);
+        border-radius: 12px 0 0 0;
+      }
+      .lf-sheet-head h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 620;
+      }
+      .lf-sheet-head p {
+        margin: 2px 0 0;
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .lf-close {
+        margin-left: auto;
+        width: 26px;
+        height: 26px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel);
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .lf-close:hover {
+        color: var(--fg);
+      }
+      .lf-sheet-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 14px 15px 40px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .lf-sheet-group {
+        margin: 4px 0 -4px;
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 640;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .lf-sheet-body .sc-field {
+        gap: 5px;
+      }
+      .lf-sheet-body .kb-row {
+        padding: 9px 0;
+      }
+      /* A form taller than its sheet has to SAY so. Without this the last field simply
+         stops at the edge and reads as a clipping bug rather than as more to scroll. */
+      .lf-sheet::after {
+        content: "";
+        position: absolute;
+        left: 1px;
+        right: 0;
+        bottom: 0;
+        height: 46px;
+        pointer-events: none;
+        border-radius: 0 0 0 12px;
+        background: linear-gradient(180deg, transparent, var(--bg-2) 78%);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mock-head">
+      <div class="mock-nav">
+        <a href="index.html">← all six</a>
+        <a href="option-a-digest.html">A · digest</a>
+        <a href="option-b-tabs.html">B · tabs</a>
+        <a href="option-c-ledger-first.html" class="is-here">C · ledger first</a>
+        <a href="option-d-grid.html">D · grid</a>
+        <a href="option-e-sentence.html">E · sentence</a>
+        <a href="option-f-presets.html">F · presets</a>
+      </div>
+      <div class="mock-tag">Option C · press Configure, then Escape</div>
+      <h1>Ledger first - the column goes away and the evidence gets the width</h1>
+      <p class="mock-thesis">
+        The strongest reading of "unnecessary": the column is not merely long, it is
+        occupying the width the ledger needs. What stays on the page is a
+        <b>posture bar</b> - the readings that must never be a click away (is a worker alive,
+        what mode, when did it last decide) and the one knob that is genuinely in-the-moment,
+        the cheap tier. Everything set once goes behind <b>Configure</b>, a right-hand sheet
+        you can still read the ledger through.
+      </p>
+      <div class="mock-metrics">
+        <div class="mock-metric"><span>control column</span> <b>1988px → 0</b></div>
+        <div class="mock-metric"><span>posture bar</span> <b id="m-bar">-</b></div>
+        <div class="mock-metric"><span>ledger width</span> <b id="m-led">-</b></div>
+        <div class="mock-metric"><span>the Asked column</span> <b id="m-ask">-</b></div>
+        <div class="mock-metric is-cost"><span>cost</span> <b>config is behind a sheet</b></div>
+      </div>
+      <p class="mock-live">
+        Press <b>Configure</b> to open the sheet and <b>Escape</b> or × to close it. Watch
+        the Asked-column measurement above: it is read off the page each time, so you can see
+        exactly what the sheet costs while it is open.
+      </p>
+    </div>
+
+    <div class="settings-pane">
+      <div class="mock-panel-head">
+        <h2>Foreman</h2>
+        <span class="mock-scope">this machine</span>
+      </div>
+
+      <section class="settings-section sc-section">
+        <div class="lf-bar" id="bar">
+          <p class="lf-state"><span class="sc-dot"></span>Live</p>
+          <div class="lf-reads" id="reads"></div>
+          <div class="lf-tier">
+            <span>Cheap tier</span>
+            <div class="lf-seg" data-segment id="tier"></div>
+          </div>
+          <button class="lf-configure" id="configure" type="button" aria-expanded="false" aria-controls="sheet">
+            ⚙ Configure <em id="repo-count"></em>
+          </button>
+        </div>
+
+        <div class="lf-stage">
+          <div data-ledger></div>
+
+          <div class="lf-scrim" id="scrim" hidden></div>
+          <aside class="lf-sheet" id="sheet" hidden aria-label="Configure Foreman">
+            <div class="lf-sheet-head">
+              <div>
+                <h3>Configure Foreman</h3>
+                <p>Set once. Changes apply to the next decision.</p>
+              </div>
+              <button class="lf-close" type="button" data-closes aria-label="Close">×</button>
+            </div>
+            <div class="lf-sheet-body" id="sheet-body"></div>
+          </aside>
+        </div>
+
+        <p class="mock-note">
+          <b>The width is the real prize.</b> Beside the current column the Asked cell is
+          366px and truncates the purpose line on nearly every row; full-width it is roughly
+          double, and most rows read whole. That column carries <code>purpose</code>, which is
+          the only field that reliably differs between two rows - <code>Needs approval: Bash</code>
+          covers 318 rows of a real 833-row ledger on its own. Open the sheet and watch the
+          same measurement: 400px of it comes back, which is the honest cost and the reason
+          the cheap tier stays out on the bar rather than going in the sheet with the rest.
+        </p>
+      </section>
+    </div>
+
+    <div class="mock-foot">
+      <div>
+        <h4>Why this one</h4>
+        <ul>
+          <li>
+            <b>The page becomes the thing it is for.</b> The ledger is the only cross-session
+            view of Foreman's decisions anywhere in the app.
+          </li>
+          <li>
+            <b>The Asked column roughly doubles</b> and stops truncating the one field that
+            distinguishes two rows.
+          </li>
+          <li>
+            <b>Honest framing.</b> A provider and seven model ids ARE set-once; putting them
+            behind a button says so instead of giving them a third of the page.
+          </li>
+          <li>
+            <b>Scales indefinitely.</b> A sixth config card lengthens a sheet nobody is
+            looking at, not the page.
+          </li>
+        </ul>
+      </div>
+      <div class="is-con">
+        <h4>What it costs</h4>
+        <ul>
+          <li>
+            <b>Biggest change.</b> New sheet component, focus trap, escape handling, and a
+            decision about what the settings-search deep links do.
+          </li>
+          <li>
+            <b>A sheet inside a settings page</b> is a second layer on a surface already
+            reachable from the command palette.
+          </li>
+          <li>
+            <b>Diverges from Inspector and Shipping</b>, which use the same
+            <code>sc-split</code>. Either they follow, or the console pattern forks.
+          </li>
+          <li>
+            <b>The posture bar is a new judgment call</b> - deciding what is in-the-moment
+            enough to stay out of the sheet, forever. Get it wrong and the sheet becomes a
+            place people open constantly, which is the worst of both layouts.
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <script src="mock-data.js"></script>
+    <script src="mock.js"></script>
+    <script>
+      const F = FOREMAN;
+      const E = Mock.esc;
+
+      document.getElementById("reads").innerHTML = F.health
+        .map(
+          (h) =>
+            `<div class="lf-read"><span>${E(h.label.replace("Sessions needing you", "Needing you").replace("Backlog autopilot", "Autopilot"))}</span><b${h.ok ? ' class="is-ok"' : ""}>${E(h.value)}</b></div>`,
+        )
+        .join("");
+
+      document.getElementById("tier").innerHTML = F.cheapTier.options
+        .map(
+          (o) =>
+            `<button type="button" data-value="${o.id}" title="${E(o.label)}" aria-pressed="${o.id === F.cheapTier.value}" class="${o.id === F.cheapTier.value ? "is-on" : ""}">${E(o.short)}</button>`,
+        )
+        .join("");
+
+      document.getElementById("repo-count").textContent = F.liveRepos.count + " repos live";
+
+      const field = (f) => `<div class="sc-field">
+        <label class="sc-field-label" for="c-${f.id}">${E(f.label)}</label>
+        ${Mock.selectHtml(f).replace("<select", `<select id="c-${f.id}"`)}
+        <p class="settings-hint">${E(f.blurb)}</p>
+      </div>`;
+
+      document.getElementById("sheet-body").innerHTML = [
+        `<p class="lf-sheet-group">Provider and models</p>`,
+        field({
+          id: "provider",
+          label: "Provider",
+          value: F.provider.value,
+          options: F.provider.options,
+          blurb: F.provider.blurb,
+        }),
+        ...F.roles.map(field),
+        `<p class="lf-sheet-group">Backlog launches</p>`,
+        `<p class="settings-hint">${E(F.backlogLaunch.blurb)}</p>`,
+        ...F.backlogLaunch.rows.map(field),
+        `<p class="lf-sheet-group">Completion safeguards</p>`,
+        `<p class="settings-hint">${E(F.safeguards.blurb)}</p>`,
+        ...F.safeguards.rows.map(
+          (s) => `<div class="kb-row">
+            <div class="kb-row-text">
+              <span class="kb-row-label">${E(s.label)}</span>
+              <span class="kb-row-desc">${E(s.desc)}</span>
+            </div>
+            <div class="kb-row-controls">
+              <label class="skill-switch"><input type="checkbox" ${s.on ? "checked" : ""} aria-label="${E(s.label)}" /></label>
+            </div>
+          </div>`,
+        ),
+        // Read only, and it links out. A sheet is exactly where someone would be tempted to
+        // put a repo editor, so the sentence says where the grant actually lives.
+        `<p class="lf-sheet-group">Live repositories</p>`,
+        `<p class="settings-hint">${E(F.liveRepos.blurb)}</p>`,
+        `<div data-live-repos></div>`,
+      ].join("");
+
+      Mock.boot();
+
+      // The scrim travels with the sheet, so there is never a dimmed ledger with nothing
+      // over it.
+      const scrim = document.getElementById("scrim");
+      Mock.wireToggle(document, "#configure", "#sheet", {
+        onOpen: () => {
+          scrim.hidden = false;
+          measure();
+        },
+        onClose: () => {
+          scrim.hidden = true;
+          measure();
+        },
+      });
+
+      const measure = () => {
+        const led = document.querySelector(".sc-ledger").getBoundingClientRect().width;
+        const ask = document.querySelector(".sc-ask").getBoundingClientRect().width;
+        const covered = document.getElementById("sheet").hidden ? 0 : 400;
+        document.getElementById("m-bar").textContent =
+          Math.round(document.getElementById("bar").getBoundingClientRect().height) + "px, always visible";
+        document.getElementById("m-led").textContent = Math.round(led) + "px, full width";
+        document.getElementById("m-ask").textContent =
+          Math.round(ask) + "px" + (covered ? " (" + covered + "px under the sheet)" : ", vs 366px today");
+      };
+      measure();
+      addEventListener("resize", measure);
+    </script>
+  </body>
+</html>

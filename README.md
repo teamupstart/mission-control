@@ -4879,7 +4879,9 @@ earns two surfaces a card has nowhere to put:
   `completed`, `cancelled` or `failed` releases its session back to free immediately, and a
   held session that stops to ask a question moves to **needs you** like any other, because
   there the operator is the one who has to act. The **Console** rail draws the same rule, since
-  it renders the same ordering. A held tile also refuses the backlog drag: dropping a card
+  it renders the same ordering, and **Cards** wears the same spine and tag on its cards - that
+  layout draws no section rule, so the mark is its whole answer. A held tile also refuses the
+  backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
 - **Killing a session closes its detail** once shutdown is accepted, without waiting for an

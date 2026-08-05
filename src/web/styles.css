@@ -1791,6 +1791,12 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* Crowded heads wrap instead of fighting: a held card carries a workflow chip, a held
+     pill AND a state badge, and before this the row resolved that by deleting the title
+     (min-width: 0) or clipping the trailing controls (a floor alone). A second chip row
+     only appears when the alternative was losing something. */
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 /* The harness's brand colour, and the only rule that draws it. `--agent-accent` is set
    inline by whoever renders the dot (`agentAccentStyle`, `session-bits.tsx`) off the
@@ -1806,7 +1812,12 @@ body {
   box-shadow: 0 0 8px color-mix(in oklab, var(--agent-accent, var(--neutral)) 60%, transparent);
 }
 .card-title {
-  min-width: 0;
+  /* A floor, not zero: with a workflow chip, a held pill and a state badge all in the head,
+     `min-width: 0` let the name shrink clean away - and a card whose every mark says "you
+     cannot use this one" still has to say WHICH one it is. Nine characters is enough for the
+     ellipsis to leave a recognisable stem; the chips after it are fixed-width and clip from
+     the tail, which costs a caret before it costs the name. */
+  min-width: 9ch;
   flex: 1;
 }
 .card-title h2 {
@@ -18296,7 +18307,8 @@ span.line-run-prov {
    Deliberately NOT dimmed the way `.tone-exited` is. Dimming says "deprioritise me", and a run
    mid-flight is among the most consequential things on the board - it is not yours to drive,
    which is a different statement from not worth reading. A tint, not a fade. */
-.tile.is-held {
+.tile.is-held,
+.card.is-held {
   --tone-color: var(--held);
   border-color: color-mix(in oklab, var(--held) 30%, var(--border));
   background: linear-gradient(color-mix(in oklab, var(--held) 7%, var(--panel)), var(--panel-2));
@@ -18305,7 +18317,11 @@ span.line-run-prov {
    (BacklogColumn.tsx) takes the tile's workflow run and refuses a session an open run holds,
    so a held tile never lights up, never hints, and never accepts a backlog drop. The drop is
    a reset, and resetting an agent mid-run is exactly what the held marking exists to stop. */
-.tile-held {
+/* One pill, two card-shaped surfaces: the Board tile's `.tile-held` and the Cards card's
+   `.card-held` are the same mark, and Cards NEEDS it more - it draws no section rule, so
+   the tag is that layout's whole answer to "why can I not use this idle agent". */
+.tile-held,
+.card-held {
   flex: none;
   padding: 1px 7px;
   font-size: 9.5px;

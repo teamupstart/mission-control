@@ -6,6 +6,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
+import { sessionIsHeld } from "../lib/held.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { Keycap } from "./Keycap.tsx";
@@ -200,6 +201,10 @@ export function SessionCard({
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
+  // Cards has no idle column to split and no section rule to draw, so the card's spine and
+  // tag are the ONLY way this layout says "an open run owns this agent's next turn". Same
+  // shared sentence the Board tile reads (`sessionIsHeld`), so the two cannot disagree.
+  const held = sessionIsHeld(workflowRun, st.tone);
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
@@ -235,7 +240,7 @@ export function SessionCard({
   return (
     <article
       ref={setRef}
-      className={`card tone-${st.tone}${attention ? " attention" : ""}${selected ? " selected" : ""}${expanded ? " expanded" : ""}`}
+      className={`card tone-${st.tone}${attention ? " attention" : ""}${selected ? " selected" : ""}${expanded ? " expanded" : ""}${held ? " is-held" : ""}`}
       data-agent={session.agent}
       onClick={onSelect}
     >
@@ -274,6 +279,16 @@ export function SessionCard({
             >
               ＋ workflow
             </button>
+          </Tooltip>
+        )}
+        {/* Cards draws no section rule, so this tag is the layout's whole answer to "why can
+            I not use this idle agent". Next to the state badge on purpose: "held" qualifies
+            the "idle" the badge is about to say. */}
+        {held && (
+          <Tooltip
+            label={`Held by ${workflowRun!.workflowName} - the run owns this session's next turn`}
+          >
+            <span className="card-held">held</span>
           </Tooltip>
         )}
         <StateBadge session={session} onOpenReviews={onOpenReviews} />

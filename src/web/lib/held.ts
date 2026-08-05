@@ -1,5 +1,6 @@
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
+import type { Tone } from "./format.ts";
 
 /**
  * The sessions a still-open workflow run owns the next turn of.
@@ -32,3 +33,19 @@ export function heldSessionIds(
 
 /** Shared empty set, so the default argument allocates nothing per call. */
 export const NO_HELD_SESSIONS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * The same join, for one session standing in front of its own run.
+ *
+ * This is what a card-shaped surface (Board tile, Cards card) uses to draw its held mark, and
+ * it is the SAME sentence `heldSessionIds` spells over the map - stated once here so the two
+ * cannot drift. Scoped to the `idle` tone to match `orderSessions`: a held session that has
+ * stopped to ask a question belongs to "needs you", and a held mark there would argue with
+ * the column it sits in.
+ */
+export function sessionIsHeld(
+  run: WorkflowRunSummary | null | undefined,
+  tone: Tone,
+): boolean {
+  return run != null && workflowRunIsOpen(run.status) && tone === "idle";
+}

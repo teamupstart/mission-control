@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
-import { workflowRunIsOpen, type WorkflowRunSummary } from "@shared/workflow.ts";
+import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
+import { sessionIsHeld } from "../../lib/held.ts";
 import {
   AgentDot,
   CostChip,
@@ -87,9 +88,8 @@ export function SessionTile({
   const workflowRunId = workflowRun?.id ?? null;
   // Held reads off the run this tile was already handed, not a second lookup: the section rule
   // above it and this tag have to agree about the same session, and one source is how they do.
-  // Scoped to the idle tone to match `orderSessions` - a held session parked on a question
-  // belongs to "needs you", and tagging it here would argue with the column it sits in.
-  const held = workflowRun != null && workflowRunIsOpen(workflowRun.status) && st.tone === "idle";
+  // `sessionIsHeld` is the shared sentence, so the Cards card cannot spell it differently.
+  const held = sessionIsHeld(workflowRun, st.tone);
   const [over, setOver] = useState(false);
   const [workflowExpanded, setWorkflowExpanded] = useState(false);
   const toggleWorkflowExpanded = useCallback(

@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { settled } from "../fixtures/settle.ts";
 
 /**
  * Clicking a session's title opens an inline box that renames it.
@@ -46,27 +47,6 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await expect(dialog).toBeHidden();
 }
 
-/**
- * Wait for a locator to stop moving before clicking it.
- *
- * A fresh dispatch settles for about a second - the titler renames it, the driver reports its
- * model, the branch line arrives - and each of those re-lays-out the card. Playwright requires
- * a stable box before it will click, and under a loaded machine that churn can outlast the
- * retry budget. Two consecutive identical reads is the same definition of settled that
- * `dispatch-and-converse.spec.ts` and `line-drawers.spec.ts` use, and it is a barrier rather
- * than a mask: the assertion that the control EXISTS runs before it, so a genuinely missing
- * button still fails exactly as loudly.
- */
-async function settled(locator: ReturnType<Page["locator"]>): Promise<void> {
-  let last = JSON.stringify(await locator.boundingBox());
-  await expect.poll(async () => {
-    const next = JSON.stringify(await locator.boundingBox());
-    const same = next === last;
-    last = next;
-    return same;
-  }, { timeout: 30_000 }).toBe(true);
-}
-
 test("clicking an SDK session's title renames it, durably", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon);
 
@@ -84,7 +64,9 @@ test("clicking an SDK session's title renames it, durably", async ({ dashboard, 
 
   const box = card.getByLabel("Rename session");
   await expect(box).toBeVisible();
-  await expect(box).toHaveValue(DERIVED_TITLE, "the editor opens on the current name");
+  // The editor opens on the current name, pre-selected, so a rename is an edit rather than a
+  // retype. `toHaveValue`'s second parameter is options, not a message - so this says it here.
+  await expect(box).toHaveValue(DERIVED_TITLE);
   await box.fill("renamed by hand");
   await box.press("Enter");
 

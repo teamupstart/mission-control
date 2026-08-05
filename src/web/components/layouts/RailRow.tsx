@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
+import { sessionIsHeld } from "../../lib/held.ts";
 import {
   AgentDot,
   InspectorRailMark,
@@ -51,6 +52,10 @@ export function RailRow({
   ensembleSummary?: EnsembleSummary | null;
 }): React.JSX.Element {
   const st = stateDisplay(session);
+  // The same shared sentence the Board tile and the Cards card read. The rail shows more
+  // rows per screen than either, so it is the surface where "the section rule scrolled
+  // away" happens soonest - the row has to carry its own answer here most of all.
+  const held = sessionIsHeld(workflowRun, st.tone);
   const ref = useRef<HTMLButtonElement>(null);
   const setRef = useCallback(
     (el: HTMLButtonElement | null) => {
@@ -90,7 +95,7 @@ export function RailRow({
     <>
       <button
         ref={setRef}
-        className={`rail-row tone-${st.tone}${selected ? " selected" : ""}`}
+        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${selected ? " selected" : ""}`}
         aria-current={selected}
         aria-describedby={descriptionId}
         onClick={onSelect}
@@ -104,7 +109,19 @@ export function RailRow({
             line each, the marks and the PR chip made a row as tall as three, and a rail
             you can only fit six sessions in has stopped being a rail. */}
         <span className="rail-right">
-          <span className="rail-state">{st.label}</span>
+          {/* Beside the state word ON ITS LINE - `.rail-right` is a column, and the row's
+              whole two-line budget is the point of it. "held" qualifies the "idle" it sits
+              next to, the same pairing the card's head draws. */}
+          <span className="rail-state-line">
+            {held && (
+              <Tooltip
+                label={`Held by ${workflowRun!.workflowName} - the run owns this session's next turn`}
+              >
+                <span className="rail-held">held</span>
+              </Tooltip>
+            )}
+            <span className="rail-state">{st.label}</span>
+          </span>
           <span className="rail-meta">
             {marks.length > 0 && <span className="rail-marks">{marks.join(" ")}</span>}
             <PrRailMark session={session} />

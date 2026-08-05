@@ -9,7 +9,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Session } from "../src/shared/types.ts";
-import { clusterFallbackLabel, fleetBlocks, orderSessions } from "../src/web/lib/fleet-order.ts";
+import {
+  clusterFallbackLabel,
+  fleetBlocks,
+  fleetRows,
+  orderSessions,
+} from "../src/web/lib/fleet-order.ts";
 import { TONE_GROUPS } from "../src/web/lib/tone.ts";
 import { moveSelection } from "../src/web/lib/layoutNav.ts";
 import { stateDisplay } from "../src/web/lib/format.ts";
@@ -223,4 +228,138 @@ test("a cluster falls back to the member link's strategy label before its summar
   // SSE summary. Waiting for it would flicker a frame in and out around tiles that never moved.
   assert.equal(clusterFallbackLabel(member("run-a", 1, "alpha")), "Best of N");
   assert.equal(clusterFallbackLabel(plain("ordinary")), "Ensemble");
+});
+
+// ---- held by an open workflow run ----
+//
+// What is at stake here is the same "one fact" property as above, plus a second one. The board
+// draws a section rule at `heldFrom` and the arrow keys walk `group.sessions`; if the partition
+// and the clustering disagree about where the boundary is, the rule lands in the wrong place or
+// a frame swallows it. And because the partition is what makes "N free" honest, a held session
+// that leaks into the free count is a dispatch decision made against a number that is wrong.
+
+test("held sessions sort last within idle, and the boundary says where they start", () => {
+  const fleet = [
+    plain("alpha", IDLE),
+    plain("bravo", IDLE),
+    plain("charlie", IDLE),
+  ];
+  const ordered = orderSessions(fleet, new Set(["plain-alpha"]));
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  // `alpha` sorts first alphabetically and is demoted below both free ones.
+  assert.deepEqual(names(idle.sessions), ["bravo", "charlie", "alpha"]);
+  assert.equal(idle.heldFrom, 2);
+});
+
+test("only idle partitions: a held session that needs you is not demoted", () => {
+  // The rule that keeps "needs you" worth reading. A held session parked on a question is the
+  // most actionable row on the board; sorting it under a rule that says the run will handle it
+  // would bury the one thing that will not resolve on its own.
+  const fleet = [
+    plain("alpha", { state: "awaiting_input", stateConfirmed: true }),
+    plain("bravo", { state: "awaiting_input", stateConfirmed: true }),
+  ];
+  const ordered = orderSessions(fleet, new Set(["plain-alpha"]));
+  const attention = ordered.groups.find((g) => g.tone === "attention")!;
+  assert.deepEqual(names(attention.sessions), ["alpha", "bravo"]);
+  assert.equal(attention.heldFrom, null);
+});
+
+test("a group with nothing held has a null boundary, not a zero one", () => {
+  // `heldFrom === 0` is a real value meaning "every session here is held", so the empty case
+  // has to be distinguishable from it - a view keying on falsiness would draw a held rule over
+  // a column where nothing is held.
+  const ordered = orderSessions([plain("alpha", IDLE)], new Set());
+  assert.equal(ordered.groups.find((g) => g.tone === "idle")!.heldFrom, null);
+
+  const allHeld = orderSessions([plain("alpha", IDLE)], new Set(["plain-alpha"]));
+  assert.equal(allHeld.groups.find((g) => g.tone === "idle")!.heldFrom, 0);
+});
+
+test("a cluster never straddles the free/held boundary", () => {
+  // The property `fleetRows` depends on: it counts sessions while walking BLOCKS, so it can
+  // only place the rule if the boundary falls between two blocks. Partitioning before
+  // clustering is what guarantees that; clustering first would bucket these two members into
+  // one span anchored at the free one, and the rule would land inside a frame or be lost.
+  const fleet = [
+    member("run-a", 1, "alpha", IDLE),
+    member("run-a", 2, "bravo", IDLE),
+    plain("charlie", IDLE),
+  ];
+  const ordered = orderSessions(fleet, new Set(["run-a-2"]));
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(names(idle.sessions), ["alpha", "charlie", "bravo"]);
+  assert.equal(idle.heldFrom, 2);
+  // Two frames for the one run, one either side - the tone-boundary rule's shape.
+  assert.deepEqual(idle.clusters, [
+    { runId: "run-a", startIndex: 0, length: 1 },
+    { runId: "run-a", startIndex: 2, length: 1 },
+  ]);
+  // Every cluster lies wholly on one side of the boundary.
+  for (const c of idle.clusters) {
+    const endsBefore = c.startIndex + c.length <= idle.heldFrom!;
+    const startsAfter = c.startIndex >= idle.heldFrom!;
+    assert.ok(endsBefore || startsAfter, `cluster ${c.runId} straddles the boundary`);
+  }
+  // And the two frames of the one run carry DISTINCT render keys. `runId` alone is not a
+  // key here: both sides of the split share it, React would match one fiber and remount or
+  // misassign the other's header and disclosure state.
+  const clusterBlocks = fleetBlocks(idle).filter((b) => b.kind === "cluster");
+  assert.equal(clusterBlocks.length, 2);
+  const keys = clusterBlocks.map((b) => (b as { key: string }).key);
+  assert.notEqual(keys[0], keys[1]);
+  for (const key of keys) assert.match(key, /^cluster-run-a-/);
+});
+
+test("fleetRows places both rules, and the walk lands exactly on the boundary", () => {
+  const fleet = [plain("alpha", IDLE), plain("bravo", IDLE), plain("charlie", IDLE)];
+  const ordered = orderSessions(fleet, new Set(["plain-alpha", "plain-charlie"]));
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(
+    fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}:${r.count}` : r.kind === "session" ? r.session.name : "cluster")),
+    ["--free:1", "bravo", "--held:2", "alpha", "charlie"],
+  );
+});
+
+test("fleetRows draws only the held rule when every session in the column is held", () => {
+  // A "free 0" heading over an empty free side would be labelling nothing.
+  const ordered = orderSessions([plain("alpha", IDLE)], new Set(["plain-alpha"]));
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  assert.deepEqual(
+    fleetRows(idle).map((r) => (r.kind === "section" ? `--${r.section}` : "row")),
+    ["--held", "row"],
+  );
+});
+
+test("fleetRows adds nothing to a group with nothing held", () => {
+  const ordered = orderSessions([plain("alpha", IDLE), plain("bravo")], new Set());
+  for (const g of ordered.groups) {
+    assert.deepEqual(fleetRows(g), fleetBlocks(g));
+  }
+});
+
+test("the partition is idempotent, so App and the views cannot disagree", () => {
+  // Same contract the cluster pass has: BoardView and ConsoleView re-run `orderSessions` on the
+  // list App already ordered, and must pass the same held set to get the same answer.
+  const fleet = [plain("alpha", IDLE), plain("bravo", IDLE), plain("charlie", IDLE)];
+  const held = new Set(["plain-alpha"]);
+  const once = orderSessions(fleet, held);
+  const twice = orderSessions(once.sessions, held);
+  assert.deepEqual(names(twice.sessions), names(once.sessions));
+  assert.deepEqual(
+    twice.groups.map((g) => g.heldFrom),
+    once.groups.map((g) => g.heldFrom),
+  );
+});
+
+test("board column arrays still match the rendered sequence with a boundary in play", () => {
+  // The whole point of putting the partition in `orderSessions` rather than in the view: the
+  // arrow keys walk `group.sessions`, and the rule is drawn from the same list.
+  const fleet = [plain("alpha", IDLE), plain("bravo", IDLE), plain("charlie", IDLE)];
+  const ordered = orderSessions(fleet, new Set(["plain-bravo"]));
+  const idle = ordered.groups.find((g) => g.tone === "idle")!;
+  const rendered = fleetRows(idle).flatMap((r) =>
+    r.kind === "section" ? [] : r.kind === "session" ? [r.session.id] : r.sessions.map((s) => s.id),
+  );
+  assert.deepEqual(rendered, idle.sessions.map((s) => s.id));
 });

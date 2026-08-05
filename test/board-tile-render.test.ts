@@ -158,3 +158,128 @@ test("a lapsed-hook session omits the ticker rather than animating a stale label
   const html = render(mkSession({ instrumented: false, state: "working", activity: "idle" }));
   assert.doesNotMatch(html, /tile-activity/);
 });
+
+// ---- idle, but held by an open workflow run ----
+//
+// The board files a session bound to a live run under `idle`, correctly - the agent did finish
+// its turn. What it must not do is present it as one of the agents you can dispatch to. These
+// pin the three marks that say otherwise: the section rule, the split count, and the tag on the
+// tile itself.
+
+/** Two idle sessions, the second of which an open run holds. */
+function idlePair(): { free: Session; held: Session } {
+  return {
+    free: mkSession({ id: "free-1", name: "aaa free", state: "idle", activity: null }),
+    held: mkSession({ id: "held-1", name: "bbb held", state: "idle", activity: null }),
+  };
+}
+
+function heldProps(open: boolean): SessionViewProps {
+  const { free, held } = idlePair();
+  return {
+    ...props([free, held]),
+    workflowRunBySession: new Map([
+      [
+        held.id,
+        {
+          ...workflowRun,
+          sessionId: held.id,
+          status: open ? ("running" as const) : ("completed" as const),
+        },
+      ],
+    ]),
+    onOpenWorkflowRun: () => {},
+  };
+}
+
+test("the idle column splits into free and held, with the held ones last", () => {
+  const html = renderToStaticMarkup(createElement(BoardView, heldProps(true)));
+  assert.match(html, /fleet-section-free/);
+  assert.match(html, /fleet-section-held/);
+  assert.match(html, /held by a workflow/);
+  // The rule carries the explanation once, so no tile below it has to.
+  assert.match(html, /it sends the next round on its own/);
+  // Free rule before held rule, and the held tile after both.
+  assert.ok(
+    html.indexOf("fleet-section-free") < html.indexOf("fleet-section-held"),
+    "the free rule must come first",
+  );
+  assert.ok(
+    html.indexOf("fleet-section-held") < html.indexOf("bbb held"),
+    "the held session must sit under the held rule",
+  );
+  assert.ok(
+    html.indexOf("aaa free") < html.indexOf("fleet-section-held"),
+    "the free session must sit above the held rule",
+  );
+});
+
+test("the idle column head reports free and held rather than one number that means neither", () => {
+  const html = renderToStaticMarkup(createElement(BoardView, heldProps(true)));
+  assert.match(html, /class="board-col-n n-free"[^>]*>1 free</);
+  assert.match(html, /class="board-col-n n-held"[^>]*>1 held</);
+  assert.match(html, /1 of 2 idle agents can take work/);
+});
+
+test("a held tile carries its own tag, since the section rule scrolls away", () => {
+  const html = renderToStaticMarkup(createElement(BoardView, heldProps(true)));
+  assert.match(html, /class="tile [^"]*is-held/);
+  // `aria-describedby` sits between the class and the text: the tag is Tooltip-wrapped, which
+  // is the point - the tag is two words and the tooltip is where the run is named.
+  assert.match(html, /class="tile-held"[^>]*>held</);
+  assert.match(html, /Held by No-Mistakes Review - the run owns this session/);
+});
+
+test("a column where everything is held drops the free pill rather than counting zero", () => {
+  // Matches `fleetRows` dropping the free RULE in the same case. "0 free · 1 held" counts a
+  // side of the split that is not there, and disagreed with the single rule below it about
+  // whether the column had two halves at all.
+  const held = mkSession({ id: "held-only", name: "held", state: "idle", activity: null });
+  const viewProps = {
+    ...props([held]),
+    workflowRunBySession: new Map([
+      [held.id, { ...workflowRun, sessionId: held.id, status: "running" as const }],
+    ]),
+    onOpenWorkflowRun: () => {},
+  };
+  const html = renderToStaticMarkup(createElement(BoardView, viewProps));
+  assert.doesNotMatch(html, /n-free/);
+  assert.doesNotMatch(html, /0 free/);
+  assert.match(html, /class="board-col-n n-held"[^>]*>1 held</);
+  assert.doesNotMatch(html, /fleet-section-free/);
+  assert.match(html, /fleet-section-held/);
+});
+
+test("a CLOSED run holds nothing: the column goes back to one count and no rules", () => {
+  // The regression this guards is a session pinned under "held by a workflow" forever because
+  // the run it was bound to finished. `workflowRunIsOpen` is the only thing keeping the two
+  // apart, and it reads an append-only status union.
+  const html = renderToStaticMarkup(createElement(BoardView, heldProps(false)));
+  assert.doesNotMatch(html, /fleet-section-held/);
+  assert.doesNotMatch(html, /class="tile [^"]*is-held/);
+  assert.doesNotMatch(html, /n-free/);
+  assert.match(html, /class="board-col-n">2</);
+});
+
+test("a held session that needs you is not tagged, and does not leave needs-you", () => {
+  // Held-ness is scoped to `idle` in BOTH the ordering and the tile, and this is where the two
+  // have to agree: a session parked on a question is the most actionable row on the board, and
+  // a "held" tag there would say the run will handle it when only a human can.
+  const asking = mkSession({
+    id: "asking-1",
+    name: "asking",
+    state: "awaiting_input",
+    stateConfirmed: true,
+    activity: null,
+  });
+  const viewProps = {
+    ...props([asking]),
+    workflowRunBySession: new Map([
+      [asking.id, { ...workflowRun, sessionId: asking.id, status: "running" as const }],
+    ]),
+    onOpenWorkflowRun: () => {},
+  };
+  const html = renderToStaticMarkup(createElement(BoardView, viewProps));
+  assert.doesNotMatch(html, /class="tile-held"/);
+  assert.doesNotMatch(html, /fleet-section-held/);
+});

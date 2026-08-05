@@ -132,6 +132,7 @@ function pend(over: Partial<Pending> = {}): Pending {
     surface: "terminal",
     question: HOOK_LINE,
     inputReviewId: null,
+    reviewId: null,
     canSend: true,
     marker: "await:1",
     ...over,

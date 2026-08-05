@@ -3643,10 +3643,20 @@ send** - that expands for the recommendation and **Dismiss**. It can't cover the
 because the prose isn't in it. The strip unmounts once the note is answered or dismissed;
 the inline entry stays.
 
-**Approve & send** appears only where there is somewhere to send it. A note whose question
-has since been resolved elsewhere, or one Foreman escalated *because* it had no reply channel,
-offers **Dismiss** and says which of the two it is - the alternative was a button that
-silently closed the note, which reads as having sent something. Foreman also re-checks the
+**Answering the question yourself retires the note.** A pinned decision is a claim on your
+attention, and answering the ask spends it: the agent is unblocked and the suggestion answers
+a closed question. So submitting the agent's own form, picking a row on its menu, or
+answering, approving or dismissing its review clears the note as part of the same action -
+no second click on **Dismiss**. It is matched to the *ask*, not to the session, so an
+escalation raised about something else - a session stuck with no reply channel - stays put
+and stays yours. The decision is kept in the **Foreman · N** history as one you closed
+without using Foreman's answer, exactly as pressing **Dismiss** always recorded it.
+
+**Approve & send** appears only where there is somewhere to send it. A note Foreman escalated
+*because* it had no reply channel offers **Dismiss** and says so - the alternative was a button
+that silently closed the note, which reads as having sent something. The same sentence covers a
+question resolved somewhere the daemon cannot see it, such as a reply typed straight into a
+tmux pane; a resolution that goes through the dashboard retires the note outright. Foreman also re-checks the
 session before pinning a decision at all: a review takes up to a few minutes, and if the
 session moved on in that time the decision is filed in the **Foreman · N** history instead of
 waiting for a click on a question that has already closed. Those decisions are recorded as

@@ -1568,6 +1568,28 @@ export interface FormResult extends ActionResult {
 }
 
 /**
+ * Whether a form submission actually reached the child.
+ *
+ * `ok` does not answer this, and the gap is the whole reason this predicate is named rather
+ * than left as an inline `r.ok` at each caller. A pane form reports `ok` for two states that
+ * delivered NOTHING:
+ *
+ * - `next-question` - the ticks stand and the walk moved to the following question. A form's
+ *   answers reach the agent only when its Submit tab is confirmed (`submitFormLocked`), so at
+ *   this point the child has received nothing at all.
+ * - `unanswered` - Claude's review tab reported a gap, so the walk stepped back to the same
+ *   question. Same screen, same ask, nothing sent.
+ *
+ * Both leave the agent blocked on the ask it started on, so anything that treats them as an
+ * answer acts on a decision that has not been made. `retireForemanNoteForDialog` read `ok`
+ * and retired the operator's pinned Foreman note on the first screen of a multi-question
+ * form; an absent outcome is read as undelivered here for the same reason.
+ */
+export function formDelivered(r: FormResult): boolean {
+  return r.ok && r.outcome === "submitted";
+}
+
+/**
  * Fill in and SEND a multi-select `AskUserQuestion` - the form half of answering a dialog.
  *
  * A form is not a menu, and the difference is the whole reason this exists. On a menu,

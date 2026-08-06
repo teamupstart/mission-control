@@ -171,6 +171,18 @@ test("an installed plugin is also recognised from Claude Code's install record",
   assert.match(view.warning ?? "", /stalls/);
 });
 
+// The record is read under a byte bound and grows with the number of installed plugins, so a
+// machine with dozens of them can carry this entry past the window. A miss there must not be
+// read as "not installed" - which is the whole reason the two signals are OR'd.
+test("a record that does not name the plugin does not overrule the directory", async () => {
+  const truncated = JSON.stringify({
+    version: 2,
+    plugins: { "dev-tools@upstartclaw": [{ version: "1.9.0" }] },
+  });
+  const view = await claw({ files: { [RECORD]: text(truncated) }, dirs: INSTALLED_LAYOUT });
+  assert.match(view.warning ?? "", /stalls/);
+});
+
 // The marketplace's name is a PREFIX of the plugin's, and a machine that merely added the
 // marketplace has installed nothing. Matching loosely here would warn every Upstart
 // engineer who browsed the catalogue and installed something else.

@@ -85,6 +85,12 @@ function quoted(value: string): string {
  * already changed once (the file carries `"version": 2`). The plugin's NAME appearing as a
  * key - `"upstartclaw-core@<marketplace>"` - is the part that survives a revision, and the
  * quote and `@` boundaries are what keep it from matching the marketplace's own name.
+ *
+ * One-directional on purpose: a match here is proof, a miss is not a refutation. The record
+ * is read under `MAX_READ_BYTES` and runs about 400 bytes per installed plugin, so on a
+ * machine with dozens of them this entry can sit past the window. That is what the directory
+ * probe is for, and why the two signals are OR'd rather than one being consulted as the
+ * answer.
  */
 function recordNamesPlugin(text: string): boolean {
   return new RegExp(`"${PLUGIN}(@[^"]*)?"`).test(text);
@@ -120,8 +126,9 @@ async function pluginDirPresent(root: string, deps: EnvironmentDeps): Promise<bo
  *
  * Two independent signals, either of which is enough, because "installed" is a fact about
  * another tool's storage layout and this must not become a claim about one version of it:
- * Claude Code's own install record, and a directory bearing the plugin's name. A machine
- * with neither is a machine that has never heard of UpstartClaw, and gets silence.
+ * Claude Code's own install record (cheap, one read, and may be truncated - see above), then
+ * a directory bearing the plugin's name (complete within its bound). A machine with neither
+ * is a machine that has never heard of UpstartClaw, and gets silence.
  */
 async function pluginInstalled(deps: EnvironmentDeps): Promise<boolean> {
   const root = join(deps.homeDir, ...PLUGINS_DIR);

@@ -188,6 +188,70 @@ export function siteProblem(site: string): string | null {
   return `"${raw.slice(0, 60)}" is not a Jira host - set it to something like your-org.atlassian.net`;
 }
 
+/** The env var that widens the set of hosts the REST rung may authenticate to. */
+const ALLOWED_HOSTS_VAR = "JIRA_ALLOWED_HOSTS";
+
+/** The bare hostname of a `host[:port]`, lowercased. Ports do not change who is answering. */
+function hostnameOf(host: string): string {
+  return host.replace(/:\d+$/, "").toLowerCase();
+}
+
+/** Jira Cloud - what this kind is built for, and where `DEFAULT_JIRA_SITE` lives. */
+function isJiraCloud(host: string): boolean {
+  return /(^|\.)atlassian\.net$/.test(hostnameOf(host));
+}
+
+/** Whether one allowlist entry names this host. `*.suffix` matches any subdomain of it. */
+function hostAllowedBy(host: string, pattern: string): boolean {
+  const name = hostnameOf(host);
+  const want = hostnameOf(pattern.trim());
+  if (!want) return false;
+  if (want.startsWith("*.")) {
+    const suffix = want.slice(1); // ".internal" - a dot-anchored suffix, never a bare substring
+    return name.endsWith(suffix);
+  }
+  return name === want;
+}
+
+/**
+ * Why this site may not be sent `JIRA_API_TOKEN`, or null when it may.
+ *
+ * A SEPARATE question from `siteProblem`, which asks whether a value is a host at all. This one
+ * asks whether it is a host this daemon is willing to authenticate to, and it exists because the
+ * userinfo refusal only closed one deceptive spelling: `evil.example` and
+ * `acme.atlassian.net.evil.example` are perfectly well-formed hosts, and the REST rung would put a
+ * Basic Authorization header on a request to either.
+ *
+ * "The operator typed it" is not the whole threat model. `PUT /api/task-sources/config` is a
+ * localhost route, and this daemon dispatches agents that run on that same machine - so a config
+ * write is a way to aim the credential, and a prompt-injected agent writing one would be
+ * exfiltrating a token rather than merely misconfiguring a source. A lookalike host in a pasted
+ * runbook does the same thing more slowly.
+ *
+ * Jira Cloud is allowed by default because that is what this kind is for. Anything else needs the
+ * operator to say so out loud in `JIRA_ALLOWED_HOSTS`, in the daemon's own environment - the same
+ * place the credential itself comes from, so widening the target and holding the token are the same
+ * act of trust.
+ *
+ * Scoped to the REST rung on purpose: the `jira` CLI authenticates with its OWN configuration and
+ * never receives this token, so a self-hosted instance reached through the CLI needs no allowlist
+ * entry and is not affected by this at all.
+ */
+export function credentialTargetProblem(site: string, env: NodeJS.ProcessEnv): string | null {
+  const host = siteHost(site);
+  // Not a host at all is `siteProblem`'s answer to give, not this one's.
+  if (!host) return null;
+  if (isJiraCloud(host)) return null;
+  const allowed = (env[ALLOWED_HOSTS_VAR] ?? "").split(",").filter((p) => p.trim().length > 0);
+  if (allowed.some((pattern) => hostAllowedBy(host, pattern))) return null;
+  return (
+    `refusing to send JIRA_API_TOKEN to ${host}: it is not a Jira Cloud host (*.atlassian.net). ` +
+    `If that really is your Jira, name it in ${ALLOWED_HOSTS_VAR} in the daemon's environment ` +
+    "(comma-separated, `*.example.internal` allowed) - the jira CLI rung is unaffected either way, " +
+    "since it uses its own credentials"
+  );
+}
+
 /**
  * The `jira issue list` argv for this config - ONE request, and never an offset.
  *
@@ -865,6 +929,12 @@ async function walkRest(
   ctx: SweepContext,
   maxPages: number,
 ): Promise<JiraWalk> {
+  // The authoritative check, at the rung that actually attaches the credential. `ladder` asks the
+  // same predicate to decide whether this rung exists at all, and that is routing; this is the
+  // control. A security refusal enforced only by its caller is one refactor from being gone.
+  const target = credentialTargetProblem(cfg.site, process.env);
+  if (target) return { issues: [], error: target, advisory: null };
+
   const issues: JiraIssue[] = [];
   const keys = new Set<string>();
   let token: string | null = null;
@@ -922,6 +992,13 @@ async function walkRest(
  */
 async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Promise<JiraWalk> {
   const cred = restCredentialFrom(process.env);
+  // Whether there IS a credential and whether it may be sent HERE are two questions, and the
+  // second one decides whether the REST rung exists for this source at all. Keeping them separate
+  // is what lets a self-hosted CLI operator who happens to have a token set carry on working: the
+  // token simply is not a rung for their host, and the CLI still is.
+  const targetProblem = cred ? credentialTargetProblem(cfg.site, process.env) : null;
+  const restCred = cred && !targetProblem ? cred : null;
+
   if (await hasBin(JIRA_BIN)) {
     const viaCli = await readCli(cfg, ctx);
     if (!viaCli.error) {
@@ -930,13 +1007,26 @@ async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Pro
       // There is a tail this rung cannot reach. Hand the whole filter to REST, which can - and
       // start it from the beginning rather than stitching, since its cursor is the authority on
       // ordering and the ledger makes a re-read of the first page free.
-      if (cred && !ctx.signal.aborted) return await walkRest(cfg, cred, ctx, maxPages);
-      return { issues: viaCli.issues, error: null, advisory: cliCannotPage(cfg) };
+      if (restCred && !ctx.signal.aborted) return await walkRest(cfg, restCred, ctx, maxPages);
+      // No usable REST rung. File what the one request read, and say which wall was hit - a
+      // credential that may not be sent here is a different sentence from having none.
+      return {
+        issues: viaCli.issues,
+        error: null,
+        advisory: targetProblem ?? cliCannotPage(cfg),
+      };
     }
-    if (!cred || ctx.signal.aborted) {
-      return { issues: [], error: viaCli.error, advisory: null };
+    if (!restCred || ctx.signal.aborted) {
+      // The CLI failed and there is no second rung to try. A credential that exists but may not be
+      // used for this host is worth saying alongside the CLI's own failure, since the operator
+      // would otherwise reasonably assume the fallback was attempted.
+      return {
+        issues: [],
+        error: targetProblem ? `${viaCli.error}; ${targetProblem}` : viaCli.error,
+        advisory: null,
+      };
     }
-    const viaRest = await walkRest(cfg, cred, ctx, maxPages);
+    const viaRest = await walkRest(cfg, restCred, ctx, maxPages);
     if (!viaRest.error) return viaRest;
     return {
       issues: [],
@@ -944,10 +1034,14 @@ async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Pro
       advisory: null,
     };
   }
-  if (!cred) {
-    return { issues: [], error: credentialGap(process.env) ?? NO_PATH, advisory: null };
+  if (!restCred) {
+    return {
+      issues: [],
+      error: targetProblem ?? credentialGap(process.env) ?? NO_PATH,
+      advisory: null,
+    };
   }
-  return walkRest(cfg, cred, ctx, maxPages);
+  return walkRest(cfg, restCred, ctx, maxPages);
 }
 
 /** Sweep the configured JQL: every page of it, up to what one sweep may read. */

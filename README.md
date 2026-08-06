@@ -1952,7 +1952,7 @@ else, it never dispatches, and a task you delete stays deleted.
 
 | Field | Meaning |
 |---|---|
-| **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. A value carrying a credential (`your-org.atlassian.net@elsewhere.example`) is **refused**, not reduced: that string names `elsewhere.example` as the server, and the token would be sent there. Defaults to `upstartnetwork.atlassian.net` |
+| **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. Two refusals guard the credential: a value carrying one (`your-org.atlassian.net@elsewhere.example`) is **refused rather than reduced**, because that string names `elsewhere.example` as the server; and the REST rung will only authenticate to **Jira Cloud** unless you name the host in `JIRA_ALLOWED_HOSTS` (below). Defaults to `upstartnetwork.atlassian.net` |
 | **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
 | **Issues per page** | how many issues **one request** asks Jira for. Over REST a sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds; over the `jira` CLI it *is* the whole request, because that CLI cannot be asked for a second page (below). What actually gets *filed* is bounded by **Most tasks per sweep** above |
 | **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
@@ -2000,6 +2000,19 @@ If the CLI is installed but can't answer (a common half-configured machine: `jir
 as a **fallback** rather than the source being declared broken with a working path unused.
 When neither works, both reasons are reported.
 
+**Where the token may go is constrained, not just where it comes from.** The REST rung sends
+`JIRA_API_TOKEN` in an `Authorization` header, so it will only do that for a **Jira Cloud** host
+(`*.atlassian.net`). A self-hosted instance - or anything else - must be named in
+`JIRA_ALLOWED_HOSTS` in the daemon's environment, comma-separated, with `*.example.internal`
+allowed for a whole domain. Otherwise the source refuses **before making any request** and says so.
+
+That is not only about typos. `PUT /api/task-sources/config` is a localhost route and this daemon
+dispatches agents onto the same machine, so a config write is a way to *aim* the credential: a
+lookalike host in a pasted runbook, or a prompt-injected agent writing a source, would otherwise
+exfiltrate the token rather than merely misconfigure a sweep. **The `jira` CLI rung is unaffected**
+either way, because it authenticates with its own configuration and never receives this token - so
+a self-hosted Jira reached through the CLI needs no allowlist entry at all.
+
 Two operational notes. The environment is the **daemon's**, read when it sweeps - exporting
 the variables in a shell after the daemon started does not reach it, so restart the daemon
 (`make restart`) after adding them. And behind a TLS-inspecting VPN the REST rung needs the
@@ -2020,6 +2033,7 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is `NODE_EXTRA_CA_CERTS` |
 | `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
 | `the Jira site must be a host, not a URL carrying a credential` | the site names one server and would send the token to another - set it to the host on its own |
+| `refusing to send JIRA_API_TOKEN to <host>` | that host is not Jira Cloud and is not in `JIRA_ALLOWED_HOSTS`. Name it there if it really is your Jira; the CLI rung keeps working regardless |
 | `this jira CLI does not support --paginate` | too old to be asked for a bounded request at all. `brew upgrade jira-cli`, or set the two variables so the REST rung is used instead |
 | `this filter is larger than one sweep can read` | more than 1000 issues (or 50 requests) match, so the tail is unreachable - narrow the JQL |
 
@@ -5939,6 +5953,7 @@ cleanup broke" from "the build passed and then cleanup broke".
 | `MISSION_TASK_SOURCE_TIMEOUT_MS` | `60000` | Task sources: hard cap on one sweep, so a hung source cannot wedge its own schedule. Floored at `5000` |
 | `JIRA_API_TOKEN` | unset | [Jira task sources](#jira): the API token the REST fallback authenticates with when the `jira` CLI is not on the daemon's `PATH` (or cannot answer). Read **bare**, without the `MISSION_` prefix, because it is the same variable `jira-cli` and Atlassian's own shell helpers already use - so a machine set up for either needs nothing new. Never stored in Mission Control's database; read from the daemon's environment when it sweeps, so a variable exported after the daemon started needs a restart to reach it |
 | `JIRA_EMAIL` | unset | Jira task sources: the account the token belongs to. Jira basic auth is the **pair** - one without the other is reported by name in the source's preflight rather than failing as a bad password |
+| `JIRA_ALLOWED_HOSTS` | unset (Jira Cloud only) | [Jira task sources](#jira): extra hosts the REST rung may send `JIRA_API_TOKEN` to, comma-separated; `*.example.internal` allows a whole domain. Without it the credential goes only to `*.atlassian.net`, so a lookalike host - or a config written by something other than you, since the config route is localhost-reachable and dispatched agents share the machine - cannot aim the token elsewhere. Read bare, like the credential itself: widening the target and holding the token are then the same act of trust. Does not affect the `jira` CLI, which uses its own credentials |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where Claude's symlinks are written; set, it wins outright. Overridable so tests never touch your real one - though setting `MISSION_HOME` is the better isolation, because it covers every harness at once and so covers the ones added later. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links. Under the `node --test` runner a reconcile pass over any of the three real directories below is **refused outright**, whatever the config says: pinning one variable and forgetting the others is how `npm run test` came to silently uninstall the machine's live Codex and Pi skills on every run |
 | `CODEX_SKILLS_DIR` | `~/.agents/skills` | the same override for Codex's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/codex-skills`, for the same reason. Point both at one path and the reconciler still walks it once |

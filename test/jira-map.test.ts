@@ -11,6 +11,7 @@ import {
   candidateFrom,
   cliFailure,
   credentialGap,
+  credentialTargetProblem,
   appendCapped,
   externalIdFor,
   freshKeys,
@@ -139,6 +140,46 @@ test("a site that is not a host at all is named as that, and nothing else is a t
     assert.ok(siteProblem(bad), `${bad} must be explained`);
   }
   assert.match(siteProblem("not a host")!, /is not a Jira host/);
+});
+
+// WHERE the credential may go, which is a different question from whether the site is a host.
+//
+// The userinfo refusal above closed one deceptive spelling; these are perfectly well-formed hosts
+// that are simply not Jira. And "the operator typed it" is not the whole threat model:
+// `PUT /api/task-sources/config` is a localhost route and this daemon dispatches agents onto the
+// same machine, so a config write is a way to AIM the credential - a prompt-injected agent writing
+// one would be exfiltrating a token, not misconfiguring a source.
+test("the credential goes to Jira Cloud, and nowhere else without being named", () => {
+  const none = {};
+  // Jira Cloud, including the shipped default.
+  assert.equal(credentialTargetProblem("acme.atlassian.net", none), null);
+  assert.equal(credentialTargetProblem(DEFAULT_JIRA_SITE, none), null);
+  assert.equal(credentialTargetProblem("https://ACME.ATLASSIAN.NET/browse/MC-1", none), null);
+
+  // Not Jira. The second is the lookalike: it ENDS in evil.example.
+  for (const hostile of ["evil.example", "acme.atlassian.net.evil.example", "atlassian.net.evil"]) {
+    const said = credentialTargetProblem(hostile, none);
+    assert.match(said!, /refusing to send JIRA_API_TOKEN/, `${hostile} must be refused`);
+    assert.match(said!, /JIRA_ALLOWED_HOSTS/, "and the refusal names the way to allow it");
+  }
+
+  // Not a host at all is `siteProblem`'s answer, not this one's - it must not double-report.
+  assert.equal(credentialTargetProblem("", none), null);
+  assert.equal(credentialTargetProblem("not a host", none), null);
+});
+
+test("an operator can name their own Jira, exactly or by domain", () => {
+  const exact = { JIRA_ALLOWED_HOSTS: "jira.internal" };
+  assert.equal(credentialTargetProblem("jira.internal", exact), null);
+  assert.equal(credentialTargetProblem("jira.internal:8080", exact), null, "a port is not a host");
+  assert.ok(credentialTargetProblem("other.internal", exact), "one entry is not a blanket");
+
+  const wildcard = { JIRA_ALLOWED_HOSTS: "*.example.internal, jira.two" };
+  assert.equal(credentialTargetProblem("jira.example.internal", wildcard), null);
+  assert.equal(credentialTargetProblem("jira.two", wildcard), null);
+  // Dot-anchored, so it cannot be satisfied by a suffix that merely ends in the same letters.
+  assert.ok(credentialTargetProblem("evilexample.internal", wildcard), "a suffix is not a substring");
+  assert.ok(credentialTargetProblem("example.internal.evil", wildcard));
 });
 
 // ---- the two rungs' requests ----

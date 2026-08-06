@@ -121,6 +121,8 @@ function machine(opts: {
   total?: string;
   /** A file the fake appends each requested `start:limit` window to. */
   calls?: string;
+  /** Hosts the REST rung may authenticate to beyond Jira Cloud. */
+  allowedHosts?: string;
 }): void {
   process.env.PATH = `${opts.cli ? withJira : noJira}:/usr/bin:/bin`;
   for (const [key, value] of [
@@ -129,6 +131,7 @@ function machine(opts: {
     ["FAKE_JIRA_MODE", opts.mode],
     ["FAKE_JIRA_TOTAL", opts.total],
     ["FAKE_JIRA_CALLS", opts.calls],
+    ["JIRA_ALLOWED_HOSTS", opts.allowedHosts],
   ] as const) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -300,7 +303,7 @@ test("a filter of exactly the page size is complete, in one request", async () =
 // REST rung's own rather than the CLI advisory.
 test("a filter bigger than one CLI request is handed to REST when a credential exists", async () => {
   const port = await deadPort();
-  machine({ cli: true, mode: "pages", total: "7", email: "a@b.c", token: "t" });
+  machine({ cli: true, mode: "pages", total: "7", email: "a@b.c", token: "t", allowedHosts: "127.0.0.1" });
 
   const swept = await jira.sweep(cfg({ limit: 3, site: `127.0.0.1:${port}` }), ctx);
   assert.match(swept.error!, /could not reach Jira at 127\.0\.0\.1:/);
@@ -327,11 +330,62 @@ test("a CLI too old for --paginate says so, and names the two ways forward", asy
   assert.match(said!, /JIRA_API_TOKEN and JIRA_EMAIL so the REST rung can page/);
 });
 
+// ---- where the credential may go ----
+
+// The REST rung is the only thing that carries JIRA_API_TOKEN, so the host policy gates it and
+// nothing else. A credential that may not be sent HERE is not a rung for this source - which is
+// what lets the sentence be about the host rather than about a connection that was never made.
+test("a credential is refused for a host that is not Jira, before any request", async () => {
+  machine({ cli: false, email: "a@b.c", token: "t" });
+
+  const said = await jira.preflight(cfg({ site: "acme.atlassian.net.evil.example" }), ctx);
+  assert.match(said!, /refusing to send JIRA_API_TOKEN to acme\.atlassian\.net\.evil\.example/);
+  assert.match(said!, /JIRA_ALLOWED_HOSTS/);
+  // Not a connection error: that sentence is only reachable if nothing was dialled.
+  assert.doesNotMatch(said!, /could not reach|ECONNREFUSED|ENOTFOUND/);
+});
+
+// The CLI never receives this token - it authenticates with its own configuration - so a
+// self-hosted operator working through the CLI is untouched by the policy. What they lose is only
+// the REST rung, and the advisory says which wall they hit rather than pretending they have none.
+test("a disallowed host costs the REST rung, not the CLI's own request", async () => {
+  machine({ cli: true, mode: "pages", total: "7", email: "a@b.c", token: "t" });
+
+  const swept = await jira.sweep(cfg({ limit: 3, site: "jira.internal" }), ctx);
+  assert.deepEqual(
+    swept.items.map((i) => i.ref.externalId),
+    ["MC-0", "MC-1", "MC-2"],
+    "the CLI request is still filed",
+  );
+  assert.match(swept.error!, /refusing to send JIRA_API_TOKEN to jira\.internal/);
+  assert.doesNotMatch(swept.error!, /cannot be asked for a second page/, "this is the wall it hit");
+});
+
+// Naming the host is the way through, and it is the daemon's environment that names it - the same
+// place the token comes from, so widening the target and holding the credential are one act.
+test("naming the host in JIRA_ALLOWED_HOSTS restores the REST rung", async () => {
+  const port = await deadPort();
+  machine({
+    cli: true,
+    mode: "pages",
+    total: "7",
+    email: "a@b.c",
+    token: "t",
+    allowedHosts: `*.internal, 127.0.0.1`,
+  });
+
+  const swept = await jira.sweep(cfg({ limit: 3, site: `127.0.0.1:${port}` }), ctx);
+  // It got as far as dialling, which is all this can prove without a server - and it is enough:
+  // the refusal above never reaches a socket.
+  assert.match(swept.error!, /could not reach Jira at 127\.0\.0\.1:/);
+  assert.doesNotMatch(swept.error!, /refusing to send/);
+});
+
 // ---- the REST rung, and the retry between them ----
 
 test("with no CLI, the credential is used against the site - and an unreachable site says so", async () => {
   const port = await deadPort();
-  machine({ cli: false, email: "a@b.c", token: "t" });
+  machine({ cli: false, email: "a@b.c", token: "t", allowedHosts: "127.0.0.1" });
   const said = await jira.preflight(cfg({ site: `127.0.0.1:${port}` }), ctx);
   assert.match(said!, /could not reach Jira at 127\.0\.0\.1:/);
   // Node's message for every transport failure is the same three words, so the cause's code
@@ -346,7 +400,7 @@ test("with no CLI, the credential is used against the site - and an unreachable 
 // neither works, because the operator has two things to look at.
 test("a broken CLI falls through to the credential, and both failures are reported", async () => {
   const port = await deadPort();
-  machine({ cli: true, mode: "unconfigured", email: "a@b.c", token: "t" });
+  machine({ cli: true, mode: "unconfigured", email: "a@b.c", token: "t", allowedHosts: "127.0.0.1" });
   const said = await jira.preflight(cfg({ site: `127.0.0.1:${port}` }), ctx);
   assert.match(said!, /not configured/, "what the CLI said");
   assert.match(said!, /the REST fallback also failed/);

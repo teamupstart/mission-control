@@ -534,8 +534,10 @@ export function ForemanSettingsPanel({
           >
             {FOREMAN_SETTINGS_TABS.map((group) => {
               const selected = tab === group.id;
+              const count =
+                group.anchors.length === 1 ? "1 setting" : `${group.anchors.length} settings`;
               return (
-                <Tooltip key={group.id} label={`Show Foreman ${group.label} settings`}>
+                <Tooltip key={group.id} label={`Show Foreman ${group.label} settings - ${count}`}>
                   <button
                     id={`foreman-settings-tab-${group.id}`}
                     type="button"
@@ -551,6 +553,12 @@ export function ForemanSettingsPanel({
                     onClick={() => setTab(group.id)}
                   >
                     {group.label}
+                    {/* Out of the accessible name - "Models 5" announces as a nonsense
+                        label. The count still reaches assistive tech through the tab's
+                        tooltip description, which spells out "5 settings". */}
+                    <span className="sc-tab-count" aria-hidden="true">
+                      {group.anchors.length}
+                    </span>
                   </button>
                 </Tooltip>
               );
@@ -604,7 +612,7 @@ export function ForemanSettingsPanel({
                 <label className="sc-field-label" htmlFor="foreman-provider">
                   Provider
                 </label>
-                <Tooltip label="Which model provider Foreman's own calls are spawned with">
+                <Tooltip label="Runs every Foreman model role through this provider. Foreman spawns a fresh, isolated call for each. Review and Verify are the expensive ones; Triage and Backlog are deliberately cheaper.">
                   <select
                     id="foreman-provider"
                     className="field-input sc-input"
@@ -628,11 +636,6 @@ export function ForemanSettingsPanel({
                     ))}
                   </select>
                 </Tooltip>
-                <p className="settings-hint">
-                  Runs every Foreman model role through this provider. Foreman spawns a fresh,
-                  isolated call for each. Review and Verify are the expensive ones; Triage and
-                  Backlog are deliberately cheaper.
-                </p>
               </div>
 
               <div className="sc-field sc-model">
@@ -647,6 +650,7 @@ export function ForemanSettingsPanel({
                     resolved={status?.models?.[role]}
                     runner={runner}
                     disabled={!config}
+                    blurb="hover"
                     onCommit={(next) =>
                       // An empty box is a cleared override, and must be STORED as empty so
                       // the env/default ladder takes over again - not dropped from the patch,
@@ -684,6 +688,7 @@ export function ForemanSettingsPanel({
                   resolved={undefined}
                   runner={agent}
                   disabled={!config}
+                  blurb="hover"
                   onCommit={(next) =>
                     void update({ backlogDefaultModel: { [agent]: next || null } })
                   }
@@ -708,12 +713,9 @@ export function ForemanSettingsPanel({
               <div className="kb-row" data-anchor="foreman/skip-scout-wrapup">
                 <div className="kb-row-text">
                   <span className="kb-row-label">Skip automatic completion for Scout tasks</span>
-                  <span className="kb-row-desc">
-                    Uses the task's durable Kind. The scout's findings remain the finished output.
-                  </span>
                 </div>
                 <div className="kb-row-controls">
-                  <Tooltip label="Keep Scout tasks out of Ship it, No-Mistakes Review, and Straight to PR">
+                  <Tooltip label="Keeps Scout tasks out of Ship it, No-Mistakes Review, and Straight to PR. Uses the task's durable Kind. The scout's findings remain the finished output.">
                     <label className="skill-switch">
                       <input
                         type="checkbox"
@@ -732,13 +734,9 @@ export function ForemanSettingsPanel({
                   <span className="kb-row-label">
                     Skip automatic completion for mockups and review artifacts
                   </span>
-                  <span className="kb-row-desc">
-                    Reads the resolved objective and artifact-only changed paths. Mixed work that
-                    also requests implementation still follows the normal completion action.
-                  </span>
                 </div>
                 <div className="kb-row-controls">
-                  <Tooltip label="Keep mockups and review-only artifacts out of automatic completion actions">
+                  <Tooltip label="Keeps mockups and review-only artifacts out of automatic completion actions. Reads the resolved objective and artifact-only changed paths. Mixed work that also requests implementation still follows the normal completion action.">
                     <label className="skill-switch">
                       <input
                         type="checkbox"

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ForemanSettingsPanel } from "../src/web/components/ForemanSettingsPanel.tsx";
 import { candidateRepos } from "../src/web/lib/trust.ts";
 import { ForemanPopover } from "../src/web/components/ForemanBar.tsx";
+import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "../src/shared/foreman-models.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
 
@@ -52,6 +53,14 @@ function renderPanel(state: ForemanState): string {
 function inputWithLabel(html: string, label: string): string {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return html.match(new RegExp(`<input[^>]*aria-label="${escaped}"[^>]*>`))?.[0] ?? "";
+}
+
+/** Static-markup entities decoded, so assertions pin the copy rather than its escaping. */
+function decoded(html: string): string {
+  return html
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
 // ---- ForemanSettingsPanel ----
@@ -129,6 +138,49 @@ test("Foreman exposes separate compatible defaults for fresh backlog launches", 
   assert.match(html, /id="foreman-backlog-task-model-codex"/);
   assert.match(html, /already names one/);
   assert.match(html, /existing session.{0,50}unchanged/);
+});
+
+// ---- the prose is printed once, not twice ----
+// Each field's explanation lives in its Tooltip, which fires on hover and on focus and
+// always renders a hidden `tt-desc` copy the trigger's aria-describedby points at. What
+// these tests pin is both halves of that move: the visible duplicate is gone, and every
+// sentence is still in the markup - moved, never deleted.
+
+test("the model blurbs render tooltip-only in Foreman - no visible duplicate, no lost sentence", () => {
+  const html = decoded(renderPanel(mkState()));
+  assert.doesNotMatch(html, /foreman-model-blurb/);
+  for (const role of FOREMAN_MODEL_ROLES) {
+    assert.ok(html.includes(FOREMAN_MODEL_SPECS[role].blurb), `the ${role} blurb went missing`);
+  }
+  for (const agent of ["Claude", "Codex", "Pi"]) {
+    assert.ok(
+      html.includes(`Used when Foreman launches an unpinned ${agent} task from the backlog.`),
+      `the ${agent} backlog blurb went missing`,
+    );
+  }
+});
+
+test("the provider explanation lives in its tooltip, not a printed paragraph", () => {
+  const html = decoded(renderPanel(mkState()));
+  assert.match(html, /<span[^>]*class="tt-desc">Runs every Foreman model role through this provider\./);
+  assert.doesNotMatch(html, /<p class="settings-hint">Runs every Foreman model role/);
+});
+
+test("the safeguard descriptions are tooltip-only while their labels stay printed", () => {
+  const html = decoded(renderPanel(mkState()));
+  assert.doesNotMatch(html, /kb-row-desc/);
+  assert.ok(html.includes(
+    "Uses the task's durable Kind. The scout's findings remain the finished output.",
+  ));
+  assert.ok(html.includes(
+    "Reads the resolved objective and artifact-only changed paths. Mixed work that also requests implementation still follows the normal completion action.",
+  ));
+});
+
+test("the two group intros stay visible paragraphs - one per group, not one per field", () => {
+  const html = decoded(renderPanel(mkState()));
+  assert.match(html, /<p class="settings-hint">When Foreman starts a fresh backlog task/);
+  assert.match(html, /<p class="settings-hint">Choose which finished work Foreman retires/);
 });
 
 test("completion safeguards render as independent default-on settings", () => {

@@ -432,12 +432,26 @@
   overflow-wrap: anywhere;
 }
 
+/* Element-agnostic on purpose: on the run page the badge IS the link to the composer, so this
+   rule dresses a `<button>` as well as the `<span>` the run rows still use. `background` is
+   declared for the button case - without it the UA fill turns the pill solid grey. */
 .wf-run-version {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 2px 7px;
+  background: transparent;
   color: var(--muted);
   font: 10px var(--mono);
+}
+
+button.wf-run-version {
+  cursor: pointer;
+}
+
+button.wf-run-version:hover:not(:disabled),
+button.wf-run-version:focus-visible {
+  border-color: var(--working);
+  color: var(--working);
 }
 
 .wf-run-more {
@@ -911,6 +925,95 @@
 
 .wf-run-timeline-round h5 {
   margin: 0 0 6px;
+}
+
+/* The run id and the two JSON downloads: a bug report's material, not a reader's next move.
+   Behind a disclosure beside the Timeline, on the charter `.rm-config` already states - "the
+   exact stored configuration: an audit view, so it sits behind a disclosure". Deliberately
+   quieter than the `.wf-run-section` cards above it: `--border-soft` rather than `--border`,
+   tighter radius, no heading, so a collapsed row reads as a footnote to the page rather than
+   as a ninth section of it. */
+.wf-run-audit {
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel);
+}
+
+.wf-run-audit > summary {
+  padding: 9px 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  /* The marker is drawn as `::before` rather than left to the UA triangle, which is the only
+     way it takes `--dim` in both engines. */
+  list-style: none;
+}
+
+.wf-run-audit > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wf-run-audit > summary::before {
+  content: "▸ ";
+  color: var(--dim);
+}
+
+.wf-run-audit[open] > summary::before {
+  content: "▾ ";
+}
+
+.wf-run-audit > summary span {
+  color: var(--dim);
+  font-weight: 400;
+}
+
+.wf-run-audit-body {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 4px 12px 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* Wraps rather than squeezing: the reader pane narrows to a phone width on the 900px layout,
+   and a 108px term beside a sentence beside a button is three things that do not fit. */
+.wf-run-audit-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 5px 0;
+}
+
+.wf-run-audit-row dt {
+  flex: none;
+  min-width: 108px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Prose stays sans. Only the id itself is mono, because only the id is a literal you might
+   compare character by character. */
+.wf-run-audit-row dd {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-run-audit-row dd.wf-run-audit-id {
+  color: var(--fg);
+  font: 11px var(--mono);
+}
+
+.wf-run-audit-row dd.wf-run-audit-act {
+  flex: none;
 }
 
 @media (max-width: 900px) {
@@ -2940,6 +3043,14 @@ body {
 .btn-ghost {
   background: transparent;
   border-color: transparent;
+}
+/* A control that IS a link - a download, a pull request - still reads as a button when it
+   wears `.btn`, and the UA underline was the one thing giving it away. In the run's audit rows
+   that put an underlined `Download JSON` immediately beside a plain `Copy`, which reads as two
+   different kinds of thing doing the same kind of job. There is no global `a` rule to inherit
+   from, so the reset belongs on the class that made the claim. */
+a.btn {
+  text-decoration: none;
 }
 .btn-danger-ghost {
   color: var(--dim);

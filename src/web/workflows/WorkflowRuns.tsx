@@ -425,6 +425,7 @@ export function WorkflowRunView({
   onCancel,
   onConfirm = () => {},
   onCopyFeedback = async () => {},
+  onCopyRunId = async () => {},
   onOpenSession = () => {},
   onOpenInspectorSettings = () => {},
   onPreparePr = async () => {},
@@ -447,6 +448,13 @@ export function WorkflowRunView({
   /** Destructive confirmations, hosted by the overlay registry rather than `window.confirm`. */
   onConfirm?: (request: WorkflowConfirmRequest) => void;
   onCopyFeedback?: () => Promise<void>;
+  /**
+   * Copy the durable run id. A callback rather than a `copyText()` call in here for the same
+   * reason `onCopyFeedback` is one: the clipboard can refuse, and the sentence saying so
+   * belongs on the page's own error surface, which the host owns. It must REJECT on failure -
+   * that is what keeps the `Copied` flip honest.
+   */
+  onCopyRunId?: () => Promise<void>;
   onOpenSession?: () => void;
   onOpenInspectorSettings?: () => void;
   onPreparePr?: () => Promise<void>;
@@ -569,6 +577,7 @@ export function WorkflowRunView({
     return [{ id: event.id, completionKind, marker, summary, state }];
   });
   const [feedbackCopied, setFeedbackCopied] = useState(false);
+  const [runIdCopied, setRunIdCopied] = useState(false);
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
   const resubmit = resubmitAvailability(detail, liveInspectorRepair);
   const gateActions = inspectorGateActions(detail);
@@ -615,7 +624,29 @@ export function WorkflowRunView({
           </p>
           <h3>{detail.summary.workflowName}</h3>
           <p className="wf-run-facts">
-            <span className="wf-run-version">v{detail.summary.workflowVersion}</span>
+            {/* The badge IS the link to the composer. It already displayed the version, so a
+                separate `Open version` button in the action row was a second control for the
+                same fact, competing with the ones that change the run. */}
+            <Tooltip label={version
+              ? `Open workflow version ${version.version} in the composer`
+              : "The immutable published version is missing or corrupt"}>
+              <button
+                className="wf-run-version"
+                aria-label={`Open workflow version ${detail.summary.workflowVersion} in the composer`}
+                disabled={!version}
+                onClick={() => {
+                  if (!version) return;
+                  // The version to reveal is handed over in session storage (the builder reads
+                  // it as it mounts); the hash names the WORKFLOW, so the link is a real deep
+                  // link rather than "the builder, on whatever it had open last".
+                  requestWorkflowVersionOpen(version.workflowId, version.version);
+                  window.location.hash =
+                    `#/library/workflows/${encodeURIComponent(version.workflowId)}`;
+                }}
+              >
+                v{detail.summary.workflowVersion}
+              </button>
+            </Tooltip>
             <span className={`workflow-chip workflow-${workflowRunTone(detail.summary)}`}>
               {runStatusLabel(detail.run.status)}
             </span>
@@ -735,57 +766,9 @@ export function WorkflowRunView({
               <button className="btn btn-ghost" disabled>{openPrAction.label}</button>
             </Tooltip>
           )}
-          <Tooltip label={version
-            ? `Open immutable workflow version ${version.version}`
-            : "The immutable published version is missing or corrupt"}>
-            <button
-              className="btn btn-ghost"
-              disabled={!version}
-              onClick={() => {
-                if (!version) return;
-                // The version to reveal is handed over in session storage (the builder reads
-                // it as it mounts); the hash names the WORKFLOW, so the link is a real deep
-                // link rather than "the builder, on whatever it had open last".
-                requestWorkflowVersionOpen(version.workflowId, version.version);
-                window.location.hash =
-                  `#/library/workflows/${encodeURIComponent(version.workflowId)}`;
-              }}
-            >
-              Open version
-            </button>
-          </Tooltip>
-          <Tooltip label="Download this run's complete retained audit history as JSON">
-            <a
-              className="btn btn-ghost"
-              href={`/api/workflow-runs/${encodeURIComponent(detail.run.id)}/export`}
-              download={`workflow-run-${detail.run.id}.json`}
-            >
-              Export run
-            </a>
-          </Tooltip>
-          {version ? (
-            <Tooltip label={`Download immutable workflow version ${version.version} as JSON`}>
-              <a
-                className="btn btn-ghost"
-                href={`/api/workflows/${encodeURIComponent(version.workflowId)}/versions/${version.version}/export`}
-                download={`workflow-version-${version.version}.json`}
-              >
-                Export version
-              </a>
-            </Tooltip>
-          ) : (
-            <Tooltip label="The immutable published version is missing or corrupt">
-              <button className="btn btn-ghost" disabled>Export version</button>
-            </Tooltip>
-          )}
-          <Tooltip label="Copy this durable workflow run id">
-            <button
-              className="btn btn-ghost"
-              onClick={() => void navigator.clipboard.writeText(detail.run.id)}
-            >
-              Copy run id
-            </button>
-          </Tooltip>
+          {/* The run id and both JSON downloads are NOT here: they answer nobody reading a run,
+              so they sit in `.wf-run-audit` at the foot of the page beside the Timeline. This
+              row is for controls that change the run, plus the two links that reach the work. */}
         </div>
 
         {/* The two that cannot be undone, kept apart from the rest and never filled red:
@@ -1389,6 +1372,102 @@ export function WorkflowRunView({
           </Tooltip>
         )}
       </section>
+
+      {/*
+        Developer material, named for who it is for.
+
+        None of these three answers any question a person reading a run has - is it moving, why
+        did it stop, what do I do, where is the work. The id has no filter to be pasted into
+        (the rail filters by state, workflow and session) and the route already carries it; the
+        two exports have no importer anywhere in the product by deliberate design, so both are
+        bug-report attachments. Attachments do not belong beside `Cancel run`, and they are not
+        worth deleting either - hence a disclosure, collapsed, beside the Timeline, where the
+        rest of the audit material already lives.
+      */}
+      <details className="wf-run-audit">
+        <Tooltip label="The run id and the JSON a bug report needs, out of the way of the run's own controls">
+          <summary>
+            Audit and bug reports
+            <span> - the run id and the complete JSON records</span>
+          </summary>
+        </Tooltip>
+        <dl className="wf-run-audit-body">
+          <div className="wf-run-audit-row">
+            <dt>Run id</dt>
+            <dd className="wf-run-audit-id">{detail.run.id}</dd>
+            <dd className="wf-run-audit-act">
+              <Tooltip label="Copy this durable workflow run id">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => void (async () => {
+                    try {
+                      await onCopyRunId();
+                      setRunIdCopied(true);
+                      window.setTimeout(() => setRunIdCopied(false), 1600);
+                    } catch {
+                      setRunIdCopied(false);
+                    }
+                  })()}
+                >
+                  {runIdCopied ? "Copied" : "Copy"}
+                </button>
+              </Tooltip>
+            </dd>
+          </div>
+          <div className="wf-run-audit-row">
+            <dt>Run history</dt>
+            <dd>Every retained event, verdict, delivery and model call</dd>
+            <dd className="wf-run-audit-act">
+              <Tooltip label="Download this run's complete retained audit history as JSON">
+                {/* Two things this anchor carries beyond its href. The `download` name matches
+                    the route's own `Content-Disposition`, which `test/workflows-http.test.ts`
+                    pins - a file must not be named two ways. And the `aria-label` names it
+                    apart from the version download below, which reads identically on screen:
+                    two controls called only "Download JSON" are one control to anybody
+                    listening to the page rather than looking at it. */}
+                <a
+                  className="btn btn-ghost"
+                  aria-label="Download the run history as JSON"
+                  href={`/api/workflow-runs/${encodeURIComponent(detail.run.id)}/export`}
+                  download={`workflow-run-${detail.run.id}.json`}
+                >
+                  Download JSON
+                </a>
+              </Tooltip>
+            </dd>
+          </div>
+          <div className="wf-run-audit-row">
+            <dt>Workflow v{detail.summary.workflowVersion}</dt>
+            <dd>The immutable published definition this run was pinned to</dd>
+            <dd className="wf-run-audit-act">
+              {version ? (
+                <Tooltip label={`Download immutable workflow version ${version.version} as JSON`}>
+                  <a
+                    className="btn btn-ghost"
+                    aria-label={`Download workflow version ${version.version} as JSON`}
+                    href={`/api/workflows/${encodeURIComponent(version.workflowId)}/versions/${version.version}/export`}
+                    download={`workflow-version-${version.version}.json`}
+                  >
+                    Download JSON
+                  </a>
+                </Tooltip>
+              ) : (
+                /* Disabled rather than absent: the row is what says this run HAS a pinned
+                   version, and a missing definition is a fault to see, not to hide. */
+                <Tooltip label="The immutable published version is missing or corrupt">
+                  <button
+                    className="btn btn-ghost"
+                    aria-label={`Download workflow version ${detail.summary.workflowVersion} as JSON`}
+                    disabled
+                  >
+                    Download JSON
+                  </button>
+                </Tooltip>
+              )}
+            </dd>
+          </div>
+        </dl>
+      </details>
     </section>
   );
 }
@@ -1583,12 +1662,33 @@ export function WorkflowRuns({
       });
     return committed;
   };
+  // A DIFFERENT run is being read: drop the previous one's detail and round in the same commit,
+  // because a submission id from the old run must not survive one render into the new one.
   useEffect(() => {
     setRoundId(null);
     setConfirm(null);
     void load(true);
     return () => { loadGeneration.current++; };
-  }, [selected, selectedSummary]);
+  }, [selected]);
+  /**
+   * The SAME run's summary moved. Refresh IN PLACE.
+   *
+   * This shared the effect above until the audit disclosure made it visible, and sharing it
+   * meant every summary bump ran `load(true)` - which nulls the detail, and the view is
+   * rendered under `{detail && …}`, so the whole reader was destroyed and rebuilt. Everything
+   * the reader had opened closed: the audit disclosure, the evidence and gate-packet
+   * disclosures, and the scrubbed round, which snapped back to the newest. On a live run that
+   * happens on every SSE bump, and even on a finished one it happens about a second after
+   * arrival, when the first list page lands and gives the selected run a summary at last.
+   *
+   * News about the run is not a new run. The guard is what keeps them apart: it fires only for
+   * the run already on screen, so first mount (no detail yet) is left to the effect above and
+   * does not fetch twice.
+   */
+  useEffect(() => {
+    if (!selectedSummary || selectedSummary.id !== detail?.run.id) return;
+    void load();
+  }, [selectedSummary]);
   const actionController = useRunActions(selected ?? "", () => load());
 
   const mutate = async (path: string, body: object): Promise<boolean> => {
@@ -1636,6 +1736,24 @@ export function WorkflowRuns({
       await copyText(workflowFeedbackText(detail));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not copy workflow feedback");
+      throw caught;
+    }
+  };
+
+  /**
+   * The audit disclosure's run-id copy.
+   *
+   * Through `copyText()` like every other clipboard control on this page. The button it
+   * replaced called `navigator.clipboard.writeText` behind a `void`, so in the Electron
+   * renderer - where the async Clipboard API can be permission-blocked even after a direct
+   * click - it copied nothing and said nothing.
+   */
+  const copyRunId = async (): Promise<void> => {
+    if (!detail) return;
+    try {
+      await copyText(detail.run.id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not copy the run id");
       throw caught;
     }
   };
@@ -1837,6 +1955,7 @@ export function WorkflowRuns({
               });
             }}
             onCopyFeedback={copyFeedback}
+            onCopyRunId={copyRunId}
             onLoadEvents={loadMoreEvents}
             onLoadCalls={loadMoreCalls}
             onPreparePr={async () => {

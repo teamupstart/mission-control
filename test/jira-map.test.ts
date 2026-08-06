@@ -11,6 +11,7 @@ import {
   candidateFrom,
   cliFailure,
   credentialGap,
+  appendCapped,
   externalIdFor,
   freshKeys,
   issuesFrom,
@@ -228,6 +229,37 @@ test("a page's new keys are counted once, and remembered", () => {
   assert.deepEqual([...seen], ["MC-1", "MC-2", "MC-3"]);
   // A row with no key cannot be counted or compared - it is dropped by the mapper anyway.
   assert.equal(freshKeys([{ fields: { summary: "no key" } }], seen), 0);
+});
+
+// `nextPage` checks the total AFTER a page is added, which is one page too late to be a cap: at
+// a page size of 199 the budget allows six requests, so six full pages would put 1,194 issues in
+// hand while every sentence about them quotes 1,000. Pages are clipped on the way in instead,
+// and a clip is also the most reliable tail signal there is - rows the walk saw and could not
+// keep prove the filter continues, with no lookahead and no inference from a full page.
+test("a page is clipped to the cap on the way in, and the clip proves a tail", () => {
+  const issue = (n: number) => ({ key: `MC-${n}` });
+  const held = Array.from({ length: 950 }, (_, i) => issue(i));
+
+  // Room for 50 more, and a 199-issue page arrives.
+  const page = Array.from({ length: 199 }, (_, i) => issue(1000 + i));
+  const { kept, clipped } = appendCapped(held, page);
+  assert.equal(kept.length, 50, "only what fits");
+  assert.equal(held.length, 1000, "exactly the cap, never past it");
+  assert.equal(clipped, true, "rows were seen and not kept, so the filter continues");
+
+  // Full is full: a further page contributes nothing and is still a clip.
+  const again = appendCapped(held, [issue(9000)]);
+  assert.deepEqual(again.kept, []);
+  assert.equal(again.clipped, true);
+  assert.equal(held.length, 1000);
+});
+
+test("a page that fits is kept whole, and is not a tail signal", () => {
+  const held = [{ key: "MC-1" }];
+  const { kept, clipped } = appendCapped(held, [{ key: "MC-2" }, { key: "MC-3" }]);
+  assert.equal(kept.length, 2);
+  assert.equal(clipped, false, "nothing was left behind, so this says nothing about a tail");
+  assert.equal(held.length, 3);
 });
 
 // Truncation is REPORTED, and the items still come back. Both halves matter: ingest should

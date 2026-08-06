@@ -659,6 +659,25 @@ export function freshKeys(page: JiraIssue[], seen: Set<string>): number {
   return fresh;
 }
 
+/**
+ * Append what fits under the cap, and say whether anything had to be left behind.
+ *
+ * `nextPage` checks the total AFTER a page has been added, which is one page too late to be a
+ * cap: at a page size of 199 the budget allows six requests, so six full pages put 1,194 issues
+ * in hand while every sentence about them quotes 1,000. The page is therefore clipped on the way
+ * in, and the clip is also the most reliable tail signal there is - rows this walk SAW and could
+ * not keep prove the filter continues, with no lookahead and no inference from a full page.
+ */
+export function appendCapped(
+  issues: JiraIssue[],
+  page: JiraIssue[],
+): { kept: JiraIssue[]; clipped: boolean } {
+  const room = Math.max(0, MAX_SWEEP_ISSUES - issues.length);
+  const kept = page.slice(0, room);
+  issues.push(...kept);
+  return { kept, clipped: page.length > kept.length };
+}
+
 /** What to say when a rung keeps answering with the page the walk already has. */
 function notAdvancing(via: "the jira CLI" | "Jira"): string {
   return (
@@ -788,11 +807,15 @@ async function walkCli(cfg: JiraConfig, ctx: SweepContext, budget: WalkBudget): 
     });
     const page = pageFromCli(res);
     if (page.error) return { issues, error: page.error, truncated: false };
-    const fresh = freshKeys(page.issues, keys);
-    issues.push(...page.issues);
+    const { kept, clipped } = appendCapped(issues, page.issues);
+    const fresh = freshKeys(kept, keys);
+    // Rows this page held that the cap had no room for. The filter demonstrably continues, and
+    // the walk stops here rather than carrying candidates past the number its own sentence
+    // quotes - no lookahead needed, since it has seen the tail with its own eyes.
+    if (clipped) return { issues, error: null, truncated: true };
     // Past the first page, a page carrying nothing new means the argument was ignored rather
     // than honoured. Reported as itself, since "narrow the JQL" would be the wrong fix.
-    if (pagesUsed > 0 && page.issues.length > 0 && fresh === 0) {
+    if (pagesUsed > 0 && kept.length > 0 && fresh === 0) {
       return { issues, error: notAdvancing("the jira CLI"), truncated: false };
     }
     const step = nextPage(
@@ -866,9 +889,12 @@ async function walkRest(
     if (ctx.signal.aborted) return { issues, error: "the sweep was abandoned", truncated: false };
     const page = pageFromRest(await restSearch(cfg, cred, ctx, token), cfg);
     if (page.error) return { issues, error: page.error, truncated: false };
-    const fresh = freshKeys(page.issues, keys);
-    issues.push(...page.issues);
-    if (pagesUsed > 0 && page.issues.length > 0 && fresh === 0) {
+    const { kept, clipped } = appendCapped(issues, page.issues);
+    const fresh = freshKeys(kept, keys);
+    // Same cap on this rung, for the same reason: `maxResults` is what the operator asked Jira
+    // for, and a final page of it can land astride the ceiling.
+    if (clipped) return { issues, error: null, truncated: true };
+    if (pagesUsed > 0 && kept.length > 0 && fresh === 0) {
       return { issues, error: notAdvancing("Jira"), truncated: false };
     }
     token = page.nextPageToken;

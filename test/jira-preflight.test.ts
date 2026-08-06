@@ -327,6 +327,21 @@ test("a filter with one issue past the bound is reported, and stays within the c
   assert.equal(callsIn(calls).at(-1), "100:1");
 });
 
+// The Inspector's own arithmetic, driven end to end: a page size of 199 buys six requests, so
+// six full pages would put 1,194 issues in hand while every sentence about them quotes 1,000.
+// Pages are clipped on the way in, so a sweep processes exactly the cap and not one more.
+test("a sweep never returns more issues than the cap it reports", async () => {
+  const calls = join(home, "calls-cap");
+  machine({ cli: true, mode: "pages", total: "1194", calls });
+
+  const swept = await jira.sweep(cfg({ limit: 199 }), ctx);
+  assert.equal(swept.items.length, 1000, "the cap, exactly - not 1194, and not 1000 plus a page");
+  assert.match(swept.error!, /larger than one sweep can read/);
+  // Six requests and no lookahead: the clipped rows are the tail, seen rather than inferred.
+  assert.equal(callsIn(calls).length, 6);
+  assert.equal(callsIn(calls).at(-1), "995:199");
+});
+
 // A lookahead that fails leaves completeness UNKNOWN, and reporting that as "the filter is too
 // broad" would tell the operator to narrow a JQL that is fine. The transient failure is what
 // they need to see.

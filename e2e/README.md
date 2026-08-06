@@ -81,6 +81,16 @@ same terms: route and registry assertions can prove the row changed, but only a 
 a reader that the banner went. The directory README records the regeneration command, and is
 explicit about the two pre-existing warts the frames also happen to show.
 
+### Persona import, provenance and upstream drift
+
+[`docs/evidence/persona-import-provenance/`](../docs/evidence/persona-import-provenance/) holds
+three frames from the run that asserts a Markdown role imported by path records where it came
+from, badges the row when that file changes, and adopts the change as a new revision. The
+provenance line, the amber `upstream changed` tag and the shelf card's version of the same tag
+are all things a route assertion can prove changed but only a capture shows a reader.
+
+The directory README records the regeneration command and what each frame is of.
+
 ### Per-harness dispatch defaults propagating
 
 [`docs/evidence/harness-defaults-propagate/`](../docs/evidence/harness-defaults-propagate/)

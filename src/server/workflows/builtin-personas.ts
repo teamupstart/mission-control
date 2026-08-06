@@ -54,6 +54,10 @@ function builtinPersona(source: { slug: string; guidanceMarkdown: string }): Per
     // instant to report. Surfaces print "Built-in" where they print a row's dates.
     createdAt: 0,
     updatedAt: 0,
+    // Not "imported from nowhere": a built-in's upstream is this build, which upgrades rather
+    // than drifts. Provenance answers "which file on this machine did this come from", and the
+    // honest answer for a compiled-in document is none - so no drift check ever reads it.
+    provenance: null,
     builtin: true,
   };
 }

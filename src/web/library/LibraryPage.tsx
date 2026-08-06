@@ -2,6 +2,7 @@ import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import type {
+  PersonaUpstreamState,
   PersonaView,
   SessionAction,
   WorkflowRunSummary,
@@ -134,6 +135,7 @@ function Shelf({
 export function LibraryPage({
   workflowSummaries = [],
   personas = [],
+  personaUpstream,
   sessionActions = [],
   workflowRuns = [],
   ensembleSummaries = [],
@@ -149,6 +151,8 @@ export function LibraryPage({
 }: {
   workflowSummaries?: WorkflowSummary[];
   personas?: PersonaView[];
+  /** What the last upstream check found for each imported Persona; badges the reviewer cards. */
+  personaUpstream?: ReadonlyMap<string, PersonaUpstreamState>;
   sessionActions?: SessionAction[];
   /** Read for the per-shelf cross-link counts only; no run is rendered on this page. */
   workflowRuns?: WorkflowRunSummary[];
@@ -167,7 +171,7 @@ export function LibraryPage({
   onOpenTaskSources: () => void;
 }): React.JSX.Element {
   const workflows = workflowCards(workflowSummaries);
-  const reviewers = personaCards(personas);
+  const reviewers = personaCards(personas, personaUpstream);
   const actions = actionCards(sessionActions);
   const strategies = ensembleStrategyCards();
   const missions = missionCards(schedules);

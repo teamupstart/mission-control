@@ -31,7 +31,7 @@ import {
 const personas: Persona[] = ["intent", "security"].map((id) => ({
   id, name: id, normalizedName: id, description: "", guidanceMarkdown: "# Judge",
   runner: null, model: null, revision: 1, archivedAt: null, createdAt: 1, updatedAt: 1,
-  builtin: false,
+  provenance: null, builtin: false,
 }));
 
 const actions: SessionAction[] = [

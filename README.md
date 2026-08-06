@@ -60,6 +60,12 @@ and get your decision back.
   moment a session needs input, a review lands, a session **gets stuck**, or a
   dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
+- **Keeps the Mac awake**, if you ask it to: the live indicator opens a **Keep awake**
+  dropdown whose switch prevents idle system sleep while the display still dims and locks,
+  so agents keep working with the screen dark. Deliberately transient - on until Mission
+  Control quits or restarts, never persisted or reacquired - and lid close, manual Sleep,
+  and the battery safeguards all still win. macOS only; elsewhere it says so instead of
+  pretending. See [Keep awake](#keep-awake-prevent-idle-system-sleep).
 - **Tracks fleet economics**: a badge on every priced card and a topbar cost chip whose
   popover carries the sessions' Claude + Codex API-equivalent estimate, tokens, estimated
   cost per pull request, and rate-limit runway. A separate automation figure attributes the
@@ -226,6 +232,12 @@ you` and means something narrower: `need you` counts SESSIONS in an attention st
 answer` counts the things you can actually settle - and it is the figure that has to match what
 the click opens.
 
+The leading connection segment is itself a button: it opens the
+[Keep awake](#keep-awake-prevent-idle-system-sleep) dropdown, and while that mode is on the
+segment reads **`live · awake`** (or **`live · awake failed`** when the assertion is not
+held) - the connection word stays, because it still qualifies every streamed figure beside
+it.
+
 When the desktop window narrows, the bar progressively collapses secondary labels instead
 of adding ragged rows. The filter becomes its **⌕** glyph; click it or press <kbd>/</kbd> to
 reopen it, and it stays open while a filter is active. **Dispatch keeps its label at every
@@ -233,6 +245,41 @@ supported desktop width.** Collapsed controls keep their tooltips and accessible
 
 The result stays on one row down to roughly half of a desktop screen. Narrower windows may
 fall back to wrapping; phone layouts are not a supported target.
+
+### Keep awake (prevent idle system sleep)
+
+The pulse's leading **live** segment opens a compact **Keep awake** dropdown anchored to
+the indicator. Its one switch keeps this Mac from going to sleep just because you stepped
+away - so long-running agents, Recurring Missions catch-up, and the Foreman keep working
+while the screen is dark.
+
+What it does, exactly: the daemon runs `/usr/bin/caffeinate -i -w <daemon PID>`, which
+prevents **user-idle system sleep** and nothing else. The display still dims and locks on
+your normal schedule. Lid close, choosing Sleep yourself, shutdown, power loss, and the
+thermal and low-battery safeguards all still win - this is an idle-sleep inhibitor, not a
+wake scheduler, and it never keeps the display awake or simulates activity. It does use
+more battery than letting the machine sleep, and the dropdown says so.
+
+While it is on, the indicator reads **`live · awake`** with a purple dot - the word
+carries the mode, so color is never the only signal. If the inhibitor process fails to
+start or exits unexpectedly, the indicator reads **`live · awake failed`** and the
+dropdown carries the bounded error; flipping the switch retries it.
+
+The mode is **deliberately transient**: on until Mission Control quits or restarts, never
+persisted, never reacquired at boot. An orderly shutdown releases the assertion itself,
+and a crash releases it too, because `-w` ties the assertion to the daemon's own
+lifetime. The tradeoff is stated in the dropdown rather than hidden: a daemon restart
+while you are away returns the mode to off. Keep awake is also independent of
+[Away mode](#away-mode) - alert delivery and host power are different decisions, and
+neither implies the other.
+
+Because the **daemon** owns the assertion (not the Electron shell), the switch behaves
+identically in every launch mode: browser dashboard, desktop app, adopted daemon, or a
+LaunchAgent. Unsupported platforms show **unavailable on this system** instead of drawing
+an on state, and while the dashboard is `reconnecting` the switch is disabled - a stale
+`on` must never read as a current claim about the OS. Every open window converges on the
+same observed state over the live channel. The manual verification runbook, including the
+`pmset -g assertions` receipts, is [docs/runbooks/keep-awake.md](docs/runbooks/keep-awake.md).
 
 ### Which terminal you use is declared, not assumed
 
@@ -1553,6 +1600,17 @@ dispatched or queued, or when you hit **Clear** to start a fresh one - either wa
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
 
+The form also reports what **your machine** would hand the agent. A dispatched session
+inherits your `~/.claude`, so a third-party plugin whose own setup is unfinished becomes the
+dispatched agent's problem - and an unattended one has nobody to ask. Where Mission Control can
+see that cheaply, the form says so in an amber note above the buttons, naming the consequence,
+the command that fixes it, and the file it read. These notes **never block a dispatch**: unlike
+an unmet dependency or an unavailable after-work Workflow, this is a fact about your machine you
+may knowingly accept. They are read fresh on every open, so fixing the thing removes the note
+without a restart, and a machine with nothing to report shows nothing at all. Today one check
+ships, for the UpstartClaw core plugin - see
+[Running Mission Control at Upstart](#running-mission-control-at-upstart).
+
 ### A task's repo is the repo, not the worktree
 
 Every path that files a task - the dispatch form, the MCP
@@ -2607,7 +2665,7 @@ normalized names.
 
 Guidance is exact text. Accepted Markdown is not trimmed or newline-normalized when it is
 created or updated. Copy writes that same text to the browser clipboard, download writes it
-to a local `.md` Blob, and import stores `File.text()` unchanged after deriving a proposed
+to a local `.md` Blob, and both imports store the document unchanged after deriving a proposed
 name from the first level-one heading or the filename. Download URLs are revoked after the
 click. Duplicate creates a new Persona rather than editing the source.
 
@@ -2617,6 +2675,69 @@ the Persona's provider override or the app-wide provider; then the Persona's mod
 unknown to an older build is reported and falls back through the shared provider ladder.
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
+
+### Importing a Persona from a file
+
+There are two ways to bring an externally-authored Markdown role in, and they differ in one
+thing that matters:
+
+- **Import .md** picks a file with the browser's file dialog. The bytes are uploaded and stored.
+  Mission Control never learns where the file was, so nothing can be said later about it.
+- **Import from path** names an absolute path *on the machine the daemon runs on*. The daemon
+  reads that file itself, which is what lets the Persona remember where its guidance came from.
+
+An imported Persona is an ordinary Persona: revisioned, editable, archivable, offered to any
+workflow stage. What it carries in addition is **provenance** - the source path, the enclosing
+git worktree when there is one, the version from the nearest `.claude-plugin/plugin.json` when
+the file sits under an installed Claude Code plugin, a sha256 of the exact bytes read, and when
+it was imported. The editor prints the path and the timestamp under the Persona's name.
+
+The name comes from the document's first level-one heading (or the filename, when it has none)
+and the description from the paragraph under it - the same rule the built-ins and **Import .md**
+use, so one document arrives under one name however it got here.
+
+The path is refused, by name, when it is not absolute, when nothing is there, when it is not a
+regular file, when it is not valid UTF-8 or contains NUL bytes, or when it is larger than the
+100,000-byte guidance limit. An oversized file is **refused rather than truncated**: a Persona
+carrying a prefix of its source would still be a valid reviewer while judging with less
+authority than the document it names.
+
+#### Upstream changes
+
+Source files move on - a plugin upgrade, a `git pull`. Mission Control re-reads every imported
+Persona's source when an authoring surface opens and when you press **Check upstream**, hashes
+what it finds, and compares it with the hash recorded at import. Nothing is watched or polled in
+the background, and nothing is ever adopted automatically.
+
+A Persona whose source has changed is tagged `upstream changed` in the Persona list and on its
+Library card, and its editor says so. One whose source cannot be read at all - deleted, moved,
+replaced by a directory, grown past the limit - is tagged `source missing`. In both cases the
+**stored guidance is unchanged and is still exactly what runs**.
+
+**Re-import from source** adopts the file's current text as a new revision through the same
+compare-and-swap as any other save, so a re-import from a stale tab is refused rather than
+overwriting whatever landed first. It replaces the guidance and the provenance record; the name
+and description stay yours, because you may have edited them and because a heading that now
+collides with another Persona would otherwise make the change impossible to adopt at all.
+
+Published workflow versions and ensemble evaluations are untouched by all of this. A published
+version carries its own copy of the guidance it was published with, exactly as it does for an
+edited or archived Persona (see
+[Workflow drafts and published versions](#workflow-drafts-and-published-versions)), so an upstream
+edit can never change what a judge already scored with. Adopting drift into a workflow is two
+deliberate steps: re-import, then publish a new version.
+
+Re-import is refused for a built-in, for an archived Persona, and for one that was authored in
+the editor rather than imported - there is no source file to re-read, and the refusal says so.
+
+The motivating source for this is [UpstartClaw](https://github.com/teamupstart/claude-code-extensions)'s
+`agent-team` role documents (Reviewer, Tester, and the rest), which are shaped as
+persona-plus-DO/DON'T contracts and read as review roles almost unchanged. Point **Import from
+path** at one inside the installed plugin, for example
+`~/.claude/plugins/.../plugins/agent-team/references/roles/reviewer.md`, and the Persona records
+the plugin version it was adapted from. When the plugin is upgraded, the badge appears and the
+diff is yours to adopt. None of those documents are copied into this repository: they are the
+plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
@@ -5853,6 +5974,98 @@ not been shown to have run against the commit it claims - so it is recorded as a
 failure instead, the run blocks and says so, and it clears once the lease is reclaimed. The
 command's own exit code is kept in the reason, so you can still tell "the build failed and then
 cleanup broke" from "the build passed and then cleanup broke".
+
+## Running Mission Control at Upstart
+
+Upstart distributes its internal Claude Code tooling as **UpstartClaw**, a private plugin
+marketplace: ~60 plugins carrying Jira/Confluence/Glean/Slack skills, MCP server configs for
+the internal services, and `PreToolUse` guard hooks. It equips a *session*; Mission Control
+commands a *fleet*. The two meet in exactly one place - the operator's `~/.claude` - and they
+already compose there, with no code on either side. See
+[docs/plans/upstartclaw-integration/plan.md](docs/plans/upstartclaw-integration/plan.md) for
+the full comparison and the boundaries this section summarizes.
+
+**Nothing here is required to run Mission Control**, and a machine without UpstartClaw
+installed behaves exactly as the rest of this README describes.
+
+### It already composes
+
+A dispatched session inherits your plugins either way it launches. A **terminal** dispatch
+runs the agent's real CLI in a worktree, so it loads `~/.claude` like any session you start
+yourself. An **[Agent SDK](#session-runtimes-terminal-or-the-agent-sdk)** dispatch loads
+`settingSources: ["user", "project", "local"]`, so user-level plugin config reaches the
+embedded driver too. That is the whole integration: your agents get the org's skills, its MCP
+servers, and - the part that matters for an unattended fleet - its fail-closed guard hooks.
+
+### Set it up once, interactively
+
+Install the `upstartclaw-core` plugin and run **`/upstartclaw-core:setup` in an interactive
+Claude Code session, once, before dispatching anything**. Its sign-in flows are interactive by
+nature and cannot complete inside a dispatched session, and until they do the plugin's own
+`PreToolUse` hook refuses its MCP calls - so an unattended agent stalls on its first Glean or
+Jira call instead of finishing the task. The dispatch form warns when this machine looks
+unprepared; see below.
+
+That setup also installs the Palo Alto VPN CA certificate and exports `NODE_EXTRA_CA_CERTS`
+at it - by appending a line to your **shell profile**, which is the detail that matters here.
+`NODE_EXTRA_CA_CERTS` has to be present in **the daemon's own environment**, because an
+embedded session's subprocess environment is the daemon's. A daemon launched from Finder, from
+the tray app, or by a launchd service never reads that profile line, so its SDK sessions cannot
+complete a TLS handshake through the inspecting proxy while terminal-runtime sessions on the
+same machine work fine - a confusing pair of symptoms with one cause. Start the daemon from a
+shell that has the variable, or set it somewhere your GUI session can see. It is deliberately
+absent from the [Configuration](#configuration) table: it is Claw's variable, not Mission
+Control's, and the daemon only passes it through.
+
+### The dispatch-time warning
+
+When the plugin is installed and its setup state file (`~/.claude/upstartclaw-core-setup`) does
+not read `completed`, the [dispatch form](#dispatch-an-agent) shows an amber note naming what
+will go wrong and the command that fixes it, with the file it read underneath. Two states, two
+different consequences: setup that never ran means Claw's gate refuses tool calls outright and
+an unattended agent stalls, while a setup left half-finished passes that gate and reaches the
+MCP servers unauthenticated instead.
+
+**The note never blocks a dispatch** - not the button, not `⌘Enter`, not "Add to backlog". It
+is a machine-configuration fact you may knowingly accept, unlike an
+[after-work Workflow](#workflows-and-personas) the daemon would have to refuse. It is read from
+disk on every open, so it disappears as soon as you finish the setup, with no restart.
+
+A machine with no UpstartClaw installed sees no note and no chrome at all - **including one
+that uninstalled it**. The state file is not removed with the plugin, and a leftover file is
+not a finding: with the plugin gone there is no gate left to stall on, so there is nothing to
+tell you.
+
+### One owner per concern
+
+Where the two overlap, run one of them and not both:
+
+- **Alerts.** Claw's `notify` plugin fires an OS notification on Claude's `Notification` hook.
+  Mission Control's [alert engine](#alerts--away-mode) already covers that event, plus stuck
+  detection, Away mode, and delivery with the window closed. Running both double-fires on every
+  needs-you. Disable `notify` when Mission Control's alerts are on.
+- **Cost.** Claw's `cost-dashboard` is a retrospective, per-machine view over local
+  transcripts; Mission Control's [cost telemetry](#cost-telemetry) is live and fleet-wide. Keep
+  the former only as a personal historical view, and note that the bundled Sniffly UI's Share
+  button uploads conversation content to an external site.
+- **Orchestration.** Do not run Claw's `agent-team` inside a Mission-Control-dispatched
+  session. Two orchestrators means nested worktrees and conflicting PR rules; choose one per
+  task and never nest them.
+- **Skills.** Claw is the org's channel for *domain* skills; Mission Control's
+  [skills catalog](#skills-every-session-mixed-reload-behavior) is app-owned skills that make
+  sessions cooperate with Mission Control. Claw's catalog is deliberately never copied into
+  this repository.
+- **Statusline.** Mission Control's statusline install is a *wrapper*: it records whatever
+  command it found in a sidecar and delegates to it, so an installed Claw statusline is meant
+  to keep rendering while Mission Control reads model/context/cost off the same line. That is
+  what the installer does by construction; confirm it on your own machine after installing
+  both, since only your machine has both halves.
+
+Claw's guard hooks (no-send/no-delete, read-only Databricks, publish gates) are worth keeping
+exactly as they are for unattended work - they are the reason a fleet running against internal
+systems fails closed. Mission Control's own boundaries are in [Security](#security), and
+[Task sources](#task-sources-pulling-work-into-the-backlog) is where work waiting in an
+internal tracker becomes backlog rows.
 
 ## Configuration
 

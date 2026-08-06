@@ -618,6 +618,21 @@ DOM as a count and a text node, and legible as a header only here.
 
 The directory README records the regeneration command.
 
+### A finished run, run again
+
+[`docs/evidence/workflow-run-again/`](../docs/evidence/workflow-run-again/) carries two frames
+from `specs/workflow-run-again.spec.ts`, and they exist because the state they show used to have
+nothing in it: every control left on a `completed`, `cancelled` or `failed` run copied, downloaded
+or navigated, so a finished review was a dead end.
+
+`01-finished-header.png` is that header with its one primary, and with `Cancel run` correctly
+absent - there is nothing left to stop, which is precisely what made the row inert.
+`02-confirm.png` is the confirm it raises: one click, no typed phrase, and a body that names the
+session, the workflow version and the model spend. Its own README is explicit about the
+pre-existing focused-tooltip bubble the frame also happens to show.
+
+The directory README records the regeneration command.
+
 ## Steering a workflow reviewer
 
 `specs/workflow-run-disable.spec.ts` drives the Runs monitor's per-run disable toggle, and

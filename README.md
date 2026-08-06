@@ -3497,10 +3497,20 @@ on a judgement the page carries the material for further down. Beside the primar
 **Copy feedback** and **Open PR**, and **Open PR** appears only when there is an adopted pull
 request to open.
 
+**A finished run can be run again.** A `completed`, `cancelled` or `failed` run used to be the
+end of the road - every control left on it copied, downloaded or navigated, and nothing anywhere
+offered to review that session again. Its primary is now **Run this review again**, or **Preview
+this review again** on a bound preview: it reads the session's current diff and transcript, runs
+the version that session is bound to against that fresh evidence, and takes you to the new run.
+The finished one stays in history. Where the binding has since been paused, orphaned or archived
+there is no run to start, so the header says which of those it is and what would start another.
+
 Actions that cannot be taken back confirm in the app rather than in a browser dialog.
-**Cancel run**, the resubmission against unchanged evidence, and the delivery's **Mark
-delivered** ask once; **Restart full workflow** and **Discard and send new round** require
-the exact phrase the daemon also demands, typed into the confirm.
+**Cancel run**, the resubmission against unchanged evidence, running a finished review again,
+and the delivery's **Mark delivered** ask once; **Restart full workflow** and **Discard and send
+new round** require the exact phrase the daemon also demands, typed into the confirm. Running a
+review again asks because it spends model tokens and creates a run, not because it destroys
+anything, so it takes one click to confirm rather than a typed phrase.
 
 With no runs at all the tab offers **Bind to a session…**, the same dialog the builder's
 right rail opens.

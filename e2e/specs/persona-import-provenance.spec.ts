@@ -1,5 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -37,6 +39,27 @@ const ROLE_V1 = [
 
 const ROLE_V2 = `${ROLE_V1}\n## DON'T\n\n- Comment on formatting.\n`;
 
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/persona-import-provenance/", import.meta.url));
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * Inside the regression rather than in a staged capture spec, for the reason `line-drawers.spec.ts`
+ * gives: the point of the picture is that the assertions around it passed on the same run, so the
+ * image and the measurement cannot drift apart. Behind `MC_E2E_EVIDENCE` so an ordinary
+ * `npm run test:e2e` does not rewrite the binaries for no added signal.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control first: `Tooltip` portals a bubble under a resting pointer, and the row
+  // being photographed is exactly what the pointer last clicked.
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED docs/evidence/persona-import-provenance/${name}.png`);
+}
+
 function writeRole(daemon: DaemonHandle, text: string): string {
   const dir = join(daemon.home, "claw", "plugins", "agent-team", "references", "roles");
   mkdirSync(dir, { recursive: true });
@@ -50,6 +73,9 @@ test("a Markdown role imported by path records where it came from, badges upstre
   daemon,
 }) => {
   const path = writeRole(daemon, ROLE_V1);
+  // Fixed for the captures below, so the committed evidence is reviewable at the width an
+  // operator actually uses rather than at whatever the runner's default happens to be.
+  await dashboard.setViewportSize({ width: 1440, height: 900 });
   await dashboard.goto(`${daemon.baseURL}/#/library/personas`);
 
   const sidebar = dashboard.getByRole("complementary", { name: "Persona library" });
@@ -77,6 +103,7 @@ test("a Markdown role imported by path records where it came from, badges upstre
   // Nothing has changed on disk, so nothing claims otherwise.
   const row = sidebar.getByRole("button", { name: /Claw Reviewer/ });
   await expect(row).not.toContainText("upstream changed");
+  await shoot(dashboard, "imported");
 
   // Now the upstream moves on, exactly as a plugin upgrade or a `git pull` would move it.
   writeRole(daemon, ROLE_V2);
@@ -88,6 +115,7 @@ test("a Markdown role imported by path records where it came from, badges upstre
   await expect(dashboard.locator("p.persona-source")).toContainText(path);
   await expect(dashboard.getByText("The source file has changed since this Persona was imported"))
     .toBeVisible();
+  await shoot(dashboard, "upstream-changed");
 
   // Adopting it is a deliberate act with a confirmation that states the invariant. One button,
   // in the header beside Save and Archive - the status line above names it rather than
@@ -117,6 +145,16 @@ test("a Markdown role imported by path records where it came from, badges upstre
   const card = dashboard.getByRole("button", { name: /Claw Reviewer/ });
   await expect(card).toBeVisible();
   await expect(card).not.toContainText("upstream changed");
+
+  // And it badges the card when the source moves again, which is the same fact on the shelf a
+  // person lands on rather than in the editor they have to open first.
+  writeRole(daemon, `${ROLE_V2}\n- Rewrite the change yourself.\n`);
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas`);
+  await sidebar.getByRole("button", { name: "Check upstream" }).click();
+  await expect(row).toContainText("upstream changed");
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await expect(card).toContainText("upstream changed");
+  await shoot(dashboard, "library-shelf");
 });
 
 test("a path the daemon cannot read is refused by name, and authors nothing", async ({

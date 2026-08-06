@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
 import type { PersonaProvenance } from "@shared/workflow.ts";
@@ -62,30 +63,95 @@ function sha256Hex(bytes: Uint8Array): string {
 }
 
 /**
+ * `O_NONBLOCK` and `O_NOFOLLOW` where the platform has them.
+ *
+ * `?? 0` rather than assuming: they are POSIX, and a build on a platform without them should
+ * lose the hardening rather than pass `NaN` as the flag word and fail every open.
+ */
+const OPEN_FLAGS = constants.O_RDONLY
+  | (constants.O_NONBLOCK ?? 0)
+  | (constants.O_NOFOLLOW ?? 0);
+
+type OpenedFile = { handle: FileHandle; size: number };
+type OpenRefusal = { refused: "missing" | "not_regular" | "unreadable" };
+
+/**
+ * Open a path and prove on the DESCRIPTOR that it is a regular file.
+ *
+ * The order is the whole point, and it is the opposite of the intuitive one. A `stat` followed by
+ * an `open` proves nothing about what was opened: between the two calls the name can be pointed
+ * at something else, and then every check that ran on the `stat` was answered about a file this
+ * process never reads. The failure is not theoretical for the two cases below.
+ *
+ * - A **FIFO** swapped in for a regular file passes an earlier `isFile()` and then blocks the
+ *   whole request inside `open` until somebody writes to it - a route that hangs for as long as
+ *   an attacker likes, holding a connection and a task. `O_NONBLOCK` is what makes that open
+ *   return immediately, and the `fstat` below is what refuses it.
+ * - A **character device** (`/dev/zero`, a tty) swapped in the same way passes `isFile()` and
+ *   then feeds the reader bytes that were never a document.
+ *
+ * So nothing is trusted from a path-based `stat`; there no longer is one. `fstat` on the handle
+ * describes the object actually opened, and both the regular-file check and the size check are
+ * answered from it. `O_NOFOLLOW` is belt-and-braces on top - the final component of a realpath
+ * is not a symlink, so refusing one means it became one after we looked - and the `fstat` would
+ * catch the swap regardless.
+ *
+ * Shared with the plugin-manifest read below, which has exactly the same exposure.
+ */
+async function openRegularFile(real: string): Promise<OpenedFile | OpenRefusal> {
+  let handle: FileHandle;
+  try {
+    handle = await open(real, OPEN_FLAGS);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { refused: "missing" };
+    // ELOOP is the swapped-in symlink O_NOFOLLOW just refused; EISDIR is how Linux answers an
+    // attempt to read a directory, where macOS opens it and lets the fstat below speak.
+    if (code === "ELOOP" || code === "EISDIR" || code === "ENXIO") return { refused: "not_regular" };
+    return { refused: "unreadable" };
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) {
+      await handle.close();
+      return { refused: "not_regular" };
+    }
+    return { handle, size: info.size };
+  } catch {
+    await handle.close();
+    return { refused: "unreadable" };
+  }
+}
+
+/**
  * Read one Markdown document, or throw a named refusal.
  *
- * `stat`-then-read rather than read-then-measure: an enormous file must not be materialized to
- * discover it is enormous, and the second check on the bytes actually read is what closes the
- * gap between the two calls (a file being appended to while this runs).
+ * Measured before it is read rather than read then measured - an enormous file must not be
+ * materialized to discover it is enormous - but measured on the open DESCRIPTOR, so the size and
+ * the regular-file check describe the bytes this function is about to read. The second check on
+ * the bytes actually read closes the remaining gap: a file being appended to while this runs.
  */
 export async function readPersonaSource(requestedPath: string): Promise<PersonaSource> {
   const sourcePath = path.resolve(requestedPath);
   const real = await realpath(sourcePath).catch(() => null);
   if (real === null) throw new PersonaImportError(`no file at ${sourcePath}`);
-  const info = await stat(real).catch(() => null);
-  if (info === null) throw new PersonaImportError(`no file at ${sourcePath}`);
-  if (!info.isFile()) throw new PersonaImportError(`${sourcePath} is not a regular file`);
-  const cap = WORKFLOW_LIMITS.personaGuidanceBytes;
-  if (info.size > cap) {
-    throw new PersonaImportError(
-      `${sourcePath} is ${info.size} bytes; Persona guidance is limited to ${cap} UTF-8 bytes`,
-    );
+  const opened = await openRegularFile(real);
+  if ("refused" in opened) {
+    if (opened.refused === "missing") throw new PersonaImportError(`no file at ${sourcePath}`);
+    if (opened.refused === "not_regular") {
+      throw new PersonaImportError(`${sourcePath} is not a regular file`);
+    }
+    throw new PersonaImportError(`${sourcePath} could not be opened for reading`);
   }
-  const handle = await open(real, constants.O_RDONLY).catch(() => null);
-  if (handle === null) throw new PersonaImportError(`${sourcePath} could not be opened for reading`);
+  const cap = WORKFLOW_LIMITS.personaGuidanceBytes;
   let bytes: Buffer;
   try {
-    const bounded = await readFileWithinCap(handle, cap);
+    if (opened.size > cap) {
+      throw new PersonaImportError(
+        `${sourcePath} is ${opened.size} bytes; Persona guidance is limited to ${cap} UTF-8 bytes`,
+      );
+    }
+    const bounded = await readFileWithinCap(opened.handle, cap);
     if (bounded.exceeded) {
       throw new PersonaImportError(
         `${sourcePath} grew past the ${cap}-byte Persona guidance limit while it was being read`,
@@ -93,7 +159,7 @@ export async function readPersonaSource(requestedPath: string): Promise<PersonaS
     }
     bytes = bounded.bytes;
   } finally {
-    await handle.close();
+    await opened.handle.close();
   }
   if (bytes.includes(0)) {
     throw new PersonaImportError(`${sourcePath} is not a text document`);
@@ -135,12 +201,16 @@ function ancestors(from: string): string[] {
 export async function readPluginVersion(filePath: string): Promise<string | null> {
   for (const dir of ancestors(path.dirname(filePath))) {
     const manifest = path.join(dir, ".claude-plugin", "plugin.json");
-    const info = await stat(manifest).catch(() => null);
-    if (info === null || !info.isFile() || info.size > PLUGIN_MANIFEST_MAX_BYTES) continue;
-    const handle = await open(manifest, constants.O_RDONLY).catch(() => null);
-    if (handle === null) continue;
+    // Through the same descriptor-validating open as the document read: a manifest path is no
+    // more trustworthy than a source path, and a FIFO here would hang the import just as well.
+    const opened = await openRegularFile(manifest);
+    if ("refused" in opened) continue;
+    if (opened.size > PLUGIN_MANIFEST_MAX_BYTES) {
+      await opened.handle.close();
+      continue;
+    }
     try {
-      const { bytes } = await readFileWithinCap(handle, PLUGIN_MANIFEST_MAX_BYTES);
+      const { bytes } = await readFileWithinCap(opened.handle, PLUGIN_MANIFEST_MAX_BYTES);
       const parsed: unknown = JSON.parse(bytes.toString("utf8"));
       const version = parsed && typeof parsed === "object"
         ? (parsed as { version?: unknown }).version
@@ -150,7 +220,7 @@ export async function readPluginVersion(filePath: string): Promise<string | null
       // A manifest that is missing, unreadable, or not JSON is simply not an answer. The
       // import itself is unaffected: the file it read is still exactly the file it read.
     } finally {
-      await handle.close();
+      await opened.handle.close();
     }
     // The nearest manifest is the one that owns this file. If it had no usable version, a
     // grandparent plugin's version would be a different plugin's number on this document.

@@ -1,5 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -185,6 +186,53 @@ test("a path that cannot become a Persona is refused by name, and nothing is sto
   assert.match(((await nothing.json()) as { error: string }).error, /no content to review with/);
 
   assert.equal(((await (await request("/api/personas")).json()) as unknown[]).length, before);
+});
+
+/**
+ * The regular-file check is answered by the DESCRIPTOR, not by a path.
+ *
+ * A `stat` followed by an `open` proves nothing about what was opened - the name can be pointed
+ * at something else in between - so the implementation has no path-based `stat` at all and
+ * validates the handle instead. These cases are what that buys, and each one names a way the
+ * previous shape failed:
+ *
+ * - A FIFO would block the whole request inside `open` until somebody wrote to it. If this test
+ *   ever hangs rather than fails, `O_NONBLOCK` has been dropped from the open flags.
+ * - A character device would pass an `isFile()` taken a moment earlier and then feed the reader
+ *   bytes that were never a document.
+ *
+ * Both are refused by name here, and neither can reach the read: without the `fstat` guard the
+ * FIFO would come back "has no content to review with" and `/dev/zero` "is not a text document",
+ * which is how this test would report the guard's absence.
+ */
+test("a FIFO and a character device are refused on the descriptor, not read", async () => {
+  const { request } = fixture();
+  const fifo = join(sources, "role.fifo");
+  execFileSync("mkfifo", [fifo]);
+  const blocked = await importRole(request, fifo);
+  assert.equal(blocked.status, 400);
+  assert.match(((await blocked.json()) as { error: string }).error, /is not a regular file/);
+
+  for (const device of ["/dev/zero", "/dev/null"]) {
+    const refused = await importRole(request, device);
+    assert.equal(refused.status, 400);
+    assert.match(((await refused.json()) as { error: string }).error, /is not a regular file/);
+  }
+  assert.deepEqual((await (await request("/api/personas")).json() as Array<{ builtin: boolean }>)
+    .filter((row) => !row.builtin), []);
+});
+
+test("a plugin manifest that is not a regular file leaves the import unharmed", async () => {
+  const { request } = fixture();
+  // The manifest read is best-effort, so its failure mode is a missing version - never a failed
+  // or hanging import. A FIFO here went through the same unvalidated open as the document did.
+  const plugin = join(sources, "fifo-plugin", "plugins", "role-pack");
+  mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
+  execFileSync("mkfifo", [join(plugin, ".claude-plugin", "plugin.json")]);
+  const path = writeRole("fifo-plugin/plugins/role-pack/references/roles/reviewer.md");
+  const persona = (await (await importRole(request, path)).json()) as ImportedPersona;
+  assert.equal(persona.guidanceMarkdown, ROLE);
+  assert.equal(persona.provenance?.pluginVersion, null);
 });
 
 test("a symlinked source is read through the link and remembered as the path that was named", async () => {

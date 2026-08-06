@@ -370,6 +370,49 @@ test("an archived imported Persona is refused a re-import and drops out of the d
   assert.equal(drift.personas.some((row) => row.id === persona.id), false);
 });
 
+/**
+ * Both new writes are bounded BEFORE Zod ever sees the body, and each on the ceiling its own
+ * schema implies rather than on the guidance-shaped one the create route beside them uses.
+ *
+ * The distinction is the whole point: a ~600 KB cap on a body that can only legally hold one
+ * integer, or one 4096-character path, is a body limit in name only - the daemon has already
+ * allocated and parsed the abuse by the time the schema rejects it.
+ */
+test("the import and re-import bodies are bounded on their own schemas before parsing", async () => {
+  const { request } = fixture();
+  const path = writeRole("bounded.md", "# Bounded\n\nOne.\n");
+  const persona = (await (await importRole(request, path)).json()) as ImportedPersona;
+
+  // An integer-only body: 100 KB of it is refused without being parsed.
+  const oversizedRevision = await request(`/api/personas/${persona.id}/reimport`, {
+    method: "POST",
+    body: JSON.stringify({ expectedRevision: 1, padding: "x".repeat(100_000) }),
+  });
+  assert.equal(oversizedRevision.status, 413);
+  // Refused before anything ran, so the row is exactly as it was.
+  assert.equal(
+    ((await (await request(`/api/personas/${persona.id}`)).json()) as ImportedPersona).revision,
+    1,
+  );
+  // Archive carries the same one integer and is bounded identically - its session-action twin
+  // always was, and this one was the pair's unguarded half.
+  assert.equal((await request(`/api/personas/${persona.id}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedRevision: 1, padding: "x".repeat(100_000) }),
+  })).status, 413);
+
+  // A path-only body, likewise: far past the 4096-character path ceiling.
+  assert.equal((await importRole(request, `/${"p".repeat(200_000)}.md`)).status, 413);
+  // And a legal request of each shape still passes the guard: a cap that refused these would be
+  // a regression dressed as hardening.
+  assert.equal((await importRole(request, join(sources, `${"d".repeat(200)}.md`))).status, 400);
+  const reimported = await request(`/api/personas/${persona.id}/reimport`, {
+    method: "POST",
+    body: JSON.stringify({ expectedRevision: 1 }),
+  });
+  assert.equal(reimported.status, 200);
+});
+
 test("a Persona named drift does not shadow the drift route", async () => {
   const { request } = fixture();
   // Route order, asserted rather than assumed: `/api/personas/:id` is registered after this and

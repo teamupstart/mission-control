@@ -267,14 +267,28 @@ const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1
  */
 const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes * 6 + 16 * 1024;
 /**
- * Archive carries one integer, so it gets its own much smaller ceiling.
+ * The ceiling for a body that carries one integer, wherever it appears.
  *
- * Sizing it from the PROMPT ceiling like the two writes above would let a caller stream
+ * Sizing it from a PROMPT or GUIDANCE ceiling like the writes above would let a caller stream
  * ~600 KB at a route whose entire schema is `{ expectedRevision }` - a body limit in name
  * only. A kilobyte is already orders of magnitude more than the largest legal request and
  * leaves room for whitespace, so the cap refuses abuse without ever refusing a real client.
+ *
+ * Shared across families rather than restated per block, because the number follows from the
+ * SCHEMA and not from which catalog the route belongs to: Persona archive, Persona re-import
+ * and session-action archive all accept exactly `{ expectedRevision }`. A per-family copy is
+ * how one of them ends up with the wrong one.
  */
-const SESSION_ACTION_ARCHIVE_BODY_MAX_BYTES = 1024;
+const REVISION_ONLY_BODY_MAX_BYTES = 1024;
+/**
+ * An import body is one absolute path, so it is bounded from the PATH ceiling.
+ *
+ * `PersonaSourcePathSchema` accepts 4096 code units. JSON escaping can spend six bytes on one
+ * of them (`\uXXXX`), so the largest legal body is ~24 KB plus its envelope - and this must
+ * exceed that or the guard would reject paths the schema accepts. It is still two orders of
+ * magnitude tighter than the guidance-shaped ceiling this route used to borrow.
+ */
+const PERSONA_IMPORT_BODY_MAX_BYTES = 32 * 1024;
 const WORKFLOW_BODY_MAX_BYTES = WORKFLOW_LIMITS.graphJsonBytes * 6 + 32 * 1024;
 
 /**
@@ -762,11 +776,11 @@ export function buildApp(
    * possible: a browser can hand over bytes but cannot say where they will be tomorrow, and a
    * hash with no path to re-read is a badge that can never fire.
    *
-   * Bounded like the create route it delegates to, although the body here is one short string:
-   * the ceiling belongs to the route family rather than to the size of this particular body.
+   * Bounded from the PATH ceiling rather than the guidance one the create route beside it uses:
+   * this body cannot legally hold a document, so a document-shaped limit would be no limit.
    */
   app.post("/api/personas/import", bodyLimit({
-    maxSize: PERSONA_BODY_MAX_BYTES,
+    maxSize: PERSONA_IMPORT_BODY_MAX_BYTES,
     onError: (c) => c.json({ error: "Persona request is too large" }, 413),
   }), async (c) => {
     const manager = personaManager();
@@ -782,8 +796,16 @@ export function buildApp(
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona, 201) : personaFailure(c, result);
   });
-  /** Adopt an imported Persona's upstream as a new revision. Same CAS, same refusals. */
-  app.post("/api/personas/:id/reimport", async (c) => {
+  /**
+   * Adopt an imported Persona's upstream as a new revision. Same CAS, same refusals.
+   *
+   * The path to re-read is provenance the daemon already holds, so the whole body is one
+   * integer - bounded accordingly, and never allocated at guidance scale for it.
+   */
+  app.post("/api/personas/:id/reimport", bodyLimit({
+    maxSize: REVISION_ONLY_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Persona request is too large" }, 413),
+  }), async (c) => {
     const manager = personaManager();
     if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
     const parsed = await parseBody(c, ReimportPersonaSchema);
@@ -809,7 +831,13 @@ export function buildApp(
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona) : personaFailure(c, result);
   });
-  app.delete("/api/personas/:id", async (c) => {
+  // Bounded on the same schema-shaped ceiling as re-import above. This route was the one member
+  // of the two catalogs' archive pair with no guard at all - its session-action twin has had one
+  // since it was written - and the omission is only visible when the pair is read together.
+  app.delete("/api/personas/:id", bodyLimit({
+    maxSize: REVISION_ONLY_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Persona request is too large" }, 413),
+  }), async (c) => {
     const manager = personaManager();
     if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
     const parsed = await parseBody(c, ArchivePersonaSchema);
@@ -895,7 +923,7 @@ export function buildApp(
     return result.ok ? c.json(result.action) : sessionActionFailure(c, result);
   });
   app.delete("/api/session-actions/:id", bodyLimit({
-    maxSize: SESSION_ACTION_ARCHIVE_BODY_MAX_BYTES,
+    maxSize: REVISION_ONLY_BODY_MAX_BYTES,
     onError: (c) => c.json({ error: "session action request is too large" }, 413),
   }), async (c) => {
     const manager = sessionActionManager();

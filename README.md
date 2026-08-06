@@ -1998,7 +1998,8 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `the jira CLI is installed but not configured … run jira init` | installed, never pointed at a site |
 | `the jira CLI is not authenticated` / `Jira rejected the JIRA_API_TOKEN / JIRA_EMAIL credential (HTTP 401)` | the credential is wrong or expired |
 | `Jira could not run this query (HTTP 400) - <what Jira said>` | the JQL is the problem, not the credential |
-| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above |
+| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is `NODE_EXTRA_CA_CERTS` |
+| `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
 
 A sweep reports the same sentences on the source itself, so a failure that happens at 3am
 is still legible at 9am. The one non-zero exit that is *not* a failure: `jira-cli` exits

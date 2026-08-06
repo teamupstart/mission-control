@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskSourcesConfigPatch } from "@shared/protocol.ts";
 import type { SweepReport, TaskSourceInstance, TaskSourcesView } from "@shared/task-source.ts";
 import { api, fetchTaskSources } from "./lib/api.ts";
+import { readIsCurrent } from "./harnesses-reconcile.ts";
 
 // The "Task sources" settings section: what pulls work INTO the backlog, and how each one
 // is doing. Owned locally by SettingsPage (like useSkills / useHarnesses), because
@@ -45,22 +46,41 @@ export function useTaskSources(): TaskSourcesState {
   // The view as last seen, readable without making the callbacks depend on it (which
   // would rebuild every one of them on each poll). This is what a revert restores.
   const viewRef = useRef<TaskSourcesView | null>(null);
+  /**
+   * How many edits this panel has STARTED, so a read that left before one cannot land after
+   * it - `readIsCurrent`, the same guard `useHarnesses` carries, and here for the same
+   * reason plus a worse one.
+   *
+   * The flash is the obvious half: this hook polls every 4 seconds and every response used
+   * to be written into state unconditionally, so a GET that left before a save came back
+   * carrying the pre-save config and snapped the field back to the value the operator had
+   * just changed away from, while the daemon held the new one.
+   *
+   * The half that is not a flash: a kind's fields write the WHOLE config blob composed from
+   * what is on screen (`{...cfg, jql}`), so once a stale read had put the old value back,
+   * the very next field's commit persisted it. Editing the Jira site and then the JQL filter
+   * saved the filter and silently reverted the site. Found by
+   * `settings-task-sources-jira.spec.ts` failing under the full suite's load, and pinned
+   * there deterministically by holding a read open.
+   */
+  const editSeq = useRef(0);
 
   const setView = useCallback((v: TaskSourcesView | null): void => {
     viewRef.current = v;
     setViewState(v);
   }, []);
 
+  /** Read the route, and apply the result only if no edit started while it was in flight. */
   const refresh = useCallback(async (): Promise<void> => {
+    const seq = editSeq.current;
     const v = await fetchTaskSources();
-    if (v) setView(v);
+    if (v && readIsCurrent(seq, editSeq.current)) setView(v);
   }, [setView]);
 
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
-      const v = await fetchTaskSources();
-      if (alive && v) setView(v);
+      if (alive) await refresh();
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
@@ -68,7 +88,7 @@ export function useTaskSources(): TaskSourcesState {
       alive = false;
       clearInterval(id);
     };
-  }, [setView]);
+  }, [refresh]);
 
   /**
    * Apply a change optimistically, and TAKE IT BACK if the server refuses - so a switch
@@ -80,12 +100,17 @@ export function useTaskSources(): TaskSourcesState {
     async (sources: TaskSourceInstance[]): Promise<boolean> => {
       const before = viewRef.current;
       if (!before) return false;
+      const seq = ++editSeq.current;
       setView({ ...before, sources });
       const patch: TaskSourcesConfigPatch = { sources };
       const res = await api.setTaskSources(patch);
       if (!res.ok) {
-        setView(before);
+        // Say so either way - a refusal the operator never sees is how a panel comes to
+        // disagree with the daemon silently. But only REVERT while this is still the newest
+        // edit: a later one has already replaced what `before` holds, and its own confirming
+        // read is what corrects this one's optimistic value.
         setError(whyItFailed(res.error));
+        if (readIsCurrent(seq, editSeq.current)) setView(before);
         return false;
       }
       setError(null);

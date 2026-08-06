@@ -347,17 +347,6 @@ function JiraFields({
         />
       </label>
 
-      <label className="ts-field ts-field-wide">
-        <span className="ts-field-label">JQL filter</span>
-        <input
-          className="field-input mono"
-          placeholder='project = MC AND status = "To Do" ORDER BY created DESC'
-          value={val("jql", cfg.jql)}
-          onChange={(e) => edit("jql", e.target.value)}
-          onBlur={() => commit("jql", (v) => onChange({ ...cfg, jql: v.trim() }))}
-        />
-      </label>
-
       <label className="ts-field">
         <span className="ts-field-label">Issues per sweep</span>
         <input
@@ -367,6 +356,20 @@ function JiraFields({
           max={200}
           value={cfg.limit}
           onChange={(e) => onChange({ ...cfg, limit: Number(e.target.value) || cfg.limit })}
+        />
+      </label>
+
+      {/* Last of the inputs rather than second, though it is the most important one: it spans
+          the row, so anything after it leaves a half-empty row above - and here it sits
+          directly over the warning and the priority switch, which are both about it. */}
+      <label className="ts-field ts-field-wide">
+        <span className="ts-field-label">JQL filter</span>
+        <input
+          className="field-input mono"
+          placeholder='project = MC AND status = "To Do" ORDER BY created DESC'
+          value={val("jql", cfg.jql)}
+          onChange={(e) => edit("jql", e.target.value)}
+          onBlur={() => commit("jql", (v) => onChange({ ...cfg, jql: v.trim() }))}
         />
       </label>
 
@@ -416,9 +419,21 @@ function SourceCard({
 }): React.JSX.Element {
   const { val, edit, commit, draft } = useDraftText();
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  /**
+   * What the last action answered, and whether that answer was a PROBLEM.
+   *
+   * The tone is carried rather than inferred because these three buttons answer in three
+   * different voices - a sweep report, a preflight verdict, a confirmation - and the one
+   * that matters most is a preflight naming a credential to go and fix. Rendered in the same
+   * dim hint colour as "Forgotten - the next sweep will file these items again", it read as
+   * reassurance.
+   */
+  const [note, setNote] = useState<{ say: string; problem: boolean } | null>(null);
 
-  async function run(what: string, fn: () => Promise<string | null>): Promise<void> {
+  async function run(
+    what: string,
+    fn: () => Promise<{ say: string; problem: boolean }>,
+  ): Promise<void> {
     setBusy(what);
     setNote(null);
     const said = await fn();
@@ -470,7 +485,6 @@ function SourceCard({
         {status && status.seenCount > 0 && ` ${status.seenCount} item(s) already filed.`}
       </p>
       {status?.lastError && <p className="settings-error ts-error">{status.lastError}</p>}
-      {note && <p className="settings-hint ts-note">{note}</p>}
 
       <div className="ts-fields">
         {/* A div rather than a label: the control is a combobox plus the button that
@@ -637,12 +651,14 @@ function SourceCard({
             onClick={() =>
               void run("sweep", async () => {
                 const r = await state.sweep(src.id);
-                if (!r) return "The sweep could not run.";
-                if (r.error) return r.error;
+                if (!r) return { say: "The sweep could not run.", problem: true };
+                if (r.error) return { say: r.error, problem: true };
                 const bits = [`filed ${r.filed}`, `${r.alreadySeen} already filed`];
                 if (r.overCap > 0) bits.push(`${r.overCap} left for the next sweep`);
                 if (r.refused.length > 0) bits.push(`${r.refused.length} refused`);
-                return `Swept: ${bits.join(", ")}.`;
+                // A refusal is a problem even though the sweep itself worked: those rows
+                // were not filed, and nothing else on this card says so.
+                return { say: `Swept: ${bits.join(", ")}.`, problem: r.refused.length > 0 };
               })
             }
           >
@@ -659,7 +675,9 @@ function SourceCard({
                 // The success sentence comes off the KIND, because what was proved differs
                 // per upstream: this used to name `gh` and the repo's issues, which a Jira
                 // source would have claimed while never going near either.
-                return problem ?? TASK_SOURCE_KIND_INFO[src.kind].preflightOk;
+                return problem === null
+                  ? { say: TASK_SOURCE_KIND_INFO[src.kind].preflightOk, problem: false }
+                  : { say: problem, problem: true };
               })
             }
           >
@@ -673,7 +691,10 @@ function SourceCard({
             onClick={() =>
               void run("forget", async () => {
                 await state.forget(src.id);
-                return "Forgotten - the next sweep will file these items again.";
+                return {
+                  say: "Forgotten - the next sweep will file these items again.",
+                  problem: false,
+                };
               })
             }
           >
@@ -681,6 +702,14 @@ function SourceCard({
           </button>
         </Tooltip>
       </div>
+      {/* What one of those three buttons just answered, BELOW them - because the card is
+          taller than the pane and the buttons are at the bottom of it, so a note at the top
+          put the answer off screen above the question. That is worst for the one sentence
+          that has to be read: preflight naming the credential to go and fix. `lastError`
+          stays up with the status line, since that is health rather than an answer. */}
+      {note && (
+        <p className={`${note.problem ? "settings-error" : "settings-hint"} ts-note`}>{note.say}</p>
+      )}
     </div>
   );
 }

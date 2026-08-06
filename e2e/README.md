@@ -522,6 +522,33 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 `--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
 that produces `transcript.txt`.
 
+### A Jira task source in Settings
+
+[`docs/evidence/jira-task-source/`](../docs/evidence/jira-task-source/) carries three frames
+from `specs/settings-task-sources-jira.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The
+spec can prove a field exists, holds a value and survives a reload; the frames are what show
+that the Jira group tiles into the card's existing rhythm, and that the sentence naming a
+missing credential lands somewhere a person will read it.
+
+That last one is the frame two fixes were made for, and neither is visible in a DOM
+assertion alone: the action note moved **below** the buttons that produce it (the card is
+taller than the pane, so an answer printed at the top arrived off screen above the question),
+and it now carries the **error** tone rather than the dim hint tone it shared with
+"Forgotten - the next sweep will file these items again".
+
+The spec reaches a real preflight for the empty-filter case, because that answer is returned
+before any binary or socket is touched and is therefore identical on every machine. The
+credential sentences are fulfilled through `page.route`: what the panel owes an operator is
+that it renders the daemon's answer verbatim, and reaching a real Jira for that would put a
+token and a VPN in the suite's path.
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/settings-task-sources-jira.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Where the Inspector's brief lives
 
 [`docs/evidence/inspector-brief-location/`](../docs/evidence/inspector-brief-location/) carries

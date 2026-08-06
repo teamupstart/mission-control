@@ -1,3 +1,8 @@
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import type { Page } from "@playwright/test";
+
 import { expect, test } from "../fixtures/test.ts";
 
 /**
@@ -34,6 +39,27 @@ const NO_CREDENTIAL =
   "no way to reach Jira: install the CLI (`brew install ankitpokhrel/jira-cli/jira-cli` " +
   "then `jira init`), or set JIRA_API_TOKEN and JIRA_EMAIL in the daemon's environment";
 
+const EVIDENCE = fileURLToPath(new URL("../../docs/evidence/jira-task-source/", import.meta.url));
+
+/**
+ * Photograph a state this spec has already asserted on.
+ *
+ * Behind `MC_E2E_EVIDENCE`, like the palette's and the settings ledger's: an ordinary run
+ * would rewrite the binaries for no added signal. Inside the regression rather than a staged
+ * capture spec, so each frame is of a run whose assertions passed.
+ */
+async function shoot(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  // Off every control, pointer AND focus: `Tooltip` opens on either, and a bubble over the
+  // field group would be the one thing in the frame that is not what the spec is about.
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.screenshot({ path: `${EVIDENCE}${name}.png` });
+  // oxlint-disable-next-line no-console
+  console.log(`CAPTURED docs/evidence/jira-task-source/${name}.png`);
+}
+
 test("a Jira source is addable from the panel, arrives off, and keeps its filter", async ({
   page,
   daemon,
@@ -68,6 +94,7 @@ test("a Jira source is addable from the panel, arrives off, and keeps its filter
   // A source with no filter sweeps nothing, which is indistinguishable from a filter with no
   // matching issues - so the panel says it before the first sweep can look healthy.
   await expect(page.getByText(/Without a JQL filter this source sweeps nothing/)).toBeVisible();
+  await shoot(page, "jira-source-without-a-filter");
 
   // Text fields commit on blur, so filling the next one is what saves the last.
   await page.getByLabel("Jira site").fill("acme.atlassian.net");
@@ -97,6 +124,120 @@ test("a Jira source is addable from the panel, arrives off, and keeps its filter
   await page.reload();
   await expect(page.getByLabel("JQL filter")).toHaveValue(JQL);
   await expect(page.getByLabel("Jira site")).toHaveValue("acme.atlassian.net");
+  await shoot(page, "jira-source-configured");
+});
+
+test("a config read that left before an edit cannot revert the field, or be saved over it", async ({
+  page,
+  daemon,
+}) => {
+  // The defect this pins is a LOST WRITE, not a flash. `useTaskSources` polls every 4s and
+  // used to write every response into state unconditionally, and a kind's fields compose the
+  // whole config blob from what is on screen (`{...cfg, jql}`) - so a read that left before
+  // an edit put the old value back, and the NEXT field's commit then persisted it. Editing
+  // the Jira site and then the JQL filter saved the filter and silently reverted the site.
+  //
+  // Found by the case above failing under the full suite's parallel load, where the 4s poll
+  // happened to land inside the two edits. Reproduced here on purpose by holding one read
+  // open, which is how `harness-defaults-propagate.spec.ts` pins the same class of bug.
+  const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+    data: {
+      sources: [{ id: "jira-race", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
+    },
+  });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
+
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  const site = page.getByLabel("Jira site");
+  await expect(site).toHaveValue("upstartnetwork.atlassian.net");
+
+  // Hold one config GET open. Its body is read NOW - before the edit below - and delivered
+  // later, which is exactly the shape of a poll that overtakes a save.
+  let release: (() => void) | null = null;
+  const released = new Promise<void>((r) => {
+    release = r;
+  });
+  let delivered: (() => void) | null = null;
+  const staleLanded = new Promise<void>((r) => {
+    delivered = r;
+  });
+  let stale: string | null = null;
+  let hit: (() => void) | null = null;
+  const gateHit = new Promise<void>((r) => {
+    hit = r;
+  });
+  // AWAITED: registration is asynchronous, and an un-awaited route lets the edit below race
+  // it - the gate would then close on the save's own confirming read instead, which carries
+  // the NEW value and would let this pass against the very bug it exists to catch.
+  await page.route("**/api/task-sources/config", async (route) => {
+    if (route.request().method() !== "GET" || stale !== null) return route.fallback();
+    const res = await route.fetch();
+    stale = await res.text();
+    hit?.();
+    await released;
+    await route.fulfill({ response: res, body: stale });
+    delivered?.();
+  });
+  await gateHit;
+  expect(stale).toContain("upstartnetwork.atlassian.net");
+
+  // Armed BEFORE the edit, so it cannot match the gated request: the save's own confirming
+  // read. Waiting for it is what makes this deterministic - see below.
+  const confirmingRead = page.waitForResponse(
+    (r) =>
+      r.url().includes("/api/task-sources/config") &&
+      r.request().method() === "GET" &&
+      r.status() === 200,
+  );
+
+  // Edit one field and commit it. The PUT and the confirming GET both fall through to the
+  // daemon, so the panel settles on the new value first...
+  await site.fill("acme.atlassian.net");
+  await page.keyboard.press("Tab");
+  await confirmingRead;
+  await expect(site).toHaveValue("acme.atlassian.net");
+
+  // ...and only THEN does the pre-edit body land, with nothing behind it to heal the view.
+  // That order is the whole test. A first draft released the stale read immediately, and the
+  // confirming read arrived a few hundred milliseconds later and corrected the field before
+  // anything could be composed from it - so the draft passed against the very bug it was
+  // written for. Measured, not reasoned about: a throwaway probe printed the field after each
+  // step and the stored config at the end.
+  release?.();
+  await staleLanded;
+  // The response is in the browser; give the render that would apply it a chance to happen,
+  // so the next edit reads whatever `cfg` the panel actually ended up with. Two frames rather
+  // than a fixed sleep, and it is a barrier for the UNFIXED path - a guarded read changes
+  // nothing observable here, which is the whole point of the assertions below.
+  await page.evaluate(
+    () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+  );
+
+  // The flash half: the field must not have snapped back to what the operator changed away
+  // from. Read ONCE rather than through `toHaveValue`, deliberately - that assertion retries
+  // for 20 seconds, and the next 4s poll heals the field inside that window, so a retrying
+  // assertion passes over the very revert it is looking at. The barrier above is what makes
+  // "right now" a well-defined moment to read.
+  expect(await site.inputValue(), "a read from before the edit put the old value back").toBe(
+    "acme.atlassian.net",
+  );
+
+  // The lost-write half, and the expensive one: the NEXT field's commit composes the whole
+  // config blob from what is on screen, so a reverted value gets PERSISTED by it.
+  await page.getByLabel("JQL filter").fill(JQL);
+  await page.keyboard.press("Tab");
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
+        const body = (await res.json()) as {
+          sources?: { config?: { site?: string; jql?: string } }[];
+        };
+        return body.sources?.[0]?.config ?? {};
+      },
+      { message: "both edits should be in force on the daemon" },
+    )
+    .toMatchObject({ site: "acme.atlassian.net", jql: JQL });
 });
 
 test("an unusable Jira source names the fix, and a healthy one names Jira rather than gh", async ({
@@ -123,6 +264,10 @@ test("an unusable Jira source names the fix, and a healthy one names Jira rather
   await check.click();
   await expect(note).toContainText("set a JQL query");
   await expect(note).not.toContainText("Looks good");
+  // And it is READ, not merely rendered. The card is taller than the pane, so an answer
+  // printed at the top of it lands off screen above the button that asked for it - which for
+  // this one sentence is the same as not answering.
+  await expect(note).toBeInViewport();
 
   await page.getByLabel("JQL filter").fill(JQL);
   await page.keyboard.press("Tab");
@@ -145,6 +290,10 @@ test("an unusable Jira source names the fix, and a healthy one names Jira rather
   await expect(note).toContainText("brew install ankitpokhrel/jira-cli/jira-cli");
   await expect(note).toContainText("JIRA_API_TOKEN and JIRA_EMAIL");
   await expect(note).not.toContainText("Looks good");
+  // A problem reads as a problem. In the hint tone it shared with "Forgotten - the next sweep
+  // will file these items again", a broken credential read as reassurance.
+  await expect(note).toHaveClass(/settings-error/);
+  await shoot(page, "preflight-names-the-fix");
 
   // And the success sentence is the KIND's. It used to be hardcoded as "gh is reachable and
   // this repo lists issues", which a Jira source would have claimed while never going near
@@ -153,4 +302,5 @@ test("an unusable Jira source names the fix, and a healthy one names Jira rather
   await check.click();
   await expect(note).toContainText("Looks good - Jira answered, and this JQL filter runs.");
   await expect(note).not.toContainText("gh");
+  await expect(note).not.toHaveClass(/settings-error/, { timeout: 2000 });
 });

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>03 Operator Log | Conversation terminal concepts</title>
+    <link rel="stylesheet" href="shell.css" />
+  </head>
+  <body class="concept-ledger">
+    <nav class="mockbar" aria-label="Mockup navigation">
+      <b>Conversation study</b>
+      <a href="index.html">All options</a>
+      <span class="spacer"></span>
+      <a href="01-native-pty.html">1 Native PTY</a>
+      <a href="02-duplex-console.html">2 Duplex</a>
+      <a href="03-operator-log.html" aria-current="page">3 Operator Log</a>
+    </nav>
+
+    <header class="concept-note">
+      <div>
+        <h1>03 · Operator Log</h1>
+        <p>
+          This option favors comprehension over emulation. It reads like a field log, with directives
+          punctuating the agent report and durable session context held in the right rail.
+        </p>
+      </div>
+      <span class="terminal-tag">◫ Long-form reading</span>
+    </header>
+
+    <nav class="app-tabs" aria-label="Session sections">
+      <button class="app-tab active" type="button"><kbd>g</kbd>Conversation</button>
+      <button class="app-tab" type="button"><kbd>q</kbd>Work queue</button>
+      <button class="app-tab" type="button"><kbd>y</kbd>Workflows</button>
+      <button class="app-tab" type="button"><kbd>d</kbd>Diff</button>
+      <button class="app-tab" type="button"><kbd>⇧F</kbd>Files</button>
+    </nav>
+
+    <main class="ledger-window">
+      <div class="session-context">
+        <span class="label">Worktree</span>
+        <span class="path">/Users/jordanmance/.treehouse/ai-harness-c7356c/32/ai-harness</span>
+        <span class="spacer"></span>
+        <button class="quiet-btn" type="button" data-action="Opening a shell in Ghostty">
+          <span class="glyph">❯_</span> Terminal <span aria-hidden="true">⌄</span>
+        </button>
+        <button class="quiet-btn" type="button" data-action="Focusing the live Codex session">
+          <span class="glyph">◆</span> Codex <span aria-hidden="true">⌄</span>
+        </button>
+      </div>
+
+      <section class="ledger-frame" aria-label="Operator log conversation mockup">
+        <div class="ledger-main">
+          <div class="ledger-date">August 6 · Implementation session</div>
+
+          <article class="ledger-entry agent">
+            <time class="ledger-marker" datetime="2026-08-06T07:29:00-04:00">7:29 AM</time>
+            <div class="ledger-content">
+              <header class="ledger-byline"><span class="role">Codex</span><span class="kind">proposed</span></header>
+              <p class="ledger-prose">
+                The interaction contract is ready for implementation. The persistent directive stays
+                scoped to the workflow run and Persona node, then each claimed Persona attempt records
+                the exact directive it received.
+              </p>
+            </div>
+          </article>
+
+          <article class="ledger-entry user">
+            <time class="ledger-marker" datetime="2026-08-06T07:31:00-04:00">7:31 AM</time>
+            <div class="ledger-content">
+              <header class="ledger-byline"><span class="role">You</span><span class="kind">directed</span></header>
+              <div class="ledger-directive">looks good, go ahead and implement it</div>
+            </div>
+          </article>
+
+          <article class="ledger-entry agent">
+            <time class="ledger-marker" datetime="2026-08-06T07:31:08-04:00">7:31 AM</time>
+            <div class="ledger-content">
+              <header class="ledger-byline"><span class="role">Codex</span><span class="kind">working</span></header>
+              <p class="ledger-prose">
+                I’m implementing the approved interaction and persistence contract now. I’ll keep the
+                feedback scoped to the workflow run and Persona node, apply it to the next eligible
+                Persona execution and every later round until removed, and preserve it in run history.
+              </p>
+              <p class="ledger-prose">
+                Because this changes visible workflow behavior, I’m using the approved mockup and will
+                add Playwright coverage alongside focused server and prompt tests.
+              </p>
+            </div>
+          </article>
+
+          <article class="ledger-entry activity">
+            <time class="ledger-marker" datetime="2026-08-06T07:31:12-04:00">7:31 AM</time>
+            <div class="ledger-content">
+              <header class="ledger-byline"><span class="role">Activity</span><span class="kind">3 operations</span></header>
+              <div class="activity-strip">
+                <span>searched PersonaDirective</span>
+                <span>read workflow runner</span>
+                <span>checked repository</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="ledger-entry agent">
+            <time class="ledger-marker" datetime="2026-08-06T07:32:11-04:00">7:32 AM</time>
+            <div class="ledger-content">
+              <header class="ledger-byline"><span class="role">Codex</span><span class="kind">decided</span></header>
+              <p class="ledger-prose">
+                I’ve settled the storage model: active directives live on the run, keyed by Persona
+                node, while every claimed Persona attempt receives an immutable snapshot of the
+                directive it actually used. This preserves both later rounds and accurate history if
+                the feedback is edited or removed.
+              </p>
+            </div>
+          </article>
+
+          <article class="ledger-entry activity">
+            <time class="ledger-marker" datetime="2026-08-06T07:32:16-04:00">7:32 AM</time>
+            <div class="ledger-content">
+              <header class="ledger-byline"><span class="role">Activity</span><span class="kind">8 operations</span></header>
+              <div class="activity-strip">
+                <span>updated database</span>
+                <span>updated protocol</span>
+                <span>built editor controls</span>
+                <span>ran focused tests</span>
+              </div>
+            </div>
+          </article>
+
+        </div>
+
+        <form class="ledger-compose" data-composer>
+          <label for="ledger-input">Direct next step</label>
+          <textarea
+            id="ledger-input"
+            name="instruction"
+            rows="1"
+            placeholder="Reply to this session…"
+          ></textarea>
+          <button class="ledger-send" type="submit">Send ↵</button>
+        </form>
+
+        <aside class="ledger-aside" aria-label="Session context">
+          <section>
+            <h2>Current objective</h2>
+            <p class="ledger-goal">Implement persistent Persona directives with accurate run history.</p>
+          </section>
+          <section>
+            <h2>Session</h2>
+            <p class="ledger-state">Codex is working</p>
+            <dl class="ledger-facts">
+              <dt>Branch</dt><dd>feat/persona-directives</dd>
+              <dt>Runtime</dt><dd>terminal</dd>
+              <dt>Process</dt><dd>pid 97533</dd>
+              <dt>Context</dt><dd>48% used</dd>
+            </dl>
+          </section>
+          <section>
+            <h2>Thread position</h2>
+            <ol class="ledger-outline">
+              <li><i>01</i><span>Interaction contract proposed</span></li>
+              <li><i>02</i><span>Implementation approved</span></li>
+              <li><i>03</i><span>Storage model settled</span></li>
+              <li class="current"><i>04</i><span>Editor and coverage in progress</span></li>
+            </ol>
+          </section>
+        </aside>
+      </section>
+
+      <footer class="ledger-footer">
+        <span>Codex</span>
+        <span>approve ▾</span>
+        <span>pid 97533</span>
+        <span class="optional">last event just now</span>
+        <span class="spacer"></span>
+        <button type="button" data-action="Opening the live terminal">⇧T terminal</button>
+        <button type="button" data-action="Opening the current diff">D diff</button>
+        <button type="button" data-action="Session marked complete">C complete</button>
+        <button type="button" data-action="Kill confirmation would open">K kill</button>
+      </footer>
+    </main>
+
+    <output class="toast" data-toast aria-live="polite"></output>
+    <script src="mockups.js"></script>
+  </body>
+</html>

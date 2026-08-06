@@ -34,6 +34,16 @@ export interface DaemonHandle {
    * the home dir is deleted on stop, so without this a seeding failure is undebuggable.
    */
   readLog(): string;
+  /**
+   * SIGKILL the daemon - the CRASH case, with no orderly shutdown of any kind. The
+   * port, home and database stay put so `restart()` can bring a successor up on the
+   * same coordinates. Exists for the states only an ungraceful death can produce:
+   * transient daemon state (keep awake) must reset, `-w`-style child backstops must
+   * fire, and the dashboard must fall to `reconnecting` rather than keep old claims.
+   */
+  crash(): Promise<void>;
+  /** Boot a fresh daemon on the same port and home after `crash()`. */
+  restart(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -160,6 +170,11 @@ export async function startDaemon(): Promise<DaemonHandle> {
     // it was handed - the exact command line a click asked a terminal to run. See
     // `FAKE_CMUX` in fake-agents.ts for why the other backends cannot play this role.
     CMUX_BIN: bins.cmux,
+    // The keep-awake provider, redirected at a fake that records its argv. With the
+    // override present this daemon is "supported" on any platform - which is the point:
+    // Linux CI drives the full manager/route/SSE path, and no test run ever places a
+    // real power assertion on the machine it runs on.
+    MISSION_KEEP_AWAKE_BIN: bins.keepAwake,
     MC_E2E_RECORD_DIR: recordDir,
     // The pool sweep is NOT scoped to MISSION_HOME - it reaps the shared treehouse
     // worktree pool, so an isolated daemon will still delete a sibling checkout's work.
@@ -191,18 +206,24 @@ export async function startDaemon(): Promise<DaemonHandle> {
     ...DAEMON_TERMINAL_IDENTITY,
   };
 
-  const child: ChildProcess = spawn(process.execPath, [join(REPO_ROOT, "dist/server/index.mjs")], {
-    cwd: REPO_ROOT,
-    env: isolatedEnv,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
   let log = "";
-  child.stdout?.on("data", (d: Buffer) => (log += d.toString()));
-  child.stderr?.on("data", (d: Buffer) => (log += d.toString()));
-
   let exited: { code: number | null; signal: string | null } | null = null;
-  child.on("exit", (code, signal) => (exited = { code, signal }));
+
+  /** Spawn the daemon bundle and wire its log and exit tracking to the shared state. */
+  const spawnDaemon = (): ChildProcess => {
+    exited = null;
+    const spawned = spawn(process.execPath, [join(REPO_ROOT, "dist/server/index.mjs")], {
+      cwd: REPO_ROOT,
+      env: isolatedEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    spawned.stdout?.on("data", (d: Buffer) => (log += d.toString()));
+    spawned.stderr?.on("data", (d: Buffer) => (log += d.toString()));
+    spawned.on("exit", (code, signal) => (exited = { code, signal }));
+    return spawned;
+  };
+
+  let child: ChildProcess = spawnDaemon();
 
   const baseURL = `http://127.0.0.1:${port}`;
   let foreman: ChildProcess | null = null;
@@ -269,44 +290,64 @@ export async function startDaemon(): Promise<DaemonHandle> {
     rmSync(home, { force: true, recursive: true });
   };
 
-  const deadline = Date.now() + BOOT_TIMEOUT_MS;
-  for (;;) {
-    // Report a crash the moment it happens. Waiting out the full timeout to say "did not
-    // boot" buries the stack trace that says why.
-    if (exited) {
-      await stop();
-      throw new Error(`daemon exited (code ${exited.code}, signal ${exited.signal}):\n${log}`);
-    }
-    if (Date.now() > deadline) {
-      await stop();
-      throw new Error(`daemon did not answer /api/health in ${BOOT_TIMEOUT_MS}ms:\n${log}`);
-    }
-    const res = await fetch(`${baseURL}/api/health`).catch(() => null);
-    if (res?.ok) {
-      const body = (await res.json().catch(() => ({}))) as { service?: string; pid?: number };
-      if (body.service !== "mission-control") {
+  const awaitBoot = async (): Promise<void> => {
+    const deadline = Date.now() + BOOT_TIMEOUT_MS;
+    for (;;) {
+      // Report a crash the moment it happens. Waiting out the full timeout to say "did not
+      // boot" buries the stack trace that says why.
+      if (exited) {
         await stop();
-        throw new Error(`/api/health answered as ${JSON.stringify(body.service)}`);
+        throw new Error(`daemon exited (code ${exited.code}, signal ${exited.signal}):\n${log}`);
       }
-      // The daemon answering has to be the one we just spawned, not merely A daemon.
-      //
-      // `service` alone cannot tell those apart: a Mission Control daemon already holding
-      // this port answers it perfectly, and everything after this point - the harness config
-      // write, every dispatch - would land on that daemon's real database instead of the
-      // throwaway one. `/api/health` reports `pid`, so identity is checkable rather than
-      // assumed, and a lost race fails loudly here instead of silently driving someone
-      // else's fleet.
-      if (body.pid !== child.pid) {
+      if (Date.now() > deadline) {
         await stop();
-        throw new Error(
-          `port ${port} is held by a different Mission Control daemon (pid ${body.pid}, ` +
-            `expected the spawned child's pid ${child.pid}). Refusing to run against it.`,
-        );
+        throw new Error(`daemon did not answer /api/health in ${BOOT_TIMEOUT_MS}ms:\n${log}`);
       }
-      break;
+      const res = await fetch(`${baseURL}/api/health`).catch(() => null);
+      if (res?.ok) {
+        const body = (await res.json().catch(() => ({}))) as { service?: string; pid?: number };
+        if (body.service !== "mission-control") {
+          await stop();
+          throw new Error(`/api/health answered as ${JSON.stringify(body.service)}`);
+        }
+        // The daemon answering has to be the one we just spawned, not merely A daemon.
+        //
+        // `service` alone cannot tell those apart: a Mission Control daemon already holding
+        // this port answers it perfectly, and everything after this point - the harness config
+        // write, every dispatch - would land on that daemon's real database instead of the
+        // throwaway one. `/api/health` reports `pid`, so identity is checkable rather than
+        // assumed, and a lost race fails loudly here instead of silently driving someone
+        // else's fleet.
+        if (body.pid !== child.pid) {
+          await stop();
+          throw new Error(
+            `port ${port} is held by a different Mission Control daemon (pid ${body.pid}, ` +
+              `expected the spawned child's pid ${child.pid}). Refusing to run against it.`,
+          );
+        }
+        return;
+      }
+      await new Promise((r) => setTimeout(r, POLL_MS));
     }
-    await new Promise((r) => setTimeout(r, POLL_MS));
-  }
+  };
+  await awaitBoot();
+
+  const crash = async (): Promise<void> => {
+    if (exited) return;
+    const gone = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    child.kill("SIGKILL");
+    await gone;
+  };
+
+  const restart = async (): Promise<void> => {
+    if (!exited) throw new Error("restart() is for a dead daemon - call crash() first");
+    // Same port, same home, same env: the successor is the same installation coming back,
+    // which is exactly the case transient state (keep awake) must reset across. The boot
+    // check re-verifies identity by pid, so a squatter that stole the freed port between
+    // the crash and this bind still fails loudly rather than being driven silently.
+    child = spawnDaemon();
+    await awaitBoot();
+  };
 
   // Prove the isolation held before any test writes through it.
   //
@@ -343,5 +384,16 @@ export async function startDaemon(): Promise<DaemonHandle> {
     );
   }
 
-  return { baseURL, home, recordDir, workspace, repo, readLog: () => log, startForeman, stop };
+  return {
+    baseURL,
+    home,
+    recordDir,
+    workspace,
+    repo,
+    readLog: () => log,
+    startForeman,
+    crash,
+    restart,
+    stop,
+  };
 }

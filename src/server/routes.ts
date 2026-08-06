@@ -29,6 +29,7 @@ import {
   ShippingConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
+  KeepAwakeRequestSchema,
   MarkItemSentSchema,
   OtlpMetricsSchema,
   PendingTurnRevisionSchema,
@@ -111,6 +112,7 @@ import type {
 import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
 import { TaskDependencyError, TaskStatusConflictError, type TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
+import type { KeepAwakeManager } from "./keep-awake.ts";
 import { recordInjection } from "./injections.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -568,6 +570,14 @@ export function buildApp(
    * `defaultPaneDeps`.
    */
   paneDeps?: PaneDeps,
+  /**
+   * The transient Keep Awake owner. Optional only for the legacy route-unit
+   * construction, like every service above it; production always supplies it, and the
+   * keep-awake routes answer 503 when it is absent rather than constructing a second
+   * owner here - the manager owns exactly one OS child, and a route-built twin would be
+   * a second claimant on host power state.
+   */
+  keepAwake?: KeepAwakeManager,
 ): Hono {
   const app = new Hono();
   const terminalLauncher = launchSessionTerminal ?? launchTerminal;
@@ -612,6 +622,53 @@ export function buildApp(
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
   );
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
+
+  // --- Keep Awake: the transient idle-sleep inhibitor ---
+  //
+  // Reads and writes go to the injected manager; convergence goes over SSE. The route
+  // answers the CALLER with the settled transition, and the Registry event answers every
+  // OTHER window - both from the same observation, so they cannot disagree.
+  app.get("/api/keep-awake", (c) => {
+    if (!keepAwake) return c.json({ error: "keep-awake manager unavailable" }, 503);
+    return c.json(keepAwake.status());
+  });
+  app.put("/api/keep-awake", async (c) => {
+    if (!keepAwake) return c.json({ error: "keep-awake manager unavailable" }, 503);
+    const parsed = await parseBody(c, KeepAwakeRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const before = keepAwake.status();
+    if (parsed.data.enabled && !before.supported) {
+      // A clear refusal, not a pretend transition: drawing `on` for a host with no
+      // provider would be the exact lie the status type exists to prevent. ENABLE only:
+      // disabling is always achievable - the manager's off is a no-op on a host with no
+      // provider - so a caller ensuring the mode is off (a startup script, a defensive
+      // re-request) falls through and gets the off it asked for rather than an error.
+      return c.json(
+        {
+          error: before.unavailableReason ?? "Keep awake is unavailable on this system",
+          code: "keep_awake_unavailable",
+          status: before,
+        },
+        409,
+      );
+    }
+    // Waits for the manager's CONFIRMED transition - the response describes observed
+    // state, never the request. A failed OS transition reports 502 with the observed
+    // error status so the caller can render it without waiting for SSE.
+    const status = await keepAwake.setEnabled(parsed.data.enabled);
+    const settled = parsed.data.enabled ? status.state === "on" : status.state === "off";
+    if (!settled) {
+      return c.json(
+        {
+          error: status.error ?? "the keep-awake transition failed",
+          code: "keep_awake_failed",
+          status,
+        },
+        502,
+      );
+    }
+    return c.json(status);
+  });
 
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;

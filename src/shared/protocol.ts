@@ -632,6 +632,21 @@ export const SetSessionEffortSchema = z.object({
 export type SetSessionEffortInput = z.infer<typeof SetSessionEffortSchema>;
 
 /**
+ * Turn the transient Keep Awake mode on or off: `PUT /api/keep-awake`.
+ *
+ * Strict and exactly one boolean on purpose. Keep Awake is daemon-run-scoped by an
+ * approved human decision - there is no persisted preference to patch here, and a body
+ * carrying anything beyond `enabled` is a caller confused about that contract, refused
+ * rather than partially honoured.
+ */
+export const KeepAwakeRequestSchema = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict();
+export type KeepAwakeRequest = z.infer<typeof KeepAwakeRequestSchema>;
+
+/**
  * Close a task with a human-recorded outcome (the `/stow` intent -> result loop).
  *
  * `satisfyDependents` is the operator asserting that this task's work is genuinely in

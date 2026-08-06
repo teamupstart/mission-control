@@ -60,6 +60,12 @@ and get your decision back.
   moment a session needs input, a review lands, a session **gets stuck**, or a
   dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
+- **Keeps the Mac awake**, if you ask it to: the live indicator opens a **Keep awake**
+  dropdown whose switch prevents idle system sleep while the display still dims and locks,
+  so agents keep working with the screen dark. Deliberately transient - on until Mission
+  Control quits or restarts, never persisted or reacquired - and lid close, manual Sleep,
+  and the battery safeguards all still win. macOS only; elsewhere it says so instead of
+  pretending. See [Keep awake](#keep-awake-prevent-idle-system-sleep).
 - **Tracks fleet economics**: a badge on every priced card and a topbar cost chip whose
   popover carries the sessions' Claude + Codex API-equivalent estimate, tokens, estimated
   cost per pull request, and rate-limit runway. A separate automation figure attributes the
@@ -226,6 +232,12 @@ you` and means something narrower: `need you` counts SESSIONS in an attention st
 answer` counts the things you can actually settle - and it is the figure that has to match what
 the click opens.
 
+The leading connection segment is itself a button: it opens the
+[Keep awake](#keep-awake-prevent-idle-system-sleep) dropdown, and while that mode is on the
+segment reads **`live · awake`** (or **`live · awake failed`** when the assertion is not
+held) - the connection word stays, because it still qualifies every streamed figure beside
+it.
+
 When the desktop window narrows, the bar progressively collapses secondary labels instead
 of adding ragged rows. The filter becomes its **⌕** glyph; click it or press <kbd>/</kbd> to
 reopen it, and it stays open while a filter is active. **Dispatch keeps its label at every
@@ -233,6 +245,41 @@ supported desktop width.** Collapsed controls keep their tooltips and accessible
 
 The result stays on one row down to roughly half of a desktop screen. Narrower windows may
 fall back to wrapping; phone layouts are not a supported target.
+
+### Keep awake (prevent idle system sleep)
+
+The pulse's leading **live** segment opens a compact **Keep awake** dropdown anchored to
+the indicator. Its one switch keeps this Mac from going to sleep just because you stepped
+away - so long-running agents, Recurring Missions catch-up, and the Foreman keep working
+while the screen is dark.
+
+What it does, exactly: the daemon runs `/usr/bin/caffeinate -i -w <daemon PID>`, which
+prevents **user-idle system sleep** and nothing else. The display still dims and locks on
+your normal schedule. Lid close, choosing Sleep yourself, shutdown, power loss, and the
+thermal and low-battery safeguards all still win - this is an idle-sleep inhibitor, not a
+wake scheduler, and it never keeps the display awake or simulates activity. It does use
+more battery than letting the machine sleep, and the dropdown says so.
+
+While it is on, the indicator reads **`live · awake`** with a purple dot - the word
+carries the mode, so color is never the only signal. If the inhibitor process fails to
+start or exits unexpectedly, the indicator reads **`live · awake failed`** and the
+dropdown carries the bounded error; flipping the switch retries it.
+
+The mode is **deliberately transient**: on until Mission Control quits or restarts, never
+persisted, never reacquired at boot. An orderly shutdown releases the assertion itself,
+and a crash releases it too, because `-w` ties the assertion to the daemon's own
+lifetime. The tradeoff is stated in the dropdown rather than hidden: a daemon restart
+while you are away returns the mode to off. Keep awake is also independent of
+[Away mode](#away-mode) - alert delivery and host power are different decisions, and
+neither implies the other.
+
+Because the **daemon** owns the assertion (not the Electron shell), the switch behaves
+identically in every launch mode: browser dashboard, desktop app, adopted daemon, or a
+LaunchAgent. Unsupported platforms show **unavailable on this system** instead of drawing
+an on state, and while the dashboard is `reconnecting` the switch is disabled - a stale
+`on` must never read as a current claim about the OS. Every open window converges on the
+same observed state over the live channel. The manual verification runbook, including the
+`pmset -g assertions` receipts, is [docs/runbooks/keep-awake.md](docs/runbooks/keep-awake.md).
 
 ### Which terminal you use is declared, not assumed
 

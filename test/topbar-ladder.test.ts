@@ -244,41 +244,77 @@ test("a disconnected pulse keeps its stale figures and review control visible", 
   }
 });
 
-test("filter compaction keeps the review control visible", () => {
+test("filter compaction keeps both interactive pulse controls visible", () => {
+  // The pulse now carries TWO controls: the leading live/Keep-awake trigger
+  // (`.pulse-link`, a button since the Keep Awake feature) and the trailing reviews
+  // control (`.pulse-btn`). An active filter may take the count readouts, but it must
+  // not make the bar's only route to reviews - or its only route to Keep awake -
+  // unreachable. What survives is one compact pill: the live segment leading, the
+  // reviews control trailing, and the hairline the review button inherits from its
+  // hidden siblings as the divider between them.
   const rules = (LADDER.get(3) ?? []).flatMap(([selectors, body]) =>
     selectors.split(",").map((selector) => ({ selector: selector.trim(), body })),
   );
   assert.ok(rules.length > 0, "the filter rung is gone");
 
   const readoutSelectors = rules.filter(({ selector }) =>
-    /\.pulse-seg:not\(\.pulse-btn\)$/.test(selector),
+    /\.pulse-seg:not\(\.pulse-btn\):not\(\.pulse-link\)$/.test(selector),
   );
   assert.equal(readoutSelectors.length, 2, "filter compaction must cover focus and a held term");
   for (const { body } of readoutSelectors) assert.match(body, /display:\s*none/);
 
-  const hiddenPulse = rules.find(
-    ({ selector, body }) => /\.pulse$/.test(selector) && /display:\s*none/.test(body),
-  );
-  assert.equal(hiddenPulse, undefined, "filter compaction hides the entire pulse");
+  // No rung-3 rule may hide the pulse itself or either interactive segment. (The
+  // `.pulse-btn .pulse-dot` rules end with `.pulse-dot`, so they pass this sweep.)
+  for (const { selector, body } of rules) {
+    if (!/display:\s*none/.test(body)) continue;
+    assert.doesNotMatch(selector, /\.pulse$/, "filter compaction hides the entire pulse");
+    assert.doesNotMatch(
+      selector,
+      /\.pulse-link$/,
+      "filter compaction hides the live/Keep-awake trigger",
+    );
+    assert.doesNotMatch(selector, /\.pulse-btn$/, "filter compaction hides the review control");
+  }
 
   const buttonSelectors = rules.filter(({ selector }) => /\.pulse-btn$/.test(selector));
   assert.equal(buttonSelectors.length, 2, "the review control must survive both filter states");
   for (const { body } of buttonSelectors) {
     assert.match(body, /padding:\s*0 9px/);
-    assert.match(body, /border-left:\s*none/);
-    assert.match(body, /border-radius:\s*999px/);
     assert.doesNotMatch(body, /display:\s*none/);
+    // The divider between the two surviving controls is the hairline the review button
+    // inherits from `.pulse-seg + .pulse-seg` even while its siblings are hidden. A
+    // compaction that cancels it fuses the live trigger and the review count into one
+    // unreadable pill.
+    assert.doesNotMatch(body, /border-left:\s*none/);
   }
 
-  const emptyPulseSelectors = rules.filter(({ selector }) =>
-    /\.pulse:not\(:has\(\.pulse-btn\)\)$/.test(selector),
+  // The empty-wrapper HIDE is GONE, not merely relaxed: with the live control leading,
+  // the pulse is never empty, and a resurrected `.pulse:not(:has(.pulse-btn))` hide
+  // would take the Keep awake control off screen with it. Anchored at the subject and
+  // gated on display so the sole-survivor ROUNDING rule below does not trip it.
+  const emptyPulseSelectors = rules.filter(
+    ({ selector, body }) =>
+      /\.pulse:not\(:has\(\.pulse-btn\)\)$/.test(selector) && /display:\s*none/.test(body),
+  );
+  assert.deepEqual(
+    emptyPulseSelectors.map(({ selector }) => selector),
+    [],
+    "the empty-pulse hide is back, and it would take the Keep awake control off screen",
+  );
+
+  // And when no reviews control exists (empty inbox - the common fleet), the surviving
+  // live trigger takes the full rounding the review button used to take as sole
+  // survivor: its leading-edge-only radius would otherwise draw a square trailing
+  // corner on hover inside the pulse's fully rounded pill.
+  const soleSurvivor = rules.filter(({ selector }) =>
+    /\.pulse:not\(:has\(\.pulse-btn\)\) \.pulse-link$/.test(selector),
   );
   assert.equal(
-    emptyPulseSelectors.length,
+    soleSurvivor.length,
     2,
-    "an empty pulse wrapper must be removed for focus and a held term",
+    "the lone live trigger must regain full rounding for focus and a held term",
   );
-  for (const { body } of emptyPulseSelectors) assert.match(body, /display:\s*none/);
+  for (const { body } of soleSurvivor) assert.match(body, /border-radius:\s*999px/);
 });
 
 test("Dispatch never degrades, and the labels that do are marked", () => {

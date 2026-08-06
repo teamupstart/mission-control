@@ -47,23 +47,32 @@ export function useTaskSources(): TaskSourcesState {
   // would rebuild every one of them on each poll). This is what a revert restores.
   const viewRef = useRef<TaskSourcesView | null>(null);
   /**
-   * How many edits this panel has STARTED, so a read that left before one cannot land after
-   * it - `readIsCurrent`, the same guard `useHarnesses` carries, and here for the same
-   * reason plus a worse one.
+   * ---- The one rule this hook is built on ----
    *
-   * The flash is the obvious half: this hook polls every 4 seconds and every response used
-   * to be written into state unconditionally, so a GET that left before a save came back
-   * carrying the pre-save config and snapped the field back to the value the operator had
-   * just changed away from, while the daemon held the new one.
+   * A response may be written into the view ONLY IF the client's picture of the world has not
+   * moved since that response was requested. Everything below is that sentence, and the reason it
+   * needs saying once rather than being re-derived per call site is that four separate defects here
+   * were all the same mistake wearing different clothes.
    *
-   * The half that is not a flash: a kind's fields write the WHOLE config blob composed from
-   * what is on screen (`{...cfg, jql}`), so once a stale read had put the old value back,
-   * the very next field's commit persisted it. Editing the Jira site and then the JQL filter
-   * saved the filter and silently reverted the site. Found by
-   * `settings-task-sources-jira.spec.ts` failing under the full suite's load, and pinned
-   * there deterministically by holding a read open.
+   * Why it bites at all: this panel polls every 4 seconds, applies edits optimistically, and a
+   * kind's fields compose the WHOLE config blob from what is on screen (`{...cfg, jql}`). So a
+   * response applied over a value the operator has moved past is not a flash - the very next
+   * field's commit persists the reverted blob, and the edit is gone from the daemon for good.
+   *
+   * The picture moves for two different reasons, which is why there are two counters:
+   *
+   *  - `editSeq` - an edit has STARTED. A read that left before it cannot describe it.
+   *  - `writeGen` - a write has LANDED. A read that left before that write describes an older
+   *    server, even if no new edit began in between.
+   *
+   * Both are needed, and one is not the other. Editing B while A is in flight moves `editSeq`
+   * only; B's own PUT landing moves `writeGen` only. A poll that left after B's edit but before
+   * B's PUT arrived carries B's `editSeq` and yet holds a pre-B server, which is exactly how the
+   * fourth defect got in: `readIsCurrent(B, B)` said yes and restored the stale value after B's
+   * own confirming read had already applied the right one.
    */
   const editSeq = useRef(0);
+  const writeGen = useRef(0);
 
   const setView = useCallback((v: TaskSourcesView | null): void => {
     viewRef.current = v;
@@ -71,27 +80,29 @@ export function useTaskSources(): TaskSourcesState {
   }, []);
 
   /**
-   * Read the route, and apply the result only if it can still be the whole truth.
+   * Read the route, and apply the result only if it can still be the whole truth - the rule above.
    *
-   * `seqAtRequest` is which edit this read is entitled to reflect, and a caller that is
-   * CONFIRMING a particular save must pass that save's own sequence rather than let this snapshot
-   * the latest one. The difference is a real lost write:
+   * BOTH counters are checked, and each catches a case the other cannot:
    *
-   *  - save A goes out; edit B is made and queues behind it;
-   *  - A's confirming read defaults to the CURRENT sequence, which is already B's;
-   *  - the response contains only A, `readIsCurrent(B, B)` says yes, and B's optimistic value is
-   *    wiped from the view before B has even been sent;
-   *  - the operator now edits C from that reverted view, so C's whole-config blob has no B in it,
-   *    and C - queued last - overwrites B on the daemon for good.
+   *  - a later EDIT means this response cannot describe what is now on screen;
+   *  - a later landed WRITE means this response describes an older server than the one the client
+   *    has already been told about, which is the poll-versus-confirming-read race.
    *
-   * Defaulting to `editSeq.current` is right for the POLL, which is entitled to whatever is
-   * current when it leaves. It is wrong for a confirming read, which is answering an older
-   * question. `save` passes its own.
+   * `seqAtRequest` is which edit this read is entitled to reflect. A caller CONFIRMING a particular
+   * save passes that save's own sequence rather than letting this snapshot the latest one, because
+   * defaulting there wipes an edit queued behind it: A's confirming read would carry B's sequence,
+   * pass its own guard, and remove B from the view before B had even been sent - after which the
+   * operator's next edit composes a blob without B and overwrites it for good. The POLL keeps the
+   * default, because whatever is current when a poll leaves is exactly what a poll is asking about.
    */
   const refresh = useCallback(
     async (seqAtRequest: number = editSeq.current): Promise<void> => {
+      const genAtRequest = writeGen.current;
       const v = await fetchTaskSources();
-      if (v && readIsCurrent(seqAtRequest, editSeq.current)) setView(v);
+      if (!v) return;
+      if (!readIsCurrent(seqAtRequest, editSeq.current)) return;
+      if (!readIsCurrent(genAtRequest, writeGen.current)) return;
+      setView(v);
     },
     [setView],
   );
@@ -158,6 +169,11 @@ export function useTaskSources(): TaskSourcesState {
           return false;
         }
         setError(null);
+        // The server has moved, so every read already in flight is describing an older one. This
+        // is what invalidates a poll that left after this edit but before this write arrived -
+        // without it, such a poll carries this edit's sequence, passes the edit check, and puts
+        // the pre-write config back on top of the confirming read below.
+        writeGen.current += 1;
         // THIS save's sequence, not whatever is current: a response that predates a queued edit
         // must not be applied over it. See `refresh`.
         await refresh(seq);

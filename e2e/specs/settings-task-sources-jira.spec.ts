@@ -390,6 +390,121 @@ test("a save's confirming read cannot wipe an edit that is queued behind it", as
     .toMatchObject({ site: "acme.atlassian.net", jql: JQL });
 });
 
+test("a poll that left before a write landed cannot undo the write's own confirming read", async ({
+  page,
+  daemon,
+}) => {
+  // The fourth and last write race, and the one the edit counter alone cannot see. A poll that
+  // leaves AFTER an edit but BEFORE that edit's write reaches the daemon carries the edit's own
+  // sequence and yet holds a pre-write server. Once the write lands and its confirming read has
+  // applied the right config, that poll arrives, passes the edit check against itself, and puts
+  // the stale config back - after which the next field commit persists it.
+  //
+  // So the client tracks two things, not one: edits STARTED and writes LANDED. This spec is the
+  // second of those, and it is why `writeGen` exists.
+  const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+    data: {
+      sources: [{ id: "jira-poll", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
+    },
+  });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
+
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  const jql = page.getByLabel("JQL filter");
+  await expect(jql).toHaveValue("");
+
+  let releasePut: (() => void) | null = null;
+  const putReleased = new Promise<void>((r) => {
+    releasePut = r;
+  });
+  let releasePoll: (() => void) | null = null;
+  const pollReleased = new Promise<void>((r) => {
+    releasePoll = r;
+  });
+  let putHeld = false;
+  let pollHeld = false;
+  let putHit: (() => void) | null = null;
+  const putIntercepted = new Promise<void>((r) => {
+    putHit = r;
+  });
+  let pollHit: (() => void) | null = null;
+  const pollIntercepted = new Promise<void>((r) => {
+    pollHit = r;
+  });
+  let pollDelivered: (() => void) | null = null;
+  const pollLanded = new Promise<void>((r) => {
+    pollDelivered = r;
+  });
+
+  await page.route("**/api/task-sources/config", async (route) => {
+    const method = route.request().method();
+    // Hold the edit's write, so a poll can leave while the daemon still knows nothing about it.
+    if (method === "PUT" && !putHeld) {
+      putHeld = true;
+      putHit?.();
+      await putReleased;
+      return route.fallback();
+    }
+    // The first poll to leave during that window. Its body is read NOW - pre-write - and delivered
+    // after the write's own confirming read has already applied the correct config.
+    if (method === "GET" && putHeld && !pollHeld) {
+      pollHeld = true;
+      const res = await route.fetch();
+      const body = await res.text();
+      pollHit?.();
+      await pollReleased;
+      await route.fulfill({ response: res, body });
+      pollDelivered?.();
+      return;
+    }
+    return route.fallback();
+  });
+
+  // The edit. Its PUT is held, so `editSeq` has moved and the daemon has not.
+  await jql.fill(JQL);
+  await page.keyboard.press("Tab");
+  await putIntercepted;
+
+  // Wait out one poll tick (4s) so a read leaves inside that window and captures the pre-write
+  // config. This is the only slow step here, and it is the whole scenario.
+  await pollIntercepted;
+
+  // Let the write land. Its confirming read follows and is the first GET the page sees answered,
+  // because the poll above is still held.
+  const confirming = page.waitForResponse(
+    (r) =>
+      r.url().includes("/api/task-sources/config") &&
+      r.request().method() === "GET" &&
+      r.status() === 200,
+  );
+  releasePut?.();
+  await confirming;
+  await expect(jql).toHaveValue(JQL);
+
+  // Now the stale poll arrives.
+  releasePoll?.();
+  await pollLanded;
+  await page.evaluate(
+    () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+  );
+
+  // Read once, for trap 6's reason: the next poll heals this a few seconds later, so a retrying
+  // assertion would pass over the defect.
+  expect(
+    await jql.inputValue(),
+    "a read that predates a landed write must not be applied after it",
+  ).toBe(JQL);
+
+  // And the daemon still holds it - nothing composed a blob from a reverted view.
+  await expect
+    .poll(async () => {
+      const res = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
+      const body = (await res.json()) as { sources?: { config?: { jql?: string } }[] };
+      return body.sources?.[0]?.config?.jql ?? "";
+    })
+    .toBe(JQL);
+});
+
 test("an unusable Jira source names the fix, and a healthy one names Jira rather than gh", async ({
   page,
   daemon,

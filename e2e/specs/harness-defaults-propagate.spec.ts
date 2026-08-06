@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { recordsIn } from "../fixtures/records.ts";
 
 /**
  * INVESTIGATION SPEC - reproduces the reported "per-harness model changes are not taken
@@ -175,12 +176,7 @@ test("a model changed in Settings reaches the very next dispatch's command line"
   await expect(dialog).toBeHidden();
 
   const dir = join(daemon.recordDir, "claude");
-  const read = (): { argv: string[] }[] =>
-    existsSync(dir)
-      ? readdirSync(dir)
-          .filter((f) => f.endsWith(".json"))
-          .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { argv: string[] })
-      : [];
+  const read = (): { argv: string[] }[] => recordsIn<{ argv: string[] }>(dir);
 
   // Polled: the card registers before the child has run far enough to write its record.
   await expect

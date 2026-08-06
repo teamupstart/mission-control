@@ -10,14 +10,17 @@ shows what the row looks like without them.
 ## The header
 
 `Copy run id`, `Export run`, `Export version` and `Open version` are gone from the action row.
-What remains is `Copy feedback` and `Open PR` - `Open PR` still renders disabled on a run with
-no pull request to open, which is the next phase's repair, not this one's.
+What remains is `Copy feedback`; this run has no pull request, so `Open PR` is absent rather than
+disabled - the repair that landed with the derived next move, one phase after this frame's own
+subtraction. It is reframed here rather than left describing the greyed-out button, because a
+committed capture that keeps naming a control the build no longer renders is a worse artifact
+than no capture at all.
 
 The `v1` badge is now the control that opens the composer, which is where the `Open version`
 button went. It is a `<button>` dressed by the same pill rule as the `<span>` it replaced, so
 the only visible difference is the pointer and the hover.
 
-![The run header with two controls in its action row and the version badge as a link](./01-header.png)
+![The run header with Copy feedback in its action row and the version badge as a link](./01-header.png)
 
 ## The disclosure, closed
 

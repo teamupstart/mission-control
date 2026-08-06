@@ -372,8 +372,6 @@ const render = (
   props: Record<string, unknown> = {},
 ): string => renderToStaticMarkup(createElement(WorkflowRunView, {
   detail,
-  onResubmit: async () => {},
-  onRetry: async () => {},
   onCancel: async () => {},
   ...props,
 }));
@@ -514,7 +512,7 @@ test("the timeline is phrased in names, not payload JSON", () => {
   assertNoGraphIds(html);
 });
 
-test("a waiting run offers both resubmissions, the run actions, and cancel", () => {
+test("a waiting run offers ONE primary move, the context controls, and cancel", () => {
   const base = runningDetail();
   const html = render({
     ...base,
@@ -522,10 +520,16 @@ test("a waiting run offers both resubmissions, the run actions, and cancel", () 
     run: { ...base.run, status: "waiting_for_session" },
   });
   const header = headerOf(html);
-  assert.match(header, /Preview fresh evidence/);
-  assert.match(header, /Preview unchanged/);
+  assert.match(header, /class="btn btn-primary"[^>]*>Preview fresh evidence</);
+  // Exactly one primary, always. The row this replaced offered five controls of equal weight,
+  // and `Preview unchanged` was one of them - a co-equal twin that only ever answers a refusal
+  // which has not happened yet on a plainly waiting run.
+  assert.equal((header.match(/btn-primary/g) ?? []).length, 1);
+  assert.doesNotMatch(header, /Preview unchanged/);
   assert.match(header, /Copy feedback/);
   assert.match(header, /Cancel run/);
+  // Nothing to explain: the move IS the explanation.
+  assert.doesNotMatch(header, /wf-run-why/);
   // The four controls that answer nothing a person reading a run asked are gone from the
   // whole page under these names: three moved into the audit disclosure at its foot, and
   // Open version was absorbed by the version badge, which is now the link itself.
@@ -641,15 +645,14 @@ test("a run whose version is missing cannot navigate to a composer that has noth
  * fault is routinely gone. The server accepts a resubmission for it; the header offered none,
  * which made a recoverable run look terminal.
  */
-test("a run blocked on a cleared check cleanup still offers both resubmissions", () => {
+test("a run blocked on a cleared check cleanup still offers the resubmission", () => {
   const base = runningDetail();
   const html = render({
     ...base,
     summary: { ...base.summary, status: "blocked" },
     run: { ...base.run, status: "blocked", currentPhase: "check_cleanup_unresolved" },
   });
-  assert.match(html, /Preview fresh evidence/);
-  assert.match(html, /Preview unchanged/);
+  assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Preview fresh evidence</);
   // The invitation names resuming, not a new round: the stalled round is what continues.
   assert.ok(tooltipLabels(html).some((label) => label.includes("resume this run where it stalled")));
   assert.match(html, /Cancel run/);
@@ -657,10 +660,15 @@ test("a run blocked on a cleared check cleanup still offers both resubmissions",
 });
 
 /**
- * The refusals mirror the server's, so the control never promises a call that will 409.
- * An orphaned binding is the common one: every `session_disappeared` run carries it.
+ * The state the whole redesign was reported from: nine controls, two of them useful.
+ *
+ * The refusals still mirror the server's, so nothing here promises a call that would 409. What
+ * changed is what a refusal PRODUCES. It used to disable two buttons and hide the reason in
+ * their tooltip, which left the one honest move - Cancel run - last and furthest right. Now the
+ * reason is a sentence in the page and the submissions are simply absent, because a control that
+ * cannot run is not an explanation.
  */
-test("a blocked run whose binding was orphaned disables resubmission and says why", () => {
+test("a blocked run whose binding was orphaned says why in prose, with no dead submissions", () => {
   const base = runningDetail();
   const html = render({
     ...base,
@@ -668,25 +676,85 @@ test("a blocked run whose binding was orphaned disables resubmission and says wh
     summary: { ...base.summary, status: "blocked" },
     run: { ...base.run, status: "blocked", currentPhase: "session_disappeared" },
   });
-  assert.ok(hasTooltip(html, "The bound session is gone, so no further round can be prepared"));
-  // Present but unusable, rather than absent: the operator learns why, and Cancel run remains.
-  assert.match(html, /Preview fresh evidence/);
-  assert.match(html, /Preview unchanged/);
-  assert.equal((html.match(/<button[^>]*disabled=""[^>]*>Preview/g) ?? []).length, 2);
-  assert.match(html, /Cancel run/);
+  const header = headerOf(html);
+  assert.match(
+    header,
+    /<p class="wf-run-why"><b>The session this run was reviewing is gone,<\/b> so it cannot take another round\./,
+  );
+  // And it names what IS available, which is the one thing the old tooltip never did.
+  assert.match(header, /Cancelling clears it from your queue/);
+  assert.doesNotMatch(header, /btn-primary/);
+  assert.doesNotMatch(header, /Preview fresh evidence/);
+  assert.doesNotMatch(header, /Preview unchanged/);
+  assert.doesNotMatch(header, /<button[^>]*disabled=""[^>]*>Preview/);
+  assert.match(header, /Cancel run/);
   assertNoGraphIds(html);
 });
 
 /** A run past its configured rounds is refused by the server, so the header must not offer it. */
-test("a blocked run out of repair rounds disables resubmission and says why", () => {
+test("a blocked run out of repair rounds says so and names where the budget lives", () => {
   const base = runningDetail();
   const html = render({
     ...base,
     summary: { ...base.summary, status: "blocked", round: 6, maxRepairRounds: 5 },
     run: { ...base.run, status: "blocked", currentPhase: "round_limit" },
   });
-  assert.ok(hasTooltip(html, "This run has used every repair round its binding allows"));
+  const header = headerOf(html);
+  assert.match(header, /<b>This run has used every repair round its binding allows,<\/b>/);
+  assert.match(header, /A larger repair budget is a change to the binding/);
+  assert.doesNotMatch(header, /btn-primary/);
   assertNoGraphIds(html);
+});
+
+/**
+ * A decision has no primary, and saying so is the point.
+ *
+ * An uncertain delivery has two mutually exclusive resolutions and choosing between them needs
+ * the operator's eyes on the session's pane. So the header does not hoist a fake primary; it
+ * names the section that owns the choice, which is the same closing move `runRemedy` makes for
+ * the triage row.
+ */
+test("a run blocked on a delivery decision points at the section that owns it", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "blocked" },
+    run: { ...base.run, status: "blocked", currentPhase: "delivery_uncertain" },
+  });
+  const header = headerOf(html);
+  assert.match(header, /<b>A repair packet may or may not have reached the session\.<\/b>/);
+  assert.match(header, /Confirm or discard it in Deliveries below/);
+  assert.doesNotMatch(header, /btn-primary/);
+  assert.match(header, /Cancel run/);
+});
+
+/**
+ * The POST-only invariant, guarded where it would be broken.
+ *
+ * `inspector_disabled` is the state that tempts a "Turn Inspector on" primary. Inspector
+ * settings open through a callback prop, so a POST descriptor could not express one - and the
+ * gate section below already renders the button. If somebody reintroduces it as a primary, this
+ * fails.
+ */
+test("an Inspector-disabled block has no primary and names the gate section instead", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "blocked" },
+    run: { ...base.run, status: "blocked", currentPhase: "inspector_disabled" },
+  });
+  const header = headerOf(html);
+  assert.match(header, /<b>Inspector is switched off, so the gate cannot be evaluated\.<\/b>/);
+  assert.match(header, /Turn it back on from Open Inspector settings, in Inspector final gate below/);
+  assert.doesNotMatch(header, /btn-primary/);
+  assert.doesNotMatch(header, /Turn Inspector on/);
+});
+
+/** A moving run is explained by the strip below it, not by a paragraph telling you to wait. */
+test("a running run offers no primary and no sentence", () => {
+  const header = headerOf(render(runningDetail()));
+  assert.doesNotMatch(header, /btn-primary/);
+  assert.doesNotMatch(header, /wf-run-why/);
 });
 
 test("a live delivery keeps every recovery control and says what each state means", () => {
@@ -1007,9 +1075,13 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.match(html, /Legacy finding: detail was not persisted/);
   assert.match(html, /Persona review bypassed for Inspector repair/);
   assert.match(html, /moved from oldhead01234 to newhead01234/);
-  assert.match(html, /Recheck Inspector/);
+  // The gate's recheck IS this run's next move, so it is the header's primary and wears the
+  // imperative a reader can act on rather than the route's own name.
+  assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Check again</);
   assert.match(html, /Restart full workflow/);
   assert.match(html, /Open Inspector settings/);
+  // This gate has an adopted pull request, so Open PR is present, enabled, and a real link.
+  assert.match(headerOf(html), /<a class="btn btn-ghost" href="https:\/\/github.com\/owner\/repo\/pull\/91"/);
   assert.match(html, /Open PR/);
   assert.match(html, /This Inspector repair round ran no Personas/);
   assert.match(html, /wf-pipeline-status workflow-passed wf-status-explained/);
@@ -1060,7 +1132,7 @@ test("scrubbing to an earlier round never withdraws a live recovery action", () 
   assert.match(render(gated, { roundId: "submission-3" }), /Persona review bypassed/);
 });
 
-test("Prepare PR and Retry provider call appear only under their own conditions", () => {
+test("the PR handoff and the provider retry are each the primary only in their own state", () => {
   const base = runningDetail();
   const waitingForPr = render({
     ...base,
@@ -1092,9 +1164,18 @@ test("Prepare PR and Retry provider call appear only under their own conditions"
       findings: [],
     },
   } as WorkflowRunDetail);
-  assert.match(waitingForPr, /Prepare PR in session/);
+  assert.match(headerOf(waitingForPr), /class="btn btn-primary"[^>]*>Ask the session to open a PR</);
   assert.match(waitingForPr, /No pull request has been opened/);
-  assert.doesNotMatch(waitingForPr, /Retry provider call/);
+  assert.doesNotMatch(waitingForPr, /Retry the failed call/);
+  /*
+   * The case a policy-only gate would get wrong, and the reason the condition is the URL.
+   *
+   * This run's completion policy IS `inspector`, so a policy check would keep `Open PR` here -
+   * on a run parked in `waiting_for_pr` precisely BECAUSE no pull request is adopted yet, which
+   * makes it the most common destination-less button of the lot. Absent, not disabled.
+   */
+  assert.doesNotMatch(headerOf(waitingForPr), /Open PR/);
+  assert.doesNotMatch(waitingForPr, /This run has no adopted pull request/);
 
   const blocked = render({
     ...base,
@@ -1104,10 +1185,15 @@ test("Prepare PR and Retry provider call appear only under their own conditions"
       ? { ...item, state: "error" as const, error: "provider_timeout" }
       : item),
   } as WorkflowRunDetail);
-  assert.match(blocked, /Retry provider call/);
+  // Retry outranks the resubmission here: the exhausted call is resumable inside the round the
+  // run already paid for, where a fresh resubmission would open a new one.
+  assert.match(headerOf(blocked), /class="btn btn-primary"[^>]*>Retry the failed call</);
+  assert.doesNotMatch(headerOf(blocked), /Preview fresh evidence/);
   assert.match(blocked, /Provider timeout\./);
   assert.match(blocked, /provider_timeout/);
-  assert.doesNotMatch(blocked, /Prepare PR in session/);
+  assert.doesNotMatch(blocked, /Ask the session to open a PR/);
+  // No gate at all on this fixture, so no PR to open. Absent rather than disabled.
+  assert.doesNotMatch(headerOf(blocked), /Open PR/);
 });
 
 test("a version this build cannot express as stages still renders on the canvas", () => {

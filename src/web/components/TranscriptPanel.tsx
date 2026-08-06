@@ -45,6 +45,7 @@ import {
   type FindHit,
   type FindScope,
 } from "../lib/find.ts";
+import { ConversationActivity } from "./ConversationActivity.tsx";
 import { ConversationFindBar, ConversationFindRail } from "./ConversationFind.tsx";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
@@ -242,6 +243,13 @@ export function TranscriptPanel({
    * detail. The query survives a close/reopen the way a browser's find does.
    */
   const [find, setFind] = useState<FindState | null>(null);
+  /**
+   * The narrow layout's Observed-activity disclosure. Closed by default because the
+   * rail is ambient rather than asked for: a narrow card's height belongs to the
+   * transcript until the reader chooses otherwise. Wide layouts ignore this - the
+   * stylesheet shows the list and hides the toggle above the container breakpoint.
+   */
+  const [activityOpen, setActivityOpen] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -666,9 +674,11 @@ export function TranscriptPanel({
       onClick={(e) => e.stopPropagation()}
     >
       <SessionLaunchers session={session} registerLaunchers={registerLaunchers} />
-      {/* The split exists only while find does. Closed, the log is the sole child and
-          the DOM is byte-for-byte what it was before this feature - which is the
-          "costs nothing to read a conversation you are not searching" property. */}
+      {/* The split's secondary column has exactly one owner at a time: find while it
+          is open, Observed activity otherwise. Both render at the same width, so the
+          takeover and the restore never reflow the conversation being read - and the
+          log element itself stays mounted throughout, so the reader's scroll position
+          survives the swap. */}
       <div className="find-split" data-find={find ? "open" : "closed"}>
         <div className="find-logwrap">
           {find && (
@@ -761,7 +771,7 @@ export function TranscriptPanel({
             that gives the rail its 244px column, and the container query that stacks it
             under the log at narrow widths flips THIS element's direction. Nested inside
             the wrapper the rail would sit above the conversation at every width. */}
-        {find && (
+        {find ? (
           <ConversationFindRail
             query={find.query}
             scope={find.scope}
@@ -771,6 +781,12 @@ export function TranscriptPanel({
             onJump={(i) => setFind((f) => (f ? { ...f, index: i } : f))}
             loadedOnly={canLoadOlder}
             onLoadOlder={() => void loadOlder()}
+          />
+        ) : (
+          <ConversationActivity
+            messages={messages}
+            open={activityOpen}
+            onToggle={() => setActivityOpen((v) => !v)}
           />
         )}
       </div>

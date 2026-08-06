@@ -63,6 +63,15 @@ const SLOW_WORKFLOW_CONTEXT_MS = 5_000;
  * the request id they echo is held by the driver.
  */
 const ASK_TURN = "ask me which linter to use";
+/**
+ * The prompt that makes this CLI leave deterministic tool activity in its transcript:
+ * one assistant turn carrying prose AND a tool call, then a tool-only turn, then the
+ * ordinary echoed reply. That pair of shapes is the whole surface the Observed
+ * activity browser specs assert against - the mixed turn is the one the main log's
+ * tool-run folding does NOT fold, so a rail that derived from the folded rows instead
+ * of the messages would silently miss it.
+ */
+const TOOL_TURN = "E2E_OBSERVED_TOOLS";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (recordDir) {
@@ -457,6 +466,21 @@ rl.on("line", (line) => {
     // answer comes back down, so the card stays "waiting on you" for the spec to act on.
     if (prompt === ASK_TURN) {
       ask(prompt);
+      return;
+    }
+
+    // Deterministic transcript tool activity, in the two shapes the real CLI writes:
+    // a `tool_use` beside prose, and a `tool_use` alone. `answer` then closes the turn
+    // with the echoed reply, which is the anchor a spec waits on before asserting.
+    if (prompt === TOOL_TURN) {
+      appendTurn("assistant", [
+        { type: "text", text: "Mock reply with observed tools" },
+        { type: "tool_use", id: `obs-${turn}-read`, name: "Read", input: { file_path: "src/web/styles.css" } },
+      ]);
+      appendTurn("assistant", [
+        { type: "tool_use", id: `obs-${turn}-bash`, name: "Bash", input: { command: "ls -la e2e" } },
+      ]);
+      answer([prompt]);
       return;
     }
 

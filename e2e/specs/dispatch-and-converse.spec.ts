@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { recordsIn } from "../fixtures/records.ts";
 import { DAEMON_TERMINAL_IDENTITY, type DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
 
@@ -753,12 +754,7 @@ test("the dispatched agent was launched headless, without the daemon's terminal 
   // The fake records its own argv and env, so the mock doubles as an assertion surface:
   // these are properties of the launch that no amount of DOM inspection could reach.
   const dir = join(daemon.recordDir, "claude");
-  const read = (): Invocation[] => {
-    if (!existsSync(dir)) return [];
-    return readdirSync(dir)
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as Invocation);
-  };
+  const read = (): Invocation[] => recordsIn<Invocation>(dir);
 
   // POLLED, not read once. The card appears as soon as the daemon registers the session,
   // which is BEFORE the child process it launched has run far enough to write anything -

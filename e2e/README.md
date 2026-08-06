@@ -532,6 +532,33 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 `--workers=1` keeps the seven tests' output from interleaving, and the `tee` is the only thing
 that produces `transcript.txt`.
 
+### A Jira task source in Settings
+
+[`docs/evidence/jira-task-source/`](../docs/evidence/jira-task-source/) carries three frames
+from `specs/settings-task-sources-jira.spec.ts`, behind the same `MC_E2E_EVIDENCE` flag. The
+spec can prove a field exists, holds a value and survives a reload; the frames are what show
+that the Jira group tiles into the card's existing rhythm, and that the sentence naming a
+missing credential lands somewhere a person will read it.
+
+That last one is the frame two fixes were made for, and neither is visible in a DOM
+assertion alone: the action note moved **below** the buttons that produce it (the card is
+taller than the pane, so an answer printed at the top arrived off screen above the question),
+and it now carries the **error** tone rather than the dim hint tone it shared with
+"Forgotten - the next sweep will file these items again".
+
+The spec reaches a real preflight for the empty-filter case, because that answer is returned
+before any binary or socket is touched and is therefore identical on every machine. The
+credential sentences are fulfilled through `page.route`: what the panel owes an operator is
+that it renders the daemon's answer verbatim, and reaching a real Jira for that would put a
+token and a VPN in the suite's path.
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/settings-task-sources-jira.spec.ts \
+  --workers=1 --reporter=list
+```
+
 ### Where the Inspector's brief lives
 
 [`docs/evidence/inspector-brief-location/`](../docs/evidence/inspector-brief-location/) carries
@@ -673,7 +700,7 @@ story is worthless if the daemon under test is not the one it thinks it is:
 
 There are no `data-testid` attributes and none should be added - there are 229 `aria-label`s
 and 155 `role`s, so `getByRole`/`getByLabel`/`getByPlaceholder` already work and stay
-correct through refactors. Four traps, all of which have cost time already:
+correct through refactors. Seven traps, all of which have cost time already:
 
 1. **Never use `{ exact: true }` on a button name.** Keyboard hints render as `<kbd>` inside
    the label and are part of the accessible name: the dispatch button is `"+Dispatch"`.
@@ -695,6 +722,17 @@ correct through refactors. Four traps, all of which have cost time already:
    `DAEMON_TERMINAL_IDENTITY` does this for the three pane variables `sdkSubprocessEnv`
    strips. The same reasoning applies to any "did not happen" assertion: arrange for it to be
    able to happen, or the test is decoration.
+6. **A web-first assertion cannot see a TRANSIENT wrong state.** `expect(locator).toHaveValue()`
+   and friends retry for the whole timeout, so a value that is wrong now and right in two
+   seconds passes - and if a poll is what corrects it, the assertion passes over exactly the
+   defect it was written for. `settings-task-sources-jira.spec.ts` needs `await
+   locator.inputValue()` read once, after a barrier that says when "now" is, because the panel's
+   own 4s poll heals the flash it is asserting about. Retry when you are waiting for something
+   to become true; read once when the claim is that something never became false.
+7. **Verify a regression test against the broken build.** Both traps above produced a green test
+   on a build with the fix reverted, which is the only way to find that out. `git stash push`
+   the fix, rebuild, run the case, see it red, then restore. If it cannot be made red, it is
+   not pinning anything.
 
 Each test gets its own daemon (`fixtures/test.ts`). That costs about a second and a half and
 buys independence: a spec asserting "exactly one session on the fleet" must not silently

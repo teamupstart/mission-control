@@ -456,6 +456,12 @@ export function SettingsPage({
     tabRefs.current.get(nextId)?.focus();
   }
 
+  // `pending` remains as the record of the latest request after its flash completes. Panels
+  // may unmount as the operator changes categories, so only hand Foreman a request this page
+  // has not consumed; otherwise a remount would mistake the stale record for a new jump and
+  // reopen its old tab.
+  const unhandledJump = pending && pending.id !== handled.current ? pending : null;
+
   function renderCategory(id: SettingsCategoryId): React.JSX.Element {
     switch (id) {
       case "display":
@@ -483,8 +489,8 @@ export function SettingsPage({
           <ForemanSettingsPanel
             state={foreman}
             onNavigate={navigateWithAnchor}
-            jumpAnchor={pending?.anchor ?? null}
-            jumpRequestId={pending?.id ?? null}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
           />
         );
       case "workflows":

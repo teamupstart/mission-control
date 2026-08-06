@@ -135,6 +135,13 @@ test("a settings deep link selects the closed Foreman tab before flashing its co
   await expect(tab(dashboard, "Safety")).toHaveAttribute("aria-selected", "true");
   await expect(target).toBeVisible();
   await expect(target).toHaveClass(/settings-flash/);
+
+  // The completed request stays in SettingsPage as history, but must not act like a new
+  // request when changing categories unmounts and later remounts the Foreman panel.
+  await dashboard.getByRole("tab", { name: "Trust" }).click();
+  await dashboard.getByRole("tab", { name: "Foreman" }).click();
+  await expect(tab(dashboard, "Posture")).toHaveAttribute("aria-selected", "true");
+  await expect(panel(dashboard, "Posture")).toBeVisible();
 });
 
 test("Live repositories is a read-only count that links to the separate Trust editor", async ({

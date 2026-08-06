@@ -1970,9 +1970,11 @@ a human wrote; anything past 4000 characters is truncated and says so.
 **A sweep reads the whole filter, not its first page.** It pages until the result set is
 exhausted, and the [ledger](#a-task-you-delete-stays-deleted) is what stops the next sweep
 re-filing any of it - so a queue of 400 issues drains at **Most tasks per sweep** per sweep
-instead of stopping after the first page forever. One sweep will read at most **1000 issues or
-50 requests**, whichever comes first; a filter bigger than that has a tail no sweep can reach,
-so it is reported on the source ("narrow the JQL…") rather than silently truncated.
+instead of stopping after the first page forever. One sweep processes at most **1000 issues**, over at most
+**50 page requests**, whichever it reaches first (plus a single-issue check at that boundary, to
+tell a filter that genuinely ended from one with a tail). A filter bigger than that has a tail
+no sweep can reach, so it is reported on the source ("narrow the JQL…") rather than silently
+truncated.
 
 **Auth is a ladder, and no rung of it stores a secret.**
 

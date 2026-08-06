@@ -65,15 +65,22 @@ const REST_SEARCH_PATH = "/rest/api/3/search/jql";
  * issues is not a background job. Hitting it is reported (`sweepResultFromWalk`) rather than
  * silently truncated, because a filter this source cannot see the end of has a tail that is
  * unreachable however many times it runs, and the fix - narrow the JQL - is the operator's.
+ *
+ * This is a HARD cap on what one sweep processes, and the truncation sentence quotes it, so
+ * nothing may exceed it - including the boundary lookahead, which is why that asks for a single
+ * issue and keeps none of it (`confirmTail`).
  */
 const MAX_SWEEP_ISSUES = 1000;
 
 /**
- * Most REQUESTS one sweep may spend, whatever page size is configured.
+ * Most PAGE requests one sweep may spend, whatever page size is configured.
  *
  * The issue ceiling alone is not a bound on work: at a page size of 1 it authorises a thousand
  * round trips, and on the CLI rung a thousand subprocesses. Both bounds are needed, and
  * whichever is reached first stops the walk and reports truncation.
+ *
+ * Exactly one more request is possible on top of this, and only at the boundary: the
+ * single-issue lookahead in `confirmTail`, which asks whether the filter genuinely ended.
  */
 const MAX_SWEEP_PAGES = 50;
 
@@ -829,10 +836,17 @@ async function walkCli(cfg: JiraConfig, ctx: SweepContext, budget: WalkBudget): 
  * its filter completely in an error state on every sweep, telling the operator to narrow a JQL
  * that is already fine. One extra request settles it, and it is spent only at the boundary.
  *
- * What it finds is KEPT rather than discarded - the issues are real and `ingest.ts` should have
- * the chance to file them - so the ceiling is "up to `MAX_SWEEP_ISSUES`, plus the page that
- * proved the end". A lookahead that fails leaves the question open, and an open question about
- * completeness is reported as truncation rather than assumed away.
+ * It asks for ONE issue and keeps NOTHING. This is a yes/no question, and the cheapest honest
+ * form of it: a full-page lookahead would cost a page to answer one bit, and - because the
+ * question is "did we stop at the cap" - keeping what it returned would push the sweep past the
+ * very cap its answer is about. The sweep therefore never processes more than
+ * `MAX_SWEEP_ISSUES`, which is what the truncation sentence promises.
+ *
+ * An issue the walk has ALREADY collected is not a tail: that is a rung repeating itself, and
+ * the honest answer to "is there more after this" is then no.
+ *
+ * A lookahead that fails leaves the question open, and an open question about completeness is
+ * reported as truncation rather than assumed away.
  */
 async function confirmTail(
   cfg: JiraConfig,
@@ -842,12 +856,16 @@ async function confirmTail(
 ): Promise<JiraWalk> {
   if (ctx.signal.aborted) return { issues, error: null, truncated: true };
   const after = pageFromCli(
-    await run(JIRA_BIN, jiraIssueListArgs(cfg, issues.length), { timeoutMs: JIRA_TIMEOUT_MS }),
+    await run(JIRA_BIN, jiraIssueListArgs({ ...cfg, limit: 1 }, issues.length), {
+      timeoutMs: JIRA_TIMEOUT_MS,
+    }),
   );
   if (after.error) return { issues, error: null, truncated: true };
-  const fresh = freshKeys(after.issues, keys);
-  issues.push(...after.issues);
-  return { issues, error: null, truncated: fresh > 0 };
+  const tail = after.issues.some((issue) => {
+    const key = externalIdFor(issue);
+    return key !== null && !keys.has(key);
+  });
+  return { issues, error: null, truncated: tail };
 }
 
 /** Walk the REST rung's pages, following the cursor Jira hands back. */

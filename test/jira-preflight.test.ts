@@ -300,18 +300,24 @@ test("a filter ending exactly on the page bound is complete, not truncated", asy
   const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
   assert.equal(swept.items.length, 100);
   assert.equal(swept.error, null, "there is no tail, so there is nothing to report");
-  // 50 pages, plus the one lookahead that established the end - and not a 51st page of data.
+  // 50 pages, plus the lookahead that established the end - and that lookahead asks for ONE
+  // issue, not a 51st page: it answers a yes/no question, and keeping a page would push the
+  // sweep past the very cap the answer is about.
   assert.equal(callsIn(calls).length, 51);
-  assert.equal(callsIn(calls).at(-1), "100:2");
+  assert.equal(callsIn(calls).at(-1), "100:1");
 });
 
 // And the lookahead must not paper over a real tail: one more issue than fits is still reported.
-test("a filter with one issue past the bound is still reported as too large", async () => {
-  machine({ cli: true, mode: "pages", total: "101" });
+// The issue it saw is NOT filed - the walk's cap is what a sweep processes, and the sentence
+// quotes that number, so the lookahead keeps nothing.
+test("a filter with one issue past the bound is reported, and stays within the cap", async () => {
+  const calls = join(home, "calls-past-bound");
+  machine({ cli: true, mode: "pages", total: "101", calls });
 
   const swept = await jira.sweep(cfg({ limit: 2 }), ctx);
-  assert.equal(swept.items.length, 101, "including the one the lookahead found");
+  assert.equal(swept.items.length, 100, "exactly the cap, not the cap plus the lookahead");
   assert.match(swept.error!, /larger than one sweep can read/);
+  assert.equal(callsIn(calls).at(-1), "100:1");
 });
 
 // A rung that ACCEPTS the pagination argument and ignores it is the nastier version: walked to

@@ -50,7 +50,7 @@ and get your decision back.
   edit or send, and a switch on the row [holds it back](#hold-a-backlog-item-back)
   from the autopilot without taking it off the list).
 - **Pulls work in** from systems that already hold it: a [task source](#task-sources-pulling-work-into-the-backlog)
-  sweeps GitHub issues on a schedule and files them into the backlog, so the work you
+  sweeps GitHub issues or a Jira JQL filter on a schedule and files them into the backlog, so the work you
   already wrote down somewhere doesn't have to be re-typed. It files backlog rows and
   nothing else - it never dispatches an agent and never types into a session. Ships with
   no sources configured.
@@ -1913,7 +1913,7 @@ turning it on is consent. Per source:
 | **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
 | **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries |
 | **Sweep now** | run it once, right now, and see what it filed |
-| **Check it works** | is `gh` installed, authenticated, and able to list issues here? |
+| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks - and names - its own: `gh` for GitHub issues, the `jira` CLI or a `JIRA_API_TOKEN` for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
 
 Pausing clears the source's previous health, so re-enabling it cannot inherit a stale
@@ -1922,7 +1922,7 @@ already counts as that fresh result.
 
 ### GitHub issues
 
-The first (and so far only) kind. **Auth is the `gh` CLI**, run inside the repo, so this
+The first kind, and the shape every other one follows. **Auth is the `gh` CLI**, run inside the repo, so this
 feature stores no token, opens no OAuth flow and adds no new secret - if `gh auth status`
 works in that checkout, the source works.
 
@@ -1943,6 +1943,67 @@ so the agent's first prompt has the actual text rather than a number to go and l
 abandoned sweep is reported as an error on the source and shown in the panel - because an
 empty sweep and a broken one are otherwise indistinguishable, and the difference is a week
 of silence.
+
+### Jira
+
+Points at a **JQL filter** and files each issue it matches as one backlog task. Same
+contract as the GitHub source in every way that matters: it files backlog rows and nothing
+else, it never dispatches, and a task you delete stays deleted.
+
+| Field | Meaning |
+|---|---|
+| **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - the scheme and path are dropped. Defaults to `upstartnetwork.atlassian.net` |
+| **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
+| **Issues per sweep** | how many issues one sweep asks for (also bounded by **Most tasks per sweep** above) |
+| **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
+
+Everything else a Jira query needs - project, status, assignee, labels, ordering - is
+already *in* the JQL, so it isn't re-expressed as controls beside it. One place to say one
+thing.
+
+Each issue becomes one task: its summary as the title, and an intent carrying
+`Jira issue MC-123: <summary>`, the **browse URL**, and the issue's **description**, so the
+agent's first prompt has the actual text rather than a key to go and look up. Descriptions
+arrive from Jira Cloud as ADF (a document tree, not a string) and are flattened to the text
+a human wrote; anything past 4000 characters is truncated and says so.
+
+**Auth is a ladder, and no rung of it stores a secret.**
+
+1. Your **`jira` CLI** ([`ankitpokhrel/jira-cli`](https://github.com/ankitpokhrel/jira-cli),
+   `brew install ankitpokhrel/jira-cli/jira-cli` then `jira init`), if it's on the daemon's
+   `PATH`. It already knows your site and your login, so this is the `gh` trade again.
+2. Otherwise **`JIRA_API_TOKEN` + `JIRA_EMAIL`** from the daemon's own environment, against
+   Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
+   written to Mission Control's database.
+
+If the CLI is installed but can't answer (a common half-configured machine: `jira` on
+`PATH`, `jira init` never run, tokens exported for shell helpers), the credential is tried
+as a **fallback** rather than the source being declared broken with a working path unused.
+When neither works, both reasons are reported.
+
+Two operational notes. The environment is the **daemon's**, read when it sweeps - exporting
+the variables in a shell after the daemon started does not reach it, so restart the daemon
+(`make restart`) after adding them. And behind a TLS-inspecting VPN the REST rung needs the
+proxy's CA in `NODE_EXTRA_CA_CERTS` in that same environment; certificate verification is
+never disabled to work around it.
+
+**A broken credential never reads as "no issues".** That is the whole reason `preflight`
+exists, and **Check it works** distinguishes, each naming one thing to go and do:
+
+| What it says | What to do |
+|---|---|
+| `set a JQL query in this source's settings` | the filter is empty - paste one |
+| `no way to reach Jira: install the CLI … or set JIRA_API_TOKEN and JIRA_EMAIL` | neither rung is available |
+| `JIRA_API_TOKEN is set but JIRA_EMAIL is not` | half a credential, named as the half that's missing |
+| `the jira CLI is installed but not configured … run jira init` | installed, never pointed at a site |
+| `the jira CLI is not authenticated` / `Jira rejected the JIRA_API_TOKEN / JIRA_EMAIL credential (HTTP 401)` | the credential is wrong or expired |
+| `Jira could not run this query (HTTP 400) - <what Jira said>` | the JQL is the problem, not the credential |
+| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above |
+
+A sweep reports the same sentences on the source itself, so a failure that happens at 3am
+is still legible at 9am. The one non-zero exit that is *not* a failure: `jira-cli` exits
+non-zero to say "no result found for given query", which is a filter that is simply up to
+date and stays **healthy**.
 
 ### A task you delete stays deleted
 
@@ -5846,6 +5907,8 @@ cleanup broke" from "the build passed and then cleanup broke".
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
 | `MISSION_TASK_SOURCE_TICK_MS` | `30000` | [Task sources](#task-sources-pulling-work-into-the-backlog): how often the sweeper wakes to ask which sources are due. Not the sweep interval - that is per source, and clamped to 1 minute - 24 hours. Floored at `5000` |
 | `MISSION_TASK_SOURCE_TIMEOUT_MS` | `60000` | Task sources: hard cap on one sweep, so a hung source cannot wedge its own schedule. Floored at `5000` |
+| `JIRA_API_TOKEN` | unset | [Jira task sources](#jira): the API token the REST fallback authenticates with when the `jira` CLI is not on the daemon's `PATH` (or cannot answer). Read **bare**, without the `MISSION_` prefix, because it is the same variable `jira-cli` and Atlassian's own shell helpers already use - so a machine set up for either needs nothing new. Never stored in Mission Control's database; read from the daemon's environment when it sweeps, so a variable exported after the daemon started needs a restart to reach it |
+| `JIRA_EMAIL` | unset | Jira task sources: the account the token belongs to. Jira basic auth is the **pair** - one without the other is reported by name in the source's preflight rather than failing as a bad password |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where Claude's symlinks are written; set, it wins outright. Overridable so tests never touch your real one - though setting `MISSION_HOME` is the better isolation, because it covers every harness at once and so covers the ones added later. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links. Under the `node --test` runner a reconcile pass over any of the three real directories below is **refused outright**, whatever the config says: pinning one variable and forgetting the others is how `npm run test` came to silently uninstall the machine's live Codex and Pi skills on every run |
 | `CODEX_SKILLS_DIR` | `~/.agents/skills` | the same override for Codex's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/codex-skills`, for the same reason. Point both at one path and the reconciler still walks it once |

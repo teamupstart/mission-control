@@ -12441,6 +12441,12 @@ select.ensemble-judge-persona {
 .ts-check {
   grid-column: 1 / -1;
 }
+/* The "this filter sweeps nothing" warning, which is a sentence rather than a field: it
+   spans the row for the reason `.ts-field-wide` does, since a 220px grid cell would break
+   one line of prose across five. */
+.ts-no-jql {
+  grid-column: 1 / -1;
+}
 /* One label -> priority mapping. The label field takes the room; the picker and the
    remove button are sized to their content so a column of these lines up. */
 .ts-prio-row {

@@ -30,7 +30,7 @@ import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
  * under the old spelling - it stops matching a registered kind and silently never
  * sweeps again.
  */
-export const TASK_SOURCE_KINDS = ["github-issues"] as const;
+export const TASK_SOURCE_KINDS = ["github-issues", "jira"] as const;
 export type TaskSourceKind = (typeof TASK_SOURCE_KINDS)[number];
 
 /** Where a candidate came from - the identity a sweep is de-duplicated on. */
@@ -101,6 +101,16 @@ export interface TaskSourceKindInfo<C = unknown> {
   label: string;
   /** One line under the label, saying what this source sweeps. */
   blurb: string;
+  /**
+   * What the panel says when `preflight` finds nothing wrong.
+   *
+   * Here rather than in the panel because it is a fact about the KIND - which upstream was
+   * reached, and what it proved - and the panel had it hardcoded as "gh is reachable and
+   * this repo lists issues", which a Jira source would have said while never going near
+   * `gh`. A `Record<TaskSourceKind, …>` then makes it the compiler's problem: a new kind
+   * cannot ship a success sentence describing somebody else's upstream.
+   */
+  preflightOk: string;
   /**
    * Validates and defaults this kind's config blob. The panel renders from it too.
    *
@@ -176,6 +186,53 @@ export const GithubIssuesConfigSchema = z
   });
 export type GithubIssuesConfig = z.infer<typeof GithubIssuesConfigSchema>;
 
+// ---- jira: a JQL filter as a backlog queue ----
+
+/**
+ * The Jira site a source points at unless it says otherwise.
+ *
+ * A default rather than a required field, because the config schema MUST parse `{}` - a
+ * freshly added source stores an empty blob and is configured afterwards. Upstart's own
+ * host is the useful default for the operators this was built for, and it is only a
+ * default: any Jira Cloud host works, and the field is editable in the panel.
+ */
+export const DEFAULT_JIRA_SITE = "upstartnetwork.atlassian.net";
+
+/**
+ * The Jira sweep, as configured.
+ *
+ * No credential lives here, and that is the design rather than an omission. The sweeper
+ * reads the operator's own `jira` CLI first and falls back to `JIRA_API_TOKEN` +
+ * `JIRA_EMAIL` from the daemon's environment, so this feature stores no token, opens no
+ * OAuth flow and adds no secret that can leak out of `app_config` - the same trade the
+ * GitHub source makes with `gh`.
+ */
+export const JiraConfigSchema = z.object({
+  /** The Jira Cloud host, e.g. `your-org.atlassian.net`. A URL is accepted and reduced. */
+  site: z.string().max(200).default(DEFAULT_JIRA_SITE),
+  /**
+   * The filter, in JQL. Empty is a valid STORED config and an unusable sweep.
+   *
+   * It cannot be refused here: the schema has to parse `{}`, because that is the blob a
+   * freshly added source carries before anybody configures it. So the emptiness is caught
+   * where it can be explained instead - `preflight` names it, and `sweep` returns an error
+   * rather than an empty success, because a source that silently sweeps nothing is
+   * indistinguishable from a filter with no matching issues.
+   */
+  jql: z.string().max(1000).default(""),
+  /** How many issues one sweep asks Jira for. */
+  limit: z.number().int().min(1).max(200).default(50),
+  /**
+   * Map the issue's own Jira priority onto the task's (Highest -> Blocker, and so on).
+   *
+   * Off, every swept task takes the source's default priority instead. Unmapped names
+   * leave the priority OPEN either way, so the source's default still applies - see
+   * `priorityFor` in `src/server/task-sources/jira.ts`.
+   */
+  priorityFromJira: z.boolean().default(true),
+});
+export type JiraConfig = z.infer<typeof JiraConfigSchema>;
+
 /**
  * Every kind's pure half, keyed by id.
  *
@@ -189,7 +246,16 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     label: "GitHub issues",
     blurb:
       "Files an open issue as a backlog task, through the gh CLI you are already signed in to.",
+    preflightOk: "Looks good - gh is reachable and this repo lists issues.",
     configSchema: GithubIssuesConfigSchema,
+  },
+  jira: {
+    kind: "jira",
+    label: "Jira",
+    blurb:
+      "Files the issues a JQL filter matches as backlog tasks, through your jira CLI or a JIRA_API_TOKEN.",
+    preflightOk: "Looks good - Jira answered, and this JQL filter runs.",
+    configSchema: JiraConfigSchema,
   },
 };
 

@@ -8,7 +8,18 @@ import type { EnvironmentCheckInfo } from "@shared/environment-checks.ts";
  * problem or warn every operator on earth.
  */
 export type FileRead =
-  | { ok: true; text: string }
+  | {
+      ok: true;
+      text: string;
+      /**
+       * Whether the read stopped at its bound with more file left.
+       *
+       * The file being checked is arbitrary content the daemon does not own, so a check that
+       * says anything about its SIZE has to know whether it saw all of it. Without this a
+       * report of "37 characters" is a guess dressed as a fact.
+       */
+      truncated: boolean;
+    }
   | { ok: false; missing: boolean; reason: string };
 
 /**

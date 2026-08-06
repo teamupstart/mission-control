@@ -213,6 +213,34 @@ test("a state file the gate refuses still warns, CRLF and all", async ({ dashboa
 });
 
 /**
+ * The contents of the state file do not reach the dashboard.
+ *
+ * The daemon reads a file it does not own, and reading is not permission to render: whatever an
+ * operator has in `~/.claude/upstartclaw-core-setup` would otherwise travel through the route
+ * and into this dialog. Driven here because "did not appear in the UI" is a claim about the UI,
+ * and the sentinel is checked against the WHOLE page rather than the note, so it cannot hide in
+ * a title, a tooltip, or an attribute.
+ *
+ * The note is asserted present in the same breath: a check that silently dropped the finding
+ * would satisfy the redaction and hide a stall, which is the failure worth guarding against
+ * once the obvious one is fixed.
+ */
+test("the state file's contents never reach the dialog", async ({ dashboard, daemon }) => {
+  const sentinel = "sk-ant-api03-DO-NOT-RENDER-ME";
+  installPlugin(daemon);
+  writeState(daemon, `2026-08-06 12:33:01 INFO ${sentinel} retrying\n`);
+
+  const dialog = await openDispatch(dashboard);
+  // The finding still lands: the gate refuses this file, so the note has to say so.
+  await expect(dialog.getByText(STALL_NOTE)).toBeVisible();
+  await expect(dialog.getByText(/not shown here/)).toBeVisible();
+  // And the path is still named, so the operator can go read the file themselves.
+  await expect(dialog.getByText(stateFile(daemon), { exact: false })).toBeVisible();
+
+  expect(await dashboard.content()).not.toContain(sentinel);
+});
+
+/**
  * A read that fails shows nothing, rather than the last answer or a broken form.
  *
  * The two failure shapes `fetchJson` folds into `null` are both driven here - a request that

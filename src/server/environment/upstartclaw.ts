@@ -52,6 +52,11 @@ import type {
 // agree with a shell rather than to be forgiving. Being more permissive than the gate is the
 // one error here that fails silently: the form calls the machine ready while every core tool
 // call is refused.
+//
+// What is REPORTED is bounded independently of that - see `isQuotable`. Reading a file the
+// daemon does not own is not permission to render it: the value travels to the dashboard, so it
+// is quoted only when it is short and made of the gate's own alphabet, and otherwise classified
+// by size alone.
 
 /** The state file the plugin's setup skill writes, relative to the operator's home. */
 const STATE_FILE = [".claude", "upstartclaw-core-setup"] as const;
@@ -109,6 +114,47 @@ function gateValue(text: string): string {
  */
 function quoted(value: string): string {
   return value === "" ? "an empty file" : JSON.stringify(value);
+}
+
+/**
+ * The longest value this check will ever quote back, and the only alphabet it will quote.
+ *
+ * The state file is somebody else's file, and the daemon does not get to decide what ends up in
+ * it - a redirected log, a pasted diagnostic, a credential someone parked in the wrong place.
+ * Whatever it holds would otherwise travel through `GET /api/environment/checks` and render in
+ * the dispatch dialog, which is both a leak the operator did not ask for and, at 64 KB, a
+ * modal with no layout left.
+ *
+ * So the rule is narrow: quote the value only when it is short AND made of nothing but the
+ * alphabet the gate's own vocabulary uses - letters, underscores, whitespace. That keeps every
+ * case worth quoting, because they are all near-misses of a bare word (`completed\r`,
+ * ` completed`, `no_setup`, a typo, whitespace only), and refuses everything that is not
+ * plausibly a state word at all: anything with digits, punctuation, or length. A token, a JSON
+ * blob, a log line and a base64 payload all fail on the first character class they hit.
+ *
+ * Anything else is CLASSIFIED rather than shown - see `describeState`. The path is always
+ * named, so an operator who needs the contents can open the file they already own.
+ */
+const MAX_QUOTED_CHARS = 24;
+const STATE_ALPHABET = /^[A-Za-z_\s]*$/;
+
+/** Whether a value is safe and useful to quote back verbatim. */
+function isQuotable(value: string): boolean {
+  return value.length <= MAX_QUOTED_CHARS && STATE_ALPHABET.test(value);
+}
+
+/**
+ * What the detail line says about the file, without ever pasting the file into the UI.
+ *
+ * The size is a floor when the read hit its bound, because "at least 65536 characters" is true
+ * and "65536 characters" would be a guess. It is worth reporting at all because it is the one
+ * thing that separates "someone typed the wrong word" from "something dumped its output in
+ * here", and neither the size nor the path is content.
+ */
+function describeState(path: string, value: string, truncated: boolean): string {
+  if (isQuotable(value)) return `${path} reads ${quoted(value)}`;
+  const size = truncated ? `at least ${value.length}` : `${value.length}`;
+  return `${path} holds ${size} characters that are not one of the states the gate reads; they are not shown here`;
 }
 
 /**
@@ -220,25 +266,30 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
 
     if (state.ok) {
       const value = gateValue(state.text);
+      const detail = describeState(path, value, state.truncated);
       if (value === COMPLETED) return { warning: null, detail: null };
       if (value === IN_PROGRESS) {
         return {
           warning:
             "Setup was started and never finished. UpstartClaw lets tool calls through while setup is in progress, so a dispatched agent reaches the core MCP servers unauthenticated and fails on the credential rather than being told why. "
             + fix("Finish"),
-          detail: `${path} reads ${quoted(value)}`,
+          detail,
         };
       }
       if (isNearMiss(value)) {
+        // The sentence quotes the BARE word, which is one of this module's own two constants -
+        // never the operator's bytes. The padding is described rather than reproduced, which
+        // reads better anyway: nobody can see what ` completed\r` is wrong with, and "wrapped
+        // in whitespace" says it outright. The guarded detail below carries the exact value.
         return {
-          warning: `The setup state file holds ${quoted(value)} - the right word with whitespace UpstartClaw's gate will not accept, since it matches the bare word and its shell strips only trailing newlines. The gate therefore refuses every core MCP call and an unattended dispatched agent stalls. Rewrite the file as the bare word, or re-run ${SETUP_COMMAND} in an interactive Claude Code session.`,
-          detail: `${path} reads ${quoted(value)}`,
+          warning: `The setup state file holds ${JSON.stringify(value.trim())} wrapped in whitespace UpstartClaw's gate will not accept, since it matches the bare word and its shell strips only trailing newlines. The gate therefore refuses every core MCP call and an unattended dispatched agent stalls. Rewrite the file as the bare word, or re-run ${SETUP_COMMAND} in an interactive Claude Code session.`,
+          detail,
         };
       }
       // Any other value - `no_setup`, empty, or something nobody expected - is the gate's
       // `*` branch, which exits 2. Reported as the blocked case rather than as an unknown
       // state, because that is what the machine will actually do.
-      return { warning: blockedWarning(), detail: `${path} reads ${quoted(value)}` };
+      return { warning: blockedWarning(), detail };
     }
 
     if (!state.missing) {

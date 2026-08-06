@@ -71,7 +71,16 @@ async function readText(path: string): Promise<FileRead> {
   try {
     const buf = Buffer.alloc(MAX_READ_BYTES);
     const { bytesRead } = await handle.read(buf, 0, MAX_READ_BYTES, 0);
-    return { ok: true, text: buf.subarray(0, bytesRead).toString("utf8") };
+    return {
+      ok: true,
+      // A checked file is arbitrary bytes, so this can land mid-character and decode the last
+      // one as U+FFFD. Harmless for every use here - the values that mean anything are ASCII
+      // words, and a check that cannot recognise a value classifies it rather than trusting it.
+      text: buf.subarray(0, bytesRead).toString("utf8"),
+      // A full buffer may or may not be a truncated file; reporting it as truncated makes any
+      // size a check derives a floor rather than a claim, which is the safe direction.
+      truncated: bytesRead === MAX_READ_BYTES,
+    };
   } catch (error) {
     // Opened but unreadable - a directory where a file was expected, a permission that
     // allows open and not read. `missing: false`: something IS there, and a check that

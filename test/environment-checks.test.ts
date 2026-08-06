@@ -56,7 +56,11 @@ function deps(arrange: {
   };
 }
 
-const text = (value: string): FileRead => ({ ok: true, text: value });
+const text = (value: string, truncated = false): FileRead => ({
+  ok: true,
+  text: value,
+  truncated,
+});
 
 /** The one check's view, for a machine arranged as `arrange`. */
 async function claw(arrange: Parameters<typeof deps>[0]) {
@@ -215,6 +219,57 @@ test("in_progress survives its trailing newlines as the unfinished-setup note", 
     assert.match(view.warning ?? "", /never finished/, JSON.stringify(value));
     assert.doesNotMatch(view.warning ?? "", /stalls/);
   }
+});
+
+// Reading a file the daemon does not own is not permission to render it. Whatever is in the
+// state file would otherwise travel through the route and into the dispatch dialog, so a value
+// that is not plausibly a state word is classified by size and never quoted. Both halves are
+// asserted: the sentinel is absent from EVERY string the view carries, and the note still
+// appears, because silently dropping the finding would "pass" this test while hiding a stall.
+test("a state file holding something else is classified, never quoted", async () => {
+  const secret = "sk-ant-api03-DO-NOT-RENDER-ME";
+  const cases: [string, RegExp][] = [
+    // Token-shaped: short enough to quote, but its alphabet is not the gate's.
+    [secret, /29 characters/],
+    // A log someone redirected over the file.
+    [`2026-08-06 12:33:01 INFO ${secret} retrying\n`, /characters/],
+    // Long, and all letters - the length bound is what catches this one.
+    ["completedcompletedcompletedcompleted", /36 characters/],
+  ];
+  for (const [value, size] of cases) {
+    const view = await claw({ files: { [STATE]: text(value) }, dirs: INSTALLED_LAYOUT });
+    assert.match(view.warning ?? "", /stalls/, `${JSON.stringify(value)} still has to warn`);
+    assert.match(view.detail ?? "", size);
+    assert.match(view.detail ?? "", /not shown here/);
+    // The path is still named, so the operator can open the file they already own.
+    assert.match(view.detail ?? "", new RegExp(STATE.replace(/[/\\]/g, "\\$&")));
+    for (const field of [view.warning, view.detail]) {
+      assert.doesNotMatch(field ?? "", /DO-NOT-RENDER-ME/, "file contents must not reach the UI");
+    }
+  }
+});
+
+// A size derived from a bounded read is a floor, not a fact, and saying it plainly is cheaper
+// than a reader discovering later that the number was a guess.
+test("a truncated read reports its size as a floor", async () => {
+  const view = await claw({
+    files: { [STATE]: text("9".repeat(200), true) },
+    dirs: INSTALLED_LAYOUT,
+  });
+  assert.match(view.detail ?? "", /at least 200 characters/);
+});
+
+// The near-miss sentence quotes the module's OWN constant rather than the operator's bytes, so
+// even a value made entirely of padding cannot push anything into the warning text.
+test("the near-miss sentence quotes the bare word, not the file", async () => {
+  const view = await claw({
+    files: { [STATE]: text(`${" ".repeat(80)}completed\n`) },
+    dirs: INSTALLED_LAYOUT,
+  });
+  assert.match(view.warning ?? "", /holds "completed" wrapped in whitespace/);
+  // 89 characters of value: past the quoting bound, so the detail classifies it instead.
+  assert.match(view.detail ?? "", /89 characters/);
+  assert.match(view.detail ?? "", /not shown here/);
 });
 
 test("a state file that exists but cannot be read is its own warning", async () => {

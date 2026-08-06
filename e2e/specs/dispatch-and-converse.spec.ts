@@ -214,6 +214,7 @@ test("Complete closes promptly while an accepted SDK stop drains", async ({ dash
   await expect(card).toContainText("stopping");
   await expect(card.getByRole("button", { name: "Complete" })).toHaveCount(0);
   if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
     console.log("OBSERVED Complete closed while the accepted SDK stop was still draining");
     await card.screenshot({
       path: `${EVIDENCE}complete-stopping-state.png`,

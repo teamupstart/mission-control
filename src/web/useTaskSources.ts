@@ -70,12 +70,31 @@ export function useTaskSources(): TaskSourcesState {
     setViewState(v);
   }, []);
 
-  /** Read the route, and apply the result only if no edit started while it was in flight. */
-  const refresh = useCallback(async (): Promise<void> => {
-    const seq = editSeq.current;
-    const v = await fetchTaskSources();
-    if (v && readIsCurrent(seq, editSeq.current)) setView(v);
-  }, [setView]);
+  /**
+   * Read the route, and apply the result only if it can still be the whole truth.
+   *
+   * `seqAtRequest` is which edit this read is entitled to reflect, and a caller that is
+   * CONFIRMING a particular save must pass that save's own sequence rather than let this snapshot
+   * the latest one. The difference is a real lost write:
+   *
+   *  - save A goes out; edit B is made and queues behind it;
+   *  - A's confirming read defaults to the CURRENT sequence, which is already B's;
+   *  - the response contains only A, `readIsCurrent(B, B)` says yes, and B's optimistic value is
+   *    wiped from the view before B has even been sent;
+   *  - the operator now edits C from that reverted view, so C's whole-config blob has no B in it,
+   *    and C - queued last - overwrites B on the daemon for good.
+   *
+   * Defaulting to `editSeq.current` is right for the POLL, which is entitled to whatever is
+   * current when it leaves. It is wrong for a confirming read, which is answering an older
+   * question. `save` passes its own.
+   */
+  const refresh = useCallback(
+    async (seqAtRequest: number = editSeq.current): Promise<void> => {
+      const v = await fetchTaskSources();
+      if (v && readIsCurrent(seqAtRequest, editSeq.current)) setView(v);
+    },
+    [setView],
+  );
 
   useEffect(() => {
     let alive = true;
@@ -139,7 +158,9 @@ export function useTaskSources(): TaskSourcesState {
           return false;
         }
         setError(null);
-        await refresh();
+        // THIS save's sequence, not whatever is current: a response that predates a queued edit
+        // must not be applied over it. See `refresh`.
+        await refresh(seq);
         return true;
       })();
       // Never a rejected link in the chain: one failed write must not stop the next one from

@@ -303,6 +303,93 @@ test("a slow save cannot land after a newer one and put the older value back", a
     .toMatchObject({ site: "acme.atlassian.net", jql: JQL });
 });
 
+test("a save's confirming read cannot wipe an edit that is queued behind it", async ({
+  page,
+  daemon,
+}) => {
+  // The third and subtlest write race, and it was introduced BY the fix for the second one. A
+  // save's confirming read used to snapshot whatever sequence was current when it left - which,
+  // with a second edit already queued, is the queued edit's. So the response (containing only the
+  // first save) passed the guard and replaced the view that held both.
+  //
+  // The flash is what this asserts, because the lost write is downstream of it: with the queued
+  // edit gone from the view, the operator's NEXT edit composes its whole-config blob without it,
+  // and that blob - queued last - overwrites it on the daemon for good.
+  const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+    data: {
+      sources: [{ id: "jira-confirm", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
+    },
+  });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
+
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  const site = page.getByLabel("Jira site");
+  await expect(site).toHaveValue("upstartnetwork.atlassian.net");
+
+  // Hold the FIRST write, so the second edit is still queued when the first one's confirming read
+  // comes back.
+  let release: (() => void) | null = null;
+  const released = new Promise<void>((r) => {
+    release = r;
+  });
+  let held = false;
+  let hit: (() => void) | null = null;
+  const gateHit = new Promise<void>((r) => {
+    hit = r;
+  });
+  await page.route("**/api/task-sources/config", async (route) => {
+    if (route.request().method() !== "PUT" || held) return route.fallback();
+    held = true;
+    hit?.();
+    await released;
+    await route.fallback();
+  });
+
+  await site.fill("acme.atlassian.net");
+  await page.keyboard.press("Tab");
+  await gateHit;
+
+  // The queued edit. Its PUT cannot go out until the held one finishes, which is exactly the
+  // window this is about.
+  await page.getByLabel("JQL filter").fill(JQL);
+  await page.keyboard.press("Tab");
+
+  // Now let the first write finish. Its confirming GET follows immediately and carries a config
+  // with the site but NO filter - the daemon has not been told about the filter yet.
+  const confirming = page.waitForResponse(
+    (r) =>
+      r.url().includes("/api/task-sources/config") &&
+      r.request().method() === "GET" &&
+      r.status() === 200,
+  );
+  release?.();
+  await confirming;
+  await page.evaluate(
+    () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+  );
+
+  // Read ONCE, for the reason trap 6 in e2e/README.md gives: the queued write lands moments later
+  // and heals this, so a retrying assertion would pass straight over the defect.
+  expect(
+    await page.getByLabel("JQL filter").inputValue(),
+    "a confirming read that predates a queued edit must not be applied over it",
+  ).toBe(JQL);
+
+  // And both edits are in force once the queue drains.
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get(`${daemon.baseURL}/api/task-sources/config`);
+        const body = (await res.json()) as {
+          sources?: { config?: { site?: string; jql?: string } }[];
+        };
+        return body.sources?.[0]?.config ?? {};
+      },
+      { message: "both edits should survive the confirming read" },
+    )
+    .toMatchObject({ site: "acme.atlassian.net", jql: JQL });
+});
+
 test("an unusable Jira source names the fix, and a healthy one names Jira rather than gh", async ({
   page,
   daemon,

@@ -105,12 +105,19 @@ function runner(verdict: () => "pass" | "fail"): LlmRunner {
  * budget during a full run and passed alone immediately after - the segment was captured, the
  * poll just did not get scheduled to say so inside five seconds.
  *
- * Ten seconds, matching `IN_PROCESS_WAIT_MS` in test/foreman-spend-delivery.test.ts and the
- * same reasoning: generous costs nothing when the condition is already true, because the loop
- * returns on the first poll that sees it. A tight bound here buys no earlier signal and only
- * ever spends it on false failures.
+ * Thirty seconds, and this is the SECOND time this budget has been raised for the same reason -
+ * which is the argument for making it generous rather than incrementally larger. The first raise
+ * (five to ten) was for the wait at "an action pipeline captures a segment per action"; ten then
+ * failed at exactly the budget for "two actions run in order in one repair round" during a full
+ * `npm test`, and that file passed alone immediately afterwards. Both times the condition was
+ * already true and the poll had simply not been scheduled to say so.
+ *
+ * Generous costs nothing when the condition is true, because the loop returns on the first poll
+ * that sees it - the only thing a tight bound here buys is false failures on a loaded machine.
+ * `test/foreman-spend-delivery.test.ts` keeps its own ten: it has not shown this, and copying a
+ * number across files is how one file's timing becomes an accident of another's.
  */
-const IN_PROCESS_WAIT_MS = 10_000;
+const IN_PROCESS_WAIT_MS = 30_000;
 
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();

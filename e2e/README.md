@@ -675,7 +675,7 @@ story is worthless if the daemon under test is not the one it thinks it is:
 
 There are no `data-testid` attributes and none should be added - there are 229 `aria-label`s
 and 155 `role`s, so `getByRole`/`getByLabel`/`getByPlaceholder` already work and stay
-correct through refactors. Four traps, all of which have cost time already:
+correct through refactors. Seven traps, all of which have cost time already:
 
 1. **Never use `{ exact: true }` on a button name.** Keyboard hints render as `<kbd>` inside
    the label and are part of the accessible name: the dispatch button is `"+Dispatch"`.
@@ -697,6 +697,17 @@ correct through refactors. Four traps, all of which have cost time already:
    `DAEMON_TERMINAL_IDENTITY` does this for the three pane variables `sdkSubprocessEnv`
    strips. The same reasoning applies to any "did not happen" assertion: arrange for it to be
    able to happen, or the test is decoration.
+6. **A web-first assertion cannot see a TRANSIENT wrong state.** `expect(locator).toHaveValue()`
+   and friends retry for the whole timeout, so a value that is wrong now and right in two
+   seconds passes - and if a poll is what corrects it, the assertion passes over exactly the
+   defect it was written for. `settings-task-sources-jira.spec.ts` needs `await
+   locator.inputValue()` read once, after a barrier that says when "now" is, because the panel's
+   own 4s poll heals the flash it is asserting about. Retry when you are waiting for something
+   to become true; read once when the claim is that something never became false.
+7. **Verify a regression test against the broken build.** Both traps above produced a green test
+   on a build with the fix reverted, which is the only way to find that out. `git stash push`
+   the fix, rebuild, run the case, see it red, then restore. If it cannot be made red, it is
+   not pinning anything.
 
 Each test gets its own daemon (`fixtures/test.ts`). That costs about a second and a half and
 buys independence: a spec asserting "exactly one session on the fleet" must not silently

@@ -450,6 +450,29 @@ test("both the API envelope and a bare array read as issues", () => {
   assert.match((issuesFrom('{"total":3}') as { error: string }).error, /unexpected shape/);
 });
 
+// This is where the wire meets the types, so it is the last place a lie is affordable. A JSON
+// array can hold anything, and the `as JiraIssue[]` this reader used to end with was an assertion
+// that had `candidateFrom` dereference `null.key` and THROW - caught by `sweepSource`, so the
+// daemon lived, but the whole sweep died, every good issue beside the bad row went with it, and
+// the operator read "Cannot read properties of null" instead of anything about their Jira.
+test("a row that cannot be an issue is dropped at the boundary, not mapped", () => {
+  const read = issuesFrom('{"issues":[null,{"key":"MC-1"},"nope",42,[],{"key":"MC-2"}]}');
+  assert.deepEqual(read, { issues: [{ key: "MC-1" }, { key: "MC-2" }], nextPageToken: null });
+});
+
+// The consequence, in the terms the source promises: the good rows are filed and nothing throws.
+test("a page holding a malformed row still files the issues beside it", () => {
+  const r = cliResult(
+    stubRun({
+      stdout: JSON.stringify({ issues: [null, ISSUE, "nope"] }),
+      stderr: "",
+      code: 0,
+    }),
+  );
+  assert.equal(r.error, null, "one bad row is not a failed sweep");
+  assert.deepEqual(r.items.map((i) => i.ref.externalId), ["MC-42"]);
+});
+
 // The cursor the enhanced endpoint hands back, carried through so the walk can ask for the
 // next page. Absent on the last page, and absent from a rung that has no cursor at all.
 test("a page carries the cursor Jira sent, and none when there isn't one", () => {

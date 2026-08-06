@@ -435,6 +435,15 @@ function candidatesFrom(issues: JiraIssue[], cfg: JiraConfig, ctx: SweepContext)
  * `nextPageToken` is carried through when the enhanced endpoint sent one. It is absent on the
  * last page, absent from a bare array, and absent from the CLI's output, so a rung that has
  * no cursor simply reports none and the walk falls back to its own page arithmetic.
+ *
+ * This is where the wire meets the types, so it is the last place a lie is affordable. Each ENTRY
+ * is checked, not only the envelope: `{"issues":[null]}` is a shape a JSON array permits, and the
+ * `as JiraIssue[]` this used to end with was an assertion that would have `candidateFrom`
+ * dereference `null.key` and THROW. `sweepSource` catches that, so the daemon survives - but the
+ * sweep dies whole, every good issue beside the bad row is lost, and the operator reads "Cannot
+ * read properties of null" instead of a sentence about their Jira. A row that is not an object
+ * cannot be an issue under any reading, so it is dropped here exactly as the GitHub source drops
+ * a row it cannot name.
  */
 export function issuesFrom(
   text: string,
@@ -451,7 +460,12 @@ export function issuesFrom(
   // takes of a `gh` that answered with something unexpected.
   if (!list) return { error: "Jira returned an unexpected shape" };
   const token = typeof envelope?.nextPageToken === "string" ? envelope.nextPageToken.trim() : "";
-  return { issues: list as JiraIssue[], nextPageToken: token || null };
+  return {
+    issues: list.filter(
+      (row): row is JiraIssue => typeof row === "object" && row !== null && !Array.isArray(row),
+    ),
+    nextPageToken: token || null,
+  };
 }
 
 /** First non-empty line of some output, for a one-line "why". */

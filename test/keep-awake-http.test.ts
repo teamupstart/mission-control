@@ -134,6 +134,20 @@ test("an unsupported host refuses with 409 and its reason, and never spawns", as
   assert.deepEqual(statuses, [], "nothing was published for a refused request");
 });
 
+test("an unsupported host still honours a disable: off is always achievable", async () => {
+  // The refusal above is ENABLE-only. The manager's disable is a no-op that reports the
+  // off it already holds, so a caller ensuring the mode is off - a startup script, a
+  // defensive re-request from a non-UI client - must get 200 off, not an error for a
+  // state the host cannot help but be in.
+  const { manager } = workingManager({ platform: "linux" });
+  const app = appWith(manager);
+  const res = await put(app, { enabled: false });
+  assert.equal(res.status, 200);
+  const status = (await res.json()) as KeepAwakeStatus;
+  assert.equal(status.state, "off");
+  assert.equal(status.supported, false);
+});
+
 test("a successful enable answers 200 with the CONFIRMED on, then disable returns off", async () => {
   const { manager } = workingManager();
   const app = appWith(manager);

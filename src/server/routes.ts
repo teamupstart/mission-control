@@ -637,9 +637,12 @@ export function buildApp(
     const parsed = await parseBody(c, KeepAwakeRequestSchema);
     if (!parsed.ok) return parsed.res;
     const before = keepAwake.status();
-    if (!before.supported) {
+    if (parsed.data.enabled && !before.supported) {
       // A clear refusal, not a pretend transition: drawing `on` for a host with no
-      // provider would be the exact lie the status type exists to prevent.
+      // provider would be the exact lie the status type exists to prevent. ENABLE only:
+      // disabling is always achievable - the manager's off is a no-op on a host with no
+      // provider - so a caller ensuring the mode is off (a startup script, a defensive
+      // re-request) falls through and gets the off it asked for rather than an error.
       return c.json(
         {
           error: before.unavailableReason ?? "Keep awake is unavailable on this system",

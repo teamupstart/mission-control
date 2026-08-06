@@ -219,10 +219,20 @@ export async function readPluginVersion(filePath: string): Promise<string | null
     // Through the same descriptor-validating open as the document read: a manifest path is no
     // more trustworthy than a source path, and a FIFO here would hang the import just as well.
     const opened = await openRegularFile(manifest);
-    if ("refused" in opened) continue;
+    // "No manifest here" and "a manifest here that cannot be used" are different answers, and
+    // only the first one may keep walking. A manifest that is simply absent means this directory
+    // is not a plugin root, so the search continues. One that EXISTS but cannot be read - a
+    // FIFO, no permission, a device - marks a plugin boundary this build cannot describe, and
+    // walking past it would put the NEXT plugin up's version on a document that belongs to this
+    // one. Misattributed provenance is worse than absent provenance: `null` says "undeterminable"
+    // and a wrong version says "adapted from agent-team 0.2.0" about a file that never was.
+    if ("refused" in opened) {
+      if (opened.refused === "missing") continue;
+      return null;
+    }
     if (opened.size > PLUGIN_MANIFEST_MAX_BYTES) {
       await opened.handle.close();
-      continue;
+      return null;
     }
     try {
       const { bytes } = await readFileWithinCap(opened.handle, PLUGIN_MANIFEST_MAX_BYTES);
@@ -232,13 +242,15 @@ export async function readPluginVersion(filePath: string): Promise<string | null
         : undefined;
       if (typeof version === "string" && version.trim().length > 0) return version.trim().slice(0, 200);
     } catch {
-      // A manifest that is missing, unreadable, or not JSON is simply not an answer. The
-      // import itself is unaffected: the file it read is still exactly the file it read.
+      // A manifest that is not JSON, or whose read fails, is not an answer. The import itself is
+      // unaffected: the file it read is still exactly the file it read.
     } finally {
       await opened.handle.close();
     }
-    // The nearest manifest is the one that owns this file. If it had no usable version, a
-    // grandparent plugin's version would be a different plugin's number on this document.
+    // The nearest manifest is the one that owns this file, so every way of failing to get a
+    // version out of it lands here rather than on the next one up: no `version` field, a
+    // non-string one, unparseable JSON. A grandparent plugin's version would be a different
+    // plugin's number on this document.
     return null;
   }
   return null;

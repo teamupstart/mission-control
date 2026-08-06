@@ -225,17 +225,57 @@ test("a FIFO and a character device are refused on the descriptor, not read", as
     .filter((row) => !row.builtin), []);
 });
 
-test("a plugin manifest that is not a regular file leaves the import unharmed", async () => {
+/**
+ * An unusable NEAREST manifest stops the search rather than deferring to the one above it.
+ *
+ * The two failure modes are not the same answer. A manifest that is absent means this directory
+ * is not a plugin root, so the walk continues. One that exists and cannot be read marks a plugin
+ * boundary this build cannot describe - and walking past it records the NEXT plugin up's version
+ * on a document that belongs to this one. That is worse than recording nothing: `null` reads as
+ * "undeterminable", while `0.2.0` reads as "adapted from agent-team 0.2.0" about a file that never
+ * was, and it is the drift badge's own wording that would carry the lie.
+ *
+ * The outer plugin here is what makes the case real - with nothing above the FIFO, a fall-through
+ * and a stop are indistinguishable.
+ */
+test("an unreadable nearest plugin manifest yields no version, not the outer plugin's", async () => {
   const { request } = fixture();
-  // The manifest read is best-effort, so its failure mode is a missing version - never a failed
-  // or hanging import. A FIFO here went through the same unvalidated open as the document did.
-  const plugin = join(sources, "fifo-plugin", "plugins", "role-pack");
+  const outer = join(sources, "fifo-plugin");
+  mkdirSync(join(outer, ".claude-plugin"), { recursive: true });
+  writeFileSync(
+    join(outer, ".claude-plugin", "plugin.json"),
+    JSON.stringify({ name: "outer-marketplace-plugin", version: "9.9.9" }),
+    "utf8",
+  );
+  const plugin = join(outer, "plugins", "role-pack");
   mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
   execFileSync("mkfifo", [join(plugin, ".claude-plugin", "plugin.json")]);
+
   const path = writeRole("fifo-plugin/plugins/role-pack/references/roles/reviewer.md");
   const persona = (await (await importRole(request, path)).json()) as ImportedPersona;
+  // The manifest read is best-effort, so its failure mode is a missing version - never a failed
+  // or a hanging import.
   assert.equal(persona.guidanceMarkdown, ROLE);
+  assert.notEqual(persona.provenance?.pluginVersion, "9.9.9");
   assert.equal(persona.provenance?.pluginVersion, null);
+
+  // Same rule for a manifest that is a regular file but too large to be one worth reading.
+  const bigPlugin = join(outer, "plugins", "big-pack");
+  mkdirSync(join(bigPlugin, ".claude-plugin"), { recursive: true });
+  writeFileSync(
+    join(bigPlugin, ".claude-plugin", "plugin.json"),
+    `{"version":"1.0.0","padding":"${"x".repeat(100_000)}"}`,
+    "utf8",
+  );
+  // Its own heading, or it would be refused as a duplicate of the Persona imported above and the
+  // assertion would be reading an error body rather than a provenance record.
+  const bigPath = writeRole(
+    "fifo-plugin/plugins/big-pack/references/roles/second-reviewer.md",
+    "# Second Reviewer\n\nJudge it too.\n",
+  );
+  const second = (await (await importRole(request, bigPath)).json()) as ImportedPersona;
+  assert.equal(second.name, "Second Reviewer");
+  assert.equal(second.provenance?.pluginVersion, null);
 });
 
 test("a symlinked source is read through the link and remembered as the path that was named", async () => {

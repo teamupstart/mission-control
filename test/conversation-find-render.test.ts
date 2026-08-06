@@ -99,18 +99,26 @@ test("the rail renders for every prop combination - none of them suppresses it",
 
 test("the transcript mounts the bar and the rail on the same find state", () => {
   // The structural half. The rail leaves by the panel UNMOUNTING it, so a mount site
-  // not guarded by `find &&` - or a rail guarded by something the bar is not - is how
-  // an open find ends up with no results list beside it.
+  // not guarded by the find state - or a rail guarded by something the bar is not - is
+  // how an open find ends up with no results list beside it.
   const src = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
-  for (const tag of ["ConversationFindBar", "ConversationFindRail"]) {
+  for (const tag of ["ConversationFindBar", "ConversationFindRail", "ConversationActivity"]) {
     const mounts = src.match(new RegExp(`<${tag}`, "g")) ?? [];
     assert.equal(mounts.length, 1, `${tag} should be mounted exactly once`);
-    assert.match(
-      src,
-      new RegExp(`\\{find && \\(\\s*<${tag}`),
-      `${tag} must be mounted behind the find state, so closing find unmounts it`,
-    );
   }
+  assert.match(
+    src,
+    /\{find && \(\s*<ConversationFindBar/,
+    "the bar must be mounted behind the find state, so closing find unmounts it",
+  );
+  // The rail slot has exactly one owner at a time: find while open, Observed activity
+  // otherwise. A ternary is the shape that makes the exclusivity structural - the two
+  // can never render together, and closing find is what restores activity.
+  assert.match(
+    src,
+    /\{find \? \(\s*<ConversationFindRail[\s\S]*?\) : \(\s*<ConversationActivity/,
+    "the find rail and Observed activity must share the secondary slot exclusively",
+  );
 });
 
 test("rows are highlighted from the scoped hits, so the count describes what is lit", () => {

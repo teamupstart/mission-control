@@ -56,7 +56,11 @@ test("the conversation dates prose and a folded tool run from its first turn", (
   assert.equal((html.match(/class="conversation-time turn-time"/g) ?? []).length, 2);
   assert.match(html, /dateTime="2026-07-31T13:42:07.000Z"/);
   assert.match(html, /dateTime="2026-07-31T13:42:08.000Z"/);
-  assert.doesNotMatch(html, /dateTime="2026-07-31T13:42:09.000Z"/);
+  // The fold keeps its FIRST turn's time in the log. The :09 instant still exists in the
+  // markup - the Observed activity rail dates every invocation individually - but no turn
+  // row may carry it.
+  assert.doesNotMatch(html, /class="conversation-time turn-time" dateTime="2026-07-31T13:42:09.000Z"/);
+  assert.match(html, /class="conversation-time activity-time" dateTime="2026-07-31T13:42:09.000Z"/);
 
   // Prose keeps its time inside the byline, where `margin-left: auto` carries it to the
   // right edge of the label's own line - the row below it is untouched and full width.

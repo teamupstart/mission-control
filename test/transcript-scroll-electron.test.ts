@@ -34,9 +34,11 @@ import { mkSession } from "./helpers/session-fixture.ts";
  * between them and not in any one of them. A markup assertion would have passed
  * throughout: the DOM was correct, its used heights were not.
  *
- * Four cases, because the wrapper is load-bearing in two directions: find CLOSED (the
- * split collapses to `display: contents` and the wrapper is the flex item) and find OPEN
- * (the split is a real flex row), each in the Console detail and in an expanded card.
+ * The cases cover the split's two owners in both hosts and at both container widths:
+ * find CLOSED (Observed activity owns the secondary column), find OPEN (find owns it,
+ * activity withheld), each in the Console detail and in an expanded card - and the
+ * narrow-container layouts where activity collapses to a disclosure row that opens on
+ * request while find still stacks its full rail.
  */
 
 const require = createRequire(import.meta.url);
@@ -56,6 +58,18 @@ interface Measured {
   composeHeight: number;
   railBottomOverflow: number | null;
   railHeight: number | null;
+  railBelowLog: boolean | null;
+  activityBelowLog: boolean | null;
+  /** The split's right edge against its host's - a column that does not fit leaks here. */
+  splitRightOverflow: number;
+  activityPresent: boolean;
+  activityHeight: number | null;
+  activityBottomOverflow: number | null;
+  activityToggleVisible: boolean | null;
+  activityBodyVisible: boolean | null;
+  activityContentHeight: number | null;
+  activityViewHeight: number | null;
+  activityScrolledTo: number | null;
 }
 
 function hit(i: number): FindHit {
@@ -76,11 +90,20 @@ function hit(i: number): FindHit {
 /** The panel's real markup, hydrated with a real conversation through the history map. */
 function panelMarkup(): string {
   resetHistories();
+  // Assistant turns carry tools BESIDE their prose - the mixed shape the Observed
+  // activity projection must not miss - and enough of them (two per assistant turn)
+  // that the activity rail's own list overflows every pane it is measured in, which is
+  // what makes "the rail scrolls independently" a checkable fact rather than a hope.
   const messages: TranscriptMessage[] = Array.from({ length: TURNS }, (_, i) => ({
     id: `m${i}`,
     role: i % 2 === 0 ? "user" : "assistant",
     text: `turn ${i} - a line of conversation long enough to wrap inside the pane, so the log is taller than any box it is measured in.`,
-    tools: [],
+    tools: i % 2 === 0
+      ? []
+      : [
+          { name: "Bash", input: `{"command":"ls -la /repo/turn-${i}"}` },
+          { name: "Read", input: `{"file_path":"/repo/src/web/components/TranscriptPanel.tsx"}` },
+        ],
     ts: i,
   }));
   seedTail("s1", { messages, start: 0, atStart: true, pos: 1000 });
@@ -156,13 +179,28 @@ function findMarkup(): { bar: string; rail: string } {
  * the Console detail's pane (`ConsoleDetail`) and an expanded card's panel row
  * (`SessionCard`). Their heights are the app's own - a detail pane fills the window, an
  * expanded card is the fixed-height box `.card.expanded` describes.
+ *
+ * Each host appears at two widths, because the split is a container query and the
+ * PANEL's width is what decides the layout: 640/900px puts `.find-split` above the
+ * 560px breakpoint (activity is a side rail), 480/500px puts it below (activity is a
+ * stacked disclosure). The `-expanded` cases flip that disclosure open; the `-open`
+ * cases open find instead.
  */
 function page(panel: string, styles: string): string {
+  const detail = (width: number): string =>
+    `<div class="detail-body" style="height:600px;width:${width}px"><div class="detail-conv">${panel}</div></div>`;
+  const card = (width: number): string =>
+    `<div class="card expanded" style="height:636px;width:${width}px"><div class="card-panels">${panel}</div></div>`;
   const cases = [
-    ["detail-closed", `<div class="detail-body" style="height:600px;width:640px"><div class="detail-conv">${panel}</div></div>`],
-    ["detail-open", `<div class="detail-body" style="height:600px;width:640px"><div class="detail-conv">${panel}</div></div>`],
-    ["card-closed", `<div class="card expanded" style="height:636px;width:900px"><div class="card-panels">${panel}</div></div>`],
-    ["card-open", `<div class="card expanded" style="height:636px;width:900px"><div class="card-panels">${panel}</div></div>`],
+    ["detail-closed", detail(640)],
+    ["detail-open", detail(640)],
+    ["card-closed", card(900)],
+    ["card-open", card(900)],
+    ["detail-narrow", detail(480)],
+    ["detail-narrow-expanded", detail(480)],
+    ["detail-narrow-open", detail(480)],
+    ["card-narrow", card(500)],
+    ["card-narrow-expanded", card(500)],
   ];
   return `<!doctype html><meta charset="utf-8"><style>${styles}</style>
     <script type="application/json" id="find-markup">${JSON.stringify(findMarkup())}</script>
@@ -197,7 +235,19 @@ before(() => {
   }
 });
 
-for (const name of ["detail-closed", "detail-open", "card-closed", "card-open"]) {
+const ALL_CASES = [
+  "detail-closed",
+  "detail-open",
+  "card-closed",
+  "card-open",
+  "detail-narrow",
+  "detail-narrow-expanded",
+  "detail-narrow-open",
+  "card-narrow",
+  "card-narrow-expanded",
+];
+
+for (const name of ALL_CASES) {
   test(`the conversation log scrolls inside its pane (${name})`, () => {
     const m = measured[name];
     assert.ok(m, `no geometry for ${name}`);
@@ -225,11 +275,18 @@ for (const name of ["detail-closed", "detail-open", "card-closed", "card-open"])
       m.composeBottomOverflow <= 1,
       `reply box must stay inside the pane, got ${m.composeBottomOverflow}px past its bottom`,
     );
+
+    // No host-page sideways overflow at any width or state: a second column that does
+    // not fit would poke past the pane's right edge before it ever broke a height.
+    assert.ok(
+      m.splitRightOverflow <= 1,
+      `the conversation frame must fit its host's width, got ${m.splitRightOverflow}px past its right edge`,
+    );
   });
 }
 
-for (const name of ["detail-open", "card-open"]) {
-  test(`an open find keeps its rail inside the pane (${name})`, () => {
+for (const name of ["detail-open", "card-open", "detail-narrow-open"]) {
+  test(`an open find owns the secondary slot and keeps its rail inside the pane (${name})`, () => {
     const m = measured[name];
     assert.ok(m, `no geometry for ${name}`);
     // The rail is visible exactly when find is open - the feature's stated invariant -
@@ -240,5 +297,84 @@ for (const name of ["detail-open", "card-open"]) {
       (m.railBottomOverflow ?? 0) <= 1,
       `rail must stay inside the pane, got ${m.railBottomOverflow}px past its bottom`,
     );
+    // Exclusive ownership, measured rather than argued: while find is open there is no
+    // activity rail competing for the same column.
+    assert.equal(m.activityPresent, false, "find open must withhold the activity rail");
+    // Where the rail sits is the container query's doing, and it is measured rather
+    // than trusted because it HAS failed silently: with `container-type` on the split
+    // itself, the query could not restyle its own container and the stacked layout
+    // never engaged at any width.
+    assert.equal(
+      m.railBelowLog,
+      name.includes("narrow"),
+      name.includes("narrow")
+        ? "a narrow pane must stack the find rail under the log"
+        : "a wide pane must keep the find rail beside the log",
+    );
+  });
+}
+
+for (const name of ["detail-closed", "card-closed"]) {
+  test(`observed activity rides its own overflow region beside the log (${name})`, () => {
+    const m = measured[name];
+    assert.ok(m, `no geometry for ${name}`);
+    assert.ok(m.activityPresent, "find closed must render the activity rail");
+    // A side rail at these widths: the list shows, the narrow disclosure does not.
+    assert.equal(m.activityBodyVisible, true, "the wide rail shows its list");
+    assert.equal(m.activityToggleVisible, false, "the wide rail hides the narrow toggle");
+    assert.equal(m.activityBelowLog, false, "a wide pane keeps activity beside the log");
+    assert.ok(
+      (m.activityBottomOverflow ?? 0) <= 1,
+      `activity must stay inside the pane, got ${m.activityBottomOverflow}px past its bottom`,
+    );
+    // Independent overflow: the fixture holds more invocations than the rail's height,
+    // and the rail answers a scroll itself instead of growing or handing it to the log.
+    assert.ok(
+      (m.activityContentHeight ?? 0) > (m.activityViewHeight ?? 0),
+      `fixture must overflow the rail, got ${m.activityContentHeight}px of rows in ${m.activityViewHeight}px`,
+    );
+    assert.ok((m.activityScrolledTo ?? 0) > 0, "the activity list must scroll when asked to");
+  });
+}
+
+for (const name of ["detail-narrow", "card-narrow"]) {
+  test(`narrow activity collapses to a reachable disclosure row (${name})`, () => {
+    const m = measured[name];
+    assert.ok(m, `no geometry for ${name}`);
+    assert.ok(m.activityPresent, "the narrow layout keeps activity reachable");
+    // Collapsed by default: one toggle row, no list - the transcript keeps its height
+    // until the reader asks. The toggle must be laid out to be clickable at all.
+    assert.equal(m.activityToggleVisible, true, "the narrow layout shows the disclosure toggle");
+    assert.equal(m.activityBodyVisible, false, "collapsed activity holds no list open");
+    assert.equal(m.activityBelowLog, true, "a narrow pane stacks activity under the log");
+    // The whole collapsed section is a sliver, not a stacked pane.
+    assert.ok(
+      (m.activityHeight ?? 0) < 48,
+      `collapsed activity should cost the transcript almost nothing, got ${m.activityHeight}px`,
+    );
+    assert.ok((m.activityBottomOverflow ?? 0) <= 1, "collapsed activity stays inside the pane");
+  });
+}
+
+for (const name of ["detail-narrow-expanded", "card-narrow-expanded"]) {
+  test(`expanded narrow activity is bounded and scrolls without evicting the composer (${name})`, () => {
+    const m = measured[name];
+    assert.ok(m, `no geometry for ${name}`);
+    assert.ok(m.activityPresent, `no activity rail in ${name}`);
+    assert.equal(m.activityBodyVisible, true, "expanded activity shows its list");
+    // Bounded: the stacked section is capped (33% of the split plus the toggle row),
+    // so the transcript keeps the larger share of a narrow pane. 40% of the host is a
+    // generous ceiling that still fails loudly if the cap ever stops resolving.
+    assert.ok(
+      (m.activityHeight ?? 0) <= m.boxHeight * 0.4,
+      `expanded activity must stay bounded, got ${m.activityHeight}px of ${m.boxHeight}px`,
+    );
+    // And it scrolls its own overflow rather than growing past the cap.
+    assert.ok(
+      (m.activityContentHeight ?? 0) > (m.activityViewHeight ?? 0),
+      "fixture must overflow the expanded activity list",
+    );
+    assert.ok((m.activityScrolledTo ?? 0) > 0, "the expanded activity list must scroll");
+    assert.ok((m.activityBottomOverflow ?? 0) <= 1, "expanded activity stays inside the pane");
   });
 }

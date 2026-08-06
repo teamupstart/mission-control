@@ -933,6 +933,29 @@ the agent wrote more than a reconnect can honestly be said to have missed. Both 
 honest answer rather than a continuation with an invisible hole in it, and scrolling up
 re-reads whatever was dropped.
 
+### Observed activity beside the conversation
+
+An **Observed activity** rail sits to the right of the transcript and lists the tool
+invocations recorded in it - the time each appeared, the tool, and what it was invoked on
+(`bash ls`, `read styles.css`), through the same projection the inline tool chips use, so
+the two can never disagree. It answers "what actions has this agent attempted?" at a
+glance, without scrolling a long conversation for the grey chips - including calls made
+mid-paragraph on turns that are mostly prose, which the log does not fold into a tool run.
+
+The name is the contract: each row means an invocation was **observed in the loaded
+transcript**, nothing more. The rail is not a process monitor and does not claim results -
+no running, succeeded, or failed, no durations, no output. The transcript records that a
+call was made; whether it finished or how it went is not something the record can prove,
+so the rail does not say it. Its window is the transcript's too: what you have loaded is
+what it lists, so scrolling back through older turns adds their invocations, and a session
+whose transcript cannot be resolved shows none rather than inventing any.
+
+The rail shares its column with find: while find is open its results own the space
+([below](#find-in-a-conversation)), and closing find brings Observed activity back. On a
+narrow conversation the rail collapses to a single **Observed activity** row under the
+log - the transcript keeps its reading width and height - and opens on a click when you
+want the list.
+
 ### Find in a conversation
 
 <kbd>⌘</kbd><kbd>F</kbd> searches the open conversation the way a browser's find searches a

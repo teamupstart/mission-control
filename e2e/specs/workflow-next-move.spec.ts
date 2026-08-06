@@ -173,6 +173,21 @@ test("the header offers one derived move, and it becomes the recovery for its ow
   await expect(primary).toHaveCount(1);
   await expect(header.getByRole("button", { name: "Preview fresh evidence" })).toHaveCount(0);
 
+  /*
+   * RELOAD before taking it, which is the whole point of this step.
+   *
+   * The request id this recovery has to replay used to live in a `useRef`, so a reload emptied it
+   * and the button went on promising the existing snapshot while the daemon opened a fresh repair
+   * round instead. Nothing on screen changed - the label, the confirm and the outcome were all
+   * identical - so the only way to catch it is to reload here and check the round at the end.
+   *
+   * The affordance itself has to survive too: the daemon persists the refusal as a run phase, so
+   * a remounted header derives the same move from detail alone.
+   */
+  await dashboard.reload();
+  await expect(primary).toHaveText("Preview unchanged", { timeout: 40_000 });
+  await expect(primary).toHaveCount(1);
+
   // It confirms first, because running every reviewer again against an unmoved snapshot spends
   // model tokens on evidence the operator has been told has not changed.
   await primary.click();
@@ -198,12 +213,12 @@ test("the header offers one derived move, and it becomes the recovery for its ow
     .toMatch(/^waiting_for_session\/(?!unchanged_evidence)/);
 
   /*
-   * The witness for the request-id contract.
+   * The witness for the request-id contract, and it is the only one.
    *
-   * Round 2 is REVIVED, so the run is still on round 2. Had the click minted a fresh request id
-   * the daemon would have found no prior submission, taken the repair path, and opened round 3 -
-   * a repair round spent on nothing, with no visible difference in the browser at all. This
-   * number is the only place that mistake is observable.
+   * Round 2 is REVIVED, so the run is still on round 2 - across the reload above. Had the click
+   * minted a fresh request id the daemon would have found no prior submission, taken the repair
+   * path, and opened round 3: a repair round spent on evidence the operator had already been told
+   * was identical, with the label, the confirm and the re-review all looking exactly the same.
    */
   const after = await probe(daemon, runId);
   expect(after.summary.round).toBe(2);

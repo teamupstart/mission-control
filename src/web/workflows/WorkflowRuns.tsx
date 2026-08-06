@@ -19,7 +19,7 @@ import {
   sessionActionSkillLabel,
 } from "@shared/workflow.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
-import { WorkflowApiError, workflowRequest } from "./workflowApi.ts";
+import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { SessionActionProgress } from "./run-model.ts";
@@ -75,7 +75,7 @@ import {
   copyFeedbackAction,
   deliveryResolutionActions,
   inspectorGateActions,
-  resubmitReusesRequestId,
+  refusedUnchangedRequestId,
   runActionTooltip,
   runNextMove,
   runNoMoveReason,
@@ -1523,7 +1523,6 @@ export function WorkflowRuns({
   const mounted = useRef(false);
   const listGeneration = useRef(0);
   const selectedIndex = useRef(0);
-  const unchangedRequest = useRef<{ runId: string; requestId: string } | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const listPage = async (cursor: string | null, append: boolean): Promise<void> => {
@@ -1688,38 +1687,31 @@ export function WorkflowRuns({
 
   const resubmit = async (unchanged: boolean): Promise<void> => {
     if (!detail) return;
-    const remembered = unchangedRequest.current?.runId === detail.run.id
-      ? unchangedRequest.current.requestId
-      : null;
     /*
-     * Replaying the refused POST's own request id is what keeps an unchanged resubmission INSIDE
-     * its round - the daemon finds the failed submission by trigger key and revives it, where a
-     * fresh id would open a repair round and spend one of the binding's.
+     * Replaying the refused submission's own request id is what keeps an unchanged resubmission
+     * INSIDE its round - the daemon finds that submission by trigger key and revives it, where a
+     * fresh id opens a repair round and spends one of the binding's.
      *
-     * `resubmitReusesRequestId` is the window the daemon actually accepts that in, and it is
-     * checked rather than assumed because both ways of getting it wrong are silent. Past the
-     * nudge limit the run's phase is `unchanged_evidence_exhausted`, the revive guard no longer
-     * matches, and the daemon answers "already applied" with the old failed row - so a replay
-     * there is a click that does nothing at all, and a fresh id is the one that runs.
+     * That id is DERIVED from the run rather than remembered from the request that earned the
+     * refusal. A `useRef` here was empty after any reload, and the header went on offering to
+     * review "this snapshot" while the daemon quietly opened a new round instead - a promise the
+     * label made and the mechanism could not keep. `refusedUnchangedRequestId` reads it off the
+     * refused submission's trigger key, so it survives a remount, a new tab, and a second
+     * operator arriving at the same run.
+     *
+     * `null` means no revivable submission, which is a correct answer rather than a failure: a
+     * fresh id is what the daemon accepts there.
      */
-    const requestId = unchanged && remembered && resubmitReusesRequestId(detail)
-      ? remembered
-      : crypto.randomUUID();
+    const replay = unchanged ? refusedUnchangedRequestId(detail) : null;
+    const requestId = replay ?? crypto.randomUUID();
     setError(null);
     try {
       await workflowRequest(`/api/workflow-runs/${detail.run.id}/resubmit`, {
         method: "POST",
         body: JSON.stringify({ requestId, resubmitUnchanged: unchanged }),
       });
-      unchangedRequest.current = null;
       void load();
     } catch (caught) {
-      if (
-        caught instanceof WorkflowApiError
-        && caught.body?.code === "workflow_unchanged_evidence"
-      ) {
-        unchangedRequest.current = { runId: detail.run.id, requestId };
-      }
       setError(caught instanceof Error ? caught.message : "Workflow resubmission failed");
       void load(false, true);
     }
@@ -1946,9 +1938,9 @@ export function WorkflowRuns({
              * new wiring here.
              *
              * The resubmission family is routed to the page's own handler rather than sent from
-             * here, and NOT for tidiness: that handler owns `unchangedRequest`, the remembered
-             * request id that keeps an unchanged resubmission inside the round it is repairing.
-             * Sending it generically would mint a fresh id and burn a repair round every time.
+             * here, and NOT for tidiness: that handler resolves the request id that keeps an
+             * unchanged resubmission inside the round it is repairing. Sending it generically
+             * would mint a fresh id and burn a repair round every time.
              */
             onNextMove={(move) => {
               if (move.kind === "resubmit" || move.kind === "resubmit-unchanged") {

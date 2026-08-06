@@ -2,7 +2,10 @@ import type {
   WorkflowDelivery,
   WorkflowRunDetail,
 } from "@shared/workflow.ts";
-import { workflowRunIsOpen } from "@shared/workflow.ts";
+import {
+  manualWorkflowTriggerRequestId,
+  workflowRunIsOpen,
+} from "@shared/workflow.ts";
 // One-directional: this module reads `run-model`'s derivations at runtime, and `run-model` takes
 // only a TYPE from here, so there is no cycle to resolve at load.
 import {
@@ -238,22 +241,38 @@ export function runActionTooltip(
 }
 
 /**
- * Whether replaying the refused submission's own request id will still revive it.
+ * The request id an unchanged resubmission must replay, read off the run itself.
  *
- * This mirrors `manager.resubmit`'s guard exactly - the failed submission is found by trigger
- * key, and revived only while the run is still `waiting_for_session`/`unchanged_evidence` - and
- * it has to, because both outcomes either side of that window are silent.
+ * DERIVED, not remembered. The id belongs to the submission the daemon refused, and that
+ * submission is on run detail carrying the very key it was filed under - so the answer is a
+ * property of the run rather than of the component that happened to make the failing request.
+ * A `useRef` holding it looked equivalent and was not: after a reload the ref is empty, and the
+ * only place that showed was the round counter. The header went on offering to review "this
+ * snapshot" while the daemon, finding no prior submission, opened a fresh repair round and spent
+ * one of the binding's on evidence it had already been told was identical.
  *
- * Inside it, replaying the id revives the failed submission IN THE SAME ROUND, which is the
- * entire reason the id is remembered: a fresh one takes `createRepairSubmission` and burns a
- * repair round. Outside it - once the nudge limit is passed and the phase is
- * `unchanged_evidence_exhausted` - the daemon finds the submission but fails the phase test and
- * answers "already applied" with the old failed row, so the click does NOTHING. A fresh id
- * there is the one that runs.
+ * The guards mirror `manager.resubmit`'s revive path exactly, and they have to, because both
+ * outcomes either side of it are silent:
+ *
+ *  - Inside the window, replaying revives the failed submission IN THE SAME ROUND.
+ *  - Past the nudge limit the phase is `unchanged_evidence_exhausted`, the revive guard no longer
+ *    matches, and the daemon answers "already applied" with the old failed row - so a replay
+ *    there is a click that does nothing, and `null` (a fresh id) is the one that runs.
+ *
+ * `null` is therefore a correct answer and not a failure: the caller mints a fresh id, which is
+ * always accepted. Every narrowing below degrades that way, including the trigger key being a
+ * shape this build does not recognise.
  */
-export function resubmitReusesRequestId(detail: WorkflowRunDetail): boolean {
-  return detail.run.status === "waiting_for_session"
-    && detail.run.currentPhase === "unchanged_evidence";
+export function refusedUnchangedRequestId(detail: WorkflowRunDetail): string | null {
+  if (
+    detail.run.status !== "waiting_for_session"
+    || detail.run.currentPhase !== "unchanged_evidence"
+  ) return null;
+  const refused = orderedSubmissions(detail).at(-1);
+  // The refusal marks the submission it opened `failed` and leaves it newest, so anything else
+  // here means the run has moved on and this is not the round being repaired.
+  if (!refused || refused.status !== "failed" || refused.triggerSource !== "manual") return null;
+  return manualWorkflowTriggerRequestId(detail.binding.id, refused.triggerKey);
 }
 
 /**

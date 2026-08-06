@@ -31,8 +31,12 @@ import type {
 } from "../src/shared/workflow.ts";
 import { WORKFLOW_RUN_STATUSES } from "../src/shared/workflow.ts";
 import {
+  manualWorkflowTriggerKey,
+  manualWorkflowTriggerRequestId,
+} from "../src/shared/workflow.ts";
+import {
   inspectorGateActions,
-  resubmitReusesRequestId,
+  refusedUnchangedRequestId,
   runNextMove,
   runNoMoveReason,
 } from "../src/web/workflows/run-actions.ts";
@@ -50,6 +54,10 @@ interface Shape {
   erroredAttempt?: boolean;
   /** The newest submission's mode. An Inspector-only repair withholds the resubmission. */
   inspectorOnly?: boolean;
+  /** The newest submission's own status and idempotency key, for the replay derivation. */
+  submissionStatus?: string;
+  triggerSource?: string;
+  triggerKey?: string;
   gate?: { waitReason: WorkflowGateWaitReason | null; prUrl?: string | null } | null;
   policy?: "none" | "inspector";
   missingPrAction?: "offer_prepare_pr" | "wait";
@@ -69,6 +77,9 @@ function detailFor(shape: Shape): WorkflowRunDetail {
     gate = null,
     policy = "none",
     missingPrAction = "offer_prepare_pr",
+    submissionStatus = "running",
+    triggerSource = "manual",
+    triggerKey = manualWorkflowTriggerKey("binding", "request-1"),
   } = shape;
   const inspectorGate: WorkflowInspectorGateDetail | null = gate
     ? {
@@ -109,6 +120,9 @@ function detailFor(shape: Shape): WorkflowRunDetail {
       round,
       segment: 0,
       mode: inspectorOnly ? "inspector_only" : "full_workflow",
+      status: submissionStatus,
+      triggerSource,
+      triggerKey,
       createdAt: 1,
     }],
     attempts: erroredAttempt
@@ -186,32 +200,98 @@ test("both unchanged-evidence phases offer the snapshot resubmission and nothing
 });
 
 /**
- * The request id only revives the failed submission inside the window the daemon accepts it in.
+ * The replayed request id comes off the RUN, so it cannot go missing with the component.
  *
- * Inside it, replaying keeps the repair round the run already opened. Outside it - past the
- * nudge limit, phase `unchanged_evidence_exhausted` - the daemon finds the submission, fails its
- * phase test and answers "already applied", so a replay is a click that does nothing. Both
- * failures are silent, which is why this is a predicate with a test rather than an assumption.
+ * This is the regression guard for the defect that made a `useRef` the wrong home for it. The ref
+ * was empty after any reload, and nothing on screen said so: the header went on offering to review
+ * "this snapshot" while the daemon, finding no prior submission, opened a fresh repair round and
+ * spent one of the binding's on evidence it had already been told was identical. Reading the id
+ * off the refused submission's own trigger key makes the answer a property of the run, which a
+ * remount cannot take away.
  */
-test("the refused request id is replayed only while the daemon will still revive it", () => {
+test("the refused request id is derived from the run, not remembered by the page", () => {
   assert.equal(
-    resubmitReusesRequestId(detailFor({
+    refusedUnchangedRequestId(detailFor({
       status: "waiting_for_session",
       phase: "unchanged_evidence",
+      submissionStatus: "failed",
+      triggerKey: manualWorkflowTriggerKey("binding", "request-42"),
     })),
-    true,
+    "request-42",
   );
-  assert.equal(
-    resubmitReusesRequestId(detailFor({
+});
+
+/**
+ * `null` is a correct answer, not a failure: the caller mints a fresh id, which the daemon always
+ * accepts. Every narrowing has to degrade that way, because the alternative is a request the
+ * daemon answers "already applied" to - a click that silently does nothing.
+ */
+test("the replay is withheld wherever the daemon would not revive the submission", () => {
+  const cases: [string, Shape][] = [
+    // Past the nudge limit the revive guard no longer matches the phase, so a replay would be
+    // answered with the old failed row and nothing would run.
+    ["exhausted", {
       status: "blocked",
       phase: "unchanged_evidence_exhausted",
-    })),
-    false,
-  );
-  assert.equal(
-    resubmitReusesRequestId(detailFor({ status: "waiting_for_session" })),
-    false,
-  );
+      submissionStatus: "failed",
+    }],
+    // No refusal has happened, so there is nothing to revive.
+    ["no refusal", { status: "waiting_for_session", submissionStatus: "running" }],
+    // The run moved on: the newest submission is not the refused one.
+    ["submission not failed", {
+      status: "waiting_for_session",
+      phase: "unchanged_evidence",
+      submissionStatus: "running",
+    }],
+    // An automatically triggered submission cannot be revived by a manual replay at all - no
+    // request id could reconstruct its key.
+    ["automatic trigger", {
+      status: "waiting_for_session",
+      phase: "unchanged_evidence",
+      submissionStatus: "failed",
+      triggerSource: "foreman",
+      triggerKey: "foreman:binding:whatever",
+    }],
+    // A namespaced sibling under the same prefix. Replaying its request id against `resubmit`
+    // would compose a key that matches a different submission, or none.
+    ["restart-full key", {
+      status: "waiting_for_session",
+      phase: "unchanged_evidence",
+      submissionStatus: "failed",
+      triggerKey: "manual:binding:restart-full:request-9",
+    }],
+    // A key shape this build does not recognise degrades to a fresh id rather than to a guess.
+    ["unrecognised key", {
+      status: "waiting_for_session",
+      phase: "unchanged_evidence",
+      submissionStatus: "failed",
+      triggerKey: "something-else-entirely",
+    }],
+  ];
+  for (const [name, shape] of cases) {
+    assert.equal(refusedUnchangedRequestId(detailFor(shape)), null, `${name} must not replay`);
+  }
+});
+
+/** The composer and the reader are one contract, so a round trip is the honest assertion. */
+test("a manual trigger key round-trips, and its namespaced siblings do not", () => {
+  const key = manualWorkflowTriggerKey("binding-7", "abc-123");
+  assert.equal(key, "manual:binding-7:abc-123");
+  assert.equal(manualWorkflowTriggerRequestId("binding-7", key), "abc-123");
+  // A different binding's key is not this binding's, even though the shape matches.
+  assert.equal(manualWorkflowTriggerRequestId("binding-8", key), null);
+  for (const sibling of [
+    "manual:binding-7:restart-full:abc-123",
+    "manual:binding-7:delivery-resolution:abc-123",
+    "manual:binding-7:",
+    "inspector-head:run:sha",
+  ]) {
+    assert.equal(
+      manualWorkflowTriggerRequestId("binding-7", sibling),
+      null,
+      `${sibling} is not a manual submission request id`,
+    );
+  }
 });
 
 test("the gate waits resolve to the handoff first, then to a recheck", () => {
